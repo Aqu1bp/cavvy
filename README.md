@@ -1,684 +1,82 @@
-# Cavvy
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="design/logo/cavvy-lockup-on-dark.svg">
+    <img alt="Cavvy" src="design/logo/cavvy-lockup.svg" width="240">
+  </picture>
+</p>
 
-A coding agent for your terminal and desktop that works with any model provider. It reads, edits and runs code in your project, asks before doing anything risky, and keeps your API keys out of everything it writes.
+<p align="center">A coding agent for your terminal and desktop that works with any model provider.</p>
+
+<p align="center">
+  <a href="https://github.com/Aqu1bp/cavvy/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Aqu1bp/cavvy/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+</p>
+
+Cavvy reads, edits and runs code in your project, asks before doing anything risky, and keeps your API keys out of everything it writes. Use it in the terminal, in its desktop app, or in your browser: a session started in one continues in the others.
+
+## Highlights
+
+- **Any model.** Anthropic, OpenAI, Gemini and Vertex AI, OpenRouter, Groq, DeepSeek, xAI, Mistral, Together, Fireworks and Cerebras; local models through Ollama and LM Studio; and any OpenAI-compatible endpoint. One searchable list, with context sizes and prices.
+- **Your Claude or ChatGPT plan.** Cavvy runs your own Claude Code or Codex, signed in by you, so a subscription works without an API key. Several accounts per CLI, switched between responses.
+- **Asks before it acts.** Five permission modes, from asking before every edit to an auto mode that runs shell commands in a sandbox and has a reviewer model check everything else.
+- **A desktop app.** Several sessions at once, approvals with diff previews, a review pane where you commit, push and open pull requests, worktrees, a terminal panel, and a browser the agent can drive.
+- **Other models as sub-agents.** Hand a task to another provider's model: a second opinion, a review, a cheaper research run.
+- **Works with what you already use.** MCP servers, Claude Code plugins and marketplaces, hooks in Claude Code's format, and `CLAUDE.md` and `AGENTS.md` memory files.
+- **Keys stay secret.** They're kept in the OS keychain, sent only to their own provider, and redacted from tool output, transcripts and logs.
+
+## Install
+
+Cavvy needs [Bun](https://bun.sh) and Git. The terminal app and the browser GUI run on macOS and Linux; the desktop app is built for macOS.
 
 ```bash
+git clone https://github.com/Aqu1bp/cavvy.git
+cd cavvy
 bun install
-bin/cavvy                 # interactive
-bin/cavvy -p "explain src/agent/agent.ts"   # one-shot
+bun link                     # puts `cavvy` on your PATH (or add bin/ to it)
 ```
 
-Put `bin/` on your `PATH` (or run `bun link`) to type `cavvy` anywhere. `bun run build` produces a standalone binary in `dist/cavvy`. For the desktop app and the browser GUI, see [Desktop app and GUI](#desktop-app-and-gui).
+`bun run build` makes a standalone binary instead, in `dist/cavvy`.
 
-## API keys
+The desktop app builds from the same checkout, and keeps itself up to date from then on:
 
-Run `cavvy` and type `/login`, then paste a key. The provider is recognized from the key's format (you pick from a list when it's ambiguous), the key is checked with one cheap authenticated request, and then stored:
-
-- in the OS keychain (macOS Keychain, libsecret, Windows Credential Manager) via `Bun.secrets`, or
-- in `~/.cavvy/credentials.json` with mode 600 when no keychain is available.
-
-Supported: Anthropic, OpenAI, Google Gemini, Google Vertex AI (through gcloud, below), your Claude or ChatGPT subscription (through your own Claude Code or Codex, [below](#claude-and-chatgpt-subscriptions)), OpenRouter, Groq, DeepSeek, xAI, Mistral, Together, Fireworks, Cerebras, plus Brave and Tavily for web search. Ollama and LM Studio are picked up automatically when they're running. `/login custom` adds any OpenAI-compatible (or Anthropic- or Responses-compatible) endpoint.
-
-From a shell: `cavvy auth add [provider]` (hidden prompt, or pipe the key on stdin), `cavvy auth list`, `cavvy auth remove <provider>`. Environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, …) also work and take precedence.
-
-### Google Cloud (Vertex AI)
-
-Gemini through Vertex AI (which Google now calls Gemini Enterprise Agent Platform) is billed to a Google Cloud project, so Cloud credits such as the free trial's apply. A Gemini API key from AI Studio is billed separately, and the free trial's credit doesn't cover it.
-
-There's no key to paste. Install the [gcloud CLI](https://cloud.google.com/sdk/docs/install), run `gcloud auth login`, then `/login vertex` in Cavvy:
-
-1. Pick the Google account (from the accounts gcloud is signed in with).
-2. Pick the project to bill (projects with billing on are listed first).
-3. Pick `global` or a region.
-
-The setup is checked by listing the model catalog at the location you picked (no model is called), so a misspelled region is caught before anything is saved. If the Vertex AI API is off in the project, you're offered to turn it on (`gcloud services enable aiplatform.googleapis.com`). From a shell: `cavvy auth add vertex --project <id> [--location global] [--account <email>]`.
-
-Only the project, location and account are saved (in `~/.cavvy/providers.json`). Requests carry an access token from `gcloud config config-helper --account=<account>`:
-
-- Cavvy keeps the token in memory until a few minutes before it expires, and forces gcloud to issue a new one if Vertex rejects it.
-- gcloud keeps its own copy in its credential store, as it does for any gcloud command. Its log file is turned off for these calls, because it would record the token there.
-- The token is only sent to `aiplatform.googleapis.com` (or the region's own host).
-- It's masked like a key, and so is any other Google access token (`ya29.…`) that shows up in tool output.
-
-The account is always named explicitly, so switching gcloud's active account doesn't change who is billed. Shell commands that print a gcloud token ask first. `/logout vertex` removes the setup; gcloud itself stays signed in.
-
-Vertex's model catalog has no context sizes or prices. They're filled in from the Gemini API's listing (if you also have a Gemini key) and OpenRouter's catalog (if you have an OpenRouter key).
-
-How keys are kept safe:
-
-- A key is only ever sent to its own provider's API host. (Vertex AI uses gcloud tokens instead of a key; see above.)
-- Keys are registered with a redactor, so they're masked in tool output, session transcripts, exports, and error messages. Nothing that's written to disk (sessions, history, settings, the model cache) contains a key.
-- Everything that enters the conversation is redacted before any model sees it: your prompts, tool results, memory files, and the model's own replies (so a key can't hop from one provider's transcript to another's when you switch models). The terminal and `-p` output are redacted too, and so is what hooks receive on stdin.
-- Every process Cavvy starts (shell commands, hooks, MCP servers, git, ripgrep, your editor) gets an environment with all provider keys removed. A settings `env` entry can't put one back; MCP servers' own `env` blocks are passed through as you wrote them.
-- The agent's file tools can't open the credential store at all. Reading `.env` files, `~/.ssh`, `~/.aws` and similar asks first, through the Read tool or a shell command. Shell commands are matched on their text, so this is a guard against fishing, not a sandbox.
-- A `.env` in the project you're working on is never loaded. Only Cavvy's own `.env` and `~/.cavvy/.env` are read, and only for known variables.
-- `bin/cavvy` starts Bun with `--no-env-file` and its own `--config`, because Bun otherwise reads `.env` and `bunfig.toml` from the current directory, and a repository's `bunfig.toml` can preload scripts.
-
-## Claude and ChatGPT subscriptions
-
-A Claude plan (Pro, Max, Team, Enterprise) or a ChatGPT plan can be used through the official CLI you already have installed. Cavvy runs Claude Code or Codex itself, the way editor integrations and apps like T3 Code do, rather than calling the API with your plan's credentials.
-
-1. Install [Claude Code](https://code.claude.com/docs/en/setup) or the [Codex CLI](https://developers.openai.com/codex/cli), and sign in there: `claude auth login`, or `codex login`. That's Anthropic's or OpenAI's own sign-in.
-2. In Cavvy, `/login claude-code` or `/login codex` (`cavvy auth add claude-code` from a shell, or **Use my Claude subscription** / **Use my ChatGPT plan** in the desktop app's Settings → Providers). This asks the CLI whether it's signed in (`claude auth status`; Codex's `account/read`) and turns it on. On first run with nothing set up, Cavvy offers whichever of the two is installed.
-3. Pick a model in `/model`: `claude-code:default`, `claude-code:sonnet`, `codex:gpt-6.1-sol`, …. The list comes from the CLI.
-
-How it works:
-
-- Each prompt runs as one turn in the CLI: `claude -p` with stream-json input and output (the protocol the Agent SDK uses), or `codex app-server` (JSON-RPC). The CLI uses its own system prompt, tools, sandbox, context management and memory (CLAUDE.md, AGENTS.md, its own settings, skills and MCP servers). Cavvy streams what it does into the transcript.
-- When the CLI asks for permission, Cavvy answers with its own rules and dialog. Deny rules refuse without asking. An explicit allow rule (`Bash(npm test:*)`, `Write`, `--allowedTools`) approves. In Accept edits, so does an edit inside the workspace. Anything else asks you, with the same diff previews as Cavvy's own tools, and "don't ask again" saves a Cavvy rule. In `-p` mode, anything that would ask is refused. Codex itself only tells its model "rejected by user", so when Cavvy refuses something, it also tells Codex why. Claude Code's `AskUserQuestion` and `ExitPlanMode`, and Codex's questions to the user, use Cavvy's question and plan dialogs. Codex asks before an MCP tool call that needs approval with an MCP elicitation of its own; Cavvy answers it like a command, with its rules for that tool (`mcp__server__tool`) and then you. An MCP server's own form or link goes to the question dialog. In `-p` mode they're declined.
-- What the CLI does without asking never reaches Cavvy, so Cavvy's rules have to be in the CLI itself to cover it:
-  - Claude Code gets Cavvy's deny and ask rules as its own permission rules, plus a deny rule for Cavvy's credential store. They then also cover what it would otherwise do on its own, like reading a file in the project. The translation:
-    - Paths are made absolute the way Cavvy resolves them.
-    - `WebFetch(domain:example.com)` also gets `domain:*.example.com`, since Cavvy's rule covers subdomains and Claude Code's doesn't.
-    - `*` stays `*`, and `*(path)` becomes a read and an edit rule.
-
-    Where the two still differ:
-    - Claude Code matches Bash rules on the command as written, so `Bash(rm:*)` doesn't catch `/bin/rm …`, `env rm …` or `bash -c 'rm …'` as Cavvy's does. That matters only when Claude Code wouldn't ask anyway: its own auto and bypass modes, or allow rules in your Claude Code settings.
-    - Claude Code reads `[…]` in a path as a pattern, where Cavvy reads it literally.
-    - A bare `Bash` ask rule doesn't stop Claude Code's sandbox from approving commands, if you've turned that sandbox on in your Claude Code settings.
-
-    The rules go on Claude Code's command line, so other local processes can see them (`ps`). Don't put a secret in a rule (a token in a `Bash(…)` command, say).
-  - Codex can't take them. Deny rules cover only what Codex asks approval for. In Manual, Plan and Accept edits, that's every edit and every command (Codex 0.162 asks even about `cat`). Commands Cavvy would run for its own models without asking (read-only ones, unless a rule or a file with credentials is involved) run without asking you, and the rest come to you. A `Read` deny rule doesn't stop Codex from reading a file with a command. In Auto and Bypass Codex asks much less, and runs commands itself, so it can read `~/.cavvy/credentials.json` there, if a key is stored there rather than in the OS keychain. In Auto, Codex's own reviewer answers what it would otherwise ask (commands and edits outside its sandbox, network access, more permissions), so Cavvy's rules don't see those; when the reviewer turns something down, the transcript says what and why.
-- Cavvy's permission mode maps to the CLI's:
-
-  | Cavvy | Claude Code | Codex (approval policy, sandbox) |
-  |---|---|---|
-  | Manual | `default` | `untrusted`, read-only |
-  | Accept edits | `default`; Cavvy approves edits inside the workspace | `untrusted`, workspace-write; Cavvy approves edits inside the workspace |
-  | Plan | `plan` | `untrusted`, read-only, told to only plan; requests for more permissions are refused |
-  | Auto | `auto` (Claude Code's own auto mode) | `on-request`, workspace-write, with Codex's own reviewer (`auto_review`): commands and edits inside the sandbox run without asking, and the reviewer decides on the rest |
-  | Bypass permissions | `bypassPermissions` | `never`, no sandbox |
-
-  Neither CLI's own accept-edits behavior is used, because both are looser than Cavvy's: Claude Code's `acceptEdits` also runs file commands (`rm`, `mv`, `sed`) without asking, and Codex's `on-request` runs any command inside its sandbox. Edits to `.claude/`, `.codex/`, `.cavvy/`, `.mcp.json` and `.git/` always ask. Codex's requests to widen its sandbox always ask (in Auto, Codex's reviewer answers them). They're refused without asking if a deny rule could match anything in a folder they name (symlinks resolved), if that folder holds Cavvy's credential store, or if they name something Cavvy can't map to folders (like Codex's "minimal" system paths).
-- Changing the mode during a turn: Claude Code switches immediately. Codex can't change its approval policy mid-turn, so switching to a stricter mode stops its turn and resumes it under the new one. A looser mode applies from the next turn, as do prompts you queue.
-
-- With Claude Code 2.1.301 or newer, messages queued during a turn are sent at the next top-level tool-result boundary, in order; the preceding reply stays before the new user message in saved history. Claude Code consumes the input between tool rounds. If there is no tool boundary, delivery waits for the current result; older or unidentified CLIs retain between-turn delivery. At most 64 unacknowledged prompts are sent at once, matching the CLI's result window; further messages wait for a result.
-- After a Claude Code answer, Cavvy keeps the run open for background work, as Claude Code's own session would. A background Bash command that passed a `timeout` runs until that timeout is up, counted from its start and capped at Claude Code's two-hour maximum. A command without a timeout, and each monitor, gets a 30-minute grace (Claude Code's default background timeout), starting after the latest answer or when that task joins the wait. All background work also shares a one-hour overall wait cap that automatic report turns do not reset; when it's reached, other work is stopped, but a command still within its own timeout keeps running until that ends, and so do sub-agents and workflows meanwhile (stopping one would end the shells under it). Set `claudeCode.backgroundWaitSec` in Cavvy settings to change the 30-minute grace (`0` disables it; invalid or negative values use the default). The setting doesn't shorten or lengthen a command's own timeout. The model is told to pass `timeout` for long finite jobs such as test suites and builds. The live status names the work, for example “Waiting for background command: Run checks · Esc to stop it”. Esc stops the tasks and preserves the reply already produced. When the grace expires, the turn ends normally with a notice naming stopped tasks and a saved reminder delivered to the model on its next prompt, including after reopening.
-- Recognized long-lived background commands (`bun run dev`, `npm start`, `vite`, `tail -f`, `--watch`, and similar dev/serve/start/watch scripts) are stopped after the answer without waiting for the grace or their own timeout. Explicitly disabled watch flags (`--watch=false`, `--watch=0`, `--no-watch`) do not enable watch mode; the last watch flag wins. This is a command heuristic, not a guarantee for every server or watcher. When agents or other finite work remain, Cavvy asks Claude Code to stop only the selected task IDs; if that stop fails or is unacknowledged for five seconds, it closes the process and names all affected work. Wait limits are checked between CLI turns, so they do not cut off an active model/tool step. Completed tasks still get a brief report grace. The model is told the lifetime limits up front; unreported processes cannot be tracked.
-- Claude Code's error messages are saved as notices, outside assistant history, so switching backends does not replay CLI diagnostics as the model's words. Genuine partial replies remain in the conversation.
-- The next prompt continues the same Claude Code session (`--resume`) or Codex thread (`thread/resume`), also after `-c`/`-r`. Each turn is also saved in Cavvy session as text (what was said, and which tools ran). If you switch to another model and back, the CLI gets what the other model said in between; if its session is gone, a new one starts with the conversation so far.
-- Usage is recorded in tokens. On a plan the cost shows as $0. If the CLI is signed in with an API key instead, Claude Code's reported cost counts, and `/login` warns you.
-- Plan limits come from the CLIs themselves, over their own protocols: Claude Code's `rate_limit_event` (each window's utilization and reset time, from 2.1.301) and Codex's `account/rateLimits/read` (asked as a turn starts on a ChatGPT plan) and `account/rateLimits/updated`. Only window names, percentages, reset times and whether a limit is reached are kept, in memory; account ids, emails and plan details in those payloads are never read. A turn that hits a limit ends with when it resets (your local time, and how long from now) whenever the CLI said, and says so when it didn't. The GUI shows them beside the context ring; the terminal's `/cost` lists them.
-- `esc` interrupts the CLI's turn. `/compact` runs the CLI's own compaction, and auto-compaction is left to the CLI.
-
-What's different from Cavvy's own models:
-
-- Cavvy's tool wrappers and auto-mode sandbox don't apply. The CLI uses its own tools and permissions, and Cavvy only sees the permission prompts it raises. Claude Code receives separate copies of approved MCP servers as described below. Hooks do run: see [which events run where](#hooks). The exception is Cavvy's delegation tools ([below](#sub-agents-on-other-models)).
-- `/rewind` rewinds the conversation, but restores only files Cavvy's own tools changed. Use git for the CLI's edits.
-- A project's own configuration for the CLIs can run commands: hooks, skills, sub-agents and permission rules in `.claude/`, and config in `.codex/`. `claude -p` shows no trust prompt of its own. The CLIs get project configuration only in a folder you've explicitly told Cavvy you trust; implicit trust because nothing needed protection at startup doesn't count. Otherwise, Claude Code uses `--setting-sources user`, and Codex is told the folder, its git root and the folders above are untrusted, even if you trusted it in Codex itself. While a CLI is on, the startup trust prompt lists that configuration; `/login claude-code` and `/login codex` offer to trust a folder that has some.
-
-  In a user-trusted folder, Claude Code loads its own user and plugin MCP servers. Cavvy reads the current `.mcp.json` each turn and passes only server names in `--settings`: `enabledMcpjsonServers` contains manager-approved project servers whose full definitions still match the manager's loaded snapshot; `disabledMcpjsonServers` contains every other project name and always `cavvy`. The disabled list wins over `enableAllProjectMcpServers` from other settings. Cavvy uses `--strict-mcp-config` for untrusted folders, read-only sub-agents, a missing manager, a changed working directory, an ancestor `.mcp.json`, or an unreadable, malformed or unrepresentable project configuration. Unexpected fallbacks emit one warning without configuration values. Claude Code 2.1.301 was verified to read physical ancestor files even above the Git root, but not descendant or `--add-dir` files. Only the reserved `cavvy` delegation server is attached over stdin and awaited by Cavvy; approved project servers have no Cavvy attach wait and their secrets are never copied into argv. Read-only sub-agents receive no MCP servers. Cavvy's manager and Claude Code still start separate copies of approved project servers; settings-only Cavvy servers stay with Cavvy's own tools. These startup, approval and delegation behaviors were checked against the real CLI without sending a model prompt. See [Claude Code's project approval rules](https://code.claude.com/docs/en/mcp#project-server-approvals-and-workspace-trust).
-
-  Codex does not load `.mcp.json`; it reads MCP servers from `.codex/config.toml`. Before each thread starts or resumes, Cavvy reads Codex's effective config and config layers (`config/read` with `includeLayers`, verified with Codex 0.163.0) and disables every server named by an active project layer, including project modifications to user servers. User-only servers remain available; read-only sub-agents disable all configured servers. Missing provenance disables all listed servers, and an unreadable config prevents the turn. The restrictions survive delegation fallback. When delegation is available, an existing `cavvy` server is disabled and delegation omitted to avoid merging transports. Trust still unlocks other project Codex configuration; it does not approve project MCP servers, and this PR adds no approval store for them.
-
-  These protections cover Cavvy's own Git calls. The CLIs also read Git independently: Claude Code's help lists a dynamic “git status” prompt section, and tracing Codex 0.163.0 startup showed its own Git metadata commands. Cavvy does not alter those commands.
-- One-off helper requests can't go to a CLI (auto-mode reviews and WebFetch summaries are for Cavvy's own tools anyway). Set `smallModel` (and `reviewModel`, if you have no Anthropic key) to another provider's model if you use those.
-
-What Cavvy never does: read, copy or store the CLI's credentials (its keychain entry, `~/.claude/.credentials.json`, `~/.codex/auth.json`), sign in on its behalf, send its tokens anywhere, or modify the binary. The CLIs get the same environment as any child process, minus Cavvy's own provider keys. That way Claude Code uses your plan rather than an `ANTHROPIC_API_KEY` you gave Cavvy. Only `providers.json` records that a CLI is on, and optionally `path` (a CLI that isn't on `PATH`) and `args` (extra arguments):
-
-```jsonc
-{ "agents": { "claude-code": {}, "codex": { "path": "~/bin/codex", "args": ["-c", "model_reasoning_summary=detailed"] } } }
+```bash
+bun run desktop:install      # builds it and installs it into /Applications
 ```
 
-Why it's built this way: Anthropic's [legal and compliance page](https://code.claude.com/docs/en/legal-and-compliance) says subscription sign-in is for Claude Code and Anthropic's own apps. Third-party developers may not offer Claude.ai login, route requests through Free, Pro or Max plan credentials, or "collect, store, or intermediate Claude.ai credentials or session tokens". The same page says this doesn't prevent "an end user from signing in to the unmodified Claude Code binary with their own Claude subscription". Tools that took Claude Code's sign-in and called the API with it were cut off in early 2026. Running the user's own unmodified Claude Code, signed in by the user, is the pattern the terms leave open. That pattern is meant for your own use. If you build a product or service on it for other people, Anthropic directs you to API keys (including for the Agent SDK). Their plan limits also assume ordinary, individual use. For Codex, `codex app-server` is the interface OpenAI ships for driving Codex from other programs (its editor extensions use it), and Cavvy runs your own Codex through it, signed in with `codex login`.
+To try the GUI without any keys, `bun run gui:demo` serves it with a mock model and a demo project.
 
-## Sub-agents on other models
+## Quick start
 
-The main agent can hand a self-contained task to a model from another provider: a second opinion from Gemini, a review by Codex, a research task on a cheaper model. The task runs as a sub-agent that starts fresh and reports back.
+```bash
+cavvy                                    # start in the current project
+cavvy -p "explain src/agent/agent.ts"    # one-shot, for scripts
+cavvy gui                                # the GUI in your browser (run `bun run gui:build` once first)
+```
 
-- **Cavvy models** use the `Task` tool, which takes a `model` (`provider:model`). `ListModels` shows the agent types and every model that can run, with how each is billed. Without a model, a sub-agent runs on its agent type's model, else the main agent's.
-- **Claude Code and Codex** keep their own sub-agents for their own models (Claude models, OpenAI models, and the same models through OpenRouter). For other providers' models, Cavvy gives them an MCP server named `cavvy` with four tools: `models`, `delegate`, `task_status` and `task_cancel`. They get these only when another provider is set up, and never as sub-agents themselves. `"delegation": false` in settings turns them off. (The same server carries the [secret tools](#asking-for-secrets), which don't depend on delegation.)
+In the terminal app, `/login` adds an API key (or `/login claude-code`, `/login codex` for your plan), `/model` picks a model, and `shift+tab` cycles the permission mode. In the desktop app, Settings → Providers adds keys and turns on Claude Code or Codex.
 
-A delegated agent works in the same folder, under the same permission mode and rules. Its actions are approved or asked about like the main agent's, and the prompt names it and its model (`Review auth (provider:model)`). Its work shows under the call that started it, and its spend counts toward the session's (billed by its own provider). It can't delegate further. Only one delegated task that can change files runs at a time, and up to four run at once. An `explore` agent is read-only: on Claude Code or Codex, reads and read-only commands run without asking you, in any folder of the workspace, and Cavvy refuses everything else, tests and builds included. In auto mode, one on Codex runs in Codex's auto mode with its read-only sandbox, so reads run there without coming to Cavvy; anything more still comes to Cavvy, which refuses it. A refusal names the part of the command that isn't read-only, so the agent can drop just that. On Claude Code it runs without its edit tools or any MCP servers. On Codex, the MCP servers in your Codex config are turned off for it, because Codex runs tools set to `approve` there without asking. Servers that come from Codex plugins or apps aren't turned off. If a stopped sub-agent was asking you something, the prompt is withdrawn, and background commands it started are stopped.
+## Documentation
 
-`delegate` waits for the result: 10 minutes by default, 60 at most. After that the task keeps running, and `task_status` gets its result. With `wait: false` it returns a task id at once, so several tasks can run together. If a task is still running when the turn ends, its result goes to the CLI with your next message. In `-p` mode there is no next message, so the main agent is told to collect every result before it finishes, and tasks still running when it does are stopped. `esc` ends the turn and stops the delegated tasks it waits on (whichever model is answering); those in the background keep running and report back. `/tasks` lists the session's background work, and `/tasks stop <id|all>` stops it. Quitting, `/clear`, `/resume` and `/logout` stop them too. In the desktop app and `cavvy gui`, each sub-agent shows as a chip above the input while it works ([below](#desktop-app-and-gui)), and a delegated task still running when the turn ends keeps its permission prompts until you answer or stop it.
-
-The `agentCli.liveSessions` setting (on unless it's `false`) is the kill switch for the live CLI layer (#219). Set it to `false` in Cavvy settings to go back to the earlier behaviour: `esc` stops every delegated task, the background ones too; background tasks' ends aren't announced (no toast or desktop notification in the desktop app or `cavvy gui`, and no line in the terminal for shells and Claude Code's tasks), and a delegated task's end is a line in the transcript again; and the model isn't told of background tasks that stopped when Cavvy quit. The Background list, the session log's record of it, and the explicit Stop (the panel's buttons, `/tasks stop`) stay either way. Later live-session changes (one CLI process per session) honour the same setting.
-
-The server listens on 127.0.0.1 only, with a random token for each session. Claude Code gets the server over stdin (an `mcp_set_servers` request), and Codex gets it in the thread's config over its app-server connection. The token never goes on a command line or into the environment, and it's redacted from anything shown or saved. Requests from a browser (with an `Origin` header) or without a live token are refused. The CLIs run Cavvy's tools without their own approval prompt, because the delegated agent's actions are checked one by one as they happen. The contract follows [T3 Code](https://github.com/pingdotgg/t3code)'s orchestration (MIT): wait or run in the background, a timeout that leaves the task running, and status and cancel by id.
-
-## Asking for secrets
-
-When a command needs a token or password you haven't set up (calling an API with curl, a deploy script, a registry login), the agent asks for it by name instead of having you paste it into the chat. A card in the GUI (a masked prompt in the terminal) shows the environment variable it becomes, such as `GITHUB_TOKEN`, and the agent's words on what it's for. You type or paste the value, or decline with Esc. The agent gets a handle back, never the value: "The user provided GITHUB_TOKEN. Shell commands in this session see it as $GITHUB_TOKEN." If you decline, it's told nothing was provided and not to ask again unless you bring it up. In `-p` mode there's no one to ask, so it's told the same.
-
-- **Where the value goes:** into the session's memory and the environment of that session's `Bash` commands (foreground and background), including those of its sub-agents and delegated Cavvy-model tasks, which act for the same session. Only the main agent can ask. No other process gets it: not hooks, MCP servers, git, editors, the GUI's terminal, other sessions, or Claude Code and Codex themselves.
-- **What's redacted:** the value wherever it shows up in tool output (`Bash`, `BashOutput`, `Read`, `Grep`, …), before the model, the transcript, the GUI, exports or hooks see it. Also its URL-encoded forms (`encodeURIComponent`, Python's `quote`, a form's `+` for spaces) and its base64 and base64url forms, when each appears unbroken. It stays redacted for as long as Cavvy runs, even after you forget it, since a file written with it can still be read. Permission prompts and the auto-mode reviewer see the command as written (`$GITHUB_TOKEN`).
-- **What isn't guaranteed:** redaction matches the text of those forms. A command that transforms the value any other way (`rev`, splitting it, `xxd`, base64 wrapped across lines as GNU `base64` does for long values, encrypting it) prints something redaction can't recognize, and an approved command can send it anywhere it's allowed to reach. Approve commands that use a secret the way you'd approve any command.
-- **Limits:** values must be 8 characters to 8 KiB, well-formed Unicode on one line, without control characters; anything shorter couldn't be told apart in output. Values containing `[REDACTED` or `REDACTED]` (ignoring case), and values or names that would expose a value inside a current or known future redaction marker, are refused. Names are capital letters, digits and underscores and must end in TOKEN, KEY, SECRET, PASSWORD, PASSWD, PASS, PWD, PAT, CREDENTIAL, CREDENTIALS or AUTH, with or without an underscore before the ending (e.g. GITHUB_TOKEN, AWS_SECRET_ACCESS_KEY, PGPASSWORD, MYSQL_PWD or NPM_TOKEN). DATABASE_URL is the only exception. A name still can't be one that changes how programs run or that Cavvy owns (`PATH`, `HOME`, `LD_*`, `DYLD_*`, `GIT_*`, `NODE_*`, `DOTNET_*`, `CORECLR_*`, provider key variables, `CAVVY*`, …). The denylist covers well-known loader, profiler, runtime-option and TLS configuration variables; it is not exhaustive.
-- **How long:** session memory only. Asking again for a name replaces it. `/secrets` in the terminal (the Secrets row in the GUI's side panel) lists the names a session holds and forgets one; new commands then don't get it. Secrets are gone when the session closes: `/clear`, `/resume` or quitting in the terminal; in the GUI, when the session is unloaded (closed, or idle with no window showing it) or the server stops. Cavvy doesn't save them anywhere: a file that holds one (because a command wrote it there) isn't copied for `/rewind`, so rewinding can't restore that file.
-
-**Claude Code and Codex** run shell commands inside the CLI, which sends the output straight to its model, so Cavvy can't redact it, and an `env` there would print anything in its environment. Instead, the `cavvy` MCP server offers `request_secret` (the same card) and `run_with_secrets`, which runs one command with Cavvy's own shell and the named secrets, and returns the output redacted. The CLIs approve Cavvy's tools without asking, so `run_with_secrets` does its own check: deny rules, plan mode and read-only agents refuse it, and anything an allow rule doesn't cover asks you, with the command as written and the secrets' names. Permission modes (even bypass) and the auto-mode reviewer don't approve it on their own, and it doesn't run in auto mode's sandbox. The CLIs' own shells never see a secret. Don't write secrets into files: the CLI's own Read or Grep can send those files straight to its model, which Cavvy can't redact. Use secrets only in the command. Cavvy can't tell a CLI's own sub-agents from its main agent, so those can call these tools too.
-
-## Models
-
-`/model` shows one combined, searchable list of every model from every provider you have a key for, with context window and price (USD per million input/output tokens; `~` means the price comes from OpenRouter's catalog). Lists are cached for 12 hours; `ctrl+r` in the picker refreshes. Use `←`/`→` in the picker to set reasoning effort. Your choice is remembered.
-
-Shortcuts: `/model gpt-6.1-sol` (unique match), `--model anthropic:claude-opus-5-5`, `cavvy models` for the same list in the shell (`--json` for scripts).
-
-Model ids are `provider:model`. Wire formats: Anthropic Messages (with prompt caching and adaptive thinking), OpenAI Responses (stateless: output items are replayed each turn), and Chat Completions for everything else.
-
-## Permission modes
-
-`shift+tab` cycles modes; `/mode` picks one; `--permission-mode` sets it at startup.
-
-| Mode | What runs without asking |
+| Page | What's in it |
 |---|---|
-| **Manual** (default) | Reads, searches and read-only shell commands inside the workspace. Everything else asks. |
-| **Accept edits** | The above, plus file edits inside the workspace. |
-| **Plan** | Read-only research. Edits and state-changing commands are refused until you approve the plan the model presents. |
-| **Auto** | Edits in the workspace and temp directories, shell commands inside a sandbox, and anything else a reviewer model judges routine and asked for. Risky actions are turned back to the model with the reason; after repeated blocks, or when the reviewer can't decide, they're shown to you. See [Auto mode](#auto-mode). |
-| **Bypass permissions** | Everything. Only available when started with `--dangerously-skip-permissions` or `--permission-mode bypassPermissions`, or with `permissions.allowBypass` in your user settings. |
-
-Whatever the mode:
-
-- Deny rules always win. A deny or ask rule for a command also catches it given by path (`/bin/rm`), behind `env` (`env -S '…'` included), `exec`, `nohup`, `nice`, `command`, `timeout`, `xargs` or `sudo` with any of their options, inside `sh -c '…'`, `eval` and `$(…)`, and, on macOS and Windows, in another case (`RM`, `/BIN/RM`), since the shell finds `/bin/rm` for that name there. A program named by a variable (`$X`) isn't known to them. Allow rules match only the command as written, so `Bash(npm test:*)` doesn't allow `NPM test`.
-- Catastrophic commands (`rm -rf ~`, `mkfs`, writes to raw disks, fork bombs and similar) always ask, even in bypass mode, by any of those names (`SH -c 'rm -rf ~'` too).
-- Edits to Cavvy's own configuration, `.mcp.json`, `.git/`, or the agent CLIs' `.claude/` and `.codex/` always ask, except in bypass mode. A git worktree Claude Code keeps in `.claude/worktrees/<name>/` counts as a project of its own: its files are ordinary edits, and only its own `.claude/`, `.codex/`, `.cavvy/`, `.mcp.json` and `.git` ask.
-
-When a prompt appears you can allow once, allow and don't ask again (saved as a rule in `.cavvy/settings.local.json`), or decline and say what to do instead.
-
-### Auto mode
-
-- **Sandboxed shell.** Shell commands, read-only ones included, run in a sandbox when the OS has one: Seatbelt (`sandbox-exec`) on macOS. On Linux, bubblewrap is used only when you turn it on with `"sandbox": true`, because it's experimental (see below). Inside the sandbox a command:
-  - can write only in the workspace and the temp directories, and never to `.git/hooks`, git config (submodules' and worktrees' included), `.cavvy/`, `.mcp.json`, the agent CLIs' `.claude/` and `.codex/`, or `~/.cavvy`. The git worktrees Claude Code keeps in `.claude/worktrees/<name>/` are projects of their own, so their files can be written, but not their own `.claude/`, `.codex/`, `.cavvy/`, `.mcp.json` or `.git` file, and a new one can't be made there. It also can't move or repoint the repo's git directory (`.git`, a worktree's `.git` file, `commondir`), those worktrees or the workspace itself, so it can't plant config that a later unsandboxed git command would run;
-  - can't read credential files (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gcloud`, `~/.config/gh`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, the keychain, `~/.cavvy` and others);
-  - has no network except localhost and the hosts the command lists (below), and no Unix sockets (so no ssh-agent or Docker);
-  - can't signal processes it didn't start;
-  - on macOS, can't open apps, send Apple Events, create launchd jobs, or reach the keychain, clipboard or window server.
-
-  Sandboxed commands run without asking and without review. The exception is commands that delete or discard work, which go to the reviewer first and then still run sandboxed. These are `rm`, `find -delete`, `git checkout` of files, `git restore`, `git stash drop`, `git branch -D`, and deletions in inline `python -c`/`node -e` code.
-- **Network in the sandbox (macOS).** A command that needs the network lists the hosts in `allowedHosts`, like `["registry.npmjs.org"]` for `npm install`. The reviewer sees the hosts with the command, and if it allows them the command runs sandboxed with only those hosts open, for that command only. This works for package installs (npm, pnpm, yarn, Bun, pip, uv), `npx`/`bunx`, `curl`/`wget` and `git clone` over https. Each command gets its own proxy on localhost, which tools find through `HTTPS_PROXY` and the like. Other commands can't use it: it wants a password that's only in that command's environment, which macOS doesn't show to other processes. It refuses unlisted hosts and names them in the result, so the model knows what to ask for. It also refuses a listed name that resolves only to this machine or the cloud metadata address, unless the IP itself is listed. A command that clearly needs the network but lists no hosts is turned back with the likely hosts before it runs. Sandboxed npm, Bun, uv and pip get their own package caches in the temp directory, and so does Corepack (the pnpm or yarn a project pins) when the command lists hosts.
-- **The reviewer** sees everything else:
-  - commands that need more than the network (`git push`/`fetch`/`pull`, an ssh `git clone`, `gh`, `docker`, cloud CLIs, `npm publish`, `kill`, …), read-only ones like `gh pr view` included, since even those can run programs from a repo's config;
-  - sandboxed commands that list hosts;
-  - commands the model reruns outside the sandbox after the sandbox got in the way (`dangerouslyDisableSandbox`);
-  - web fetches and MCP tools.
-
-  It's `reviewModel` in your user settings (a project's settings can't choose it), or Claude Sonnet 5.5 when you have an Anthropic key, or else the session's own model. It reviews in two steps. First comes a one-word check without extended thinking, which lets routine actions straight through. Anything it isn't sure of gets a reasoned verdict. Both steps send the same cached instructions. It allows routine work, and effects outside the machine (push, PR, deploy) only when you asked for that specific action in your own words. It blocks pushes, deploys, publishing or messages you didn't ask for. It also blocks exposing secrets, probing for credentials, data leaving the machine, lasting changes outside the project or to security settings, deleting work, and actions unrelated to your request. Its rules adapt those of [OpenAI Codex's auto-review policy](https://github.com/openai/codex) (Apache-2.0).
-
-  A blocked action goes back to the model with the reason and a warning not to get the same result another way, so it can take a safer route or stop and ask. After 3 blocks in a row, or 20 in a session, flagged actions come to you instead, and your answer starts the count over. Each step has a time limit (5 seconds for the check, 20 for the verdict). A step that runs out, fails or answers nonsense sends the action to you; nothing runs unreviewed, and you're told once that the reviewer failed. A reply that Anthropic's safety filter stops (it does for actions like sending secrets out) counts as a block, after the verdict step has had its own try. An approved action shows how long its review took. This reviewer covers Cavvy's own tools, so API models and their sub-agents. Claude Code and Codex use their own auto modes.
-- **Only your messages authorize anything.** The reviewer sees your last few messages, labelled as yours. A sub-agent's task, a compaction summary, the agent's recent actions, file contents and tool output are shown to it as the agent's words or as data.
-- **Always asks:** catastrophic commands, Cavvy and git configuration, credential stores, and `git push` to `main`/`master`/`trunk`. That push rule also covers `--all`/`--mirror`, and a plain `git push` or `git push origin HEAD` while `main` is checked out. Commands that use a `.env` file go to the reviewer: loading it for the tests or creating it from `.env.example` is fine; printing or sending its values asks.
-- `"sandbox": false` in settings turns the sandbox off. Read-only commands then run, and other shell commands go to the reviewer.
-
-What the sandbox doesn't cover:
-- Changes inside the workspace itself. That's why deletions are reviewed. Git is the undo for shell changes; `/rewind` restores only what the edit tools changed.
-- Code a sandboxed command leaves behind runs with your full access when something unsandboxed runs it later. That includes scripts, `package.json` scripts on `npm install`, `.husky/` hooks, and a nested repo or submodule with its own git config when git runs inside it unsandboxed (your own `git status` in a terminal recurses into submodules).
-- Which commands need the network is a guess from the command text. One that fails in the sandbox is retried with the hosts it needs, or outside the sandbox, after review.
-- A listed host is open to the whole command. The proxy decides on the host name the client asks for and doesn't look inside TLS, so a host that fronts others (a CDN) reaches those too, and anything a listed host accepts (an upload, say) can carry data out. Tools that ignore the proxy variables (plain ssh, most database drivers) get no network at all.
-- On Linux, bubblewrap has no proxy: commands that need the network run outside the sandbox, after review, as before.
-- Linux (bubblewrap, experimental):
-  - It has its own network, PID and IPC namespaces. It hides the usual Unix-socket locations (`/run`, X11, tmux, ssh-agent, Docker Desktop, Colima, Lima), but sockets elsewhere stay reachable.
-  - It can only protect paths that exist when the command starts. A `.cavvy/`, `.mcp.json`, `.claude/` or `.codex/` that doesn't exist yet can be created, and so can the hooks of a repo created by that same command.
-  - It has only been tested at the level of the arguments it builds, not on a real Linux machine.
-
-Rules (`/permissions` to edit them):
-
-```jsonc
-{
-  "permissions": {
-    "allow": ["Bash(npm test:*)", "Edit(src/**)", "WebFetch(domain:docs.python.org)", "mcp__github"],
-    "ask":   ["Bash(git push:*)"],
-    "deny":  ["Read(./secrets/**)", "Bash(curl:*)"]
-  }
-}
-```
-
-## Using it
-
-- `@path` attaches a file (completion included); `!cmd` runs a shell command yourself; `#note` saves a memory; `/` opens commands.
-- `esc` interrupts; type while it works and your message is delivered at the next step. While messages are queued, `esc` takes back the latest one into the prompt instead (one per press), and interrupts once nothing is queued; after an interrupt, anything not yet sent goes back to the prompt; `ctrl+o` toggles verbose output; `ctrl+t` toggles the todo list; `ctrl+g` opens `$EDITOR`; `↑`/`↓` history.
-- For a newline in the prompt, type `\` then `enter`, or press `ctrl+j`. `shift+enter` works too in terminals that support the kitty keyboard protocol, which Cavvy turns on while it runs; in other terminals it usually sends the message instead.
-- Cavvy takes over the terminal window: it clears the screen and scrollback when it starts, keeps the spinner, prompt and status line on the bottom rows (the reply and running tools follow the conversation above them; when a turn ends, the conversation is brought back down to the prompt), and lets the conversation scroll into the terminal's own scrollback (so scrolling, selecting and copying work as usual, and the conversation stays there after you quit). When the window is resized, it clears the screen and scrollback again and lays everything out at the new size.
-- Sessions are saved per project. Resume them with `-c` (latest), `-r` (picker) or `/resume`. `--append-system-prompt` applies to the run you give it on, a resumed session included, and isn't saved with the session.
-- `--max-turns n` stops each prompt after n model turns, in the TUI as with `-p`; send another message to let it continue.
-- Jupyter notebooks: `Read` shows each cell with its id, and the `NotebookEdit` tool replaces, inserts or deletes a cell by that id (replacing a code cell clears its outputs). It asks for permission like any other edit.
-- `/rewind` (or `esc esc` on an empty prompt) goes back to before one of your prompts: restore the files Cavvy changed since then, the conversation, or both. The prompt goes back in the input box to edit and resend. Before an edit tool first changes a file during a prompt, Cavvy saves a copy in `~/.cavvy/projects/<project>/file-history/<session>/` (private to you; files over 10 MB aren't saved), so it works after `-c`/`-r` too. Files changed outside Cavvy since it last wrote them are listed before they're overwritten, and if a file can't be restored the conversation is kept, so you can try again. Shell and backend edits are recorded separately in Git turn snapshots for review, but `/rewind` still restores only the edit tools’ copies. Prompts from before a `/compact` can't be rewound to. Both kinds of history are deleted 30 days after the session was last used.
-- `/fork` (GUI or terminal) continues in a new session from the latest finished response. In the GUI, use **Fork from here** on an earlier response or ⌘K → **Fork session**; **Forked from …** opens the original. The terminal prints its `/resume <id>` command. A fork keeps the conversation, timeline, frozen system prompt, and current model, effort, permission mode and speed, with the title "Fork of <title>". Spend starts at zero; queues, shells, delegated tasks and file history aren't copied. Rewinding before the fork restores only the conversation and files changed by the fork itself; earlier file changes can only be restored from the original. Imported CLI responses can be forked too, while their original rewind restrictions remain. Running turns and turns before the last compaction can't be forked. Claude Code (`--resume --fork-session`) and Codex (`thread/fork`) copy eligible backend sessions on next use: both sessions first persist a marker preventing either from continuing the shared backend in place. For an earlier cut or a busy original, the fork instead starts a fresh backend with conversation context.
-
-Commands: `/help /model /login /logout /providers /effort /permissions /mode /plan /clear /compact /cost /context /status /resume /rewind /fork /rename /export /copy /init /review /memory /config /thinking /mcp /plugin /agents /hooks /todos /tasks /bashes /add-dir /doctor /exit`.
-
-Custom commands are markdown files in `~/.cavvy/commands/` or `.cavvy/commands/`. The body is the prompt; `$ARGUMENTS` and `$1`…`$9` are substituted; `commands/git/pr.md` becomes `/git:pr`.
-
-## Project files
-
-| File | Purpose |
-|---|---|
-| `CAVVY.md` (also reads `AGENTS.md`, `CLAUDE.md`) | Notes loaded into every session. `/init` writes one. |
-| `CAVVY.local.md` | Personal notes, git-ignored. |
-| `~/.cavvy/CAVVY.md` | Notes for all projects. |
-| `~/.claude/CLAUDE.md`, `~/.claude/rules/**/*.md`, `~/.codex/AGENTS.override.md` or `AGENTS.md` | Your Claude Code and Codex notes for all projects, so API sessions follow them too (Claude Code and Codex sessions read their own). Rules with `paths:` frontmatter are left out. Loaded before `~/.cavvy/CAVVY.md`, then the project's files. |
-| `.cavvy/settings.json`, `.cavvy/settings.local.json`, `~/.cavvy/settings.json` | Settings: project, personal, user. |
-| `.mcp.json` | Shared MCP servers; Cavvy approvals are bound to what each server runs by a fingerprint saved in local settings (`/mcp` to review and approve). Legacy name-only approvals ask again. In user-trusted folders, Claude Code reads the file itself; Cavvy enables only project servers its manager permits starting whose raw definitions still match the approved snapshot and use only fields the approval covers, and disables all others (a definition Claude Code would read differently isn't passed on: one with `headersHelper` or `oauth`, `${VAR}` expansion, a `type` that doesn't match a single command or URL, or a `cwd` other than the project folder). |
-| `.cavvy/agents/*.md`, `~/.cavvy/agents/*.md` | Custom sub-agents (frontmatter: `name`, `description`, `tools`, `model`). |
-
-Settings files may contain `//` and `/* */` comments and trailing commas. A settings, credentials, providers or trust file that has a JSON error is ignored (with a warning) and is never overwritten: saving a setting into it fails with a message naming the file, so nothing in it is lost. Saving rewrites the file as plain JSON, so comments in a file Cavvy edits are not kept.
-
-When a folder contains Cavvy configuration, you're asked once whether you trust it. Until you do, its settings, hooks, MCP servers, commands and memory files (CAVVY.md, AGENTS.md, CLAUDE.md) are ignored, except deny/ask rules, which only add restrictions. Memory files are only read when they are markdown inside the project (a symlink pointing elsewhere is skipped). `@path` in any memory file imports another file, as in Claude Code: relative to the importing file (or `~/...`, or absolute), up to four hops deep; a missing one is skipped. An imported file comes before the file importing it. What's code is what a CommonMark parser (Bun's) reads as code: `@path` inside a code span, a fenced or indented code block (in block quotes and list items too), an HTML block or an HTML comment isn't an import. The path itself is taken as written: Markdown's emphasis, entities and links don't change it (`@docs/_draft_.md` is `docs/_draft_.md`), and `\@path` or `&#64;path` isn't an import. A project's memory files import only from inside the project until you trust the folder yourself: a folder trusted only because it had nothing to protect doesn't count, as Claude Code asks before it loads such external imports. A memory file that imports from outside the project therefore counts as configuration, and the trust question names those imports; a run's new worktrees are checked as committed, so a committed import the working copy has since dropped still asks first. Your own files (`~/.claude`, `~/.codex`, `~/.cavvy`) may import from anywhere. Only markdown is imported, so `@.env`, `@~/.aws/credentials` or `@~/.cavvy/providers.json` stay literal text. Nothing under `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`, `~/.kube`, `~/.docker`, `~/.config/gcloud` or `~/.password-store` is read even when it is markdown, whether reached through a symlink (or with those folders themselves symlinked) or spelled in another case. Each memory file is capped at 40 KB, and all of them together at 200 files and 200 KB. Files count as they're read: yours, then the project's from its root down, each followed by what it imports, nearest imports first; files past the cap are left out, and the prompt and `/memory` say which. The rules folder walk stops after 100 folders, 2,000 entries or 8 levels; a folder with more entries than the walk has left is left out whole, with a notice, rather than cut wherever the system happens to list it. Branch-only callers such as project inspection and initial session state still read only branch metadata, with `core.fsmonitor` disabled. Git prompt context includes recent commits without signature verification or lazy fetching. Before explicit user trust, it also reads status when the repository’s local and worktree configuration (including includes) has no filter, fsmonitor, submodule or hook execution settings; status ignores submodules. Otherwise it skips status and names the configuration section or check failure in the prompt, without values. User-trusted folders retain status regardless of those settings. Creating a worktree also turns hooks off, and needs trust when the repository's own config could run commands on checkout; see **Terminal and worktrees**.
-
-## MCP
-
-```bash
-cavvy mcp add github -- npx -y @modelcontextprotocol/server-github
-cavvy mcp add --transport http docs https://example.com/mcp -H "Authorization: Bearer …"
-cavvy mcp list
-```
-
-A server in a project's `.mcp.json` starts only once you approve it, and only in a folder you trust (an untrusted folder's `.mcp.json` isn't read at all). Approving needs a folder you've trusted yourself. A folder that had nothing to protect when it was opened is trusted for that session only, so if a `.mcp.json` turns up in it later, approving asks you to trust the folder first. In the terminal, `/mcp` lists the folder's servers. In the GUI, a server that needs approval or failed shows in the side panel, and clicking it (or `/mcp`, or "MCP servers" in the folder menu) opens the list of every server with its status, tool count and source. Before you approve, a card shows exactly what will run: the command and each argument on its own, the folder it runs in, the names of the environment variables it sets, or the URL and header names for a remote server. Values aren't shown. Values from credential-named env variables or headers (including Authorization and Cookie), credential flags and URL fields are masked wherever they appear in payload text; other env/header values are treated as secrets only at 20 characters or more. Protocol fields and schema keywords are preserved; a tool with a secret in its name or input property names is hidden. Control and bidi characters are shown as `⟨U+…⟩` rather than rendered. The card also says which `.mcp.json` declared it. Approving starts it at once, and every open session in the folder sees it connect. From the list you can reject a server (it stays off until you approve it), revoke an approval (it stops and asks again), or reconnect one that failed.
-
-Approval binds the server configuration, not the contents of scripts or executables it runs.
-
-An approval covers exactly what the server runs: its command, arguments, working folder, environment (names and values), URL and headers, in this folder. If `.mcp.json` later changes any of these, the server asks again before it starts, and the card says it changed. Approvals are saved in the folder's `.cavvy/settings.local.json` as a hash keyed with a secret in your Cavvy home (`~/.cavvy/mcp-approval.key`), so a settings file committed to a repo can't approve that repo's servers. Approvals and rejections count only from your user settings and the folder's local settings, never from the committed `.cavvy/settings.json`. Approvals saved by name only, before this, ask once more. `"enableAllProjectMcpServers": true` in your user settings is a blanket opt-in: it approves every server in the `.mcp.json` of every folder you've trusted yourself, including later changes to what they run. It doesn't count from a folder's own settings files, since a repo can ship a `settings.local.json`. `cavvy mcp add --scope project` approves the server it adds.
-
-Cavvy's approval governs the servers Cavvy itself runs, whose tools go to sessions on Cavvy's own models. Claude Code and Codex sessions don't get those tools. Codex takes its MCP servers from its own config. Claude Code reads `.mcp.json` itself: in a folder you haven't trusted, it runs with `--strict-mcp-config` and gets none of them. In a folder you have trusted, Cavvy passes Claude Code a settings list that enables only the project servers you approved in Cavvy, and only while their definition is unchanged and Claude Code would run it exactly as approved. Each approval is rechecked against your saved settings at the start of every turn, and every other server in `.mcp.json` is disabled. If Cavvy can't check the configuration safely, Claude Code runs with `--strict-mcp-config` instead and gets no project servers. Read-only sub-agents get no MCP servers on either CLI. The approval card says this for a session on Claude Code or Codex.
-
-Both protocol generations are supported. The client probes with `server/discover` (the 2026-07-28 stateless protocol) and falls back to `initialize` for servers on 2025-11-25 and earlier. stdio and streamable HTTP transports are supported.
-
-## Diagnostics after edits
-
-When the model changes a file with Edit, MultiEdit or Write, the file's new text goes to a language server, and the errors and warnings it finds come back with the edit: the model reads them in the tool result, and you see them under the edit (in the terminal, `✗ 1 error in src/a.ts` and the first problems; in the GUI, a count on the row and the list in its details, each opening the file at that line). Only what's new since the last report on that file is listed, so the same problem isn't repeated on every edit, and problems that went away are counted as fixed. Hints and information are left out, and a report holds at most 20 problems a file and 40 in all.
-
-Language servers run the project's own code (its TypeScript install, build scripts, its Python environment), so they only run in a folder you've trusted yourself. A folder Cavvy trusted for the session only, because it had nothing to protect when it was opened, says diagnostics are off on the first edit; `/trust` (in the terminal or the GUI) trusts it and turns them on.
-
-Servers start on the first edit of a file one handles, so a session that doesn't edit code starts none. They're shared by every session open in the same folder and stop after 10 minutes without edits. Files changed some other way (a shell command, your editor, a rewind) are sent again before the next check. These run when they're installed (on `PATH`, or in the project's `node_modules/.bin`):
-
-| Language | Server |
-|---|---|
-| TypeScript, JavaScript | `typescript-language-server` (with `typescript` installed) |
-| Python | `pyright-langserver`, else `basedpyright-langserver` |
-| Go | `gopls` |
-| Rust | `rust-analyzer` |
-| C, C++ | `clangd` |
-
-An edit waits up to 3 seconds for the diagnostics (12 when it has to start the server); what comes later reaches the model with the next tool results. With TypeScript Cavvy asks tsserver directly, which takes well under 100 ms once the project is loaded. A server that crashes restarts on the next edit, and after three crashes it stays off until Cavvy restarts.
-
-Add or replace servers in settings (the shape of Claude Code's `lspServers`), or turn the feature off:
-
-```jsonc
-{
-  "lsp": {
-    "servers": {
-      "deno": { "command": "deno", "args": ["lsp"], "extensionToLanguage": { ".ts": "typescript" } },
-      "clangd": { "disabled": true }
-    }
-  }
-  // or "lsp": false
-}
-```
-
-A server named like a built-in replaces it. Each takes `command`, `args`, `env`, `extensionToLanguage`, `initializationOptions`, `settings` (answers to the server's `workspace/configuration` requests) and `startupTimeout` (ms). Project settings count only in folders you trust. Codex has no language servers of its own: when one of its patches finishes, Cavvy checks the files it changed and steers new problems into its running turn (`turn/steer`), in the same format and with the same limits. If that turn has already ended, you get a notice instead, and no turn starts. Claude Code gets diagnostics from its own LSP plugins.
-
-## Browser
-
-Agents can open web pages, to check the UI they build. Six tools (`BrowserNavigate`, `BrowserSnapshot`, `BrowserAct`, `BrowserScreenshot`, `BrowserEval`, `BrowserLogs`) drive a headless Chrome, Chromium, Edge or Brave over the DevTools protocol, with nothing to install but the browser itself; they're offered when one is found. API models get them as built-in tools; Claude Code and Codex get the same tools from Cavvy's own MCP server (`mcp__cavvy__browser_navigate` and the rest), and screenshots reach them as images. The usual loop: start the dev server in the background, `BrowserNavigate` to `http://localhost:PORT`, read the page with `BrowserSnapshot`, and act with `BrowserAct`.
-
-- **Snapshots are text.** A page comes back as an indented outline from its accessibility tree: roles, names, values and states (checked, disabled, expanded), link targets, and a ref like `[e12]` on everything to act on. Password values are never shown, and the outline stops at about 24,000 characters (it says so). Refs last until the page navigates or you take over; an old one is refused with a note to snapshot again. `BrowserAct` clicks and types with real mouse and key events, scrolling the element into view first, and answers with what changed in the outline. A screenshot is an image, only when asked for. Console messages, uncaught exceptions and requests (method, URL, status, failure; no bodies) are kept per tab, newest 200 and 300, with secrets redacted.
-- **Where it may go.** `http:` and `https:` pages, `about:blank` and files inside the project. `javascript:`, `data:`, `chrome:`, `view-source:`, `blob:` and files outside the project are refused, also when a page redirects or scripts its way there. Downloads are refused and noted in the logs. What a page does on its own is held to the same rules, in its frames too (those from other sites included): a redirect, link or script that would take it to a host a `WebFetch(domain:…)` deny rule names, or to a file a `Read` deny or ask rule covers, is blocked and the console says why. So is one to a host an ask rule names, except the host the agent was let open in that tab (or you went to), while the tab stays there: a page can't take the agent somewhere it would be asked about, as `WebFetch` doesn't follow a redirect to another host; opening a file with `BrowserNavigate` follows the `Read` rules (deny and ask rules, the credential store, files that may hold credentials), and an approved file load grants only that exact file for that navigation. A page opened from a file can't load others from outside the project. A JavaScript `alert` is accepted and logged; a `confirm` or `prompt` waits for the agent to answer it (`BrowserAct action=dialog`).
-- **Permissions.** Reading (snapshot, screenshot, logs) is read-only and never asks. Opening `localhost`, `127.0.0.1`, a file or a blank page is allowed; opening any other host asks like `WebFetch`, and `WebFetch(domain:example.com)` rules cover it. Clicking, typing and `BrowserEval` run a page's own scripts and can submit its forms, so they ask like other execute-level tools ("don't ask again" allows the tool in the project), and a yes covers that call alone: the same click or script on the next page asks again; hovering, scrolling and waiting don't. Plan mode allows opening, reading and scrolling, not acting (hovering included, since a page's hover handlers run). Everything that sends the page input waits while you have the tab. Hooks run for these tools as for any other. Claude Code and Codex call them as `mcp__cavvy__browser_navigate` and so on, and rules naming those (`mcp__cavvy__*`, `mcp__cavvy__browser_act`) apply too, though the CLI approves Cavvy's tools itself.
-- **One browser per project, a profile of its own.** Chrome starts with the first page, with a profile under `~/.cavvy/projects/<project>/browser` that keeps logins and cookies between runs, and ends with the last session using it, after 10 minutes unused, or with Cavvy (on Windows, a Cavvy killed outright, from Task Manager say, leaves its browser running; elsewhere a watcher stops it). It's driven over a pipe only Cavvy holds (on Windows, over a port on 127.0.0.1, which other programs on the machine can reach). Each session has its own tabs (at most 8), closed with it. Tabs use separate Chrome windows so different sessions can stream concurrently. If Chrome dies, the tool call says so, and the next page starts a new one. The terminal UI and `-p` runs use it too.
-- **In the GUI,** the side panel's **Browser** tab shows the session's current tab (streamed as frames, only while the tab is showing) with an address bar, back, forward, reload and the tab strip, and the page takes the pane's size. A dot on the tab and a toast say when the agent opens a page. Click, type or scroll in the page and you take the tab: the agent can still read it, but its actions on it fail until you press **Hand back to agent**. Pasted text and committed IME compositions arrive as text; `Shift+Esc` leaves the page for the address bar. It works in the desktop app and in `cavvy gui` in a browser, since Chrome runs next to the server. Clipboard copy out of the page isn't supported.
-- **In the desktop app** the browser is the app's own Chromium, not a headless Chrome: each tab is a real page in the window, which you use directly (scrolling, selecting and copying, IME, as in any browser), and the agent drives the same tabs over the app's connection to the server, which opens no DevTools port. Each project keeps its own cookies and storage. A tab nobody sees and nobody has used for 30 seconds sleeps (it isn't drawn, and costs next to no CPU) and wakes when a pane shows it or the agent uses it. A popup you open (a site's sign-in window) is a window of its own that keeps `window.opener`, so the page it reports back to gets the answer; it goes only to web pages and closes with its tab. A popup the agent opens is a tab. No Chrome is needed; `cavvy gui` in a browser still uses one, streamed as above.
-- **Display quality.** The pane uses a dedicated authenticated binary stream and a Retina Chrome compositor, at one size and quality whether the page is still or moving. Wheel turns go to Chrome as they happen, and transport and decoding each keep only the newest waiting picture. Taking the tab or a page's dialog never resizes the page. Stream reconnects leave chat connected, and disconnected viewers release held keys and mouse buttons. `scripts/browser-perf.ts` measures input-to-picture latency and frame rates against a real Chrome.
-- **Sites see Chrome.** The headless browser tells sites it's the same Chrome with a window (user agent and client hints, `navigator.webdriver` false), so Google, YouTube and the like don't answer it with a robot check.
-- **Settings.** `browser.enabled` (default `true`; Settings → General → Browser; any settings file can turn it off). `browser.executable` names a browser to run instead of the one found, and `browser.headless: false` shows its window while you debug; both count only from your user settings, since a project must not choose what gets launched. The `CAVVY_BROWSER` environment variable names a browser too, and wins. Without any browser, the tools aren't offered and the pane says how to fix that.
-
-## Plugins
-
-A plugin bundles slash commands, sub-agents, skills, hooks and MCP servers and language servers. Plugins come from marketplaces: catalogs you add once. The format is Claude Code's, so Claude Code plugins and marketplaces (Anthropic's `anthropics/claude-plugins-official`, say) install as they are.
-
-```bash
-cavvy plugin marketplace add anthropics/claude-plugins-official   # owner/repo, a git URL (#branch), a folder, or a marketplace.json path or URL
-cavvy plugin install commit-commands                             # name, or name@marketplace when two have it
-cavvy plugin install pr-review-toolkit --scope project           # user (default) | project | local
-cavvy plugin list
-cavvy plugin disable commit-commands                             # enable | disable | update [name|--all] | uninstall
-cavvy plugin validate ./my-plugin                                # check a plugin or marketplace folder
-```
-
-In the terminal, `/plugin` opens a browser: installed plugins first, then what your marketplaces offer (type to filter), with install, enable/disable, update and uninstall, and the marketplaces themselves. `/plugin install …` and the rest work as in the shell. In the GUI, it's **Settings → Plugins** (or `/plugin`). Changes apply at once: commands, agents and hooks load, and MCP servers start.
-
-| Scope | Setting | Effect |
-|---|---|---|
-| `user` | `~/.cavvy/settings.json` | On for you in every folder. |
-| `project` | `.cavvy/settings.json` | On for everyone working in the repo (commit it). Teammates without the plugin are told to install it. |
-| `local` | `.cavvy/settings.local.json` | On just for you, in this repo. |
-
-The setting is `"enabledPlugins": { "name@marketplace": true }`; a narrower scope wins (local over project over user), so `false` in local settings turns a project's plugin off for you. In a folder you haven't trusted, only your user-scope plugins load.
-
-A plugin's parts are named after it: commands are `/plugin:command` (a bare `/command` works when no other command has that name and only one plugin does), agents `plugin:agent`, MCP servers `plugin:plugin:server` (tools `mcp__plugin_…`). Hooks run alongside yours and are listed by `/hooks` with the plugin's name. `${CLAUDE_PLUGIN_ROOT}` (or `${CAVVY_PLUGIN_ROOT}`) in a plugin's MCP configuration is its folder, and hook commands get both as environment variables.
-
-On Claude Code, Claude Code loads the plugins itself: each enabled plugin's installed folder is passed with `--plugin-dir`, so it runs their commands, agents, skills, hooks, MCP and language servers natively, as plugins it installed would run. Cavvy then doesn't run their hooks itself (except Notification hooks, for its own notices), and sends a plugin's `/command` or skill to Claude Code as typed. On Codex and API models, Cavvy loads them as described above, and their language servers join `lsp.servers` as `plugin:<plugin>@<marketplace>:<server>` (a server you configure under that name wins, `"lsp": false` turns them off with the rest), so edits there get the plugin's diagnostics too. Codex takes MCP servers only from its own config, so a plugin's MCP servers reach Codex sessions only if you also install the plugin in Codex (`codex plugin marketplace add …`, then `codex plugin add …`), which reads the same format. Read-only sub-agents get no plugins on Claude Code.
-
-Plugin sources in a marketplace: a path inside the marketplace (`./plugins/x`), `{ "source": "github", "repo": "o/r" }`, `{ "source": "url", "url": "….git" }`, `{ "source": "git-subdir", "url", "path" }` (each with an optional `ref` or `sha`), and `{ "source": "npm", "package", "version" }` (a version, tag or range; the tarball is checked against its integrity hash, and no install scripts run). Fetching runs no code from the plugin: git hooks are off, git never prompts for credentials (a private repository fails with git's message instead), and a manifest path that points outside the plugin is ignored. Installed copies live in `~/.cavvy/plugins/cache/`; a plugin's hooks and MCP servers run commands on your computer, so install plugins you trust.
-
-## Hooks
-
-```jsonc
-{
-  "hooks": {
-    "PreToolUse": [{ "matcher": "Edit|Write", "command": "./scripts/check-paths.sh" }],
-    "PostToolUse": [{ "matcher": "Edit", "command": "npx prettier --write \"$(jq -r .tool_input.file_path)\"" }],
-    "Stop": [{ "type": "prompt", "prompt": "Did the assistant run the tests it said it would? $ARGUMENTS" }],
-    "Notification": [{ "type": "http", "url": "https://hooks.example.com/cavvy", "headers": { "Authorization": "Bearer $ALERT_TOKEN" }, "allowedEnvVars": ["ALERT_TOKEN"] }]
-  }
-}
-```
-
-Each event takes a list of handlers. Claude Code's nested format works too, so a `hooks` block copied from `.claude/settings.json` runs unchanged: `{ "matcher": "Edit", "hooks": [{ "type": "command", "command": "./fmt.sh" }] }`. Both can be mixed in one list. An entry that can't run (an unknown type, a command hook with no command, an unknown event name) is skipped, and `/hooks` lists what was skipped and why.
-
-**Handler types:**
-
-| `type` | Runs | Fields | Default timeout |
-|---|---|---|---|
-| `command` (default) | A shell command, input on stdin | `command`; or `command` plus `args` to run it without a shell (`${VAR}` expanded); `async: true` runs it in the background and reports when done | 60 s |
-| `http` | A POST with the input as JSON | `url`, `headers`; `$VAR` / `${VAR}` in headers are filled in only for names in `allowedEnvVars` (provider keys never). Redirects are refused | 60 s |
-| `prompt` | Asks the session's model (or `model`) a yes/no question about the input | `prompt` (`$ARGUMENTS` is the input), `model`. Answer `{"ok": false, "reason": "…"}` blocks | 30 s |
-| `mcp_tool` | Calls a tool on one of the session's MCP servers | `server`, `tool`, `input` (`${tool_input.file_path}` and other paths are filled in from the input) | 60 s |
-
-Every handler also takes `matcher`, `if` (a permission rule such as `Bash(git *)`, for tool events), `timeout` in seconds and `statusMessage`. Handlers for one event run in parallel; their answers are combined in the order they're configured. Hooks get the event as JSON: `hook_event_name`, `cwd`, `session_id`, `permission_mode`, the fields below, and `agent_id`/`agent_type` inside a sub-agent, with keys redacted. Commands also get `CAVVY_PROJECT_DIR` and `CLAUDE_PROJECT_DIR`. Project hooks only run in folders you trust.
-
-`matcher`: empty, `*` or absent matches everything. A name or a `|` list of names (`Edit|Write`) matches exactly. Anything else is a regular expression. What it's compared with is in the table's last column; events without one run every handler.
-
-| Event | When | Input | Can block | Matcher field |
-|---|---|---|---|---|
-| `SessionStart` | A session starts, resumes, is cleared or compacted | `source`, `model` | — (`additionalContext` reaches the model with the next prompt) | `source` |
-| `InstructionsLoaded` | Each memory file (CAVVY.md, AGENTS.md, CLAUDE.md, and the files they `@import`) is loaded | `file_path`, `memory_type`, `load_reason` (`include` for an import), `parent_file_path` (an import's) | — | `load_reason` |
-| `UserPromptSubmit` | You send a prompt | `prompt` | The prompt | — |
-| `PreToolUse` | Before a tool runs | `tool_name`, `tool_input`, `tool_use_id` | The call (or `allow` / `deny` / `ask`, `updatedInput`) | `tool_name` |
-| `PermissionRequest` | Before you're asked to approve a tool | `tool_name`, `tool_input` | Answers for you: `decision.behavior` `allow` (with `updatedInput`) or `deny` (with `message`, `interrupt`) | `tool_name` |
-| `PermissionDenied` | Auto mode's reviewer refused a call | `tool_name`, `tool_input`, `reason` | — | `tool_name` |
-| `PostToolUse` | A tool succeeded | `tool_name`, `tool_input`, `tool_response`, `duration_ms` | Adds the reason to the result; `updatedToolOutput` replaces it | `tool_name` |
-| `PostToolUseFailure` | A tool failed | `tool_name`, `tool_input`, `error`, `is_interrupt`, `duration_ms` | Adds the reason to the result | `tool_name` |
-| `PostToolBatch` | All of one model turn's tool calls finished | `tool_calls` | Ends the turn | — |
-| `SubagentStart` | A sub-agent starts | `agent_id`, `agent_type` | — (`additionalContext` goes to the sub-agent) | `agent_type` |
-| `SubagentStop` | A sub-agent finishes | `agent_type`, `description`, `last_assistant_message` | The sub-agent keeps going | `agent_type` |
-| `Notification` | A notification would be shown, even with `notifications` off | `message`, `notification_type`: `done`, `permission`, `question`, `plan` or `error` | — | `notification_type` |
-| `PreCompact` | Before the conversation is compacted | `trigger`: `manual` or `auto`, `custom_instructions` | Skips the compaction | `trigger` |
-| `PostCompact` | After it was compacted | `trigger`, `compact_summary` | — | `trigger` |
-| `CwdChanged` | The working directory moved (`cd` in Bash or `!`) | `old_cwd`, `new_cwd` | — | — |
-| `FileChanged` | A watched file changed on disk, whatever changed it | `file_path`, `event`: `add`, `change` or `unlink` | — | the file's name |
-| `DirectoryAdded` | `/add-dir` added a folder | `directory`, `source` | — | `source` |
-| `WorktreeCreate` | A worktree is created (GUI, `/plan` handoff) | `name`, `branch`, `base` | Refuses it. When configured, the hook creates the worktree instead of Git and prints its path as its last line | — |
-| `WorktreeRemove` | A worktree is removed | `worktree_path` | — (when it deletes the folder, Git doesn't run) | — |
-| `Stop` | The model finishes its answer | `last_assistant_message`, `stop_hook_active` | The model keeps going (up to 3 times) | — |
-| `StopFailure` | A turn ended on an error | `error` (`rate_limit`, `overloaded`, `authentication_failed`, `billing_error`, `server_error`, `max_output_tokens` or `unknown`), `error_details` | — | `error` |
-| `SessionEnd` | A session ends | `reason`: `exit`, `clear` or `resume` | — | `reason` |
-
-`FileChanged` watches the files its matchers list (`.envrc|.env`, `config/app.json`, or an absolute path), relative to the project folder; a name matches a file of that name, a path that file. A hook can add paths with `watchPaths` in its JSON output (from SessionStart, CwdChanged or FileChanged). A pattern (`^\.env`), or no matcher, matches every watched file by name but adds none.
-
-Exit code 2 blocks where the table says it can, with stderr as the reason; elsewhere it's reported like any other failure. JSON on stdout follows Claude Code's format: `continue: false` (with `stopReason`) ends the turn from any event, `systemMessage` is shown to you, `decision: "block"` with `reason` blocks, and `hookSpecificOutput` carries `permissionDecision`, `updatedInput`, `additionalContext` (up to 10,000 characters), `updatedToolOutput`, `watchPaths` and, for PermissionRequest, `decision`. UserPromptSubmit and SessionStart also take plain text as context. SessionStart, SessionEnd and Notification hooks run in the background, except that Cavvy waits up to 5 seconds for SessionEnd hooks when it exits.
-
-PostToolUse now runs only when the tool succeeded, as in Claude Code. A hook that should see failures goes in PostToolUseFailure too.
-
-**On Claude Code and Codex:**
-
-| | Claude Code | Codex |
-|---|---|---|
-| UserPromptSubmit, Stop, SessionEnd, Notification, InstructionsLoaded, FileChanged, DirectoryAdded, StopFailure | Cavvy | Cavvy |
-| SessionStart | Cavvy; after a compaction (Claude Code's own too), Claude Code calls back | Cavvy |
-| PreToolUse | Claude Code calls back to Cavvy for each handler | Codex calls back to Cavvy before every tool call (below) |
-| PermissionRequest | When Claude Code asks for approval | When Codex asks for approval |
-| PostToolUse, PostToolUseFailure | Claude Code calls back | Commands, patches and MCP calls that ran; context is steered into the turn |
-| PostToolBatch, PermissionDenied, CwdChanged, WorktreeCreate, WorktreeRemove | Claude Code calls back | — |
-| SubagentStart, SubagentStop | Claude Code calls back | Codex calls back when it starts and finishes a sub-agent (below) |
-| PreCompact, PostCompact | Claude Code calls back | `/compact`; Codex's own auto-compaction runs PostCompact only |
-
-Claude Code runs Cavvy's hooks for its own tools, sub-agents, compaction and worktrees through its SDK hook callbacks: each handler runs in Cavvy, with Claude Code's input and Cavvy's `session_id` (Claude Code's own is `backend_session_id`). The events Cavvy runs itself aren't registered with Claude Code, so nothing runs twice. SessionStart handlers that match `compact` are registered too, for compaction only, so after Claude Code compacts (on its own or for `/compact`) their context reaches its model. Prompt hooks for these events go to Claude Code in its settings instead, and it asks its own model, as for its own prompt hooks. Prompt hooks for the events Cavvy runs, and on Codex, are answered by the session's CLI in a throwaway session with no tools (Claude Code with `--tools ""`, Codex in an ephemeral read-only thread with no shell), so they work without a `smallModel`.
-
-Codex 0.160 and later run hooks themselves, so PreToolUse goes to Codex as one of its own: an `mcp_tool` hook that calls a tool on Cavvy's MCP server (hidden from Codex's model), where Cavvy runs your handlers, as with Claude Code. It fires before every tool call (commands, patches, MCP tools, sub-agents), in every mode, and Codex keeps its own approval policy. Codex runs only hooks it trusts, so Cavvy gives the hook with its trust hash and checks with `hooks/list` that Codex took it; your own Codex hooks and their trust are left alone. Codex's tools reach your matchers under Cavvy's names: `Bash`, `Write` or `Edit` for a patch (with its first file as `file_path` and the patch as `patch`), `Task` for `spawn_agent`, `mcp__server__tool`; its other tools keep their names. A rewrite (`updatedInput`) runs, after being checked as the call it becomes (deny rules, read-only agents, the mode); a patch or a sub-agent can't be rewritten, so that call is refused. A hook's `ask` asks you from the hook, since Codex may not ask (Bypass never does). If the hook's call fails, Codex goes on with the tool call, so Cavvy stops the turn and says so. SubagentStart and SubagentStop go to Codex the same way, with `agent_type` `codex` and the sub-agent's task as `description`: SubagentStart's `additionalContext` reaches the sub-agent before its prompt, and a SubagentStop block keeps it going with the reason, after which the hook runs again with `stop_hook_active` set. A Codex that doesn't take the hooks (older than 0.160) gets the earlier behavior: PreToolUse sees only what Codex asks about, and in Bypass mode Cavvy sets Codex to ask about every command; SubagentStart and SubagentStop run in Cavvy, where they can't add context or keep a sub-agent going. Codex's PostToolUse can't change a result that's already in Codex, so `updatedToolOutput` is ignored there; feedback and context reach the model as a steering message. Codex has no events for a moved working directory, its worktrees, or a batch of tool calls.
-
-Not supported yet: the `agent` handler type, `PermissionDenied`'s `retry`, and Claude Code's Setup, UserPromptExpansion, TaskCreated, TaskCompleted, TeammateIdle, Elicitation, ElicitationResult, MessageDisplay, ConfigChange and Pre/PostModelSwitch events (Cavvy has no equivalent point for most of them yet).
-
-## Status line
-
-```jsonc
-{ "statusLine": { "command": "~/.cavvy/statusline.sh" } }
-```
-
-The command gets `{session_id, cwd, model: {id, display_name}, permission_mode, cost_usd, context_tokens, context_window}` as JSON on stdin. The first line it prints replaces the right side of the footer. It runs at most every 2 seconds and is killed after 3. Colors are kept; any other escape sequence is stripped.
-
-## Notifications
-
-When the terminal window isn't focused, Cavvy lets you know when a turn that took 30 seconds or more finishes, when it's waiting for you (a permission prompt, a question, or a plan to approve), and when a turn stops with an error.
-
-```jsonc
-{ "notifications": "auto", "notifyAfterSeconds": 30 }
-```
-
-| `notifications` | How |
-|---|---|
-| `auto` (default) | A desktop notification in terminals known to show one (iTerm2, WezTerm, Ghostty, kitty, foot), otherwise the terminal bell. |
-| `terminal` | The terminal's notification sequence: OSC 9, or OSC 99 in kitty. |
-| `bell` | The terminal bell. |
-| `system` | `osascript` on macOS, `notify-send` on Linux. The bell if that fails. |
-| `off` | Nothing. Notification hooks still run. |
-
-`/config` switches between them. Focus comes from the terminal's focus reporting. If the terminal doesn't report focus, prompts and errors always notify, and so do turns over the time limit. Nothing is notified in `-p` mode. Messages are short ("Cavvy: done (2m 10s)", "Cavvy: waiting for your approval") and never include tool input.
-
-Inside tmux, `auto` uses the bell, which tmux passes on to your terminal. `terminal` wraps the sequence for tmux passthrough, which works only with `set -g allow-passthrough on` (tmux 3.3 and later; `on` passes it only from a visible pane, `all` from any pane). For focus reporting inside tmux, also `set -g focus-events on`.
-
-## Desktop app and GUI
-
-The same agent, in a window: a sidebar of sessions from every project, several sessions running at once, the reply streaming in with tool calls folded into one-line summaries ("Read 3 files, searched 2 times · +13 −1") you can open, approvals as cards above the input, a Changes panel with what changed in the folder, the plan as a checklist, and context and cost at a glance. Sessions are the same files the terminal app uses: start in one, continue in the other (`cavvy -r <id>`, or **Copy resume command** in the GUI).
-
-```bash
-bun run gui:build          # once (and after pulling GUI changes): builds gui/dist
-cavvy gui                # opens it in your browser (cavvy serve: server only)
-bun run gui:demo           # try it without API keys: a mock model and a demo project
-```
-
-The desktop app wraps the same GUI in a window of its own ([Electron](https://www.electronjs.org)), where the Browser pane is a real Chromium page that you use directly and the agent drives too (`desktop-electron/`). The agent runs alongside it, the CLI compiled with `bun build --compile`:
-
-```bash
-bun run desktop:dev        # hot-reloading GUI, server from source
-bun run desktop:build      # macOS: the app in desktop-electron/out
-bun run desktop:install    # macOS: this checkout's app into /Applications, restarted
-bun run desktop:update     # macOS: the latest main into /Applications, restarted
-```
-
-`desktop:install` is for trying a change in the real app: it builds whatever branch or worktree you run it in, quits Cavvy if it's open (its sessions close as on any quit), replaces the installed app and opens it. `--no-restart` installs without touching a running Cavvy.
-
-`desktop:update` keeps the app on the latest `main` without pulling into your checkout: it fetches `origin/main`, lists what's new since the installed build, builds it in a worktree of its own (`~/.cavvy/app-source`) and installs it the same way. Nothing new, nothing to do; `--check` only lists what's new, `--force` rebuilds anyway. It works from Cavvy's own terminal too: it installs while Cavvy runs, then restarts it.
-
-Once installed that way, the app updates itself: it checks `origin/main` every few hours, and when there's something new a download icon shows beside Settings. One click runs `desktop:update` in the background (its output in `~/.cavvy/logs/app-update.log`) while you keep working, and Cavvy restarts once the new build is installed; it asks first only if sessions are working. Settings → About lists what's new. `bun run gui:demo --update` walks through it with a stand-in build.
-
-Building it needs only Bun: the first build downloads Electron. It's built for macOS; Electron runs on Linux and Windows too, but their builds aren't set up yet. To distribute it on macOS, sign and notarize the app, server included.
-
-Using it:
-
-- `⌘K` (`Ctrl+K`) searches sessions, projects and actions; `⌘N` new session, `⌘B` sidebar, `⌘.` side panel, `⌘/` model, `⌘[` `⌘]` previous/next session, `⌘,` settings, `` Ctrl+` `` terminal.
-- From two characters on, `⌘K` also searches what was said: your prompts and the agent's replies in every session, archived ones too (marked). Each hit shows the session, its project, the words around the match and how long ago; Enter opens the session at that turn. Tool output, thinking and images aren't searched. It reads the session files as they are (nothing is loaded or locked), and remembers what it read until a file changes; when there's more than one search reads at once, it carries on into older sessions by itself ("Searching older sessions…") and says so if it had to stop.
-- `⌘F` (`Ctrl+F`) finds text in the open session, including turns not drawn yet and rows folded away (a tool row counts by its title and summary, not its output): "3 of 12", `Enter` / `Shift+Enter` next and previous, `Esc` closes. Attachment chips and file contents are excluded from both searches.
-- In the input: `@` mentions a file, `/` lists commands (`/compact`, `/init`, `/review`, `/rewind`, custom commands…), `!` runs a shell command yourself, paste, drop or attach files, `↑` recalls a prompt, `shift+tab` cycles the permission mode, `Esc` interrupts. Messages sent while it works are queued; remove them before they go, and after an interrupt they come back to the input.
-- Attachments: the paperclip, drag and drop, or pasting files adds them to the message as chips. Images go as they always have. Text and code files (up to 512 KB; what counts as text is decided from the bytes, not the name) reach the model framed with their name, so it can tell where the file ends and your message resumes, with secrets redacted as for `@` mentions. PDFs (up to 10 MB) go as documents to models that read them: Anthropic, OpenAI and OpenRouter models, and Claude Code. Gemini, Vertex, the other OpenAI-compatible providers and Codex don't take PDFs, so a PDF there is refused and the message can't be sent until you remove it. Anything else (archives, binaries) is refused with the reason. A message carries at most 10 files and 20 MB of them, with a separate combined 20 MB cap for PDFs and images; the server checks all of this again. Every request resends the conversation's attachments, so past 20 MB of PDFs and images in all, the oldest are left out of what's sent (the model is told, and can ask you to attach one again); the transcript keeps them. A paste over 4,000 characters or 80 lines becomes a "Pasted text" chip you can open, or put back in the box as text. The transcript keeps each file once and shows its name and size, not its contents. Editing a queued message, an interrupt, or rewinding to a prompt puts its files back in the box along with its text.
-- Approvals: `1` `2` `3` choose, `Esc` denies (with a note for the model if you type one). The buttons never take focus on their own, so an Enter meant for the input can't approve anything.
-- Hover a prompt to copy it or rewind to before it (files, conversation, or both, as with `/rewind`).
-- Hover a finished turn and click **Fork from here** to continue in a new session from that point, keeping this one as it is (see `/fork`).
-- **Changes** (the side panel's row, or a turn's **Review changes**) opens a review pane: the changed files with git's status letter and +/− counts, and each file's diff, unified or split. It refreshes when a turn ends, when you come back to the window, and after the terminal panel goes quiet. In a Git repository it shows what git sees, whoever made the change (Cavvy's tools, Claude Code or Codex, a shell command or you):
-  - **Uncommitted**, the default: the working tree against the last commit, so staged, unstaged and untracked files that aren't ignored.
-  - **Branch**: everything since this branch left its base (`feat/x → origin/main`), committed or not. The base starts as the main branch (what `origin/HEAD` points at, else `main` or `master`), and you can pick another from a searchable list of local and remote branches.
-  - **Last turn** and **Turn N**: the difference between a prompt’s start and end snapshots, including shell commands, any provider’s tools, and sub-agent work during that turn. Pick an earlier prompt by its text and time, including after reopening the session. A steered prompt closes the preceding snapshot and starts a new one. The turn’s changed-files card opens that exact turn.
-  - **Cavvy edits**: only what Cavvy's own edit tools changed in this session. Outside a Git repository it's the only view, and the pane says so.
-
-  Up to 300 files are listed, with a count of the rest. A new folder with many untracked files (an unignored `node_modules`) is one entry, and so are submodules and repositories inside this one. Symbolic links are diffed as their targets and never followed. Binary, very large and cut diffs say so. Listing and viewing diffs only reads: it never stages, writes the index or runs anything from the repository's config. `git status` and `git diff` would run a repository's clean filters, so Cavvy lists the trees and the index with git and compares the files on disk itself. A file git runs through a filter (Git LFS, say) is settled by the index's record of it, as git does: if it hasn't changed since git last looked it isn't listed, and if it has, it's listed without a diff, since diffing it would mean running the filter.
-
-  Turn snapshots are recorded by the shared agent in trusted, saved Git sessions (GUI, terminal, and headless). They cover tracked files and untracked files that are not ignored, preserving the bytes on disk, executable bits, and symlink target text. Ignored untracked files (including an ignored `.env`), files over 10 MB, unreadable/special files, and the contents of submodules or nested repositories are not copied. Skipped files are marked; a capture that exceeds its roughly 2-second budget is marked incomplete instead of delaying the model indefinitely. Closing a turn also has a separate 2-second comparison budget, including at a steering boundary. A crash or server stop that cuts a turn off can leave a start without an end. Reopening preserves that start and never invents a closing snapshot from the current files. The card and Review show that the snapshot is incomplete; the card retains any edit-tool diffs available, but shell/backend changes have no exact turn diff without an end. Later prompts start separate snapshots. Changes made by a background task after its turn ended aren't attributed to a turn. Concurrent sessions or other processes in the same repository contribute to each other’s turn diffs; capture is a bounded scan, not an atomic filesystem transaction. The Changes badge counts distinct paths listed by recorded turn diffs plus legacy edit-tool history (omissions with unchanged metadata are not counted), so it may differ from the current Uncommitted count.
-
-  Storage lives beside file history: `turn-snapshots.jsonl` is a versioned append-only journal of checkpoint ids, prompt labels/times, start/end tree ids and omissions; `turn-snapshots/` contains a reusable private index and private Git objects. Direct raw object hashing/compression is equivalent to [`hash-object --no-filters`](https://git-scm.com/docs/git-hash-object), followed by [`update-index --index-info` and `write-tree`](https://git-scm.com/docs/git-update-index). `git add` is deliberately avoided because it applies [clean/process filters and EOL conversion](https://git-scm.com/docs/gitattributes). Git commands disable fsmonitor, index hooks, split index and lazy fetching; inherited repository environment overrides are cleared before the private index/object paths are applied. No refs, objects, index, stash or hooks in the repository are changed. Folders are 0700 and files 0600. Each session has a 256 MiB quota for compressed private objects (blobs and trees); reaching it stops capture and marks the snapshot incomplete while the turn continues. Objects left by failed or timed-out captures count toward the quota and remain until file-history pruning: removing them safely would require checking references across all retained trees. Unpublished temporary writes are removed when possible. The quota does not cover the journal, private index, or legacy edit-tool copies. All captured objects are stored privately rather than borrowed through alternates: repository garbage collection cannot invalidate history. Missing or damaged private objects are shown as incomplete. Old sessions and non-Git folders retain their previous behavior.
-
-  Native backend history is insufficient for this recording: [Claude Code checkpointing](https://code.claude.com/docs/en/agent-sdk/file-checkpointing) excludes Bash and most sub-agent edits, while Codex app-server’s [`thread/revert`](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/thread.rs) changes conversation history rather than restoring local files. The common snapshot record covers all providers; using it for `/rewind` is separate follow-up work.
-
-  In **Uncommitted**, each file has a checkbox, checked by default. Untick files to leave out, then click **Commit…** to review the branch and selection and enter a subject and optional body. The dialog warns on the main branch or a detached HEAD. Committing is disabled while the session works and refused by the server in untrusted folders. It commits the checked files' current contents, including whole renames and deletions, while other files keep their staging and working changes. Repository hooks run and configured commit signing is honored; a hook that stages unchecked files is rejected before the branch moves. Success shows the short hash and subject and refreshes the pane; failures show Git's output. It never pushes or amends. Collapsed untracked folders and nested repositories cannot be checked as one file.
-
-  **Push…** beside Commit opens a confirmation dialog for this session's repo or worktree, including clean branches. It shows the remote URL and destination branch, plus ahead/behind counts from local tracking refs (unknown before an upstream exists). A single `origin` is used when there is no upstream; ambiguous remotes need an upstream configured in a terminal. The dialog checks the remote's current default branch. Pushing `main`, `master`, that default branch, or to a remote whose default is unknown needs an extra checkbox. Detached HEADs are refused. Pushes never force, mirror, publish tags or recurse into submodules; this GUI flow disables repository hooks. Rejected updates show Git's output and must be reconciled in a terminal.
-
-  With authenticated GitHub CLI (`gh auth status`) and a github.com destination, the dialog offers **Open pull request**, with editable commit-derived title, description, base branch and Draft. The confirmation names the destination and base. It pushes missing commits first, reuses an existing open PR, and redacts outgoing text. If `gh` is missing or unauthenticated, **Compare on GitHub** opens a link for github.com remotes; push first to publish new commits. A PR row in Changes shows its number, title, state, check count and link. Focus and a 60-second visible-pane timer refresh it; publishing refreshes immediately. Network reads happen only when opening/using the dialog or refreshing PR state in the visible pane. Only confirmation clicks publish—there is no agent publishing tool. Busy or untrusted sessions cannot publish; repository-owned transport/helper configuration (including worktree configuration and includes) additionally requires explicit user trust. Applicable Git URL rewrites are refused, even in trusted folders: configure a literal remote URL so discovery and push agree. Changed branches or destinations require reopening the dialog, and only the confirmed commit SHA is pushed. PR lookup matches the exact head branch and repository, including numeric branch names. Git and `gh` handle credentials themselves.
-
-  **Generate message** runs only when clicked, using the `smallModel` chosen in Settings, otherwise a small model from the session's provider, or the session's own model if none is available. It receives a redacted, budgeted diff of the selection and recent commit subjects, and puts an editable draft in the box with the model's name. Claude Code and Codex sessions need `smallModel` set to a model on another provider that supports one-off requests. Generating never commits; you can always write the message yourself.
-
-  Hooks receive the private index, including `post-commit`; staging done by `post-commit` is discarded so unchecked files keep their staging. Hooks still run with the trusted repository's normal access to its working files. Git commands have a two-minute limit and timed-out hooks are stopped. If a hook times out after the commit was published, Cavvy still reports the successful commit and reconciles the index.
-- On Claude Code or Codex, a plan meter beside the context ring shows where your plan stands: each window's use and when it resets ("5-hour 62% · resets 4:40 PM"), "as of" a time once it's out of date, red with the reset time once a limit is reached. Limits are your account's, so every session on that CLI shows the same numbers.
-- Settings → Usage (also `⌘K` → Usage, or `/cost`) adds up the last 24 hours, 7 days or 30 days from your session transcripts, per provider and model: tokens in and out, cache reads, estimated cost and sessions. Usage on a plan is priced at what the API would have charged and labelled as that estimate; a model with no known price shows "unknown", never $0. Usage records include their time, billing source and the concrete model reported by the CLI. Older undated records are placed at their session's last activity; alias-only records use today's model mapping and are counted as approximately priced. `/context` opens the context card (which says so when the window's size isn't known yet: Claude Code reports it with its first reply). A `/word` that isn't a command isn't sent: a notice offers to send it as a message anyway. In a Claude Code session, the commands and skills Claude Code lists as its own (`/code-review`, `/simplify`…) go to it as the prompt, and it runs them; Cavvy remembers the list per workspace, so a new session there can use it immediately. Before a workspace has reported a list, Claude Code resolves commands itself. A message that starts with a path (`/Users/me/app.ts fails to build`) is sent as usual.
-- Themes: Light, Paper, Dark, Midnight, Dusk and High contrast, or follow the system; nine accent colors, text size and density. Settings → Providers adds API keys (validated, then stored in the OS keychain, like `/login`) or turns on Claude Code or Codex to use your own Claude subscription or ChatGPT plan.
-- Sub-agents (Task calls, Claude Code's and Codex's own sub-agents, and tasks Claude Code or Codex delegate to another provider's model) show as chips above the input: their name, model, and whether they're working, waiting for you, done or failed. A chip opens that agent in the side panel: the task it was given, what it's saying and doing as it goes (each tool call opens to its output or diff), and its report. A delegated task has a Stop button; a Task sub-agent stops with the turn. When one asks permission, the prompt names it and links to it. `/tasks` lists them all, and `/tasks stop [task-id]` stops delegated tasks.
-- The side panel's **Browser** tab shows the pages agents open and lets you take them over (see [Browser](#browser)).
-- A session that finishes or needs you while you're elsewhere sends a notification; the window title counts the sessions waiting for you.
-- Open in your editor (macOS and Linux): choose one under Settings → General → **Open files with** (VS Code, Cursor, Zed, Sublime Text, IntelliJ IDEA, WebStorm, PyCharm, GoLand, CLion, RubyMine, PhpStorm, Rider, or Finder to reveal). The list shows those found on the machine running the server: a launcher on `PATH` (`code`, `cursor`, `zed`, `subl`, `idea`…) or, on macOS, the app in `/Applications` or `~/Applications`. Then file paths in replies (`src/server/engine.ts:780`, `:line:col`, in backticks or not, and markdown links to relative paths or `file://` URLs) become links that open at that line; tool rows for Read, Edit and Write, diff headers and changed-file rows get an open button; and the session menu has **Open project in …**. The choice is saved as `editor` in your user `settings.json`.
-- **Delete…** (a session's menu in the sidebar or on its title, or `⌘K`) asks first, then removes the session from every window and from the terminal's `-r`/`/resume` list. Its transcript, UI log and /rewind file copies move to `~/.cavvy/trash/` and its pin, archived and unread state are dropped. **Undo** on the toast puts it all back, and entries are purged after 7 days (at server start, then hourly). A session that's working, or open in a terminal, isn't deleted. The project's files and git, Claude Code's and Codex's own session stores, and the shared prompt history (`↑`) are left as they are.
-
-How it fits together:
-
-```
-desktop app (Electron)             browser tab (cavvy gui)
-  its own window and Chromium        ─┐
-  └─ GUI (gui/, SolidJS) ─────────────┴─ WebSocket on 127.0.0.1, token ─┐
-                                                                        ▼
-  cavvy serve  (src/server: engine.ts → runtime.ts, one per open session)
-     └─ the agent (src/agent), tools, permissions, providers, MCP: shared with the CLI
-```
-
-`src/server/protocol.ts` is the contract between the two sides. A session's timeline is changed by small ops (add a block, append text, patch a tool's status) that the server applies to its own copy and sends; the GUI applies them with the same code (`src/server/timeline.ts`), batched once per frame, so streaming only touches the text that changed. Opening a session rebuilds the same timeline from the transcript plus a small log of what it doesn't keep (diffs, timings), so a reopened session looks the way it did live, including turns from before a compaction.
-
-Security. Whoever can talk to the server can run commands as you, so:
-
-- It listens on 127.0.0.1 only (`--host` exposes it, with a warning). Every WebSocket needs the server's random token, sent as a subprotocol so it never appears in a URL or a log. The browser link carries a one-time code (two minutes) that the page trades for the token. Host and Origin headers are checked, so a web page that rebinds a DNS name to 127.0.0.1 can't connect, and the pages are served with a strict Content-Security-Policy.
-- Model output is untrusted: raw HTML in it is shown as text, links open in your browser (never in the app), and images in replies aren't loaded, since a remote image URL can carry data out the moment it's displayed.
-- The desktop app's page has no Node or shell access (context isolation and Chromium's sandbox); it reaches the app only through a few named calls (a folder picker, opening a link, the server's address), and only from its own origin. Only the app's main process starts the server, which exits when its stdin closes, so it goes away with the app, even if the app is killed. The Browser pane's pages are sandboxed too, in a session of their own per project, and the server drives them over the app's connection (`/browser-host`, with the server's token): no DevTools port is opened.
-- Open in editor: a path from a reply is linked only if it's a file inside the session's folder or its `additionalDirectories` (symlinks followed), and the server checks again before opening it. The GUI sends only an editor id from a fixed list, never a program or arguments; editors start from argument lists, never a shell, and nothing goes to the system's default handler (Finder only reveals). A file the chosen editor would open as a project (`.code-workspace` in VS Code and Cursor, `.sublime-project` in Sublime Text, a solution, `.csproj`, `pom.xml` or `build.gradle` in the JetBrains IDEs) isn't opened or linked, since it can name other folders; only folders open as projects. With `--host`, the editor opens on the server's machine, not the one with the browser.
-- Apps started outside a terminal don't get your shell's `PATH`; the desktop sidecar asks your login shell for it (`--login-env`), so the agent finds your tools.
-
-`CAVVY_GUI_DEBUG=1` makes the server say why it refused a connection.
-
-**Terminal and worktrees.** The terminal button in the title bar (or Ctrl+backtick, on every platform) opens a resizable bottom panel with interactive shell tabs in the current project's directory. Drag its top edge to resize it; hiding the panel keeps shells running. Each project/worktree has its own tabs: opening the panel starts a shell where there is none, and going to another project with the panel open doesn't (click **New terminal** there). A window has up to 12 terminals across all its projects, with 48 across the server. Closing a tab stops its shell; if disconnected, that close is remembered across reloads and sent when the connection returns.
-
-Terminals belong to the window, not to its connection. Reloading the window, or losing the connection and getting it back, leaves the shells running. When the window is back, its tabs return with their names and folders, and each shows its shell's recent output: up to about a million characters per terminal, which is roughly 12,000 full lines. After a reconnect without a reload, a tab gets only the output it missed. Typing while disconnected is dropped. If a shell exited meanwhile, its tab comes back with its output and "Shell exited (code)". A window that's gone for good (closed, or not back within 10 minutes) has its shells stopped then. Shells that exited, or are waiting for their window, count toward the 12 until they're closed or stopped. Quitting the desktop app, or stopping the server, stops every shell and waits for cleanup. A private pipe guard also stops the shell if the server crashes or is killed, even when the shell ignores hangup.
-
-How it works and its limits:
-
-- The window keeps a random key in its sessionStorage, so a reload keeps it and another window has its own. The key is sent with the connection (never in a URL), and only a connection with that key can see, attach to, type into or close the window's terminals.
-- A copy of the window, such as the browser's "Duplicate tab", starts with the same key. The window that attached last gets the terminals, and the other's tabs say they moved.
-- Cleanup covers the shell and ordinary terminal jobs. Graceful cleanup also stops hangup-resistant descendants when the OS allows process enumeration. After abrupt server death, a hangup-resistant job in a separate job-control process group can still survive; deliberately daemonized jobs are not managed by the panel.
-- A full-screen program (vim, htop, less) can't be redrawn from saved output alone. When a tab comes back to one, Cavvy nudges the terminal's size so the program redraws itself. Programs that ignore size changes look garbled until they next redraw (Ctrl+L in most).
-- Truncated replay resets the screen and starts at a safe escape-sequence and Unicode boundary, preferring a line boundary. Colours set before that point may be lost; incomplete control strings are discarded until they end. Retained output targets one million UTF-16 characters per terminal, trimmed when it exceeds 1.25 million (plus one PTY read); detached and exited tabs share the same limits. Replaying terminal queries does not send their replies back into the shell. Shells get your own environment (your `PAGER`, not the agent tools' settings, and nothing from the terminal or tmux Cavvy was started in; `TERM_PROGRAM` is `Cavvy`). When a command prints faster than the panel can draw, the panel skips ahead to the latest output and says how much it skipped. Terminal commands are your own shell commands, outside agent permission prompts and conversation history. This panel currently requires macOS or Linux.
-
-**Project scripts.** Save the commands you run often in a project ("dev", "test", "lint") and run each with one click. The ▶ button next to the terminal button in a session's title bar runs the project's last-used script (or its first one). The menu beside it lists them all: click one to run it, hover to edit, move up or delete it, and **Add script…** for a new one (a name, a one-line command, and optionally an icon). Running a script opens the terminal panel on a new tab named after it, in the session's folder (a worktree's folder for a session in a worktree), and types the command into an interactive shell as if you had typed it. The command is typed once the shell has started; press Ctrl+C (or start typing) before then and it isn't typed at all. Stop it with Ctrl+C or by closing the tab. When the command ends, the shell stays open, so you can read the output or run it again. Restarting that tab gives a plain shell and doesn't run the script again. Scripts count toward the 12-terminal limit. A script's tab survives a reload like any other tab: it keeps its name and its running command (a dev server keeps serving), and comes back to the same shell without running the command again. If the window goes away before the command was typed (within a moment of the click), the command is cancelled and never typed.
-- Scripts run only when you click one, except the one you mark as the setup script (below), on creating a worktree from Cavvy. Nothing runs them on opening a project or session, or on reconnecting. There's no agent tool for them.
-- **Setup script.** In a script's Add/Edit dialog, **Run when a worktree is created** marks it as the project's setup script (`bun install`, say, or `npm ci && cp ../../../.env .`); a project has one at most, so marking another moves it, and the menu labels it **Setup**. It's off until you check that box; nothing in the repository can turn it on. When you create a worktree with **New worktree…**, the dialog shows the script's command first, with **Don't run it this time**. Once the worktree is created and opened, the command is typed into a new terminal tab there ("Setup · <folder>"), exactly as when you click a script: Ctrl+C or typing before then cancels it, Ctrl+C or closing the tab stops it, and the shell stays open when it ends. If it fails, or the tab can't open (the 12-terminal limit, a disconnect), the worktree stays; run the script from the menu. It runs only in a repository you've trusted yourself (its main checkout, or the new folder); a folder trusted only for having no Cavvy configuration doesn't count, since the script runs the repository's code. Without that trust the dialog says it won't run and offers to trust the repository, which also turns on the repository's own Cavvy configuration. The server allows each run once, from the window that created the worktree, within two minutes, for the script as it was marked then (unmark or edit it meanwhile and it doesn't run); a reload or reconnect never runs it. A setup tab reattaches to its existing shell with its setup label and command preserved, without reusing the ticket or typing the command again; if its shell is gone, the tab is dropped. If the window goes away before the command is typed, it is cancelled. It never runs for a worktree made elsewhere (`git worktree add` in a terminal, an agent, Claude Code), or on picking an existing worktree. The file they're kept in is an ordinary file in the Cavvy home: Cavvy's own agents have to ask before editing it there (with an edit tool, or a shell command that names the Cavvy home), except in bypass mode.
-- Setup runs in the terminal independently of your chat; it never holds the first prompt while you wait for it to finish.
-- They're yours, not the repository's: they're stored in `~/.cavvy/scripts.json` (under `CAVVY_HOME` if set), keyed by project, never in the project's `.cavvy/` folder. A repository's main checkout and all its worktrees share one list, keyed by the main checkout's path; a subfolder opened as a project keeps its own list. A folder counts as a worktree only when the repository lists it and its `.git` points back at it, so a `.git` symlinked or pointed at another repository doesn't share that repository's scripts. Folders outside Git are keyed by their own path. If Git fails for another reason (a timeout, a repository it refuses to read), the menu says so instead of guessing.
-- The desktop app and `cavvy gui` (even different versions) can share the file. A file in another format, or one that isn't shaped as expected, is never rewritten: the menu shows an error naming it. Entries this version can't use (edited by hand, say) stay in the file as they are, neither shown nor run; so do all the entries that share an id, or a name in any case, so which one runs never depends on their order. The menu says how many were set aside, and a new or renamed script can't take one of their names.
-- Names are unique per project (ignoring case) and up to 40 characters. Commands are a single line of up to 2,000 characters, with no tabs or other control characters (join several with `&&` or `;`). A project holds up to 50 scripts. Edits in one window show up in the others.
-
-**Continuing a Claude Code or Codex session.** Started something with `claude` or `codex` in a terminal? Home offers **Continue a Claude Code or Codex session** for its project: that folder's recent CLI sessions, newest first (up to 50 of each), with their title (the CLI's own, or the first prompt), age, number of messages and model. **Import** opens a Cavvy session on the matching backend, in the folder the CLI session ran in, on its model when the provider lists it (else the provider's default). The conversation so far shows at the top of the timeline, read-only (prompts and replies, and a "Used: Bash(npm test), Edit(src/x.ts)" line for each turn's tools; no thinking, images, tool output or sub-agent transcripts), and can't be rewound into. Your next message continues the CLI's own conversation (`claude --resume <id>`, Codex's `thread/resume`), so nothing is sent again; if that session is gone, a new one starts with the conversation as context. A session that's already in Cavvy (imported before, or one Cavvy ran itself) shows **In Cavvy · Open**; those are folded into an "N already in Cavvy" line and don't count toward the 50. Runs of Cavvy's own sub-agents (Task, delegate) on Claude Code or Codex aren't listed. One that changed in the last couple of minutes may still be open in a terminal: using it in both places at once mixes the two. The CLI's stores are only read, never written: Claude Code's under `$CLAUDE_CONFIG_DIR` (default `~/.claude`), Codex's under `$CODEX_HOME` (default `~/.codex`), and only conversation files and Codex's thread titles, never credentials, settings or prompt history. Imports are capped (64 MB files, the latest 400 messages); the header says how many earlier messages were left out.
-
-Under the new-chat composer, click the branch to select a Git worktree. The menu refreshes each time it opens and shows branches and full paths, including detached worktrees. Selection changes the new chat's folder; existing chats keep their own folders.
-
-**New worktree…** in that menu creates one on a new branch (`git worktree add -b`) and starts the new chat there. The base defaults to the folder's current branch (its commit when detached); the new branch starts at the base's commit and gets no upstream. By default it goes in `<main worktree>/.claude/worktrees/<branch, with / as ->` (where Claude Code keeps its worktrees, even when you start from a linked worktree); you can rename the folder or choose a folder elsewhere. Cavvy creates `.claude/worktrees` when it's missing but doesn't touch your `.gitignore`. It refuses an existing branch, an existing path, and a `.claude` or `.claude/worktrees` that is a symlink. Git runs with hooks turned off (`core.hooksPath=/dev/null`), so the repository's `post-checkout` hook never runs; run any setup a hook would have done yourself, or mark a project script as the setup script to have it typed into a terminal tab of each new worktree (see **Project scripts**). Checking files out does still run filter drivers (Git LFS, for example) and anything else Git config sets up for a checkout. Those from your own global or system config always run. In a project you haven't trusted, the repository's own config (`.git/config`) may only hold settings that can't run anything: what `git init` and `clone` write, plus branch and remote bookkeeping. Per-worktree config (`config.worktree`, with `extensions.worktreeConfig`) applies only in its own worktree. Each worktree Git runs in is held to the same rule unless that worktree's own folder (or a folder containing it) is trusted; trusting a sibling worktree doesn't count. When something needs trust, the message names the folder, and the button trusts that folder. Before Git runs in a folder (the one you asked from, and the worktree being removed), Cavvy checks that it really belongs to this repository: its common Git directory must be the main worktree's, and its own Git directory must sit under that one's `worktrees/`. A worktree whose metadata points at another repository (whose config was never checked) is refused outright; trusting wouldn't fix it. If it has anything else (a filter driver, an `include`, `core.sshCommand`, a credential helper, a partial clone's promisor remote, …), you're asked to trust the project first (**Trust and create**), before Git so much as resolves the base. Cavvy's own checks never fetch missing objects in a partial clone (`GIT_NO_LAZY_FETCH=1`); only the checkout itself does, in a trusted project. In a trusted project its filters run as usual.
-
-Worktrees in `.claude/worktrees` also get a remove button. Removal runs `git worktree remove` without `--force`, counting untracked files even if your config hides them, so Git refuses when there are changes. Branches are kept. Git would delete ignored files (an `.env`, `node_modules/`) without asking, so they're listed first, and removal goes ahead only once you've agreed to delete exactly those (**Delete them and remove**). Removal is refused for the main worktree, a locked worktree, and a detached worktree whose commit isn't on any branch. It's also refused while a Cavvy session is open in the worktree: a session in the app counts, including one still closing; a session in another process (such as the terminal) counts once it has sent a message. Git still refuses a worktree with changes, so a session that isn't seen loses nothing. While Git removes it, no session can open in it from the app and no other removal of it starts. Checking for changes reads the files, so it needs the same trust as creating when the repository's own config could run commands (**Trust and remove**). A worktree whose folder is already gone loses only its own record; other worktrees' records stay, even when their folders are away (say, on a drive that isn't mounted).
-
-**Plans: a new worktree, or a file.** When a session presents a plan, its card also offers **New worktree…** (5) and **Save…** (6); the side panel's **Proposed plan** row keeps both (and Copy) once the card is answered, after a reload too. **Implement in a new worktree** creates a managed worktree on a new branch (named from the plan's title; the base is the session's current branch), with the same checks and trust as **New worktree…**, then opens a new session there with the planning session's model, effort and speed, and the plan as its first message (it says where the plan came from and which worktree, branch and base it works in). The new session's mode is one of the Approve choices: by default the mode the planning session was in before it started planning, else your default mode, or Ask for edits if that's Plan. The worktree starts from the base commit, so uncommitted changes don't come along. The planning session's card is answered without approving it: that session stops, still in plan mode, having changed nothing. Both sessions link to each other in the side panel. If the worktree is made but its session can't start (a folder that needs trust, say), the worktree is kept and the dialog says so; starting again uses it. **Save plan** writes Markdown, by default to `~/.cavvy/plans/<project>/<date>-<title>.md` (private, never in the repository); you can pick a file in the project instead. Only files ending in `.md`, inside the session's folder or the Cavvy home, outside `.git/`, through no symlink; an existing file is replaced only after a second, explicit **Replace**.
-
-If model setup fails after creating the worktree and session, the dialog identifies both and offers to open the new session; the original plan remains unanswered.
-
-**Archiving a session in a worktree.** Archiving a session whose folder is in a managed worktree asks whether to remove the worktree too (**Archive only** is the default). Removal works as above (no `--force`, ignored files listed first, the branch always kept), and also keeps the worktree when its HEAD has commits no remote-tracking branch contains (in a repository with no remote, that's every commit), when another session (unarchived) works there, and when this session is still working or open in another window or process. The dialog says why before you choose; changes Git refuses are reported when you archive, and the session is archived either way. **Undo** brings the session back but not a removed worktree, and opening a session whose folder is gone says so instead of opening.
-
-**Comparing models.** When you're not sure which model will do a task best, give it to two to four at once. On Home, in a Git project, turn on **Compare models** in the model picker and tick the models, from any provider, Claude Code and Codex included. The picker then says how many you picked, and the send button says **Send to N models**. Picking them doesn't change your default model. In a folder that isn't a Git repository the switch is off, with the reason, and a session's own composer is unchanged. Sending creates one worktree per model, one at a time, each on a new branch from the Home folder's last commit, in `<main worktree>/.claude/worktrees/<name>`, the same place and through the same checks as **New worktree…**. Uncommitted changes in the Home folder aren't carried over. It then opens a session in each worktree on exactly that model, with the composer's permission mode and attachments, and sends it the prompt. Each worktree is named after a few words of the prompt and the model, for example `fix-login-redirect-opus-5-5`. Names use only letters, digits and `-`, keys and other secrets are taken out of the prompt first, and `-2`, `-3`, … are added when the branch or folder exists. A sheet then shows each model's result: started, with its branch and folder, or why not and what to do (no key for that provider, a model that isn't listed, images for a model that doesn't take them, a worktree Git couldn't create, …). One model failing never stops the others. A worktree whose session couldn't start is kept, and the sheet names it. A session that can't be set to its model is never sent the prompt, rather than running on the default model. Nothing is deleted for you; remove worktrees as above. In the sidebar a run's sessions stay together under the prompt, in both views, each card naming its model. A session in a run shows the others in its title bar with their status (working, needs you, done, stopped), one click each. Runs are remembered in `gui.json` (the last 50).
-
-Long pasted tasks and attachment-only messages work too (an attachment-only run is labelled “Attached files”); slash-prefixed prompts are sent literally to each model. Text files, PDFs and images use the same attachment checks as ordinary messages; a model that cannot read an attached PDF or image fails only its own row. A separate comparison table is deferred; use the grouped sessions and header switcher to compare replies.
-
-**Cost guard.** Starting more than two models billed per token through an API key asks first, listing them with their prices (or "price unknown"); cancel and nothing is created. Claude Code and Codex run on your plan, and Ollama, LM Studio and other servers on this machine are free, so they don't count. Every other provider does, including Vertex and custom ones. The server enforces this, not only the app.
-
-**Trust for a run.** The Git config rules above apply to every worktree a run creates. When the repository's own config needs trust, nothing is created until you trust the folder it names. Then the run starts again by itself. The new worktrees' project configuration (`.cavvy/`, `.mcp.json`, the agent CLIs' `.claude/` and `.codex/`) is decided once per run, before anything is created. If a folder you trusted contains them (their main worktree, say), they're trusted. If you chose **Open without its configuration** for the Home folder or the main worktree, they open that way too. If they'd have configuration and you haven't decided, the run asks you once (trust the main worktree, or open them without their configuration) and starts after your answer. Nothing is trusted on your behalf. For a linked worktree outside the main folder whose Git configuration needs trust, the run refuses before creating anything: trust the Home folder and main worktree separately, then retry.
-
-**Adding features.** Anything in the core (`src/agent`, `src/tools`, `src/providers`, `src/permissions`, `src/mcp`) reaches both apps by itself. Something you see or click needs a part in each: the terminal's in `src/ui` and `src/commands`, the GUI's in `src/server/runtime.ts` (which plays the role of `src/ui/app.ts`) and `gui/`. Keeping the logic in the core and the two front ends thin keeps them from drifting apart.
-
-## Headless
-
-```bash
-cavvy -p "fix the lint errors" --permission-mode acceptEdits --allowedTools "Bash(npm run lint:*)"
-git diff | cavvy -p "review this" --output-format json
-cavvy -p "…" --output-format stream-json     # one JSON event per line
-```
-
-In `-p` mode nothing can prompt you, so anything that would ask is denied, and there are no notifications. Allow it with `--allowedTools`, rules, or `--permission-mode`. The exit code is 0 on success and 1 on error or `--max-turns`.
-
-Piped stdin is added to the prompt. When the prompt is also given on the command line, stdin is optional: if nothing arrives within 3 seconds the run goes on without it (so a parent process that leaves stdin open can't hang it). To pipe a command that's slow to start printing, save its output to a file first. Retries (rate limits, overloaded or unreachable providers, or one that sends nothing for 5 minutes) are reported on stderr as they happen. `-c` and `-r` continue with the model the session was using, if it's still available.
-
-## SDK
-
-Drive Cavvy from TypeScript (Bun): the same agent as the CLI, in your process.
-
-```ts
-import { query } from "cavvy/sdk";
-
-for await (const m of query({ prompt: "fix the lint errors", options: { permissionMode: "acceptEdits" } })) {
-    if (m.type === "result") console.log(m.result);
-}
-```
-
-Messages have the same shapes as `--output-format stream-json`. Permission prompts go to a `canUseTool` callback, and `tool()` gives the agent tools of your own. See [src/sdk/README.md](src/sdk/README.md) and [examples/sdk](examples/sdk) (`bun run sdk:example` runs them without keys).
-
-## Development
-
-```bash
-bun run typecheck
-bun run gui:typecheck
-bun run test
-```
-
-Layout:
-
-| Directory | Contents |
-|---|---|
-| `src/agent` | Loop, sessions, compaction, hooks, memory, sub-agents |
-| `src/providers` | Wire formats, model catalog, pricing |
-| `src/backends` | Claude Code and Codex as agent backends (your installed CLIs) |
-| `src/permissions` | Rules, shell-command analysis, the auto-mode reviewer |
-| `src/tools` | Built-in tools |
-| `src/mcp` | MCP client |
-| `src/ui` | Terminal renderer, editor, markdown, dialogs |
-| `src/commands` | Slash commands |
-| `src/server` | GUI server: protocol, multi-session engine, WebSocket server (`cavvy gui` / `serve`) |
-| `gui` | The GUI (SolidJS, Vite). `bun run gui:dev` (add `--demo` for the mock model) runs it with hot reload at http://localhost:5173 |
-| `desktop-electron` | The desktop app (Electron): its window, the Browser pane's pages, packaging and benchmarks |
-| `desktop` | The app's icons, and the Tauri shell it replaces |
-| `scripts` | Mock model and demo project (`gui:demo`), sidecar build |
-
-### Fast mode
-
-The composer shows a **Standard / Fast** toggle when the selected model and backend support faster service. It changes the provider's service speed, independently of reasoning effort, and uses higher rates or plan limits. A session's choice survives closing and reopening it; the Home toggle sets the default for new sessions. Change speed while idle (or interrupt the current response first).
-
-In the terminal, use `/fast`, `/fast on`, `/fast off`, or `/fast status`; the footer shows `↯ fast` when enabled. `/fast` also saves the default for new sessions. `cavvy --fast` and `cavvy --no-fast` override speed for that session, including `-p` runs. Unsupported models never inherit a fast request.
-
-- **Codex:** reads `serviceTiers` from the installed CLI's model catalog (its fast tier is `priority`; older CLIs list `fast` in `additionalSpeedTiers`), and sends the fast tier on thread start/resume and each turn. Standard takes a thread off a fast tier it is on (from an earlier fast turn, or Codex's own config); any other tier from Codex's config, such as `flex`, is left alone.
-- **Claude Code:** requires version 2.1.205+ and the CLI's `supportsFastMode` capability; passes `fastMode` through `--settings`. Standard explicitly overrides external fast preferences. Backend availability or cooldown notices appear in the conversation.
-- **OpenAI / Anthropic APIs:** enabled only for documented first-party models/endpoints (Claude Opus 5.5, Opus 5 and Opus 4.8 on the Claude API), with `service_tier: "fast"` / `speed: "fast"` (and the `fast-mode-2026-02-01` beta). Standard sends neither, so the provider's default applies (for OpenAI, your project's own service tier). Cost estimates use the response's actual speed and fast prices; provider downgrades are surfaced. Custom/proxy endpoints and other providers are not assumed to support fast service.
-- **Sub-agents** (the Task tool, and tasks Claude Code or Codex delegate to other models) run at the speed their session runs at, fast where their own model has fast mode. A change made while one runs applies from its next request (API models), its next turn (Codex), or the next time Claude Code is started for it (Claude Code takes the speed when it starts). Sub-agents that Claude Code or Codex start on their own are up to the CLI.
-
-Model support does not guarantee account or organization access or available capacity. Refresh the model picker after upgrading a CLI. References: [Codex speed](https://learn.chatgpt.com/docs/agent-configuration/speed), [OpenAI Fast mode](https://developers.openai.com/api/docs/guides/fast-mode), [OpenAI pricing](https://developers.openai.com/api/docs/pricing?latest-pricing=fast), [Claude Code Fast mode](https://code.claude.com/docs/en/fast-mode), [Claude API Fast mode](https://platform.claude.com/docs/en/build-with-claude/fast-mode).
-
-### Several CLI accounts
-
-In **Settings → Providers → Add account**, give the account a name and leave the folder blank to create a private folder at `~/.cavvy/accounts/<provider>/<id>` (or under `CAVVY_HOME`). You may instead supply an absolute, dedicated folder outside projects, such as `/Users/you/.claude-work`. Folders cannot overlap another account or a default CLI folder; this is checked again before every login, status check, model listing and session launch, so a folder later replaced by a link to another account's is refused rather than signing in as that account. Cavvy-created folders have mode `0700`; only non-secret metadata is saved in `providers.json` (mode `0600`).
-
-A terminal tab opens the installed CLI's login command. You complete the sign-in yourself. For named accounts, Cavvy passes both `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR` to Claude Code, or `CODEX_HOME` to Codex; it never supplies a password, copies credentials, or opens credential files. **Refresh** checks the CLI's own status (`claude auth status --json` or Codex `account/read`), and status refreshes when login exits. Email and plan, if the CLI reports them, stay in memory and the UI; they are not saved in transcripts. Unsigned accounts show **not signed in** and **Sign in** reopens the terminal.
-
-**Default** uses the existing CLI setup, including inherited `CLAUDE_CONFIG_DIR`, `CLAUDE_SECURESTORAGE_CONFIG_DIR`, and `CODEX_HOME`. Default launches of a CLI refuse its own non-empty relative selector (`CLAUDE_CONFIG_DIR` or `CLAUDE_SECURESTORAGE_CONFIG_DIR` for Claude Code, `CODEX_HOME` for Codex) with an error naming it: each child would resolve it against its own folder, and Claude Code derives its keychain entry from the selector's raw text, so rewriting it would change the sign-in it uses. Set it to an absolute path. The other CLI's selectors don't stop a launch: a relative one is left out of that child's environment rather than resolved against the child's folder. Unset and empty values stay unchanged. Ordinary user terminal tabs inherit all three values verbatim; account login terminals receive only their selected account's environment. These variables never reach Cavvy's tools or hooks. Account add/removal also reserves relative selector resolutions under home, Cavvy's cwd, open projects, and terminal/session launch directories, so a folder used by an ordinary terminal or an older launch cannot be claimed or deleted. API-key and OAuth-token environment overrides are stripped from children. Choose the starting account for each CLI in Providers. This applies to new sessions; reopened sessions keep their own selection. With named accounts, the model picker displays the selected account and offers an account chooser. Each CLI's model list, with each model's effort and speed options, comes from its starting account, also when refreshed; switching a session to another account says so, as that account may not offer all of them. With only Default, the picker remains unchanged.
-
-Switch accounts between responses; a running response must finish or be interrupted first. The Cavvy transcript, model, effort, and mode are kept, and a timeline notice says how the conversation goes on. A Cavvy-made account shares Default's CLI history, so switching between them resumes the same native session. Switching to an account with its own history (an existing folder) keeps the session's native thread for the folder it lives in, and continues on that account's own earlier thread if the session has one. Otherwise it starts a new CLI thread with the conversation as context. So a round trip Default → own-folder account → Default resumes Default's earlier thread and sends it only the turns it missed, once. If that thread can't be resumed (deleted from the CLI's history, say), a new one starts with the whole conversation. Context uses the existing provider-handoff path, which bounds the conversation text to 60,000 characters; the saved transcript remains complete. Backend IDs are bound to the actual folder as well as the account selection, so replacing a folder cannot accidentally resume its predecessor's thread. Rewinding drops the native threads that saw past the rewind point, and Cavvy's `/compact` drops them all. Session forks copy selections and messages. Unless a response is running, a fork also shares the native threads that saw no further than the fork point, the ones kept for other folders included. Each side then forks a shared thread natively instead of continuing it in place.
-
-The plan meter and limit notices are separate for every provider/account pair and use only the CLI's reported windows, percentages and reset times. They are kept in memory, shared by sessions using that account, and refreshed as the CLI reports usage. When a limit is reached, Cavvy checks the other accounts' sign-in status and offers **Switch to <account>** beside the meter. Switching does not resend automatically: send your message again. The terminal app can use `/account` for the same handoff.
-
-Usage history (`usage.summary`'s per-account rows) reads history that Default and Cavvy-made accounts share once. Each native session or thread Cavvy ran is counted under the account it was on at the time. Cavvy tells by the session's own records, so a thread moved to another account splits at the switch. Usage that Cavvy didn't run in a shared folder, like a plain terminal `claude` or `codex`, is counted under Default.
-
-The terminal app supports `/login claude-code add` and `/login codex add`, then `/login <provider> <account-id>` to sign in again. `/account` lists the current CLI's accounts; `/account <provider> <account-id>` switches directly. Login temporarily hands the terminal to the official CLI.
-
-Named account folders (managed or external) are protected as a whole, including backups, settings and history. When at least one named account is configured for either CLI, only Claude Code’s `.credentials.json` and Codex’s `auth.json` are denied: Codex’s under the effective `CODEX_HOME` (otherwise `~/.codex`), and Claude Code’s under the effective `CLAUDE_CONFIG_DIR` (otherwise `~/.claude`) and, where Claude Code keeps a file sign-in when `CLAUDE_SECURESTORAGE_CONFIG_DIR` is set, under that folder (`~/.claude` when it is set but empty). Credential paths and named folders are resolved through symlink aliases. Without named accounts, Default permissions are unchanged. Default settings, `~/.claude.json`, `CLAUDE.md`, skills, plugins and `config.toml` remain readable. Cavvy tools deny reads and changes to these protected paths, searches rooted in them, and commands that name them (or a pattern that can match them); sandboxed commands cannot read or write them. A search or listing of a folder that merely holds one (`ls ~`, `rg foo ~`, Grep in your home folder) decides as it would without accounts: Cavvy's search tools leave the protected files out of their results, and in Bypass mode, where Cavvy's own shell commands aren't sandboxed, a shell search there can still read them. Folder grants covering them are refused. Named folders are reread from `providers.json` for permission checks. An account only selects which config folder a CLI uses: Claude Code and Codex get the same permission mode, sandbox and prompts with or without named accounts. Claude Code additionally receives file-tool deny rules for these paths (they never ask); a running Claude Code process keeps the rules it started with until it restarts. Adding or removing an account never stops or restarts running turns or CLI background work; removing an account waits only while a running turn, delegated CLI child or sign-in terminal uses it. Existing explicit CLI-history import remains a separate feature for the Default CLI store; account management does not inspect any account-folder contents.
-
-**Remove** names the exact folder before confirmation. It waits until that account's sign-ins have ended: a sign-in terminal (one in a window that went away, or closing, too) or `/login <provider> <account-id>` in the terminal app, in any Cavvy process using the same Cavvy home. A sign-in doesn't start while that account is being removed, so a login can't sign in to a removed folder. Like adding, removal also waits for running responses, delegated CLI children and CLI background tasks, since changing the protected folders restarts running CLIs. A folder created by Cavvy is deleted only if it remains at its recorded managed location after resolving symlinks. A folder you supplied is only forgotten. Cavvy never follows a symlink out during deletion, deletes Default, or deletes a project's folder. Sign-out and revocation are your responsibility: run `claude auth logout` or `codex logout` with that account's environment variable before removal. Removing metadata does not revoke a CLI's sign-in. A session that had the removed account selected never runs on another account in its place: its next message is held, not sent, and the session asks you to pick an account for that CLI (the model picker opens on its accounts; in the terminal, `/account`). Picking one sends the held messages once each, in order, on that account; so does picking another model yourself (they go to it). Held messages stay held across a restart.
-
-New folders intentionally have separate settings and history. In particular, a new Codex home inherits neither your existing `config.toml` nor MCP servers. Claude Console sign-ins **without an API key** are stored outside the Claude config folder and therefore are **not isolated per account**; use this feature for isolated Claude subscription sign-ins. See [Claude authentication](https://code.claude.com/docs/en/authentication), [Codex authentication](https://developers.openai.com/codex/auth), and [Codex permissions](https://learn.chatgpt.com/docs/permissions).
+| [Providers and models](docs/providers.md) | API keys, Vertex AI, the model list, fast mode, and how keys are kept safe |
+| [Claude and ChatGPT subscriptions](docs/subscriptions.md) | Running your own Claude Code or Codex, several accounts, continuing a CLI session |
+| [Permissions](docs/permissions.md) | Permission modes, auto mode's sandbox and reviewer, rules |
+| [The terminal app](docs/terminal.md) | Shortcuts, commands, rewinding and forking, the status line, notifications |
+| [Desktop app and GUI](docs/desktop.md) | Building, installing and updating, using it, the terminal panel, project scripts, security |
+| [Changes, worktrees and comparing models](docs/git.md) | The review pane, committing and pushing, pull requests, worktrees, one task on several models |
+| [Browser](docs/browser.md) | The browser tools and the Browser pane |
+| [Sub-agents on other models](docs/sub-agents.md) | Delegating a task to another provider's model |
+| [Asking for secrets](docs/secrets.md) | Tokens the agent asks you for, kept out of its sight |
+| [Project files](docs/project-files.md) | `CAVVY.md` and other memory files, settings files, trust |
+| [MCP](docs/mcp.md) · [Plugins](docs/plugins.md) · [Hooks](docs/hooks.md) | Extending it |
+| [Diagnostics after edits](docs/lsp.md) | Language servers checking each edit |
+| [Headless runs and the SDK](docs/headless.md) | `cavvy -p` in scripts and CI, and the TypeScript SDK |
+| [Development](docs/development.md) | Building, testing, and how the code is laid out |
+
+## Contributing
+
+Issues and pull requests are welcome. [Development](docs/development.md) covers building and testing, and [AGENTS.md](AGENTS.md) has the working rules for branches, tests and CI. Please report security problems privately, as [SECURITY.md](SECURITY.md) explains.
 
 ## License
 
