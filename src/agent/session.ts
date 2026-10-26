@@ -826,6 +826,8 @@ export class Session {
         const s = new Session(meta, { file, persist });
         s.started = true;
         for (const l of lines) if (l.t === "worked" && typeof l.at === "number" && Number.isFinite(l.at)) s.workedAt = Math.max(s.workedAt ?? -Infinity, l.at);
+        // Never after the file was last written (a clock set back since): the listing counts on it (newestByWork).
+        if (s.workedAt !== undefined) s.workedAt = Math.min(s.workedAt, writtenAt);
         s.savedWorkedAt = s.workedAt;
         s.writtenAt = writtenAt;
         // End a torn last line, or the next record appended would join it and
@@ -1461,7 +1463,7 @@ export function listSessions(cwd: string, limit = 50): SessionSummary[] {
             file,
             cwd,
             createdAt,
-            updatedAt: head.workedAt ?? mtimeMs,
+            updatedAt: workTime(head, mtimeMs),
             title: (head.title ?? head.first ?? "(untitled)").replace(/\s+/g, " ").trim().slice(0, 120),
             messages: head.count,
             model: head.model,
@@ -1554,12 +1556,17 @@ export function listAllSessions(limit = 200): SessionSummary[] {
             file,
             cwd: head.cwd,
             createdAt,
-            updatedAt: head.workedAt ?? mtimeMs,
+            updatedAt: workTime(head, mtimeMs),
             title: (head.title ?? head.first ?? "(untitled)").replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").replace(/\s+/g, " ").trim().slice(0, 120),
             messages: head.count,
             model: head.model,
         };
     });
+}
+
+/** When it last worked: never after its file was last written (a clock set back since), so newestByWork can stop early. */
+function workTime(head: SessionHead, mtimeMs: number): number {
+    return Math.min(head.workedAt ?? mtimeMs, mtimeMs);
 }
 
 /**

@@ -2959,8 +2959,11 @@ export class App {
             return;
         }
         this.screen.print(["", theme.bashMode("! ") + cmd]);
+        // The person's own command: work, as in the app (Session.worked).
+        this.session.worked(Date.now(), true);
         // As a task: esc and ctrl+c stop it, and prompts typed meanwhile queue up.
         const res = await this.runTask("Running", (signal) => runShell({ command: cmd, cwd: this.toolState.cwd, timeoutMs: 120_000, signal, env: childEnv(this.settings.env) }));
+        this.session.worked(Date.now(), true);
         if (!res) return;
         const out = redact(res.output.replace(/\s+$/, ""));
         const note = res.aborted ? "\n(interrupted)" : res.timedOut ? "\n(stopped after 2 minutes)" : "";

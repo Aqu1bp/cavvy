@@ -77,3 +77,18 @@ test("the listing goes by work, reading past newer files that only a rename wrot
     // Across projects too (an earlier test's sessions among them).
     expect(listAllSessions(1).map((s) => s.id)).toEqual([recent.meta.id]);
 });
+
+test("a work time after its file was last written (a clock set back since) counts as the file's time", () => {
+    const cwd = realpathSync(tempDir());
+    const ahead = Session.create(cwd);
+    ahead.push({ role: "user", content: [{ type: "text", text: "Worked under a clock an hour fast" }] });
+    ahead.worked(Date.now() + HOUR, true);
+    ahead.release();
+    const writtenAt = Date.now() - 3 * HOUR;
+    utimesSync(ahead.path, writtenAt / 1000, writtenAt / 1000);
+    const other = legacy(cwd, "Worked two hours ago", 2 * HOUR);
+    expect(Math.round(Session.load(ahead.path).workedAt!)).toBe(Math.round(writtenAt));
+    // So the listing, which reads newest files first and stops once the rest can't be listed, still finds the newest.
+    expect(listSessions(cwd, 1).map((s) => s.id)).toEqual([other.meta.id]);
+    expect(listSessions(cwd, 2).map((s) => s.id)).toEqual([other.meta.id, ahead.meta.id]);
+});

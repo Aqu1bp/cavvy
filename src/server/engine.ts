@@ -779,7 +779,8 @@ export class Engine {
             projectName: basename(rt.ws.cwd) || rt.ws.cwd,
             title: rt.title ?? rt.firstPrompt()?.replace(/\s+/g, " ").slice(0, 120) ?? "New session",
             createdAt: rt.session.meta.createdAt,
-            updatedAt: rt.lastActive,
+            // Its file's time can be a moment later (a turn's end, saved once the turn is put away).
+            updatedAt: Math.max(rt.lastActive, rt.session.workedAt ?? -Infinity),
             messages: rt.session.messages.length,
             status: rt.status,
             waitingKind: rt.waitingKind,
