@@ -62,9 +62,11 @@ async function run() {
         check(calls.some(c => c.method === "browser.watch" && c.params.height > 400), "pane never subscribes at its rendered size");
         adoptBrowserState(id, state(1));
         frame(1, "red");
-        await tick();
+        // The frame is decoded before it's drawn, which takes a loaded runner longer than a tick: until it is (up to 2 s).
+        const centre = () => { const c = root.querySelector("canvas"); return c ? c.getContext("2d")!.getImageData(c.width / 2, c.height / 2, 1, 1).data : new Uint8ClampedArray(4); };
+        for (let i = 0; i < 100 && !(centre()[0] > 240 && centre()[1] < 20); i++) await tick();
         const canvas = root.querySelector("canvas")!;
-        const pixel = canvas.getContext("2d")!.getImageData(canvas.width / 2, canvas.height / 2, 1, 1).data;
+        const pixel = centre();
         check(pixel[0] > 240 && pixel[1] < 20, `frame was not drawn: ${pixel}`);
         check(calls.some(c => c.method === "browser.ack" && c.params.frameId === "red"), "matching acknowledgement missing");
 

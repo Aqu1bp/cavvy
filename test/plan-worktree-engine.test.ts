@@ -107,6 +107,8 @@ describe("archive worktree RPCs without sockets", () => {
             old.push({ role: "user", content: [{ type: "text", text: "old shared" }] });
             old.setTitle("Old shared work");
             old.release();
+            // Strictly older: a fast machine makes the first of the others in the same millisecond, and a tie can sort it in.
+            await Bun.sleep(5);
             // More than a sidebar page of newer sessions, in a different folder.
             for (let i = 0; i < 1001; i++) {
                 const other = Session.create(s.main);
