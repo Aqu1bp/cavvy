@@ -81,8 +81,9 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     let mutatedAt = -Infinity;
     let repinned: number[] = [];
     const gapOf = (el: HTMLElement) => el.scrollHeight - el.clientHeight - el.scrollTop;
-    /** Measured after every scroll and size change: the button goes by what's in view, not only by following. */
-    const measureEnd = () => scroller && setScrolledDown(gapOf(scroller) <= 1);
+    /** Measured after every scroll and size change: the button goes by what's in view, not only by following. The end of
+     * what's mounted isn't the end while turns below it are still held back (trimmed). */
+    const measureEnd = () => scroller && setScrolledDown(trimmed() === 0 && gapOf(scroller) <= 1);
     const wrote = () => {
         if (!scroller) return;
         lastTop = scroller.scrollTop;
@@ -433,7 +434,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         const next = anchoredTop(scroller.scrollTop, t.el.getBoundingClientRect().top, t.top);
         if (Math.abs(next - scroller.scrollTop) > 0.5) scroller.scrollTop = next;
         // Followed again if the end is in view after it (folded with all of it showing): as a scroll there would.
-        setStick(scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= 1);
+        setStick(trimmed() === 0 && scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= 1);
         wrote();
         reading = capture();
     };

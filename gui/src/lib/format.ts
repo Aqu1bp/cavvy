@@ -1,6 +1,6 @@
 // Formatters built once: toLocale*String builds one on every call, and opening a long session formats every turn's
 // time (a long session's open spent ~10 ms of its slow frame there, measured). A formatter keeps the time zone it was
-// built in, so they're built again when the computer's moves (a trip, or the clocks changing).
+// built in, so at most once a minute the zone is looked up, and they're built again if the computer's moved.
 const build = () => ({
     clock: new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }),
     day: new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }),
@@ -8,12 +8,15 @@ const build = () => ({
     dayTime: new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }),
     dayYearTime: new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }),
 });
-// The offset says so cheaply; asking a formatter for the zone's name would build one each time.
-let offset: number | undefined;
+let zone: string | undefined;
+let checked = -Infinity;
 let built: ReturnType<typeof build> | undefined;
 function formats() {
-    const now = new Date().getTimezoneOffset();
-    if (!built || now !== offset) { offset = now; built = build(); }
+    const now = Date.now();
+    if (built && now - checked < 60_000) return built;
+    checked = now;
+    const here = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (!built || here !== zone) { zone = here; built = build(); }
     return built;
 }
 

@@ -1,7 +1,7 @@
 // What you said, in the conversation (UserPrompt in gui/src/components/TurnView.tsx, styled by
 // transcript.css): a bubble at the right as wide as its text, what came with it above it, and its
 // time, Copy and Rewind under it, laid over the gap on hover or focus.
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setSystemTime, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -38,9 +38,12 @@ describe("promptTime", () => {
             const utc = clock(noon);
             expect(utc).toBe(new Date(noon).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }));
             process.env.TZ = "Asia/Kolkata";
+            // Looked up at most once a minute.
+            setSystemTime(new Date(Date.now() + 61_000));
             expect(clock(noon)).toBe(new Date(noon).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }));
             expect(clock(noon)).not.toBe(utc);
         } finally {
+            setSystemTime();
             if (was === undefined) delete process.env.TZ;
             else process.env.TZ = was;
         }
