@@ -26,6 +26,14 @@ test("up to date: when it was checked, and Check now; nothing in the rail", () =
     expect(updateView({ ...base, checkedAt: NOW - 10_000 }, 0, NOW)!.detail).toContain("checked just now");
 });
 
+test("checked, but never compared with main (no fetch, and no main from before): it says so, not that it's up to date", () => {
+    const { installed: _i, latest: _l, ...never } = base;
+    const v = updateView({ ...never, checkedAt: NOW, error: "Couldn't fetch main: Permission denied (publickey)." }, 0, NOW)!;
+    expect(v).toMatchObject({ title: "Couldn't check for updates", action: "check", busy: false });
+    expect(v.detail).toBeUndefined();
+    expect(v.rail).toBeUndefined();
+});
+
 test("not checked yet, and checking", () => {
     expect(updateView(base, 0)).toMatchObject({ detail: "Not checked yet.", action: "check", busy: false });
     expect(updateView({ ...base, checking: true }, 0)).toMatchObject({ title: "Checking for updates…", busy: true });

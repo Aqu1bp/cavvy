@@ -50,6 +50,8 @@ export function updateView(u: AppUpdateInfo | undefined, working: number, now = 
     }
     if (u.checking) return { title: "Checking for updates…", detail: u.installed ? `This build ${u.installed}` : undefined, busy: true };
     if (!u.checkedAt) return { title: "Updates from main", detail: "Not checked yet.", action: "check", busy: false };
+    // Checked, but never compared with main (it couldn't fetch, and had no main from before): the error says why.
+    if (!u.installed) return { title: "Couldn't check for updates", action: "check", busy: false };
     const when = ago(u.checkedAt, now);
     return { title: "Harness is up to date", detail: `Built from main ${u.installed} · checked ${when === "now" ? "just now" : `${when} ago`}`, action: "check", busy: false };
 }

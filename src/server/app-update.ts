@@ -7,9 +7,10 @@
 import { spawn, type ChildProcess } from "child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readSync, realpathSync, statSync } from "fs";
 import { homedir } from "os";
-import { dirname, join } from "path";
-import { appSourceDir, readInstallRecord, type InstallRecord } from "../config/desktop-install";
+import { dirname, join, resolve } from "path";
+import { appSourceDir, noPromptGit, readInstallRecord, runningUpdate, type InstallRecord } from "../config/desktop-install";
 import { harnessHome, paths } from "../config/paths";
+import { REPO_VARS } from "../util/git";
 import type { AppUpdateChange, AppUpdateInfo } from "./protocol";
 
 const CHECK_EVERY_MS = 6 * 3600_000;
@@ -62,10 +63,10 @@ const isDir = (p: string) => {
 const lastLine = (s: string) => s.trim().split("\n").at(-1)?.trim() ?? "";
 
 /**
- * Runs it and collects its output. Past `timeoutMs` its whole process group is killed (ssh, a remote helper, whatever
- * git started) and it answers at once, even if something still holds its output open.
+ * Runs it and collects its output. Past `timeoutMs`, or on `signal`, its whole process group is killed (ssh, a remote
+ * helper, whatever git started) and it answers at once, even if something still holds its output open.
  */
-export function capture(cmd: string[], cwd: string, timeoutMs: number, env: NodeJS.ProcessEnv = process.env): Promise<{ ok: boolean; out: string; err: string; timedOut?: boolean }> {
+export function capture(cmd: string[], cwd: string, timeoutMs: number, env: NodeJS.ProcessEnv = process.env, signal?: AbortSignal): Promise<{ ok: boolean; out: string; err: string; timedOut?: boolean }> {
     return new Promise((resolve) => {
         let out = "";
         let err = "";
@@ -75,8 +76,14 @@ export function capture(cmd: string[], cwd: string, timeoutMs: number, env: Node
             if (settled) return;
             settled = true;
             clearTimeout(timer);
+            signal?.removeEventListener("abort", stopped);
             resolve(r);
         };
+        const stopped = () => {
+            kill();
+            finish({ ok: false, out: out.trimEnd(), err: `${cmd.slice(0, 2).join(" ")} was stopped` });
+        };
+        if (signal?.aborted) return finish({ ok: false, out: "", err: `${cmd.slice(0, 2).join(" ")} was stopped` });
         let p: ChildProcess;
         try {
             // Its own process group, so the timeout can end everything it started.
@@ -84,14 +91,18 @@ export function capture(cmd: string[], cwd: string, timeoutMs: number, env: Node
         } catch (e) {
             return finish({ ok: false, out: "", err: (e as Error).message });
         }
-        timer = setTimeout(() => {
+        const kill = () => {
             try {
                 process.kill(-p.pid!, "SIGKILL");
             } catch {
                 p.kill("SIGKILL");
             }
+        };
+        timer = setTimeout(() => {
+            kill();
             finish({ ok: false, out: out.trimEnd(), err: `${cmd.slice(0, 2).join(" ")} took longer than ${Math.round(timeoutMs / 1000)}s`, timedOut: true });
         }, timeoutMs);
+        signal?.addEventListener("abort", stopped, { once: true });
         // The handlers first: a spawn that fails (out of file descriptors) can leave the streams missing.
         p.once("error", (e) => finish({ ok: false, out: "", err: e.message }));
         p.once("close", (code) => finish({ ok: code === 0, out: out.trimEnd(), err: err.trim() || (code === 0 ? "" : `exit code ${code}`) }));
@@ -100,10 +111,25 @@ export function capture(cmd: string[], cwd: string, timeoutMs: number, env: Node
     });
 }
 
-/** Never asks for a password or passphrase: there's no one at a terminal to answer. */
-function git(cwd: string, args: string[], timeoutMs = 30_000) {
-    const env = { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND ?? "ssh -o BatchMode=yes -o ConnectTimeout=15" };
-    return capture(["git", ...args], cwd, timeoutMs, env);
+/**
+ * This environment, for git and the update in `cwd`'s repository: not one an inherited GIT_DIR (and the like) names,
+ * nor a GIT_CONFIG that would hide its settings from `git config` (core.sshCommand) but not from the fetch.
+ */
+function repoEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
+    const env = { ...process.env, ...extra };
+    for (const key of [...REPO_VARS, "GIT_CONFIG"]) delete env[key];
+    return env;
+}
+
+/** Never asks for a password or passphrase: there's no one at a terminal to answer. `sshCommand`: the repository's own. */
+function git(cwd: string, args: string[], o: { timeoutMs?: number; sshCommand?: string; signal?: AbortSignal } = {}) {
+    return capture(["git", ...args], cwd, o.timeoutMs ?? 30_000, repoEnv(noPromptGit(process.env, o.sshCommand)), o.signal);
+}
+
+/** The repository a checkout or worktree belongs to: its common git directory. */
+async function repositoryOf(dir: string, signal?: AbortSignal): Promise<string | undefined> {
+    const r = await git(dir, ["rev-parse", "--git-common-dir"], { signal });
+    return r.ok ? real(resolve(dir, r.out)) : undefined;
 }
 
 /** The last line a log has, of its last few KB: cargo's "Compiling …", bun's, the script's own. Escapes and \r redraws dropped. */
@@ -133,6 +159,8 @@ export class AppUpdates {
     private starting?: Promise<AppUpdateInfo>;
     private child?: ChildProcess;
     private stopped = false;
+    /** Ends a check's git when the server stops: its timeout goes with the server, and the git is in a group of its own. */
+    private readonly ending = new AbortController();
 
     constructor(private o: AppUpdatesOptions) {}
 
@@ -156,6 +184,7 @@ export class AppUpdates {
         this.stopped = true;
         for (const t of this.timers) clearTimeout(t);
         this.timers = [];
+        this.ending.abort();
     }
 
     /** Fetches main and compares it with the installed build. One at a time; none while an update runs. */
@@ -180,8 +209,15 @@ export class AppUpdates {
         const bun = this.o.bun ?? Bun.which("bun") ?? (existsSync(home) ? home : undefined);
         if (!bun) return this.patch({ failed: "Updating needs bun, and it isn't on your PATH (https://bun.sh)." });
         // The worktree desktop:update keeps has the script once it has run; before that, the checkout the app came from.
-        const dir = [appSourceDir(), w.record.source].find((d) => existsSync(join(d, "scripts", "update-desktop.ts")));
+        // Only a worktree of that checkout's repository, though: another's would update to its own main.
+        const signal = this.ending.signal;
+        const kept = isDir(appSourceDir()) ? await repositoryOf(appSourceDir(), signal) : undefined;
+        const ours = kept !== undefined && kept === (await repositoryOf(w.record.source, signal));
+        const dir = [...(ours ? [appSourceDir()] : []), w.record.source].find((d) => existsSync(join(d, "scripts", "update-desktop.ts")));
         if (!dir) return this.patch({ failed: `${w.record.source} has no scripts/update-desktop.ts yet: pull main there, then update.` });
+        // One started before Harness last opened (quit while it built) still runs: a second would build over it.
+        const running = runningUpdate();
+        if (running) return this.patch({ failed: `An update started earlier is still running${running.pid ? ` (process ${running.pid})` : ""}: Harness restarts when it's done.` });
 
         const log = join(paths.logs(), "app-update.log");
         const startedAt = Date.now();
@@ -195,7 +231,7 @@ export class AppUpdates {
                     // Its own session: the app quitting to restart doesn't take it along.
                     detached: true,
                     stdio: ["ignore", fd, fd],
-                    env: { ...process.env, HARNESS_HOME: harnessHome(), GIT_TERMINAL_PROMPT: "0" },
+                    env: repoEnv({ HARNESS_HOME: harnessHome(), GIT_TERMINAL_PROMPT: "0" }),
                 });
             } finally {
                 closeSync(fd);
@@ -280,9 +316,11 @@ export class AppUpdates {
         const { record } = w;
         const repo = record.source;
         this.patch({ checking: true, unavailable: undefined });
+        const signal = this.ending.signal;
+        const ssh = await git(repo, ["config", "--get", "core.sshCommand"], { signal });
         // Into origin/main by name: a remote whose fetch refspec leaves main out would only fill FETCH_HEAD.
-        const fetched = await git(repo, ["fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main"], 60_000);
-        const head = await git(repo, ["rev-parse", "--verify", "origin/main^{commit}"]);
+        const fetched = await git(repo, ["fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main"], { timeoutMs: 60_000, sshCommand: (ssh.ok && ssh.out) || undefined, signal });
+        const head = await git(repo, ["rev-parse", "--verify", "origin/main^{commit}"], { signal });
         if (!head.ok) return this.patch({ checking: false, checkedAt: Date.now(), error: fetched.ok ? "origin/main isn't a commit in that checkout." : `Couldn't fetch main: ${lastLine(fetched.err)}` });
         const target = head.out;
         // desktop:update's worktree only ever has main checked out, so a change there (bun install touching the lockfile) doesn't count.
@@ -292,10 +330,10 @@ export class AppUpdates {
         let note: string | undefined;
         if (!current) {
             if (record.commit === target) note = "This build has uncommitted changes on top of main.";
-            else if ((await git(repo, ["merge-base", "--is-ancestor", record.commit, target])).ok) {
+            else if ((await git(repo, ["merge-base", "--is-ancestor", record.commit, target], { signal })).ok) {
                 const range = `${record.commit}..${target}`;
-                behind = Number((await git(repo, ["rev-list", "--count", "--no-merges", range])).out) || 0;
-                changes = (await git(repo, ["log", "--no-merges", `-n${SHOWN}`, "--format=%h%x09%s", range])).out
+                behind = Number((await git(repo, ["rev-list", "--count", "--no-merges", range], { signal })).out) || 0;
+                changes = (await git(repo, ["log", "--no-merges", `-n${SHOWN}`, "--format=%h%x09%s", range], { signal })).out
                     .split("\n")
                     .filter(Boolean)
                     .map((l) => {

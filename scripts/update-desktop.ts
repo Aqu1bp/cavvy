@@ -18,7 +18,7 @@ import { existsSync, realpathSync, writeFileSync } from "fs";
 import { userInfo } from "os";
 import { join, resolve } from "path";
 import { harnessHome } from "../src/config/paths";
-import { appSourceDir, readInstallRecord } from "../src/config/desktop-install";
+import { appSourceDir, capUpdate, lockUpdate, noPromptGit, readInstallRecord, UPDATE_CAP_MS } from "../src/config/desktop-install";
 
 if (process.platform !== "darwin") {
     console.error("desktop:update is for macOS. Elsewhere, bun run desktop:build makes the installers.");
@@ -51,7 +51,7 @@ function run(cmd: string[], cwd: string, o: { timeoutMs?: number; env?: Record<s
 
 // Into origin/main by name: a remote whose fetch refspec leaves main out would only fill FETCH_HEAD.
 // From the app there's no one to type a password or passphrase: it fails instead of waiting for one.
-const noPrompts = fromApp ? { GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND ?? "ssh -o BatchMode=yes -o ConnectTimeout=15" } : undefined;
+const noPrompts = fromApp ? noPromptGit(process.env, git(root, "config", "--get", "core.sshCommand").out || undefined) : undefined;
 run(["git", "fetch", "--quiet", "origin", `+refs/heads/main:refs/remotes/${REF}`], root, { timeoutMs: 120_000, env: noPrompts });
 const resolved = git(root, "rev-parse", "--verify", `${REF}^{commit}`);
 if (!resolved.ok) {
@@ -79,6 +79,15 @@ else if (known) {
 } else if (installed) console.log(`The installed build (${installed.commit.slice(0, 7)}${installed.dirty ? ", with uncommitted changes" : ""}) isn't on main; main is at ${short}.`);
 else console.log(`No record of which build is installed; main is at ${short}.`);
 if (check) process.exit(0);
+
+// One update at a time, from the app or a terminal. From the app, one that hangs is stopped in the end, even with the
+// app gone; its watchdog holds the lock until all of it has ended.
+const lock = lockUpdate();
+if ("holder" in lock) {
+    console.error(`An update is already running${lock.holder ? ` (process ${lock.holder})` : ""}. Let it finish, or stop it, then try again.`);
+    process.exit(1);
+}
+if (fromApp) capUpdate(process.pid, UPDATE_CAP_MS / 1000, 5, lock.fd);
 
 // The worktree: made on the first update, moved to main's latest on each one after. The forced checkout throws away
 // changes, so it's only ever done in the worktree made here, which carries a marker in its own git directory: never
