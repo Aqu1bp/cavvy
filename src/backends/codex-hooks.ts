@@ -18,6 +18,8 @@ export type CodexHookEvent = "PreToolUse" | "SubagentStart" | "SubagentStop";
 export const CODEX_HOOK_EVENTS: CodexHookEvent[] = ["PreToolUse", "SubagentStart", "SubagentStop"];
 const LABEL: Record<CodexHookEvent, string> = { PreToolUse: "pre_tool_use", SubagentStart: "subagent_start", SubagentStop: "subagent_stop" };
 export const codexHookTool = (event: CodexHookEvent) => LABEL[event];
+/** What Codex runs Cavvy's hooks for: each event the user has hooks for, and PreToolUse for a read-only agent, which keeps it to reads. */
+export const codexHookEvents = (hooked: (e: CodexHookEvent) => boolean, readOnly: boolean): CodexHookEvent[] => CODEX_HOOK_EVENTS.filter((e) => hooked(e) || (e === "PreToolUse" && readOnly));
 
 /** What Codex passes to each tool: placeholders it fills in from the event's input (a field it doesn't have fails the hook). */
 const HOOK_INPUT: Record<CodexHookEvent, Record<string, string>> = {

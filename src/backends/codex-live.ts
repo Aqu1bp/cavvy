@@ -27,7 +27,7 @@ import { APP_TITLE, APP_VERSION } from "../config/paths";
 import { redact } from "../util/redact";
 import { registerTools } from "../mcp/server";
 import { CODEX_CLI, extraArgs, requireCli, type JsonLinesProcess } from "./cli";
-import { CODEX_HOOK_EVENTS, CODEX_HOOK_SERVER, codexHookArgs } from "./codex-hooks";
+import { CODEX_HOOK_SERVER, codexHookArgs, codexHookEvents } from "./codex-hooks";
 import { codexInput, pastedPrompt, type CodexSkill } from "./native-skills";
 import { limitAccountLabel, limitStopOf, limitStopReport, resetSentence } from "./limits";
 import { agentCli, type CliCapabilities } from "./defs";
@@ -48,7 +48,6 @@ import {
     answerOf,
     clientMessageId,
     codexGoalCommand,
-    codexPolicy,
     hookServerConfig,
     liveCodexRpcs,
     modeNote,
@@ -367,7 +366,7 @@ export class CodexLiveConnection extends CodexTurn {
         const t = this.t;
         await this.readAccount();
         this.accountReadFor = this.adapter.run;
-        this.nativeEvents = CODEX_HOOK_EVENTS.filter((e) => this.hooked(e));
+        this.nativeEvents = this.hookEvents();
         if (this.nativeEvents.length) {
             this.hookServer = registerTools(this.nativeEvents.map((e) => this.hookTool(e)));
             this.nativeHooks = await this.hooksTaken(t.cwd);
@@ -385,10 +384,10 @@ export class CodexLiveConnection extends CodexTurn {
         if (typeof overrides === "string") throw new Error(overrides);
         const off = overrides.config;
         if (overrides.collisions.includes(CODEX_HOOK_SERVER)) {
-            this.sink.emit({ type: "notice", level: "warn", message: `Codex already has a server named ${CODEX_HOOK_SERVER}; it is disabled, and ${APP_TITLE} runs your hooks the older way in this session${this.nativeEvents.includes("PreToolUse") ? ", asking about every command so your PreToolUse hooks see them" : ""}.` });
+            this.sink.emit({ type: "notice", level: "warn", message: this.hookServerTaken("in this session") });
             this.nativeHooks = false;
         }
-        const policy = codexPolicy(startMode, t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse") && !this.nativeHooks);
+        const policy = this.policyFor(startMode);
         if (orch && overrides.collisions.includes(orch.name)) {
             this.sink.emit({ type: "notice", level: "warn", message: "Codex already has a server named cavvy; it is disabled and this session runs without Cavvy delegation to avoid merging server configurations." });
             orch = undefined;
@@ -794,7 +793,7 @@ export class CodexLiveConnection extends CodexTurn {
         // Paused in Codex for a mode change: active again once this turn (under the mode) has started.
         if (this.goalPausedForMode) activate = true;
         const mode = this.host.mode();
-        const policy = codexPolicy(mode, t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse") && !this.nativeHooks);
+        const policy = this.policyFor(mode);
         const note = modeNote(mode, Boolean(t.readOnly));
         const asked = run.skills ? codexInput(text, request, run.skills, t.skills, after) : { text: pastedPrompt(text, request, t.skills ?? [], after), items: [] };
         const input = [...this.input(note ? `${note}\n\n${asked.text}` : asked.text, seg.images), ...asked.items];
@@ -1245,7 +1244,7 @@ export class CodexLiveConnection extends CodexTurn {
         const leaves = this.goalLeaves;
         const text = [notes.length ? `<system-reminder>\n${notes.map((n) => n.text).join("\n\n")}\n</system-reminder>` : "", goalGoesOn ? modeSwitched(mode) : ""].filter(Boolean).join("\n\n");
         const label = notes.length === 1 ? notes[0]!.label : notes.length ? `${notes.length} background commands finished` : "Codex goes on with the goal under the new mode";
-        const policy = codexPolicy(mode, t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse") && !this.nativeHooks);
+        const policy = this.policyFor(mode);
         const note = modeNote(mode, Boolean(t.readOnly));
         const effort = t.effort && (!t.model.effortLevels || t.model.effortLevels.includes(t.effort)) ? t.effort : undefined;
         const model = t.model.id === "default" ? undefined : t.model.id;
@@ -1380,7 +1379,7 @@ export class CodexLiveAdapter implements AgentCliAdapter {
     spawn(cfg: SpawnConfig): SpawnSpec {
         const id = this.live.providerDef.id;
         const bin = requireCli(id, CODEX_CLI);
-        const hooks = CODEX_HOOK_EVENTS.filter((e) => cfg.hooks?.[e]?.length);
+        const hooks = codexHookEvents((e) => Boolean(cfg.hooks?.[e]?.length), Boolean(cfg.readOnly));
         const args = ["app-server", ...extraArgs(id), ...(cfg.trusted === false ? untrustedArgs(cfg.cwd) : []), ...(hooks.length ? codexHookArgs(hooks) : [])];
         const env = accountEnv(id, cfg.accountId, cfg.cwd);
         const o = cfg.orchestrator;

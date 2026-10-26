@@ -1229,8 +1229,12 @@ describe("Codex backend", () => {
         expect(insideWorkspace(join(home, "proj", "src"), "/elsewhere", ["~/proj"])).toBe(true);
         expect(insideWorkspace(join(home, "other"), "/elsewhere", ["~/proj"])).toBe(false);
         expect(insideWorkspace(join(realpathSync(tmpdir()), "ws", "lib"), join(realpathSync(tmpdir()), "ws", "app"), ["../lib"])).toBe(true);
-        // A read-only agent in auto: reads run in the read-only sandbox; anything more asks Cavvy, never Codex's reviewer.
+        // A read-only agent in auto: reads run in the read-only sandbox. Codex's reviewer decides on more once Cavvy's hook
+        // keeps the agent to reads; without the hook (an older Codex), more asks Cavvy.
+        expect(codexPolicy("auto", ["/x"], true, false, true)).toEqual({ approvalPolicy: "on-request", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: false }, approvalsReviewer: "auto_review" });
         expect(codexPolicy("auto", ["/x"], true)).toEqual({ approvalPolicy: "on-request", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: false }, approvalsReviewer: "user" });
+        // The hook changes nothing in other modes: Codex asks Cavvy there.
+        expect(codexPolicy("default", [], true, false, true)).toMatchObject({ approvalPolicy: "untrusted", approvalsReviewer: "user" });
         expect(codexPolicy("auto", ["/x"])).toMatchObject({ approvalPolicy: "on-request", sandbox: "workspace-write", approvalsReviewer: "auto_review" });
         expect(codexPolicy("plan", [])).toMatchObject({ approvalPolicy: "untrusted", sandbox: "read-only", approvalsReviewer: "user" });
         expect(codexPolicy("acceptEdits", ["/x"])).toMatchObject({ approvalPolicy: "untrusted", sandbox: "workspace-write", sandboxPolicy: { type: "workspaceWrite", writableRoots: ["/x"] }, approvalsReviewer: "user" });

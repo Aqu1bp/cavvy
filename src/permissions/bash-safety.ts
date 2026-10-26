@@ -1041,6 +1041,17 @@ export function isReadOnlyCommand(cmd: string): boolean {
 }
 
 /**
+ * What a read-only agent hears when it tries to change something. For a
+ * command: what in it isn't read-only (so it doesn't send the same command
+ * again), and which ones do run.
+ */
+export function readOnlyRefusal(toolName: string, command?: string, why?: string): string {
+    if (toolName !== "Bash") return "This is a read-only agent: that action isn't allowed. Report what should be changed instead.";
+    const what = why ?? (command !== undefined ? notReadOnly(command) : undefined);
+    return `This is a read-only agent, and ${what ?? "this command isn't read-only"}. Only read-only commands run: plain commands such as cat, rg, wc or git log, and pipes of them, with no loops, subshells, $(…) or > redirects. Tests, builds and scripts don't run either. Leave out or replace just that part, or report what should be run or changed instead.`;
+}
+
+/**
  * What keeps a command from being read-only, naming the part (for a
  * read-only agent, so it can drop or replace just that), or undefined.
  */
