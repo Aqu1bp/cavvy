@@ -122,7 +122,7 @@ test("EffortPicker: a change the server refuses goes back to the level in force,
     mock.module("../../gui/src/lib/platform", () => names(["copyText", "pickFolder"]));
     mock.module("../../gui/src/state/prefs", () => ({ prefs: {}, setPrefs: stub }));
     mock.module("../../gui/src/state/ui", () => ({
-        ...names(["railOpen", "requestComposerFocus", "setAgentFocus", "setArchiveRequest", "setDeleteRequest", "setContextCardOpen", "setFolderPickerOpen", "setMcpOpen", "setModePickerOpen", "setModelPickerOpen", "setRailOpen", "setReview", "setRewindOpen", "setSettingsTab"]),
+        ...names(["railOpen", "requestComposerFocus", "setAgentFocus", "setArchiveRequest", "setDeleteRequest", "setContextCardOpen", "setFolderPickerOpen", "setMcpOpen", "setModePickerOpen", "setModelPickerOpen", "setRailOpen", "setReview", "setRewindOpen", "setSettingsTab", "setTerminalMax"]),
         shellLayout: () => ({ railMode: "dock" }),
     }));
     const { setEffort } = await import("../../gui/src/state/actions");

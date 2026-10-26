@@ -164,7 +164,11 @@ if (!process.env.CAVVY_TEST_DEFAULT_ACCOUNTS) {
                 expect({ command, blocked: accountTarget(command, home) }).toEqual({ command, blocked: false });
             }
             expect(check("Bash", { command: "ls ~/.codex" }).behavior).toBe("allow");
-            expect(check("Bash", { command: "grep -r token ~/.codex" }).behavior).toBe("allow");
+            // A search of a folder holding a sign-in file: sandboxed (macOS; Linux with "sandbox": true) the file can't be
+            // read, so it runs; with no sandbox (Linux by default) it would read the file, so the reviewer decides.
+            const grep = (sandbox: "seatbelt" | undefined) => new PermissionChecker(() => ({}), home, () => sandbox).check(BUILTIN_TOOLS.find((t) => t.name === "Bash")!, { command: "grep -r token ~/.codex" }, "auto", home);
+            expect(grep("seatbelt").behavior).toBe("allow");
+            expect(grep(undefined)).toMatchObject({ behavior: "ask", needsClassifier: true, sensitive: "Cavvy credential store" });
             for (const command of ["cat ~/.codex/auth.json", "cat ~/.claude/.credentials.json", "echo changed > ~/.codex/auth.json"]) expect(check("Bash", { command }).behavior).toBe("deny");
             for (const root of [join(home, ".claude"), join(home, ".codex"), alias]) {
                 // Searched as without accounts, the sign-in file hidden in it.

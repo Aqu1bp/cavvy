@@ -638,8 +638,9 @@ describe("carrying on", () => {
             expect(prompt).toContain("User: now add a test");
             expect(prompt).not.toContain(FAKE.anthropic);
             expect(prompt.endsWith("and the docs too")).toBe(true);
-            const notices = rt.snapshot().turns.flatMap((t) => t.blocks).filter((b) => b.t === "notice").map((b) => (b as { text: string }).text);
-            expect(notices.join("\n")).toMatch(/Starting a new one with this conversation as context/);
+            // Its title says what happened; what the CLI said folds under it (#426).
+            const titles = rt.snapshot().turns.flatMap((t) => t.blocks).filter((b) => b.t === "notice").map((b) => (b as { title?: string }).title);
+            expect(titles.join("\n")).toMatch(/started a new one/);
         } finally {
             await e.stop();
         }

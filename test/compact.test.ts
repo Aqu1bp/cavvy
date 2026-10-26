@@ -22,7 +22,7 @@ const assistant = (text: string): Message => ({ role: "assistant", content: [{ t
 
 function handoff(messages: Message[]): string {
     const proto = Agent.prototype as any;
-    return proto.backendPrompt.call({ session: { messages }, missedPrompt: proto.missedPrompt }, "continue", messages.length);
+    return proto.backendPrompt.call({ session: { messages }, missedPrompt: proto.missedPrompt, missedMessages: proto.missedMessages }, "continue", messages.length);
 }
 
 test("handoff keeps all eleven findings, without per-message clipping", () => {

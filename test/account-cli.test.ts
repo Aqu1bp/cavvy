@@ -196,7 +196,10 @@ test("Codex's initialize, thread and turn parameters are the same with and witho
         await backend.release?.(key);
         const received = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line).received).filter(Boolean);
         const pick = (method: string) => received.find((message) => message.method === method)?.params;
-        return { initialize: pick("initialize"), thread: pick("thread/start"), turn: pick("turn/start") };
+        // Every turn/start has an id of its own (clientUserMessageId), fresh each time: its form is what has to match.
+        const turnParams = pick("turn/start");
+        const turnId = turnParams?.clientUserMessageId;
+        return { initialize: pick("initialize"), thread: pick("thread/start"), turn: turnParams && { ...turnParams, clientUserMessageId: /^cavvy_cli-turn-[0-9a-f-]{36}$/.test(turnId) ? "<turn id>" : turnId } };
     };
     const saved = readAgentConfig("codex")?.accounts;
     try {

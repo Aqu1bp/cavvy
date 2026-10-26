@@ -244,17 +244,17 @@
     resize: none;
 }
 .br-view:focus-within { outline: 2px solid var(--accent); outline-offset: -2px; }
-.br-blank .blank { max-width: 32ch; padding: 24px; text-align: center; }
+.br-blank .blank { max-width: 32ch; padding: calc(24 * var(--sp)); text-align: center; }
 
 .br-connection {
     position: absolute;
     left: 50%;
-    top: 16px;
+    top: calc(16 * var(--sp));
     transform: translateX(-50%);
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
+    gap: calc(8 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(12 * var(--sp));
     border: 1px solid var(--line);
     border-radius: var(--pill);
     background: var(--sheet-2);
@@ -301,10 +301,10 @@ body.resizing .br-host-tab {
 /* The agent's browser floating over the chat (FloatingBrowser): its page box is drawn over by the real page. */
 .br-float {
     position: absolute;
-    top: calc(var(--header-h) + 8px);
+    top: calc(var(--header-h) + 8 * var(--sp));
     right: calc(16 * var(--sp));
     z-index: 20;
-    width: min(400px, calc(100% - 32 * var(--sp)));
+    width: min(calc(400 * var(--sp)), calc(100% - 32 * var(--sp)));
     border-radius: var(--radius-md);
     overflow: hidden;
     display: flex;

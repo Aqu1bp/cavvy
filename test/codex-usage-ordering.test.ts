@@ -22,10 +22,17 @@ beforeEach(() => {
     saveAgentConfig("codex", { path: bin });
     forgetClient("codex");
 });
-afterAll(() => {
+afterAll(async () => {
+    // Its turns leave Codex app-servers running (live sessions, never closed here). Stopped, so that a later file in
+    // the same process (CI runs a shard in one) doesn't ask one of them: codexPlan asks a live one first.
+    const { liveCodexRpcs } = await import("../src/backends/codex");
+    for (const { rpc } of liveCodexRpcs.values()) void rpc.proc.kill();
+    for (let i = 0; i < 300 && liveCodexRpcs.size; i++) await Bun.sleep(10);
+    const left = liveCodexRpcs.size;
     iso.cleanup();
     rmSync(cwd, { recursive: true, force: true });
     for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_")) delete process.env[k];
+    expect(left).toBe(0);
 });
 
 async function agentFor(drainQueued: () => string[] = () => []) {

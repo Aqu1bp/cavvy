@@ -24,7 +24,18 @@ const y = (selector: string) => row(selector).getBoundingClientRect().top;
 const click = (selector: string) => row(selector).click();
 let dispose = () => {};
 // A 100px composer dock under the transcript, as SessionView passes it.
-const mount = async (handle: any) => { dispose(); dispose = render(() => <Transcript handle={handle} dock={100} />, root); await settle(); };
+const mount = async (handle: any) => { dispose(); dispose = render(() => <Transcript handle={handle} dock={100} />, root); await settle(); await grown(); };
+/** Past the first screens, turns go in a few at a time, a frame apart (Transcript's staged mount): until the count holds. */
+const grown = async () => {
+    let same = 0;
+    for (let last = -1, i = 0; same < 2 && i < 100; i++) {
+        const n = root.querySelectorAll("[data-turn]").length;
+        same = n === last ? same + 1 : 0;
+        last = n;
+        await settle();
+    }
+    if (same < 2) throw new Error("transcript scroll: the transcript was still adding turns after 100 frames");
+};
 const scroll = async (value: number) => { scroller().scrollTop = value; await settle(); };
 
 export async function checkTranscriptScroll(target: HTMLElement) {
