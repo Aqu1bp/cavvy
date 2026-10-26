@@ -60,6 +60,8 @@
 //                   the task leaves the list and the stop is refused, then its notification and report turn come
 // FAKE_RESULT_DELAY_MS  shell-background*: the turn's answer comes this long after the background command is listed
 // FAKE_SHELL_NOTIFY_MS  shell-background*: its task_notification comes this long after it leaves the list (default 80)
+// FAKE_SHELL_NOTIFY_AFTER_PROMPT=1  shell-background*: that long after the next prompt comes, if that's later
+// FAKE_WAKE_START_MS  a report turn Claude Code takes itself starts this long after the report is due
 // FAKE_SHELL_MS     shell-background*: the background command finishes this long after the answer (default 150; the
 //                   stuck, mixed and nested ones finish only when it's set)
 // FAKE_API_KEY_SOURCE  system/init apiKeySource (default "none": a plan)
@@ -751,6 +753,8 @@ async function use(id: string, tool: string, input: any): Promise<boolean> {
 /** A wake turn, after whatever turn runs now (Claude Code runs one at a time). */
 function queueWake(textOut: string) {
     turnTail = turnTail.then(async () => {
+        // FAKE_WAKE_START_MS: the report turn starts (its init) this long after it's due.
+        if (process.env.FAKE_WAKE_START_MS) await Bun.sleep(Number(process.env.FAKE_WAKE_START_MS));
         busy = true;
         try {
             await followUp(textOut);
@@ -813,6 +817,7 @@ async function turn(content: any[], uuid?: string) {
     recordSent(content.map((c) => c?.text ?? "").join(""));
     // FAKE_INIT_DELAY_MS: the turn has started (its "started" lifecycle is out), its system/init comes this much later.
     if (process.env.FAKE_INIT_DELAY_MS) await Bun.sleep(Number(process.env.FAKE_INIT_DELAY_MS));
+    log({ init: prompts });
     // slash_commands: its built-ins and skills, named as 2.1.301 names them (a plugin's skills as plugin:skill, as --plugin-dir's are).
     out({ ...(process.env.FAKE_FAST_MODE_END ? { fast_mode_state: "on" } : {}), ...(uuid && process.env.FAKE_OLD_RESULTS !== "1" ? { user_message_uuids: [uuid] } : {}), capabilities: CAPABILITIES, type: "system", subtype: "init", session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode, slash_commands: [...(process.env.FAKE_SLASH_COMMANDS ? JSON.parse(process.env.FAKE_SLASH_COMMANDS) : ["code-review", "simplify", "compact", "context", "design:ux-copy"]), ...pluginSkills()] });
     // Commands it answers itself: a synthetic message, no model call, nothing spent.
@@ -1037,9 +1042,14 @@ async function turn(content: any[], uuid?: string) {
         result("success");
         if (process.env.FAKE_SHELL_MS || !["shell-background-stuck", "shell-background-mixed", "shell-background-nested", "monitor-background-stuck"].includes(scenario)) setTimeout(async () => {
             if (stoppedTasks.has("background-1")) return;
+            // Logged as it happens, before it's said: a test can go by it.
+            log({ shell: "left" });
             bgTasks.delete("background-1");
             backgroundChanged();
+            // FAKE_SHELL_NOTIFY_AFTER_PROMPT=1: the notification's wait starts once the next prompt has come.
+            if (process.env.FAKE_SHELL_NOTIFY_AFTER_PROMPT === "1") while (prompts < 2) await Bun.sleep(5);
             await Bun.sleep(Number(process.env.FAKE_SHELL_NOTIFY_MS ?? 80));
+            log({ shell: "notified" });
             const status = process.env.FAKE_SHELL_STATUS ?? "completed";
             if (shellOutput && type === "local_bash" && !nested) {
                 writeFileSync(shellOutput, process.env.FAKE_SHELL_OUTPUT_FROM ? readFileSync(process.env.FAKE_SHELL_OUTPUT_FROM) : process.env.FAKE_SHELL_OUTPUT!);

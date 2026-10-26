@@ -87,7 +87,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_IGNORE_INTERRUPT", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_MS", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_FG_TASK", "FAKE_SUB_COMMANDS", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS", "FAKE_SHELL_STATUS", "FAKE_STOP_ANSWER", "FAKE_STOP_MS", "FAKE_FOLLOWUP_MS", "FAKE_RESULT_DELAY_MS", "FAKE_EXIT_AFTER_MS", "FAKE_STOP_STATUS", "FAKE_STOP_TURN_AT", "FAKE_STOP_NOTIFY_AT", "FAKE_STOP_RESULT_AT", "FAKE_SHELL_NOTIFY_MS"]) delete process.env[k];
+    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_IGNORE_INTERRUPT", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_MS", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_FG_TASK", "FAKE_SUB_COMMANDS", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS", "FAKE_SHELL_STATUS", "FAKE_STOP_ANSWER", "FAKE_STOP_MS", "FAKE_FOLLOWUP_MS", "FAKE_RESULT_DELAY_MS", "FAKE_EXIT_AFTER_MS", "FAKE_STOP_STATUS", "FAKE_STOP_TURN_AT", "FAKE_STOP_NOTIFY_AT", "FAKE_STOP_RESULT_AT", "FAKE_SHELL_NOTIFY_MS", "FAKE_WAKE_START_MS", "FAKE_INIT_DELAY_MS", "FAKE_SHELL_NOTIFY_AFTER_PROMPT"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -3251,6 +3251,65 @@ describe("Claude Code background commands' own timeouts (#193)", () => {
             expect(JSON.stringify(a.session.messages)).toContain("Background checks passed.");
             expect(notices(a.events).some((n) => /stopped.*Wait for checks/i.test(n))).toBe(false);
             expect(stops()).toEqual(["agent-1"]);
+        } finally { restore(); }
+    });
+
+    test("a command's grace running out while a sub-agent's report is due stops the command and waits for that report (#308)", async () => {
+        process.env.FAKE_SCENARIO = "shell-background-mixed";
+        process.env.FAKE_BACKGROUND_MS = "50";
+        process.env.FAKE_WAKE_START_MS = "600";
+        const restore = timing({ commandWaitMs: 250, settleMs: 3000 });
+        try {
+            const a = await makeAgent({ provider: "claude-code" });
+            expect(await a.run("start both")).toBe("done");
+            expect(stops()).toEqual(["background-1"]);
+            expect(JSON.stringify(a.session.messages)).toContain("The explorer reported back");
+        } finally { restore(); }
+    });
+
+    // What the fake did and was sent, in order: the shell leaving the list and its notification, each turn's start, the message.
+    const timeline = () => logLines().flatMap((l) => (l.shell ? [`shell ${l.shell}`] : l.init ? [`init ${l.init}`] : JSON.stringify(l.received ?? "").includes("also check the docs") ? ["message"] : []));
+
+    test("a message the user sent before a finished command's notification came doesn't take that command's report (#308)", async () => {
+        process.env.FAKE_SCENARIO = "shell-background";
+        process.env.FAKE_SECOND_SCENARIO = "none";
+        process.env.FAKE_SHELL_MS = "400";
+        process.env.FAKE_SHELL_NOTIFY_MS = "600";
+        process.env.FAKE_SHELL_NOTIFY_AFTER_PROMPT = "1";
+        // No polls while it waits: the message goes when the command leaves Claude Code's list, before its notification.
+        const restore = timing({ settleMs: 3000, pollMs: 60_000 });
+        let sent = false;
+        try {
+            const a = await makeAgent({
+                provider: "claude-code",
+                // Once the command has left Claude Code's list.
+                drainQueued: () => (!sent && logLines().some((l) => l.shell === "left") ? ((sent = true), ["also check the docs"]) : []),
+            });
+            expect(await a.run("run the checks")).toBe("done");
+            expect(timeline()).toEqual(["init 1", "shell left", "message", "init 2", "shell notified"]);
+            expect(userTexts().some((t) => t.includes("also check the docs"))).toBe(true);
+            expect(JSON.stringify(a.session.messages)).toContain("Background checks passed.");
+        } finally { restore(); }
+    });
+
+    test("a message sent before a finished command's notification, whose turn starts after it, doesn't take that command's report (#308)", async () => {
+        process.env.FAKE_SCENARIO = "shell-background";
+        process.env.FAKE_SECOND_SCENARIO = "none";
+        process.env.FAKE_SHELL_MS = "400";
+        process.env.FAKE_SHELL_NOTIFY_MS = "300";
+        process.env.FAKE_SHELL_NOTIFY_AFTER_PROMPT = "1";
+        // Each turn starts (its init) this long after its prompt: the notification comes between the message and its turn.
+        process.env.FAKE_INIT_DELAY_MS = "700";
+        const restore = timing({ settleMs: 3000, pollMs: 60_000 });
+        let sent = false;
+        try {
+            const a = await makeAgent({
+                provider: "claude-code",
+                drainQueued: () => (!sent && logLines().some((l) => l.shell === "left") ? ((sent = true), ["also check the docs"]) : []),
+            });
+            expect(await a.run("run the checks")).toBe("done");
+            expect(timeline()).toEqual(["init 1", "shell left", "message", "shell notified", "init 2"]);
+            expect(JSON.stringify(a.session.messages)).toContain("Background checks passed.");
         } finally { restore(); }
     });
 

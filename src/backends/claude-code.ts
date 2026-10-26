@@ -514,6 +514,16 @@ class ClaudeTurn {
      * which of its turns. The first turn after that takes its report (reportDue).
      */
     private endedIn = new Map<string, number>();
+    /**
+     * Shells and monitors that left Claude Code's list with no task_notification yet: their report turn follows the
+     * notification, so a turn that starts before it (a queued message's) doesn't take their report (#308).
+     */
+    private unnotified = new Set<string>();
+    /**
+     * Of those, ones whose notification came while a prompt of ours was unanswered: its turn may not have started
+     * yet, and doesn't take their report, so they're kept until it's answered.
+     */
+    private notifiedEarly = new Set<string>();
     /** What each sub-agent said last: its report, when nothing else carries one. */
     private lastWords = new Map<string, string>();
     /** Each sub-agent's token count as Claude Code last reported it. */
@@ -830,7 +840,9 @@ class ClaudeTurn {
             } else if (now - this.commandWaitingSince.get(id)! >= grace) stopping.push({ task, why: `when its background grace expired after ${grace / 1000}s` });
         }
         if (stopping.length) {
-            if (stopping.length === left.length) {
+            // All that's left is stopped, unless a task's report is still due: then they're stopped by task id and
+            // that turn is waited for, as at the overall cap below (#308).
+            if (stopping.length === left.length && !this.reportDue()) {
                 for (const { task, why } of stopping) this.noteStopped([task], "harness", why);
                 this.toldStopped = true;
                 return true;
@@ -1217,6 +1229,11 @@ class ClaudeTurn {
                     this.commandWaitingSince.clear();
                     this.busy = false;
                     const ours = this.answers(m);
+                    // Our prompts are answered: a report whose notification came meanwhile is due after this turn.
+                    if (!this.unanswered.size) {
+                        for (const id of this.notifiedEarly) this.unnotified.delete(id);
+                        this.notifiedEarly.clear();
+                    }
                     this.onResult(m, ours);
                     if (ours && !this.unanswered.size) this.answered = true;
                     this.syncBackground();
@@ -1360,6 +1377,8 @@ class ClaudeTurn {
                 // Each turn starts with one, a turn Claude Code takes itself (with background reports) too.
                 this.busy = true;
                 this.turnCount++;
+                // Their report turn is still to come, after this one.
+                for (const id of this.unnotified) this.endedIn.set(id, this.turnCount);
                 clearTimeout(this.settleTimer);
                 this.settleTimer = undefined;
                 if (typeof m.session_id === "string" && m.session_id) {
@@ -1379,7 +1398,11 @@ class ClaudeTurn {
                     const next = m.tasks.map((t: any) => ({ id: String(t?.task_id ?? ""), type: String(t?.task_type ?? ""), description: typeof t?.description === "string" ? t.description : "" }));
                     // A shell/Monitor may leave the list before its notification and
                     // automatic report turn. Give that turn the same grace as agents.
-                    for (const t of this.background ?? []) if (t.type !== "local_agent" && !this.stoppedTaskIds.has(t.id) && !next.some((n: { id: string }) => n.id === t.id)) this.markEnded(t.id);
+                    for (const t of this.background ?? []) {
+                        if (t.type === "local_agent" || this.stoppedTaskIds.has(t.id) || next.some((n: { id: string }) => n.id === t.id)) continue;
+                        if (!this.endedIn.has(t.id) && !this.taskEnds.has(t.id)) this.unnotified.add(t.id);
+                        this.markEnded(t.id);
+                    }
                     for (const id of this.commandWaitingSince.keys()) {
                         if (!next.some((t: { id: string }) => t.id === id)) this.commandWaitingSince.delete(id);
                     }
@@ -1410,6 +1433,9 @@ class ClaudeTurn {
             }
             case "task_notification": {
                 this.commandWaitingSince.delete(m.task_id);
+                // Its report turn follows; a prompt's turn that was already waiting goes before it (notifiedEarly).
+                if (this.unanswered.size && this.unnotified.has(m.task_id)) this.notifiedEarly.add(m.task_id);
+                else this.unnotified.delete(m.task_id);
                 if (typeof m.task_id === "string" && typeof m.status === "string") this.taskEnds.set(m.task_id, m.status);
                 // A sub-agent finished (in the foreground, this comes before its Agent call's result). It
                 // ran even if nothing of it showed. A later one replaces what this one said (the report it
