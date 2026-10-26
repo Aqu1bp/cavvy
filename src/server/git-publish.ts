@@ -1,6 +1,8 @@
 // GUI-only publishing. Reads are local except explicit dialog discovery and PR refresh.
 import { createHash } from "crypto";
-import { isAbsolute, delimiter } from "path";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { isAbsolute, delimiter, join, sep } from "path";
 import { gitArgv, gitEnv, gitNetworkSkipReason } from "../util/git";
 import { redact } from "../util/redact";
 import type { GitPublishInfo, GitPublishRequest, GitPrInfo } from "./protocol";
@@ -18,14 +20,14 @@ async function checkNetworkTrust(cwd: string) {
     if (reason) throw new RpcError(`Trust this folder explicitly before publishing or reading remote state: ${reason}.`, "needs_trust", cwd);
 }
 
-async function run(cwd: string, args: string[], network = false, signal?: AbortSignal) {
+async function run(cwd: string, args: string[], network = false, signal?: AbortSignal, extraEnv: Record<string, string> = {}): Promise<{ out: string; err: string; code: number }> {
     if (signal?.aborted) throw fail("Publishing cancelled; check the remote before retrying.", "git_cancelled");
     if (network) await checkNetworkTrust(cwd);
     const env = gitEnv();
     delete env.GIT_CONFIG;
     for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE"]) delete env[key];
     if (env.PATH) env.PATH = env.PATH.split(delimiter).filter(isAbsolute).join(delimiter);
-    Object.assign(env, { GH_PROMPT_DISABLED: "1", GIT_NO_LAZY_FETCH: "1" });
+    Object.assign(env, { GH_PROMPT_DISABLED: "1", GIT_NO_LAZY_FETCH: "1" }, extraEnv);
     // Only inherited credentials; never consult Harness's credential store for gh.
     if (args[0] === "gh") {
         for (const key of ["GH_TOKEN", "GITHUB_TOKEN"]) if (process.env[key]) env[key] = process.env[key]!;
@@ -33,15 +35,31 @@ async function run(cwd: string, args: string[], network = false, signal?: AbortS
         delete env.GH_HOST;
     }
     if (!network) env.GIT_ALLOW_PROTOCOL = "harness-none";
-    const argv = args[0] === "git" ? gitArgv(["-c", "core.hooksPath=/dev/null", ...args.slice(1)]) : args;
+    // A network call runs from an empty folder of its own, git told the repository by --git-dir and that folder as
+    // its work tree (whatever core.worktree says): git runs a helper (an ssh command, a credential helper, a proxy)
+    // at its work tree's top, so one the user's own settings name by a relative path can't reach the repository's
+    // files (#107). In the repository, that's the repository.
+    const away = network ? mkdtempSync(join(tmpdir(), "harness-net-")) : undefined;
+    let gitDir: string | undefined;
+    try {
+        if (away && args[0] === "git") gitDir = await git(cwd, ["rev-parse", "--absolute-git-dir"], signal);
+    } catch (e) {
+        rmSync(away!, { recursive: true, force: true });
+        throw e;
+    }
+    const argv = args[0] === "git" ? gitArgv([...(gitDir ? [`--git-dir=${gitDir}`, `--work-tree=${away}`] : []), "-c", "core.hooksPath=/dev/null", ...args.slice(1)]) : args;
     // Resolve with the same sanitized PATH passed to the child; do not fall back
     // to the server's startup PATH when a CLI disappears or PATH changes.
     const executable = Bun.which(argv[0]!, { PATH: env.PATH ?? "", cwd });
-    if (!executable) throw fail(`${args[0]} is not installed or could not be started.`, "unavailable");
+    if (!executable) {
+        if (away) rmSync(away, { recursive: true, force: true });
+        throw fail(`${args[0]} is not installed or could not be started.`, "unavailable");
+    }
     let proc;
     try {
-        proc = Bun.spawn([executable, ...argv.slice(1)], { cwd, env, detached: true, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+        proc = Bun.spawn([executable, ...argv.slice(1)], { cwd: away ?? cwd, env, detached: true, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     } catch {
+        if (away) rmSync(away, { recursive: true, force: true });
         throw fail(`${args[0]} is not installed or could not be started.`, "unavailable");
     }
     let stopping: Promise<void> | undefined;
@@ -64,6 +82,7 @@ async function run(cwd: string, args: string[], network = false, signal?: AbortS
     } finally {
         clearTimeout(timer);
         signal?.removeEventListener("abort", stop);
+        if (away) rmSync(away, { recursive: true, force: true });
     }
 }
 /** One `gh` call with the publish rules: inherited credentials only, no prompts, the folder's network trust checked. */
@@ -136,7 +155,15 @@ async function local(cwd: string, signal?: AbortSignal) {
     }
     const urls = pushUrls.length ? pushUrls : fetchUrls;
     if (urls.length !== 1 || !urls[0] || /[\x00-\x20\x7f]/.test(urls[0]) || urls[0].startsWith("-") || urls[0].includes("::")) throw fail("Use one ordinary push URL for this remote.", "invalid");
-    const url = urls[0];
+    // A relative folder path, from the work tree's top, where git read it: the network calls run elsewhere (run()). Not
+    // normalized, so the system follows links before a `..` as it did there. Git reads ~ as home wherever it runs.
+    let url = urls[0];
+    // On Windows, one with a drive and no root (C:x) or a root and no drive (\x) is the current drive's: whose that is
+    // differs where the calls run.
+    if (localPath(url) && process.platform === "win32" && (/^[A-Za-z]:(?![\\/])/.test(url) || /^[\\/](?![\\/])/.test(url))) {
+        throw fail("Use a full path for this remote, with its drive.", "invalid");
+    }
+    if (localPath(url) && !isAbsolute(url) && !url.startsWith("~")) url = `${await git(cwd, ["rev-parse", "--show-toplevel"], signal)}${sep}${url}`;
     let ahead: number | undefined, behind: number | undefined;
     if (tracking) {
         const counts = await git(cwd, ["rev-list", "--left-right", "--count", `${sha}...${tracking}`, "--"], signal, false, true);
@@ -144,6 +171,13 @@ async function local(cwd: string, signal?: AbortSignal) {
     }
     const fingerprint = createHash("sha256").update(JSON.stringify({ branch, sha, remote, target, url, hasUpstream })).digest("hex");
     return { branch, sha, remote, target, url, hasUpstream, ahead, behind, fingerprint };
+}
+/** Whether a remote URL is a folder's path, as git tells: no scheme://, and no host: before a slash (scp-like ssh). */
+function localPath(url: string): boolean {
+    if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(url)) return false;
+    if (process.platform === "win32" && /^[A-Za-z]:/.test(url)) return true;
+    const colon = url.indexOf(":");
+    return colon === -1 || (url.indexOf("/") !== -1 && url.indexOf("/") < colon);
 }
 /** Where a push would go now (git only, no network), with the fingerprint gitPublish checks. */
 export async function gitPushTarget(cwd: string, signal?: AbortSignal) {
@@ -162,25 +196,37 @@ async function ghReady(cwd: string, signal?: AbortSignal): Promise<boolean> {
     catch (e) { if (e instanceof RpcError && e.code === "unavailable") return false; throw e; }
 }
 async function prView(cwd: string, repo: string, branch: string, signal?: AbortSignal): Promise<GitPrInfo | undefined> {
-    // `pr view 123` means PR #123, not head branch "123". A list query
-    // keeps branch lookup unambiguous and lets us prefer open PRs over history.
-    const result = await run(cwd, ["gh", "pr", "list", "--head", branch, "--state", "all", "--limit", "100", "--repo", `https://github.com/${repo}`, "--json", "number,url,title,state,isDraft,statusCheckRollup,headRefName,headRepository,headRepositoryOwner,updatedAt"], true, signal);
-    if (result.code) throw fail(result.err + result.out || "Could not read pull request state.", "gh");
-    let values;
-    try { values = JSON.parse(result.out); } catch { throw fail("gh returned invalid pull request state.", "gh"); }
-    if (!Array.isArray(values)) throw fail("gh returned invalid pull request state.", "gh");
+    // Asked for by head owner and branch (owner:branch), so other owners' PRs from a branch of the same name (forks)
+    // can't crowd this repository's out of a page before it's filtered (#107). A branch has one open PR per base,
+    // so a page holds it. The one picked is then read by its number (`pr view 123` is PR #123, never branch "123").
     const [owner, name] = repo.split("/");
-    const candidates = values.filter((value) => value && value.headRefName === branch
-        && typeof value.url === "string" && value.url.toLowerCase() === `https://github.com/${repo}/pull/${value.number}`.toLowerCase()
-        && typeof value.headRepositoryOwner?.login === "string" && value.headRepositoryOwner.login.toLowerCase() === owner!.toLowerCase()
-        && typeof value.headRepository?.name === "string" && value.headRepository.name.toLowerCase() === name!.toLowerCase()
-        && ["OPEN", "MERGED", "CLOSED"].includes(value.state));
-    candidates.sort((a, b) => Number(b.state === "OPEN") - Number(a.state === "OPEN")
-        || (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0) || b.number - a.number);
-    const value = candidates[0];
-    if (!value) return undefined;
-    const url = `https://github.com/${repo}/pull/${value.number}`;
-    if (!Number.isSafeInteger(value.number) || value.number < 1 || value.url.toLowerCase() !== url.toLowerCase() || !["OPEN", "MERGED", "CLOSED"].includes(value.state) || typeof value.title !== "string" || typeof value.isDraft !== "boolean") throw fail("gh returned invalid pull request state.", "gh");
+    // Open ones first, then the most recently updated of the rest: a page of 100 newer closed ones can't hide an open one.
+    const list = async (state: "open" | "all") => {
+        const listed = await run(cwd, ["gh", "api", "--hostname", "github.com", "--method", "GET", `repos/${repo}/pulls`, "-f", `head=${owner}:${branch}`, "-f", `state=${state}`, "-f", "sort=updated", "-f", "direction=desc", "-f", "per_page=100"], true, signal);
+        if (listed.code) throw fail(listed.err + listed.out || "Could not read pull request state.", "gh");
+        let values;
+        try { values = JSON.parse(listed.out); } catch { throw fail("gh returned invalid pull request state.", "gh"); }
+        if (!Array.isArray(values)) throw fail("gh returned invalid pull request state.", "gh");
+        return values;
+    };
+    const valid = (values: any[]) => values.filter((value) => value && Number.isSafeInteger(value.number) && value.head?.ref === branch
+        && typeof value.head?.repo?.owner?.login === "string" && value.head.repo.owner.login.toLowerCase() === owner!.toLowerCase()
+        && typeof value.head?.repo?.name === "string" && value.head.repo.name.toLowerCase() === name!.toLowerCase()
+        && ["open", "closed"].includes(value.state));
+    let candidates = valid(await list("open"));
+    if (!candidates.length) candidates = valid(await list("all"));
+    candidates.sort((a, b) => Number(b.state === "open") - Number(a.state === "open")
+        || (Date.parse(b.updated_at) || 0) - (Date.parse(a.updated_at) || 0) || b.number - a.number);
+    if (!candidates[0]) return undefined;
+    const result = await run(cwd, ["gh", "pr", "view", String(candidates[0].number), "--repo", `https://github.com/${repo}`, "--json", "number,url,title,state,isDraft,statusCheckRollup,headRefName,headRepository,headRepositoryOwner"], true, signal);
+    if (result.code) throw fail(result.err + result.out || "Could not read pull request state.", "gh");
+    let value;
+    try { value = JSON.parse(result.out); } catch { throw fail("gh returned invalid pull request state.", "gh"); }
+    const url = `https://github.com/${repo}/pull/${candidates[0].number}`;
+    if (!value || value.number !== candidates[0].number || typeof value.url !== "string" || value.url.toLowerCase() !== url.toLowerCase() || value.headRefName !== branch
+        || typeof value.headRepositoryOwner?.login !== "string" || value.headRepositoryOwner.login.toLowerCase() !== owner!.toLowerCase()
+        || typeof value.headRepository?.name !== "string" || value.headRepository.name.toLowerCase() !== name!.toLowerCase()
+        || !["OPEN", "MERGED", "CLOSED"].includes(value.state) || typeof value.title !== "string" || typeof value.isDraft !== "boolean") throw fail("gh returned invalid pull request state.", "gh");
     return { number: value.number, url, title: clean(value.title, 500), state: value.state === "OPEN" && value.isDraft ? "draft" : value.state.toLowerCase(), checks: Array.isArray(value.statusCheckRollup) ? value.statusCheckRollup.length : 0 };
 }
 
@@ -218,6 +264,62 @@ export async function gitPublishInfo(cwd: string, signal?: AbortSignal): Promise
     };
 }
 
+/**
+ * The ref a remote's fetch refspecs map `ref` to, as git does for a push's tracking ref: the first positive one whose
+ * source matches (a `*` taking any part), none when a negative one (`^src`) matches it.
+ */
+export function trackingRefs(refspecs: string[], ref: string): string[] {
+    const match = (pattern: string) => {
+        const star = pattern.indexOf("*");
+        if (star === -1) return pattern === ref ? "" : undefined;
+        const [head, tail] = [pattern.slice(0, star), pattern.slice(star + 1)];
+        return ref.length >= head.length + tail.length && ref.startsWith(head) && ref.endsWith(tail) ? ref.slice(head.length, ref.length - tail.length) : undefined;
+    };
+    const specs = refspecs.map((spec) => spec.trim()).filter(Boolean);
+    if (specs.some((spec) => spec.startsWith("^") && match(spec.slice(1)) !== undefined)) return [];
+    for (const spec of specs) {
+        if (spec.startsWith("^")) continue;
+        const [src, dst] = spec.replace(/^\+/, "").split(":");
+        const part = src ? match(src) : undefined;
+        if (part === undefined || !dst) continue;
+        const target = dst.includes("*") ? dst.replace("*", part) : dst;
+        if (target.startsWith("refs/")) return [target];
+    }
+    return [];
+}
+
+/**
+ * The push, to the URL checked and confirmed: not by the remote's name, which git would look up again (a URL or
+ * push URL changed since). A URL rewrite (insteadOf, pushInsteadOf) added since would still apply to it, so a
+ * pre-push hook of Harness's own compares the URL git resolved with that one, and refuses any other before
+ * anything is sent (#107).
+ */
+async function pushTo(cwd: string, info: { remote: string; target: string; url: string; sha: string }, signal?: AbortSignal) {
+    const hooks = mkdtempSync(join(tmpdir(), "harness-push-"));
+    try {
+        const hook = join(hooks, "pre-push");
+        writeFileSync(hook, '#!/bin/sh\n# Harness: push only to the destination that was checked and confirmed.\n[ "$2" = "$HARNESS_PUSH_URL" ] && exit 0\necho "The push destination changed after it was checked (a Git URL rewrite?); nothing was pushed. Reopen the dialog." >&2\nexit 1\n');
+        chmodSync(hook, 0o700);
+        // Git skips a hook it can't run (a temp folder mounted noexec) and pushes anyway: it must run here first.
+        // Git for Windows runs hooks with its own sh, whatever their mode.
+        const runs = () => {
+            try { return Bun.spawnSync([hook, info.remote, info.url], { env: { PATH: process.env.PATH ?? "", HARNESS_PUSH_URL: info.url }, stdin: "ignore", stdout: "ignore", stderr: "ignore" }).exitCode === 0; }
+            catch { return false; }
+        };
+        if (process.platform !== "win32" && !runs()) throw fail("Harness couldn't run its check of the push destination (is the temporary folder mounted noexec?); nothing was pushed.");
+        const result = await run(cwd, ["git", "-c", `core.hooksPath=${hooks}`, "-c", "push.followTags=false", "-c", "push.pushOption=", "push", "--porcelain", "--no-force", "--no-follow-tags", "--recurse-submodules=no", "--", info.url, `${info.sha}:refs/heads/${info.target}`], true, signal, { HARNESS_PUSH_URL: info.url });
+        // Pushed to the URL, git leaves the remote's tracking branches as they were: updated as a push to the remote
+        // would have (by its fetch refspecs), so ahead/behind stay right.
+        if (!result.code) {
+            const fetch = await git(cwd, ["config", "--get-all", `remote.${info.remote}.fetch`], signal, false, true);
+            for (const ref of trackingRefs(fetch.split("\n"), `refs/heads/${info.target}`)) await git(cwd, ["update-ref", ref, info.sha], signal, false, true);
+        }
+        return result;
+    } finally {
+        rmSync(hooks, { recursive: true, force: true });
+    }
+}
+
 export async function gitPublish(cwd: string, request: GitPublishRequest, signal?: AbortSignal): Promise<{ pr?: GitPrInfo }> {
     const info = await local(cwd, signal);
     if (info.fingerprint !== request.fingerprint) throw fail("The branch, commit or destination changed. Reopen the dialog before publishing.", "stale");
@@ -237,7 +339,7 @@ export async function gitPublish(cwd: string, request: GitPublishRequest, signal
     const remoteRef = await git(cwd, ["ls-remote", "--", info.url, `refs/heads/${info.target}`], signal, true);
     if ((await local(cwd, signal)).fingerprint !== info.fingerprint) throw fail("The branch or destination changed. Reopen the dialog.", "stale");
     const needsPush = !info.hasUpstream || remoteRef.split("\t")[0] !== info.sha;
-    const result = needsPush ? await run(cwd, ["git", "-c", `remote.${info.remote}.mirror=false`, "-c", "push.followTags=false", "-c", "push.pushOption=", "push", "--porcelain", "--no-force", "--no-follow-tags", "--recurse-submodules=no", "--", info.remote, `${info.sha}:refs/heads/${info.target}`], true, signal) : { code: 0, out: "", err: "" };
+    const result = needsPush ? await pushTo(cwd, info, signal) : { code: 0, out: "", err: "" };
     if (result.code) throw fail(`Push failed. ${/non-fast-forward|fetch first|rejected/i.test(result.out + result.err) ? "The remote rejected the update; fetch and reconcile the branch in a terminal. No force push was attempted.\n" : ""}${result.err}${result.out}`);
     if (!info.hasUpstream) {
         // A SHA source cannot set upstream via push -u. Name the reviewed local

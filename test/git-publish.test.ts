@@ -1,6 +1,6 @@
 import { afterAll, expect, test, setDefaultTimeout } from "bun:test";
-import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "fs";
-import { join } from "path";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { basename, join, relative, sep } from "path";
 import { isolate } from "./helpers/isolate";
 import { publishFixtures } from "./helpers/git-publish";
 setDefaultTimeout(120_000);
@@ -339,8 +339,10 @@ test("numeric branches select the exact head in this repo, prefer open/draft, th
     expect(await gitPrState(cwd)).toMatchObject({ number: 7, state: "draft" });
     const preview = await gitPublishInfo(cwd);
     expect((await gitPublish(cwd, { fingerprint: preview.fingerprint, action: "pr", base: "main", title: "Existing numeric branch" })).pr?.number).toBe(7);
-    expect(calls(state).some((args) => args[1] === "create" || args[1] === "view")).toBe(false);
-    expect(calls(state).filter((args) => args[1] === "list").every((args) => args[args.indexOf("--head") + 1] === "123")).toBe(true);
+    expect(calls(state).some((args) => args[1] === "create")).toBe(false);
+    // Looked up by head owner and branch, then read by the number picked.
+    expect(calls(state).filter((args) => args[0] === "api").every((args) => args.includes("head=example:123"))).toBe(true);
+    expect(calls(state).filter((args) => args[1] === "view").every((args) => args[2] === "7")).toBe(true);
     writeFileSync(state, JSON.stringify([wrong, fork, otherRepo, record(6, "123", "CLOSED", "2026-01-01T00:00:00Z"), recent]));
     expect(await gitPrState(cwd)).toMatchObject({ number: 8, state: "merged" });
     writeFileSync(state, JSON.stringify([wrong, fork, otherRepo]));
@@ -359,4 +361,110 @@ test("each network call reaudits config added after a preceding network read", a
         expect(calls(state)).toHaveLength(1);
         expect(calls(state)[0]!.slice(0, 2)).toEqual(["auth", "status"]);
     }
+});
+
+test("other owners' PRs from a branch of the same name can't hide this repository's open PR (#107)", async () => {
+    const { cwd, state } = repo(true);
+    const record = (number: number, login: string, updatedAt: string) => ({ number, url: `https://github.com/example/project/pull/${number}`, headRefName: "feature", state: "OPEN", updatedAt, title: `PR ${number}`, isDraft: false, headRepository: { name: "project" }, headRepositoryOwner: { login } });
+    const forks = Array.from({ length: 100 }, (_, i) => record(100 + i, `fork-${i}`, "2026-10-20T00:00:00Z"));
+    writeFileSync(state, JSON.stringify([record(7, "example", "2026-10-01T00:00:00Z"), ...forks]));
+    expect(await gitPrState(cwd)).toMatchObject({ number: 7, state: "open" });
+    const preview = await gitPublishInfo(cwd);
+    expect((await gitPublish(cwd, { fingerprint: preview.fingerprint, action: "pr", base: "main", title: "Duplicate?" })).pr?.number).toBe(7);
+    expect(calls(state).some((args) => args[1] === "create")).toBe(false);
+});
+
+test("a remote URL changed after the last check doesn't move the push: it goes to the URL confirmed (#107)", async () => {
+    const { cwd, remote, state } = repo();
+    const other = `${cwd}-other`; mkdirSync(other); git(other, "init", "--bare", "-q", "-b", "main");
+    const preview = await gitPublishInfo(cwd);
+    process.env.FAKE_PUBLISH_PUSH_CONFIG = `remote.origin.url=${other}`;
+    await gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" });
+    expect(git(remote, "rev-parse", "feature")).toBe(git(cwd, "rev-parse", "HEAD"));
+    expect(() => git(other, "rev-parse", "--verify", "feature")).toThrow();
+    // The remote's tracking branch moves as a push to the remote would have moved it.
+    expect(git(cwd, "rev-parse", "origin/feature")).toBe(git(cwd, "rev-parse", "HEAD"));
+    expect(calls(state, ".git-calls").find((args) => args.includes("push"))).toContain(remote);
+});
+
+for (const rule of ["insteadOf", "pushInsteadOf"]) test(`a URL ${rule} rewrite added after the last check is refused before anything is pushed (#107)`, async () => {
+    const { trustFolder } = await import("../src/config/trust");
+    const { cwd, remote } = repo(); trustFolder(cwd);
+    const other = `${cwd}-other`; mkdirSync(other); git(other, "init", "--bare", "-q", "-b", "main");
+    const preview = await gitPublishInfo(cwd);
+    process.env.FAKE_PUBLISH_PUSH_CONFIG = `url.${other}.${rule}=${remote}`;
+    await expect(gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" })).rejects.toThrow("push destination changed");
+    expect(() => git(other, "rev-parse", "--verify", "feature")).toThrow();
+    expect(() => git(remote, "rev-parse", "--verify", "feature")).toThrow();
+});
+
+test("network calls run from an empty folder of their own: a helper the user's settings name by a relative path can't reach the repository's files (#107)", async () => {
+    const { cwd, state } = repo(true);
+    writeFileSync(join(cwd, "payload.sh"), ": > ssh-ran\nexit 1\n");
+    // In the repository, git runs a helper at its top, so `sh payload.sh` there would be the repository's.
+    expect(await gitPrState(cwd)).toBeUndefined();
+    const preview = await gitPublishInfo(cwd);
+    await gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" });
+    const cwds = readFileSync(`${state}.cwds`, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { cwd: string; empty: boolean });
+    // gh's (auth status, the PR lookup) and git's (ls-remote, push).
+    expect(cwds.length).toBeGreaterThanOrEqual(4);
+    for (const at of cwds) {
+        expect(relative(cwd, at.cwd).startsWith("..")).toBe(true);
+        expect(at.empty).toBe(true);
+        expect(existsSync(at.cwd)).toBe(false);
+    }
+    // Git's with the repository given, and that folder as its work tree: a core.worktree of the repository's can't
+    // send git back to the checkout to run a helper.
+    const gitCalls = calls(state, ".git-calls");
+    expect(gitCalls.length).toBeGreaterThanOrEqual(2);
+    for (const args of gitCalls) {
+        expect(args.some((arg) => arg.startsWith("--git-dir="))).toBe(true);
+        const workTree = args.find((arg) => arg.startsWith("--work-tree="))?.slice("--work-tree=".length);
+        // By name: one is the other with the system's links followed (/tmp, /private/tmp).
+        expect(cwds.map((at) => basename(at.cwd))).toContain(basename(workTree ?? ""));
+    }
+});
+
+test("a remote that's a relative folder path is read from the work tree, as git reads it there (#107)", async () => {
+    const { cwd, remote } = repo();
+    // Through a link, then `..`: the system follows the link first, as git's own read did.
+    mkdirSync(`${cwd}-team/sub`, { recursive: true });
+    renameSync(remote, `${cwd}-team/remote`);
+    symlinkSync(`${cwd}-team/sub`, join(cwd, "link"), "dir");
+    git(cwd, "remote", "set-url", "origin", "link/../remote");
+    const preview = await gitPublishInfo(cwd);
+    expect(preview.destination).toBe(`${cwd}${sep}link/../remote`);
+    await gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" });
+    expect(git(`${cwd}-team/remote`, "rev-parse", "feature")).toBe(git(cwd, "rev-parse", "HEAD"));
+});
+
+test("a push to the confirmed URL moves the tracking refs the remote's fetch refspecs name, as git would (#107)", async () => {
+    const { trackingRefs } = await import("../src/server/git-publish");
+    const ref = "refs/heads/feature";
+    expect(trackingRefs(["+refs/heads/*:refs/remotes/origin/*"], ref)).toEqual(["refs/remotes/origin/feature"]);
+    // A single-branch clone's, a negative one, several, and one for another branch.
+    expect(trackingRefs(["+refs/heads/feature:refs/remotes/origin/feature"], ref)).toEqual(["refs/remotes/origin/feature"]);
+    expect(trackingRefs(["+refs/heads/*:refs/remotes/origin/*", "^refs/heads/feature"], ref)).toEqual([]);
+    // Only the first that matches, as git updates it: not a later one into the local branches.
+    expect(trackingRefs(["+refs/heads/*:refs/remotes/origin/*", "+refs/heads/*:refs/heads/archive/*"], ref)).toEqual(["refs/remotes/origin/feature"]);
+    expect(trackingRefs(["+refs/heads/main:refs/remotes/origin/main", "refs/heads/feat*:refs/remotes/mirror/feat*"], ref)).toEqual(["refs/remotes/mirror/feature"]);
+    expect(trackingRefs(["+refs/heads/main:refs/remotes/origin/main"], ref)).toEqual([]);
+    const { cwd } = repo();
+    git(cwd, "config", "--replace-all", "remote.origin.fetch", "+refs/heads/feature:refs/remotes/origin/feature");
+    const preview = await gitPublishInfo(cwd);
+    await gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" });
+    expect(git(cwd, "rev-parse", "origin/feature")).toBe(git(cwd, "rev-parse", "HEAD"));
+});
+
+test("100 newer closed PRs from this branch to other bases can't hide its open PR (#107)", async () => {
+    const { cwd, state } = repo(true);
+    const record = (number: number, prState: string, updatedAt: string) => ({ number, url: `https://github.com/example/project/pull/${number}`, headRefName: "feature", state: prState, updatedAt, title: `PR ${number}`, isDraft: false, headRepository: { name: "project" }, headRepositoryOwner: { login: "example" } });
+    const closed = Array.from({ length: 100 }, (_, i) => record(100 + i, "CLOSED", "2026-10-20T00:00:00Z"));
+    writeFileSync(state, JSON.stringify([record(7, "OPEN", "2026-10-01T00:00:00Z"), ...closed]));
+    expect(await gitPrState(cwd)).toMatchObject({ number: 7, state: "open" });
+    // On github.com, whatever host gh would pick by default.
+    expect(calls(state).filter((args) => args[0] === "api").every((args) => args[args.indexOf("--hostname") + 1] === "github.com")).toBe(true);
+    // None open: the most recently updated of the rest.
+    writeFileSync(state, JSON.stringify([record(7, "CLOSED", "2026-10-01T00:00:00Z"), record(9, "MERGED", "2026-10-25T00:00:00Z"), record(8, "CLOSED", "2026-10-02T00:00:00Z")]));
+    expect(await gitPrState(cwd)).toMatchObject({ number: 9, state: "merged" });
 });
