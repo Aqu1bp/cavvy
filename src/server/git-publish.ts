@@ -158,10 +158,12 @@ async function local(cwd: string, signal?: AbortSignal) {
     // A relative folder path, from the work tree's top, where git read it: the network calls run elsewhere (run()). Not
     // normalized, so the system follows links before a `..` as it did there. Git reads ~ as home wherever it runs.
     let url = urls[0];
-    if (localPath(url) && !isAbsolute(url) && !url.startsWith("~")) {
-        if (process.platform === "win32" && /^[A-Za-z]:/.test(url)) throw fail("Use an absolute path for this remote, not one relative to a drive.", "invalid");
-        url = `${await git(cwd, ["rev-parse", "--show-toplevel"], signal)}${sep}${url}`;
+    // On Windows, one with a drive and no root (C:x) or a root and no drive (\x) is the current drive's: whose that is
+    // differs where the calls run.
+    if (localPath(url) && process.platform === "win32" && (/^[A-Za-z]:(?![\\/])/.test(url) || /^[\\/](?![\\/])/.test(url))) {
+        throw fail("Use a full path for this remote, with its drive.", "invalid");
     }
+    if (localPath(url) && !isAbsolute(url) && !url.startsWith("~")) url = `${await git(cwd, ["rev-parse", "--show-toplevel"], signal)}${sep}${url}`;
     let ahead: number | undefined, behind: number | undefined;
     if (tracking) {
         const counts = await git(cwd, ["rev-list", "--left-right", "--count", `${sha}...${tracking}`, "--"], signal, false, true);
