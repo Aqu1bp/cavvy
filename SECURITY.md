@@ -22,8 +22,9 @@ unless you'd rather it didn't.
   transcript, log, prompt, the model's context or another process.
 - Another site, local user or program reaching the GUI server, the MCP
   server or the desktop app without the session's token.
-- An account's sign-in or history becoming reachable from another account
-  or project.
+- An account's sign-in becoming reachable from another account or project,
+  or its history from an account that isn't meant to share it (accounts
+  Cavvy makes share Default's on purpose).
 
 Problems in Claude Code, Codex or a model provider itself go to them, not
 here, unless Cavvy makes them worse.

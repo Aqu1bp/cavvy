@@ -23,7 +23,7 @@ import { appSourceDir, capUpdate, lockUpdate, noPromptGit, readInstallRecord, UP
 import { appInfo } from "../desktop-electron/app-info";
 
 if (process.platform !== "darwin") {
-    console.error("desktop:update is for macOS. Elsewhere, bun run desktop:build makes the installers.");
+    console.error("desktop:update is for macOS, as the desktop app is for now. Elsewhere, cavvy gui runs the same app in your browser.");
     process.exit(1);
 }
 

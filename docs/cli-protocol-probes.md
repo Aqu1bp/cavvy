@@ -1,4 +1,6 @@
-# Subscription-CLI protocol probes (#219 PR 0)
+# Subscription-CLI protocol probes
+
+A research log from building the live Claude Code and Codex sessions: what each CLI did when probed, and what that meant for the design. Its § numbers are sections of that design, and its # numbers are issues and pull requests from before the repository was public.
 
 Measured 2026-10-21/22 against Claude Code 2.1.304 (`claude`, stream-json, `--model haiku --effort low`) and Codex 0.163.0 (`codex app-server`, JSON-RPC, `gpt-6-luna` effort low, the cheapest model `model/list` returns). No product code was touched. Every claim below cites a recorded transcript in `test/fixtures/protocol/`; each probe is in `scripts/probes/` and can be re-run (`bun scripts/probes/<name>.ts`, scratch folder `/tmp/live-probes-scratch`, override with `PROBE_SCRATCH`).
 
