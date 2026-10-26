@@ -9,7 +9,7 @@
   "cavvy": {
     "identifier": "dev.cavvy.desktop",
     "category": "public.app-category.developer-tools",
-    "minimumSystemVersion": "12.0"
+    "minimumSystemVersion": "13.0"
   },
   "scripts": {
     "build": "bun build src/main.ts --target=node --format=cjs --external electron --external electron-liquid-glass --outfile dist/main.cjs && bun build src/preload.ts --target=node --format=cjs --external electron --outfile dist/preload.cjs",

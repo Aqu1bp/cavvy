@@ -18,3 +18,15 @@ export function appInfo(dir = import.meta.dir): AppInfo {
     const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { productName: string; version: string; cavvy: { identifier: string; category: string; minimumSystemVersion: string } };
     return { productName: pkg.productName, version: pkg.version, ...pkg.cavvy };
 }
+
+/** Whether macOS `version` (as `sw_vers -productVersion` says it, "13.6.1") is older than `minimum` ("13.0"). */
+export function olderThan(version: string, minimum: string): boolean {
+    const a = version.split(".").map(Number);
+    const b = minimum.split(".").map(Number);
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+        const x = a[i] || 0;
+        const y = b[i] || 0;
+        if (x !== y) return x < y;
+    }
+    return false;
+}

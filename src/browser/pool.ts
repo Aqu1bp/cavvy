@@ -205,6 +205,8 @@ export class BrowserPool {
     }
 
     private listen(cdp: CdpClient) {
+        // The desktop app's: a tab there is on screen, or the person is using it (desktop-electron/src/browser-host.ts).
+        cdp.on("Cavvy.inUse", () => this.touch());
         cdp.on("Target.attachedToTarget", (p: { sessionId: string; targetInfo: Attachment["info"] }) => {
             const a: Attachment = { sessionId: p.sessionId, info: p.targetInfo };
             if (a.info.type !== "page") return;

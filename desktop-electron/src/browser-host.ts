@@ -40,6 +40,8 @@ interface Tab {
     personAt: number;
     /** The popup windows it opened for the person, and the ones those opened. */
     popups: Set<BrowserWindow>;
+    /** The sessions of its frames from other sites. */
+    children: Set<string>;
     frozen: boolean;
     /** Chromium refused to freeze it once: it isn't tried again. */
     unfreezable?: boolean;
@@ -57,6 +59,8 @@ const WEBVIEW_SRC = /^about:blank#(tab-\d+)$/;
 const PERSON_INPUT = new Set(["mouseDown", "keyDown", "mouseWheel"]);
 /** A tab unseen and unused this long sleeps (checks may shorten it with CAVVY_ELECTRON_FREEZE_MS). */
 const FREEZE_AFTER_MS = Number(process.env.CAVVY_ELECTRON_FREEZE_MS ?? 30_000);
+/** How often the server hears that a project's browser is in use here (Cavvy.inUse), so it isn't closed as idle. */
+const IN_USE_EVERY_MS = 60_000;
 /** An asleep tab's page process using more CPU than this (%, over the last 5s) is put back to sleep. */
 const BUSY_ASLEEP_PERCENT = 1;
 /** How long Chromium takes to take in a webview's visibility changing (a frame or two, with room). */
@@ -75,9 +79,12 @@ export class BrowserHost {
     private ws?: WebSocket;
     private channels = new Map<string, Channel>();
     private tabsBySid = new Map<string, Tab>();
+    /** A tab's frames from other sites, by their sessions. */
+    private childOf = new Map<string, Tab>();
     private tabsById = new Map<string, Tab>();
     private tabsByKey = new Map<string, Tab>();
     private seq = 0;
+    private inUseAt = 0;
     private attaching: string[] = [];
     private attachWaiters = new Map<string, (wc: WebContents) => void>();
     private closing = false;
@@ -157,6 +164,7 @@ export class BrowserHost {
 
     private freezeIdle() {
         const now = Date.now();
+        this.reportInUse(now);
         // CPU of each page process since the last look (percentCPUUsage is since the previous getAppMetrics).
         const cpu = new Map(app.getAppMetrics().map((m) => [m.pid, m.cpu.percentCPUUsage]));
         for (const tab of this.tabsById.values()) {
@@ -164,6 +172,19 @@ export class BrowserHost {
             else if (!tab.frozen && !tab.closed && !tab.unfreezable && now - tab.usedAt >= FREEZE_AFTER_MS && !tab.wc.isLoading() && !tab.wc.isCurrentlyAudible()) void this.freeze(tab);
             // Asleep, but its page is busy again (Chromium drawing it once more): put it back to sleep.
             else if (tab.frozen && !tab.closed && (cpu.get(tab.wc.getOSProcessId()) ?? 0) > BUSY_ASLEEP_PERCENT) void this.resleep(tab);
+        }
+    }
+
+    /**
+     * The server closes a browser nobody has used for a while; it sees the agent's calls, not a person looking at or using
+     * a tab here. A project's browser with a tab on screen, or one the person used lately, is said to be in use.
+     */
+    private reportInUse(now: number) {
+        if (now - this.inUseAt < IN_USE_EVERY_MS) return;
+        this.inUseAt = now;
+        for (const channel of this.channels.values()) {
+            const used = [...channel.tabs.values()].some((t) => !t.closed && (this.onScreen.has(t.key) || now - t.personAt < IN_USE_EVERY_MS));
+            if (used) this.event(channel, "Cavvy.inUse", {});
         }
     }
 
@@ -300,6 +321,12 @@ export class BrowserHost {
 
     private async command(channel: Channel, cmd: { id: number; method: string; params?: Record<string, unknown>; sessionId?: string }) {
         const p = cmd.params ?? {};
+        const frameOf = cmd.sessionId ? this.childOf.get(cmd.sessionId) : undefined;
+        if (frameOf) {
+            // A frame's own session: straight to it (it is set up and let go as the pool says, Page.watchFrame).
+            if (frameOf.channel !== channel || frameOf.closed) return this.fail(channel, cmd.id, "No such frame");
+            return this.answer(channel, cmd.id, (await frameOf.wc.debugger.sendCommand(cmd.method, p, cmd.sessionId)) ?? {});
+        }
         if (cmd.sessionId) {
             const tab = this.tabsBySid.get(cmd.sessionId);
             if (!tab || tab.channel !== channel || tab.closed) return this.fail(channel, cmd.id, "No such tab");
@@ -354,7 +381,9 @@ export class BrowserHost {
 
     private async openTab(channel: Channel, openerId?: string): Promise<Tab> {
         if (!this.window()) throw new Error("The app's window is closed");
-        const key = `tab-${++this.seq}`;
+        // Numbered before anything is awaited: tabs opened at once get numbers of their own.
+        const n = ++this.seq;
+        const key = `tab-${n}`;
         const wc = await new Promise<WebContents>((resolve, reject) => {
             const timer = setTimeout(() => {
                 this.attachWaiters.delete(key);
@@ -370,15 +399,26 @@ export class BrowserHost {
         if (wc.isLoading()) await new Promise<void>((r) => wc.once("did-stop-loading", () => r()));
         wc.debugger.attach("1.3");
         const { targetInfo } = (await wc.debugger.sendCommand("Target.getTargetInfo")) as { targetInfo: { targetId: string } };
-        const tab: Tab = { targetId: targetInfo.targetId, sid: `desktop-${this.seq}`, key, wc, channel, openerId, agentInputs: 0, closed: false, usedAt: Date.now(), personAt: 0, popups: new Set(), frozen: false };
+        const tab: Tab = { targetId: targetInfo.targetId, sid: `desktop-${n}`, key, wc, channel, openerId, agentInputs: 0, closed: false, usedAt: Date.now(), personAt: 0, popups: new Set(), children: new Set(), frozen: false };
         channel.tabs.set(tab.targetId, tab);
         this.tabsById.set(tab.targetId, tab);
         this.tabsBySid.set(tab.sid, tab);
         this.tabsByKey.set(key, tab);
 
         wc.debugger.on("message", (_e, method, params, childSession) => {
-            // The page's own events; frames and workers it attached aren't the pool's.
-            if (!childSession) this.event(channel, method, params, tab.sid);
+            // The page's own events go out under the tab's session; its frames from other sites (the pool attaches them
+            // to check what they load, Page.watchFrame) under theirs.
+            const from = childSession || undefined;
+            if (from && !tab.children.has(from)) return;
+            const p = params as { sessionId?: string; targetInfo?: { type?: string } };
+            if (method === "Target.attachedToTarget" && p.sessionId && p.targetInfo?.type === "iframe") {
+                tab.children.add(p.sessionId);
+                this.childOf.set(p.sessionId, tab);
+            } else if (method === "Target.detachedFromTarget" && p.sessionId) {
+                tab.children.delete(p.sessionId);
+                this.childOf.delete(p.sessionId);
+            }
+            this.event(channel, method, params, from ?? tab.sid);
         });
         wc.debugger.on("detach", () => this.closeTab(tab, true));
         wc.once("destroyed", () => this.closeTab(tab, true));
@@ -444,6 +484,8 @@ export class BrowserHost {
         this.tabsById.delete(tab.targetId);
         this.tabsBySid.delete(tab.sid);
         this.tabsByKey.delete(tab.key);
+        for (const child of tab.children) this.childOf.delete(child);
+        tab.children.clear();
         try {
             if (!tab.wc.isDestroyed() && tab.wc.debugger.isAttached()) tab.wc.debugger.detach();
         } catch {

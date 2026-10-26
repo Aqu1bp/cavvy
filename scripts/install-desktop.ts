@@ -21,7 +21,7 @@ import { accessSync, constants, existsSync } from "fs";
 import { homedir, userInfo } from "os";
 import { join, resolve } from "path";
 import { replaceBundle, writeInstallRecord } from "../src/config/desktop-install";
-import { appInfo } from "../desktop-electron/app-info";
+import { appInfo, olderThan } from "../desktop-electron/app-info";
 
 if (process.platform !== "darwin") {
     console.error("desktop:install is for macOS. Elsewhere, bun run desktop:build makes the installers.");
@@ -30,8 +30,15 @@ if (process.platform !== "darwin") {
 
 const restart = !process.argv.includes("--no-restart");
 const root = resolve(import.meta.dir, "..");
-const { productName, identifier } = appInfo(join(root, "desktop-electron"));
+const { productName, identifier, minimumSystemVersion } = appInfo(join(root, "desktop-electron"));
 const env = { ...process.env };
+
+// Electron's own minimum: an older macOS keeps the app it has, rather than one that wouldn't open (an update included).
+const macOS = Bun.spawnSync(["sw_vers", "-productVersion"]).stdout.toString().trim();
+if (macOS && olderThan(macOS, minimumSystemVersion)) {
+    console.error(`${productName} needs macOS ${minimumSystemVersion} or later, and this Mac has ${macOS}. The installed app is left as it is.`);
+    process.exit(1);
+}
 
 function run(cmd: string[], cwd: string) {
     const r = Bun.spawnSync(cmd, { cwd, env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
