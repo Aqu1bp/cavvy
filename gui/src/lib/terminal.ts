@@ -63,7 +63,7 @@ export interface SavedTabs {
     closed?: string[];
 }
 
-const TABS_KEY = "harness.terminals";
+const TABS_KEY = "cavvy.terminals";
 const EMPTY: SavedTabs = { tabs: [], next: 1, open: false };
 
 /** sessionStorage: this window's own, kept across a reload (localStorage, like the GUI's prefs, is every window's). */

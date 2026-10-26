@@ -17,7 +17,7 @@ const jsonOut = args.includes("--json") ? args[args.indexOf("--json") + 1] : und
 const only = args[1] && !args[1].startsWith("--") ? args[1].split(",") : undefined;
 
 const dir = import.meta.dir;
-const host = "/tmp/harness-webkit-host";
+const host = "/tmp/cavvy-webkit-host";
 const source = join(dir, "webkit-host.swift");
 if (!existsSync(host) || statSync(host).mtimeMs < statSync(source).mtimeMs) {
     const built = Bun.spawnSync(["swiftc", "-O", source, "-o", host], { stderr: "inherit" });

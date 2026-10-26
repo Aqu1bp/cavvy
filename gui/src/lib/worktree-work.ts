@@ -1,4 +1,4 @@
-// The diff reader's worktree picker: which Harness sessions work in each
+// The diff reader's worktree picker: which Cavvy sessions work in each
 // worktree (by their folder; the server says which sub-agents do, see
 // src/server/worktree-agents.ts), and the reader's choice of worktree, with
 // the views each worktree has.
@@ -8,7 +8,7 @@ import { normalPath, worktreeOf } from "@shared/worktree-agents";
 import type { ReviewScope } from "../state/changes";
 
 export interface WorktreeWork {
-    /** Harness sessions in it: running ones first, then the latest. */
+    /** Cavvy sessions in it: running ones first, then the latest. */
     sessions: { id: string; title: string; running: boolean }[];
     /** Sub-agents working in it now. */
     agents: WorktreeAgent[];
@@ -55,7 +55,7 @@ export interface ReviewPlace {
     own?: { scope: ReviewScope; base?: string };
 }
 
-/** The views another worktree has: Git's. Turns and Harness's edits are the session's own folder's. */
+/** The views another worktree has: Git's. Turns and Cavvy's edits are the session's own folder's. */
 export const OTHER_WORKTREE_SCOPES: ReadonlySet<ReviewScope> = new Set(["uncommitted", "branch"]);
 
 /**
@@ -98,9 +98,9 @@ export function keepWorktree(cur: ReviewPlace, listed: { path: string; exists: b
  * Whether the diff on screen is the session's own folder's, so what's the session's alone (comments
  * for its next message, Commit, Push, the editor) can act on it. Both the choice and the answer on
  * screen must be the session's: after switching back from another worktree, that worktree's answer
- * stays on screen until the session's comes. Harness edits are always the session's.
+ * stays on screen until the session's comes. Cavvy edits are always the session's.
  */
 export function ownOnScreen(selected: string | undefined, scope: ReviewScope, answer: { worktree?: string } | undefined): boolean {
     if (selected !== undefined) return false;
-    return scope === "harness" || answer?.worktree === undefined;
+    return scope === "cavvy" || answer?.worktree === undefined;
 }

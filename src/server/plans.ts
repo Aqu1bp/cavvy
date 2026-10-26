@@ -1,6 +1,6 @@
 // Plans a session presented: their titles, the branch and file names made
 // from them, the prompt that carries one to a new worktree, and saving one
-// as Markdown, only ever inside the session's folder or the Harness home.
+// as Markdown, only ever inside the session's folder or the Cavvy home.
 
 import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync, renameSync, unlinkSync, writeSync } from "fs";
 import { randomBytes } from "crypto";
@@ -29,7 +29,7 @@ export function implementPrompt(o: { plan: string; title?: string; sessionId: st
     const named = o.title ? `"${o.title}" (${o.sessionId})` : o.sessionId;
     const start = o.commit && o.commit !== o.base ? `${o.base} (${o.commit.slice(0, 12)})` : o.base;
     return [
-        `Implement the plan below. It was made in another Harness session, ${named}, working in ${o.from}.`,
+        `Implement the plan below. It was made in another Cavvy session, ${named}, working in ${o.from}.`,
         "",
         "You're in a new Git worktree made for it:",
         `- Folder: ${o.path}`,
@@ -88,7 +88,7 @@ const outside = (why: string) => new RpcError(why, "path_outside");
 
 /**
  * Where `input` (absolute, ~/…, or relative to the session's folder) lands:
- * the root it's in and the path segments below it. The Harness home is
+ * the root it's in and the path segments below it. The Cavvy home is
  * checked first, as it's the stricter of the two (files there are private).
  */
 function place(input: string, roots: Root[], cwd: string): { root: Root; parts: string[] } {
@@ -106,7 +106,7 @@ function place(input: string, roots: Root[], cwd: string): { root: Root; parts: 
 }
 
 /**
- * Write the plan to `input`, inside the session's folder or the Harness home
+ * Write the plan to `input`, inside the session's folder or the Cavvy home
  * (their real paths). No link on the way is followed: each folder below the
  * root is made (or found) one level at a time and must be a real folder, and
  * the file is created exclusively (O_EXCL | O_NOFOLLOW). An existing file is

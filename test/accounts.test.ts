@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, realpathSync, statSync, symlinkSync, writeFileSy
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 const iso = isolate();
-const outside = tempDir("harness-account-folders-");
+const outside = tempDir("cavvy-account-folders-");
 const { addAccount, account, defaultAccount, listAccounts, removeAccount, renameAccount, setDefaultAccount } = await import("../src/providers/accounts");
 const { readAgentConfig, saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
 afterAll(() => { iso.cleanup(); rmSync(outside, { recursive: true, force: true }); });
@@ -116,7 +116,7 @@ test("invalid saved folders stay listed and preferred, fail selection, and remov
     try {
         for (const provider of ["claude-code", "codex"]) {
             for (const folder of ["", "relative", `${outside}/../${outside.split("/").at(-1)}`, null, 42]) {
-                saveAgentConfig(provider, { path: "/nonexistent-harness-test-cli", accounts: [{ id: "broken", name: "Broken", folder: folder as any, managed: true }], defaultAccount: "broken" });
+                saveAgentConfig(provider, { path: "/nonexistent-cavvy-test-cli", accounts: [{ id: "broken", name: "Broken", folder: folder as any, managed: true }], defaultAccount: "broken" });
                 expect(readAgentConfig(provider)?.accounts).toMatchObject([{ id: "broken", invalid: true }]);
                 expect(defaultAccount(provider)).toBe("broken");
                 expect(() => account(provider, "broken")).toThrow(/Invalid account folder/);

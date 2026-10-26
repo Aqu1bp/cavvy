@@ -3,7 +3,7 @@
 // Resolution order for a provider key:
 //   1. environment variable (ANTHROPIC_API_KEY, OPENROUTER_API_KEY, ...)
 //   2. OS keychain via Bun.secrets (macOS Keychain, libsecret, Windows Credential Manager)
-//   3. ~/.harness/credentials.json (0600) — only used when no keychain is available
+//   3. ~/.cavvy/credentials.json (0600) — only used when no keychain is available
 //
 // Keys are never written to transcripts, logs, settings or history, and are
 // registered with the redactor so they cannot leak through tool output.
@@ -11,10 +11,11 @@
 import { chmodSync, existsSync, readFileSync, statSync } from "fs";
 import { readJson, readJsonForUpdate, writeJson } from "../config/settings";
 import { paths } from "../config/paths";
+import { LEGACY } from "../config/legacy";
 import { allProviders, getProvider, readAgentConfig, readProvidersFile, readProvidersFileForUpdate, readVertexConfig, writeProvidersFile, SEARCH_PROVIDERS, type ProviderDef } from "../providers/registry";
 import { registerSecret } from "../util/redact";
 
-const SERVICE = "harness-cli";
+const SERVICE = "cavvy-cli";
 
 export type KeySource = "env" | "keychain" | "file";
 
@@ -28,7 +29,7 @@ let keychainAvailable: boolean | undefined;
 
 async function keychainWorks(): Promise<boolean> {
     if (keychainAvailable !== undefined) return keychainAvailable;
-    if (process.env.HARNESS_NO_KEYCHAIN) return (keychainAvailable = false);
+    if (process.env.CAVVY_NO_KEYCHAIN || process.env.HARNESS_NO_KEYCHAIN) return (keychainAvailable = false);
     try {
         await Bun.secrets.get({ service: SERVICE, name: "__probe__" });
         keychainAvailable = true;
@@ -88,7 +89,7 @@ async function lookup(providerId: string): Promise<ResolvedKey | undefined> {
     }
     if (await keychainWorks()) {
         try {
-            const v = await Bun.secrets.get({ service: SERVICE, name: providerId });
+            const v = (await Bun.secrets.get({ service: SERVICE, name: providerId })) ?? (await fromLegacyKeychain(Bun.secrets, providerId));
             if (v) return { value: v, source: "keychain" };
         } catch {
             // fall through to file store
@@ -97,6 +98,22 @@ async function lookup(providerId: string): Promise<ResolvedKey | undefined> {
     const fileVal = readFileStore()[providerId];
     if (fileVal) return { value: fileVal, source: "file" };
     return undefined;
+}
+
+/**
+ * A key Harness kept under its own service name, copied to Cavvy's. The old item
+ * stays, for a Harness that's still installed (removeKey deletes both). If the
+ * copy fails, the old item is used as it is and copied again next time.
+ */
+export async function fromLegacyKeychain(store: Pick<typeof Bun.secrets, "get" | "set">, providerId: string): Promise<string | null> {
+    const old = await store.get({ service: LEGACY.keychainService, name: providerId });
+    if (!old) return null;
+    try {
+        await store.set({ service: SERVICE, name: providerId, value: old });
+    } catch {
+        // Keep using the old item.
+    }
+    return old;
 }
 
 /** Store a key. Returns where it was stored. */
@@ -141,10 +158,13 @@ export async function setKey(providerId: string, value: string): Promise<KeySour
 export async function removeKey(providerId: string): Promise<boolean> {
     let removed = false;
     if (await keychainWorks()) {
-        try {
-            removed = (await Bun.secrets.delete({ service: SERVICE, name: providerId })) || removed;
-        } catch {
-            // ignore
+        // Harness's item too: lookups would move it back otherwise.
+        for (const service of [SERVICE, LEGACY.keychainService]) {
+            try {
+                removed = (await Bun.secrets.delete({ service, name: providerId })) || removed;
+            } catch {
+                // ignore
+            }
         }
     }
     const store = readFileStore();
@@ -201,7 +221,7 @@ export async function storageDescription(): Promise<string> {
 
 // ---------------------------------------------------------------------------
 // .env loading. Bun's automatic .env loading is disabled (--no-env-file) so a
-// project's .env is never silently picked up. We load only the harness's own
+// project's .env is never silently picked up. We load only Cavvy's own
 // files, and only variables that look like provider settings.
 
 const LEGACY_HOSTS: [RegExp, string][] = [
@@ -234,19 +254,19 @@ export function parseDotenv(text: string): Record<string, string> {
 }
 
 /**
- * Load harness-owned .env files. Supports the original BASE_URL / API_KEY /
+ * Load cavvy-owned .env files. Supports the original BASE_URL / API_KEY /
  * MODEL trio: the key is mapped to a known provider by BASE_URL's host, and
  * ignored for unknown hosts so a key is never sent somewhere unexpected.
  * Returns a default model ref if the legacy MODEL variable was set.
  */
-export function loadHarnessEnv(files: string[]): { legacyModel?: string; notes: string[] } {
+export function loadCavvyEnv(files: string[]): { legacyModel?: string; notes: string[] } {
     const notes: string[] = [];
     let legacyModel: string | undefined;
     const allowed = new Set<string>([
         ...allProviders().flatMap((p) => p.envKeys),
         ...allProviders().flatMap((p) => (p.baseUrlEnv ? [p.baseUrlEnv] : [])),
         ...SEARCH_PROVIDERS.flatMap((s) => [...s.envKeys]),
-        "HARNESS_MODEL",
+        "CAVVY_MODEL",
     ]);
     for (const file of files) {
         if (!existsSync(file)) continue;
@@ -276,7 +296,7 @@ export function loadHarnessEnv(files: string[]): { legacyModel?: string; notes: 
                 notes.push(`Ignored API_KEY in ${file}: BASE_URL host "${host}" is not a known provider. Use /login to add a custom provider.`);
             }
         }
-        if (vars.HARNESS_MODEL && !legacyModel) legacyModel = vars.HARNESS_MODEL;
+        if (vars.CAVVY_MODEL && !legacyModel) legacyModel = vars.CAVVY_MODEL;
     }
     return { legacyModel, notes };
 }

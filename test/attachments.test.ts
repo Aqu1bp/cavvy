@@ -56,7 +56,7 @@ async function engineWithSession() {
     const events: ServerEvent[] = [];
     const c = { subs: new Set<string>(), send: (e: ServerEvent) => void events.push(e) };
     engine.clients.add(c as never);
-    const cwd = createDemoProject(tempDir("harness-attach-proj-"), { git: false });
+    const cwd = createDemoProject(tempDir("cavvy-attach-proj-"), { git: false });
     const snap = (await engine.handle(c as never, "session.create", { cwd })) as SessionSnapshot;
     const id = snap.state.id;
     return { engine, c: c as never, events, cwd, id, rt: engine.runtimes.get(id)! };

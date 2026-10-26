@@ -1,28 +1,28 @@
 // Project scripts: named shell commands per project ("dev", "test", "lint")
 // that the user runs from the GUI, each in a terminal tab. They belong to the
-// user, not the repository: they're kept in the Harness home (scripts.json),
-// never in the project's .harness/, and nothing runs one but a click in the GUI,
+// user, not the repository: they're kept in the Cavvy home (scripts.json),
+// never in the project's .cavvy/, and nothing runs one but a click in the GUI,
 // or, for the one the user marks as the setup script, creating a worktree from
 // the GUI (see setup.ts). A repository's main checkout and its worktrees share
 // one list.
 //
-// The file may be shared with another Harness (the desktop app and a
-// `harness gui` of another version) or edited by hand, so a write never drops
+// The file may be shared with another Cavvy (the desktop app and a
+// `cavvy gui` of another version) or edited by hand, so a write never drops
 // what this one doesn't understand: a file of another format or shape isn't
 // written at all, other projects' entries are written back as they were read,
 // and in the project being changed, entries that can't be used are kept as
-// they are (neither shown nor run), as are fields this Harness doesn't know.
+// they are (neither shown nor run), as are fields this Cavvy doesn't know.
 
 import { randomUUID } from "crypto";
 import { closeSync, fstatSync, linkSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from "fs";
 import { readFile, realpath, stat } from "fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
-import { ensureDir, harnessHome } from "../config/paths";
+import { ensureDir, cavvyHome } from "../config/paths";
 import { gitArgv, gitEnv } from "../util/git";
 import { RpcError } from "./rpc-error";
 import { SCRIPT_ICONS, SCRIPT_LIMITS, type ProjectScript, type ProjectScripts, type ScriptIcon } from "./protocol";
 
-export const scriptsFile = () => join(harnessHome(), "scripts.json");
+export const scriptsFile = () => join(cavvyHome(), "scripts.json");
 
 // Nothing here holds up the server's one thread while it waits: git and the
 // folder checks run asynchronously, and a save waits its turn for the lock
@@ -217,7 +217,7 @@ interface Store {
     projects: Json;
 }
 
-/** A script this Harness can use, with the entry it came from (fields it doesn't know are written back); or an entry kept as it was. */
+/** A script this Cavvy can use, with the entry it came from (fields it doesn't know are written back); or an entry kept as it was. */
 type Item = { script: ProjectScript; raw: Json } | { kept: unknown };
 
 interface Project {
@@ -249,8 +249,8 @@ function readStore(): Store {
     } catch {
         throw storeError(file, "The project scripts file isn't valid JSON.");
     }
-    if (isObject(raw) && typeof raw.version === "number" && raw.version > 1) throw storeError(file, `The project scripts file was written by a newer Harness (format ${raw.version}).`);
-    if (!isObject(raw) || raw.version !== 1 || (raw.projects !== undefined && !isObject(raw.projects))) throw storeError(file, "The project scripts file isn't in a form this Harness understands.");
+    if (isObject(raw) && typeof raw.version === "number" && raw.version > 1) throw storeError(file, `The project scripts file was written by a newer Cavvy (format ${raw.version}).`);
+    if (!isObject(raw) || raw.version !== 1 || (raw.projects !== undefined && !isObject(raw.projects))) throw storeError(file, "The project scripts file isn't in a form this Cavvy understands.");
     const projects = (raw.projects ??= {}) as Json;
     return { file, raw, projects };
 }
@@ -262,7 +262,7 @@ const nameOf = (s: unknown) => (isObject(s) && typeof s.name === "string" ? s.na
 function readProject(store: Store, key: string): Project {
     const entry = store.projects[key];
     if (entry === undefined) return { items: [], raw: {} };
-    if (!isObject(entry) || (entry.scripts !== undefined && !Array.isArray(entry.scripts))) throw storeError(store.file, "This project's entry in the project scripts file isn't in a form this Harness understands.");
+    if (!isObject(entry) || (entry.scripts !== undefined && !Array.isArray(entry.scripts))) throw storeError(store.file, "This project's entry in the project scripts file isn't in a form this Cavvy understands.");
     const { scripts = [], lastUsed, ...rest } = entry as { scripts?: unknown[]; lastUsed?: unknown };
     // Entries sharing an id, or a name in any case, are all set aside, wherever they are: which one
     // ran mustn't depend on their order (a reorder would change what an id runs).
@@ -410,7 +410,7 @@ export function takeOver(lock: string, found: Found): boolean {
     }
 }
 
-const busy = () => new RpcError("The project scripts are being saved by another Harness window; try again", "busy");
+const busy = () => new RpcError("The project scripts are being saved by another Cavvy window; try again", "busy");
 
 type LockId = { ino: number; dev: number; token: string };
 
@@ -476,7 +476,7 @@ export function stillMine(lock: string, mine: LockId): boolean {
 
 /**
  * Held around a read-change-write, so another server process (the desktop app
- * and a `harness gui`) can't interleave its own; another request in this one
+ * and a `cavvy gui`) can't interleave its own; another request in this one
  * waits for it too. Waiting is on a timer, so the server carries on meanwhile.
  * `fn` gets the fence a write checks first.
  */

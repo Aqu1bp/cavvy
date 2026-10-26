@@ -1,5 +1,5 @@
 "use strict";
-/* Harness glass redesign: interactive mockup. A scripted fake agent drives
+/* Cavvy glass redesign: interactive mockup. A scripted fake agent drives
    everything; no models are called. All data is sample data. */
 
 // ---------- Helpers ------------------------------------------------------
@@ -76,13 +76,13 @@ const FILES = [
     "gui/src/lib/session-order.ts", "gui/src/lib/composer-draft.ts", "gui/src/state/app.ts", "gui/src/state/prefs.ts",
     "gui/src/styles/tokens.css", "scripts/test-shard.ts", "src/providers/openai-compat.ts", "src/providers/registry.ts",
 ];
-const PROJECTS = { "my-own-harness": "main", "codex-bridge": "main" };
+const PROJECTS = { "cavvy": "main", "codex-bridge": "main" };
 
 // Context around each change, so the review pane reads like a real diff.
 const CTX = {
     "gui/src/lib/session-order.ts": { fn: "sessionOrder", head: ['import type { Session } from "../state/app";', "", "/** Newest first. */"], pre: ["", "/** The order the sidebar lists sessions in. */"], post: ["", "export const isRunning = (s: Session) => s.status === \"running\";"], total: 31 },
     "gui/src/components/Sidebar.tsx": { fn: "SessionList", head: ['import { createMemo, For } from "solid-js";', 'import { sessionOrder, isRunning } from "../lib/session-order";', 'import { SessionRow } from "./SessionRow";'], pre: ["export function SessionList(p: { sessions: Session[] }) {", "    const [renaming, setRenaming] = createSignal<string>();"], post: ["    return <For each={ordered()}>{(s) => <SessionRow s={s} renaming={renaming() === s.id} />}</For>;", "}"], total: 412 },
-    "gui/src/lib/composer-draft.ts": { fn: "saveDraft", head: ['import { read, write } from "./storage";', "", "const DRAFTS_KEY = \"harness.drafts\";"], pre: ["let timer: ReturnType<typeof setTimeout> | undefined;", "const pending = new Map<string, string>();", ""], post: ["", "function flush() {", "    write(DRAFTS_KEY, { ...all(), ...Object.fromEntries(pending) });"], total: 64 },
+    "gui/src/lib/composer-draft.ts": { fn: "saveDraft", head: ['import { read, write } from "./storage";', "", "const DRAFTS_KEY = \"cavvy.drafts\";"], pre: ["let timer: ReturnType<typeof setTimeout> | undefined;", "const pending = new Map<string, string>();", ""], post: ["", "function flush() {", "    write(DRAFTS_KEY, { ...all(), ...Object.fromEntries(pending) });"], total: 64 },
     "gui/src/App.tsx": { fn: "onKeyDown", head: ['import { createEffect, onMount } from "solid-js";', 'import { isMod, isTerminalToggle } from "./lib/platform";'], pre: ["function onKeyDown(e: KeyboardEvent) {", "    if (e.defaultPrevented) return;"], post: ["    if (isMod(e) && e.key === \"k\") setPaletteOpen(true);", "}"], total: 640 },
     "scripts/test-shard.ts": { fn: "shard", head: ['import timings from "../test/timings.json";', "", "const time = (f: string) => timings[f] ?? median;"], pre: ["/** The files shard `index` of `n` runs. */"], post: ["", "if (import.meta.main) console.log(shard(files, n).join(\"\\n\"));"], total: 88 },
     "src/providers/openai-compat.ts": { fn: "request", head: ['import type { Route } from "./registry";', 'import { toChat } from "./chat";'], pre: ["export async function request(route: Route, messages: Message[]) {"], post: ["    return fetch(route.url, { method: \"POST\", body: JSON.stringify(body) });", "}"], total: 210 },
@@ -97,7 +97,7 @@ const AREAS = [
         file: "gui/src/components/Sidebar.tsx", test: "test/gui-sidebar-component.test.ts",
         finding: "Rows in `Sidebar.tsx` are keyed by their index. Any reorder remounts them, which drops their hover and rename state.",
         fix: "I'll key them by session id and add a test that reorders mid-rename.",
-        explain: "Each session row comes from `SessionRow` in `Sidebar.tsx`. The list is ordered by `sessionOrder()`, which sorts on when each session's last turn started.\n\nWhen Harness restarts, the server reloads each session from disk and the GUI asks for its history, so the transcript, the plan and the changed files come back as they were.",
+        explain: "Each session row comes from `SessionRow` in `Sidebar.tsx`. The list is ordered by `sessionOrder()`, which sorts on when each session's last turn started.\n\nWhen Cavvy restarts, the server reloads each session from disk and the GUI asks for its history, so the transcript, the plan and the changed files come back as they were.",
         summary: "Done. Rows are keyed by session id, so reordering keeps their state, and the new test covers a reorder during a rename.",
         plan: ["Key session rows by id", "Keep rename state across reorders", "Test a reorder mid-rename"],
         hunk: [["c", 41, "export function SessionList(p: { sessions: Session[] }) {"], ["d", 42, "    return <For each={p.sessions}>{(s, i) => <SessionRow key={i()} s={s} />}</For>;"], ["a", 42, "    // Key by id: an index key remounts every row the list reorders."], ["a", 43, "    return <For each={p.sessions}>{(s) => <SessionRow key={s.id} s={s} />}</For>;"], ["c", 44, "}"]],
@@ -141,7 +141,7 @@ const AREAS = [
         file: "src/providers/openai-compat.ts", test: "test/openai-compat.test.ts",
         finding: "`openai-compat.ts` never sends `cache_control`, so OpenRouter can't cache the system prompt.",
         fix: "I'll mark the system prompt and the last tool result as cacheable when the route supports it.",
-        explain: "Providers register in `registry.ts`. OpenAI-compatible ones, OpenRouter included, go through `openai-compat.ts`, which turns Harness messages into chat-completions requests.",
+        explain: "Providers register in `registry.ts`. OpenAI-compatible ones, OpenRouter included, go through `openai-compat.ts`, which turns Cavvy messages into chat-completions requests.",
         summary: "Done. Requests to routes that support caching now mark the system prompt and the latest tool result.",
         plan: ["Detect routes that support caching", "Mark the system prompt and last tool result", "Test the request body"],
         hunk: [["c", 88, "const body = {"], ["c", 89, "    model: route.model,"], ["d", 90, "    messages: toChat(messages),"], ["a", 90, "    messages: route.caching ? withCacheMarks(toChat(messages)) : toChat(messages),"], ["c", 91, "};"]],
@@ -188,7 +188,7 @@ const MIN = 60000;
 
 function mkSession(o) {
     return {
-        id: `s${++uid}`, project: "my-own-harness", title: "New session", branch: "main", status: "idle", unread: false,
+        id: `s${++uid}`, project: "cavvy", title: "New session", branch: "main", status: "idle", unread: false,
         at: Date.now(), blocks: [], changes: [], plan: [], model: prefs.model, effort: prefs.effort, mode: prefs.defaultMode,
         ctx: 12, queue: [], pending: null, run: null, started: 0, label: "", pr: null, commit: null, isNew: false,
         attach: [], draft: "", fresh: false, history: [], ...o,
@@ -251,7 +251,7 @@ function seed() {
         ],
         pr: 163, prChecks: "passed",
     });
-    const quick = (title, branch, at, q, answer, project = "my-own-harness", model = "opus") => mkSession({
+    const quick = (title, branch, at, q, answer, project = "cavvy", model = "opus") => mkSession({
         title, branch, at, project, ctx: 9, model,
         blocks: [userB(q), actsB([["eye", "Read", pick(FILES)], ["file-search", "Searched", pick(["cache_control", "menubar", "summary", "listModels"]), "3 results"]]), proseB(answer), B("meta", { text: `${modelOf(model).label}, high effort`, dur: 23000 })],
     });
@@ -264,9 +264,9 @@ function seed() {
     ];
     state.active = flick.id;
     // Terminals: one shell and a dev server per project to start with.
-    state.term.tabs["my-own-harness"] = [
-        tab("zsh", [`<span class="mut">Last login: Tue Oct 21 09:12:04 on ttys002</span>`, `${prompt("my-own-harness", "fix/session-flicker")} git status --short`, " M gui/src/components/Sidebar.tsx", " M gui/src/lib/session-order.ts", "?? test/gui-session-order.test.ts"]),
-        tab("bun run dev", [`${prompt("my-own-harness", "fix/session-flicker")} bun run dev`, "$ vite", "", "  VITE v8.3.0  ready in 412 ms", "", "  ➜  Local:   http://localhost:5173/", "  ➜  press h + enter to show help"], true),
+    state.term.tabs["cavvy"] = [
+        tab("zsh", [`<span class="mut">Last login: Tue Oct 21 09:12:04 on ttys002</span>`, `${prompt("cavvy", "fix/session-flicker")} git status --short`, " M gui/src/components/Sidebar.tsx", " M gui/src/lib/session-order.ts", "?? test/gui-session-order.test.ts"]),
+        tab("bun run dev", [`${prompt("cavvy", "fix/session-flicker")} bun run dev`, "$ vite", "", "  VITE v8.3.0  ready in 412 ms", "", "  ➜  Local:   http://localhost:5173/", "  ➜  press h + enter to show help"], true),
     ];
     state.term.tabs["codex-bridge"] = [tab("zsh", [])];
     return { flick, shard };
@@ -595,7 +595,7 @@ function send(s, text, att = [], fromQueue = false) {
     if (s.run && !fromQueue) { s.queue.push({ text, att }); paint(); return; }
     if (s.isNew) {
         s.isNew = false; s.title = autoTitle(text.replace(/^!/, ""));
-        if (s.worktree) s.branch = `harness/${slug(s.title)}`;
+        if (s.worktree) s.branch = `cavvy/${slug(s.title)}`;
         s.fresh = true;
     }
     s.history.push(text); s.hi = -1;
@@ -626,7 +626,7 @@ function stepSession(d) {
     const next = list[(i + d + list.length) % list.length];
     if (next) select(next.id);
 }
-function newSession(project = cur()?.project ?? "my-own-harness") {
+function newSession(project = cur()?.project ?? "cavvy") {
     const existing = state.sessions.find((s) => s.isNew && !s.blocks.length);
     const s = existing ?? mkSession({ isNew: true, project, branch: PROJECTS[project], fresh: true });
     if (!existing) state.sessions.unshift(s);
@@ -666,7 +666,7 @@ function resolveAsk(v) {
             (sc) => { toast(`Saved the plan to ${$("#dlg-plan", sc).value}`, { kind: "ok", icon: "save" }); }, "#dlg-plan");
     }
     if (v === "worktree") {
-        return dialog(`<h3>Build in a new worktree</h3><p>Approves the plan and builds it on its own branch, leaving this checkout as it is.</p><div class="keyin" style="padding:0"><input id="dlg-wt" value="harness/${slug(s.title)}" spellcheck="false" /></div><div class="row"><span class="grow"></span><button class="btn ghost" data-x>Cancel</button><button class="btn primary" data-ok>Create and build</button></div>`,
+        return dialog(`<h3>Build in a new worktree</h3><p>Approves the plan and builds it on its own branch, leaving this checkout as it is.</p><div class="keyin" style="padding:0"><input id="dlg-wt" value="cavvy/${slug(s.title)}" spellcheck="false" /></div><div class="row"><span class="grow"></span><button class="btn ghost" data-x>Cancel</button><button class="btn primary" data-ok>Create and build</button></div>`,
             (sc) => { s.branch = $("#dlg-wt", sc).value.trim() || s.branch; s.worktree = true; toast(`Created a worktree on ${s.branch}`, { kind: "ok", icon: "folder-git-2" }); resolveAsk("edits"); }, "#dlg-wt");
     }
     const el = $("#ask .ask");
@@ -1004,7 +1004,7 @@ function rewindDialog(s, from) {
     const body = () => {
         const f = files();
         return `<div class="rw-list">${prompts.map((x) => `<button class="rw-item ${x.i === pick ? "on" : ""}" data-rw="${x.i}">${I("rotate-ccw-clock", 14)}<span class="trunc">${esc(plain(x.b.text))}</span></button>`).join("")}</div>
-            <div class="rw-plan">${f.length ? `<div>Harness changed ${f.length} file${f.length > 1 ? "s" : ""} since then:</div>${f.map((c) => `<div class="rw-f">${I("file-pen", 13)}${esc(c.path)}</div>`).join("")}` : `<div class="dim">No file changes to undo since then.</div>`}<div class="dim">Changes made by shell commands aren't tracked and won't be undone.</div></div>`;
+            <div class="rw-plan">${f.length ? `<div>Cavvy changed ${f.length} file${f.length > 1 ? "s" : ""} since then:</div>${f.map((c) => `<div class="rw-f">${I("file-pen", 13)}${esc(c.path)}</div>`).join("")}` : `<div class="dim">No file changes to undo since then.</div>`}<div class="dim">Changes made by shell commands aren't tracked and won't be undone.</div></div>`;
     };
     const sc = dialog(`<h3>Rewind</h3><p>Go back to before one of your prompts</p><div class="rw">${body()}</div>
         <div class="row"><button class="btn ghost" data-x>Cancel</button><span class="grow"></span><button class="btn ghost" data-rwgo="code">Code only</button><button class="btn ghost" data-rwgo="conv">Conversation only</button><button class="btn primary" data-ok>Restore both</button></div>`, () => go(true, true));
@@ -1147,7 +1147,7 @@ function settingsHTML() {
         h += `<div class="set-group">${SHORTCUTS.map(([k, d]) => row(d, "", `<span class="sc-keys">${k.split("|").map((x) => `<span class="kbd">${esc(x)}</span>`).join("")}</span>`)).join("")}</div>`;
     }
     if (sec === "about") {
-        h += `<div class="set-group">${row("Version", "", `<span class="set-val">1.0.0</span>`)}${row("Data", "", `<span class="set-val">~/.harness</span>`)}${row("Platform", "", `<span class="set-val">macOS, arm64</span>`)}${row("Connection", "", `<span class="set-val">Local server, connected</span>`)}</div><div class="set-note">Sample values for the mockup.</div>`;
+        h += `<div class="set-group">${row("Version", "", `<span class="set-val">1.0.0</span>`)}${row("Data", "", `<span class="set-val">~/.cavvy</span>`)}${row("Platform", "", `<span class="set-val">macOS, arm64</span>`)}${row("Connection", "", `<span class="set-val">Local server, connected</span>`)}</div><div class="set-note">Sample values for the mockup.</div>`;
     }
     return h + `</div>`;
 }
@@ -1261,7 +1261,7 @@ function blockHTML(b) {
 const TURN_FILES = [["gui/src/lib/session-order.ts", 3, 1], ["gui/src/components/Sidebar.tsx", 3, 1], ["test/gui-session-order.test.ts", 6, 0, "new"]];
 const WT_FILES = [["gui/src/components/Home.tsx", 140, 82], ["gui/src/styles/home.css", 349, 200], ["gui/src/components/CliSessions.tsx", 120, 57], ["gui/src/components/ErrorCards.tsx", 210, 0, "new"], ["gui/src/state/app.ts", 52, 12], ["gui/src/components/Sidebar.tsx", 160, 23]];
 const PLACES = [
-    { name: "my-own-harness", branch: "main", own: true, files: 2, add: 12, del: 2, commits: 0, who: [] },
+    { name: "cavvy", branch: "main", own: true, files: 2, add: 12, del: 2, commits: 0, who: [] },
     { name: "home-redesign", branch: "design/home-redesign", files: 35, add: 2836, del: 609, commits: 3, who: [{ prov: "claude-code", label: "You" }] },
     { name: "agent-77de", branch: "agent/home", files: 9, add: 610, del: 210, commits: 0, who: [{ prov: "claude-code", label: "Port Home" }] },
     { name: "agent-3f2a", branch: "agent/error-cards", files: 7, add: 412, del: 96, commits: 2, who: [{ prov: "claude-code", label: "Error cards" }, { prov: "codex", label: "Review" }, { prov: "gemini", label: "Copy pass" }] },
@@ -1533,7 +1533,7 @@ function renderInsp(s) {
     let bodyHtml = "";
     if (state.insp === "plan") {
         bodyHtml = s.plan.length ? `<div class="pane plan"><ul>${s.plan.map((p) => `<li class="${p.st}"><span class="box">${p.st === "done" ? I("check", 11, 3) : ""}</span><span>${esc(p.t)}</span></li>`).join("")}</ul></div>`
-            : `<div class="pane blank">${I("map", 22)}<b>No plan yet</b>Switch to Plan mode (⇧Tab) and Harness lays out the steps before changing anything.</div>`;
+            : `<div class="pane blank">${I("map", 22)}<b>No plan yet</b>Switch to Plan mode (⇧Tab) and Cavvy lays out the steps before changing anything.</div>`;
     } else {
         const a = s.changes.reduce((n, c) => n + c.add, 0), d = s.changes.reduce((n, c) => n + c.del, 0);
         if (s.pr) bodyHtml += `<div class="prline">${I("git-pull-request", 18)}<div><b>PR #${s.pr} is open</b><span>${s.prChecks === "running" ? "Checks are running" : "All checks passed"}</span></div></div>`;
@@ -1544,7 +1544,7 @@ function renderInsp(s) {
             bodyHtml += `<div class="sum committed">${I("git-commit-horizontal", 15)}<span>Committed <b>${s.commit.sha}</b>${s.commit.pushed ? " and pushed" : ""}</span></div><div class="cmsg">${esc(s.commit.msg)}</div>`;
             bodyHtml += s.commit.changes.map((c) => `<button class="file" style="width:100%;text-align:left" data-file="${esc(c.path)}" title="Review ${esc(base(c.path))}"><span class="fs ${c.kind}">${c.kind.toUpperCase()}</span><span class="nm"><b>${esc(base(c.path))}</b><span>${esc(dir(c.path))}</span></span><span class="st"><span class="a">+${c.add}</span> ${c.del ? `<span class="d">−${c.del}</span>` : ""}</span></button>`).join("");
         }
-        else if (!s.pr) bodyHtml += `<div class="pane blank">${I("file-diff", 22)}<b>No changes yet</b>Files Harness edits in this session show up here.</div>`;
+        else if (!s.pr) bodyHtml += `<div class="pane blank">${I("file-diff", 22)}<b>No changes yet</b>Files Cavvy edits in this session show up here.</div>`;
     }
     const html = `<div class="insp-h"><div class="seg">${[["changes", `Changes${nC ? ` <span class="ct">${nC}</span>` : ""}`], ["plan", `Plan${s.plan.length ? ` <span class="ct">${s.plan.filter((p) => p.st === "done").length}/${s.plan.length}</span>` : ""}`]].map(([k, l]) => `<button class="${state.insp === k ? "on" : ""}" data-pane="${k}">${l}</button>`).join("")}</div></div><div class="insp-body">${bodyHtml}</div>`;
     put(root2, html + footHTML(s));

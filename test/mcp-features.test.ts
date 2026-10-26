@@ -19,7 +19,7 @@ import type { McpClient as McpClientT, McpInput } from "../src/mcp/client";
 import type { McpManager as McpManagerT } from "../src/mcp/manager";
 
 const FIXTURE = join(import.meta.dir, "fixtures", "mcp-stdio-server.ts");
-const WORK = tempDir("harness-mcp-features-");
+const WORK = tempDir("cavvy-mcp-features-");
 
 function stdio(era: string, env: Record<string, string> = {}): McpServerConfig {
     return { command: process.execPath, args: ["--no-env-file", FIXTURE], env: { MCP_FIXTURE_ERA: era, ...env }, cwd: WORK };
@@ -395,7 +395,7 @@ describe("the manager: resources, prompts and the model's resource tools", () =>
 
     test("an OAuth client secret is masked in what the server says, like env and headers", async () => {
         const { maskConfigValues } = await import("../src/mcp/approval");
-        const masked = maskConfigValues("token endpoint said: bad client_secret=cs-1 for client harness", { url: "https://x.invalid/mcp", oauth: { clientId: "harness", clientSecret: "cs-1" } });
+        const masked = maskConfigValues("token endpoint said: bad client_secret=cs-1 for client cavvy", { url: "https://x.invalid/mcp", oauth: { clientId: "cavvy", clientSecret: "cs-1" } });
         expect(masked).not.toContain("cs-1");
         expect(masked).toContain("[REDACTED OAuth client secret]");
     });

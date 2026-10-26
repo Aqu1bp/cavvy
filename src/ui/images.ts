@@ -31,7 +31,7 @@ export type Runner = (argv: string[], timeoutMs?: number, maxBytes?: number) => 
 /** How long a command asked to stop (SIGTERM) gets before it's killed. */
 export const KILL_GRACE_MS = 300;
 
-/** Process groups still running. Detached, they'd outlive the harness, so its exit kills them. */
+/** Process groups still running. Detached, they'd outlive Cavvy, so its exit kills them. */
 const liveGroups = new Set<number>();
 let killOnExit = false;
 function track(pid: number) {
@@ -471,7 +471,7 @@ export function planImage(bytes: number, size?: { width: number; height: number 
  */
 export async function downscale(data: Buffer, mediaType: string, run: Runner = runCommand, platform = process.platform): Promise<{ data: Buffer; mediaType: string } | undefined> {
     if (platform !== "darwin") return undefined;
-    const dir = mkdtempSync(join(tmpdir(), "harness-img-"));
+    const dir = mkdtempSync(join(tmpdir(), "cavvy-img-"));
     try {
         const ext = mediaType === "image/png" ? "png" : mediaType === "image/gif" ? "gif" : mediaType === "image/webp" ? "webp" : "jpg";
         const src = join(dir, `in.${ext}`);
@@ -517,7 +517,7 @@ const CLIPBOARD_SCRIPT = [
 export async function readClipboardImage(run: Runner = runCommand, platform = process.platform): Promise<Buffer | undefined> {
     const isPng = (b: Buffer | undefined) => (b && b.length && sniffImage(b) === "image/png" ? b : undefined);
     if (platform === "darwin") {
-        const dir = mkdtempSync(join(tmpdir(), "harness-clip-"));
+        const dir = mkdtempSync(join(tmpdir(), "cavvy-clip-"));
         try {
             const out = join(dir, "clipboard.png");
             const r = await run(["osascript", ...CLIPBOARD_SCRIPT.flatMap((l) => ["-e", l]), out], 5000);

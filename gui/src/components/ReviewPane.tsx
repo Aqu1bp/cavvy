@@ -1,10 +1,10 @@
 // The diff reader: the inspector widens into it (lib/layout.ts). One toolbar row: back; a view menu
-// for which changes (uncommitted, the branch, a recorded turn, Harness's own edits, or another
+// for which changes (uncommitted, the branch, a recorded turn, Cavvy's own edits, or another
 // worktree's); "vs <base>" in Branch view; the files as a jump list; the view's total; side by side;
 // refresh. Under it every file is stacked in one scroll, each under a sticky header that folds it,
 // and lines take comments for the next message; Commit and Push at the foot. Opened from the side
 // panel, the title bar's changes chip or a turn's Review changes, scrolled to the file asked for.
-// Git's views show every change in the folder, whoever made it; Harness edits shows only what the
+// Git's views show every change in the folder, whoever made it; Cavvy edits shows only what the
 // edit tools did, and is all there is outside a Git repository. Another worktree of the repository
 // (where an agent works) can be read too: its branch and uncommitted changes only; commenting,
 // committing, pushing and opening in the editor stay with the session's own folder. Only the files
@@ -660,7 +660,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     ask(asPick(review()));
     createEffect(() => lastView.set(id(), { scope: scope(), base: base(), turnId: turnId(), worktree: worktree(), own: place().own }));
 
-    const gitScope = (): GitScope => (scope() === "harness" ? "uncommitted" : (scope() as GitScope));
+    const gitScope = (): GitScope => (scope() === "cavvy" ? "uncommitted" : (scope() as GitScope));
     const [git, { refetch: refetchGit }] = useGitChanges(() => p.handle, gitScope, () => (gitScope() === "branch" ? base() : undefined), () => (gitScope() === "turn" ? turnId() : undefined), worktree);
 
     // The repository's worktrees: listed once, and again each time the view menu opens, on Refresh, and when the
@@ -712,26 +712,26 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     };
     /** What works in each worktree: the sessions in it, and the sub-agents the server found there. */
     const work = () => worktreeWork(listing()?.list ?? [], app.sessions, { home: app.hello?.homeDir, self: id() });
-    /** Outside a Git repository, Harness's own record is all there is. */
+    /** Outside a Git repository, Cavvy's own record is all there is. */
     const noRepo = () => git()?.repo === false;
-    const shownScope = (): ReviewScope => (noRepo() && !away() ? "harness" : scope());
+    const shownScope = (): ReviewScope => (noRepo() && !away() ? "cavvy" : scope());
     /** The diff on screen is the session's own folder's (not the answer for another worktree, still shown while the session's loads). */
     const own = () => ownOnScreen(worktree(), shownScope(), git());
     /** The folder the files on screen are relative to. */
     const shownRoot = () => (own() ? p.handle.view.state.cwd : (git()?.worktree ?? worktree() ?? p.handle.view.state.cwd));
-    const [harness, { refetch: refetchHarness }] = createResource(
-        () => sessionReadReady(p.handle) && shownScope() === "harness" && { id: id(), n: p.handle.view.state.filesChanged, busy: p.handle.view.state.busy, outside: changedOutside() },
+    const [cavvy, { refetch: refetchCavvy }] = createResource(
+        () => sessionReadReady(p.handle) && shownScope() === "cavvy" && { id: id(), n: p.handle.view.state.filesChanged, busy: p.handle.view.state.busy, outside: changedOutside() },
         ({ id }) =>
             rpc.call("session.changes", { id }).catch((e) => {
                 if (sessionReadReady(p.handle)) reportError(e);
                 return { files: [], added: 0, removed: 0, tracked: true };
             }),
     );
-    const view = () => (shownScope() === "harness" ? harness() : git());
-    const loading = () => (shownScope() === "harness" ? harness.loading : git.loading);
+    const view = () => (shownScope() === "cavvy" ? cavvy() : git());
+    const loading = () => (shownScope() === "cavvy" ? cavvy.loading : git.loading);
     const files = (): Row[] => view()?.files ?? [];
-    const more = () => (shownScope() !== "harness" && git()?.more) || 0;
-    const error = () => (shownScope() !== "harness" ? git()?.error : undefined);
+    const more = () => (shownScope() !== "cavvy" && git()?.more) || 0;
+    const error = () => (shownScope() !== "cavvy" ? git()?.error : undefined);
     /** Commit opens the Commit dialog with every file; it picks from there. A collapsed folder or a nested repository can't be. */
     const commitPaths = () => files().filter((f) => f.kind !== "folder" && f.kind !== "repo").map(key);
     const commitDisabled = () => commitUnavailable(p.handle) ?? (loading() ? "Wait for changes to finish loading." : error() ? "Refresh the changes before committing." : !commitPaths().length ? "Nothing to commit." : undefined);
@@ -756,7 +756,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     // answer counts only for the view, base and path it was asked for; the resource keeps its last.
     const unlistedKey = () => {
         const want = picked();
-        return shownScope() !== "harness" && view() && want && !listedPick() ? JSON.stringify([id(), gitScope(), base(), turnId(), worktree(), pickKey(want)]) : undefined;
+        return shownScope() !== "cavvy" && view() && want && !listedPick() ? JSON.stringify([id(), gitScope(), base(), turnId(), worktree(), pickKey(want)]) : undefined;
     };
     const [unlisted, { refetch: refetchUnlisted }] = createResource(
         () => {
@@ -803,7 +803,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     const refresh = () => {
         void refetchGit();
         if (away()) void refetchWorktrees();
-        if (shownScope() === "harness") void refetchHarness();
+        if (shownScope() === "cavvy") void refetchCavvy();
     };
 
     /** A file's comments: by its handle when its name was shown redacted (another may show the same), else by name. They wait in this session's composer until the next message. */
@@ -833,7 +833,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
 
     const count = () => {
         const n = files().length + more();
-        const plus = shownScope() !== "harness" && git()?.moreAtLeast ? "+" : "";
+        const plus = shownScope() !== "cavvy" && git()?.moreAtLeast ? "+" : "";
         return plus ? `${n.toLocaleString()}+ files` : plural(n, "file");
     };
     const moreLabel = () => (more() ? `${more().toLocaleString()}${git()?.moreAtLeast ? "+" : ""} more not shown` : undefined);
@@ -841,7 +841,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     const empty = () => {
         const v = view();
         if (!v) return undefined;
-        if (shownScope() === "harness") return v.tracked === false ? "This session isn't saved yet." : "No file changes yet. Edits Harness's tools make show up here as a reviewable diff.";
+        if (shownScope() === "cavvy") return v.tracked === false ? "This session isn't saved yet." : "No file changes yet. Edits Cavvy's tools make show up here as a reviewable diff.";
         if (shownScope() === "branch") return `Nothing has changed since ${branchLabel()} left ${git()?.base?.ref ?? "its base"}.`;
         if (shownScope() === "turn" || shownScope() === "last-turn") return git()?.incomplete ? "This turn’s snapshot is incomplete." : "No file changes in this turn.";
         return "Nothing to commit: the working tree matches the last commit.";
@@ -1028,7 +1028,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                     </div>
                 </Show>
                 <Show when={noRepo() && !away() && git()?.reason}>
-                    <div class="rv-slim selectable">{git()!.reason} Harness edits shows what its own tools changed.</div>
+                    <div class="rv-slim selectable">{git()!.reason} Cavvy edits shows what its own tools changed.</div>
                 </Show>
                 <Show when={gone()}>
                     {(w) => (
@@ -1037,7 +1037,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                         </div>
                     )}
                 </Show>
-                <Show when={shownScope() !== "harness" && (git()?.incomplete || git()?.notes?.length)}>
+                <Show when={shownScope() !== "cavvy" && (git()?.incomplete || git()?.notes?.length)}>
                     <div class="rv-slim warn selectable" role="status" title={`${git()?.incomplete ? "This turn’s snapshot is incomplete. " : ""}${git()?.notes?.join(" ") ?? ""}`}>
                         {git()?.incomplete ? "This turn’s snapshot is incomplete. " : ""}
                         {git()?.notes?.join(" ")}

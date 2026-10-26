@@ -1,5 +1,5 @@
 // Delegation: Claude Code and Codex hand tasks to other providers' models
-// through the harness's MCP server, and harness models pick a model for the
+// through Cavvy's MCP server, and cavvy models pick a model for the
 // Task tool. Fake CLIs (test/fixtures) and a scripted model stand in for the
 // real ones; nothing here runs the real CLIs or touches the network.
 
@@ -220,7 +220,7 @@ async function makeAgent(o: Opts) {
 
 // ---------------------------------------------------------------------------
 
-describe("the harness's MCP server", () => {
+describe("Cavvy's MCP server", () => {
     const echo = { name: "echo", description: "Echo", inputSchema: { type: "object" }, annotations: { readOnlyHint: true }, call: async (args: Record<string, unknown>, ctx: { meta: Record<string, unknown> }) => ({ text: `echo ${JSON.stringify(args)} ${JSON.stringify(ctx.meta)}` }) };
     const post = (url: string, body: unknown, headers: Record<string, string> = {}, signal?: AbortSignal) =>
         fetch(url, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", ...headers }, body: typeof body === "string" ? body : JSON.stringify(body), signal });
@@ -397,9 +397,9 @@ describe("the harness's MCP server", () => {
         expect(ran).toBe(false);
     });
 
-    test("the harness's own MCP client can use it (a client that probes for the newer protocol first)", async () => {
+    test("Cavvy's own MCP client can use it (a client that probes for the newer protocol first)", async () => {
         const reg = registerTools([echo], () => "hello");
-        const c = new McpClient("harness", { url: reg.url, headers: { Authorization: reg.authorization } }, cwd);
+        const c = new McpClient("cavvy", { url: reg.url, headers: { Authorization: reg.authorization } }, cwd);
         try {
             await c.connect();
             expect(c.era).toBe("legacy");
@@ -427,7 +427,7 @@ describe("which models a backend delegates to", () => {
         expect(nativeModel("codex", { provider: "openai", id: "gpt-x" })).toBe(true);
         expect(nativeModel("codex", { provider: "openrouter", id: "openai/gpt-x" })).toBe(true);
         expect(nativeModel("codex", { provider: "claude-code", id: "default" })).toBe(false);
-        // Harness models have no sub-agents of their own: everything is theirs to use.
+        // Cavvy models have no sub-agents of their own: everything is theirs to use.
         expect(nativeModel("anthropic", { provider: "anthropic", id: "claude-x" })).toBe(false);
     });
 
@@ -644,7 +644,7 @@ describe("the delegate tools", () => {
 // ---------------------------------------------------------------------------
 
 describe("Claude Code as the main agent", () => {
-    test("delegates to another provider's model through the harness's MCP server", async () => {
+    test("delegates to another provider's model through Cavvy's MCP server", async () => {
         process.env.FAKE_SCENARIO = "mcp";
         calls([{ tool: "delegate", args: { task: "Write notes.txt, then report", description: "Write notes", model: "gemini:gemini-test" } }]);
         script = (_req, n) => (n === 1 ? use("w1", "Write", { file_path: join(cwd, "notes.txt"), content: "from gemini\n" }) : say("I wrote notes.txt."));
@@ -652,7 +652,7 @@ describe("Claude Code as the main agent", () => {
         expect(await run("get gemini to write notes")).toBe("done");
 
         // The server went over stdin, before the prompt, with its tools allowed and a timeout past the longest wait.
-        const set = setServers()[0].request.servers.harness;
+        const set = setServers()[0].request.servers.cavvy;
         expect(set).toMatchObject({ type: "http", alwaysLoad: true, timeout: TOOL_TIMEOUT_SEC * 1000 });
         expect(set.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
         expect(set.tools).toEqual(TOOLS.map((name) => ({ name, permission_policy: "always_allow" })));
@@ -667,7 +667,7 @@ describe("Claude Code as the main agent", () => {
 
         // It connected, and got the instructions (Claude Code puts them in its system prompt).
         const conn = logLines().find((l) => l.mcpConnected);
-        expect(conn).toMatchObject({ mcpConnected: "harness", tools: TOOLS });
+        expect(conn).toMatchObject({ mcpConnected: "cavvy", tools: TOOLS });
         expect(conn.instructions).toContain("For Claude models, keep using your own Agent tool.");
 
         // The delegated agent's edit was asked about like the main agent's, naming it and its model.
@@ -711,7 +711,7 @@ describe("Claude Code as the main agent", () => {
         expect(text).not.toContain("claude-code:default");
     });
 
-    test("only the harness's own tools are approved by their server's name: another tool under that name is asked about", async () => {
+    test("only Cavvy's own tools are approved by their server's name: another tool under that name is asked about", async () => {
         process.env.FAKE_SCENARIO = "mcp";
         calls([{ server: MCP_SERVER_NAME, tool: "erase", args: {} }]);
         const { run, asked } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: false }) });
@@ -781,7 +781,7 @@ describe("Claude Code as the main agent", () => {
         calls([]);
         expect(await run("anything back?")).toBe("done");
         const last = userTexts().at(-1)!;
-        expect(last).toContain("A task you delegated (with the harness delegate tool) has ended.");
+        expect(last).toContain("A task you delegated (with the cavvy delegate tool) has ended.");
         expect(last).toContain("Looks fine.");
         expect(last).toContain("anything back?");
         // Given once.
@@ -824,7 +824,7 @@ describe("Claude Code as the main agent", () => {
         expect(notices(events)).toContain("info: Stopped 1 delegated task.");
     });
 
-    test("after a switch to a harness model, esc leaves the tasks running in the background, and an explicit stop ends them (#228)", async () => {
+    test("after a switch to a Cavvy model, esc leaves the tasks running in the background, and an explicit stop ends them (#228)", async () => {
         process.env.FAKE_SCENARIO = "mcp";
         calls([{ tool: "delegate", args: { task: "Review", description: "Review", model: "gemini:gemini-test", agent: "explore", wait: false } }]);
         script = async (req) => {
@@ -944,7 +944,7 @@ describe("Claude Code as the main agent", () => {
         await agent.delegatedTasks[0]!.settled;
         expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["cancelled", "running"]);
 
-        const set = setServers()[0].request.servers.harness;
+        const set = setServers()[0].request.servers.cavvy;
         await agent.dispose(2000);
         expect(agent.delegatedTasks.map((t) => t.status)).toEqual(["cancelled", "cancelled"]);
         const r = await fetch(set.url, { method: "POST", headers: { "Content-Type": "application/json", Authorization: set.headers.Authorization }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }) });
@@ -1055,22 +1055,22 @@ describe("Claude Code as the main agent", () => {
         expect(result.text).toContain("Codex didn't list its MCP servers safely, so this turn cannot run");
     }, 20_000);
 
-    test("an approved server named harness cannot replace the delegation server", async () => {
-        writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: { harness: { command: "must-not-run" } } }));
+    test("an approved server named Cavvy cannot replace the delegation server", async () => {
+        writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: { cavvy: { command: "must-not-run" } } }));
         trust.trustFolder(cwd);
-        saveApproval(cwd, "harness", mcpFingerprint({ command: "must-not-run" }, cwd));
+        saveApproval(cwd, "cavvy", mcpFingerprint({ command: "must-not-run" }, cwd));
         const manager = new McpManager(cwd, () => loadSettings(cwd, { trusted: true }), true);
         manager.load();
-        expect(manager.approvedServers().servers.harness?.source).toBe("project");
+        expect(manager.approvedServers().servers.cavvy?.source).toBe("project");
         const { run } = await makeAgent({ provider: "claude-code", approvedMcpServers: () => manager.approvedServers() });
         expect(await run("hi")).toBe("done");
         expect(setServers()).toHaveLength(1);
-        expect(setServers()[0].request.servers.harness.type).toBe("http");
-        expect(setServers()[0].request.servers.harness.command).toBeUndefined();
-        expect(logLines().some((l) => l.mcpConnected === "harness")).toBe(true);
+        expect(setServers()[0].request.servers.cavvy.type).toBe("http");
+        expect(setServers()[0].request.servers.cavvy.command).toBeUndefined();
+        expect(logLines().some((l) => l.mcpConnected === "cavvy")).toBe(true);
         const argv = starts()[0].argv;
         expect(argv).not.toContain("--strict-mcp-config");
-        expect(JSON.parse(argv[argv.indexOf("--settings") + 1]).disabledMcpjsonServers).toContain("harness");
+        expect(JSON.parse(argv[argv.indexOf("--settings") + 1]).disabledMcpjsonServers).toContain("cavvy");
     });
 
     test("with a scheduler, Claude Code gets the schedule tools, and its own (which can't outlive the turn) are denied", async () => {
@@ -1078,7 +1078,7 @@ describe("Claude Code as the main agent", () => {
         const scheduler = new Scheduler({ idle: () => false, fire: () => {} });
         const { run } = await makeAgent({ provider: "claude-code", scheduler });
         expect(await run("hi")).toBe("done");
-        const tools = setServers()[0].request.servers.harness.tools.map((t: { name: string }) => t.name);
+        const tools = setServers()[0].request.servers.cavvy.tools.map((t: { name: string }) => t.name);
         expect(tools).toEqual(expect.arrayContaining(["schedule_create", "schedule_list", "schedule_delete"]));
         const argv = starts()[0].argv;
         const settings = JSON.parse(argv[argv.indexOf("--settings") + 1]!);
@@ -1099,9 +1099,9 @@ describe("Claude Code as the main agent", () => {
         try {
             const { run, agent } = await makeAgent({ provider: "claude-code", wakes: true });
             expect(await run("watch my PR")).toBe("done");
-            const tools = setServers()[0].request.servers.harness.tools.map((t: { name: string }) => t.name);
+            const tools = setServers()[0].request.servers.cavvy.tools.map((t: { name: string }) => t.name);
             expect(tools).toEqual(expect.arrayContaining(["watch_pull_request", "unwatch_pull_request"]));
-            // Committing and pushing stay with the CLI's own shell, under the harness's prompts.
+            // Committing and pushing stay with the CLI's own shell, under Cavvy's prompts.
             expect(tools).not.toContain("GitCommit");
             expect(mcpResults()[0]).toMatchObject({ tool: "watch_pull_request" });
             expect(JSON.stringify(mcpResults()[0])).toContain("Watching it now");
@@ -1116,14 +1116,14 @@ describe("Claude Code as the main agent", () => {
     test("-p has nowhere to wake, so no watch tools", async () => {
         const { run } = await makeAgent({ provider: "claude-code", wakes: true, headless: true });
         expect(await run("hi")).toBe("done");
-        const tools = (setServers()[0]?.request.servers.harness.tools ?? []).map((t: { name: string }) => t.name);
+        const tools = (setServers()[0]?.request.servers.cavvy.tools ?? []).map((t: { name: string }) => t.name);
         expect(tools).not.toContain("watch_pull_request");
     });
 
     test("without one (-p, a sub-agent), no schedule tools and Claude Code's own aren't touched", async () => {
         const { run } = await makeAgent({ provider: "claude-code" });
         expect(await run("hi")).toBe("done");
-        const servers = setServers()[0]?.request.servers.harness;
+        const servers = setServers()[0]?.request.servers.cavvy;
         expect((servers?.tools ?? []).map((t: { name: string }) => t.name)).not.toContain("schedule_create");
         const argv = starts()[0].argv;
         expect(JSON.parse(argv[argv.indexOf("--settings") + 1]!).permissions.deny).not.toContain("CronCreate");
@@ -1136,7 +1136,7 @@ describe("Claude Code as the main agent", () => {
         try {
             const { run, events } = await makeAgent({ provider: "claude-code" });
             expect(await run("hello")).toBe(response === "exit" ? "error" : "done");
-            const warning = response === "hang" ? "warn: Claude Code timed out waiting for MCP servers: harness." : "warn: Claude Code couldn't connect to MCP servers: harness.";
+            const warning = response === "hang" ? "warn: Claude Code timed out waiting for MCP servers: cavvy." : "warn: Claude Code couldn't connect to MCP servers: cavvy.";
             expect(notices(events)).toContain(warning);
             expect(notices(events).some((n) => n.includes("timed out"))).toBe(response === "hang");
         } finally {
@@ -1162,7 +1162,7 @@ describe("Claude Code as the main agent", () => {
         const third = await makeAgent({ provider: "claude-code" });
         expect(await third.run("hi")).toBe("done");
         expect(setServers()).toHaveLength(1);
-        expect(notices(third.events)).toContain("warn: Claude Code couldn't connect to MCP servers: harness.");
+        expect(notices(third.events)).toContain("warn: Claude Code couldn't connect to MCP servers: cavvy.");
         expect(readFileSync(join(cwd, "out.txt"), "utf-8")).toBe("hi\n");
     });
 });
@@ -1178,7 +1178,7 @@ describe("Codex as the main agent", () => {
         expect(await run("go")).toBe("done");
 
         const thread = received().find((m) => m.method === "thread/start")!.params;
-        const cfg = thread.config.mcp_servers.harness;
+        const cfg = thread.config.mcp_servers.cavvy;
         expect(cfg).toMatchObject({ tool_timeout_sec: TOOL_TIMEOUT_SEC, startup_timeout_sec: 30, default_tools_approval_mode: "approve", supports_parallel_tool_calls: true });
         expect(cfg.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
         const token = String(cfg.http_headers.Authorization).replace(/^Bearer /, "");
@@ -1186,7 +1186,7 @@ describe("Codex as the main agent", () => {
         expect(thread.developerInstructions).toContain("For OpenAI models, keep using your own sub-agents.");
         // Given once: not again as the server's instructions.
         const conn = logLines().find((l) => l.mcpConnected);
-        expect(conn).toMatchObject({ mcpConnected: "harness", tools: TOOLS, approvalMode: "approve" });
+        expect(conn).toMatchObject({ mcpConnected: "cavvy", tools: TOOLS, approvalMode: "approve" });
         expect(conn.instructions).toBeUndefined();
 
         const [models, delegated] = mcpResults();
@@ -1204,10 +1204,10 @@ describe("Codex as the main agent", () => {
         const subs = events.filter((e) => e.type === "subagent") as any[];
         expect(subs.length).toBeGreaterThan(0);
         expect(new Set(subs.map((e) => e.parentId))).toEqual(new Set(["mcp-turn-1-1"]));
-        expect(events.find((e) => e.type === "tool_start" && e.call.name === "mcp__harness__models")).toMatchObject({ title: "Models" });
+        expect(events.find((e) => e.type === "tool_start" && e.call.name === "mcp__cavvy__models")).toMatchObject({ title: "Models" });
     });
 
-    test("a read-only agent on Claude Code starts without its edit tools or MCP servers, and every command comes to the harness", async () => {
+    test("a read-only agent on Claude Code starts without its edit tools or MCP servers, and every command comes to Cavvy", async () => {
         process.env.FAKE_CODEX_SCENARIO = "mcp";
         process.env.FAKE_SCENARIO = "bash";
         calls([{ tool: "delegate", args: { task: "Run the tests and report", description: "Tests", model: "claude-code:default", agent: "explore" } }]);
@@ -1229,7 +1229,7 @@ describe("Codex as the main agent", () => {
         // It's told what was refused, and that tests don't run here, so it doesn't send them again.
         expect(reply.message).toContain("`npm test` isn't one of the read-only commands");
         expect(reply.message).toContain("Tests, builds and scripts don't run either.");
-        // No harness server for the child.
+        // No Cavvy server for the child.
         expect(setServers()).toEqual([]);
         expect(mcpResults()[0].text).toContain('(explore on claude-code:default) finished');
     });
@@ -1358,7 +1358,7 @@ describe("Codex as the main agent", () => {
         expect(resumes[1].developerInstructions).not.toContain("delegate");
         expect(resumes[1].threadId).toBe("thr-new");
         expect(received().some((m) => m.method === "thread/start")).toBe(false);
-        expect(notices(events)).toContain("warn: Codex didn't accept Harness's delegation tools (invalid config: unknown field `default_tools_approval_mode`); this session runs without them, preserving MCP restrictions.");
+        expect(notices(events)).toContain("warn: Codex didn't accept Cavvy's delegation tools (invalid config: unknown field `default_tools_approval_mode`); this session runs without them, preserving MCP restrictions.");
         expect(notices(events).join("\n")).not.toContain("Starting a new one");
 
         const fresh = await makeAgent({ provider: "codex" });
@@ -1388,14 +1388,14 @@ describe("Codex as the main agent", () => {
         expect(await run("hello")).toBe("done");
         const config = received().find((m) => m.method === "thread/start").params.config;
         expect(config.plugins).toEqual({ "theirs@local": { enabled: false } });
-        expect(config.mcp_servers.harness.url).toBeString();
+        expect(config.mcp_servers.cavvy.url).toBeString();
     });
 
-    test("a project harness server stays disabled instead of merging with delegation", async () => {
-        process.env.FAKE_PROJECT_MCP = JSON.stringify({ harness: { command: "unapproved", env: { X: "unapproved" } } });
+    test("a project Cavvy server stays disabled instead of merging with delegation", async () => {
+        process.env.FAKE_PROJECT_MCP = JSON.stringify({ cavvy: { command: "unapproved", env: { X: "unapproved" } } });
         const { run, events } = await makeAgent({ provider: "codex" });
         expect(await run("hello")).toBe("done");
-        expect(received().find((m) => m.method === "thread/start").params.config).toEqual({ mcp_servers: { harness: { enabled: false } } });
+        expect(received().find((m) => m.method === "thread/start").params.config).toEqual({ mcp_servers: { cavvy: { enabled: false } } });
         expect(notices(events).join("\n")).toContain("avoid merging server configurations");
     });
 
@@ -1413,20 +1413,20 @@ describe("Codex as the main agent", () => {
 
 describe("Monitor for Codex (it has none of its own)", () => {
     const MONITOR_TOOLS = ["monitor", "monitor_output", "monitor_stop"];
-    const harnessTools = () => (logLines().find((l) => l.mcpConnected)?.tools ?? []) as string[];
+    const cavvyTools = () => (logLines().find((l) => l.mcpConnected)?.tools ?? []) as string[];
     const monitors = (agent: InstanceType<typeof Agent>) => [...agent.state.shells.values()].filter((s) => s.monitor);
 
     test("a session that can be woken gives Codex the monitor tools; a call is asked about as Monitor and starts one", async () => {
         process.env.FAKE_SCENARIO = "mcp";
-        // Not read-only, so it is asked about (a read-only one runs unasked, as Harness's own Monitor does).
+        // Not read-only, so it is asked about (a read-only one runs unasked, as Cavvy's own Monitor does).
         calls([{ tool: "monitor", args: { command: "touch started; echo ready; sleep 30", description: "server readiness" } }]);
         const { run, agent, asked, events } = await makeAgent({ provider: "codex", wakes: true });
         try {
             expect(await run("watch the server")).toBe("done");
-            expect(harnessTools()).toEqual(expect.arrayContaining(MONITOR_TOOLS));
+            expect(cavvyTools()).toEqual(expect.arrayContaining(MONITOR_TOOLS));
             const thread = received().find((m) => m.method === "thread/start")!.params;
             expect(thread.developerInstructions).toContain("use monitor");
-            // The CLI approves Harness's tools without asking: Harness asks, as for its own Monitor.
+            // The CLI approves Cavvy's tools without asking: Cavvy asks, as for its own Monitor.
             expect(asked.map((r) => [r.tool.name, r.input.command])).toEqual([["Monitor", "touch started; echo ready; sleep 30"]]);
             expect(asked[0]!.callId).toMatch(/^mcp-/);
             const [r] = mcpResults();
@@ -1436,7 +1436,7 @@ describe("Monitor for Codex (it has none of its own)", () => {
             expect(r.text).toContain("monitor_stop id");
             expect(r.text).not.toContain("KillShell");
             expect(r.text).not.toContain("BashOutput");
-            // Shown once, as Harness's Monitor (not as an MCP call, nor twice).
+            // Shown once, as Cavvy's Monitor (not as an MCP call, nor twice).
             const startsOf = events.flatMap((e) => (e.type === "tool_start" ? [e.call.name] : []));
             expect(startsOf).toEqual(["Monitor"]);
             const m = monitors(agent);
@@ -1590,13 +1590,13 @@ describe("Monitor for Codex (it has none of its own)", () => {
     test("Claude Code keeps its own Monitor: none offered; nor in -p, which has nowhere to wake", async () => {
         const cc = await makeAgent({ provider: "claude-code", wakes: true });
         expect(await cc.run("hi")).toBe("done");
-        const ccTools = (setServers()[0]?.request.servers.harness.tools ?? []).map((t: { name: string }) => t.name);
+        const ccTools = (setServers()[0]?.request.servers.cavvy.tools ?? []).map((t: { name: string }) => t.name);
         expect(ccTools).not.toContain("monitor");
 
         rmSync(LOG, { force: true });
         const headless = await makeAgent({ provider: "codex", wakes: true, headless: true });
         expect(await headless.run("hi")).toBe("done");
-        expect(harnessTools()).not.toContain("monitor");
+        expect(cavvyTools()).not.toContain("monitor");
     });
 });
 
@@ -1634,22 +1634,22 @@ describe("a served tool's images", () => {
 
 describe("Browser tools for Codex and Claude Code", () => {
     const BROWSER_TOOLS = ["browser_navigate", "browser_snapshot", "browser_act", "browser_screenshot", "browser_eval", "browser_logs"];
-    const harnessTools = () => (logLines().find((l) => l.mcpConnected)?.tools ?? []) as string[];
+    const cavvyTools = () => (logLines().find((l) => l.mcpConnected)?.tools ?? []) as string[];
     const { fakeChromeAt, fakeChromeProgram } = require("./helpers/fake-chrome") as typeof import("./helpers/fake-chrome");
     const { forgetChromeLookup } = require("../src/browser/chrome") as typeof import("../src/browser/chrome");
     const { projectStateDir } = require("../src/config/paths") as typeof import("../src/config/paths");
-    const savedBrowser = process.env.HARNESS_BROWSER;
+    const savedBrowser = process.env.CAVVY_BROWSER;
     const program = fakeChromeProgram();
     const SHOT_PAGE = "http://localhost:4000/";
     const agentsMade: InstanceType<typeof Agent>[] = [];
 
     beforeEach(() => {
-        process.env.HARNESS_BROWSER = program;
+        process.env.CAVVY_BROWSER = program;
         forgetChromeLookup();
     });
     afterEach(async () => {
         for (const a of agentsMade.splice(0)) await a.state.browser?.dispose();
-        process.env.HARNESS_BROWSER = savedBrowser;
+        process.env.CAVVY_BROWSER = savedBrowser;
         forgetChromeLookup();
     });
 
@@ -1666,16 +1666,16 @@ describe("Browser tools for Codex and Claude Code", () => {
         process.env.FAKE_SCENARIO = "mcp";
         const on = await codex();
         expect(await on.run("hi")).toBe("done");
-        expect(harnessTools()).toEqual(expect.arrayContaining(BROWSER_TOOLS));
+        expect(cavvyTools()).toEqual(expect.arrayContaining(BROWSER_TOOLS));
         expect(received().find((m) => m.method === "thread/start")!.params.developerInstructions).toContain("browser_snapshot");
 
         for (const [name, settings, env] of [["the setting", { browser: { enabled: false } }, program], ["no browser", {}, join(cwd, "none")]] as const) {
             rmSync(LOG, { force: true });
-            process.env.HARNESS_BROWSER = env;
+            process.env.CAVVY_BROWSER = env;
             forgetChromeLookup();
             const off = await codex({ settings });
             expect(await off.run("hi")).toBe("done");
-            expect(harnessTools().filter((t) => BROWSER_TOOLS.includes(t)), name).toEqual([]);
+            expect(cavvyTools().filter((t) => BROWSER_TOOLS.includes(t)), name).toEqual([]);
         }
     });
 
@@ -1694,21 +1694,21 @@ describe("Browser tools for Codex and Claude Code", () => {
         expect(hover.isError).toBe(false);
         // only the click: localhost, reading and hovering don't ask
         expect(asked.map((r) => [r.tool.name, r.input.action])).toEqual([["BrowserAct", "click"]]);
-        // shown once each, as the Harness tool
+        // shown once each, as the Cavvy tool
         expect(events.flatMap((e) => (e.type === "tool_start" ? [e.call.name] : []))).toEqual(["BrowserNavigate", "BrowserSnapshot", "BrowserScreenshot", "BrowserAct", "BrowserAct"]);
         expect((await chromeLog("Input.dispatchMouseEvent")).map((c) => c.params.type)).toEqual(["mouseMoved", "mousePressed", "mouseReleased", "mouseMoved"]);
     });
 
     test("a rule naming the tool as it is served is enforced before anything runs, whatever the CLI itself approves", async () => {
         process.env.FAKE_SCENARIO = "mcp";
-        for (const rule of ["mcp__harness__browser_act", "mcp__harness__*", "mcp__harness"]) {
+        for (const rule of ["mcp__cavvy__browser_act", "mcp__cavvy__*", "mcp__cavvy"]) {
             rmSync(LOG, { force: true });
             calls([open, { tool: "browser_act", args: { action: "click", ref: "e5" } }]);
             const { run, asked, agent } = await codex({ settings: { permissions: { deny: [rule] } } });
             await run("click it");
             const [opened, click] = mcpResults();
             // a rule for browser_act alone leaves browser_navigate alone
-            expect(opened.isError, rule).toBe(rule === "mcp__harness__browser_act" ? false : true);
+            expect(opened.isError, rule).toBe(rule === "mcp__cavvy__browser_act" ? false : true);
             expect(click, rule).toMatchObject({ tool: "browser_act", isError: true });
             expect(click.text, rule).toContain(`Denied by permission rule ${rule}`);
             expect(asked, rule).toEqual([]);
@@ -1720,12 +1720,12 @@ describe("Browser tools for Codex and Claude Code", () => {
     test("an ask rule for the served name asks the user, and a no stops the call", async () => {
         process.env.FAKE_SCENARIO = "mcp";
         calls([open, { tool: "browser_snapshot", args: {} }]);
-        const { run, asked } = await codex({ settings: { permissions: { ask: ["mcp__harness__browser_snapshot"] } }, ask: () => ({ allow: false }) });
+        const { run, asked } = await codex({ settings: { permissions: { ask: ["mcp__cavvy__browser_snapshot"] } }, ask: () => ({ allow: false }) });
         await run("read it");
         const [, snapshot] = mcpResults();
         expect(snapshot).toMatchObject({ tool: "browser_snapshot", isError: true });
         expect(snapshot.text).toContain("declined");
-        expect(asked.map((r) => r.tool.name)).toEqual(["mcp__harness__browser_snapshot"]);
+        expect(asked.map((r) => r.tool.name)).toEqual(["mcp__cavvy__browser_snapshot"]);
     });
 
     test("the rules that cover the tool by its own name hold on this path too: a host, a file, plan mode", async () => {
@@ -1762,7 +1762,7 @@ describe("Browser tools for Codex and Claude Code", () => {
         expect(scroll.isError).toBe(false);
     });
 
-    test("a call the user already has the tab for is refused as the Harness tool is, and the page stays theirs", async () => {
+    test("a call the user already has the tab for is refused as the Cavvy tool is, and the page stays theirs", async () => {
         process.env.FAKE_SCENARIO = "mcp";
         calls([open]);
         const { run, agent } = await codex();
@@ -1774,7 +1774,7 @@ describe("Browser tools for Codex and Claude Code", () => {
     });
 });
 
-describe("harness models", () => {
+describe("cavvy models", () => {
     test("esc in an API session ends the turn, not a background Task started on an earlier turn: it still reports back (#228)", async () => {
         const main = (content: unknown[], stopReason = "end_turn") => ({ role: "assistant", provider: "anthropic", model: "claude-main", stopReason, content, usage: { inputTokens: 10, outputTokens: 5 } });
         const g = gate();
@@ -1860,7 +1860,7 @@ describe("harness models", () => {
         const listed = ends.find((e) => e.call.id === "t1")!.result.content;
         expect(listed).toContain("you are on anthropic:claude-main");
         expect(listed).toContain("gemini:gemini-test (Gemini Test, 1.00M context)");
-        // Nothing is left out for a harness model: it has no sub-agents of its own.
+        // Nothing is left out for a Cavvy model: it has no sub-agents of its own.
         expect(listed).toContain("openrouter:anthropic/claude-x");
         const task = ends.find((e) => e.call.id === "t2")!;
         expect(task.result.isError).toBeFalsy();
@@ -1876,16 +1876,16 @@ describe("harness models", () => {
         expect(session.usageByModel.get("gemini:gemini-test")?.usage.inputTokens).toBe(100);
     });
 
-    test("a read-only harness sub-agent is told which part of a command was refused", async () => {
+    test("a read-only Cavvy sub-agent is told which part of a command was refused", async () => {
         const main = (content: unknown[], stopReason = "end_turn") => ({ role: "assistant", provider: "anthropic", model: "claude-main", stopReason, content, usage: { inputTokens: 10, outputTokens: 5 } });
         const steps = [main([{ type: "tool_call", id: "t1", name: "Task", input: { description: "Look", prompt: "Run the tests", model: "gemini:gemini-test", subagent_type: "explore" } }], "tool_use"), main([{ type: "text", text: "ok" }])];
         let n = 0;
         const client = { stream: async () => steps[n++], listModels: async () => [] };
-        script = (_req, k) => (k === 1 ? use("b1", "Bash", { command: "git --version && command -v git && HARNESS_NO_KEYCHAIN=1 bun test" }) : say("Couldn't run them."));
+        script = (_req, k) => (k === 1 ? use("b1", "Bash", { command: "git --version && command -v git && CAVVY_NO_KEYCHAIN=1 bun test" }) : say("Couldn't run them."));
         const { run } = await makeAgent({ provider: "anthropic", model: { id: "claude-main" }, client });
         expect(await run("go")).toBe("done");
         const seen = JSON.stringify(childRequests[1]!.messages);
-        expect(seen).toContain("This is a read-only agent, and `HARNESS_NO_KEYCHAIN=1 bun test` isn't one of the read-only commands.");
+        expect(seen).toContain("This is a read-only agent, and `CAVVY_NO_KEYCHAIN=1 bun test` isn't one of the read-only commands.");
         expect(seen).toContain("Tests, builds and scripts don't run either.");
     });
 
@@ -1939,7 +1939,7 @@ describe("harness models", () => {
         expect(childRequests.map((r) => r.fastMode)).toEqual([false]);
     });
 
-    test("a harness model gets no MCP server: delegation is its Task tool", async () => {
+    test("a Cavvy model gets no MCP server: delegation is its Task tool", async () => {
         const client = { stream: async () => ({ role: "assistant", provider: "anthropic", model: "claude-main", stopReason: "end_turn", content: [{ type: "text", text: "hi" }] }), listModels: async () => [] };
         const { run, agent } = await makeAgent({ provider: "anthropic", model: { id: "claude-main" }, client });
         expect(await run("hi")).toBe("done");
@@ -1948,7 +1948,7 @@ describe("harness models", () => {
     });
 });
 
-describe("tasks that stopped when Harness quit", () => {
+describe("tasks that stopped when Cavvy quit", () => {
     test("a /goal doesn't take the reminder of them (it leaves reminders for later): the next prompt does, and only then are they kept stopped (#282 review 6)", async () => {
         const { SessionBackground } = await import("../src/agent/background");
         const prompts: string[] = [];
@@ -1961,16 +1961,16 @@ describe("tasks that stopped when Harness quit", () => {
             runTurn: async (t: { prompt: string }) => (prompts.push(t.prompt), { reason: "done" as const, text: "ok", actions: [] }),
         };
         const { run, agent } = await makeAgent({ provider: "fake-cli", client: backend });
-        const logged = new Map([["bash_1", { id: "bash_1", provider: "harness", kind: "shell" as const, label: "npm run dev", startedAt: 5, status: "running" as const, stoppable: true }]]);
+        const logged = new Map([["bash_1", { id: "bash_1", provider: "cavvy", kind: "shell" as const, label: "npm run dev", startedAt: 5, status: "running" as const, stoppable: true }]]);
         const log = { backgroundTasks: logged, recordBackgroundTask: (t: any) => void logged.set(t.id, t) };
         agent.state.background = new SessionBackground(log);
         expect(await run("/goal ship the release")).toBe("done");
-        expect(prompts[0]).not.toContain("stopped when Harness quit");
+        expect(prompts[0]).not.toContain("stopped when Cavvy quit");
         // Not taken: the log still has it running, so a reopen now would still tell.
         expect(logged.get("bash_1")!.status).toBe("running");
         expect(agent.state.background.shown().map((t) => t.lost)).toEqual([true]);
         expect(await run("how's it going?")).toBe("done");
-        expect(prompts[1]).toContain("These background tasks stopped when Harness quit: background command: npm run dev (bash_1)");
+        expect(prompts[1]).toContain("These background tasks stopped when Cavvy quit: background command: npm run dev (bash_1)");
         expect(logged.get("bash_1")).toMatchObject({ status: "stopped", lost: true });
     });
 });
@@ -2120,7 +2120,7 @@ describe("secrets in Claude Code and Codex sessions (request_secret, run_with_se
     const matches = (name: string, v: string) => `[ "$(printf %s "$${name}" | cksum | awk '{print $1, $2}')" = "${cksum(v)}" ] && echo MATCH || echo NO-MATCH`;
     const purpose = "To deploy the demo app.";
 
-    test("asks through the same card, runs with Harness's Bash after a check, and the value never reaches the CLI", async () => {
+    test("asks through the same card, runs with Cavvy's Bash after a check, and the value never reaches the CLI", async () => {
         const VALUE = "test-secret-mcp-001";
         const secrets = new SecretStore();
         const asked: string[] = [];
@@ -2132,12 +2132,12 @@ describe("secrets in Claude Code and Codex sessions (request_secret, run_with_se
         const t = await makeAgent({ provider: "claude-code", secrets, ui: { requestSecret: async (name, p) => (asked.push(`${name}: ${p}`), VALUE) } });
         expect(await t.run("deploy it")).toBe("done");
 
-        const set = setServers()[0].request.servers.harness;
+        const set = setServers()[0].request.servers.cavvy;
         expect(set.tools).toEqual([...TOOLS, "request_secret", "run_with_secrets"].map((name) => ({ name, permission_policy: "always_allow" })));
         expect(asked).toEqual([`DEPLOY_TOKEN: ${purpose}`]);
         const [handle, ran] = mcpResults();
         expect(handle.isError).toBe(false);
-        expect(handle.text).toStartWith("The user provided DEPLOY_TOKEN. Run commands that need it with the harness run_with_secrets tool");
+        expect(handle.text).toStartWith("The user provided DEPLOY_TOKEN. Run commands that need it with Cavvy run_with_secrets tool");
         expect(ran).toEqual({ tool: "run_with_secrets", text: "deploying with [REDACTED DEPLOY_TOKEN]\nMATCH", isError: false });
 
         // The check ran, and showed the command as written.
@@ -2222,7 +2222,7 @@ describe("secrets in Claude Code and Codex sessions (request_secret, run_with_se
     }, 30_000);
 
     for (const tool of ["request_secret", "run_with_secrets"]) {
-        for (const rule of [`mcp__harness__${tool}`, "mcp__harness", "mcp__harness__*"]) {
+        for (const rule of [`mcp__cavvy__${tool}`, "mcp__cavvy", "mcp__cavvy__*"]) {
             test(`${tool} honors its own deny rule ${rule} before asking or running`, async () => {
                 const secrets = new SecretStore();
                 secrets.set("OWN_RULE_TOKEN", "zq7Xv9Lr2Wm4Kp8T");
@@ -2246,12 +2246,12 @@ describe("secrets in Claude Code and Codex sessions (request_secret, run_with_se
             process.env.FAKE_SCENARIO = "mcp";
             const args = tool === "request_secret" ? { name: "OWN_RULE_TOKEN", purpose } : { command: "echo ran > own-rule-result.txt", secrets: ["OWN_RULE_TOKEN"] };
             calls([{ tool, args }]);
-            const t = await makeAgent({ provider: "claude-code", secrets, ui: { requestSecret: async () => (secretPrompts++, undefined) }, settings: { permissions: { ask: [`mcp__harness__${tool}`], allow: ["Bash"] } }, ask: () => ({ allow: false }) });
+            const t = await makeAgent({ provider: "claude-code", secrets, ui: { requestSecret: async () => (secretPrompts++, undefined) }, settings: { permissions: { ask: [`mcp__cavvy__${tool}`], allow: ["Bash"] } }, ask: () => ({ allow: false }) });
             t.switchMode("bypassPermissions");
             await t.run("go");
             expect(mcpResults().at(-1)?.isError).toBe(true);
             expect(t.asked).toHaveLength(1);
-            expect(t.asked[0]!.tool.name).toBe(`mcp__harness__${tool}`);
+            expect(t.asked[0]!.tool.name).toBe(`mcp__cavvy__${tool}`);
             expect(t.asked[0]!.decision.suggestions).toEqual([]);
             expect(t.asked[0]!.signal).toBeInstanceOf(AbortSignal);
             expect(secretPrompts).toBe(0);
@@ -2296,9 +2296,9 @@ describe("secrets in Claude Code and Codex sessions (request_secret, run_with_se
         calls([]);
         const only = await makeAgent({ provider: "claude-code", secrets: new SecretStore(), ui: { requestSecret: async () => undefined }, settings: { delegation: false } });
         await only.run("go");
-        expect(setServers().at(-1).request.servers.harness.tools.map((t: { name: string }) => t.name)).toEqual(["request_secret", "run_with_secrets"]);
+        expect(setServers().at(-1).request.servers.cavvy.tools.map((t: { name: string }) => t.name)).toEqual(["request_secret", "run_with_secrets"]);
         const conn = logLines().findLast((l) => l.mcpConnected);
-        expect(conn.instructions).toContain("# Secrets (harness)");
+        expect(conn.instructions).toContain("# Secrets (cavvy)");
         expect(conn.instructions).not.toContain("Delegating to other models");
 
         rmSync(LOG, { force: true });
@@ -2337,7 +2337,7 @@ describe("secrets in Claude Code and Codex sessions (request_secret, run_with_se
 });
 
 describe("a read-only agent on Claude Code or Codex", () => {
-    test("in auto runs in Codex's own (read-only) auto mode; Claude Code's stays in default, where the harness runs read-only commands", () => {
+    test("in auto runs in Codex's own (read-only) auto mode; Claude Code's stays in default, where Cavvy runs read-only commands", () => {
         expect(readOnlyBackendMode("auto", "codex")).toBe("auto");
         expect(readOnlyBackendMode("auto", "claude-code")).toBe("default");
         for (const p of ["codex", "claude-code"]) {
@@ -2363,7 +2363,7 @@ describe("the terminal's background list across sessions and turns: #282 review 
     const shell = (id: string, command: string) => ({ id, command, startedAt: Date.now() - 1000, output: "", readOffset: 0, exitCode: null as number | null, kill: async () => "stopped" as const });
     const stopTimer = (app: App) => (app as any).backgroundTimer && clearInterval((app as any).backgroundTimer);
 
-    test("a shell left running by /new that then finishes isn't 'stopped when Harness quit' when its session is reopened (A3)", async () => {
+    test("a shell left running by /new that then finishes isn't 'stopped when Cavvy quit' when its session is reopened (A3)", async () => {
         const { SessionBackground } = await import("../src/agent/background");
         const { app } = tui();
         try {
@@ -2478,7 +2478,7 @@ describe("the background list across sessions, and the delegate tool's own tasks
     }
     const stopTimer = (app: InstanceType<typeof App>) => (app as any).backgroundTimer && clearInterval((app as any).backgroundTimer);
 
-    test("/new while a delegated task runs: the Agent it ran under goes, and the old session's log has it stopped then, not 'stopped when Harness quit'", async () => {
+    test("/new while a delegated task runs: the Agent it ran under goes, and the old session's log has it stopped then, not 'stopped when Cavvy quit'", async () => {
         const { SessionBackground } = await import("../src/agent/background");
         const app = tui();
         try {
@@ -2530,7 +2530,7 @@ describe("the background list across sessions, and the delegate tool's own tasks
         app.toolState.background = undefined;
         (app as any).agent = {
             delegatedTasks: [],
-            backgroundTasks: () => [{ id: "bash_9", provider: "harness", kind: "shell", label: "npm test", startedAt: 1, status: "running", stoppable: true }],
+            backgroundTasks: () => [{ id: "bash_9", provider: "cavvy", kind: "shell", label: "npm test", startedAt: 1, status: "running", stoppable: true }],
             stopBackground: async () => ({ bash_9: "ended" }),
         };
         await runCommand(app, "/tasks stop bash_9");

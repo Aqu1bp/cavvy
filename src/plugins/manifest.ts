@@ -1,18 +1,22 @@
 // Plugin and marketplace manifests. The format is Claude Code's, so its
 // plugins and marketplaces install as they are:
 //
-//   <plugin>/.harness-plugin/plugin.json   (or .claude-plugin/plugin.json)
+//   <plugin>/.cavvy-plugin/plugin.json   (or .claude-plugin/plugin.json)
 //   <plugin>/commands/*.md  agents/*.md  skills/<name>/SKILL.md
 //   <plugin>/hooks/hooks.json  <plugin>/.mcp.json
 //
-//   <marketplace>/.harness-plugin/marketplace.json  (or .claude-plugin/…)
+//   <marketplace>/.cavvy-plugin/marketplace.json  (or .claude-plugin/…)
 //   { "name": "…", "owner": {…}, "plugins": [{ "name": "…", "source": "./plugins/x" }, …] }
 
 import { existsSync } from "fs";
 import { join } from "path";
+import { LEGACY } from "../config/legacy";
 
-/** Manifest folders, ours first: a plugin that ships both is read as a harness plugin. */
-export const MANIFEST_DIRS = [".harness-plugin", ".claude-plugin"] as const;
+/**
+ * Manifest folders, ours first: a plugin that ships both is read as a Cavvy plugin.
+ * Then Harness's, which a copy installed before the rename has (legacy.ts).
+ */
+export const MANIFEST_DIRS = [".cavvy-plugin", LEGACY.pluginManifestDir, ".claude-plugin"] as const;
 
 export interface PluginAuthor {
     name?: string;
@@ -54,7 +58,7 @@ export interface MarketplaceEntry extends Partial<Omit<PluginManifest, "name">> 
     tags?: string[];
     /** false: the entry is the whole manifest (the plugin has none of its own). */
     strict?: boolean;
-    /** The entry's manifest fields as written, those the harness doesn't read included (outputStyles…), for Claude Code's copy. */
+    /** The entry's manifest fields as written, those Cavvy doesn't read included (outputStyles…), for Claude Code's copy. */
     raw?: Record<string, unknown>;
 }
 

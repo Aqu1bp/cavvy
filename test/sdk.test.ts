@@ -8,9 +8,9 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, w
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
-const { home: HARNESS_HOME, cleanup } = isolate();
+const { home: CAVVY_HOME, cleanup } = isolate();
 const sdk = await import("../src/sdk/index");
-const { query, tool, HarnessSdkError } = sdk;
+const { query, tool, CavvySdkError } = sdk;
 type SDKMessage = import("../src/sdk/index").SDKMessage;
 type SDKResultMessage = import("../src/sdk/index").SDKResultMessage;
 
@@ -64,7 +64,7 @@ beforeAll(() => {
             return new Response(stream, { headers: { "content-type": "text/event-stream" } });
         },
     });
-    writeFileSync(join(HARNESS_HOME, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock", baseUrl: `http://127.0.0.1:${server.port}/v1`, kind: "openai", requiresKey: false, models: ["m1"] }] }));
+    writeFileSync(join(CAVVY_HOME, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock", baseUrl: `http://127.0.0.1:${server.port}/v1`, kind: "openai", requiresKey: false, models: ["m1"] }] }));
 });
 
 afterAll(() => {
@@ -78,7 +78,7 @@ afterEach(() => {
 });
 
 const MODEL = "mock:m1";
-const project = () => realpathSync(tempDir("harness-sdk-"));
+const project = () => realpathSync(tempDir("cavvy-sdk-"));
 
 async function collect(q: AsyncIterable<SDKMessage>): Promise<SDKMessage[]> {
     const out: SDKMessage[] = [];
@@ -387,7 +387,7 @@ describe("permissions", () => {
         const [a, b] = results(seen);
         expect(a!.permission_denials).toEqual(["Bash"]);
         expect(b!.permission_denials).toEqual([]);
-        await expect(q.setPermissionMode("nonsense" as any)).rejects.toThrow(HarnessSdkError);
+        await expect(q.setPermissionMode("nonsense" as any)).rejects.toThrow(CavvySdkError);
     });
 });
 
@@ -481,10 +481,10 @@ describe("abort and interrupt", () => {
 const lastSentOf = (req: Req) => JSON.stringify(req.messages.at(-1) ?? "");
 
 describe("errors", () => {
-    test("bad options and models throw HarnessSdkError from the iterator", async () => {
+    test("bad options and models throw CavvySdkError from the iterator", async () => {
         const cwd = project();
         const first = (o: any) => query({ prompt: "x", options: { cwd, ...o } }).next();
-        await expect(first({ model: "not-a-ref" })).rejects.toThrow(HarnessSdkError);
+        await expect(first({ model: "not-a-ref" })).rejects.toThrow(CavvySdkError);
         await expect(first({ model: "nosuch:model" })).rejects.toThrow(/Invalid model/);
         await expect(first({ model: MODEL, resume: "zzzzzz" })).rejects.toThrow(/No session matching/);
         await expect(first({ model: MODEL, permissionMode: "yolo" })).rejects.toThrow(/permissionMode/);
@@ -671,7 +671,7 @@ describe("found in review", () => {
     test("setPermissionMode checks the mode before the query starts; every mode is accepted", async () => {
         const { PERMISSION_MODES } = await import("../src/permissions/modes");
         const q = query({ prompt: "x", options: { cwd: project(), model: MODEL, persistSession: false } });
-        await expect(q.setPermissionMode("bogus" as any)).rejects.toThrow(HarnessSdkError);
+        await expect(q.setPermissionMode("bogus" as any)).rejects.toThrow(CavvySdkError);
         for (const m of PERMISSION_MODES) await q.setPermissionMode(m);
         const ms = await collect(q);
         expect(ms[0]).toMatchObject({ subtype: "init", permission_mode: "bypassPermissions" });
@@ -681,8 +681,8 @@ describe("found in review", () => {
         const cwd = project();
         await collect(query({ prompt: "x", options: { cwd, model: MODEL, persistSession: false } }));
         // Project settings appear after the first query.
-        mkdirSync(join(cwd, ".harness"), { recursive: true });
-        writeFileSync(join(cwd, ".harness", "settings.json"), JSON.stringify({ env: { FROM_PROJECT: "yes" } }));
+        mkdirSync(join(cwd, ".cavvy"), { recursive: true });
+        writeFileSync(join(cwd, ".cavvy", "settings.json"), JSON.stringify({ env: { FROM_PROJECT: "yes" } }));
         script = (_req, n) => (n === 1 ? { calls: [{ id: "c1", name: "Bash", args: { command: "echo [$FROM_PROJECT]" } }] } : { text: "ok" });
         requests.length = 0;
         const ms = await collect(query({ prompt: "x", options: { cwd, model: MODEL, persistSession: false, permissionMode: "bypassPermissions" } }));
@@ -701,11 +701,11 @@ describe("found in review", () => {
         const { isTrusted } = await import("../src/config/trust");
         const cwd = project();
         writeFileSync(join(cwd, "AGENTS.md"), "EMPTY-FOLDER-MEMORY-MARKER");
-        const definition = join(HARNESS_HOME, "agents", "sdk-memory-reader.md");
-        mkdirSync(join(HARNESS_HOME, "agents"), { recursive: true });
+        const definition = join(CAVVY_HOME, "agents", "sdk-memory-reader.md");
+        mkdirSync(join(CAVVY_HOME, "agents"), { recursive: true });
         writeFileSync(definition, "---\nname: sdk-memory-reader\ndescription: reader\nmemory: project\n---\nMEMORY-READER-MARKER");
-        mkdirSync(join(cwd, ".harness", "agent-memory", "sdk-memory-reader"), { recursive: true });
-        writeFileSync(join(cwd, ".harness", "agent-memory", "sdk-memory-reader", "MEMORY.md"), "EMPTY-FOLDER-AGENT-MEMORY-MARKER");
+        mkdirSync(join(cwd, ".cavvy", "agent-memory", "sdk-memory-reader"), { recursive: true });
+        writeFileSync(join(cwd, ".cavvy", "agent-memory", "sdk-memory-reader", "MEMORY.md"), "EMPTY-FOLDER-AGENT-MEMORY-MARKER");
         try {
             script = (_req, n) => (n === 1 ? { calls: [{ id: "task", name: "Task", args: { description: "read", prompt: "review", subagent_type: "sdk-memory-reader" } }] } : { text: "done" });
             const ms = await collect(query({ prompt: "hello", options: { cwd, model: MODEL, persistSession: false, permissionMode: "bypassPermissions" } }));
@@ -762,8 +762,8 @@ describe("trusted: false in a folder the user trusted", () => {
         const cwd = project();
         mkdirSync(join(cwd, ".claude"), { recursive: true });
         writeFileSync(join(cwd, ".claude", "settings.json"), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: `touch ${join(cwd, "hook-ran")}` }] }] } }));
-        mkdirSync(join(cwd, ".harness", "agents"), { recursive: true });
-        writeFileSync(join(cwd, ".harness", "agents", "repo-agent.md"), "---\nname: repo-agent\ndescription: from the repository\n---\nRepository instructions.");
+        mkdirSync(join(cwd, ".cavvy", "agents"), { recursive: true });
+        writeFileSync(join(cwd, ".cavvy", "agents", "repo-agent.md"), "---\nname: repo-agent\ndescription: from the repository\n---\nRepository instructions.");
         writeFileSync(join(cwd, "AGENTS.md"), "REPO-MEMORY-MARKER");
         return cwd;
     }
@@ -772,7 +772,7 @@ describe("trusted: false in a folder the user trusted", () => {
         const { saveAgentConfig } = await import("../src/providers/registry");
         const { forgetClient } = await import("../src/providers/models");
         const { trustFolder } = await import("../src/config/trust");
-        const bin = tempDir("harness-sdk-bin-");
+        const bin = tempDir("cavvy-sdk-bin-");
         const claude = join(bin, "claude");
         const log = join(bin, "log.jsonl");
         writeFileSync(claude, `#!/bin/sh\nexec "${process.execPath}" "${join(import.meta.dir, "fixtures", "fake-claude.ts")}" "$@"\n`);
@@ -800,7 +800,7 @@ describe("trusted: false in a folder the user trusted", () => {
         }
     });
 
-    test("the harness's own agent doesn't load the project's memory files or agents", async () => {
+    test("Cavvy's own agent doesn't load the project's memory files or agents", async () => {
         const { trustFolder } = await import("../src/config/trust");
         const cwd = trustedRepo();
         trustFolder(cwd);
@@ -821,14 +821,14 @@ describe("SDK integration with skills and subagent definitions", () => {
     test("explicit distrust also excludes project skills and memory preloaded by a user agent", async () => {
         const { trustFolder } = await import("../src/config/trust");
         const cwd = project();
-        const definition = join(HARNESS_HOME, "agents", "sdk-reader.md");
+        const definition = join(CAVVY_HOME, "agents", "sdk-reader.md");
         const write = (file: string, body: string) => {
             mkdirSync(file.slice(0, file.lastIndexOf("/")), { recursive: true });
             writeFileSync(file, body);
         };
         write(definition, "---\nname: sdk-reader\ndescription: reader\nskills: [sdk-project-skill]\nmemory: project\n---\nUSER-AGENT-MARKER");
-        write(join(cwd, ".harness", "skills", "sdk-project-skill", "SKILL.md"), "---\ndescription: project skill\n---\nPROJECT-SKILL-MARKER");
-        write(join(cwd, ".harness", "agent-memory", "sdk-reader", "MEMORY.md"), "PROJECT-AGENT-MEMORY-MARKER");
+        write(join(cwd, ".cavvy", "skills", "sdk-project-skill", "SKILL.md"), "---\ndescription: project skill\n---\nPROJECT-SKILL-MARKER");
+        write(join(cwd, ".cavvy", "agent-memory", "sdk-reader", "MEMORY.md"), "PROJECT-AGENT-MEMORY-MARKER");
         trustFolder(cwd);
         try {
             for (const trusted of [false, true]) {
@@ -850,7 +850,7 @@ describe("SDK integration with skills and subagent definitions", () => {
 
     test("headless keeps slash and dollar skill expansion and exposes the Skill tool", async () => {
         const cwd = project();
-        const skillDir = join(cwd, ".harness", "skills", "sdk-explain");
+        const skillDir = join(cwd, ".cavvy", "skills", "sdk-explain");
         mkdirSync(skillDir, { recursive: true });
         writeFileSync(join(skillDir, "SKILL.md"), "---\ndescription: explain\n---\nSKILL-BODY-MARKER $ARGUMENTS @nonexistent.txt");
         const { runHeadless } = await import("../src/headless");
@@ -878,7 +878,7 @@ describe("found in the Codex review", () => {
     async function fakeCli(provider: "claude-code" | "codex", env: Record<string, string>) {
         const { saveAgentConfig } = await import("../src/providers/registry");
         const { forgetClient } = await import("../src/providers/models");
-        const bin = tempDir("harness-sdk-bin-");
+        const bin = tempDir("cavvy-sdk-bin-");
         const exe = join(bin, provider === "codex" ? "codex" : "claude");
         const log = join(bin, "log.jsonl");
         writeFileSync(exe, `#!/bin/sh\nexec "${process.execPath}" "${join(import.meta.dir, "fixtures", provider === "codex" ? "fake-codex.ts" : "fake-claude.ts")}" "$@"\n`);
@@ -1078,7 +1078,7 @@ describe("found in the Codex review", () => {
         }
     });
 
-    test("@server:resource mentions attach an MCP resource, as in harness -p", async () => {
+    test("@server:resource mentions attach an MCP resource, as in cavvy -p", async () => {
         const cwd = project();
         const docs = { command: process.execPath, args: ["--no-env-file", join(import.meta.dir, "fixtures", "mcp-stdio-server.ts")], env: { MCP_FIXTURE_ERA: "legacy" }, cwd };
         await collect(query({ prompt: "summarize @docs:fixture://readme", options: { cwd, model: MODEL, persistSession: false, settings: { mcpServers: { docs } } } }));
@@ -1091,7 +1091,7 @@ describe("found in the Codex review", () => {
     });
 });
 
-describe("harness -p --output-format stream-json", () => {
+describe("cavvy -p --output-format stream-json", () => {
     test("prints the SDK's message shapes", async () => {
         const cwd = project();
         script = () => ({ text: "from headless" });
@@ -1117,14 +1117,14 @@ describe("the examples", () => {
     test("run end to end against the mock model (bun run sdk:example)", async () => {
         const root = join(import.meta.dir, "..");
         const started = Date.now();
-        const p = Bun.spawn(["bun", "--no-env-file", `--config=${join(root, "bunfig.toml")}`, join(root, "scripts/sdk-demo.ts")], { cwd: root, env: { PATH: process.env.PATH ?? "", HOME: HARNESS_HOME }, stdout: "pipe", stderr: "pipe" });
+        const p = Bun.spawn(["bun", "--no-env-file", `--config=${join(root, "bunfig.toml")}`, join(root, "scripts/sdk-demo.ts")], { cwd: root, env: { PATH: process.env.PATH ?? "", HOME: CAVVY_HOME }, stdout: "pipe", stderr: "pipe" });
         const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
         expect(err).toContain("? Edit(src/auth/index.ts) -> allowed");
         expect(err).toMatch(/success in \d+ steps/);
         expect(err).toMatch(/session: \d{8}-/);
         expect(out).toContain("SAML single sign-on");
         expect(code).toBe(0);
-        // Two scripts, each exiting once its query is done: no timer of the harness's keeps them alive.
+        // Two scripts, each exiting once its query is done: no timer of Cavvy's keeps them alive.
         expect(Date.now() - started).toBeLessThan(10_000);
     }, 60_000);
 });

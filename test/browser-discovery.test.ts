@@ -70,7 +70,7 @@ describe("finding an installed browser", () => {
             const error = found(r) as string;
             expect(error).toContain("No Chrome, Chromium, Edge or Brave was found");
             expect(error).toContain("browser.executable");
-            expect(error).toContain("HARNESS_BROWSER");
+            expect(error).toContain("CAVVY_BROWSER");
         }
     });
 });
@@ -79,8 +79,8 @@ describe("naming a browser", () => {
     const system = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
     test("the environment variable wins over the setting, which wins over what is installed", () => {
-        const env = machine("darwin", { files: [system, "/opt/env-chrome", "/opt/setting-chrome"], env: { HARNESS_BROWSER: "/opt/env-chrome" } });
-        expect(found(chrome.findChrome("/opt/setting-chrome", env))).toEqual({ path: "/opt/env-chrome", source: "HARNESS_BROWSER" });
+        const env = machine("darwin", { files: [system, "/opt/env-chrome", "/opt/setting-chrome"], env: { CAVVY_BROWSER: "/opt/env-chrome" } });
+        expect(found(chrome.findChrome("/opt/setting-chrome", env))).toEqual({ path: "/opt/env-chrome", source: "CAVVY_BROWSER" });
         expect(found(chrome.findChrome("/opt/setting-chrome", { ...env, env: {} }))).toEqual({ path: "/opt/setting-chrome", source: "browser.executable" });
         expect(found(chrome.findChrome(undefined, { ...env, env: {} }))).toMatchObject({ source: "installed" });
     });
@@ -97,49 +97,49 @@ describe("naming a browser", () => {
         const env = machine("darwin", { files: [system] });
         const setting = found(chrome.findChrome("/opt/gone", env)) as string;
         expect(setting).toBe('The browser.executable setting names "/opt/gone", which isn\'t an installed browser. Fix or remove it.');
-        const variable = found(chrome.findChrome(undefined, { ...env, env: { HARNESS_BROWSER: "nothing-by-this-name" } })) as string;
-        expect(variable).toBe('The HARNESS_BROWSER environment variable names "nothing-by-this-name", which isn\'t an installed browser. Fix or remove it.');
+        const variable = found(chrome.findChrome(undefined, { ...env, env: { CAVVY_BROWSER: "nothing-by-this-name" } })) as string;
+        expect(variable).toBe('The CAVVY_BROWSER environment variable names "nothing-by-this-name", which isn\'t an installed browser. Fix or remove it.');
         // the variable is the one complained of even when the setting is fine
-        expect(found(chrome.findChrome(system, { ...env, env: { HARNESS_BROWSER: "/opt/gone" } }))).toContain("HARNESS_BROWSER");
+        expect(found(chrome.findChrome(system, { ...env, env: { CAVVY_BROWSER: "/opt/gone" } }))).toContain("CAVVY_BROWSER");
     });
 
     test("empty, or only spaces, names nothing", () => {
-        const env = machine("darwin", { files: [system], env: { HARNESS_BROWSER: "  " } });
+        const env = machine("darwin", { files: [system], env: { CAVVY_BROWSER: "  " } });
         expect(found(chrome.findChrome("", env))).toEqual({ path: system, source: "installed" });
         expect(found(chrome.findChrome("   ", env))).toEqual({ path: system, source: "installed" });
     });
 
     test("the real machine's answer is remembered for a moment, per name, and can be forgotten", () => {
-        const saved = process.env.HARNESS_BROWSER;
+        const saved = process.env.CAVVY_BROWSER;
         try {
-            const a = join(tempDir("harness-browser-find-"), "chrome-a");
+            const a = join(tempDir("cavvy-browser-find-"), "chrome-a");
             const b = join(dirname(a), "chrome-b");
             writeFileSync(a, "");
             writeFileSync(b, "");
-            process.env.HARNESS_BROWSER = a;
+            process.env.CAVVY_BROWSER = a;
             chrome.forgetChromeLookup();
             const first = chrome.cachedChrome(undefined);
-            expect(first).toEqual({ ok: true, path: a, source: "HARNESS_BROWSER" });
+            expect(first).toEqual({ ok: true, path: a, source: "CAVVY_BROWSER" });
             expect(chrome.cachedChrome(undefined)).toBe(first);
             // a different variable or setting is a different question
-            process.env.HARNESS_BROWSER = b;
+            process.env.CAVVY_BROWSER = b;
             expect(chrome.cachedChrome(undefined)).toMatchObject({ path: b });
             expect(chrome.cachedChrome("/elsewhere")).toMatchObject({ path: b });
             // and a file that goes isn't noticed until the answer expires or is forgotten
-            process.env.HARNESS_BROWSER = a;
+            process.env.CAVVY_BROWSER = a;
             const again = chrome.cachedChrome(undefined);
             expect(again).toMatchObject({ path: a });
             chrome.forgetChromeLookup();
             expect(chrome.cachedChrome(undefined)).not.toBe(again);
         } finally {
-            process.env.HARNESS_BROWSER = saved;
+            process.env.CAVVY_BROWSER = saved;
             chrome.forgetChromeLookup();
         }
     });
 });
 
 describe("a profile folder another browser holds", () => {
-    const folder = () => tempDir("harness-browser-profile-");
+    const folder = () => tempDir("cavvy-browser-profile-");
     const lock = (dir: string, target: string) => symlinkSync(target, join(dir, "SingletonLock"));
 
     test("is one whose lock names a running process on this machine", () => {
@@ -168,7 +168,7 @@ describe("a profile folder another browser holds", () => {
 });
 
 describe("the browser settings", () => {
-    const root = tempDir("harness-browser-settings-");
+    const root = tempDir("cavvy-browser-settings-");
     let n = 0;
     const project = () => {
         const d = join(root, `p${++n}`);

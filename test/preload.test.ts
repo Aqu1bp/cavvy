@@ -5,8 +5,8 @@ import { join } from "path";
 // can't stand in for the preload; it reads the project's bunfig.toml as every run does.
 test("bun test's preload isolates the home and disables the keychain", () => {
     const env = { ...process.env };
-    delete env.HARNESS_HOME;
-    delete env.HARNESS_NO_KEYCHAIN;
+    delete env.CAVVY_HOME;
+    delete env.CAVVY_NO_KEYCHAIN;
     const root = join(import.meta.dir, "..");
     const r = Bun.spawnSync([process.execPath, "--no-env-file", "test", "./test/fixtures/preload-probe.test.ts"], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
     expect(r.stderr.toString()).toContain("1 pass");

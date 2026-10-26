@@ -31,7 +31,7 @@ test("a limit in a few words: the card, credits, reached", () => {
     expect(limitTitle(limit, "error", at(16))).toBe("Second is out of its 5-hour limit");
 });
 
-test("a warning's pill: the CLI's title, what folds under it; Harness's own sentence is the pill", () => {
+test("a warning's pill: the CLI's title, what folds under it; Cavvy's own sentence is the pill", () => {
     expect(warnParts(n({ level: "warn", title: "Claude can't use thinking from another organization", text: "Claude's earlier thinking…", source: "claude-code" }), NOW)).toEqual({ title: "Claude can't use thinking from another organization", body: "Claude's earlier thinking…" });
     expect(warnParts(n({ level: "warn", text: "Claude Code ended the turn without a reply." }), NOW)).toEqual({ title: "Claude Code ended the turn without a reply." });
     expect(warnParts(n({ level: "warn", text: "Codex · Default: usage limit reached …", limit: { ...limit, credits: true } }), NOW).title).toStartWith("Using credits until ");

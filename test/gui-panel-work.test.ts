@@ -11,7 +11,7 @@ const dur = (ms: number) => `${ms / 1000}s`;
 
 test("shells and monitors are commands; sub-agents, workflows and other tasks are agents'", () => {
     expect(["agent", "workflow", "other", "shell", "monitor"].map((kind) => tabOf({ kind: kind as BackgroundTaskInfo["kind"] }))).toEqual(["agents", "agents", "agents", "commands", "commands"]);
-    const tasks = [task(), task({ id: "bash_1", kind: "shell", provider: "harness", label: "npm run dev" }), task({ id: "m1", kind: "monitor", label: "Watch the log" })];
+    const tasks = [task(), task({ id: "bash_1", kind: "shell", provider: "cavvy", label: "npm run dev" }), task({ id: "m1", kind: "monitor", label: "Watch the log" })];
     expect(commandRows(tasks).map((r) => r.key)).toEqual(["task:bash_1", "task:m1"]);
     expect(agentRows(tasks, []).map((r) => r.key)).toEqual(["task:t1"]);
 });
@@ -19,7 +19,7 @@ test("shells and monitors are commands; sub-agents, workflows and other tasks ar
 test("a background sub-agent and its run are one row: by the call that launched it, or a delegated task's id", () => {
     // Claude Code's: its task id is the CLI's own, the call is the run's id.
     const cc = task({ id: "b7x2", toolUseId: "toolu_1", label: "Fix #375" });
-    // Harness's delegated task: task-1, from the delegate call; the run knows it as its taskId too.
+    // Cavvy's delegated task: task-1, from the delegate call; the run knows it as its taskId too.
     const delegated = task({ id: "task-1", provider: "gemini", toolUseId: "call_d", label: "Review the diff" });
     // Codex's: the sub-agent's thread, from its spawn call.
     const codex = task({ id: "thread-9", provider: "codex", toolUseId: "call_s", label: "Explore" });
@@ -90,7 +90,7 @@ test("Running is oldest first; Finished most recent first, with its failures cou
 });
 
 test("the tabs' counts: what runs in each now, every sub-agent once", () => {
-    const tasks = [task({ id: "b1", toolUseId: "toolu_1" }), task({ id: "b2", toolUseId: "toolu_2" }), task({ id: "sh", kind: "shell", provider: "harness" }), task({ id: "old", kind: "shell", status: "done", endedAt: 1 })];
+    const tasks = [task({ id: "b1", toolUseId: "toolu_1" }), task({ id: "b2", toolUseId: "toolu_2" }), task({ id: "sh", kind: "shell", provider: "cavvy" }), task({ id: "old", kind: "shell", status: "done", endedAt: 1 })];
     const agents = [run({ id: "toolu_1" }), run({ id: "toolu_2", description: "Other" }), run({ id: "toolu_3", status: "done", endedAt: 2 }), run({ id: "nested", parentId: "toolu_1", status: "waiting" })];
     // Before: Background listed b1 and b2, Lineage toolu_1 and toolu_2 again.
     expect(workSection(agentRows(tasks, agents)).live).toBe(3);
@@ -142,22 +142,22 @@ test("a row's time, its end, and their colour", () => {
     expect(rowMeta(done!, [], 6000, dur)).toBe("Done · 3s");
     expect(rowMeta(failed!, [], 6000, dur)).toBe("Failed · 2s");
     expect([live, waiting, done, failed].map((r) => rowTone(r!))).toEqual(["", "warn", "ok", "err"]);
-    // A task's own row says it as the task does: a monitor's time left; one Harness's quitting stopped.
+    // A task's own row says it as the task does: a monitor's time left; one Cavvy's quitting stopped.
     const shells = [{ id: "m1", command: "x", running: true, exitCode: null, startedAt: 0, monitor: { description: "d", events: 0, expiresAt: 125_000 } }];
     expect(rowMeta(commandRows([task({ id: "m1", kind: "monitor" })])[0]!, shells, 5000, dur)).toBe("2m left");
     const lost = agentRows([task({ toolUseId: "call_1", status: "stopped", lost: true })], [run({ status: "stopped" })])[0]!;
-    expect(rowMeta(lost, [], 0, dur)).toBe("Stopped when Harness quit");
+    expect(rowMeta(lost, [], 0, dur)).toBe("Stopped when Cavvy quit");
     expect(rowTone(lost)).toBe("warn");
     // Rows cleared from a fold are known by their key, start and end.
     expect(clearKey(done!)).toBe("d@1000-4000");
 });
 
-test("who runs a row: its task's runner, else its run's model's provider, else the session's; none for Harness's own commands", () => {
+test("who runs a row: its task's runner, else its run's model's provider, else the session's; none for Cavvy's own commands", () => {
     const [cc, delegated, own] = agentRows([task({ toolUseId: "a" })], [run({ id: "a" }), run({ id: "b", model: "gemini:gemini-3-pro" }), run({ id: "c" })]);
     expect(rowProvider(cc!, "codex")).toBe("claude-code");
     expect(rowProvider(delegated!, "codex")).toBe("gemini");
     expect(rowProvider(own!, "codex")).toBe("codex");
-    expect(rowProvider(commandRows([task({ id: "sh", kind: "shell", provider: "harness" })])[0]!, "codex")).toBeUndefined();
+    expect(rowProvider(commandRows([task({ id: "sh", kind: "shell", provider: "cavvy" })])[0]!, "codex")).toBeUndefined();
 });
 
 test("the server's finished tasks are cleared once every finished row with a task is cleared, in both tabs", () => {

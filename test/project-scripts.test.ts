@@ -13,13 +13,13 @@ const { gitArgv, gitEnv } = await import("../src/util/git");
 afterAll(() => iso.cleanup());
 
 function git(cwd: string, ...args: string[]) {
-    const result = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Harness Test", "-c", "user.email=test@example.invalid", ...args]), { cwd, env: gitEnv(), stdout: "pipe", stderr: "pipe" });
+    const result = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Cavvy Test", "-c", "user.email=test@example.invalid", ...args]), { cwd, env: gitEnv(), stdout: "pipe", stderr: "pipe" });
     if (result.exitCode !== 0) throw new Error(result.stderr.toString());
 }
 
 /** A repository with one commit and a linked worktree beside it. */
 function repoWithWorktree() {
-    const base = realpathSync(tempDir("harness-scripts-repo-"));
+    const base = realpathSync(tempDir("cavvy-scripts-repo-"));
     const main = join(base, "app");
     const linked = join(base, "app-feature");
     mkdirSync(join(main, "packages", "web"), { recursive: true });
@@ -32,7 +32,7 @@ function repoWithWorktree() {
     return { main, linked };
 }
 
-const folder = () => realpathSync(tempDir("harness-scripts-dir-"));
+const folder = () => realpathSync(tempDir("cavvy-scripts-dir-"));
 const resetStore = () => rmSync(scriptsFile(), { force: true });
 
 describe("validation", () => {
@@ -118,9 +118,9 @@ describe("storage", () => {
         expect(await listScripts(main)).toEqual({ project: main, scripts: [script] });
         expect((await listScripts(linked)).scripts).toEqual([script]);
         expect((await listScripts(folder())).scripts).toEqual([]);
-        // Not in the repository: nothing under .harness/ in either checkout.
-        expect(existsSync(join(main, ".harness"))).toBe(false);
-        expect(existsSync(join(linked, ".harness"))).toBe(false);
+        // Not in the repository: nothing under .cavvy/ in either checkout.
+        expect(existsSync(join(main, ".cavvy"))).toBe(false);
+        expect(existsSync(join(linked, ".cavvy"))).toBe(false);
     });
 
     test("create, update, delete; names are unique per project ignoring case", async () => {
@@ -207,7 +207,7 @@ describe("storage", () => {
         const writer = (n: number) => Bun.spawn([process.execPath, "-e", `
             const { saveScript } = await import(${JSON.stringify(join(import.meta.dir, "../src/server/scripts.ts"))});
             for (let i = 0; i < 20; i++) await saveScript(${JSON.stringify(dir)}, { name: "p${n}-" + i, command: "echo " + i });
-        `], { env: { ...process.env, HARNESS_HOME: iso.home }, stdout: "ignore", stderr: "pipe" });
+        `], { env: { ...process.env, CAVVY_HOME: iso.home }, stdout: "ignore", stderr: "pipe" });
         const procs = [writer(1), writer(2)];
         const codes = await Promise.all(procs.map((p) => p.exited));
         for (const p of procs) if (p.exitCode) throw new Error(await new Response(p.stderr).text());
@@ -242,7 +242,7 @@ describe("storage", () => {
             let ticks = 0;
             const timer = setInterval(() => ticks++, 20);
             expect((await listScripts(dir)).scripts.map((s) => s.name)).toEqual(["a"]);
-            await expect(waiting).rejects.toThrow("being saved by another Harness window");
+            await expect(waiting).rejects.toThrow("being saved by another Cavvy window");
             clearInterval(timer);
             expect(Date.now() - started).toBeGreaterThanOrEqual(1900);
             expect(ticks).toBeGreaterThan(20);
@@ -284,7 +284,7 @@ describe("typed input in a new terminal", () => {
     const saved = { SHELL: process.env.SHELL, HOME: process.env.HOME };
     beforeAll(() => {
         process.env.SHELL = "/bin/sh";
-        process.env.HOME = tempDir("harness-scripts-home-");
+        process.env.HOME = tempDir("cavvy-scripts-home-");
     });
     afterAll(() => {
         for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
@@ -338,7 +338,7 @@ describe("typed input in a new terminal", () => {
     }, 20_000);
 });
 
-describe("a store this Harness doesn't fully understand", () => {
+describe("a store this Cavvy doesn't fully understand", () => {
     const write = (data: unknown) => writeFileSync(scriptsFile(), typeof data === "string" ? data : JSON.stringify(data, null, 2));
     const file = () => JSON.parse(readFileSync(scriptsFile(), "utf-8"));
     afterAll(resetStore);
@@ -353,7 +353,7 @@ describe("a store this Harness doesn't fully understand", () => {
             { id: "dup-name", name: "Rocket", command: "echo duplicate name" },
             "not even an object",
         ];
-        const otherEntry = { scripts: [{ id: "x-1", name: "x", command: "echo x", icon: "rocket" }], pinnedBy: "another Harness" };
+        const otherEntry = { scripts: [{ id: "x-1", name: "x", command: "echo x", icon: "rocket" }], pinnedBy: "another Cavvy" };
         write({ version: 1, note: "top-level field", projects: { [dir]: { scripts: [good, ...kept], lastUsed: "bad-icon", sortBy: "name" }, [other]: otherEntry } });
         expect((await listScripts(dir)).scripts.map((s) => s.id)).toEqual(["good-1"]);
         await expect(findScript(dir, "bad-icon")).rejects.toThrow("no longer exists");
@@ -386,11 +386,11 @@ describe("a store this Harness doesn't fully understand", () => {
     });
 
     for (const [what, data, message] of [
-        ["projects is null", { version: 1, projects: null }, "isn't in a form this Harness understands"],
-        ["projects is a list", { version: 1, projects: [] }, "isn't in a form this Harness understands"],
-        ["no version", { projects: {} }, "isn't in a form this Harness understands"],
-        ["it's a list", [], "isn't in a form this Harness understands"],
-        ["a newer Harness wrote it", { version: 2, projects: { "/somewhere": { scripts: [{ id: "a", name: "a", command: "a", runIn: "docker" }] } } }, "written by a newer Harness (format 2)"],
+        ["projects is null", { version: 1, projects: null }, "isn't in a form this Cavvy understands"],
+        ["projects is a list", { version: 1, projects: [] }, "isn't in a form this Cavvy understands"],
+        ["no version", { projects: {} }, "isn't in a form this Cavvy understands"],
+        ["it's a list", [], "isn't in a form this Cavvy understands"],
+        ["a newer Cavvy wrote it", { version: 2, projects: { "/somewhere": { scripts: [{ id: "a", name: "a", command: "a", runIn: "docker" }] } } }, "written by a newer Cavvy (format 2)"],
     ] as const) {
         test(`${what}: reported, and neither a save nor a run writes it`, async () => {
             const dir = folder();
@@ -461,7 +461,7 @@ describe("when git fails", () => {
     });
     /** `git` on PATH is this script. */
     function fakeGit(body: string) {
-        const bin = tempDir("harness-fake-git-");
+        const bin = tempDir("cavvy-fake-git-");
         writeFileSync(join(bin, "git"), `#!/bin/sh\n${body}\n`);
         chmodSync(join(bin, "git"), 0o755);
         process.env.PATH = `${bin}:${savedPath}`;
@@ -505,7 +505,7 @@ describe("when git fails", () => {
 
     test("no git at all: the folder is its own project", async () => {
         const { linked } = repoWithWorktree();
-        process.env.PATH = tempDir("harness-no-git-");
+        process.env.PATH = tempDir("cavvy-no-git-");
         forgetProjectKeys();
         try {
             expect((await listScripts(linked)).project).toBe(linked);
@@ -526,7 +526,7 @@ describe("the store's lock", () => {
         const old = new Date(Date.now() - 10_000);
         utimesSync(lock(), old, old);
         try {
-            await expect(saveScript(folder(), { name: "a", command: "echo a" })).rejects.toThrow("being saved by another Harness window");
+            await expect(saveScript(folder(), { name: "a", command: "echo a" })).rejects.toThrow("being saved by another Cavvy window");
             expect(readFileSync(lock(), "utf-8")).toBe(String(process.pid));
         } finally {
             rmSync(lock(), { force: true });
@@ -578,7 +578,7 @@ describe("typing into a shell once it's reading", () => {
     const saved = { SHELL: process.env.SHELL, HOME: process.env.HOME, ZDOTDIR: process.env.ZDOTDIR };
     beforeAll(() => {
         process.env.SHELL = "/bin/sh";
-        process.env.HOME = tempDir("harness-scripts-home-");
+        process.env.HOME = tempDir("cavvy-scripts-home-");
     });
     afterAll(() => {
         for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
@@ -619,7 +619,7 @@ describe("typing into a shell once it's reading", () => {
     }, 20_000);
 
     test.skipIf(!existsSync("/bin/zsh"))("the terminal answering the shell's query before then doesn't stop the command being typed", async () => {
-        const zdot = tempDir("harness-zdotdir-");
+        const zdot = tempDir("cavvy-zdotdir-");
         // As a prompt theme does: ask the terminal, and read its answer.
         writeFileSync(join(zdot, ".zshrc"), "print -n '\\e[c'; read -rs -d c reply; print __got_reply__; PS1='READY> '\n");
         process.env.SHELL = "/bin/zsh";
@@ -642,7 +642,7 @@ describe("typing into a shell once it's reading", () => {
     }, 15_000);
 
     test.skipIf(!existsSync("/bin/zsh"))("zsh: typed only when its line editor starts reading, after slow rc files, and echoed once", async () => {
-        const zdot = tempDir("harness-zdotdir-");
+        const zdot = tempDir("cavvy-zdotdir-");
         // A banner, then slow, silent work: quiet output that isn't a shell reading yet.
         writeFileSync(join(zdot, ".zshrc"), "print __banner__\nsleep 1\nPS1='READY> '\n");
         process.env.SHELL = "/bin/zsh";
@@ -732,7 +732,7 @@ describe("second review", () => {
                 write(theirs);
                 p.items = [];
                 return true;
-            })).rejects.toThrow("being saved by another Harness window");
+            })).rejects.toThrow("being saved by another Cavvy window");
             expect(file()).toEqual(theirs);
             // And its lock is left alone.
             expect(readFileSync(lock, "utf-8")).toBe("1");
@@ -757,7 +757,7 @@ describe("second review", () => {
                 write(theirs);
                 p.items = [];
                 return true;
-            })).rejects.toThrow("being saved by another Harness window");
+            })).rejects.toThrow("being saved by another Cavvy window");
             expect(file()).toEqual(theirs);
             expect(readFileSync(lock, "utf-8")).toBe("1:bbbbbbbb");
         } finally {
@@ -916,7 +916,7 @@ describe("arming, and when typing happens", () => {
         const saved = { SHELL: process.env.SHELL, HOME: process.env.HOME };
         beforeAll(() => {
             process.env.SHELL = "/bin/sh";
-            process.env.HOME = tempDir("harness-arm-home-");
+            process.env.HOME = tempDir("cavvy-arm-home-");
         });
         afterAll(() => {
             for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
@@ -1015,7 +1015,7 @@ describe("git that won't stop", () => {
 
     test("ignoring SIGTERM, with a child keeping its output open: the error still comes after about 3 s", async () => {
         const { linked } = repoWithWorktree();
-        const bin = tempDir("harness-stuck-git-");
+        const bin = tempDir("cavvy-stuck-git-");
         // A child in the group, and (where perl is) one in a session of its own that the group kill can't reach.
         writeFileSync(join(bin, "git"), "#!/bin/sh\ntrap '' TERM\nperl -e 'use POSIX qw(setsid); setsid(); sleep 6' &\nsleep 10 &\nwait\n");
         chmodSync(join(bin, "git"), 0o755);
@@ -1085,7 +1085,7 @@ describe("the lock, where there are no hard links", () => {
             return fd;
         }) as typeof lockFiles.open;
         try {
-            await expect(saveScript(dir, { name: "after", command: "echo after" })).rejects.toThrow("being saved by another Harness window");
+            await expect(saveScript(dir, { name: "after", command: "echo after" })).rejects.toThrow("being saved by another Cavvy window");
             expect(tookOver).toBe(true);
             // Nothing was written, and the other process's lock is still there.
             expect(readFileSync(scriptsFile(), "utf-8")).toBe(before);

@@ -115,11 +115,11 @@ describe("the proxy", async () => {
     test("its URL carries credentials; without them (or with wrong ones) it asks for them", async () => {
         const p = await startProxy([{ host: "127.0.0.1" }]);
         try {
-            expect(p.url).toMatch(/^http:\/\/harness:[\w-]{20,}@127\.0\.0\.1:\d+$/);
-            for (const auth of [null, "Basic " + Buffer.from("harness:wrong").toString("base64")]) {
+            expect(p.url).toMatch(/^http:\/\/cavvy:[\w-]{20,}@127\.0\.0\.1:\d+$/);
+            for (const auth of [null, "Basic " + Buffer.from("cavvy:wrong").toString("base64")]) {
                 const r = await talk(p.url, `CONNECT 127.0.0.1:${echo.port} HTTP/1.1\r\nHost: x\r\n\r\n`, { auth });
                 expect(r).toStartWith("HTTP/1.1 407 Proxy Authentication Required");
-                expect(r).toContain('Proxy-Authenticate: Basic realm="harness"');
+                expect(r).toContain('Proxy-Authenticate: Basic realm="cavvy"');
             }
             expect(p.refused()).toEqual([]);
             // Each command's proxy has its own.
@@ -243,8 +243,8 @@ describe("the proxy", async () => {
 });
 
 test("proxyEnv points the usual variables at it and leaves localhost direct", () => {
-    const env = proxyEnv("http://harness:pw@127.0.0.1:9");
-    for (const k of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "npm_config_proxy", "npm_config_https_proxy"]) expect(env[k]).toBe("http://harness:pw@127.0.0.1:9");
+    const env = proxyEnv("http://cavvy:pw@127.0.0.1:9");
+    for (const k of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "npm_config_proxy", "npm_config_https_proxy"]) expect(env[k]).toBe("http://cavvy:pw@127.0.0.1:9");
     expect(env.NO_PROXY).toBe("localhost,127.0.0.1,::1,.localhost");
     expect(env.NODE_USE_ENV_PROXY).toBe("1");
 });

@@ -96,7 +96,7 @@ export interface AppInit {
     fastMode?: boolean;
     /** Open the session picker at startup (--resume without an id). */
     resumePicker?: boolean;
-    /** Default model when settings don't name one (legacy MODEL in the harness .env). */
+    /** Default model when settings don't name one (legacy MODEL in Cavvy .env). */
     fallbackModel?: string;
     /**
      * --worktree: its line in the welcome box, and what happens to it on exit: decided first (asking
@@ -1006,7 +1006,7 @@ export class App {
     }
 
     /**
-     * The session's background list (src/agent/background.ts), from its log: what ran when Harness last quit on
+     * The session's background list (src/agent/background.ts), from its log: what ran when Cavvy last quit on
      * it is said once here, and to the agent with the next prompt.
      */
     private bindBackground() {
@@ -1016,7 +1016,7 @@ export class App {
         this.toolState.background = new SessionBackground(this.session, Date.now, this.toolState.shells);
         this.toolState.background.onChange(() => this.persistBackground());
         const lost = this.toolState.background.shown().filter((t) => t.lost);
-        if (lost.length) this.notice(`${lost.length === 1 ? "This background task" : `These ${lost.length} background tasks`} stopped when Harness quit: ${lost.map((t) => describeTask(t)).join("; ")}.`, "warn");
+        if (lost.length) this.notice(`${lost.length === 1 ? "This background task" : `These ${lost.length} background tasks`} stopped when Cavvy quit: ${lost.map((t) => describeTask(t)).join("; ")}.`, "warn");
     }
 
     private boundBackground?: Session;
@@ -2205,7 +2205,7 @@ export class App {
 
     private async externalEditor() {
         const editor = process.env.VISUAL || process.env.EDITOR || "vi";
-        const dir = mkdtempSync(join(tmpdir(), "harness-prompt-"));
+        const dir = mkdtempSync(join(tmpdir(), "cavvy-prompt-"));
         const file = join(dir, "prompt.md");
         const exported = this.editor.value();
         const before = this.editor.capture();
@@ -2601,7 +2601,7 @@ export class App {
     private keptQueue?: { id: string; items: StoredQueued[] };
 
     /**
-     * Messages that were waiting when Harness last closed on this session (it quit mid-turn) come
+     * Messages that were waiting when Cavvy last closed on this session (it quit mid-turn) come
      * back into the prompt, images too, as an interrupt would have handed them back.
      */
     private restoreSavedQueue() {
@@ -2621,7 +2621,7 @@ export class App {
             this.notice(`${holding.length === 1 ? "A message waits" : `${holding.length} messages wait`} for an account: the ${cli} account this session used was removed. Pick one with /account to send ${holding.length === 1 ? "it" : "them"}.`, "warn");
         }
         if (!saved.length) {
-            if (kept.length) this.notice(kept.length === 1 ? "A message with a file that was waiting when Harness closed is still saved: open this session in the app to send it." : `${kept.length} messages with files that were waiting when Harness closed are still saved: open this session in the app to send them.`);
+            if (kept.length) this.notice(kept.length === 1 ? "A message with a file that was waiting when Cavvy closed is still saved: open this session in the app to send it." : `${kept.length} messages with files that were waiting when Cavvy closed are still saved: open this session in the app to send them.`);
             return;
         }
         const e = this.editor;
@@ -2633,7 +2633,7 @@ export class App {
         });
         if (typed) e.restore([typed]);
         this.queueUpdated();
-        const back = saved.length === 1 ? "A message that was waiting when Harness closed is back in the prompt." : `${saved.length} messages that were waiting when Harness closed are back in the prompt.`;
+        const back = saved.length === 1 ? "A message that was waiting when Cavvy closed is back in the prompt." : `${saved.length} messages that were waiting when Cavvy closed are back in the prompt.`;
         this.notice(kept.length ? `${back} ${kept.length === 1 ? "One with a file is" : `${kept.length} with files are`} still saved: open this session in the app to send ${kept.length === 1 ? "it" : "them"}.` : back);
         this.renderLive();
     }
@@ -2984,9 +2984,9 @@ export class App {
             title: "Where should this memory go?",
             header: [theme.muted(note)],
             items: [
-                { label: "Project memory", value: "project", description: "HARNESS.md, checked in and shared with the team" },
-                { label: "Project memory (local)", value: "local", description: "HARNESS.local.md, git-ignored, just for you" },
-                { label: "User memory", value: "user", description: "~/.harness/HARNESS.md, all your projects" },
+                { label: "Project memory", value: "project", description: "CAVVY.md, checked in and shared with the team" },
+                { label: "Project memory (local)", value: "local", description: "CAVVY.local.md, git-ignored, just for you" },
+                { label: "User memory", value: "user", description: "~/.cavvy/CAVVY.md, all your projects" },
             ],
             color: theme.memoryMode,
         });

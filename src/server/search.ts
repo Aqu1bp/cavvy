@@ -90,7 +90,7 @@ export function searchCacheSize(): { docs: number; chars: number; turnTimes: num
     return { docs: docs.size, chars: cachedChars, turnTimes: times.size, records: cachedTimes };
 }
 
-/** Not followed: a symlinked folder or file isn't part of the Harness home. */
+/** Not followed: a symlinked folder or file isn't part of the Cavvy home. */
 function plainStat(path: string) {
     const st = lstatSync(path);
     return st.isSymbolicLink() ? undefined : st;

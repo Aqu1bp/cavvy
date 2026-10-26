@@ -1,6 +1,6 @@
 // One language server process: starts it, keeps documents in sync (whole
 // text on every change, which every server accepts) and passes on the
-// diagnostics it publishes. The harness only asks for diagnostics, so it
+// diagnostics it publishes. Cavvy only asks for diagnostics, so it
 // claims little and answers the server's own requests with the minimum.
 
 import { pathToFileURL } from "url";
@@ -46,7 +46,7 @@ interface Pending {
 
 export const fileUri = (path: string) => pathToFileURL(path).href;
 
-/** Every server still running, killed if the harness exits without stopping them. */
+/** Every server still running, killed if Cavvy exits without stopping them. */
 const live = new Set<{ kill: (sig?: number | NodeJS.Signals) => void }>();
 let exitHook = false;
 function track(proc: { kill: (sig?: number | NodeJS.Signals) => void; exited: Promise<number> }) {
@@ -114,7 +114,7 @@ export class LspClient {
             "initialize",
             {
                 processId: process.pid,
-                clientInfo: { name: "harness" },
+                clientInfo: { name: "cavvy" },
                 rootUri: uri,
                 rootPath: root,
                 workspaceFolders: [{ uri, name: root.split("/").pop() || root }],

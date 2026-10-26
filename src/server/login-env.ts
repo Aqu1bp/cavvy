@@ -3,7 +3,7 @@
 // wouldn't find your tools. The desktop app's server asks your login shell
 // for its PATH once at startup and adds what's missing.
 
-const MARK = "__HARNESS_PATH__";
+const MARK = "__CAVVY_PATH__";
 
 /** PATH as your interactive login shell sets it, or undefined if that couldn't be found out. */
 export async function loginShellPath(timeoutMs = 4000): Promise<string | undefined> {
@@ -14,7 +14,7 @@ export async function loginShellPath(timeoutMs = 4000): Promise<string | undefin
             stdin: "ignore",
             stdout: "pipe",
             stderr: "ignore",
-            env: { ...process.env, TERM: "dumb", HARNESS_LOGIN_ENV: "1" } as Record<string, string>,
+            env: { ...process.env, TERM: "dumb", CAVVY_LOGIN_ENV: "1" } as Record<string, string>,
         });
         const timer = setTimeout(() => proc.kill(), timeoutMs);
         const out = await new Response(proc.stdout).text();

@@ -48,7 +48,7 @@ function alias(model: string) {
     writeFileSync(join(cache, "models.json"), JSON.stringify({ version: 3, providers: { "claude-code": { fetchedAt: now, fp: "test", models: [{ provider: "claude-code", id: "opus", name: `Opus (${model})` }] } } }));
 }
 
-test("Harness CLI records are excluded even when native transcripts are unavailable", async () => {
+test("Cavvy CLI records are excluded even when native transcripts are unavailable", async () => {
     records("api", [{ model: "codex:gpt-6-astra", usage: { inputTokens: 1_000_000, outputTokens: 0 }, cost: 0 }]);
     records("plan", [{ model: "codex:gpt-6-astra", usage: { inputTokens: 1_000_000, outputTokens: 0, cost: 0 }, cost: 0 }]);
     const summary = await usageSummary(1, now);

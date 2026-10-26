@@ -18,7 +18,7 @@ afterAll(() => {
 
 const answer = (): AssistantMessage => ({ role: "assistant", provider: "test", model: "test", content: [{ type: "text", text: "done" }], stopReason: "end_turn" });
 function setup(client: ProviderClient, opts: { trusted?: boolean; subagent?: boolean; queue?: string[][]; tools?: any[]; settings?: any } = {}) {
-    const cwd = realpathSync(tempDir("harness-turn-agent-"));
+    const cwd = realpathSync(tempDir("cavvy-turn-agent-"));
     dirs.push(cwd);
     const session = Session.create(cwd, { system: "test" });
     const settings = { autoCompact: false, delegation: false, ...opts.settings };

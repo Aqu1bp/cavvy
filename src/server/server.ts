@@ -45,7 +45,7 @@ export interface RunningServer {
 
 /** The desktop app's webview origins (macOS/Linux, Windows). */
 const APP_ORIGINS = ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"];
-const SUBPROTOCOL = "harness.v1";
+const SUBPROTOCOL = "cavvy.v1";
 const CODE_TTL_MS = 120_000;
 
 const TYPES: Record<string, string> = {
@@ -146,8 +146,8 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
         return new Response(Bun.file(file), { headers });
     };
 
-    // HARNESS_GUI_DEBUG=1: say why requests are turned away (never logs tokens).
-    const debug = process.env.HARNESS_GUI_DEBUG ? log : () => {};
+    // CAVVY_GUI_DEBUG=1: say why requests are turned away (never logs tokens).
+    const debug = process.env.CAVVY_GUI_DEBUG ? log : () => {};
     const server = Bun.serve<Conn>({
         hostname: host,
         port: o.port ?? 0,
@@ -194,7 +194,7 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                 const now = Date.now();
                 for (const [c, exp] of codes) if (exp < now) codes.delete(c);
                 const match = [...codes.keys()].find((c) => sameSecret(c, code));
-                if (!match) return Response.json({ error: "This link has expired. Run harness gui again, or use the link it printed most recently." }, { status: 401, headers: securityHeaders });
+                if (!match) return Response.json({ error: "This link has expired. Run cavvy gui again, or use the link it printed most recently." }, { status: 401, headers: securityHeaders });
                 codes.delete(match);
                 return Response.json({ token }, { headers: { ...securityHeaders, "Cache-Control": "no-store" } });
             }

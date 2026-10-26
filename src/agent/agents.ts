@@ -1,5 +1,5 @@
 // Custom sub-agents: markdown files with YAML frontmatter in
-//   ~/.harness/agents/*.md  and  <project>/.harness/agents/*.md
+//   ~/.cavvy/agents/*.md  and  <project>/.cavvy/agents/*.md
 //
 //   ---
 //   name: reviewer
@@ -30,7 +30,8 @@
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { basename, join } from "path";
-import { paths, harnessHome } from "../config/paths";
+import { APP_NAME, paths, cavvyHome } from "../config/paths";
+import { inProjectDir, withCurrentMcpNames } from "../config/legacy";
 import { isTrusted } from "../config/trust";
 import { loadPlugins } from "../plugins/loader";
 import { EFFORT_LEVELS, type Effort, type HookConfig, type McpServerConfig, type Settings } from "../config/settings";
@@ -206,10 +207,11 @@ export function parseAgentFile(text: string, fallbackName: string, source: Agent
     const def: AgentDef = { name: str(data.name) || fallbackName, description: str(data.description) ?? "", prompt: body.trim(), source, ...(file ? { file } : {}) };
     if (!yaml && ["hooks", "mcpservers", "skills"].some((k) => k in data)) warn("the frontmatter isn't valid YAML, so it was read line by line: hooks, mcpServers and skills need YAML");
 
+    // Tools of Cavvy's MCP server named as Harness's (mcp__harness__…) still count (legacy.ts).
     const tools = names(data.tools);
-    if (tools) def.tools = tools;
+    if (tools) def.tools = withCurrentMcpNames(tools, APP_NAME);
     const disallowed = names(data.disallowedtools);
-    if (disallowed) def.disallowedTools = disallowed;
+    if (disallowed) def.disallowedTools = withCurrentMcpNames(disallowed, APP_NAME);
 
     const model = str(data.model);
     if (model && model !== "inherit") {
@@ -323,14 +325,14 @@ export function loadAgents(cwd: string, trusted?: boolean): AgentDef[] {
 
 /**
  * A skill's SKILL.md, by its folder's name: <root>/<name>/SKILL.md in the
- * project's .harness/skills and .claude/skills (trusted folders only), then
- * the user's ~/.harness/skills and ~/.claude/skills. The body, without
+ * project's .cavvy/skills and .claude/skills (trusted folders only), then
+ * the user's ~/.cavvy/skills and ~/.claude/skills. The body, without
  * its frontmatter.
  */
 export function findSkill(name: string, cwd: string, trusted?: boolean): { path: string; body: string } | undefined {
     if (!/^[A-Za-z0-9][\w.:-]*$/.test(name) || name.includes("..")) return undefined;
     const root = gitRoot(cwd) ?? cwd;
-    const roots = [...((trusted ?? isTrusted(cwd)) ? [join(root, ".harness", "skills"), join(root, ".claude", "skills")] : []), join(harnessHome(), "skills"), join(homedir(), ".claude", "skills")];
+    const roots = [...((trusted ?? isTrusted(cwd)) ? [paths.projectSkills(root), join(root, ".claude", "skills")] : []), join(cavvyHome(), "skills"), join(homedir(), ".claude", "skills")];
     for (const r of roots) {
         const path = join(r, name, "SKILL.md");
         try {
@@ -349,11 +351,11 @@ export function findSkill(name: string, cwd: string, trusted?: boolean): { path:
 export const MEMORY_LINES = 200;
 export const MEMORY_BYTES = 25_000;
 
-/** Where an agent's memory lives. Project and local memory is in the project's .harness/. */
+/** Where an agent's memory lives. Project and local memory is in the project's .cavvy/ (or .harness/, inProjectDir). */
 export function agentMemoryDir(scope: AgentMemoryScope, name: string, projectRoot: string): string {
     const safe = name.replace(/[^\w.-]+/g, "-").replace(/^\.+/, "") || "agent";
-    if (scope === "user") return join(harnessHome(), "agent-memory", safe);
-    return join(projectRoot, ".harness", scope === "local" ? "agent-memory-local" : "agent-memory", safe);
+    if (scope === "user") return join(cavvyHome(), "agent-memory", safe);
+    return join(inProjectDir(projectRoot, scope === "local" ? "agent-memory-local" : "agent-memory"), safe);
 }
 
 /** The first lines of MEMORY.md, and whether there was more. */

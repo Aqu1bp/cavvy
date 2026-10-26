@@ -35,7 +35,7 @@ export function TrustDialog() {
                 <h2 id={titleId}>Do you trust the files in this folder?</h2>
                 <div class="mono small trust-path">{trustRequest()?.path}</div>
                 <Show when={forMcp()}>
-                    <p class="muted">Harness trusted this folder for this session only, because it had nothing to protect when it was opened. Its .mcp.json servers can be approved once you trust it yourself.</p>
+                    <p class="muted">Cavvy trusted this folder for this session only, because it had nothing to protect when it was opened. Its .mcp.json servers can be approved once you trust it yourself.</p>
                     <p class="muted">Cancel keeps the current session trust, project settings and hooks as they are. It does not approve any MCP server.</p>
                 </Show>
                 <Show when={info()?.needsTrust.length}>

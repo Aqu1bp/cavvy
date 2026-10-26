@@ -1,4 +1,4 @@
-// `harness --worktree [name]`: making or reopening the worktree, the branch
+// `cavvy --worktree [name]`: making or reopening the worktree, the branch
 // prefix and base settings, and what happens to it on exit (removed when
 // nothing was done, asked about, or kept), through the library, the App's
 // exit and the real entry point with -p.
@@ -23,7 +23,7 @@ afterAll(() => iso.cleanup());
 const ROOT = resolve(import.meta.dir, "..");
 
 function git(cwd: string, ...args: string[]): string {
-    const result = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Harness Test", "-c", "user.email=test@example.invalid", ...args]), { cwd, env: gitEnv(), stdout: "pipe", stderr: "pipe" });
+    const result = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Cavvy Test", "-c", "user.email=test@example.invalid", ...args]), { cwd, env: gitEnv(), stdout: "pipe", stderr: "pipe" });
     if (result.exitCode !== 0) throw new Error(result.stderr.toString());
     return result.stdout.toString().trim();
 }
@@ -57,14 +57,14 @@ describe("making the worktree", () => {
     test("a named one goes in .claude/worktrees on a prefixed branch, starts where you were, and is marked", async () => {
         const main = repo();
         const wt = await W.enterSessionWorktree({ cwd: join(main, "src", "deep"), name: "feature/login" });
-        expect(wt).toMatchObject({ name: "feature/login", path: join(main, ".claude", "worktrees", "feature-login"), branch: "harness/feature/login", baseLabel: "main", created: true, main });
+        expect(wt).toMatchObject({ name: "feature/login", path: join(main, ".claude", "worktrees", "feature-login"), branch: "cavvy/feature/login", baseLabel: "main", created: true, main });
         // The same subfolder, inside the worktree.
         expect(wt.cwd).toBe(join(wt.path, "src", "deep"));
-        expect(W.readMarker(wt.path)).toMatchObject({ name: "feature/login", branch: "harness/feature/login", base: git(main, "rev-parse", "HEAD") });
+        expect(W.readMarker(wt.path)).toMatchObject({ name: "feature/login", branch: "cavvy/feature/login", base: git(main, "rev-parse", "HEAD") });
         // The marker is in Git's own folder, never in the checkout.
         expect(git(wt.path, "status", "--porcelain")).toBe("");
         expect(wt.ms).toBeGreaterThanOrEqual(0);
-        expect(stripAnsi(worktreeLine(wt))).toBe("worktree: feature/login · branch harness/feature/login · from main");
+        expect(stripAnsi(worktreeLine(wt))).toBe("worktree: feature/login · branch cavvy/feature/login · from main");
     });
 
     test("the same name again reopens it instead of making another", async () => {
@@ -72,7 +72,7 @@ describe("making the worktree", () => {
         const first = await W.enterSessionWorktree({ cwd: main, name: "again" });
         writeFileSync(join(first.path, "work.txt"), "unsaved\n");
         const second = await W.enterSessionWorktree({ cwd: main, name: "again" });
-        expect(second).toMatchObject({ path: first.path, branch: "harness/again", created: false, base: first.base });
+        expect(second).toMatchObject({ path: first.path, branch: "cavvy/again", created: false, base: first.base });
         expect(existsSync(join(second.path, "work.txt"))).toBe(true);
         expect(worktreePaths(main)).toHaveLength(2);
         expect(stripAnsi(worktreeLine(second))).toContain("(reopened)");
@@ -82,7 +82,7 @@ describe("making the worktree", () => {
         const main = repo();
         const a = await W.enterSessionWorktree({ cwd: main });
         expect(a.name).toMatch(/^[a-z]+-[a-z]+(-\d+)?$/);
-        expect(a.branch).toBe(`harness/${a.name}`);
+        expect(a.branch).toBe(`cavvy/${a.name}`);
         const b = await W.enterSessionWorktree({ cwd: main });
         expect(b.path).not.toBe(a.path);
     });
@@ -102,7 +102,7 @@ describe("making the worktree", () => {
         const head = git(main, "rev-parse", "HEAD");
         git(main, "checkout", "--detach");
         const wt = await W.enterSessionWorktree({ cwd: main, name: "det" });
-        expect(wt).toMatchObject({ branch: "harness/det", base: head, baseLabel: head.slice(0, 12) });
+        expect(wt).toMatchObject({ branch: "cavvy/det", base: head, baseLabel: head.slice(0, 12) });
     });
 
     test("baseRef fresh starts from origin/HEAD as last fetched, and falls back to HEAD with a note", async () => {
@@ -171,17 +171,17 @@ describe("making the worktree", () => {
         const tip = git(first.path, "rev-parse", "HEAD");
         expect(await (await decideWorktree(first, { cleanup: "auto", ask: async () => "remove" }))()).toEqual({ kind: "removed", branchDeleted: false });
         const again = await W.enterSessionWorktree({ cwd: main, name: "kept" });
-        expect(again).toMatchObject({ created: true, fromBranch: true, branch: "harness/kept", base: tip });
+        expect(again).toMatchObject({ created: true, fromBranch: true, branch: "cavvy/kept", base: tip });
         expect(git(again.path, "rev-parse", "HEAD")).toBe(tip);
-        expect(stripAnsi(worktreeLine(again))).toBe("worktree: kept · branch harness/kept (back on its kept branch)");
+        expect(stripAnsi(worktreeLine(again))).toBe("worktree: kept · branch cavvy/kept (back on its kept branch)");
         // Asked about, it offers to remove only the worktree: that branch was there before it.
         const offered: string[] = [];
         expect(await (await decideWorktree(again, { cleanup: "ask", ask: async (q) => (offered.push(...q.items.map((i) => i.label)), "keep") }))()).toEqual({ kind: "kept", why: undefined });
-        expect(offered).toEqual(["Keep it", "Remove the worktree, keep branch harness/kept"]);
+        expect(offered).toEqual(["Keep it", "Remove the worktree, keep branch cavvy/kept"]);
         // Nothing done this time: the worktree goes, but the branch it came back for stays, though main has its commit.
-        git(main, "merge", "--ff-only", "harness/kept");
+        git(main, "merge", "--ff-only", "cavvy/kept");
         expect(await (await decideWorktree(again, { cleanup: "auto" }))()).toEqual({ kind: "removed", branchDeleted: false });
-        expect(branches(main)).toContain("harness/kept");
+        expect(branches(main)).toContain("cavvy/kept");
     });
 
     test("a worktree whose folder was deleted says how to clear it", async () => {
@@ -203,8 +203,8 @@ describe("settings", () => {
     test("a project's worktree settings add to the user's, field by field", () => {
         const { loadSettings } = require("../src/config/settings") as typeof import("../src/config/settings");
         const main = repo();
-        mkdirSync(join(main, ".harness"));
-        writeFileSync(join(main, ".harness", "settings.json"), JSON.stringify({ worktree: { baseRef: "fresh" } }));
+        mkdirSync(join(main, ".cavvy"));
+        writeFileSync(join(main, ".cavvy", "settings.json"), JSON.stringify({ worktree: { baseRef: "fresh" } }));
         writeFileSync(join(iso.home, "settings.json"), JSON.stringify({ worktree: { cleanup: "keep", branchPrefix: "me/" } }));
         try {
             expect(worktreeSettings(loadSettings(main, { trusted: true }))).toEqual({ branchPrefix: "me/", baseRef: "fresh", cleanup: "keep" });
@@ -215,10 +215,10 @@ describe("settings", () => {
     });
 
     test("defaults, and malformed values fall back to them", () => {
-        expect(worktreeSettings({})).toEqual({ branchPrefix: "harness/", baseRef: "head", cleanup: "auto" });
+        expect(worktreeSettings({})).toEqual({ branchPrefix: "cavvy/", baseRef: "head", cleanup: "auto" });
         expect(worktreeSettings({ worktree: { branchPrefix: " me/ ", baseRef: "fresh", cleanup: "keep" } })).toEqual({ branchPrefix: "me/", baseRef: "fresh", cleanup: "keep" });
-        expect(worktreeSettings({ worktree: { branchPrefix: 3, baseRef: "main", cleanup: "always" } } as any)).toEqual({ branchPrefix: "harness/", baseRef: "head", cleanup: "auto" });
-        expect(worktreeSettings({ worktree: "yes" } as any)).toEqual({ branchPrefix: "harness/", baseRef: "head", cleanup: "auto" });
+        expect(worktreeSettings({ worktree: { branchPrefix: 3, baseRef: "main", cleanup: "always" } } as any)).toEqual({ branchPrefix: "cavvy/", baseRef: "head", cleanup: "auto" });
+        expect(worktreeSettings({ worktree: "yes" } as any)).toEqual({ branchPrefix: "cavvy/", baseRef: "head", cleanup: "auto" });
     });
 });
 
@@ -241,7 +241,7 @@ describe("on exit", () => {
         expect(asked).toEqual([]);
         expect(worktreePaths(main)).toEqual([main]);
         expect(branches(main)).toEqual(["main"]);
-        expect(stripAnsi(endingLines(wt, end).join("\n"))).toBe("Removed worktree .claude/worktrees/w and branch harness/w.");
+        expect(stripAnsi(endingLines(wt, end).join("\n"))).toBe("Removed worktree .claude/worktrees/w and branch cavvy/w.");
     });
 
     test("uncommitted or untracked changes keep it whatever the setting, and nothing is asked", async () => {
@@ -254,9 +254,9 @@ describe("on exit", () => {
             expect(end).toEqual({ kind: "kept", why: "2 uncommitted changes" });
             expect(asked).toEqual([]);
             expect(existsSync(join(wt.path, "new.txt"))).toBe(true);
-            expect(branches(main)).toContain("harness/w");
+            expect(branches(main)).toContain("cavvy/w");
             const lines = stripAnsi(endingLines(wt, end).join("\n"));
-            expect(lines).toBe(`Worktree w kept (2 uncommitted changes), on branch harness/w\n  at ${wt.path.replace(homedir(), "~")}\n  come back with: harness -w w --continue`);
+            expect(lines).toBe(`Worktree w kept (2 uncommitted changes), on branch cavvy/w\n  at ${wt.path.replace(homedir(), "~")}\n  come back with: cavvy -w w --continue`);
         }
     });
 
@@ -276,12 +276,12 @@ describe("on exit", () => {
         asked.length = 0;
         const end = await (await decideWorktree(wt, { cleanup: "auto", ask: answer("remove") }))();
         expect(asked[0]).toContain("Keep this worktree?");
-        expect(asked[0]).toContain("It has 1 commit on harness/w.");
-        expect(asked[0]).toContain("Remove the worktree, keep branch harness/w");
+        expect(asked[0]).toContain("It has 1 commit on cavvy/w.");
+        expect(asked[0]).toContain("Remove the worktree, keep branch cavvy/w");
         expect(end).toEqual({ kind: "removed", branchDeleted: false });
         expect(worktreePaths(main)).toEqual([main]);
-        expect(git(main, "rev-parse", "harness/w")).toBe(tip);
-        expect(stripAnsi(endingLines(wt, end)[0]!)).toBe("Removed worktree .claude/worktrees/w; branch harness/w is kept.");
+        expect(git(main, "rev-parse", "cavvy/w")).toBe(tip);
+        expect(stripAnsi(endingLines(wt, end)[0]!)).toBe("Removed worktree .claude/worktrees/w; branch cavvy/w is kept.");
     });
 
     test("commits: keeping (or dismissing the question) keeps everything", async () => {
@@ -296,7 +296,7 @@ describe("on exit", () => {
     test("with nobody to ask (a signal), commits keep it and say why", async () => {
         const { main, wt } = await fresh();
         git(wt.path, "commit", "--allow-empty", "-m", "work");
-        expect(await (await decideWorktree(wt, { cleanup: "auto" }))()).toEqual({ kind: "kept", why: "1 commit on harness/w" });
+        expect(await (await decideWorktree(wt, { cleanup: "auto" }))()).toEqual({ kind: "kept", why: "1 commit on cavvy/w" });
         expect(worktreePaths(main)).toContain(wt.path);
     });
 
@@ -309,7 +309,7 @@ describe("on exit", () => {
         const end = await (await decideWorktree(wt, { cleanup: "auto", ask: answer("remove") }))();
         expect(asked[0]).toContain("It has 2 ignored files or folders.");
         expect(asked[0]).toContain("Removing it deletes .env, node_modules/.");
-        expect(asked[0]).toContain("Remove the worktree and branch harness/w");
+        expect(asked[0]).toContain("Remove the worktree and branch cavvy/w");
         expect(end).toEqual({ kind: "removed", branchDeleted: true });
         expect(worktreePaths(main)).toEqual([main]);
     });
@@ -371,7 +371,7 @@ describe("on exit", () => {
         const end = await finish();
         expect(end.kind).toBe("kept");
         expect(worktreePaths(main)).toContain(wt.path);
-        expect(branches(main)).toContain("harness/w");
+        expect(branches(main)).toContain("cavvy/w");
     });
 
     test("a trusted launch subfolder carries over to a new worktree as the user's trust, which the agent CLIs need too", async () => {
@@ -492,14 +492,14 @@ describe("on exit", () => {
         expect(worktreePaths(b.main)).toContain(b.wt.path);
     });
 
-    test("one Harness didn't make (no marker) is never removed", async () => {
+    test("one Cavvy didn't make (no marker) is never removed", async () => {
         const main = repo();
         const path = join(main, ".claude", "worktrees", "mine");
         mkdirSync(join(main, ".claude", "worktrees"), { recursive: true });
         git(main, "worktree", "add", "-b", "mine", path);
         const wt = await W.enterSessionWorktree({ cwd: main, name: "mine" });
         expect(wt.created).toBe(false);
-        expect(await (await decideWorktree(wt, { cleanup: "auto" }))()).toEqual({ kind: "kept", why: "harness didn't create it" });
+        expect(await (await decideWorktree(wt, { cleanup: "auto" }))()).toEqual({ kind: "kept", why: "cavvy didn't create it" });
         expect(worktreePaths(main)).toContain(path);
     });
 
@@ -523,9 +523,9 @@ describe("on exit", () => {
                 writeFileSync(`${other.path}.lock`, JSON.stringify({ pid: holder.pid }));
                 const end = await finish();
                 expect(end.kind).toBe("kept");
-                expect((end as { why?: string }).why).toContain("A Harness session is open");
+                expect((end as { why?: string }).why).toContain("A Cavvy session is open");
                 expect(existsSync(wt.path)).toBe(true);
-                expect(branches(main)).toContain("harness/w");
+                expect(branches(main)).toContain("cavvy/w");
             } finally {
                 holder.kill();
                 await holder.exited;
@@ -538,7 +538,7 @@ describe("on exit", () => {
     test("another session open in it that hasn't sent anything yet keeps it", async () => {
         const { main, wt } = await fresh();
         const finish = await decideWorktree(wt, { cleanup: "auto" });
-        // A second `harness -w w`, idle: no session lock yet, only its mark.
+        // A second `cavvy -w w`, idle: no session lock yet, only its mark.
         const script = `const { markPresent } = await import(${JSON.stringify(join(ROOT, "src/server/worktrees.ts"))}); if (!markPresent(process.argv[1])) process.exit(2); console.log("ready"); await Bun.sleep(30000);`;
         const other = Bun.spawn([process.execPath, "-e", script, wt.path], { stdout: "pipe" });
         try {
@@ -546,10 +546,10 @@ describe("on exit", () => {
             expect(new TextDecoder().decode((await reader.read()).value)).toContain("ready");
             for (const end of [await finish(), await (await decideWorktree(wt, { cleanup: "auto" }))()]) {
                 expect(end.kind).toBe("kept");
-                expect((end as { why?: string }).why).toContain("A Harness session is open");
+                expect((end as { why?: string }).why).toContain("A Cavvy session is open");
             }
             expect(existsSync(wt.path)).toBe(true);
-            expect(branches(main)).toContain("harness/w");
+            expect(branches(main)).toContain("cavvy/w");
         } finally {
             other.kill();
             await other.exited;
@@ -567,7 +567,7 @@ describe("on exit", () => {
         const end = await (await decideWorktree(wt, { cleanup: "auto", ask: answer("remove") }))();
         expect(asked[0]).toContain("HEAD moved off its starting commit");
         expect(end).toEqual({ kind: "removed", branchDeleted: false });
-        expect(branches(main)).toContain("harness/w");
+        expect(branches(main)).toContain("cavvy/w");
     });
 });
 
@@ -632,7 +632,7 @@ describe("App exit", () => {
             startupNotes: [],
             worktree: {
                 line: "worktree: x",
-                resume: "harness -w x",
+                resume: "cavvy -w x",
                 kept: () => ["kept"],
                 decide: async (ask) => {
                     order.push(`decide:${(await ask?.({ title: "Keep this worktree?", header: [], items: [{ label: "Remove", value: "remove" }] })) ?? "no-ask"}`);
@@ -748,7 +748,7 @@ describe("App exit", () => {
 // ---------------------------------------------------------------------------
 // The real entry point, with -p and a local mock provider.
 
-describe("harness -p --worktree", () => {
+describe("cavvy -p --worktree", () => {
     let server: ReturnType<typeof Bun.serve>;
     const cwds: string[] = [];
     beforeAll(() => {
@@ -766,8 +766,8 @@ describe("harness -p --worktree", () => {
     });
     afterAll(() => server.stop(true));
 
-    async function harness(args: string[], cwd: string, home = iso.home): Promise<{ code: number; stdout: string; stderr: string }> {
-        const env: Record<string, string> = { PATH: process.env.PATH ?? "", HOME: home, HARNESS_HOME: iso.home, HARNESS_NO_KEYCHAIN: "1" };
+    async function cavvy(args: string[], cwd: string, home = iso.home): Promise<{ code: number; stdout: string; stderr: string }> {
+        const env: Record<string, string> = { PATH: process.env.PATH ?? "", HOME: home, CAVVY_HOME: iso.home, CAVVY_NO_KEYCHAIN: "1" };
         const child = spawn(process.execPath, ["--no-env-file", `--config=${join(ROOT, "bunfig.toml")}`, join(ROOT, "src/index.ts"), "-p", "--model", "mock:m1", ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
         let stdout = "";
         let stderr = "";
@@ -782,18 +782,18 @@ describe("harness -p --worktree", () => {
 
     test("runs in the worktree, and removes it after when nothing was done", async () => {
         const main = repo();
-        const r = await harness(["-w", "quick", "say ok"], main);
+        const r = await cavvy(["-w", "quick", "say ok"], main);
         expect(r).toMatchObject({ code: 0, stdout: "ok\n" });
-        expect(r.stderr).toContain("harness: worktree: quick · branch harness/quick · from main");
-        expect(r.stderr).toContain("harness: Removed worktree .claude/worktrees/quick and branch harness/quick.");
+        expect(r.stderr).toContain("cavvy: worktree: quick · branch cavvy/quick · from main");
+        expect(r.stderr).toContain("cavvy: Removed worktree .claude/worktrees/quick and branch cavvy/quick.");
         expect(worktreePaths(main)).toEqual([main]);
     });
 
     test("a prompt with spaces after -w is the prompt, not the name", async () => {
         const main = repo();
-        const r = await harness(["--worktree", "fix the tests"], main);
+        const r = await cavvy(["--worktree", "fix the tests"], main);
         expect(r.code).toBe(0);
-        expect(r.stderr).toMatch(/worktree: [a-z]+-[a-z]+ · branch harness\/[a-z]+-[a-z]+/);
+        expect(r.stderr).toMatch(/worktree: [a-z]+-[a-z]+ · branch cavvy\/[a-z]+-[a-z]+/);
         expect(r.stderr).not.toContain("fix the tests");
     });
 
@@ -805,48 +805,48 @@ describe("harness -p --worktree", () => {
         symlinkSync(realpathSync(iso.home), home);
         let r;
         try {
-            r = await harness(["--worktree=kept", "say ok"], main, home);
+            r = await cavvy(["--worktree=kept", "say ok"], main, home);
         } finally {
             rmSync(join(iso.home, "settings.json"));
         }
         expect(r.code).toBe(0);
         expect(r.stderr).toContain("branch bot/kept");
-        expect(r.stderr).toContain(`harness: Worktree kept kept, on branch bot/kept\nharness:   at ~/${relative(realpathSync(iso.home), join(main, ".claude", "worktrees", "kept"))}\nharness:   come back with: harness -w kept --continue`);
+        expect(r.stderr).toContain(`cavvy: Worktree kept kept, on branch bot/kept\ncavvy:   at ~/${relative(realpathSync(iso.home), join(main, ".claude", "worktrees", "kept"))}\ncavvy:   come back with: cavvy -w kept --continue`);
     });
 
     test("an untrusted project is warned about once, for the worktree", async () => {
         const main = repo();
-        mkdirSync(join(main, ".harness"));
-        writeFileSync(join(main, ".harness", "settings.json"), JSON.stringify({ worktree: { branchPrefix: "project/" } }));
+        mkdirSync(join(main, ".cavvy"));
+        writeFileSync(join(main, ".cavvy", "settings.json"), JSON.stringify({ worktree: { branchPrefix: "project/" } }));
         git(main, "add", "-A");
         git(main, "commit", "-m", "project settings");
-        const r = await harness(["-w", "untrusted", "say ok"], main);
+        const r = await cavvy(["-w", "untrusted", "say ok"], main);
         expect(r.code).toBe(0);
         expect(r.stderr.match(/isn't trusted/g)).toHaveLength(1);
         // Its settings don't count: the user's default prefix.
-        expect(r.stderr).toContain("branch harness/untrusted");
+        expect(r.stderr).toContain("branch cavvy/untrusted");
     });
 
     test("cleanup comes from where it was started: local settings there count, though the worktree hasn't them", async () => {
         const main = repo();
-        mkdirSync(join(main, ".harness"));
-        writeFileSync(join(main, ".harness", "settings.local.json"), JSON.stringify({ worktree: { cleanup: "keep" } }));
+        mkdirSync(join(main, ".cavvy"));
+        writeFileSync(join(main, ".cavvy", "settings.local.json"), JSON.stringify({ worktree: { cleanup: "keep" } }));
         writeFileSync(join(iso.home, "trusted.json"), JSON.stringify({ dirs: [main] }));
         let r;
         try {
-            r = await harness(["-w", "local", "say ok"], main);
+            r = await cavvy(["-w", "local", "say ok"], main);
         } finally {
             rmSync(join(iso.home, "trusted.json"));
         }
         expect(r.code).toBe(0);
-        expect(r.stderr).toContain("harness: Worktree local kept, on branch harness/local");
+        expect(r.stderr).toContain("cavvy: Worktree local kept, on branch cavvy/local");
         expect(worktreePaths(main)).toHaveLength(2);
     });
 
     test("outside a Git repository it says so and exits 1", async () => {
         const plain = join(realpathSync(iso.home), `plain-cli-${++n}`);
         mkdirSync(plain);
-        const r = await harness(["-w", "x", "hi"], plain);
-        expect(r).toMatchObject({ code: 1, stderr: "harness: This folder isn't in a Git repository.\n" });
+        const r = await cavvy(["-w", "x", "hi"], plain);
+        expect(r).toMatchObject({ code: 1, stderr: "cavvy: This folder isn't in a Git repository.\n" });
     });
 });

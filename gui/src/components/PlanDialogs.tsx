@@ -143,7 +143,7 @@ function SavePlan(p: { sessionId: string; info: PlanInfo; busy: boolean; setBusy
         }
     };
     return (
-        <Dialog open onClose={p.onClose} title="Save plan" subtitle="As a Markdown file, in this project or in the Harness home." width={560}>
+        <Dialog open onClose={p.onClose} title="Save plan" subtitle="As a Markdown file, in this project or in the Cavvy home." width={560}>
             <form
                 class="wt-form"
                 onSubmit={(e) => {
@@ -156,7 +156,7 @@ function SavePlan(p: { sessionId: string; info: PlanInfo; busy: boolean; setBusy
                     <input class="input mono" autofocus spellcheck={false} autocomplete="off" maxLength={4096} disabled={p.busy} value={path()} onInput={(e) => edit(e.currentTarget.value)} aria-invalid={Boolean(error())} />
                     <span class="wt-hint">
                         <button type="button" class="link-btn" disabled={p.busy} onClick={() => edit(inHome())}>
-                            Harness home
+                            Cavvy home
                         </button>{" "}
                         (never touches the repository) ·{" "}
                         <button type="button" class="link-btn" disabled={p.busy} onClick={() => edit(inProject())}>

@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudeCompactAt, claudeCompactWindow, claudeEnvWindow, claudeSettingsKey, codexCompactLimit, harnessCompactAt, modelKeys, outputReserve } from "../src/backends/compact-at";
+import { claudeCompactAt, claudeCompactWindow, claudeEnvWindow, claudeSettingsKey, codexCompactLimit, cavvyCompactAt, modelKeys, outputReserve } from "../src/backends/compact-at";
 
 const dir = () => mkdtempSync(join(tmpdir(), "compact-at-"));
 const json = (file: string, v: unknown) => writeFileSync(file, JSON.stringify(v));
@@ -111,11 +111,11 @@ test("model keys: the model served, the one asked for, and what its name says it
     expect(modelKeys({ id: "gpt-6" })).toEqual(["gpt-6"]);
 });
 
-test("Harness's own point: the threshold of the window less the answer's room; a null threshold is the default", () => {
+test("Cavvy's own point: the threshold of the window less the answer's room; a null threshold is the default", () => {
     expect(outputReserve(200_000)).toBe(32_000);
     expect(outputReserve(200_000, 8_000)).toBe(8_000);
     expect(outputReserve(64_000, 64_000)).toBe(16_000);
-    expect(harnessCompactAt(200_000, undefined)).toBeCloseTo((200_000 - 32_000) * 0.92);
-    expect(harnessCompactAt(200_000, undefined, null)).toBeCloseTo(154_560);
-    expect(harnessCompactAt(200_000, 8_000, 0.8)).toBeCloseTo(192_000 * 0.8);
+    expect(cavvyCompactAt(200_000, undefined)).toBeCloseTo((200_000 - 32_000) * 0.92);
+    expect(cavvyCompactAt(200_000, undefined, null)).toBeCloseTo(154_560);
+    expect(cavvyCompactAt(200_000, 8_000, 0.8)).toBeCloseTo(192_000 * 0.8);
 });

@@ -1,8 +1,8 @@
 // A small site for the browser tests, served from 127.0.0.1, and the Chrome to drive it with.
 import { existsSync } from "node:fs";
 
-/** The Chrome the tests use: HARNESS_TEST_CHROME, else one in its usual place. Undefined where there is none (the test skips). */
-export const chromePath = [process.env.HARNESS_TEST_CHROME, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"].find((p) => p && existsSync(p));
+/** The Chrome the tests use: CAVVY_TEST_CHROME, else one in its usual place. Undefined where there is none (the test skips). */
+export const chromePath = [process.env.CAVVY_TEST_CHROME, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"].find((p) => p && existsSync(p));
 
 const PAGE = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Fixture shop</title>

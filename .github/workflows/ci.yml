@@ -19,7 +19,7 @@ permissions:
 
 env:
   BUN_VERSION: 1.3.14
-  HARNESS_NO_KEYCHAIN: "1"
+  CAVVY_NO_KEYCHAIN: "1"
 
 jobs:
   checks:
@@ -56,7 +56,7 @@ jobs:
       - name: Install ripgrep
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
       - name: Set a git identity for tests that commit
-        run: git config --global user.name "Harness CI" && git config --global user.email "ci@harness.invalid"
+        run: git config --global user.name "Cavvy CI" && git config --global user.email "ci@cavvy.invalid"
       # sandbox-differential.test.ts compares against origin/main, which a shallow checkout doesn't have.
       - name: Fetch origin/main
         run: git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main

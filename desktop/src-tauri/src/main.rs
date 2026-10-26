@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    harness_desktop_lib::run()
+    cavvy_desktop_lib::run()
 }

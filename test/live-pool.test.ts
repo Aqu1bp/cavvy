@@ -456,7 +456,7 @@ test("an end of the task's own while its stop is asked: it ended by itself (ende
     expect(s.tasks.get("stubborn3")?.status).toBe("failed");
 });
 
-test("release stops one harness session's processes; shutdownAll stops them all, tasks and all", async () => {
+test("release stops one Cavvy session's processes; shutdownAll stops them all, tasks and all", async () => {
     const { pool } = setup();
     const a = pool.session("a", "fake");
     const b = pool.session("b", "fake");

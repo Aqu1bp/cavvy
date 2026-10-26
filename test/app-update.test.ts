@@ -13,7 +13,7 @@ import type { AppUpdateInfo } from "../src/server/protocol";
 
 let dir: string;
 let savedHome: string | undefined;
-const BUNDLE = "/Applications/Harness.app";
+const BUNDLE = "/Applications/Cavvy.app";
 
 function sh(cwd: string, ...args: string[]): string {
     const r = Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
@@ -77,20 +77,20 @@ function fakeSsh(name: string, then = "exit 255") {
 }
 
 beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "harness-app-update-"));
-    savedHome = process.env.HARNESS_HOME;
-    process.env.HARNESS_HOME = join(dir, "home");
+    dir = mkdtempSync(join(tmpdir(), "cavvy-app-update-"));
+    savedHome = process.env.CAVVY_HOME;
+    process.env.CAVVY_HOME = join(dir, "home");
 });
 
 afterEach(() => {
-    process.env.HARNESS_HOME = savedHome;
+    process.env.CAVVY_HOME = savedHome;
     rmSync(dir, { recursive: true, force: true });
 });
 
 describe("bundleOf", () => {
     test("the .app a program runs from", () => {
-        expect(bundleOf("/Applications/Harness.app/Contents/MacOS/harness")).toBe("/Applications/Harness.app");
-        expect(bundleOf("/Users/me/Applications/My Apps/Harness.app/Contents/MacOS/harness")).toBe("/Users/me/Applications/My Apps/Harness.app");
+        expect(bundleOf("/Applications/Cavvy.app/Contents/MacOS/cavvy")).toBe("/Applications/Cavvy.app");
+        expect(bundleOf("/Users/me/Applications/My Apps/Cavvy.app/Contents/MacOS/cavvy")).toBe("/Users/me/Applications/My Apps/Cavvy.app");
         expect(bundleOf("/Users/me/.bun/bin/bun")).toBeUndefined();
     });
 });
@@ -102,7 +102,7 @@ describe("where it can't update itself", () => {
         expect((await updates({ platform: "linux" }).u.check()).unavailable).toContain("macOS");
         expect((await updates({ bundle: undefined }).u.check()).unavailable).toContain("Only the installed desktop app");
         expect((await updates().u.check()).unavailable).toContain("no record");
-        record({ commit: head, source: work, app: "/Users/me/Applications/Harness.app" });
+        record({ commit: head, source: work, app: "/Users/me/Applications/Cavvy.app" });
         expect((await updates().u.check()).unavailable).toContain("isn't the one last installed");
         record({ commit: head, source: join(dir, "gone") });
         expect((await updates().u.check()).unavailable).toContain("is gone");
@@ -263,7 +263,7 @@ describe("update", () => {
     test("installed: it waits for the restart, and says so if none comes", async () => {
         const { work } = repos();
         record({ commit: sh(work, "rev-parse", "HEAD~1"), source: work });
-        script(work, `await Bun.write(process.env.HARNESS_HOME + "/desktop-install.json", JSON.stringify({ commit: "x", dirty: false, source: "s", installedAt: new Date().toISOString() }));`);
+        script(work, `await Bun.write(process.env.CAVVY_HOME + "/desktop-install.json", JSON.stringify({ commit: "x", dirty: false, source: "s", installedAt: new Date().toISOString() }));`);
         const { u } = updates({ restartWaitMs: 300 });
         await u.update();
         await until(() => Boolean(u.get().updating?.restarting));
@@ -275,7 +275,7 @@ describe("update", () => {
     test("nothing installed (main hadn't moved): back to checking", async () => {
         const { work } = repos();
         record({ commit: sh(work, "rev-parse", "HEAD"), source: work });
-        script(work, `console.log("Harness is up to date with main.");`);
+        script(work, `console.log("Cavvy is up to date with main.");`);
         const { u } = updates();
         await u.update();
         await until(() => !u.get().updating && Boolean(u.get().checkedAt));
@@ -338,7 +338,7 @@ describe("update", () => {
         expect(await Bun.file(u.get().log!).text()).toContain("from the worktree");
     });
 
-    test("an update from before Harness last opened, still running: it says so, and starts none", async () => {
+    test("an update from before Cavvy last opened, still running: it says so, and starts none", async () => {
         const { work } = repos();
         record({ commit: sh(work, "rev-parse", "HEAD~1"), source: work });
         const runs = join(dir, "runs");
@@ -347,7 +347,7 @@ describe("update", () => {
         if (!("fd" in lock)) throw new Error("the lock wasn't free");
         try {
             const info = await updates().u.update();
-            expect(info.failed).toBe(`An update started earlier is still running (process ${process.pid}): Harness restarts when it's done.`);
+            expect(info.failed).toBe(`An update started earlier is still running (process ${process.pid}): Cavvy restarts when it's done.`);
             expect(info.updating).toBeUndefined();
             await Bun.sleep(300);
             expect(existsSync(runs)).toBe(false);
@@ -512,26 +512,26 @@ describe("replaceBundle: the new app in place of the old, never a broken one in 
     });
 
     test("a swap that fails puts the installed app back at once", () => {
-        const dest = join(dir, "Applications", "Harness.app");
+        const dest = join(dir, "Applications", "Cavvy.app");
         bundle(dest, "old");
         // A copy that leaves nothing to swap in.
         expect(() => replaceBundle(join(dir, "built.app"), dest, () => {})).toThrow();
         expect(build(dest)).toBe("old");
-        expect(apps()).toEqual(["Harness.app"]);
+        expect(apps()).toEqual(["Cavvy.app"]);
     });
 
     test("in place of the installed one, or where there was none, leaving nothing beside it", () => {
-        const dest = join(dir, "Applications", "Harness.app");
+        const dest = join(dir, "Applications", "Cavvy.app");
         replaceBundle(join(dir, "built.app"), dest, copy);
         expect(build(dest)).toBe("new");
         bundle(join(dir, "built.app"), "newer");
         replaceBundle(join(dir, "built.app"), dest, copy);
         expect(build(dest)).toBe("newer");
-        expect(apps()).toEqual(["Harness.app"]);
+        expect(apps()).toEqual(["Cavvy.app"]);
     });
 
     test("a copy stopped part way leaves the installed app as it was, and the next install clears what it left", () => {
-        const dest = join(dir, "Applications", "Harness.app");
+        const dest = join(dir, "Applications", "Cavvy.app");
         bundle(dest, "old");
         expect(() => replaceBundle(join(dir, "built.app"), dest, (_from, to) => {
             mkdirSync(to);
@@ -540,18 +540,18 @@ describe("replaceBundle: the new app in place of the old, never a broken one in 
         expect(build(dest)).toBe("old");
         replaceBundle(join(dir, "built.app"), dest, copy);
         expect(build(dest)).toBe("new");
-        expect(apps()).toEqual(["Harness.app"]);
+        expect(apps()).toEqual(["Cavvy.app"]);
     });
 
     test("a swap stopped between its renames is put back first", () => {
-        const dest = join(dir, "Applications", "Harness.app");
+        const dest = join(dir, "Applications", "Cavvy.app");
         // The old app moved aside, the new one never moved in.
-        bundle(join(dir, "Applications", ".Harness.app.old"), "old");
+        bundle(join(dir, "Applications", ".Cavvy.app.old"), "old");
         expect(existsSync(dest)).toBe(false);
         expect(() => replaceBundle(join(dir, "built.app"), dest, () => {
             throw new Error("copy failed");
         })).toThrow("copy failed");
         expect(build(dest)).toBe("old");
-        expect(apps()).toEqual(["Harness.app"]);
+        expect(apps()).toEqual(["Cavvy.app"]);
     });
 });

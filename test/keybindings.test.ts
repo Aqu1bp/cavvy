@@ -376,7 +376,7 @@ describe("display", () => {
 });
 
 describe("file on disk and live reload", () => {
-    const tmp = () => mkdtempSync(join(tmpdir(), "harness-keys-"));
+    const tmp = () => mkdtempSync(join(tmpdir(), "cavvy-keys-"));
     const until = async (cond: () => boolean, ms = 3000) => {
         const end = Date.now() + ms;
         while (!cond() && Date.now() < end) await new Promise((r) => setTimeout(r, 20));

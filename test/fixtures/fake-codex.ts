@@ -1,5 +1,5 @@
 // A stand-in for `codex app-server`: newline-delimited JSON-RPC with the
-// requests, notifications and approval requests the harness uses. A turn
+// requests, notifications and approval requests Cavvy uses. A turn
 // says something, does one thing (a command by default), and finishes. No
 // network.
 //
@@ -623,7 +623,7 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
             notify("turn/started", { threadId: child, turn: { id: childTurn, rootTurnId: turnId, status: "inProgress" } });
             notify("item/agentMessage/delta", { threadId: child, turnId: childTurn, itemId: "c-msg1", delta: "Looking around." });
             notify("item/completed", { threadId: child, turnId: childTurn, item: { type: "agentMessage", id: "c-msg1", text: "Looking around.", phase: "commentary" } });
-            // FAKE_CHILD_MCP={tool,args}: the sub-agent calls one of the harness's MCP tools.
+            // FAKE_CHILD_MCP={tool,args}: the sub-agent calls one of Cavvy's MCP tools.
             if (process.env.FAKE_CHILD_MCP) {
                 const c = JSON.parse(process.env.FAKE_CHILD_MCP);
                 const server = [...mcpServers.keys()][0] ?? "none";
@@ -835,7 +835,7 @@ async function handle(m: any) {
     const reply = (result: unknown) => out({ id: m.id, result });
     const fail = (message: string) => out({ id: m.id, error: { code: -32600, message } });
     const p = m.params ?? {};
-    if ((m.method === "thread/start" || m.method === "thread/resume") && p.config?.mcp_servers?.harness?.url && process.env.FAKE_REJECT_CONFIG === "1") return fail("invalid config: unknown field `default_tools_approval_mode`");
+    if ((m.method === "thread/start" || m.method === "thread/resume") && p.config?.mcp_servers?.cavvy?.url && process.env.FAKE_REJECT_CONFIG === "1") return fail("invalid config: unknown field `default_tools_approval_mode`");
     switch (m.method) {
         case "initialize":
             if (process.env.FAKE_HANG_INIT === "1") return;

@@ -1,4 +1,4 @@
-// Running the agent CLIs: finding the binary, starting it with the harness's
+// Running the agent CLIs: finding the binary, starting it with Cavvy's
 // child environment (provider keys removed, so the CLI uses its own sign-in),
 // and talking newline-delimited JSON over its stdin/stdout.
 
@@ -51,7 +51,7 @@ export function requireCli(providerId: string, cli: CliInfo): string {
     return bin;
 }
 
-/** Extra arguments saved for this CLI (providers.json), placed before the harness's own. */
+/** Extra arguments saved for this CLI (providers.json), placed before Cavvy's own. */
 export function extraArgs(providerId: string): string[] {
     return readAgentConfig(providerId)?.args ?? [];
 }

@@ -29,9 +29,9 @@ export function hostEnvironment(): ChromeEnvironment {
     return { platform: osPlatform(), env: process.env, home: homedir(), exists: existsSync, which: (name) => Bun.which(name) };
 }
 
-export type ChromeLookup = { ok: true; path: string; source: "HARNESS_BROWSER" | "browser.executable" | "installed" } | { ok: false; error: string };
+export type ChromeLookup = { ok: true; path: string; source: "CAVVY_BROWSER" | "browser.executable" | "installed" } | { ok: false; error: string };
 
-export const BROWSER_ENV = "HARNESS_BROWSER";
+export const BROWSER_ENV = "CAVVY_BROWSER";
 
 const MAC_APPS = ["Google Chrome", "Chromium", "Microsoft Edge", "Brave Browser", "Google Chrome Canary"];
 const LINUX_PROGRAMS = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge", "microsoft-edge-stable", "brave-browser", "brave"];
@@ -60,13 +60,13 @@ export function installedNames(e: Pick<ChromeEnvironment, "platform">): string[]
 }
 
 /**
- * The browser to run: HARNESS_BROWSER, else the `browser.executable` setting, else the first installed one.
+ * The browser to run: CAVVY_BROWSER, else the `browser.executable` setting, else the first installed one.
  * Something configured that isn't there is an error, not a reason to fall back: the user asked for that one.
  */
 export function findChrome(configured: string | undefined, e: ChromeEnvironment = hostEnvironment()): ChromeLookup {
     const cwd = e.home;
-    const asked: [string | undefined, "HARNESS_BROWSER" | "browser.executable"][] = [
-        [e.env[BROWSER_ENV], "HARNESS_BROWSER"],
+    const asked: [string | undefined, "CAVVY_BROWSER" | "browser.executable"][] = [
+        [e.env[BROWSER_ENV], "CAVVY_BROWSER"],
         [configured, "browser.executable"],
     ];
     for (const [value, source] of asked) {
@@ -74,7 +74,7 @@ export function findChrome(configured: string | undefined, e: ChromeEnvironment 
         if (!want) continue;
         const path = /[\\/]/.test(want) || want.startsWith("~") ? expandPath(want, cwd) : e.which(want);
         if (path && e.exists(path)) return { ok: true, path, source };
-        return { ok: false, error: `${source === "HARNESS_BROWSER" ? `The ${BROWSER_ENV} environment variable` : "The browser.executable setting"} names "${want}", which isn't an installed browser. Fix or remove it.` };
+        return { ok: false, error: `${source === "CAVVY_BROWSER" ? `The ${BROWSER_ENV} environment variable` : "The browser.executable setting"} names "${want}", which isn't an installed browser. Fix or remove it.` };
     }
     for (const path of installedPaths(e)) if (e.exists(path)) return { ok: true, path, source: "installed" };
     for (const name of installedNames(e)) {
@@ -237,7 +237,7 @@ function killGroup(pid: number, signal: NodeJS.Signals) {
     }
 }
 
-/** The harness exiting, however it does (not SIGKILL: the guard covers that), takes the browsers with it. */
+/** Cavvy exiting, however it does (not SIGKILL: the guard covers that), takes the browsers with it. */
 function killAtExit(p: { pid: number }) {
     live.add(p);
     if (exitHook) return;
@@ -266,12 +266,12 @@ export async function launchChrome(o: LaunchOptions): Promise<ChromeProcess> {
     proc.unref();
     killAtExit(proc);
     let guard: ReturnType<typeof parentGuard> | undefined;
-    // Windows has no process groups to signal and no shell to watch from: a harness ended from Task Manager leaves its browser
+    // Windows has no process groups to signal and no shell to watch from: a Cavvy ended from Task Manager leaves its browser
     // running (a normal exit stops it). A job object that kills its processes when its handle closes would fix that, and needs native calls.
     if (process.platform !== "win32") {
         try {
             guard = parentGuard(proc.pid, "browser-parent-guard");
-            // It must not keep the harness from exiting: its pipe closes with the harness, and that is what it waits for.
+            // It must not keep Cavvy from exiting: its pipe closes with Cavvy, and that is what it waits for.
             guard.unref();
         } catch {
             // Restricted sandboxes may not allow a second process; the exit hook still covers a normal exit.
@@ -332,7 +332,7 @@ export async function launchChrome(o: LaunchOptions): Promise<ChromeProcess> {
 /**
  * Browsers whose pipe is in use. Bun closes a process's pipe descriptors when it collects the process, so nothing here
  * closes them (a second close would hit whatever has the number by then: another browser's guard, which takes that for
- * the harness ending), and the process is held until its pipe is done with.
+ * Cavvy ending), and the process is held until its pipe is done with.
  */
 const piped = new Set<Subprocess>();
 

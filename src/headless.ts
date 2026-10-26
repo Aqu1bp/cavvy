@@ -1,4 +1,4 @@
-// Non-interactive mode: `harness -p "prompt"`. Runs one prompt to completion
+// Non-interactive mode: `cavvy -p "prompt"`. Runs one prompt to completion
 // and prints the result. Anything that would need an approval prompt is
 // denied unless a rule, --allowedTools or the permission mode allows it.
 

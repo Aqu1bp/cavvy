@@ -510,9 +510,9 @@ async function agentLogin(app: App, providerId: string) {
     }
 }
 
-/** Launch only the vendor's own flow; credentials never pass through a Harness input dialog. */
+/** Launch only the vendor's own flow; credentials never pass through a Cavvy input dialog. */
 async function signInCliAccount(app: App, provider: string, id: string) {
-    // Taken before the account is looked up: a removal in any Harness process then sees it and waits, or is seen
+    // Taken before the account is looked up: a removal in any Cavvy process then sees it and waits, or is seen
     // here (this stops), or has saved its change already (the lookup fails).
     const release = holdLogin(provider, id);
     let selected: ReturnType<typeof account>;
@@ -536,7 +536,7 @@ async function addCliAccount(app: App, provider: string) {
     if (id === undefined) return;
     const name = await app.showDialog(new InputDialog({ title: "Account name", placeholder: "Personal" }));
     if (name === undefined) return;
-    const folder = await app.showDialog(new InputDialog({ title: "Account folder (optional)", header: [theme.muted("Leave empty for a folder in Harness's accounts directory that shares Default's settings and history."), theme.muted("An existing folder is used as it is.")], placeholder: "/absolute/path" }));
+    const folder = await app.showDialog(new InputDialog({ title: "Account folder (optional)", header: [theme.muted("Leave empty for a folder in Cavvy's accounts directory that shares Default's settings and history."), theme.muted("An existing folder is used as it is.")], placeholder: "/absolute/path" }));
     if (folder === undefined) return;
     // An account only selects a CLI's folder (#375): what's running goes on as it is.
     const selected = addAccount(provider, { id: id.trim(), name: name.trim(), ...(folder.trim() ? { folder: folder.trim() } : {}) }, [app.cwd]);
@@ -564,7 +564,7 @@ async function pickAccount(app: App, providers: string[]) {
         label: a.name, value: `${provider}:${a.id}`, group: getProvider(provider)!.name,
         description: a.folder || "The CLI's normal configuration", detail: app.session.accountId(provider) === a.id ? "current" : undefined,
     })));
-    const choice = await app.showDialog(new SelectDialog<string>({ title: "Session account", items, searchable: true, footer: [theme.muted("Harness-made accounts share history: a switch among them and Default resumes the CLI session."), theme.muted("Another account starts a new CLI thread with this conversation as context."), theme.muted("Add one: /login claude-code add or /login codex add")] })) as string | undefined;
+    const choice = await app.showDialog(new SelectDialog<string>({ title: "Session account", items, searchable: true, footer: [theme.muted("Cavvy-made accounts share history: a switch among them and Default resumes the CLI session."), theme.muted("Another account starts a new CLI thread with this conversation as context."), theme.muted("Add one: /login claude-code add or /login codex add")] })) as string | undefined;
     if (choice) {
         const [provider, id] = choice.split(":");
         await app.setAccount(provider!, id!);
@@ -1095,7 +1095,7 @@ function costCommand(app: App) {
 
 /**
  * /tasks: the session's background work (src/agent/background.ts): tasks delegated to other models, an agent
- * CLI's background sub-agents, shells and monitors, and the harness's own background shells. /tasks stop
+ * CLI's background sub-agents, shells and monitors, and Cavvy's own background shells. /tasks stop
  * <id|all> stops them; Esc doesn't (#228).
  */
 async function tasksCommand(app: App, args: string) {
@@ -1145,7 +1145,7 @@ async function tasksCommand(app: App, args: string) {
     if (shown.length) {
         lines.push(heading("Running in the background"));
         for (const t of shown) {
-            const by = getProvider(t.provider)?.name ?? (t.provider === "harness" ? "" : t.provider);
+            const by = getProvider(t.provider)?.name ?? (t.provider === "cavvy" ? "" : t.provider);
             lines.push(`  ${bold(t.id)}  ${truncate(describeTask(t), 60)}  ${theme.muted(by)}  ${theme.warning(`running ${formatDuration(Date.now() - t.startedAt)}`)}${t.stoppable ? "" : theme.muted(" · can't be stopped on its own")}`);
         }
     }
@@ -1179,7 +1179,7 @@ async function statusCommand(app: App) {
         kv("Thinking text", app.settings.showThinking ? "shown" : theme.muted("hidden (summaries only)")),
         kv("Permission mode", MODE_INFO[app.mode].color(MODE_INFO[app.mode].label)),
         kv("MCP servers", servers.length ? servers.map((s) => `${s.name} ${s.status === "connected" ? theme.success("✔") : s.status === "failed" ? theme.error("✘") : theme.muted(s.status)}`).join(", ") : theme.muted("none")),
-        kv("Memory files", memory.length ? memory.map((f) => displayPath(f.path, app.cwd)).join(", ") : theme.muted("none (/init creates HARNESS.md)")),
+        kv("Memory files", memory.length ? memory.map((f) => displayPath(f.path, app.cwd)).join(", ") : theme.muted("none (/init creates CAVVY.md)")),
         kv("Settings", (["user", "project", "local"] as SettingsScope[]).filter((s) => existsSync(settingsPath(s, app.cwd))).map((s) => displayPath(settingsPath(s, app.cwd), app.cwd)).join(", ") || theme.muted("defaults")),
         kv("Cost so far", formatCost(app.session.cost, app.session.costUnknown)),
     ];
@@ -1242,7 +1242,7 @@ async function exportCommand(app: App, args: string) {
         app.notice(`Copied the conversation to the ${await copyToClipboard(text)}.`);
         return;
     }
-    let file = args.trim() ? expandPath(args.trim(), app.cwd) : join(app.cwd, `harness-${app.session.meta.id}.md`);
+    let file = args.trim() ? expandPath(args.trim(), app.cwd) : join(app.cwd, `cavvy-${app.session.meta.id}.md`);
     if (existsSync(file) && !(await confirm(app, `Overwrite ${displayPath(file, app.cwd)}?`))) return;
     writeFileSync(file, text);
     app.notice(`Exported the conversation to ${displayPath(file, app.cwd)}`);
@@ -1491,7 +1491,7 @@ function mcpCardLines(app: App, info: McpServerInfo): string[] {
 async function trustForApproval(app: App): Promise<boolean> {
     if (trustedByUser(app.cwd)) return true;
     const header = [
-        theme.warning("You haven't trusted this folder yourself: Harness trusted it for this session only, because it had nothing to protect when it was opened."),
+        theme.warning("You haven't trusted this folder yourself: Cavvy trusted it for this session only, because it had nothing to protect when it was opened."),
         theme.muted(app.cwd),
         "",
         theme.muted("Its settings, hooks and memory files already apply this session. Trusting it is saved, and lets you approve its .mcp.json servers."),
@@ -1591,8 +1591,8 @@ async function mcpCommand(app: App, args: string) {
                 "",
                 heading("MCP servers"),
                 theme.muted("  None configured. Add one with:"),
-                `    ${bold("harness mcp add <name> -- <command> [args…]")}        ${theme.muted("(stdio)")}`,
-                `    ${bold("harness mcp add --transport http <name> <url>")}   ${theme.muted("(HTTP)")}`,
+                `    ${bold("cavvy mcp add <name> -- <command> [args…]")}        ${theme.muted("(stdio)")}`,
+                `    ${bold("cavvy mcp add --transport http <name> <url>")}   ${theme.muted("(HTTP)")}`,
                 theme.muted(`  or edit "mcpServers" in ${displayPath(paths.userSettings(), app.cwd)} / a project .mcp.json.`),
             ]);
             return;
@@ -1712,8 +1712,8 @@ async function memoryCommand(app: App) {
         ...files.map((f) => ({ label: displayPath(f.path, app.cwd), value: f.path, description: `${f.scope} · ${Math.round(f.content.length / 100) / 10} KB` })),
     ];
     for (const [label, p] of [
-        ["Project memory (HARNESS.md)", join(root, "HARNESS.md")],
-        ["Local project memory (HARNESS.local.md)", join(root, "HARNESS.local.md")],
+        ["Project memory (CAVVY.md)", join(root, "CAVVY.md")],
+        ["Local project memory (CAVVY.local.md)", join(root, "CAVVY.local.md")],
         ["User memory", paths.userMemory()],
     ] as const) {
         if (!files.some((f) => f.path === p)) candidates.push({ label: theme.muted(`+ ${label}`), value: p, description: "create" });
@@ -1753,7 +1753,7 @@ function agentsCommand(app: App) {
         for (const m of more) lines.push(theme.subtle(`    ${truncate(m, termCols() - 6)}`));
         for (const w of a.warnings ?? []) lines.push(theme.warning(`    ⚠ ${truncate(w, termCols() - 8)}`));
     }
-    if (agents.length === BUILTIN_AGENTS.length) lines.push("", theme.muted(`  Add your own as markdown files in ${displayPath(paths.userAgents(), app.cwd)}/ or .harness/agents/ (frontmatter: name, description, tools, disallowedTools, model, permissionMode, effort, maxTurns, isolation, background, memory, skills, mcpServers, hooks).`));
+    if (agents.length === BUILTIN_AGENTS.length) lines.push("", theme.muted(`  Add your own as markdown files in ${displayPath(paths.userAgents(), app.cwd)}/ or .cavvy/agents/ (frontmatter: name, description, tools, disallowedTools, model, permissionMode, effort, maxTurns, isolation, background, memory, skills, mcpServers, hooks).`));
     app.print(lines);
 }
 
@@ -1777,7 +1777,7 @@ function skillsCommand(app: App, args: string) {
             const dirs = skillRoots(app.cwd, app.init.trusted).map((r) => displayPath(r.dir, app.cwd) + "/");
             lines.push(theme.muted(`  Add one as <name>/SKILL.md in ${dirs.join(", ")} (frontmatter: name, description).`));
         }
-        if (!app.init.trusted) lines.push(theme.warning("  This folder isn't trusted, so its skills (.harness/skills, .claude/skills) are ignored."));
+        if (!app.init.trusted) lines.push(theme.warning("  This folder isn't trusted, so its skills (.cavvy/skills, .claude/skills) are ignored."));
         return lines;
     });
 }
@@ -2018,14 +2018,14 @@ async function addDirCommand(app: App, args: string) {
 // ---------------------------------------------------------------------------
 // Prompts
 
-export const INIT_PROMPT = `Please analyze this codebase and create a HARNESS.md file at the repository root. It will be loaded into your context in future sessions in this repository.
+export const INIT_PROMPT = `Please analyze this codebase and create a CAVVY.md file at the repository root. It will be loaded into your context in future sessions in this repository.
 
 What to include:
 1. Commands that are commonly used: how to build, lint, run the tests, and run a single test.
 2. High-level architecture and code structure: the "big picture" that takes reading several files to understand.
 
 Guidelines:
-- If a HARNESS.md, CLAUDE.md or AGENTS.md already exists, suggest improvements to it instead of starting over.
+- If a CAVVY.md, CLAUDE.md or AGENTS.md already exists, suggest improvements to it instead of starting over.
 - Don't repeat yourself, and don't include obvious instructions ("write clean code", "handle errors") or generic advice.
 - Don't list every file or component; those are easy to discover.
 - Include important parts of the README, and of any Cursor rules (.cursor/rules/, .cursorrules) or Copilot rules (.github/copilot-instructions.md).
@@ -2116,9 +2116,9 @@ const BUILTIN: Command[] = [
         run: async (app) => (app.lastResponse ? app.notice(`Copied the last response to the ${await copyToClipboard(app.lastResponse)}.`) : app.notice("Nothing to copy yet.")),
     },
     { name: "goal", description: "Keep working until a condition holds (/goal clear stops)", args: "[condition]", whileBusy: true, noEcho: true, images: true, run: goalCommand },
-    { name: "init", description: "Create a HARNESS.md with notes about this codebase", noEcho: true, images: true, run: (app, _args, draft) => app.startTurn(INIT_PROMPT, { display: "/init", kind: "command", draft }) },
+    { name: "init", description: "Create a CAVVY.md with notes about this codebase", noEcho: true, images: true, run: (app, _args, draft) => app.startTurn(INIT_PROMPT, { display: "/init", kind: "command", draft }) },
     { name: "review", description: "Review the current changes (or a PR number) for bugs", args: "[pr-number|focus]", noEcho: true, images: true, run: (app, args, draft) => app.startTurn(reviewPrompt(args), { display: `/review${args ? " " + args : ""}`, kind: "command", draft }) },
-    { name: "memory", description: "Edit memory files (HARNESS.md)", run: memoryCommand },
+    { name: "memory", description: "Edit memory files (CAVVY.md)", run: memoryCommand },
     { name: "config", aliases: ["settings"], description: "Change settings", run: configCommand },
     { name: "thinking", description: "Toggle showing the model's thinking text", whileBusy: true, run: (app) => {
         updateSettings("user", app.cwd, (s) => (s.showThinking = !app.settings.showThinking));
@@ -2378,7 +2378,7 @@ function helpLines(app: App, cmds: ReturnType<typeof commandList>, custom: numbe
     const lines = ["", `${theme.accent("✻")} ${bold(APP_TITLE)} ${theme.muted(`v${APP_VERSION} · a coding agent for your terminal, with any model`)}`, "", heading("Commands")];
     const w = Math.min(28, Math.max(...cmds.map((c) => width(c.name) + (c.args ? width(c.args) + 1 : 0))) + 4);
     for (const c of cmds) lines.push(truncate(`  ${padEnd(`/${c.name}${c.args ? " " + theme.subtle(c.args) : ""}`, w)}${theme.muted(c.description)}`, cols - 1));
-    if (!custom) lines.push(theme.subtle(`  Add your own: markdown files in ${displayPath(paths.userCommands(), app.cwd)}/ or .harness/commands/, or skills (<name>/SKILL.md) in ${displayPath(join(paths.home(), "skills"), app.cwd)}/ or .harness/skills/`));
+    if (!custom) lines.push(theme.subtle(`  Add your own: markdown files in ${displayPath(paths.userCommands(), app.cwd)}/ or .cavvy/commands/, or skills (<name>/SKILL.md) in ${displayPath(join(paths.home(), "skills"), app.cwd)}/ or .cavvy/skills/`));
     lines.push(
         "",
         heading("Input"),

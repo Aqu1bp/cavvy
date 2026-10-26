@@ -789,7 +789,7 @@
 
 /* ---- Notices (#426): drawn as what they are -----------------------------
    The UI explains, not words: placement, icon, colour and state carry the meaning. Ported from the approved
-   mockup (harness-chat-mockup notices.css), at the app's 14px root: 13px = 0.929rem, 12.5px = 0.893rem,
+   mockup (cavvy-chat-mockup notices.css), at the app's 14px root: 13px = 0.929rem, 12.5px = 0.893rem,
    12px = 0.857rem, 11.5px = 0.821rem, 13.5px = 0.964rem. */
 
 /* Info: one quiet line; the icon in a 22px gutter, the text where a step's verb starts. Cut short, it opens. */

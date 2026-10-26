@@ -1,9 +1,10 @@
 import { spawn, spawnSync } from "bun";
 import { createHash } from "crypto";
-import { appendFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { cwdGitEnv, gitArgv } from "../util/git";
 import { isInside } from "../util/files";
+import { LEGACY } from "../config/legacy";
 import { isTrusted, trustedByUser } from "../config/trust";
 import { loadSettings, type Settings } from "../config/settings";
 import { runHooks } from "../agent/hooks";
@@ -55,7 +56,7 @@ function isDir(path: string): boolean {
     try { return statSync(path).isDirectory(); } catch { return false; }
 }
 
-/** Where Harness (like Claude Code) keeps a repository's worktrees, under its main worktree. */
+/** Where Cavvy (like Claude Code) keeps a repository's worktrees, under its main worktree. */
 export const WORKTREES_DIR = join(".claude", "worktrees");
 
 /** Strictly inside <main>/.claude/worktrees/ once symlinks are resolved; a folder that's gone is judged by the path Git recorded. */
@@ -361,7 +362,7 @@ function checkIdentity(repo: Repo, folders: string[]) {
     };
     const common = (cwd: string) => dirOf(cwd, ["--path-format=absolute", "--git-common-dir"]);
     const inconsistent = (dir: string) =>
-        new RpcError(`${dir} has Git metadata that doesn't match this repository (its Git directory or common directory points elsewhere), so Harness won't run Git there. Check it with git rev-parse --git-common-dir.`, "inconsistent");
+        new RpcError(`${dir} has Git metadata that doesn't match this repository (its Git directory or common directory points elsewhere), so Cavvy won't run Git there. Check it with git rev-parse --git-common-dir.`, "inconsistent");
     const expected = common(repo.main);
     if (!expected) throw inconsistent(repo.main);
     const main = canonical(repo.main);
@@ -582,7 +583,7 @@ export function planRemoval(o: { path: string; worktree: string; inUse: (path: s
     if (exists) checkIdentity(repo, [record.path]);
     if (!isManaged(repo.main, record.path, exists)) throw new RpcError(`Only worktrees in ${join(repo.main, WORKTREES_DIR)} can be removed here.`, "not_managed");
     if (record.locked !== undefined) throw new RpcError(`${record.path} is locked${record.locked ? ` (${record.locked})` : ""}. Unlock it with git worktree unlock first.`, "locked");
-    if (o.inUse(record.path)) throw new RpcError(`A Harness session is open in ${record.path} (in this app, or in another process such as a terminal). Close it first.`, "in_use");
+    if (o.inUse(record.path)) throw new RpcError(`A Cavvy session is open in ${record.path} (in this app, or in another process such as a terminal). Close it first.`, "in_use");
     // Git's status runs in the worktree itself, and runs clean filters on files whose stat changed.
     checkConfigTrust(repo, cwd, exists ? [record.path] : [], "remove");
     // A detached HEAD's commit is kept only by the worktree's own HEAD and reflog, which go with it.
@@ -660,7 +661,7 @@ export async function runRemoval(plan: Removal, o: { deleteIgnored?: string; set
     const waiting = await ignoredWaiting(plan, o.deleteIgnored, log);
     if (waiting) return waiting;
     // Asked again after the awaits above: a session may have opened there since the plan.
-    if (plan.exists && o.inUse?.(plan.path)) throw new RpcError(`A Harness session is open in ${plan.path} (in this app, or in another process such as a terminal). Close it first.`, "in_use");
+    if (plan.exists && o.inUse?.(plan.path)) throw new RpcError(`A Cavvy session is open in ${plan.path} (in this app, or in another process such as a terminal). Close it first.`, "in_use");
     // WorktreeRemove hooks run first (after the same checks). One that deleted the folder
     // removed it (a worktree a WorktreeCreate hook made); otherwise Git removes it as usual.
     const settings = o.settings ?? repoSettings(plan.main);
@@ -698,8 +699,8 @@ export async function removeWorktree(o: { path: string; worktree: string; inUse:
 }
 
 // ---------------------------------------------------------------------------
-// Session worktrees: `harness --worktree [name]` (and anything else that wants
-// a throwaway checkout). Harness marks the ones it makes so cleanup knows the
+// Session worktrees: `cavvy --worktree [name]` (and anything else that wants
+// a throwaway checkout). Cavvy marks the ones it makes so cleanup knows the
 // commit each started from; it only ever removes a marked one, and never one
 // with uncommitted or untracked changes (Git refuses those, without --force).
 
@@ -707,10 +708,10 @@ export type BaseRef = "head" | "fresh";
 export type CleanupMode = "auto" | "ask" | "keep";
 
 /** Written in the worktree's own Git dir, so it's never part of the checkout and goes with it. */
-const MARKER = "harness-worktree.json";
+const MARKER = "cavvy-worktree.json";
 
 export interface WorktreeMarker {
-    /** The name it was asked for by (`harness -w <name>`). */
+    /** The name it was asked for by (`cavvy -w <name>`). */
     name: string;
     branch: string;
     /** The commit the branch started at. */
@@ -725,7 +726,7 @@ function gitDirOf(worktree: string): string | undefined {
 }
 
 /** One empty file per process working in a session worktree, named by its pid, in the worktree's Git dir. */
-const PRESENT = "harness-present";
+const PRESENT = "cavvy-present";
 
 /**
  * Marks this process as working in the worktree until it exits, so another
@@ -735,18 +736,23 @@ const PRESENT = "harness-present";
 export function markPresent(worktree: string): boolean {
     const dir = gitDirOf(worktree);
     if (!dir) return false;
-    const file = join(dir, PRESENT, String(process.pid));
-    try {
-        mkdirSync(join(dir, PRESENT), { recursive: true });
-        writeFileSync(file, "");
-    } catch {
-        return false;
+    // Under Harness's name too (best effort), so a Harness still running leaves it alone as well.
+    const files = [PRESENT, LEGACY.worktreePresent].map((n) => join(dir, n, String(process.pid)));
+    for (const [i, file] of files.entries()) {
+        try {
+            mkdirSync(dirname(file), { recursive: true });
+            writeFileSync(file, "");
+        } catch {
+            if (i === 0) return false;
+        }
     }
     process.once("exit", () => {
-        try {
-            rmSync(file, { force: true });
-        } catch {
-            // the worktree went first
+        for (const file of files) {
+            try {
+                rmSync(file, { force: true });
+            } catch {
+                // the worktree went first
+            }
         }
     });
     return true;
@@ -756,12 +762,14 @@ export function markPresent(worktree: string): boolean {
 export function othersPresent(worktree: string): boolean {
     const dir = gitDirOf(worktree);
     if (!dir) return false;
-    let names: string[];
-    try {
-        names = readdirSync(join(dir, PRESENT));
-    } catch {
-        return false;
-    }
+    // A Harness process marks itself under its own name.
+    const names = [PRESENT, LEGACY.worktreePresent].flatMap((n) => {
+        try {
+            return readdirSync(join(dir, n));
+        } catch {
+            return [];
+        }
+    });
     return names.some((n) => {
         const pid = Number(n);
         if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
@@ -784,7 +792,9 @@ export function readMarker(worktree: string): WorktreeMarker | undefined {
     const dir = gitDirOf(worktree);
     if (!dir) return undefined;
     try {
-        const m = JSON.parse(readFileSync(join(dir, MARKER), "utf8")) as Partial<WorktreeMarker>;
+        // Harness marked the ones it made under its own name.
+        const file = [MARKER, LEGACY.worktreeMarker].map((n) => join(dir, n)).find((f) => existsSync(f)) ?? join(dir, MARKER);
+        const m = JSON.parse(readFileSync(file, "utf8")) as Partial<WorktreeMarker>;
         if (typeof m.name !== "string" || typeof m.branch !== "string" || typeof m.base !== "string" || !/^[0-9a-f]{40,64}$/.test(m.base)) return undefined;
         return { name: m.name, branch: m.branch, base: m.base, createdAt: typeof m.createdAt === "number" ? m.createdAt : 0, ownBranch: m.ownBranch !== false };
     } catch {
@@ -817,7 +827,7 @@ export interface SessionWorktree {
     main: string;
     /** Undefined when it's on a detached HEAD (a reopened one). */
     branch?: string;
-    /** The commit it started from, when Harness made it. */
+    /** The commit it started from, when Cavvy made it. */
     base?: string;
     /** What the base was, in words: a branch, origin/main, or a commit. */
     baseLabel?: string;
@@ -873,7 +883,7 @@ export async function enterSessionWorktree(o: { cwd: string; name?: string; bran
     // Only where things are, for now: creating (or reopening) checks the rest, once.
     const repo = repoOf(cwd);
     const main = repo.main;
-    const prefix = o.branchPrefix ?? "harness/";
+    const prefix = o.branchPrefix ?? "cavvy/";
     const done = (w: Omit<SessionWorktree, "ms" | "main">): SessionWorktree => ({ ...w, main, ms: Math.round(performance.now() - started) });
 
     let name = o.name;
@@ -993,7 +1003,7 @@ export async function removeSessionWorktree(o: { plan: Removal; marker: Worktree
     // detached HEAD nothing else would hold that commit once the worktree's HEAD and reflog are gone.
     // So does a session opened in it meanwhile: asked again, not taken from the plan.
     if (o.plan.exists) {
-        if (o.inUse?.(o.plan.path)) throw new RpcError(`A Harness session is open in ${o.plan.path} (in this app, or in another process such as a terminal). Close it first.`, "in_use");
+        if (o.inUse?.(o.plan.path)) throw new RpcError(`A Cavvy session is open in ${o.plan.path} (in this app, or in another process such as a terminal). Close it first.`, "in_use");
         const head = runGit(o.plan.path, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])?.trim();
         const branch = runGit(o.plan.path, ["symbolic-ref", "--quiet", "--short", "HEAD"])?.trim() || undefined;
         if (head !== o.work.head || branch !== o.work.branch) return { removed: false, branchDeleted: false, changed: true };
@@ -1012,7 +1022,7 @@ export async function removeSessionWorktree(o: { plan: Removal; marker: Worktree
  */
 export async function removeIfPristine(o: { main: string; path: string; inUse?: (path: string) => boolean; ignoredIsWork?: boolean }, log?: Log): Promise<{ removed: boolean; branchDeleted: boolean; kept?: string }> {
     const marker = readMarker(o.path);
-    if (!marker) return { removed: false, branchDeleted: false, kept: "Harness didn't make this worktree." };
+    if (!marker) return { removed: false, branchDeleted: false, kept: "Cavvy didn't make this worktree." };
     try {
         const { plan, work } = await worktreeWork({ main: o.main, path: o.path, marker, inUse: o.inUse ?? (() => false) }, log);
         if (!isPristine(work, o)) return { removed: false, branchDeleted: false, kept: "It has work in it." };

@@ -27,13 +27,13 @@ export function updateView(u: AppUpdateInfo | undefined, working: number, now = 
     if (!u) return undefined;
     if (u.unavailable) return { title: "Updates from main", detail: u.unavailable, busy: false };
     if (u.updating) {
-        if (u.updating.restarting) return { title: "Restarting Harness…", detail: "The new build is installed.", busy: true, rail: { state: "busy", label: "The update is installed: Harness is restarting" } };
+        if (u.updating.restarting) return { title: "Restarting Cavvy…", detail: "The new build is installed.", busy: true, rail: { state: "busy", label: "The update is installed: Cavvy is restarting" } };
         return {
             title: u.latest ? `Updating to main (${u.latest})…` : "Updating…",
             detail: u.updating.line,
             busy: true,
-            warn: working ? `Harness restarts when the build is done: ${plural(working, "session")} working then will stop.` : undefined,
-            rail: { state: "busy", label: `Updating Harness: ${u.updating.line}` },
+            warn: working ? `Cavvy restarts when the build is done: ${plural(working, "session")} working then will stop.` : undefined,
+            rail: { state: "busy", label: `Updating Cavvy: ${u.updating.line}` },
         };
     }
     const failed = u.failed ? { state: "failed" as const, label: `${u.failed.replace(/[.!?]?$/, ".")} Click to try again.` } : undefined;
@@ -45,7 +45,7 @@ export function updateView(u: AppUpdateInfo | undefined, working: number, now = 
             action: "update",
             busy: u.checking,
             warn: working ? `${plural(working, "session")} working: restarting stops ${working === 1 ? "it" : "them"}.` : undefined,
-            rail: failed ?? { state: "ready", label: `${title}. Click to update and restart Harness.` },
+            rail: failed ?? { state: "ready", label: `${title}. Click to update and restart Cavvy.` },
         };
     }
     if (u.checking) return { title: "Checking for updates…", detail: u.installed ? `This build ${u.installed}` : undefined, busy: true };
@@ -53,5 +53,5 @@ export function updateView(u: AppUpdateInfo | undefined, working: number, now = 
     // Checked, but never compared with main (it couldn't fetch, and had no main from before): the error says why.
     if (!u.installed) return { title: "Couldn't check for updates", action: "check", busy: false };
     const when = ago(u.checkedAt, now);
-    return { title: "Harness is up to date", detail: `Built from main ${u.installed} · checked ${when === "now" ? "just now" : `${when} ago`}`, action: "check", busy: false };
+    return { title: "Cavvy is up to date", detail: `Built from main ${u.installed} · checked ${when === "now" ? "just now" : `${when} ago`}`, action: "check", busy: false };
 }

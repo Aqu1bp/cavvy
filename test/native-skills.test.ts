@@ -1,4 +1,4 @@
-// The harness's skills on Claude Code and Codex: handed to each CLI so it runs
+// Cavvy's skills on Claude Code and Codex: handed to each CLI so it runs
 // them itself (src/backends/native-skills.ts). The helpers on their own, then
 // whole turns through the real Agent with the fake CLIs (test/fixtures).
 
@@ -73,7 +73,7 @@ describe("the folder the CLIs are given", () => {
     test("a Claude Code plugin whose skills link to each skill's own folder", () => {
         const a = fake("alpha");
         const dir = native.skillFolder([a], { plugin: true })!;
-        expect(JSON.parse(readFileSync(join(dir, ".claude-plugin", "plugin.json"), "utf-8")).name).toBe("harness");
+        expect(JSON.parse(readFileSync(join(dir, ".claude-plugin", "plugin.json"), "utf-8")).name).toBe("cavvy");
         expect(lstatSync(join(dir, "skills", "alpha")).isSymbolicLink()).toBe(true);
         expect(readlinkSync(join(dir, "skills", "alpha"))).toBe(a.dir);
         expect(readFileSync(join(dir, "skills", "alpha", "SKILL.md"), "utf-8")).toContain("Body of alpha.");
@@ -94,9 +94,9 @@ describe("the folder the CLIs are given", () => {
         expect(native.skillFolder([])).toBeUndefined();
     });
 
-    test("${HARNESS_SKILL_DIR}, which neither CLI fills in, is filled in; the skill's other files are still beside it", () => {
+    test("${CAVVY_SKILL_DIR}, which neither CLI fills in, is filled in; the skill's other files are still beside it", () => {
         const s = fake("tools");
-        writeFileSync(s.file, "---\ndescription: x\n---\nRun ${HARNESS_SKILL_DIR}/run.sh, or ${CLAUDE_SKILL_DIR}/run.sh.\n");
+        writeFileSync(s.file, "---\ndescription: x\n---\nRun ${CAVVY_SKILL_DIR}/run.sh, or ${CLAUDE_SKILL_DIR}/run.sh.\n");
         writeFileSync(join(s.dir, "run.sh"), "echo hi\n");
         mkdirSync(join(s.dir, "refs"));
         const dir = native.skillFolder([s])!;
@@ -115,7 +115,7 @@ describe("the folder the CLIs are given", () => {
     test("folders unused for a day are removed, without touching the skills they link to", () => {
         const a = fake("alpha");
         const c = fake("tools");
-        writeFileSync(c.file, "---\ndescription: x\n---\n${HARNESS_SKILL_DIR}/run.sh\n");
+        writeFileSync(c.file, "---\ndescription: x\n---\n${CAVVY_SKILL_DIR}/run.sh\n");
         writeFileSync(join(c.dir, "run.sh"), "echo\n");
         const old = native.skillFolder([a, c])!;
         const recent = native.skillFolder([a])!;
@@ -150,9 +150,9 @@ describe("Claude Code", () => {
         expect(native.forClaudeCode(all, cwd, false).map((s) => s.name)).toEqual(["u1"]);
         // Another account's config folder: ~/.claude/skills isn't its own.
         expect(native.forClaudeCode(all, cwd, true, tempDir("other-account-")).map((s) => s.name)).toEqual(["p1", "u1", "c1"]);
-        // What it calls each: its own as they are, ours as harness:<name>; a plugin's and an untrusted project's it doesn't have.
-        expect([...native.claudeNames(all, [project, mine], cwd, true)]).toEqual([["c1", "c1"], ["c2", "c2"], ["p1", "harness:p1"], ["u1", "harness:u1"]]);
-        expect([...native.claudeNames(all, [mine], cwd, false)]).toEqual([["c1", "c1"], ["u1", "harness:u1"]]);
+        // What it calls each: its own as they are, ours as cavvy:<name>; a plugin's and an untrusted project's it doesn't have.
+        expect([...native.claudeNames(all, [project, mine], cwd, true)]).toEqual([["c1", "c1"], ["c2", "c2"], ["p1", "cavvy:p1"], ["u1", "cavvy:u1"]]);
+        expect([...native.claudeNames(all, [mine], cwd, false)]).toEqual([["c1", "c1"], ["u1", "cavvy:u1"]]);
     });
 
     const format = (s: Skill, args: string) => `<skill ${s.name}${args ? ` ${args}` : ""}>`;
@@ -160,11 +160,11 @@ describe("Claude Code", () => {
     const theirs = { ...fake("review"), dir: join(claudeRoot(), "review") };
     const quiet = fake("secret", { modelInvocable: false });
     const skills = [ours, theirs, quiet];
-    const plugged = new Map([["deploy", "harness:deploy"], ["secret", "harness:secret"], ["review", "review"]]);
+    const plugged = new Map([["deploy", "cavvy:deploy"], ["secret", "cavvy:secret"], ["review", "review"]]);
 
-    test("/name runs one of ours as /harness:name, its own as typed", () => {
-        expect(native.claudePrompt("/deploy prod now", "/deploy prod now", skills, plugged, format)).toBe("/harness:deploy prod now");
-        expect(native.claudePrompt("/DEPLOY", "/DEPLOY", skills, plugged, format)).toBe("/harness:deploy");
+    test("/name runs one of ours as /cavvy:name, its own as typed", () => {
+        expect(native.claudePrompt("/deploy prod now", "/deploy prod now", skills, plugged, format)).toBe("/cavvy:deploy prod now");
+        expect(native.claudePrompt("/DEPLOY", "/DEPLOY", skills, plugged, format)).toBe("/cavvy:deploy");
         expect(native.claudePrompt("/review high", "/review high", skills, plugged, format)).toBe("/review high");
         expect(native.claudePrompt("/compact", "/compact", skills, plugged, format)).toBe("/compact");
         expect(native.claudePrompt("/usr/bin/foo is broken", "/usr/bin/foo is broken", skills, plugged, format)).toBe("/usr/bin/foo is broken");
@@ -177,7 +177,7 @@ describe("Claude Code", () => {
 
     test("$name asks it to load the skill with its Skill tool; one the model may not load goes in as text", () => {
         expect(native.claudePrompt("use $deploy and $review.", "use $deploy and $review.", skills, plugged, format)).toBe(
-            'use $deploy and $review.\n\nLoad the "harness:deploy" skill with the Skill tool and follow it.\n\nLoad the "review" skill with the Skill tool and follow it.',
+            'use $deploy and $review.\n\nLoad the "cavvy:deploy" skill with the Skill tool and follow it.\n\nLoad the "review" skill with the Skill tool and follow it.',
         );
         expect(native.claudePrompt("try $secret", "try $secret", skills, plugged, format)).toBe("try $secret\n\n<skill secret>");
         expect(native.claudePrompt("costs $5, see $HOME", "costs $5, see $HOME", skills, plugged, format)).toBe("costs $5, see $HOME");
@@ -220,10 +220,10 @@ describe("Codex", () => {
         expect(mixed.text).toStartWith("x $nofront and $imagegen\n\n<skill name=\"nofront\">");
     });
 
-    test("one of ours goes by its harness name too; Codex's own are listed for the menus", () => {
+    test("one of ours goes by its Cavvy name too; Codex's own are listed for the menus", () => {
         const s = fake("lint", { name: "acme:lint", source: "plugin" });
         const folder = native.skillFolder([s])!;
-        // Codex doesn't name them harness:<name> (it would, given Claude Code's plugin manifest).
+        // Codex doesn't name them cavvy:<name> (it would, given Claude Code's plugin manifest).
         expect(existsSync(join(folder, ".claude-plugin"))).toBe(false);
         const listed = [own, { name: "lint", path: realpathSync(s.file) }];
         const { skills, own: theirs } = native.codexSkills(listed, [s], folder);
@@ -233,7 +233,7 @@ describe("Codex", () => {
 
     test("one whose SKILL.md the folder fills in is known by the folder's copy, where Codex reads it", () => {
         const s = fake("tools");
-        writeFileSync(s.file, "---\ndescription: x\n---\nRun ${HARNESS_SKILL_DIR}/run.sh\n");
+        writeFileSync(s.file, "---\ndescription: x\n---\nRun ${CAVVY_SKILL_DIR}/run.sh\n");
         const folder = native.skillFolder([s])!;
         const copy = realpathSync(native.skillFile(folder, s));
         expect(copy).not.toBe(realpathSync(s.file));
@@ -244,7 +244,7 @@ describe("Codex", () => {
 });
 
 describe("review round 2", () => {
-    test("Codex: a name the harness has is the harness's skill, even where Codex has its own by that name", () => {
+    test("Codex: a name Cavvy has is Cavvy's skill, even where Codex has its own by that name", () => {
         const s = fake("deploy");
         const folder = native.skillFolder([s])!;
         const theirs = { name: "deploy", path: "/codex/skills/deploy/SKILL.md" };
@@ -266,8 +266,8 @@ describe("review round 2", () => {
         expect(native.codexInput("try $hidden", "try $hidden", skills, [s])).toEqual({ text: "try $hidden", items: [] });
     });
 
-    test("Claude Code: one of its own that uses ${HARNESS_SKILL_DIR} is pasted, since it wouldn't fill that in", () => {
-        const dir = skill(claudeRoot(), "tools", "description: tools", "Run ${HARNESS_SKILL_DIR}/run.sh");
+    test("Claude Code: one of its own that uses ${CAVVY_SKILL_DIR} is pasted, since it wouldn't fill that in", () => {
+        const dir = skill(claudeRoot(), "tools", "description: tools", "Run ${CAVVY_SKILL_DIR}/run.sh");
         const s: Skill = { name: "tools", description: "tools", modelInvocable: true, userInvocable: true, source: "user", file: join(dir, "SKILL.md"), dir };
         const names = native.claudeNames([s], [], cwd, true);
         expect(names.get("tools")).toBe("tools");
@@ -280,7 +280,7 @@ describe("review round 2", () => {
         const s = fake("deploy", { name: "team:deploy" });
         const dir = native.skillFolder([s], { plugin: true })!;
         expect(existsSync(join(dir, "skills", "team__deploy", "SKILL.md"))).toBe(true);
-        expect(native.claudeNames([s], [s], cwd, true).get("team:deploy")).toBe("harness:team__deploy");
+        expect(native.claudeNames([s], [s], cwd, true).get("team:deploy")).toBe("cavvy:team__deploy");
     });
 });
 
@@ -290,9 +290,9 @@ describe("review round 3", () => {
     test("a $name in an attached file's text runs nothing", () => {
         const s = fake("deploy");
         const after = "\n\n<file notes.md>run $deploy now</file>";
-        const names = new Map([["deploy", "harness:deploy"]]);
+        const names = new Map([["deploy", "cavvy:deploy"]]);
         expect(native.claudePrompt("Explain @notes.md" + after, "Explain @notes.md", [s], names, format, after)).toBe("Explain @notes.md" + after);
-        const listed = [{ name: "deploy", path: "/x/deploy/SKILL.md", harness: "deploy" }];
+        const listed = [{ name: "deploy", path: "/x/deploy/SKILL.md", cavvy: "deploy" }];
         expect(native.codexInput("Explain @notes.md" + after, "Explain @notes.md", listed, [s], after)).toEqual({ text: "Explain @notes.md" + after, items: [] });
         expect(native.pastedPrompt("Explain @notes.md" + after, "Explain @notes.md", [s], after)).toBe("Explain @notes.md" + after);
         // A /name with files after it is pasted on Claude Code, so the files aren't the skill's arguments.
@@ -302,13 +302,13 @@ describe("review round 3", () => {
     test("$names after a /name are run too", () => {
         const a = fake("review-it");
         const b = fake("checks");
-        const names = new Map([["review-it", "harness:review-it"], ["checks", "harness:checks"]]);
+        const names = new Map([["review-it", "cavvy:review-it"], ["checks", "cavvy:checks"]]);
         expect(native.claudePrompt("/review-it also apply $checks", "/review-it also apply $checks", [a, b], names, format)).toBe(
-            '/harness:review-it also apply $checks\n\nLoad the "harness:checks" skill with the Skill tool and follow it.',
+            '/cavvy:review-it also apply $checks\n\nLoad the "cavvy:checks" skill with the Skill tool and follow it.',
         );
         expect(native.claudePrompt("/review-it also apply $checks", "/review-it also apply $checks", [a, b], new Map(), format)).toBe("<skill review-it also apply $checks>\n\n<skill checks>");
         // Codex: registered, an item each; neither registered, both pasted; only the second, an item for it.
-        const listed = [{ name: "review-it", path: "/r", harness: "review-it" }, { name: "checks", path: "/c", harness: "checks" }];
+        const listed = [{ name: "review-it", path: "/r", cavvy: "review-it" }, { name: "checks", path: "/c", cavvy: "checks" }];
         expect(native.codexInput("/review-it also apply $checks", "/review-it also apply $checks", listed, [a, b]).items.map((i) => i.path)).toEqual(["/r", "/c"]);
         const none = native.codexInput("/review-it also apply $checks", "/review-it also apply $checks", [], [a, b]);
         expect(none.items).toEqual([]);
@@ -324,13 +324,13 @@ describe("review round 3", () => {
 
     test("Codex: /DEPLOY runs the skill by its listed name", () => {
         const s = fake("deploy");
-        const listed = [{ name: "deploy", path: "/d", harness: "deploy" }];
+        const listed = [{ name: "deploy", path: "/d", cavvy: "deploy" }];
         expect(native.codexInput("/DEPLOY prod", "/DEPLOY prod", listed, [s])).toEqual({ text: "$deploy prod", items: [{ type: "skill", name: "deploy", path: "/d" }] });
     });
 
     test("a skill folder path with $& in it is filled in as it is", () => {
         const root = join(tempDir("dollar-"), "a$&b");
-        const dir = skill(root, "tools", "description: x", "Run ${HARNESS_SKILL_DIR}/run.sh");
+        const dir = skill(root, "tools", "description: x", "Run ${CAVVY_SKILL_DIR}/run.sh");
         const s: Skill = { name: "tools", description: "x", modelInvocable: true, userInvocable: true, source: "user", file: join(dir, "SKILL.md"), dir };
         const folder = native.skillFolder([s])!;
         expect(readFileSync(native.skillFile(folder, s), "utf-8")).toContain(`Run ${dir}/run.sh`);
@@ -452,7 +452,7 @@ describe("review round 4", () => {
         const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
         Object.defineProperty(process, "platform", { value: "win32" });
         try {
-            const dir = skill(tempDir("win-"), "tools", "description: x", "Read ${HARNESS_SKILL_DIR}/reference.md");
+            const dir = skill(tempDir("win-"), "tools", "description: x", "Read ${CAVVY_SKILL_DIR}/reference.md");
             writeFileSync(join(dir, "reference.md"), "old");
             const s: Skill = { name: "tools", description: "x", modelInvocable: true, userInvocable: true, source: "user", file: join(dir, "SKILL.md"), dir };
             const first = native.skillFolder([s])!;
@@ -505,15 +505,15 @@ describe("a whole turn", () => {
         // Claude Code reads its own folder itself.
         expect(existsSync(join(dir, "skills", "review"))).toBe(false);
         const sent = received().filter((m) => m.type === "user").map((m) => m.message.content[0].text);
-        expect(sent).toEqual(["/harness:deploy prod"]);
+        expect(sent).toEqual(["/cavvy:deploy prod"]);
         const listed = events.flatMap((e) => (e.type === "cli_commands" ? e.names : []));
         expect(listed).toContain("code-review");
-        expect(listed.some((n) => n.startsWith("harness:"))).toBe(false);
+        expect(listed.some((n) => n.startsWith("cavvy:"))).toBe(false);
     });
 
     test("Claude Code in an untrusted folder: the user's own skills, not the project's", async () => {
         skill(userRoot(), "mine", "description: Mine", "Mine.");
-        skill(join(cwd, ".harness", "skills"), "repo", "description: The repo's", "Repo.");
+        skill(join(cwd, ".cavvy", "skills"), "repo", "description: The repo's", "Repo.");
         await runTurn("claude-code", "hi");
         const argv: string[] = logLines().find((l) => l.argv && l.argv.includes("--plugin-dir"))!.argv;
         const dir = argv[argv.indexOf("--plugin-dir") + 1]!;
@@ -523,7 +523,7 @@ describe("a whole turn", () => {
 
     test("a project's skill under trust for this session only isn't registered, and still runs: its text is sent", async () => {
         // The session's list has it (the folder had nothing to protect when it was opened).
-        skill(join(cwd, ".harness", "skills"), "repo", "description: The repo's", "Repo steps for $ARGUMENTS.");
+        skill(join(cwd, ".cavvy", "skills"), "repo", "description: The repo's", "Repo steps for $ARGUMENTS.");
         const skills = () => loadSkills(cwd, true);
         await runTurn("claude-code", "/repo now", { skills });
         expect(received().filter((m) => m.type === "user").map((m) => m.message.content[0].text)).toEqual(["Repo steps for now."].map((t) => expect.stringContaining(t)) as any);
@@ -543,7 +543,7 @@ describe("a whole turn", () => {
     test("Codex: our skills are an extra skills root; /name and $name are skill items; its own skills reach the menus", async () => {
         process.env.FAKE_CODEX_SKILL = "imagegen";
         skill(userRoot(), "deploy", "description: Ship it", "Deploy steps.");
-        skill(join(cwd, ".harness", "skills"), "repo", "description: The repo's", "Repo.");
+        skill(join(cwd, ".cavvy", "skills"), "repo", "description: The repo's", "Repo.");
         const { events } = await runTurn("codex", "/deploy prod with $imagegen", { trusted: true });
         const roots = received().find((m) => m.method === "skills/extraRoots/set")!.params.extraRoots;
         expect(roots).toHaveLength(1);
@@ -562,7 +562,7 @@ describe("a whole turn", () => {
 
     test("Codex in an untrusted folder: the project's skills aren't registered", async () => {
         skill(userRoot(), "mine", "description: Mine", "Mine.");
-        skill(join(cwd, ".harness", "skills"), "repo", "description: The repo's", "Repo.");
+        skill(join(cwd, ".cavvy", "skills"), "repo", "description: The repo's", "Repo.");
         await runTurn("codex", "hi");
         const roots = received().find((m) => m.method === "skills/extraRoots/set")!.params.extraRoots;
         expect(existsSync(join(roots[0], "mine"))).toBe(true);

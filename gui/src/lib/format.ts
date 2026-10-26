@@ -136,7 +136,7 @@ export function since(ms: number, now = Date.now()): string {
     return `${Math.floor(d / 365)}y`;
 }
 
-/** Two letters for a project: "my-own-harness" -> "MH", "api" -> "AP". */
+/** Two letters for a project: "cavvy" -> "MH", "api" -> "AP". */
 export function monogram(name: string): string {
     const words = name.split(/[^A-Za-z0-9]+/).filter(Boolean);
     if (!words.length) return "?";

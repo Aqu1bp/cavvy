@@ -18,7 +18,7 @@ import type { Tool, ToolContext, ToolResult } from "./types";
 
 const TAB = { type: "integer", description: "Tab number from the tabs list; the current tab when left out" };
 
-/** The names these tools have when Harness serves them to Claude Code and Codex (mcp__harness__browser_navigate). */
+/** The names these tools have when Cavvy serves them to Claude Code and Codex (mcp__cavvy__browser_navigate). */
 export const BROWSER_SERVER_TOOLS = ["browser_navigate", "browser_snapshot", "browser_act", "browser_screenshot", "browser_eval", "browser_logs"];
 
 const ACTIONS = ["click", "double_click", "hover", "type", "press", "select", "scroll", "wait", "dialog"] as const;
@@ -85,7 +85,7 @@ export const BrowserNavigateTool: Tool<NavigateInput> = {
     name: "BrowserNavigate",
     category: "network",
     readOnly: false,
-    description: `Opens pages in a headless Chrome that the user can watch (and take over) in Harness's Browser pane. Returns what the page shows as a text outline with refs like [e12] that BrowserAct takes. Use it to check web UI work: start the dev server first (Bash with run_in_background, wait until it answers), then open http://localhost:PORT.
+    description: `Opens pages in a headless Chrome that the user can watch (and take over) in Cavvy's Browser pane. Returns what the page shows as a text outline with refs like [e12] that BrowserAct takes. Use it to check web UI work: start the dev server first (Bash with run_in_background, wait until it answers), then open http://localhost:PORT.
 
 action: goto (default; needs url), back, forward, reload, new_tab (url optional), switch_tab, close_tab, list_tabs, resize (width, height in CSS pixels). Tabs belong to this session and have numbers. Only http(s) pages, about:blank and files inside the project open; logins and cookies stay in the browser's own profile for the project.`,
     parameters: {
@@ -432,7 +432,7 @@ const SERVED_TITLES = ["Open a page", "Read the page", "Act on the page", "Scree
 
 /**
  * The browser tools for Claude Code and Codex, which have no browser of their own here. `run` takes a call through
- * Harness's checks (rules, mode, hooks, the user), as the same tool called by a model Harness runs.
+ * Cavvy's checks (rules, mode, hooks, the user), as the same tool called by a model Cavvy runs.
  */
 export function browserServerTools(run: (tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal, callId?: string) => Promise<ServerToolResult>): ServerTool[] {
     return BROWSER_SERVER_TOOLS.map((name, i) => {
@@ -455,17 +455,17 @@ export function servedBrowserName(tool: string): string | undefined {
     return BROWSER_SERVER_TOOLS[BROWSER_TOOLS.findIndex((t) => t.name === tool)];
 }
 
-/** A call of a served browser tool (mcp__harness__browser_act) as the Harness tool it is (BrowserAct), for the transcript. */
+/** A call of a served browser tool (mcp__cavvy__browser_act) as the Cavvy tool it is (BrowserAct), for the transcript. */
 export function nativeBrowserCall(tool: string, input: Record<string, unknown>): { name: string; input: Record<string, unknown> } | undefined {
     const native = SERVED_NAMES[tool];
     return native ? { name: native.name, input } : undefined;
 }
 
-/** Whether a call (by the name its backend gave it) is of a served browser tool, which Harness runs its own hooks for. */
+/** Whether a call (by the name its backend gave it) is of a served browser tool, which Cavvy runs its own hooks for. */
 export function servedBrowserTool(server: string | undefined, toolName: unknown): boolean {
     return Boolean(server) && typeof toolName === "string" && BROWSER_SERVER_TOOLS.some((t) => toolName === `mcp__${server}__${t}`);
 }
 
-export const BROWSER_INSTRUCTIONS = `# Browser (harness)
+export const BROWSER_INSTRUCTIONS = `# Browser (cavvy)
 
-browser_navigate, browser_snapshot, browser_act, browser_screenshot, browser_eval and browser_logs drive a headless Chrome the user can watch in Harness's Browser pane. To check web UI work, start the dev server (in the background), open its address with browser_navigate, then read the page with browser_snapshot: its refs (e12) name elements for browser_act. Take a screenshot only when how the page looks matters. The user can take a tab over; acting on it then fails until they hand it back.`;
+browser_navigate, browser_snapshot, browser_act, browser_screenshot, browser_eval and browser_logs drive a headless Chrome the user can watch in Cavvy's Browser pane. To check web UI work, start the dev server (in the background), open its address with browser_navigate, then read the page with browser_snapshot: its refs (e12) name elements for browser_act. Take a screenshot only when how the page looks matters. The user can take a tab over; acting on it then fails until they hand it back.`;

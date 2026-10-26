@@ -65,7 +65,7 @@ final class Host: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWithRepl
         view.navigationDelegate = self
         window.contentView = view
         window.level = .floating
-        window.title = "Harness perf (WebKit)"
+        window.title = "Cavvy perf (WebKit)"
         window.orderFrontRegardless()
         view.load(URLRequest(url: url))
     }

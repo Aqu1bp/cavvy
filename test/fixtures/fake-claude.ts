@@ -1,5 +1,5 @@
 // A stand-in for the `claude` CLI, speaking the parts of its stream-json
-// protocol the harness uses: `auth status --json`, and `-p` with stream-json
+// protocol Cavvy uses: `auth status --json`, and `-p` with stream-json
 // in and out (initialize, a turn with one tool call, interrupt,
 // set_permission_mode, --resume, --fork-session). It makes no network requests.
 //
@@ -222,7 +222,7 @@ const askRules: string[] = [...(fromFlag.ask ?? []), ...(project.permissions?.as
 const allow: string[] = project.permissions?.allow ?? [];
 for (const h of project.hooks?.SessionStart ?? []) for (const c of h.hooks ?? []) Bun.spawnSync(["sh", "-c", c.command]);
 
-/** Claude Code's rule matching, for the forms the harness passes: Tool, Tool(//abs/path[/**]), Bash(prefix:*). */
+/** Claude Code's rule matching, for the forms Cavvy passes: Tool, Tool(//abs/path[/**]), Bash(prefix:*). */
 function ruleHits(rule: string, tool: string, input: any): boolean {
     const m = rule.match(/^(\w+)(?:\((.*)\))?$/);
     if (!m) return false;

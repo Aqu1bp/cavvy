@@ -26,6 +26,8 @@ import { expandPath } from "../util/files";
 import { childEnv } from "../tools/bash";
 import { redactedJson } from "../util/redact";
 import { isShellTool } from "../tools/types";
+import { APP_NAME } from "../config/name";
+import { legacyMcpMatcher, legacyMcpName } from "../config/legacy";
 
 export type { HookEvent };
 
@@ -157,12 +159,32 @@ function fileMatches(m: string, file: string): boolean {
 }
 
 /**
- * A tool event's matcher for a backend that matches hooks itself (Claude Code): one that covers Bash
- * covers Monitor too, as hookApplies does, since a Monitor command runs like a Bash one.
+ * A tool event's matcher for a backend that matches hooks itself (Claude Code), covering what
+ * hookApplies does: Monitor for one that covers Bash, since a Monitor command runs like a Bash one,
+ * and Cavvy's MCP tools for one written for Harness's (mcp__harness__…, legacy.ts).
  */
 export function backendMatcher(event: string, m: string | undefined): string | undefined {
-    if (!m || MATCH_FIELD[event as HookEvent] !== "tool_name" || !matcherFn(m)("Bash") || matcherFn(m)("Monitor")) return m;
-    return /^[A-Za-z0-9_\-, |]+$/.test(m) ? `${m}|Monitor` : `(?:${m})|^Monitor$`;
+    if (!m || MATCH_FIELD[event as HookEvent] !== "tool_name") return m;
+    const extra: string[] = [];
+    if (matcherFn(m)("Bash") && !matcherFn(m)("Monitor")) extra.push("Monitor");
+    const renamed = legacyMcpMatcher(m, APP_NAME);
+    if (renamed !== m) extra.push(renamed);
+    return matcherOr(m, extra);
+}
+
+/** A matcher for what `m` matches or any of `extra` does (each a list of names or a regex, as matcherFn reads them). */
+export function matcherOr(m: string, extra: string[]): string {
+    if (!extra.length) return m;
+    const simple = (x: string) => /^[A-Za-z0-9_\-, |]+$/.test(x);
+    if (simple(m) && extra.every(simple)) return [m, ...extra].join("|");
+    return [m, ...extra].map((x) => (simple(x) ? `^(?:${x.split(/[|,]/).map((n) => n.trim()).filter(Boolean).join("|")})$` : `(?:${x})`)).join("|");
+}
+
+/** Other names a tool's hooks may know it by: Bash for Monitor, Harness's for a tool of Cavvy's MCP server. */
+function toolAliases(name: string): string[] {
+    if (name === "Monitor") return ["Bash"];
+    const old = legacyMcpName(name, APP_NAME);
+    return old ? [old] : [];
 }
 
 /** Does this handler run for this occurrence of the event? */
@@ -170,8 +192,9 @@ export function hookApplies(h: HookConfig, event: HookEvent, payload: Record<str
     const field = MATCH_FIELD[event];
     if (field) {
         const v = payload[field];
-        // A Monitor command runs like a Bash one: hooks that guard Bash guard it too.
-        if (typeof v === "string" && !matcherFn(h.matcher)(v) && !(field === "tool_name" && v === "Monitor" && matcherFn(h.matcher)("Bash"))) return false;
+        // A Monitor command runs like a Bash one: hooks that guard Bash guard it too. And hooks written
+        // for Harness's MCP server's tools (mcp__harness__…) guard Cavvy's.
+        if (typeof v === "string" && !matcherFn(h.matcher)(v) && !(field === "tool_name" && toolAliases(v).some(matcherFn(h.matcher)))) return false;
     }
     if (event === "FileChanged" && h.matcher && h.matcher !== "*" && typeof payload.file_path === "string" && !fileMatches(h.matcher, payload.file_path)) return false;
     if (h.if && TOOL_EVENTS.has(event) && typeof payload.tool_name === "string") {
@@ -205,11 +228,13 @@ function shell(): string {
 
 function hookEnv(event: HookEvent, cwd: string, h: HookConfig): Record<string, string> {
     return childEnv({
+        CAVVY_HOOK_EVENT: event,
+        CAVVY_PROJECT_DIR: cwd,
+        // Scripts written for Claude Code read these, and ones written for Harness the HARNESS_ ones (legacy.ts).
+        CLAUDE_PROJECT_DIR: cwd,
         HARNESS_HOOK_EVENT: event,
         HARNESS_PROJECT_DIR: cwd,
-        // Scripts written for Claude Code read these.
-        CLAUDE_PROJECT_DIR: cwd,
-        ...(h.pluginRoot ? { HARNESS_PLUGIN_ROOT: h.pluginRoot, CLAUDE_PLUGIN_ROOT: h.pluginRoot } : {}),
+        ...(h.pluginRoot ? { CAVVY_PLUGIN_ROOT: h.pluginRoot, CLAUDE_PLUGIN_ROOT: h.pluginRoot, HARNESS_PLUGIN_ROOT: h.pluginRoot } : {}),
     });
 }
 
@@ -518,7 +543,7 @@ export function claudeCodeHookOutput(event: HookEvent, r: HookResult): Record<st
         return { decision: "block", reason: r.reason };
     }
     const j = r.json;
-    // Plain text is context where the harness takes it as context (Claude Code wants it as JSON).
+    // Plain text is context where Cavvy takes it as context (Claude Code wants it as JSON).
     if (!j) return r.text?.trim() && TEXT_CONTEXT.has(event) ? { hookSpecificOutput: { hookEventName: event, additionalContext: r.text.trim().slice(0, MAX_CONTEXT) } } : {};
     const out: Record<string, unknown> = {};
     for (const k of ["continue", "stopReason", "systemMessage", "reason"]) if (j[k] !== undefined) out[k] = j[k];

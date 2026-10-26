@@ -29,8 +29,8 @@ export function createUpdateAction() {
         else void start();
     };
     const Confirm = () => (
-        <ConfirmDialog open={asking() > 0} title="Update Harness now?" confirmLabel="Update" onClose={() => setAsking(0)} onConfirm={start}>
-            {asking() === 1 ? "A session is" : `${asking()} sessions are`} working. Harness restarts once the update is built, which stops whatever is still running then.
+        <ConfirmDialog open={asking() > 0} title="Update Cavvy now?" confirmLabel="Update" onClose={() => setAsking(0)} onConfirm={start}>
+            {asking() === 1 ? "A session is" : `${asking()} sessions are`} working. Cavvy restarts once the update is built, which stops whatever is still running then.
         </ConfirmDialog>
     );
     return { request, pending, Confirm };

@@ -8,7 +8,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
-const { home: HARNESS_HOME, cleanup } = isolate();
+const { home: CAVVY_HOME, cleanup } = isolate();
 const { sandboxPolicy, seatbeltProfile, bwrapArgs, sandboxArgv, needsHostAccess, accessNeeded, looksDestructive, blockedBySandbox, sandboxKind, SANDBOX_HINT, WORKTREE_HINT } = await import("../src/permissions/sandbox");
 const { ANALYSIS_LIMIT, analyzeCommand, pushesDefaultBranch, commandsWithDirs, configTarget, isReadOnlyCommand, shellWord } = await import("../src/permissions/bash-safety");
 const { BashTool, BashOutputTool, KillShellTool, killAllShells, sandboxOutputHint } = await import("../src/tools/bash");
@@ -19,19 +19,19 @@ afterAll(cleanup);
 const real = (p: string) => realpathSync(p);
 
 describe("sandboxPolicy", () => {
-    test("writable: the workspace roots and the temp dirs; protected: harness config and home; unreadable: credentials", () => {
+    test("writable: the workspace roots and the temp dirs; protected: Cavvy config and home; unreadable: credentials", () => {
         const ws = real(tempDir());
         const home = real(tempDir());
-        const p = sandboxPolicy([ws], { harnessHome: HARNESS_HOME, home });
+        const p = sandboxPolicy([ws], { cavvyHome: CAVVY_HOME, home });
         expect(p.writable).toContain(ws);
         expect(p.writable).toContain(real(tmpdir()));
         expect(p.writable).toContain(process.platform === "darwin" ? "/private/tmp" : "/tmp");
-        expect(p.readOnly).toEqual([join(ws, ".harness"), join(ws, ".mcp.json"), real(HARNESS_HOME)]);
+        expect(p.readOnly).toEqual([join(ws, ".cavvy"), join(ws, ".harness"), join(ws, ".mcp.json"), real(CAVVY_HOME)]);
         for (const c of [".ssh", ".aws", ".gnupg", ".config/gcloud", ".netrc", ".npmrc", ".git-credentials", "Library/Keychains"]) expect(p.unreadable).toContain(join(home, c));
         // The secrets and accounts/ can't be read or listed; the rest of the home can be listed, not read.
-        for (const f of ["credentials.json", "providers.json", "accounts"]) expect(p.unreadable).toContain(join(real(HARNESS_HOME), f));
-        expect(p.unreadable).not.toContain(real(HARNESS_HOME));
-        expect(p.contentsUnreadable).toEqual([real(HARNESS_HOME)]);
+        for (const f of ["credentials.json", "providers.json", "accounts"]) expect(p.unreadable).toContain(join(real(CAVVY_HOME), f));
+        expect(p.unreadable).not.toContain(real(CAVVY_HOME));
+        expect(p.contentsUnreadable).toEqual([real(CAVVY_HOME)]);
         // Covered before a repo exists, so `git init` can't plant hooks either.
         expect(p.gitDirs).toEqual([join(ws, ".git")]);
     });
@@ -44,7 +44,7 @@ describe("sandboxPolicy", () => {
         writeFileSync(join(own, "commondir"), "../..\n");
         const wt = real(tempDir());
         writeFileSync(join(wt, ".git"), `gitdir: ${own}\n`);
-        const p = sandboxPolicy([wt], { harnessHome: HARNESS_HOME });
+        const p = sandboxPolicy([wt], { cavvyHome: CAVVY_HOME });
         expect(p.writable).toContain(own);
         expect(p.writable).toContain(common);
         expect(p.gitDirs).toEqual([join(wt, ".git"), own, common]);
@@ -56,10 +56,10 @@ describe("sandboxPolicy", () => {
         mkdirSync(own, { recursive: true });
         const wt = real(tempDir());
         writeFileSync(join(wt, ".git"), `gitdir: ${own}\n`);
-        const first = sandboxPolicy([wt], { harnessHome: HARNESS_HOME });
+        const first = sandboxPolicy([wt], { cavvyHome: CAVVY_HOME });
         const elsewhere = real(tempDir());
         writeFileSync(join(wt, ".git"), `gitdir: ${elsewhere}\n`);
-        const second = sandboxPolicy([wt], { harnessHome: HARNESS_HOME });
+        const second = sandboxPolicy([wt], { cavvyHome: CAVVY_HOME });
         expect(second.writable).toEqual(first.writable);
         expect(second.writable).not.toContain(elsewhere);
     });
@@ -68,12 +68,12 @@ describe("sandboxPolicy", () => {
         const ws = real(tempDir());
         const link = join(tempDir(), "link");
         require("fs").symlinkSync(ws, link);
-        expect(sandboxPolicy([ws, link], { harnessHome: HARNESS_HOME }).writable.filter((w) => w === ws)).toHaveLength(1);
+        expect(sandboxPolicy([ws, link], { cavvyHome: CAVVY_HOME }).writable.filter((w) => w === ws)).toHaveLength(1);
     });
 });
 
 describe("seatbeltProfile", () => {
-    const policy = { writable: ["/w/proj", "/private/tmp"], readOnly: ["/w/proj/.harness", "/h"], unreadable: ["/home/.ssh", "/h"], gitDirs: ["/w/proj/.git"] };
+    const policy = { writable: ["/w/proj", "/private/tmp"], readOnly: ["/w/proj/.cavvy", "/h"], unreadable: ["/home/.ssh", "/h"], gitDirs: ["/w/proj/.git"] };
     const profile = seatbeltProfile(policy);
 
     test("network: everything denied, then only localhost (no unix-socket allowance)", () => {
@@ -88,7 +88,7 @@ describe("seatbeltProfile", () => {
         const lines = profile.split("\n");
         const denyAll = lines.indexOf('(deny file-write* (subpath "/"))');
         const allow = lines.findIndex((l) => l.startsWith("(allow file-write*"));
-        const protect = lines.findIndex((l) => l.startsWith("(deny file-write*") && l.includes("/w/proj/.harness"));
+        const protect = lines.findIndex((l) => l.startsWith("(deny file-write*") && l.includes("/w/proj/.cavvy"));
         expect(denyAll).toBeGreaterThan(-1);
         // Later rules win, so the order is what makes the exceptions work.
         expect(allow).toBeGreaterThan(denyAll);
@@ -111,7 +111,7 @@ describe("seatbeltProfile", () => {
         expect(own).toBeGreaterThan(allow);
         expect(seatbeltProfile({ ...policy, gitDirs: [] })).not.toContain("(deny file-write* )");
         // Unreadable paths can't be written or renamed either.
-        expect(lines.find((l) => l.includes("/w/proj/.harness"))).toContain('(subpath "/home/.ssh")');
+        expect(lines.find((l) => l.includes("/w/proj/.cavvy"))).toContain('(subpath "/home/.ssh")');
     });
 
     test("signals stay inside; app launching, launchd jobs and escape services are denied", () => {
@@ -335,14 +335,14 @@ describe("protective analysis regressions", () => {
     ];
     test.each(["cat <<'EOF'\ncase x in\nEOF\n", "case x in case ) true;; esac; "])("retains HEAD^ protections after %p", async (prefix) => {
         const { PermissionChecker } = await import("../src/permissions/checker");
-        const checker = new PermissionChecker(() => ({}), HARNESS_HOME, () => "seatbelt");
+        const checker = new PermissionChecker(() => ({}), CAVVY_HOME, () => "seatbelt");
         for (const expected of baseline) {
             const cmd = prefix + expected.suffix;
             expect(looksDestructive(cmd)).toBe(expected.destructive);
             expect(accessNeeded(cmd)).toEqual(expected.access);
             expect(pushesDefaultBranch(cmd)).toBe(expected.push);
             expect(configTarget(cmd)).toBe(expected.config);
-            const decision = checker.check(BashTool, { command: cmd }, "auto", HARNESS_HOME);
+            const decision = checker.check(BashTool, { command: cmd }, "auto", CAVVY_HOME);
             expect(decision.behavior).toBe(expected.behavior);
             expect(decision.needsClassifier).toBe(expected.classifier);
             for (const original of analyzeCommand(cmd).commands) {
@@ -359,14 +359,14 @@ describe("protective analysis regressions", () => {
 
     test("real scripts beside heredoc data are analyzed without exhausting the budget", async () => {
         const { PermissionChecker } = await import("../src/permissions/checker");
-        const checker = new PermissionChecker(() => ({}), HARNESS_HOME, () => "seatbelt");
+        const checker = new PermissionChecker(() => ({}), CAVVY_HOME, () => "seatbelt");
         for (const cmd of [
             "cat <<EOF\nhello\nEOF\nsh -c 'git restore tracked.txt'",
             "sh -c 'git restore tracked.txt'; cat <<EOF\nhello\nEOF",
         ]) {
             expect(commandsWithDirs(cmd, undefined).exhausted).toBe(false);
             expect(looksDestructive(cmd)).toBe("git restore");
-            expect(checker.check(BashTool, { command: cmd }, "auto", HARNESS_HOME)).toMatchObject({ behavior: "ask", needsClassifier: true });
+            expect(checker.check(BashTool, { command: cmd }, "auto", CAVVY_HOME)).toMatchObject({ behavior: "ask", needsClassifier: true });
         }
         expect(accessNeeded("cat <<'EOF'\nsh -c 'curl https://example.com'\nEOF")).toEqual({});
     });
@@ -375,8 +375,8 @@ describe("protective analysis regressions", () => {
         const cmd = "find . -name -exec -exec git restore tracked.txt \\;";
         expect(looksDestructive(cmd)).toBe("git restore");
         const { PermissionChecker } = await import("../src/permissions/checker");
-        const checker = new PermissionChecker(() => ({}), HARNESS_HOME, () => "seatbelt");
-        expect(checker.check(BashTool, { command: cmd }, "auto", HARNESS_HOME)).toMatchObject({ behavior: "ask", needsClassifier: true });
+        const checker = new PermissionChecker(() => ({}), CAVVY_HOME, () => "seatbelt");
+        expect(checker.check(BashTool, { command: cmd }, "auto", CAVVY_HOME)).toMatchObject({ behavior: "ask", needsClassifier: true });
     });
 
     const pathological = [
@@ -399,8 +399,8 @@ describe("protective analysis regressions", () => {
         expect(pushesDefaultBranch(cmd)).toBeDefined();
         expect(configTarget(cmd)).toBeDefined();
         const { PermissionChecker } = await import("../src/permissions/checker");
-        const checker = new PermissionChecker(() => ({}), HARNESS_HOME, () => "seatbelt");
-        const decision = checker.check(BashTool, { command: cmd }, "auto", HARNESS_HOME);
+        const checker = new PermissionChecker(() => ({}), CAVVY_HOME, () => "seatbelt");
+        const decision = checker.check(BashTool, { command: cmd }, "auto", CAVVY_HOME);
         expect(decision.behavior).toBe("ask");
         expect(decision.needsClassifier).toBeUndefined();
     });
@@ -409,8 +409,8 @@ describe("protective analysis regressions", () => {
         const cmd = `sh -c 'python -c "os.'remove'(path)"'`;
         expect(looksDestructive(cmd)).toBe("deletes files");
         const { PermissionChecker } = await import("../src/permissions/checker");
-        const checker = new PermissionChecker(() => ({}), HARNESS_HOME, () => "seatbelt");
-        expect(checker.check(BashTool, { command: cmd }, "auto", HARNESS_HOME)).toMatchObject({ behavior: "ask", needsClassifier: true });
+        const checker = new PermissionChecker(() => ({}), CAVVY_HOME, () => "seatbelt");
+        expect(checker.check(BashTool, { command: cmd }, "auto", CAVVY_HOME)).toMatchObject({ behavior: "ask", needsClassifier: true });
     });
 
     test("deduplication distinguishes unknown from unspecified directories", () => {
@@ -590,8 +590,8 @@ const seatbelt = process.platform === "darwin" && sandboxKind() === "seatbelt";
 describe.skipIf(!seatbelt)("a sandboxed Bash command (Seatbelt)", () => {
     const ws = real(tempDir());
     mkdirSync(join(ws, ".git", "hooks"), { recursive: true });
-    writeFileSync(join(HARNESS_HOME, "credentials.json"), "{}");
-    const sandbox: Sandbox = { kind: "seatbelt", policy: sandboxPolicy([ws], { harnessHome: HARNESS_HOME }) };
+    writeFileSync(join(CAVVY_HOME, "credentials.json"), "{}");
+    const sandbox: Sandbox = { kind: "seatbelt", policy: sandboxPolicy([ws], { cavvyHome: CAVVY_HOME }) };
     const state = { cwd: ws, projectRoot: ws, fileState: new Map(), todos: [], shells: new Map() } as any;
     /** null: run without the sandbox. */
     const ctx = (sb: Sandbox | null = sandbox) => ({ state, settings: {}, signal: new AbortController().signal, mode: () => "auto", setMode() {}, ui: {}, sandbox: sb ?? undefined }) as any;
@@ -629,15 +629,15 @@ describe.skipIf(!seatbelt)("a sandboxed Bash command (Seatbelt)", () => {
         expect(r.content).toBe("hi\ndone");
     });
 
-    test("can't plant git hooks or touch the harness home, and says how to retry", async () => {
+    test("can't plant git hooks or touch Cavvy home, and says how to retry", async () => {
         const hook = await bash("echo 'echo pwned' > .git/hooks/pre-commit");
         expect(hook.isError).toBe(true);
         expect(existsSync(join(ws, ".git", "hooks", "pre-commit"))).toBe(false);
         expect(hook.content).toContain(SANDBOX_HINT);
-        const cfg = await bash(`echo x > "${join(HARNESS_HOME, "settings.json")}"`);
+        const cfg = await bash(`echo x > "${join(CAVVY_HOME, "settings.json")}"`);
         expect(cfg.isError).toBe(true);
-        expect(existsSync(join(HARNESS_HOME, "settings.json"))).toBe(false);
-        const read = await bash(`cat "${join(HARNESS_HOME, "credentials.json")}"`);
+        expect(existsSync(join(CAVVY_HOME, "settings.json"))).toBe(false);
+        const read = await bash(`cat "${join(CAVVY_HOME, "credentials.json")}"`);
         expect(read.isError).toBe(true);
     });
 
@@ -646,7 +646,7 @@ describe.skipIf(!seatbelt)("a sandboxed Bash command (Seatbelt)", () => {
         const git = (args: string[]) => Bun.spawnSync(["git", "-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd: repo });
         git(["init", "-q", "-b", "main"]);
         git(["commit", "-q", "--allow-empty", "-m", "init"]);
-        const sb: Sandbox = { kind: "seatbelt", policy: sandboxPolicy([repo], { harnessHome: HARNESS_HOME }) };
+        const sb: Sandbox = { kind: "seatbelt", policy: sandboxPolicy([repo], { cavvyHome: CAVVY_HOME }) };
         const r = await BashTool.run({ command: "git worktree add -b feature-x .claude/worktrees/feature-x" }, { ...ctx(sb), state: { ...state, cwd: repo, projectRoot: repo } });
         expect(r.isError).toBe(true);
         expect(r.content).toContain(".git/worktrees");
@@ -659,7 +659,7 @@ describe.skipIf(!seatbelt)("a sandboxed Bash command (Seatbelt)", () => {
     });
 
     test("unsandboxed, the same read works (so the sandbox is what stopped it)", async () => {
-        const plain = await bash(`cat "${join(HARNESS_HOME, "credentials.json")}"`, null);
+        const plain = await bash(`cat "${join(CAVVY_HOME, "credentials.json")}"`, null);
         expect(plain.content).toBe("{}");
     });
 
@@ -708,7 +708,7 @@ describe.skipIf(!seatbelt)("a sandboxed Bash command (Seatbelt)", () => {
     test("package caches it can write", async () => {
         const r = await bash('for d in "$npm_config_cache" "$BUN_INSTALL_CACHE_DIR" "$UV_CACHE_DIR"; do mkdir -p "$d" && touch "$d/.w" && echo ok; done');
         expect(r.content).toBe("ok\nok\nok");
-        expect((await bash("echo $npm_config_cache", null)).content).not.toContain("harness-sandbox-cache");
+        expect((await bash("echo $npm_config_cache", null)).content).not.toContain("cavvy-sandbox-cache");
     });
 
     test("another sandboxed command can't read a running command's proxy password", async () => {
@@ -726,7 +726,7 @@ describe.skipIf(!seatbelt)("a sandboxed Bash command (Seatbelt)", () => {
             expect(peek.content).not.toContain(password);
             // The same look at itself does show its own, so the check above could have seen one.
             const self = await BashTool.run({ command: `${procargs("os.getpid()")} | grep "^HTTPS_PROXY="`, allowedHosts: ["example.com"] }, ctx());
-            expect(self.content).toMatch(/^HTTPS_PROXY=http:\/\/harness:[\w-]{20,}@127\.0\.0\.1:\d+$/);
+            expect(self.content).toMatch(/^HTTPS_PROXY=http:\/\/cavvy:[\w-]{20,}@127\.0\.0\.1:\d+$/);
         } finally {
             await KillShellTool.run({ shell_id: id }, ctx());
         }
@@ -736,7 +736,7 @@ describe.skipIf(!seatbelt)("a sandboxed Bash command (Seatbelt)", () => {
         const plain = await bash('echo "${COREPACK_HOME:-default}"');
         expect(plain.content).toBe("default");
         const net = await BashTool.run({ command: 'mkdir -p "$COREPACK_HOME" && touch "$COREPACK_HOME/.w" && echo "$COREPACK_HOME"', allowedHosts: ["registry.npmjs.org"] }, ctx());
-        expect(net.content).toContain("harness-sandbox-cache");
+        expect(net.content).toContain("cavvy-sandbox-cache");
     });
 
     test("a background shell's proxy closes when it exits", async () => {
@@ -791,7 +791,7 @@ describe.skipIf(!seatbelt)("a sandboxed Bash command (Seatbelt)", () => {
         const home = join(ws, "fakehome");
         mkdirSync(join(home, ".ssh"), { recursive: true });
         writeFileSync(join(home, ".ssh", "id_test"), "KEY");
-        const sb: Sandbox = { kind: "seatbelt", policy: sandboxPolicy([ws], { harnessHome: HARNESS_HOME, home }) };
+        const sb: Sandbox = { kind: "seatbelt", policy: sandboxPolicy([ws], { cavvyHome: CAVVY_HOME, home }) };
         const r = await bash(`mv fakehome/.ssh fakehome/ssh2; cat fakehome/ssh2/id_test fakehome/.ssh/id_test`, sb);
         expect(r.content).not.toContain("KEY");
         expect(existsSync(join(home, ".ssh", "id_test"))).toBe(true);
@@ -810,7 +810,7 @@ describe.skipIf(!seatbelt)("a sandboxed Bash command (Seatbelt)", () => {
         writeFileSync(join(own, "commondir"), "../..\n");
         const wt = real(tempDir());
         writeFileSync(join(wt, ".git"), `gitdir: ${own}\n`);
-        const sb: Sandbox = { kind: "seatbelt", policy: sandboxPolicy([wt], { harnessHome: HARNESS_HOME }) };
+        const sb: Sandbox = { kind: "seatbelt", policy: sandboxPolicy([wt], { cavvyHome: CAVVY_HOME }) };
         const wtState = { cwd: wt, projectRoot: wt, fileState: new Map(), todos: [], shells: new Map() } as any;
         const run = (command: string) => BashTool.run({ command }, { ...ctx(sb), state: wtState });
         const evil = real(tempDir());

@@ -248,9 +248,9 @@ describe("NotebookEdit permissions, as for Edit", () => {
     test("outside the workspace asks, even in acceptEdits", () => {
         expect(check(join(O, "n.ipynb"), "acceptEdits")).toMatchObject({ behavior: "ask", reason: "Outside the workspace" });
     });
-    test("the harness's own files: the credential store is refused, config always asks", () => {
+    test("Cavvy's own files: the credential store is refused, config always asks", () => {
         expect(check(paths.credentialsFile(), "bypassPermissions").behavior).toBe("deny");
-        expect(check(join(W, ".harness", "n.ipynb"), "acceptEdits").behavior).toBe("ask");
+        expect(check(join(W, ".cavvy", "n.ipynb"), "acceptEdits").behavior).toBe("ask");
     });
     test("the path checked is notebook_path, even with a file_path alongside it", () => {
         const decoy = { notebook_path: join(O, "n.ipynb"), file_path: join(W, "n.ipynb"), cell_id: "a", new_source: "x" };

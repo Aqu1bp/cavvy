@@ -9,7 +9,7 @@ const { gitArgv, gitEnv } = await import("../src/util/git");
 afterAll(() => iso.cleanup());
 
 let next = 0;
-const IDENTITY = ["-c", "maintenance.auto=false", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Harness Test", "-c", "user.email=test@example.invalid"];
+const IDENTITY = ["-c", "maintenance.auto=false", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Cavvy Test", "-c", "user.email=test@example.invalid"];
 
 function git(cwd: string, args: string[]): string {
     const env = gitEnv();

@@ -371,14 +371,14 @@ export function startMonitor(o: StartOpts): { id: string; pid?: number; shell: B
 }
 
 // ---------------------------------------------------------------------------
-// Codex has no Monitor of its own: it gets Harness's, through the harness MCP
+// Codex has no Monitor of its own: it gets Cavvy's, through Cavvy MCP
 // server (Claude Code keeps its own Monitor, so it isn't offered this one).
 
-/** Harness's tool names as the served ones, in what the agent reads. */
+/** Cavvy's tool names as the served ones, in what the agent reads. */
 function served(text: string): string {
     return text
         .replace("use Bash with run_in_background and a command that exits when the condition holds", "run a command that exits when the condition holds")
-        .replace("It runs like Bash: same working directory, environment, permissions and sandbox.", "It runs in this working directory, under Harness's permission rules for commands.")
+        .replace("It runs like Bash: same working directory, environment, permissions and sandbox.", "It runs in this working directory, under Cavvy's permission rules for commands.")
         .replaceAll("KillShell shell_id", "monitor_stop id")
         .replaceAll("BashOutput bash_id", "monitor_output id")
         .replaceAll("KillShell", "monitor_stop")
@@ -399,14 +399,14 @@ const ServedMonitorTool: Tool<MonitorInput> = {
 export const MONITOR_SERVER_TOOLS = ["monitor", "monitor_output", "monitor_stop"];
 
 /**
- * The monitor tools for Codex. `run` takes a call through Harness's checks (rules, mode, hooks, the user), as
- * the same tool called by a model Harness runs.
+ * The monitor tools for Codex. `run` takes a call through Cavvy's checks (rules, mode, hooks, the user), as
+ * the same tool called by a model Cavvy runs.
  */
 export function monitorServerTools(run: (tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal, callId?: string) => Promise<ServerToolResult>, state: () => ToolState): ServerTool[] {
     // Codex sends its call's id: the permission prompt goes with that call.
     const callId = (meta: Record<string, unknown>) => (typeof meta.callId === "string" ? meta.callId : undefined);
     const say = (r: ServerToolResult): ServerToolResult => ({ text: served(r.text), isError: r.isError });
-    // The other two act on monitors only, not on Harness's other background shells.
+    // The other two act on monitors only, not on Cavvy's other background shells.
     const unknown = (id: unknown): ServerToolResult | undefined => {
         if (typeof id === "string" && state().shells.get(id)?.monitor) return undefined;
         const ids = [...state().shells.values()].filter((s) => s.monitor).map((s) => s.id);
@@ -440,7 +440,7 @@ export function monitorServerTools(run: (tool: Tool<any>, input: Record<string, 
     ];
 }
 
-/** A call of a served monitor tool (mcp__harness__monitor_stop) as the Harness tool it is (KillShell), for the transcript. */
+/** A call of a served monitor tool (mcp__cavvy__monitor_stop) as the Cavvy tool it is (KillShell), for the transcript. */
 export function nativeMonitorCall(tool: string, input: Record<string, unknown>): { name: string; input: Record<string, unknown> } | undefined {
     if (tool === "monitor") return { name: "Monitor", input };
     if (tool === "monitor_output") return { name: "BashOutput", input: { bash_id: input.id, ...(input.filter !== undefined ? { filter: input.filter } : {}) } };
@@ -448,6 +448,6 @@ export function nativeMonitorCall(tool: string, input: Record<string, unknown>):
     return undefined;
 }
 
-export const MONITOR_INSTRUCTIONS = `# Monitoring (harness)
+export const MONITOR_INSTRUCTIONS = `# Monitoring (cavvy)
 
 To be told about a command's output as it happens ("tell me when an ERROR shows up in the log", "follow the CI steps"), use monitor: each new stdout line of its command comes back to you as a message, even after your turn has ended. Each message is the command's output, not the user's words. monitor_output reads what a message left out (and stderr); monitor_stop stops it.`;

@@ -1,7 +1,7 @@
 /**
- * The harness's PreToolUse hooks as one of Codex's own hooks (Codex 0.160 and
- * later). Codex calls a tool on the harness's MCP server before every tool
- * call, in every mode, and the harness runs its handlers there, as Claude
+ * Cavvy's PreToolUse hooks as one of Codex's own hooks (Codex 0.160 and
+ * later). Codex calls a tool on Cavvy's MCP server before every tool
+ * call, in every mode, and Cavvy runs its handlers there, as Claude
  * Code's hook_callback does. Codex only runs hooks it trusts, so the hook
  * goes in with its trust (the hash Codex computes for it), and hooks/list
  * confirms Codex took it before the turn counts on it.
@@ -9,11 +9,11 @@
 import { createHash } from "crypto";
 import { isAbsolute, resolve } from "path";
 
-/** The MCP server Codex calls for the harness's hooks, beside the delegation one. Its tools are hidden from the model. */
-export const CODEX_HOOK_SERVER = "harness_hooks";
+/** The MCP server Codex calls for Cavvy's hooks, beside the delegation one. Its tools are hidden from the model. */
+export const CODEX_HOOK_SERVER = "cavvy_hooks";
 export const CODEX_HOOK_TOOL = "pre_tool_use";
 
-/** The harness's events Codex runs itself, each as one mcp_tool hook calling the tool of the same name. */
+/** Cavvy's events Codex runs itself, each as one mcp_tool hook calling the tool of the same name. */
 export type CodexHookEvent = "PreToolUse" | "SubagentStart" | "SubagentStop";
 export const CODEX_HOOK_EVENTS: CodexHookEvent[] = ["PreToolUse", "SubagentStart", "SubagentStop"];
 const LABEL: Record<CodexHookEvent, string> = { PreToolUse: "pre_tool_use", SubagentStart: "subagent_start", SubagentStop: "subagent_stop" };
@@ -65,15 +65,15 @@ export function codexHookFailed(p: any): boolean {
 }
 
 export interface NativeCall {
-    /** The harness's name for it, which its matchers and rules use. */
+    /** Cavvy's name for it, which its matchers and rules use. */
     toolName: string;
     input: Record<string, unknown>;
-    /** Codex's input can't be rebuilt from a rewrite in the harness's shape (a patch). */
+    /** Codex's input can't be rebuilt from a rewrite in Cavvy's shape (a patch). */
     rewritable: boolean;
 }
 
 /**
- * Codex's tool call as the harness names it: Bash as is, apply_patch as Write
+ * Codex's tool call as Cavvy names it: Bash as is, apply_patch as Write
  * (only new files) or Edit with the first file it touches, spawn_agent as
  * Task, MCP tools as mcp__server__tool. Codex's other tools keep their names.
  */

@@ -1,5 +1,5 @@
 // Turning a Claude Code or Codex session (read by cli-sessions.ts) into a
-// Harness session on the matching backend, and knowing which ones already are
+// Cavvy session on the matching backend, and knowing which ones already are
 // one. The imported conversation is stored as the session's first messages,
 // marked imported (shown, never rewound to), with a lasting {t:"import"}
 // record of where it came from. The backend session is set to the CLI's own,
@@ -25,15 +25,15 @@ export function linkKey(source: string, id: string): string {
 
 const linkCache = new Map<string, { mtimeMs: number; size: number; links: CliLink[] }>();
 
-export interface HarnessLinks {
-    /** CLI sessions a Harness session holds (imported, or run on as its backend): to that session's id. The newest wins. */
+export interface CavvyLinks {
+    /** CLI sessions a Cavvy session holds (imported, or run on as its backend): to that session's id. The newest wins. */
     held: Map<string, string>;
-    /** Ones Harness's sub-agents ran on (Task, delegate): nobody's conversation to pick up. */
+    /** Ones Cavvy's sub-agents ran on (Task, delegate): nobody's conversation to pick up. */
     subagent: Set<string>;
 }
 
-/** CLI sessions Harness already has, from the session files of these folders. */
-export function harnessLinks(folders: string[]): HarnessLinks {
+/** CLI sessions Cavvy already has, from the session files of these folders. */
+export function cavvyLinks(folders: string[]): CavvyLinks {
     const dirs = new Set<string>();
     for (const f of folders) {
         dirs.add(projectStateDir(resolve(f)));
@@ -64,7 +64,7 @@ export function harnessLinks(folders: string[]): HarnessLinks {
         }
     }
     files.sort((a, b) => b.mtimeMs - a.mtimeMs);
-    const out: HarnessLinks = { held: new Map(), subagent: new Set() };
+    const out: CavvyLinks = { held: new Map(), subagent: new Set() };
     for (const f of files) {
         let cached = linkCache.get(f.file);
         if (!cached || cached.mtimeMs !== f.mtimeMs || cached.size !== f.size) {
@@ -105,13 +105,13 @@ export function importModel(source: CliSource, cliModel: string | undefined, lis
     return d ? modelRef(d) : `${source}:default`;
 }
 
-/** Write the Harness session for an imported conversation; returns its id. Nothing is kept open. */
+/** Write the Cavvy session for an imported conversation; returns its id. Nothing is kept open. */
 export function writeImportedSession(o: { cwd: string; entry: CliSessionEntry; transcript: CliTranscript; model: string; title: string }): string {
     const { entry, transcript } = o;
     const name = getProvider(entry.source)?.name ?? entry.source;
     const modelId = parseModelRef(o.model)?.id ?? "default";
     const session = Session.create(o.cwd, { strictWrites: true });
-    // The import picker reads the CLI's normal home, regardless of the default for new Harness chats.
+    // The import picker reads the CLI's normal home, regardless of the default for new Cavvy chats.
     session.setAccount(entry.source, "default");
     const messages = transcript.turns.reduce((n, t) => n + 1 + (t.replies.length || t.actions.length ? 1 : 0), 0);
     try {

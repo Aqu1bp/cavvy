@@ -7,14 +7,14 @@ import { homedir, tmpdir } from "os";
 import { join, sep } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
-const child = process.env.HARNESS_TEST_SESSION_HOME;
+const child = process.env.CAVVY_TEST_SESSION_HOME;
 const run = child ? test : test.skip;
 if (!child) {
     test("account handoff in an isolated home", () => {
         const home = realpathSync(tempDir());
         try {
             const result = Bun.spawnSync([process.execPath, "--no-env-file", "test", import.meta.path], {
-                env: { ...process.env, HOME: home, HARNESS_TEST_SESSION_HOME: home },
+                env: { ...process.env, HOME: home, CAVVY_TEST_SESSION_HOME: home },
                 timeout: 110_000,
             });
             expect({ code: result.exitCode, output: result.stderr.toString() }).toMatchObject({ code: 0 });
@@ -48,7 +48,7 @@ afterAll(() => {
 });
 
 /** A fake CLI for the provider, and an Agent on a new session in `root`: on live CLI sessions, or a process per turn. */
-async function harness(provider: "claude-code" | "codex", live: boolean, log: string) {
+async function cavvy(provider: "claude-code" | "codex", live: boolean, log: string) {
     const binary = join(root, provider);
     const fixture = join(import.meta.dir, "fixtures", provider === "codex" ? "fake-codex.ts" : "fake-claude.ts");
     writeFileSync(binary, `#!/bin/sh\nexec "${process.execPath}" --no-env-file "${fixture}" "$@"\n`);
@@ -97,7 +97,7 @@ function transcriptOf(provider: string, id: string): string {
     return found;
 }
 
-// Harness-made accounts link Default's history (account-layout.ts): their CLI finds the same transcripts, so a
+// Cavvy-made accounts link Default's history (account-layout.ts): their CLI finds the same transcripts, so a
 // switch among them and Default goes on with the same native session (#377). The fakes keep transcripts in each
 // home's history folder (FAKE_TRANSCRIPTS) and resume only what they find there, as the CLIs do.
 for (const provider of ["claude-code", "codex"] as const) for (const live of [true, false]) describe(`${provider} account switch, ${live ? "live CLI sessions" : "a process per turn"}`, () => {
@@ -110,10 +110,10 @@ for (const provider of ["claude-code", "codex"] as const) for (const live of [tr
         return a;
     };
     const real = (folder: string | undefined) => (folder === undefined ? undefined : realpathSync(folder));
-    async function withHarness(name: string, body: (h: Awaited<ReturnType<typeof harness>>) => Promise<void>) {
+    async function withCavvy(name: string, body: (h: Awaited<ReturnType<typeof cavvy>>) => Promise<void>) {
         // Codex's threads with ids of their own, as Claude Code's sessions have: a round trip tells them apart.
         process.env.FAKE_TRANSCRIPTS = process.env.FAKE_UNIQUE_THREADS = "1";
-        const h = await harness(provider, live, join(root, `${tag}-${name}.jsonl`));
+        const h = await cavvy(provider, live, join(root, `${tag}-${name}.jsonl`));
         try { await body(h); } finally {
             await h.agent.dispose();
             delete process.env.FAKE_TRANSCRIPTS;
@@ -121,9 +121,9 @@ for (const provider of ["claude-code", "codex"] as const) for (const live of [tr
         }
     }
 
-    run("Default → a Harness-made account: the native session goes on there, sent only the new message", async () => {
+    run("Default → a Cavvy-made account: the native session goes on there, sent only the new message", async () => {
         const work = add("work");
-        await withHarness("default-managed", async (h) => {
+        await withCavvy("default-managed", async (h) => {
             expect(await h.run("Remember the word teal")).toBe("done");
             const id = h.session.backends.get(provider)!.id;
             expect(h.session.setAccount(provider, work.id)).toBe(true);
@@ -141,10 +141,10 @@ for (const provider of ["claude-code", "codex"] as const) for (const live of [tr
         });
     }, 30_000);
 
-    run("one Harness-made account → another, then Default: the same native session throughout", async () => {
+    run("one Cavvy-made account → another, then Default: the same native session throughout", async () => {
         const a = add("alpha");
         const b = add("beta");
-        await withHarness("managed-managed", async (h) => {
+        await withCavvy("managed-managed", async (h) => {
             h.session.setAccount(provider, a.id);
             expect(await h.run("On alpha")).toBe("done");
             const id = h.session.backends.get(provider)!.id;
@@ -158,10 +158,10 @@ for (const provider of ["claude-code", "codex"] as const) for (const live of [tr
         });
     }, 30_000);
 
-    run("a Harness-made account → an existing-folder account: a new native session, handed the conversation", async () => {
+    run("a Cavvy-made account → an existing-folder account: a new native session, handed the conversation", async () => {
         const a = add("own");
         const custom = add("custom", join(iso.home, `${tag}-custom`));
-        await withHarness("managed-custom", async (h) => {
+        await withCavvy("managed-custom", async (h) => {
             h.session.setAccount(provider, a.id);
             expect(await h.run("Before the switch")).toBe("done");
             expect(h.session.setAccount(provider, custom.id)).toBe(true);
@@ -176,7 +176,7 @@ for (const provider of ["claude-code", "codex"] as const) for (const live of [tr
 
     run("the new account can't resume the native session: a new one, handed the conversation once, with the notice", async () => {
         const work = add("lost");
-        await withHarness("resume-fails", async (h) => {
+        await withCavvy("resume-fails", async (h) => {
             expect(await h.run("Earlier on Default")).toBe("done");
             const id = h.session.backends.get(provider)!.id;
             // Gone from the shared history: the CLI won't find it on the new account.
@@ -200,7 +200,7 @@ for (const provider of ["claude-code", "codex"] as const) for (const live of [tr
     // to the thread the session had there, sent only what it missed, once, rather than a third thread with everything.
     run("Default → an existing-folder account → Default → back: each goes on with its own native thread, sent only the turns it missed, once", async () => {
         const custom = add("trip", join(iso.home, `${tag}-trip`));
-        await withHarness("round-trip", async (h) => {
+        await withCavvy("round-trip", async (h) => {
             expect(await h.run("alpha on Default")).toBe("done");
             const d = h.session.backends.get(provider)!.id;
             expect(h.session.setAccount(provider, custom.id)).toBe(true);
@@ -235,7 +235,7 @@ for (const provider of ["claude-code", "codex"] as const) for (const live of [tr
 
     run("back on Default when its earlier thread can't be resumed: a new one, handed the whole conversation once", async () => {
         const custom = add("gone", join(iso.home, `${tag}-gone`));
-        await withHarness("round-trip-gone", async (h) => {
+        await withCavvy("round-trip-gone", async (h) => {
             expect(await h.run("alpha on Default")).toBe("done");
             const d = h.session.backends.get(provider)!.id;
             h.session.setAccount(provider, custom.id);
@@ -259,7 +259,7 @@ for (const provider of ["claude-code", "codex"] as const) for (const live of [tr
 
     run("rewound past the existing-folder account's turns: its thread goes, and Default's is sent only the kept turns it missed", async () => {
         const custom = add("rewind", join(iso.home, `${tag}-rewind`));
-        await withHarness("round-trip-rewind", async (h) => {
+        await withCavvy("round-trip-rewind", async (h) => {
             expect(await h.run("alpha on Default")).toBe("done");
             const d = h.session.backends.get(provider)!.id;
             h.session.setAccount(provider, custom.id);

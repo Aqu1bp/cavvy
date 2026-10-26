@@ -9,7 +9,7 @@ import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
 const program = fakeChromeProgram();
-process.env.HARNESS_BROWSER = program;
+process.env.CAVVY_BROWSER = program;
 setDefaultTimeout(30_000);
 
 const { CdpClient, CdpError } = await import("../src/browser/cdp");
@@ -229,7 +229,7 @@ describe("starting the browser", () => {
         const base = { profile: "/p", headless: true };
         const mac = chromeArgs({ ...base, platform: "darwin", uid: 501 });
         expect(mac[0]).toBe("--headless=new");
-        // spoken to over its pipe, which only the harness holds; a port, anything on the machine can reach
+        // spoken to over its pipe, which only Cavvy holds; a port, anything on the machine can reach
         expect(mac).toContain("--remote-debugging-pipe");
         expect(mac.join(" ")).not.toContain("--remote-debugging-port");
         expect(chromeArgs({ ...base, platform: "linux", uid: 1000 })).toContain("--remote-debugging-pipe");
@@ -264,7 +264,7 @@ describe("starting the browser", () => {
     });
 
     test("is spoken to over its pipe once it answers there, and stops with its whole process group", async () => {
-        const profile = join(tempDir("harness-browser-profile-"), "p");
+        const profile = join(tempDir("cavvy-browser-profile-"), "p");
         const chrome = await launchChrome({ executable: program, profile, startupMs: 20_000 });
         stops.push(() => chrome.stop());
         expect(chrome.profile).toBe(profile);
@@ -287,7 +287,7 @@ describe("starting the browser", () => {
     });
 
     test("where a port is used instead (Windows), waits for its endpoint and checks it is that browser's", async () => {
-        const profile = join(tempDir("harness-browser-profile-"), "p");
+        const profile = join(tempDir("cavvy-browser-profile-"), "p");
         const chrome = await launchChrome({ executable: program, profile, startupMs: 20_000, pipe: false });
         stops.push(() => chrome.stop());
         expect(await chrome.cdp.send("Target.setDiscoverTargets", { discover: true })).toEqual({});
@@ -297,16 +297,16 @@ describe("starting the browser", () => {
 
     test("a browser that has gone leaves descriptors that are now another's alone", async () => {
         // Bun closes a process's pipe when it collects the process. Closed here as well, the numbers would be another's by
-        // then: the next browser's guard, say, which would read its pipe closing as the harness ending, and end that browser.
+        // then: the next browser's guard, say, which would read its pipe closing as Cavvy ending, and end that browser.
         const once = async () => {
-            const chrome = await launchChrome({ executable: program, profile: join(tempDir("harness-browser-profile-"), "p"), startupMs: 20_000 });
+            const chrome = await launchChrome({ executable: program, profile: join(tempDir("cavvy-browser-profile-"), "p"), startupMs: 20_000 });
             await chrome.stop();
         };
         for (let i = 0; i < 3; i++) await once();
         await Bun.sleep(200);
         // these take any number the browsers gave back
         const mine = Array.from({ length: 8 }, () => openSync("/dev/null", "r"));
-        const next = await launchChrome({ executable: program, profile: join(tempDir("harness-browser-profile-"), "p"), startupMs: 20_000 });
+        const next = await launchChrome({ executable: program, profile: join(tempDir("cavvy-browser-profile-"), "p"), startupMs: 20_000 });
         stops.push(() => next.stop());
         for (let i = 0; i < 5; i++) {
             Bun.gc(true);
@@ -328,7 +328,7 @@ describe("starting the browser", () => {
 
     test("is told why when it exits first, with what it said", async () => {
         process.env.FAKE_CHROME = "exit";
-        const profile = join(tempDir("harness-browser-profile-"), "p");
+        const profile = join(tempDir("cavvy-browser-profile-"), "p");
         const e = (await launchChrome({ executable: program, profile, startupMs: 20_000 }).catch((x) => x)) as Error;
         expect(e.message).toContain("The browser exited before opening its DevTools endpoint (21)");
         expect(e.message).toContain("The browser said:\nfake chrome: refusing to start");
@@ -336,25 +336,25 @@ describe("starting the browser", () => {
 
     test("gives up on one that never opens its endpoint, and leaves nothing running", async () => {
         process.env.FAKE_CHROME = "silent";
-        const profile = join(tempDir("harness-browser-profile-"), "p");
+        const profile = join(tempDir("cavvy-browser-profile-"), "p");
         const started = Date.now();
         const e = (await launchChrome({ executable: program, profile, startupMs: 400 }).catch((x) => x)) as Error;
         expect(e.message).toContain("The browser didn't open its DevTools endpoint within 400 ms");
         expect(Date.now() - started).toBeLessThan(10_000);
         const cancelled = new AbortController();
-        const pending = launchChrome({ executable: program, profile: join(tempDir("harness-browser-profile-"), "p"), startupMs: 20_000, signal: cancelled.signal }).catch((x) => x as Error);
+        const pending = launchChrome({ executable: program, profile: join(tempDir("cavvy-browser-profile-"), "p"), startupMs: 20_000, signal: cancelled.signal }).catch((x) => x as Error);
         await Bun.sleep(150);
         cancelled.abort();
         expect((await pending).message).toContain("Starting the browser was cancelled");
     });
 
     test("a program that isn't there is an error, not a hang", async () => {
-        const profile = join(tempDir("harness-browser-profile-"), "p");
+        const profile = join(tempDir("cavvy-browser-profile-"), "p");
         await expect(launchChrome({ executable: join(profile, "nope"), profile, startupMs: 2000 })).rejects.toThrow();
     });
 
     test("a stale endpoint file from an earlier browser isn't believed", async () => {
-        const profile = join(tempDir("harness-browser-profile-"), "p");
+        const profile = join(tempDir("cavvy-browser-profile-"), "p");
         mkdirSync(profile, { recursive: true });
         // names a port nothing listens on
         writeFileSync(join(profile, "DevToolsActivePort"), "1\n/devtools/browser/old");
@@ -367,7 +367,7 @@ describe("starting the browser", () => {
 // ---------------------------------------------------------------------------
 
 describe("a session's browser", () => {
-    const root = tempDir("harness-browser-engine-project-");
+    const root = tempDir("cavvy-browser-engine-project-");
     const profile = join(projectStateDir(root), "browser");
     const sessions: InstanceType<typeof BrowserSession>[] = [];
     const refused: string[] = [];
@@ -435,11 +435,11 @@ describe("a session's browser", () => {
         expect(pressed.content).toContain("Pressed Control+a");
         // the handles to the field, the select and the focused element go back in the browser's hands
         const released = (await fake.sent("Runtime.releaseObjectGroup")).map((c) => c.params.objectGroup);
-        expect(released.filter((g) => g === "harness-act")).toHaveLength(2);
-        const made = (await fake.log()).filter((c) => (c.method === "DOM.resolveNode" || c.method === "Runtime.evaluate") && (c.params.objectGroup === "harness-act"));
+        expect(released.filter((g) => g === "cavvy-act")).toHaveLength(2);
+        const made = (await fake.log()).filter((c) => (c.method === "DOM.resolveNode" || c.method === "Runtime.evaluate") && (c.params.objectGroup === "cavvy-act"));
         expect(made.length).toBeGreaterThanOrEqual(2);
         // everything made in the action's group (nothing is left in the page's default one)
-        expect((await fake.sent("DOM.resolveNode")).every((c) => c.params.objectGroup === "harness-act")).toBe(true);
+        expect((await fake.sent("DOM.resolveNode")).every((c) => c.params.objectGroup === "cavvy-act")).toBe(true);
         expect(session.tabCount).toBe(1);
     });
 
@@ -451,8 +451,8 @@ describe("a session's browser", () => {
         expect(r.isError, r.content).toBeFalsy();
         expect(r.content).toContain("Typed into the focused element");
         const active = (await fake.sent("Runtime.evaluate")).filter((c) => c.params.expression === "document.activeElement");
-        expect(active.every((c) => c.params.objectGroup === "harness-act")).toBe(true);
-        expect((await fake.sent("Runtime.releaseObjectGroup")).some((c) => c.params.objectGroup === "harness-act")).toBe(true);
+        expect(active.every((c) => c.params.objectGroup === "cavvy-act")).toBe(true);
+        expect((await fake.sent("Runtime.releaseObjectGroup")).some((c) => c.params.objectGroup === "cavvy-act")).toBe(true);
     });
 
     test("a stale or unknown ref says to take a new snapshot, and nothing was sent to the page", async () => {
@@ -772,8 +772,8 @@ describe("a session's browser", () => {
     });
 
     test("without a browser the tools say how to get one, and the pane is told", async () => {
-        const saved = process.env.HARNESS_BROWSER;
-        process.env.HARNESS_BROWSER = join(root, "none");
+        const saved = process.env.CAVVY_BROWSER;
+        process.env.CAVVY_BROWSER = join(root, "none");
         forgetChromeLookup();
         try {
             const { session, nav } = open();
@@ -782,7 +782,7 @@ describe("a session's browser", () => {
             expect(r.isError).toBe(true);
             expect(r.content).toContain("isn't an installed browser");
         } finally {
-            process.env.HARNESS_BROWSER = saved;
+            process.env.CAVVY_BROWSER = saved;
             forgetChromeLookup();
         }
     });
@@ -824,8 +824,8 @@ describe("a session's browser", () => {
 // ---------------------------------------------------------------------------
 
 describe("what a page may load", () => {
-    const root = tempDir("harness-browser-load-project-");
-    const outside = tempDir("harness-browser-load-outside-");
+    const root = tempDir("cavvy-browser-load-project-");
+    const outside = tempDir("cavvy-browser-load-outside-");
     mkdirSync(join(root, "private"));
     writeFileSync(join(root, "page.html"), "<img src=a.png>");
     const sessions: InstanceType<typeof BrowserSession>[] = [];

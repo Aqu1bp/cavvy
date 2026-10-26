@@ -1,4 +1,4 @@
-// The harness's agent definitions as Claude Code's --agents flag takes them
+// Cavvy's agent definitions as Claude Code's --agents flag takes them
 // (src/backends/claude-agents.ts): each field's mapping, which agents are
 // left out, and the rules carried over (trust, MCP approval, the session's
 // mode winning).
@@ -11,7 +11,7 @@ import { isolate, tempDir } from "./helpers/isolate";
 const { cleanup } = isolate();
 const { parseAgentFile, BUILTIN_AGENTS } = await import("../src/agent/agents");
 const { claudeAgents, claudeModel, writeAgentsFile } = await import("../src/backends/claude-agents");
-const { harnessHome } = await import("../src/config/paths");
+const { cavvyHome } = await import("../src/config/paths");
 const { MCP_SERVER_NAME } = await import("../src/agent/delegation");
 
 afterAll(cleanup);
@@ -41,7 +41,7 @@ memory: project`);
                 description: "Reviews diffs",
                 prompt: "Do the thing.",
                 tools: ["Read", "Grep", "Bash"],
-                // A plan agent in a default session: the harness's tools (delegate) would run in default.
+                // A plan agent in a default session: Cavvy's tools (delegate) would run in default.
                 disallowedTools: ["Write", `mcp__${MCP_SERVER_NAME}`],
                 model: "claude-sonnet-5-5",
                 permissionMode: "plan",
@@ -118,15 +118,15 @@ hooks:
         });
     });
 
-    test("skills the harness finds go in the prompt; the rest are Claude Code's to find", () => {
-        mkdirSync(join(harnessHome(), "skills", "style"), { recursive: true });
-        writeFileSync(join(harnessHome(), "skills", "style", "SKILL.md"), "---\nname: style\n---\nUse tabs.\n");
+    test("skills Cavvy finds go in the prompt; the rest are Claude Code's to find", () => {
+        mkdirSync(join(cavvyHome(), "skills", "style"), { recursive: true });
+        writeFileSync(join(cavvyHome(), "skills", "style", "SKILL.md"), "---\nname: style\n---\nUse tabs.\n");
         const out = claudeAgents([user("name: s\ndescription: d\nskills: [style, cc-only]")], opts);
         expect(out.s!.prompt).toBe("Do the thing.\n\n# Skill: style\n\nUse tabs.");
         expect(out.s!.skills).toEqual(["cc-only"]);
     });
 
-    test("MCP servers: names pass through; own ones by transport, with the approval and name rules the harness applies", () => {
+    test("MCP servers: names pass through; own ones by transport, with the approval and name rules Cavvy applies", () => {
         const front = `name: m
 description: d
 mcpServers:
@@ -165,7 +165,7 @@ mcpServers:
         // A cwd that is where Claude Code runs is fine, and so is a URL server.
         expect(claudeAgents([def("project", "      command: node\n      cwd: .")], approved).m!.mcpServers).toHaveLength(1);
         expect(claudeAgents([def("project", "      url: https://example.com/mcp\n      cwd: tools")], approved).m!.mcpServers).toHaveLength(1);
-        // A session in a subfolder: Claude Code starts it there, the harness at the project root.
+        // A session in a subfolder: Claude Code starts it there, Cavvy at the project root.
         mkdirSync(join(root, "sub"), { recursive: true });
         expect(claudeAgents([def("user", "      command: node")], { ...approved, cwd: join(root, "sub") }).m!.mcpServers).toBeUndefined();
         // ${VAR}: Claude Code expands it, the approval covers the literal text.
@@ -174,7 +174,7 @@ mcpServers:
         expect(claudeAgents([def("user", '      command: "${TOOL}"')], approved).m!.mcpServers).toHaveLength(1);
     });
 
-    test("an own server named like the project's .mcp.json one isn't passed, as the harness refuses it", () => {
+    test("an own server named like the project's .mcp.json one isn't passed, as Cavvy refuses it", () => {
         writeFileSync(join(root, ".mcp.json"), JSON.stringify({ mcpServers: { shared: { command: "x" } } }));
         const notes: string[] = [];
         const def = user("name: c\ndescription: d\nmcpServers:\n  - shared:\n      command: y");
@@ -184,26 +184,26 @@ mcpServers:
         expect(claudeAgents([def], { ...opts, trusted: false }).c!.mcpServers).toHaveLength(1);
     });
 
-    test("an agent can't define or name a server with the harness's own server's name (its tools are approved by name)", () => {
+    test("an agent can't define or name a server with Cavvy's own server's name (its tools are approved by name)", () => {
         const notes: string[] = [];
         const own = user(`name: h\ndescription: d\nmcpServers:\n  - ${MCP_SERVER_NAME}:\n      command: erase`);
         expect(claudeAgents([own], { ...opts, notes }).h!.mcpServers).toBeUndefined();
         // By name too: a server of Claude Code's own config with that name could have a tool named like delegate.
         const named = user(`name: n\ndescription: d\nmcpServers: [${MCP_SERVER_NAME}, github]`);
         expect(claudeAgents([named], { ...opts, notes }).n!.mcpServers).toEqual(["github"]);
-        expect(notes).toEqual([0, 1].map(() => expect.stringContaining("that name is the harness's own server's")));
+        expect(notes).toEqual([0, 1].map(() => expect.stringContaining("that name is Cavvy's own server's")));
     });
 
-    test("an agent with a mode of its own doesn't get the harness's tools (they run in the session's mode when called)", () => {
-        const harness = `mcp__${MCP_SERVER_NAME}`;
+    test("an agent with a mode of its own doesn't get Cavvy's tools (they run in the session's mode when called)", () => {
+        const cavvy = `mcp__${MCP_SERVER_NAME}`;
         const def = (mode?: string) => user(`name: a\ndescription: d${mode ? `\npermissionMode: ${mode}` : ""}\ndisallowedTools: Bash`);
         // A plan agent in an acceptEdits session: delegate would edit in acceptEdits.
-        expect(claudeAgents([def("plan")], { ...opts, mode: "acceptEdits" }).a!.disallowedTools).toEqual(["Bash", harness]);
-        expect(claudeAgents([def("acceptEdits")], opts).a!.disallowedTools).toEqual(["Bash", harness]);
+        expect(claudeAgents([def("plan")], { ...opts, mode: "acceptEdits" }).a!.disallowedTools).toEqual(["Bash", cavvy]);
+        expect(claudeAgents([def("acceptEdits")], opts).a!.disallowedTools).toEqual(["Bash", cavvy]);
         // Even while the session's mode is the same, or wins: the session can change mode mid-turn, the definitions can't.
-        expect(claudeAgents([def("plan")], { ...opts, mode: "plan" }).a!.disallowedTools).toEqual(["Bash", harness]);
-        expect(claudeAgents([def("default")], opts).a!.disallowedTools).toEqual(["Bash", harness]);
-        // No mode of its own: it follows the session's, as the harness's tools do.
+        expect(claudeAgents([def("plan")], { ...opts, mode: "plan" }).a!.disallowedTools).toEqual(["Bash", cavvy]);
+        expect(claudeAgents([def("default")], opts).a!.disallowedTools).toEqual(["Bash", cavvy]);
+        // No mode of its own: it follows the session's, as Cavvy's tools do.
         expect(claudeAgents([def()], { ...opts, mode: "acceptEdits" }).a!.disallowedTools).toEqual(["Bash"]);
     });
 

@@ -21,7 +21,7 @@ test("can't update itself: why, and no button anywhere", () => {
 
 test("up to date: when it was checked, and Check now; nothing in the rail", () => {
     const v = updateView({ ...base, checkedAt: NOW - 5 * 60_000 }, 0, NOW)!;
-    expect(v).toMatchObject({ title: "Harness is up to date", detail: "Built from main abc1234 · checked 5m ago", action: "check" });
+    expect(v).toMatchObject({ title: "Cavvy is up to date", detail: "Built from main abc1234 · checked 5m ago", action: "check" });
     expect(v.rail).toBeUndefined();
     expect(updateView({ ...base, checkedAt: NOW - 10_000 }, 0, NOW)!.detail).toContain("checked just now");
 });
@@ -42,7 +42,7 @@ test("not checked yet, and checking", () => {
 test("an update: how many changes, Update & restart, and the rail's button", () => {
     const v = updateView({ ...base, available: true, behind: 4, checkedAt: NOW }, 0, NOW)!;
     expect(v).toMatchObject({ title: "4 new changes on main", detail: "This build abc1234 · main def5678", action: "update", busy: false });
-    expect(v.rail).toEqual({ state: "ready", label: "4 new changes on main. Click to update and restart Harness." });
+    expect(v.rail).toEqual({ state: "ready", label: "4 new changes on main. Click to update and restart Cavvy." });
     expect(updateView({ ...base, available: true, behind: 1 }, 0)!.title).toBe("1 new change on main");
     // A check in flight doesn't take the update away.
     expect(updateView({ ...base, available: true, behind: 1, checking: true }, 0)).toMatchObject({ action: "update", busy: true });
@@ -65,12 +65,12 @@ test("updating: the build's last line, a spinner, and the rail says so", () => {
     expect(v).toMatchObject({ title: "Updating to main (def5678)…", detail: "Compiling tauri v2.1.0", busy: true });
     expect(v.action).toBeUndefined();
     expect(v.warn).toContain("2 sessions working then will stop");
-    expect(v.rail).toEqual({ state: "busy", label: "Updating Harness: Compiling tauri v2.1.0" });
+    expect(v.rail).toEqual({ state: "busy", label: "Updating Cavvy: Compiling tauri v2.1.0" });
 });
 
 test("restarting: installed, and the app is about to go", () => {
     const v = updateView({ ...base, updating: { startedAt: NOW, line: "x", restarting: true } }, 0)!;
-    expect(v).toMatchObject({ title: "Restarting Harness…", busy: true, rail: { state: "busy", label: "The update is installed: Harness is restarting" } });
+    expect(v).toMatchObject({ title: "Restarting Cavvy…", busy: true, rail: { state: "busy", label: "The update is installed: Cavvy is restarting" } });
 });
 
 test("a failed update: the rail's icon turns red, to try again; the card still offers the update", () => {

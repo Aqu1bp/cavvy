@@ -20,7 +20,7 @@ const tool = (name: string): Message => ({ role: "assistant", content: [{ type: 
 const result = (content: string): Message => ({ role: "user", content: [{ type: "tool_result", toolCallId: "c", toolName: "Bash", content }], meta: { kind: "tool_results" } });
 
 /** A host that records what the controller asked for; timers run when the test says so. */
-function harness(opts: { judge?: (system: string, prompt: string, signal: AbortSignal) => Promise<string>; canJudge?: boolean } = {}) {
+function cavvy(opts: { judge?: (system: string, prompt: string, signal: AbortSignal) => Promise<string>; canJudge?: boolean } = {}) {
     const session = Session.create(realpathSync(tempDir("goal-")), { persist: false });
     const notices: { text: string; level: string }[] = [];
     const turns: { prompt: string; display: string }[] = [];
@@ -146,7 +146,7 @@ describe("the check's answer", () => {
         expect(classifyError("")).toBe("transient");
     });
 
-    test("usedTools sees the harness's tool calls and a CLI backend's actions note", () => {
+    test("usedTools sees Cavvy's tool calls and a CLI backend's actions note", () => {
         expect(usedTools([said("thinking about it")])).toBe(false);
         expect(usedTools([tool("Bash")])).toBe(true);
         expect(usedTools([said("[Claude Code used: Bash(bun test), Edit(src/a.ts)]")])).toBe(true);
@@ -180,7 +180,7 @@ describe("the check's answer", () => {
 
 describe("GoalController", () => {
     test("setting a goal saves it and gives the first turn's prompt; replacing one says so", () => {
-        const h = harness();
+        const h = cavvy();
         const first = h.goal.set("all tests in test/auth pass");
         expect(first.display).toBe("/goal all tests in test/auth pass");
         expect(first.prompt).toContain("all tests in test/auth pass");
@@ -195,7 +195,7 @@ describe("GoalController", () => {
 
     test("not met: the reason is shown and the next turn starts with it as guidance; met: cleared with a summary", async () => {
         let n = 0;
-        const h = harness({ judge: async () => (++n === 1 ? '{"verdict":"not_met","reason":"Lint has not been run."}' : '{"verdict":"met","reason":"Tests and lint pass."}') });
+        const h = cavvy({ judge: async () => (++n === 1 ? '{"verdict":"not_met","reason":"Lint has not been run."}' : '{"verdict":"met","reason":"Tests and lint pass."}') });
         h.goal.set("tests and lint pass");
         h.setTokens(5000);
         await h.goal.afterTurn("done", h.turn(user("go"), tool("Bash"), result("12 pass"), said("Tests pass.")), true);
@@ -223,7 +223,7 @@ describe("GoalController", () => {
     });
 
     test("impossible ends the goal with the reason", async () => {
-        const h = harness({ judge: async () => '{"verdict":"impossible","reason":"The file it names was never in this repo."}' });
+        const h = cavvy({ judge: async () => '{"verdict":"impossible","reason":"The file it names was never in this repo."}' });
         h.goal.set("restore deleted.ts from git");
         await h.goal.afterTurn("done", h.turn(user("go"), tool("Bash"), said("No such file in history.")), true);
         expect(h.goal.active).toBe(false);
@@ -232,7 +232,7 @@ describe("GoalController", () => {
     });
 
     test("without a model to check, the working model reports for itself", async () => {
-        const h = harness({ canJudge: false });
+        const h = cavvy({ canJudge: false });
         const first = h.goal.set("docs build");
         expect(first.prompt).toContain("GOAL: met");
         expect(h.goal.view()!.judge).toBe("self");
@@ -249,7 +249,7 @@ describe("GoalController", () => {
     });
 
     test(`${IDLE_TURNS} goal turns in a row without a tool pause it; the goal stays set and a message picks it up`, async () => {
-        const h = harness();
+        const h = cavvy();
         h.goal.set("x");
         for (let i = 0; i < IDLE_TURNS - 1; i++) {
             await h.goal.afterTurn("done", h.turn(user("k"), said("I will do it.")), true);
@@ -271,7 +271,7 @@ describe("GoalController", () => {
     });
 
     test("a user's own turn without tools doesn't count toward the idle pause", async () => {
-        const h = harness();
+        const h = cavvy();
         h.goal.set("x");
         for (let i = 0; i < IDLE_TURNS + 1; i++) {
             await h.goal.afterTurn("done", h.turn(user("question?"), said("answer")), false);
@@ -281,7 +281,7 @@ describe("GoalController", () => {
     });
 
     test("an interrupt pauses it without a check; /goal resume checks where it stands, then continues", async () => {
-        const h = harness();
+        const h = cavvy();
         h.goal.set("x");
         await h.goal.afterTurn("aborted", h.turn(user("go")), true);
         expect(h.judged).toEqual([]);
@@ -300,7 +300,7 @@ describe("GoalController", () => {
     });
 
     test("/goal resume ends the goal at once when the check finds it already met", async () => {
-        const h = harness({ judge: async () => '{"verdict":"met","reason":"Already green."}' });
+        const h = cavvy({ judge: async () => '{"verdict":"met","reason":"Already green."}' });
         h.goal.restore({ condition: "x", setAt: 1 });
         h.goal.resume();
         await Bun.sleep(0);
@@ -310,7 +310,7 @@ describe("GoalController", () => {
     });
 
     test("/goal resume while a turn runs waits for that turn's end", async () => {
-        const h = harness();
+        const h = cavvy();
         h.goal.set("x");
         h.goal.pause("Paused with /goal pause.");
         h.setIdle(false);
@@ -325,7 +325,7 @@ describe("GoalController", () => {
 
     test("denied and blocked turns pause it", async () => {
         for (const reason of ["denied", "blocked", "max_turns"] as const) {
-            const h = harness();
+            const h = cavvy();
             h.goal.set("x");
             await h.goal.afterTurn(reason, h.turn(user("go")), true);
             expect(h.goal.view()!.state).toBe("paused");
@@ -334,7 +334,7 @@ describe("GoalController", () => {
     });
 
     test("an error you have to fix clears the goal", async () => {
-        const h = harness();
+        const h = cavvy();
         h.goal.set("x");
         const from = h.turn(user("go"));
         h.session.recordNotice("error", "401 Unauthorized: invalid x-api-key");
@@ -345,7 +345,7 @@ describe("GoalController", () => {
     });
 
     test("a limit pauses it", async () => {
-        const h = harness();
+        const h = cavvy();
         h.goal.set("x");
         const from = h.turn(user("go"));
         h.session.recordNotice("error", "You've hit your usage limit. It resets at 5pm.");
@@ -363,7 +363,7 @@ describe("GoalController", () => {
         'Google Gemini: You exceeded your current quota, please check your plan and billing details. {"quotaId":"RequestsPerDay"}',
     ])("provider waits pause the goal without clearing it or scheduling an early retry: %s", async (message) => {
         expect(classifyError(message)).toBe("limit");
-        const h = harness();
+        const h = cavvy();
         h.goal.set("finish the work");
         const from = h.turn(user("go"));
         h.session.recordNotice("error", message);
@@ -387,7 +387,7 @@ describe("GoalController", () => {
         const e = httpError(429, "Too Many Requests", JSON.stringify(body), "33", "Google Gemini");
         expect(e.retryable).toBe(true);
         expect(classifyError(e.message)).toBe("limit");
-        const h = harness();
+        const h = cavvy();
         h.goal.set("finish the work");
         const from = h.turn(user("go"));
         h.session.recordNotice("error", e.message);
@@ -405,7 +405,7 @@ describe("GoalController", () => {
         const e = vertexError(403, "Forbidden", JSON.stringify({ error: { message: "BILLING_DISABLED" } }), "Vertex AI", { project: "test-project", account: "test@example.com" } as any);
         expect(e.message).toContain("no billing account linked");
         expect(classifyError(e.message)).toBe("fatal");
-        const h = harness();
+        const h = cavvy();
         h.goal.set("finish the work");
         const from = h.turn(user("go"));
         h.session.recordNotice("error", e.message);
@@ -415,7 +415,7 @@ describe("GoalController", () => {
     });
 
     test("other errors retry after a wait, three times, then pause; a success resets the count", async () => {
-        const h = harness();
+        const h = cavvy();
         h.goal.set("x");
         const fail = async () => {
             const from = h.turn(user("go"));
@@ -445,7 +445,7 @@ describe("GoalController", () => {
     });
 
     test("delegated tasks still running hold the check until they finish", async () => {
-        const h = harness();
+        const h = cavvy();
         h.goal.set("x");
         h.setBackground(2);
         await h.goal.afterTurn("done", h.turn(user("go"), tool("Task")), true);
@@ -461,7 +461,7 @@ describe("GoalController", () => {
     });
 
     test(`background work holds the check for ${BACKGROUND_WAIT_MS / 60_000} minutes at most`, async () => {
-        const h = harness();
+        const h = cavvy();
         h.goal.set("x");
         h.setBackground(1);
         await h.goal.afterTurn("done", h.turn(user("go"), tool("Task")), true);
@@ -473,7 +473,7 @@ describe("GoalController", () => {
 
     test("a user's turn overtakes a check in flight: its verdict is dropped", async () => {
         let release!: (s: string) => void;
-        const h = harness({ judge: () => new Promise<string>((r) => (release = r)) });
+        const h = cavvy({ judge: () => new Promise<string>((r) => (release = r)) });
         h.goal.set("x");
         const checking = h.goal.afterTurn("done", h.turn(user("go"), tool("Bash")), true);
         await Bun.sleep(0);
@@ -490,7 +490,7 @@ describe("GoalController", () => {
 
     test("clear during a check drops it; a check that fails twice pauses with the reason", async () => {
         let release!: (s: string) => void;
-        const h = harness({ judge: () => new Promise<string>((r) => (release = r)) });
+        const h = cavvy({ judge: () => new Promise<string>((r) => (release = r)) });
         h.goal.set("x");
         const checking = h.goal.afterTurn("done", h.turn(user("go"), tool("Bash")), true);
         await Bun.sleep(0);
@@ -500,21 +500,21 @@ describe("GoalController", () => {
         expect(h.notices.some((n) => n.text.startsWith("✓"))).toBe(false);
         expect(h.goal.clear()).toBeUndefined();
 
-        const bad = harness({ judge: async () => "I am not sure" });
+        const bad = cavvy({ judge: async () => "I am not sure" });
         bad.goal.set("x");
         await bad.goal.afterTurn("done", bad.turn(user("go"), tool("Bash")), true);
         expect(bad.judged).toHaveLength(2);
         expect(bad.goal.view()!.state).toBe("paused");
         expect(bad.notices.at(-1)!.text).toBe("Goal paused: couldn't check the goal (its answer wasn't a verdict). Send a message or /goal resume to continue.");
 
-        const down = harness({ judge: async () => { throw new Error("fetch failed"); } });
+        const down = cavvy({ judge: async () => { throw new Error("fetch failed"); } });
         down.goal.set("x");
         await down.goal.afterTurn("done", down.turn(user("go"), tool("Bash")), true);
         expect(down.notices.at(-1)!.text).toContain("couldn't check the goal (fetch failed)");
     });
 
     test("the next turn waits while something else runs (a command, a queued message)", async () => {
-        const h = harness();
+        const h = cavvy();
         h.goal.set("x");
         await h.goal.afterTurn("done", h.turn(user("go"), tool("Bash")), true);
         h.setIdle(false);
@@ -527,7 +527,7 @@ describe("GoalController", () => {
     });
 
     test("pause during the wait for the next turn stops it", async () => {
-        const h = harness();
+        const h = cavvy();
         h.goal.set("x");
         await h.goal.afterTurn("done", h.turn(user("go"), tool("Bash")), true);
         h.goal.pause("Paused with /goal pause.");
@@ -537,7 +537,7 @@ describe("GoalController", () => {
     });
 
     test("a compaction during the turn: what's left is the turn's, and its error is found by time", async () => {
-        const h = harness({ canJudge: false });
+        const h = cavvy({ canJudge: false });
         h.goal.set("x");
         // The turn started at message 40; a compaction left 3 messages, the last with the report.
         for (let i = 0; i < 3; i++) h.session.push(i === 2 ? said("GOAL: met") : tool("Bash"));
@@ -545,7 +545,7 @@ describe("GoalController", () => {
         expect(h.goal.active).toBe(false);
         expect(h.notices.at(-1)!.text).toStartWith("✓ Goal achieved");
 
-        const e = harness();
+        const e = cavvy();
         e.goal.set("x");
         const startedAt = Date.now();
         e.session.recordNotice("error", "429 Too Many Requests");
@@ -559,7 +559,7 @@ describe("GoalController", () => {
 
     test("a user's turn tells the UI its check is gone, even from checking to active", async () => {
         let release!: (s: string) => void;
-        const h = harness({ judge: () => new Promise<string>((r) => (release = r)) });
+        const h = cavvy({ judge: () => new Promise<string>((r) => (release = r)) });
         h.goal.set("x");
         void h.goal.afterTurn("done", h.turn(user("go"), tool("Bash")), true);
         await Bun.sleep(0);
@@ -571,7 +571,7 @@ describe("GoalController", () => {
     });
 
     test("the next turn starts before the UI hears of it, so it never reads as idle in between", async () => {
-        const h = harness();
+        const h = cavvy();
         const seen: boolean[] = [];
         h.host.changed = () => seen.push(h.goal.pending() || h.turns.length > 0);
         h.goal.set("x");
@@ -585,7 +585,7 @@ describe("GoalController", () => {
     });
 
     test("/goal resume waits for delegated work before it checks", async () => {
-        const h = harness();
+        const h = cavvy();
         h.goal.restore({ condition: "x", setAt: 1 });
         h.setBackground(1);
         h.goal.resume();
@@ -598,7 +598,7 @@ describe("GoalController", () => {
     });
 
     test("a reopened session's goal comes back paused, with counters reset", () => {
-        const h = harness();
+        const h = cavvy();
         h.setTokens(50_000);
         h.goal.restore({ condition: "ship it", setAt: 5 });
         expect(h.goal.view()).toMatchObject({ condition: "ship it", state: "paused", turns: 0, tokens: 0, since: 1_000_000 });
@@ -611,7 +611,7 @@ describe("GoalController", () => {
     });
 
     test("dispose stops pending timers", async () => {
-        const h = harness();
+        const h = cavvy();
         h.goal.set("x");
         await h.goal.afterTurn("done", h.turn(user("go"), tool("Bash")), true);
         h.goal.dispose();

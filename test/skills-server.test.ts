@@ -46,7 +46,7 @@ afterAll(async () => {
     iso.cleanup();
 });
 
-const project = () => createDemoProject(tempDir("harness-skills-srv-"), { git: false });
+const project = () => createDemoProject(tempDir("cavvy-skills-srv-"), { git: false });
 
 class Client {
     ws: WebSocket;
@@ -57,7 +57,7 @@ class Client {
     private listeners = new Set<() => void>();
 
     constructor() {
-        this.ws = new WebSocket(`ws://127.0.0.1:${srv.port}/ws`, { protocols: ["harness.v1", `auth.${TOKEN}`] } as any);
+        this.ws = new WebSocket(`ws://127.0.0.1:${srv.port}/ws`, { protocols: ["cavvy.v1", `auth.${TOKEN}`] } as any);
         this.ws.onmessage = (m) => {
             const msg = JSON.parse(String(m.data));
             if ("event" in msg) {
@@ -161,7 +161,7 @@ describe("skills in the GUI", () => {
         srv.engine.cliCommandsReported("claude-code", cwd, ["code-review"]);
         const codex = await c.call<CommandInfo[]>("commands.list", { cwd, provider: "codex" });
         expect(codex.filter((x) => x.name === "imagegen")).toEqual([{ name: "imagegen", description: "Codex's own skill", skill: true }]);
-        // One the harness has itself is listed once, as the harness's.
+        // One Cavvy has itself is listed once, as Cavvy's.
         expect(codex.filter((x) => x.name === "explain")).toEqual([{ name: "explain", description: "Explain code simply", args: "<path>", skill: true }]);
         const claude = await c.call<CommandInfo[]>("commands.list", { cwd, provider: "claude-code" });
         expect(claude.find((x) => x.name === "code-review")).toEqual({ name: "code-review", description: "Claude Code's own command" });
@@ -255,7 +255,7 @@ describe("skills in the GUI", () => {
     test("a trusted project's skills, and not an untrusted one's", async () => {
         const c = await client();
         const cwd = project();
-        skill(join(cwd, ".harness", "skills"), "project-only", "---\ndescription: From the repo\n---\nRepo instructions.");
+        skill(join(cwd, ".cavvy", "skills"), "project-only", "---\ndescription: From the repo\n---\nRepo instructions.");
         expect((await c.call<CommandInfo[]>("commands.list", { cwd })).some((x) => x.name === "project-only")).toBe(false);
         await c.call("projects.trust", { path: cwd, trust: true });
         await Bun.sleep(2100);
@@ -266,7 +266,7 @@ describe("skills in the GUI", () => {
     test("a skill keeps its bare name when a plugin has a command by the same name", async () => {
         const { addMarketplace } = await import("../src/plugins/marketplaces");
         const { installPlugin, removeMarketplace } = await import("../src/plugins/install");
-        const mk = tempDir("harness-skills-mk-");
+        const mk = tempDir("cavvy-skills-mk-");
         writeFileSync(join(mk, "marketplace.json"), JSON.stringify({ name: "clash", plugins: [{ name: "doc", source: "./doc" }] }));
         mkdirSync(join(mk, "doc", "commands"), { recursive: true });
         writeFileSync(join(mk, "doc", "commands", "explain.md"), "The plugin's explain.");

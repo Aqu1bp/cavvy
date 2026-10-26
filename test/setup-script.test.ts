@@ -112,7 +112,7 @@ describe("setup RPC dispatch without sockets", () => {
     async function fixture(trusted = true) {
         const main = realpathSync(mkdtempSync(join(iso.home, "rpc-repo-")));
         const git = (...args: string[]) => {
-            const result = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Harness Test", "-c", "user.email=test@example.invalid", ...args]), {
+            const result = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Cavvy Test", "-c", "user.email=test@example.invalid", ...args]), {
                 cwd: main, env: { ...gitEnv(), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }, stdout: "pipe", stderr: "pipe",
             });
             if (result.exitCode !== 0) throw new Error(result.stderr.toString());

@@ -5,14 +5,14 @@ import { pathToFileURL } from "node:url";
 import { isolate, tempDir } from "./helpers/isolate";
 import { chromePath } from "./helpers/browser-fixture";
 const iso = isolate();
-if (chromePath) process.env.HARNESS_BROWSER = chromePath;
+if (chromePath) process.env.CAVVY_BROWSER = chromePath;
 const { BrowserSession } = await import("../src/browser/session");
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { BrowserNavigateTool, BrowserActTool, BrowserEvalTool } = await import("../src/tools/browser-tools");
 const { registerSecret, unregisterSecret } = await import("../src/util/redact");
 const { startDemoSite } = await import("../scripts/demo-site");
 const { checkUrl } = await import("../src/browser/url-policy");
-const root = tempDir("harness-browser-regressions-");
+const root = tempDir("cavvy-browser-regressions-");
 const sessions: InstanceType<typeof BrowserSession>[] = [];
 const session = (opts: object = {}) => {
     const b = new BrowserSession({ root, settings: () => ({}), pool: { startupMs: 90_000 }, ...opts });

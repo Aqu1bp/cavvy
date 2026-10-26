@@ -1,24 +1,25 @@
-// Folder trust. A cloned repository can ship .harness/settings.json (hooks,
+// Folder trust. A cloned repository can ship .cavvy/settings.json (hooks,
 // allow rules, env) and .mcp.json (servers that run commands). None of that
 // is honored until the user says they trust the folder.
 //
 // Two kinds of trust: a folder the user trusted (saved, or answered yes this
 // session), and a folder trusted for this session only because it had
-// nothing to protect when the harness started. Agent CLIs (Claude Code,
+// nothing to protect when Cavvy started. Agent CLIs (Claude Code,
 // Codex) get a project's own configuration only with the first kind: they
-// read more of it than the harness checks at startup, and `claude -p` shows
+// read more of it than Cavvy checks at startup, and `claude -p` shows
 // no trust prompt of its own.
 
 import { existsSync } from "fs";
 import { homedir } from "os";
 import { join, resolve } from "path";
 import { readJson, readJsonForUpdate, writeJson } from "./settings";
-import { harnessHome, paths } from "./paths";
+import { cavvyHome, paths } from "./paths";
+import { LEGACY } from "./legacy";
 import { isInside } from "../util/files";
 import { readAgentConfig } from "../providers/registry";
 import { externalImports } from "../agent/memory";
 
-const file = () => join(harnessHome(), "trusted.json");
+const file = () => join(cavvyHome(), "trusted.json");
 /** Trusted by the user for this session only (home, "/", or the list couldn't be saved); folders inside it too. */
 const userTrusted = new Set<string>();
 /**
@@ -89,7 +90,7 @@ export function trustForSession(dir: string) {
 /**
  * A project's own configuration for an agent CLI, which that CLI would load
  * (hooks, skills, sub-agents, commands, permission rules). Claude Code also
- * reads .mcp.json, which the harness's own check already covers.
+ * reads .mcp.json, which Cavvy's own check already covers.
  */
 export function agentProjectConfig(cwd: string, provider: "claude-code" | "codex", has: (path: string) => boolean = existsSync): string[] {
     const found: string[] = [];
@@ -103,15 +104,19 @@ export function agentProjectConfig(cwd: string, provider: "claude-code" | "codex
 /** Whether the folder has anything that trust would unlock. `has` says whether a path exists (a commit's tree, for a checkout yet to be made). */
 export function projectConfigSummary(cwd: string, has: (path: string) => boolean = existsSync): string[] {
     const found: string[] = [];
-    if (has(paths.projectSettings(cwd))) found.push(".harness/settings.json");
-    if (has(paths.localSettings(cwd))) found.push(".harness/settings.local.json");
+    // Each of Cavvy's files where it's read from, by `has` (inProjectDir asks the disk): in Harness's .harness/ when only that has it.
+    const own = (name: string, suffix = "") => {
+        for (const dir of [".cavvy", LEGACY.dir]) if (has(join(cwd, dir, name))) return found.push(`${dir}/${name}${suffix}`);
+    };
+    own("settings.json");
+    own("settings.local.json");
     if (has(paths.projectMcp(cwd))) found.push(".mcp.json");
-    if (has(paths.projectCommands(cwd))) found.push(".harness/commands/");
-    if (has(paths.projectAgents(cwd))) found.push(".harness/agents/");
+    own("commands", "/");
+    own("agents", "/");
     // Agent CLIs that are turned on load their own project configuration only in a folder the user trusted.
     for (const p of ["claude-code", "codex"] as const) if (readAgentConfig(p)) found.push(...agentProjectConfig(cwd, p, has));
     // Skills are instructions for the model, read natively from both folders whatever the model (src/agent/skills.ts).
-    if (has(join(cwd, ".harness", "skills"))) found.push(".harness/skills/");
+    own("skills", "/");
     if (has(join(cwd, ".claude", "skills"))) found.push(".claude/skills/");
     // Memory files load in a folder with nothing to protect, but their imports stay inside the project
     // until the user trusts it (src/agent/memory.ts): one that imports from outside has something to unlock.

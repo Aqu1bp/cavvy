@@ -33,7 +33,7 @@ const image = (data: string, text: string): Rec => ({ t: "msg", m: { role: "user
 let n = 0;
 /** A session file as the app writes it, one record a line; `age` seconds old. */
 function write(records: Rec[], o: { cwd?: string; age?: number; id?: string } = {}): { id: string; file: string; cwd: string } {
-    const cwd = o.cwd ?? join(tempDir("harness-search-proj-"), "proj");
+    const cwd = o.cwd ?? join(tempDir("cavvy-search-proj-"), "proj");
     const id = o.id ?? `20260101-000000-${(++n).toString(16).padStart(6, "0")}`;
     const dir = projectStateDir(cwd);
     mkdirSync(dir, { recursive: true });
@@ -57,7 +57,7 @@ function turnFor(file: string, seg: number, index: number, ui = new UiLog(file, 
 
 describe("searching session files", () => {
     test.each(["claude-code", "codex"] as const)("%s imports keep searchable message positions without enabling rewind", async (source) => {
-        const cwd = tempDir("harness-search-import-");
+        const cwd = tempDir("cavvy-search-import-");
         const title = `Imported ${source} conversation`;
         const key = `import-${source}-search`;
         const id = writeImportedSession({
@@ -281,7 +281,7 @@ describe("searching session files", () => {
     test("a long line a crash cut short isn't counted, as replay skips it", async () => {
         const torn = JSON.stringify(image("QUJD".repeat(1_300_000), "torn"));
         expect(torn.endsWith("}}}")).toBe(true);
-        const cwd = join(tempDir("harness-search-proj-"), "proj");
+        const cwd = join(tempDir("cavvy-search-proj-"), "proj");
         const s = write([prompt("juliet before the torn line")], { cwd });
         appendFileSync(s.file, torn.slice(0, -1) + "\n" + JSON.stringify(reply("kilo after the torn line")) + "\n");
         const h = (await searchSessions("kilo after the torn")).hits[0]!;
@@ -363,7 +363,7 @@ describe("searching session files", () => {
         const k = (await searchSessions(key)).hits;
         expect(k).toHaveLength(1);
         expect(k[0]!.snippet).not.toContain("Zq7Zq7");
-        // A secret the harness learned since the file was written.
+        // A secret Cavvy learned since the file was written.
         registerSecret("hunter2-wobble-secret", "test-secret");
         try {
             write([prompt("the passphrase"), reply("it was hunter2-wobble-secret all along")]);
@@ -622,7 +622,7 @@ describe("searching session files", () => {
 
     test("a symlinked ui folder isn't followed either", async () => {
         const s = write([prompt("yankee real prompt")]);
-        const elsewhere = tempDir("harness-search-uidir-");
+        const elsewhere = tempDir("cavvy-search-uidir-");
         writeFileSync(join(elsewhere, `${s.id}.jsonl`), JSON.stringify({ t: "turn", seg: 0, index: 0, at: 4_242 }) + "\n");
         symlinkSync(elsewhere, join(projectStateDir(s.cwd), "ui"));
         clearSearchCache();
@@ -633,16 +633,16 @@ describe("searching session files", () => {
 
     test("symlinked project folders, session files and GUI logs aren't followed", async () => {
         // A folder elsewhere, linked in as a project.
-        const elsewhere = tempDir("harness-search-elsewhere-");
+        const elsewhere = tempDir("cavvy-search-elsewhere-");
         writeFileSync(join(elsewhere, "20260101-000000-feed01.jsonl"), [{ t: "meta", id: "20260101-000000-feed01", cwd: elsewhere, createdAt: 0, version: "1" }, prompt("tango linked folder")].map((r) => JSON.stringify(r)).join("\n") + "\n");
         symlinkSync(elsewhere, join(paths.projectsDir(), "linked-project"));
         // A session file elsewhere, linked into a real project.
         const real = write([prompt("victor real session")]);
-        const outside = join(tempDir("harness-search-file-"), "s.jsonl");
+        const outside = join(tempDir("cavvy-search-file-"), "s.jsonl");
         writeFileSync(outside, [{ t: "meta", id: "x", cwd: real.cwd, createdAt: 0, version: "1" }, prompt("uniform linked file")].map((r) => JSON.stringify(r)).join("\n") + "\n");
         symlinkSync(outside, join(projectStateDir(real.cwd), "20260101-000000-feed02.jsonl"));
         // A GUI log elsewhere, linked in for the real session.
-        const log = join(tempDir("harness-search-log-"), "ui.jsonl");
+        const log = join(tempDir("cavvy-search-log-"), "ui.jsonl");
         writeFileSync(log, JSON.stringify({ t: "turn", seg: 0, index: 0, at: 7_777 }) + "\n");
         mkdirSync(join(projectStateDir(real.cwd), "ui"), { recursive: true });
         symlinkSync(log, join(projectStateDir(real.cwd), "ui", `${real.id}.jsonl`));
@@ -736,7 +736,7 @@ describe("sessions.search in the engine", () => {
 
 describe("speed", () => {
     test("a few hundred sessions: the first search reads them, the next ones are quick", async () => {
-        const cwd = join(tempDir("harness-search-many-"), "many");
+        const cwd = join(tempDir("cavvy-search-many-"), "many");
         const filler = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore. ".repeat(6);
         let bytes = 0;
         for (let i = 0; i < 200; i++) {
@@ -810,7 +810,7 @@ describe("speed", () => {
 
 describe("listing a big project folder", () => {
     test("yields and checks for a newer search every so many files, and a budget spent listing is partial", async () => {
-        const cwd = join(tempDir("harness-search-big-"), "big");
+        const cwd = join(tempDir("cavvy-search-big-"), "big");
         const dir = projectStateDir(cwd);
         mkdirSync(dir, { recursive: true });
         for (let i = 0; i < 3000; i++) {

@@ -1,5 +1,5 @@
 // Where a session compacts on its own, in tokens of context: what the composer's context card and ring
-// measure against. An agent CLI's own trigger, worked out the way the CLI does; Harness's for its own sessions.
+// measure against. An agent CLI's own trigger, worked out the way the CLI does; Cavvy's for its own sessions.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -159,7 +159,7 @@ export function outputReserve(window: number, maxOutput?: number): number {
     return Math.min(maxOutput ?? 32_000, 32_000, Math.floor(window / 4));
 }
 
-/** Harness's own sessions compact once their context passes this: `threshold` (0.92 unless set) of what the window leaves after the answer's room. */
-export function harnessCompactAt(window: number, maxOutput: number | undefined, threshold?: number | null): number {
+/** Cavvy's own sessions compact once their context passes this: `threshold` (0.92 unless set) of what the window leaves after the answer's room. */
+export function cavvyCompactAt(window: number, maxOutput: number | undefined, threshold?: number | null): number {
     return (window - outputReserve(window, maxOutput)) * (threshold ?? 0.92);
 }

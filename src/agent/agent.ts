@@ -4,7 +4,7 @@
 // Invariants that keep every provider's prompt cache and Anthropic's
 // preserved thinking valid:
 //   - history is append-only; the system prompt and tool list are frozen
-//   - mode changes and other harness notes are appended as reminder text
+//   - mode changes and other Cavvy notes are appended as reminder text
 //   - every tool call gets exactly one tool result, even when interrupted
 //   - an interrupted (partial) model response is discarded, never stored
 
@@ -35,7 +35,7 @@ import type { Decision } from "../permissions/checker";
 import { PermissionChecker } from "../permissions/checker";
 import { AutoClassifier, needsSummary, summaryFits, type ReviewContext } from "../permissions/classifier";
 import { sandboxKind, sandboxPolicy, type Sandbox } from "../permissions/sandbox";
-import { APP_TITLE, harnessHome } from "../config/paths";
+import { APP_TITLE, cavvyHome } from "../config/paths";
 import type { Sampler, Tool, ToolContext, ToolDisplay, ToolResult, ToolState, UiBridge } from "../tools/types";
 import { formatWakes, wakeDisplay } from "./wakes";
 import { isReadOnly, isShellTool } from "../tools/types";
@@ -102,7 +102,7 @@ import { deniedWithin } from "../permissions/rules";
 import { canonical, expandPath, isInside } from "../util/files";
 import type { NoticeData, PlanLimits, StoppedTask } from "../server/protocol";
 import type { NativeGoal } from "./goal";
-import { harnessCompactAt, outputReserve } from "../backends/compact-at";
+import { cavvyCompactAt, outputReserve } from "../backends/compact-at";
 
 // ---------------------------------------------------------------------------
 // Host interface (implemented by the TUI and by headless mode)
@@ -284,7 +284,7 @@ export interface AgentOptions {
     subagent?: { type: string; description: string; parentSessionId: string };
     /** Read-only agent (explore): edits and state-changing commands are refused. */
     readOnly?: boolean;
-    /** Sub-agents: the folder its memory is kept in, which isn't harness configuration for it. */
+    /** Sub-agents: the folder its memory is kept in, which isn't Cavvy configuration for it. */
     memoryDir?: string;
     maxTurns?: number;
     /**
@@ -412,8 +412,8 @@ function readOnlyRefusal(toolName: string, command?: string, why?: string): stri
 /** How much of a wake's report is shown and told when the session can't take the wake over (#305). */
 const WAKE_REPORT_CHARS = 4000;
 
-/** For a backend whose last turn was stopped without its knowing (Harness was closed or died while it worked). */
-const BACKEND_CUT_OFF = "Your last turn in this session was cut off: Harness stopped while you were working (it was closed, or it crashed), so that turn may not have finished what it set out to do.";
+/** For a backend whose last turn was stopped without its knowing (Cavvy was closed or died while it worked). */
+const BACKEND_CUT_OFF = "Your last turn in this session was cut off: Cavvy stopped while you were working (it was closed, or it crashed), so that turn may not have finished what it set out to do.";
 
 /** A /goal command, which a CLI backend runs as its own. */
 const GOAL_COMMAND = /^\s*\/goal(\s|$)/i;
@@ -509,15 +509,15 @@ export class Agent {
     private lastEnd?: TurnEndReason;
     /** The last few tool calls, for the auto-mode reviewer ("Bash: npm test"). */
     private recentActions: string[] = [];
-    /** Tasks a backend (Claude Code, Codex) delegated to other models through the harness's MCP tools. */
+    /** Tasks a backend (Claude Code, Codex) delegated to other models through Cavvy's MCP tools. */
     private delegations?: Delegations;
     /** The account each background task of the session's own CLI runs under, by provider and task id (see sessionEvent). */
     private cliTaskAccounts = new Map<string, { provider: string; accountId: string }>();
-    /** The harness agents this turn passed to Claude Code (--agents), by name: their permission modes apply to their asks. */
+    /** Cavvy agents this turn passed to Claude Code (--agents), by name: their permission modes apply to their asks. */
     private nativeDefs = new Map<string, AgentDef>();
     private nativeNotes = new Set<string>();
     private registration?: Registration;
-    /** What the harness MCP server offers this turn, and its instructions (read by the server on each request). */
+    /** What Cavvy MCP server offers this turn, and its instructions (read by the server on each request). */
     private serverTools: ServerTool[] = [];
     /** The last run stopped on the plan's usage limit (an agent CLI said so), and when that resets if known. */
     limitStop?: { resetsAt?: number };
@@ -738,7 +738,7 @@ export class Agent {
             }
             if (h.context) this.addReminder(h.context);
         }
-        // A turn its CLI started by itself (adopt) is sent nothing: Harness's notes, results and context all wait
+        // A turn its CLI started by itself (adopt) is sent nothing: Cavvy's notes, results and context all wait
         // for the next prompt that is sent, as they do for a /goal.
         const adopting = Boolean(opts.adopt);
         // SessionStart hooks' context goes with the first prompt after them.
@@ -748,10 +748,10 @@ export class Agent {
         if (!adopting) this.deliverTasks(false);
         // Its images fitted to what providers take, before they're stored (and resent every turn). Claude Code and Codex take them as they came.
         const parts: UserContent[] = [...(isAgentBackend(this.client) ? content : await fitContent(content))];
-        // A /goal to Claude Code or Codex is their own command, sent as typed: Harness's notes wait for the next prompt.
+        // A /goal to Claude Code or Codex is their own command, sent as typed: Cavvy's notes wait for the next prompt.
         const goalCommand = isAgentBackend(this.client) && GOAL_COMMAND.test(promptText);
         const keepNotes = goalCommand || adopting;
-        // Background tasks that stopped when Harness quit (the session was open with them running): said once, with
+        // Background tasks that stopped when Cavvy quit (the session was open with them running): said once, with
         // a prompt that takes the reminders now (it's stored just below). Taking them writes them stopped in the
         // log, so not for a /goal, which leaves its reminders for the next prompt (kept in memory only).
         const lost = this.o.isSubagent || keepNotes ? [] : (this.state.background?.takeLost() ?? []);
@@ -1336,7 +1336,7 @@ export class Agent {
         if (isAgentBackend(this.client)) return false;
         const window = this.model.contextWindow;
         if (!window) return false;
-        return this.session.messages.length > 4 && this.estimatedContext() > harnessCompactAt(window, this.model.maxOutput, s.autoCompactThreshold);
+        return this.session.messages.length > 4 && this.estimatedContext() > cavvyCompactAt(window, this.model.maxOutput, s.autoCompactThreshold);
     }
 
     /** Room for the answer below the window (compact-at.ts). */
@@ -1532,7 +1532,7 @@ export class Agent {
         return isAgentBackend(this.client) && !this.o.readOnly && loadsPluginsNatively(this.model.provider);
     }
 
-    /** Settings for the hooks the harness runs: without the plugins' when Claude Code runs those. */
+    /** Settings for the hooks Cavvy runs: without the plugins' when Claude Code runs those. */
     private hookSettings(): Settings {
         const s = this.o.settings();
         return this.pluginsNative() ? withoutPluginHooks(s) : s;
@@ -1571,7 +1571,7 @@ export class Agent {
             rules: { deny: s.permissions?.deny ?? [], ask: s.permissions?.ask ?? [], root: this.state.projectRoot },
             maxTurns: this.o.maxTurns,
             // Claude Code runs some of them itself; Codex only says what it does, so it hears of all of them.
-            // Claude Code runs the plugins' hooks with the plugins (--plugin-dir), so only the harness's own are registered with it.
+            // Claude Code runs the plugins' hooks with the plugins (--plugin-dir), so only Cavvy's own are registered with it.
             hooks: this.model.provider === "claude-code" ? backendOwnedHooks(this.hookSettings()) : s.hooks,
             orchestrator: this.orchestrator(),
             readOnly: this.o.readOnly,
@@ -1583,7 +1583,7 @@ export class Agent {
         };
     }
 
-    /** On Claude Code, the harness's agents run on its own Agent tool; none for sub-agents, which can't start more. */
+    /** On Claude Code, Cavvy's agents run on its own Agent tool; none for sub-agents, which can't start more. */
     private nativeAgents(trusted: boolean): BackendTurn["agents"] {
         this.nativeDefs.clear();
         if (this.model.provider !== "claude-code" || this.o.isSubagent || this.o.readOnly) return undefined;
@@ -1605,7 +1605,7 @@ export class Agent {
 
     // -----------------------------------------------------------------------
     // Delegation (src/agent/delegation.ts): a backend main agent hands tasks
-    // to other providers' models through the harness's MCP tools.
+    // to other providers' models through Cavvy's MCP tools.
 
     /**
      * The MCP server for this turn; none for sub-agents. Delegation tools when it's on and there's another provider to
@@ -1620,9 +1620,9 @@ export class Agent {
         const scheduling = Boolean(this.state.scheduler);
         // A watch wakes the session later: only one that stays open (not -p) has somewhere to wake.
         const watching = Boolean(this.state.wakes && this.state.watchers) && !this.oneShot;
-        // Claude Code has a Monitor of its own; Codex gets Harness's.
+        // Claude Code has a Monitor of its own; Codex gets Cavvy's.
         const monitoring = watching && caller === "codex";
-        // Neither has a browser to show Harness's pane: its tools go to both.
+        // Neither has a browser to show Cavvy's pane: its tools go to both.
         const browsing = offered(BrowserNavigateTool, this.o.settings());
         if (!delegating && !(store && ask) && !scheduling && !watching && !browsing) return undefined;
         const tools: ServerTool[] = [];
@@ -1674,7 +1674,7 @@ export class Agent {
             authorization: this.registration.authorization,
             tools: tools.map((t) => t.name),
             instructions: this.serverInstructions,
-            // Above the longest wait, so the harness's own timeout is what ends a long call.
+            // Above the longest wait, so Cavvy's own timeout is what ends a long call.
             toolTimeoutSec: DELEGATION_LIMITS.maxWaitMs / 1000 + 5 * 60,
         };
     }
@@ -1745,7 +1745,7 @@ export class Agent {
         });
     }
 
-    /** At the end of a turn of the harness's own: background tasks still running say where their results will go. */
+    /** At the end of a turn of Cavvy's own: background tasks still running say where their results will go. */
     private noteRunningTasks() {
         if (this.o.isSubagent) return;
         // One that finished while the model was answering: said now, and its result goes with the next prompt.
@@ -1759,7 +1759,7 @@ export class Agent {
      * The agentCli.liveSessions kill switch (on unless it's false). Off, the session-level background behaviour
      * of #219 PR 2 falls back to what it was: Esc stops every delegated task (cancelTasks), a delegated task's end
      * is a transcript line again rather than the window's notice (deliverTasks; the runtime and the TUI send no
-     * background notices), and the agent isn't told of tasks that stopped when Harness quit. The Background list,
+     * background notices), and the agent isn't told of tasks that stopped when Cavvy quit. The Background list,
      * its log lines and the user's explicit Stop stay: they only add a view and an action the user takes.
      */
     private get liveSessions(): boolean {
@@ -1871,7 +1871,7 @@ export class Agent {
     }
 
     /**
-     * Stop background work: these tasks, or every one running. A delegated task and a shell of the harness's
+     * Stop background work: these tasks, or every one running. A delegated task and a shell of Cavvy's
      * own stop here; one an agent CLI runs is asked of its backend (none can while its CLI isn't running).
      */
     async stopBackground(ids?: string[]): Promise<BackgroundStops> {
@@ -2092,8 +2092,8 @@ export class Agent {
 
     private missedPrompt(text: string, promptIndex: number, resume?: { synced: number }): string {
         const missed = this.missedMessages(promptIndex, resume).map(withoutStateNotes);
-        // Only that its last turn was stopped, which it never heard (Harness stopped or died part way), and
-        // Harness's notes to it since (a message that missed that turn): said plainly, not as another model's turn.
+        // Only that its last turn was stopped, which it never heard (Cavvy stopped or died part way), and
+        // Cavvy's notes to it since (a message that missed that turn): said plainly, not as another model's turn.
         if (resume && missed.length && missed.every((m) => m.role === "user" && (m.meta?.kind === "interrupt" || m.meta?.kind === "reminder"))) {
             const kinds = missed.map((m) => (m.role === "user" ? m.meta?.kind : undefined));
             const notes = missed.filter((_, i) => kinds[i] === "reminder").map(textOf);
@@ -2109,7 +2109,7 @@ export class Agent {
     }
 
     /**
-     * What Harness put before the user's words in a backend prompt (the conversation so far, its notes): kept apart
+     * What Cavvy put before the user's words in a backend prompt (the conversation so far, its notes): kept apart
      * (BackendTurn.preamble), so the prompt still goes as the user's own message. Marked synthetic, Claude Code 2.1.304
      * records it as not the user's ("[MESSAGE FROM NON-USER SOURCE …]"), and the model may refuse what they asked.
      */
@@ -2152,13 +2152,13 @@ export class Agent {
     /** An adopted turn running: what its CLI wasn't sent, carried with each move of its place (SessionHost.sessionId). */
     private adoptedUnsent?: { provider: string; text: string };
 
-    /** How a backend runs the harness's hooks: whole events (Codex's items), or one handler Claude Code calls back for. */
+    /** How a backend runs Cavvy's hooks: whole events (Codex's items), or one handler Claude Code calls back for. */
     private backendHooks(signalOf: AbortSignal | (() => AbortSignal)): Pick<SessionHost, "hooks" | "hookHandler"> {
         const current = () => (typeof signalOf === "function" ? signalOf() : signalOf);
         return {
             hooks: (event, payload) => this.hooks(event, payload, current()),
             hookHandler: async (event, h, input, sig) => {
-                // As the harness's own hooks: its session (Claude Code's own id beside it), and `if` applied here.
+                // As Cavvy's own hooks: its session (Claude Code's own id beside it), and `if` applied here.
                 const sub = this.o.subagent;
                 const full: Record<string, unknown> = { ...input, hook_event_name: event, backend_session_id: input.session_id, session_id: sub?.parentSessionId ?? this.session.meta.id, ...(sub && input.agent_id === undefined ? { agent_id: this.session.meta.id, agent_type: sub.type } : {}) };
                 const cwd = typeof input.cwd === "string" ? input.cwd : this.state.cwd;
@@ -2371,7 +2371,7 @@ export class Agent {
                 return { ...prompt, ...(first !== undefined ? { request: first, requestAfter: prompt.text.slice(first.length) } : {}) };
             },
         };
-        // A stop from Harness's checks of a tool it serves the backend (a hook, a PermissionRequest interrupt) ends the backend's turn, as a stop on its own call does.
+        // A stop from Cavvy's checks of a tool it serves the backend (a hook, a PermissionRequest interrupt) ends the backend's turn, as a stop on its own call does.
         const stopper = new AbortController();
         this.stopServedTurn = () => {
             declined = true;
@@ -2403,7 +2403,7 @@ export class Agent {
                 // An adopted turn is the first round only: a Stop hook's "keep going" is a prompt of ours.
                 const adopting = adopt !== undefined && stopRounds === 0;
                 // What the CLI hasn't been sent of the conversation before the turn it started (another model's
-                // turns, Harness's notes): nothing goes with that turn, so if it moves the CLI's place past them
+                // turns, Cavvy's notes): nothing goes with that turn, so if it moves the CLI's place past them
                 // (sessionId), they go with the next prompt.
                 const unsent = adopting ? this.backendPrompt("", promptIndex, resume).trim() : "";
                 const placed = this.session.backends.get(provider);
@@ -2476,7 +2476,7 @@ export class Agent {
                 return this.endBackendTurn(provider, "max_turns");
             }
             const settings = this.hookSettings();
-            // A sub-agent's turn ends with SubagentStop, as one the harness runs does.
+            // A sub-agent's turn ends with SubagentStop, as one Cavvy runs does.
             const stopEvent = this.o.isSubagent ? "SubagentStop" : "Stop";
             if (settings.hooks?.[stopEvent]?.length && stopRounds < 3) {
                 const sub = this.o.subagent;
@@ -2507,7 +2507,7 @@ export class Agent {
     private recordBackendTurn(provider: string, name: string, r: BackendResult) {
         if (r.backgroundStopped?.length) {
             // The model hears all of it; the user sees a short line, the tasks' names folded under it.
-            this.backendStopReminders.push(`Harness stopped these ${name} background tasks: ${r.backgroundStopped.join("; ")}. They are no longer running and will not produce further results. Restart them only if still needed; do not wait for their old task IDs.`);
+            this.backendStopReminders.push(`Cavvy stopped these ${name} background tasks: ${r.backgroundStopped.join("; ")}. They are no longer running and will not produce further results. Restart them only if still needed; do not wait for their old task IDs.`);
             const notice = stoppedTasksNotice(r.backgroundStopped);
             this.session.recordNotice("warn", notice.text, { details: notice.details });
         }
@@ -2609,7 +2609,7 @@ export class Agent {
             setMode: () => {},
             usage: (u, o) => this.recordBackendUsage(u, o),
             // Its compaction moves its id (the same, a new one, a fork's), never its place (#406): it was sent nothing
-            // of this session's, so what it missed (other models' turns, Harness's notes) goes with its next ordinary
+            // of this session's, so what it missed (other models' turns, Cavvy's notes) goes with its next ordinary
             // prompt, once and whole. Not into the compaction: Codex's (thread/compact/start) takes no input, and
             // Claude Code's /compact only instructions for its summary, which would keep a summary of them at best.
             sessionId: (id) => this.session.setBackendSession(provider, id, this.session.backends.get(provider)?.synced ?? resume.synced, place),
@@ -2630,7 +2630,7 @@ export class Agent {
         this.cache = undefined;
         this.emit({ type: "compact_end", summary: `${getProvider(provider)?.name ?? provider} compacted its own context.`, ...(opts.idle ? { idle: true } : {}) });
         if (ownHooks && !this.o.isSubagent) void this.hooks("PostCompact", { trigger: opts.auto ? "auto" : "manual", compact_summary: "" });
-        // Claude Code runs SessionStart (compact) itself (backendOwnedHooks); the harness runs it for Codex, and the memory files' InstructionsLoaded on both.
+        // Claude Code runs SessionStart (compact) itself (backendOwnedHooks); Cavvy runs it for Codex, and the memory files' InstructionsLoaded on both.
         if (!this.o.isSubagent) void (provider === "claude-code" ? instructionsLoadedHooks(this.o.settings(), this.session, "compact", this.state.cwd, (msg, level = "warn") => this.emit({ type: "notice", level, message: msg }), this.hookServices()) : this.compacted());
         return true;
     }
@@ -2641,8 +2641,8 @@ export class Agent {
     }
 
     /**
-     * Backend tool calls use the harness's tool (when there is one) for titles
-     * and rendering. Their output is redacted here, as the harness's own tools
+     * Backend tool calls use Cavvy's tool (when there is one) for titles
+     * and rendering. Their output is redacted here, as Cavvy's own tools
      * redact theirs (keys in a file the backend read, say).
      */
     private emitFromBackend(e: AgentEvent) {
@@ -2651,7 +2651,7 @@ export class Agent {
         if (e.type === "tool_end") this.backendRequestAt = Date.now();
         e = redactBackendEvent(e);
         this.noteServedCall(e, this.servedMain);
-        // Harness's own tools it served (Monitor for Codex) show as those tools.
+        // Cavvy's own tools it served (Monitor for Codex) show as those tools.
         if ((e.type === "tool_start" || e.type === "tool_end") && e.call.name.startsWith(`mcp__${MCP_SERVER_NAME}__`)) {
             const served = e.call.name.slice(`mcp__${MCP_SERVER_NAME}__`.length);
             const native = nativeMonitorCall(served, (e.call.input ?? {}) as Record<string, unknown>) ?? nativeBrowserCall(served, (e.call.input ?? {}) as Record<string, unknown>);
@@ -2724,7 +2724,7 @@ export class Agent {
         this.emit({ type: "usage", usage, cost, contextTokens: this.contextTokens });
     }
 
-    /** The CLI auto-approves our MCP tools, so their explicit rules (mcp__harness__*, mcp__harness__browser_act) must be enforced here. */
+    /** The CLI auto-approves our MCP tools, so their explicit rules (mcp__cavvy__*, mcp__cavvy__browser_act) must be enforced here. */
     private async authorizeServedTool(name: string, title: string | undefined, input: Record<string, unknown>, signal: AbortSignal): Promise<ServerToolResult | undefined> {
         const refuse = (text: string): ServerToolResult => ({ text, isError: true });
         const tool = backendTool(`mcp__${MCP_SERVER_NAME}__${name}`, title);
@@ -2741,7 +2741,7 @@ export class Agent {
     }
 
     private servedCalls = 0;
-    /** The backend's calls of the tools Harness serves it, by whose they are: its main thread's, or a sub-agent's. */
+    /** The backend's calls of the tools Cavvy serves it, by whose they are: its main thread's, or a sub-agent's. */
     private servedMain = new Set<string>();
     private servedSub = new Set<string>();
 
@@ -2765,15 +2765,15 @@ export class Agent {
     private stopServedTurn?: () => void;
 
     /**
-     * One of Harness's own tools, called by a backend through the harness MCP server (Monitor for Codex). The CLI
-     * approves Harness's tools without asking, so it goes through the same checks as the tool's call from a model
-     * Harness runs: validation, read-only agents, PreToolUse hooks, rules and mode, the reviewer, the user, the
+     * One of Cavvy's own tools, called by a backend through Cavvy MCP server (Monitor for Codex). The CLI
+     * approves Cavvy's tools without asking, so it goes through the same checks as the tool's call from a model
+     * Cavvy runs: validation, read-only agents, PreToolUse hooks, rules and mode, the reviewer, the user, the
      * sandbox, PostToolUse hooks. The backend's own event for the call is what the transcript shows.
      */
     private async runServed(tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal, callId?: string): Promise<ServerToolResult> {
-        // Only the main agent can be woken, so a sub-agent gets no Monitor (Harness's sub-agents don't either). Nor can its stop end the main turn.
+        // Only the main agent can be woken, so a sub-agent gets no Monitor (Cavvy's sub-agents don't either). Nor can its stop end the main turn.
         if (tool.name === "Monitor" && callId && (await this.fromBackendSubagent(callId))) return { text: "Monitor isn't available to sub-agents: only the main agent can be woken by one.", isError: true };
-        // The CLI approves Harness's tools without asking: a rule naming the tool as served is enforced here, before the checks its own name gets.
+        // The CLI approves Cavvy's tools without asking: a rule naming the tool as served is enforced here, before the checks its own name gets.
         const served = servedBrowserName(tool.name);
         if (served) {
             const refused = await this.authorizeServedTool(served, tool.title(input), input, signal);
@@ -2795,8 +2795,8 @@ export class Agent {
     }
 
     /**
-     * run_with_secrets (Claude Code, Codex): one command with Harness's Bash and those secrets. The CLI approves
-     * Harness's tools without asking, so the check is here, at least as strict as backendPermission's for a
+     * run_with_secrets (Claude Code, Codex): one command with Cavvy's Bash and those secrets. The CLI approves
+     * Cavvy's tools without asking, so the check is here, at least as strict as backendPermission's for a
      * command: deny rules, plan mode and read-only agents refuse it, and only an allow rule runs it without asking
      * (no mode or reviewer does: it holds secrets). The prompt shows the command as written, and the secrets' names.
      */
@@ -2845,13 +2845,13 @@ export class Agent {
 
     /**
      * A permission prompt from the backend. Its own permission system decided
-     * to ask; the harness's rules then apply: deny rules (and the harness's
+     * to ask; Cavvy's rules then apply: deny rules (and Cavvy's
      * protected files) refuse it, an explicit allow rule approves it, and
-     * anything else goes to the user. The harness's mode defaults never
+     * anything else goes to the user. Cavvy's mode defaults never
      * approve on the user's behalf what the backend wanted confirmed, except
      * where the ask says nothing of its own: Codex asking about every command,
-     * or a read-only agent asking because of the harness's own rule. There a
-     * read-only command the harness would run for its own models runs.
+     * or a read-only agent asking because of Cavvy's own rule. There a
+     * read-only command Cavvy would run for its own models runs.
      */
     /**
      * A PermissionRequest hook approved other input than the backend asked about: it goes back to the
@@ -2874,7 +2874,7 @@ export class Agent {
     private async backendPermission(req: BackendPermission, signal: AbortSignal): Promise<PermissionAnswer> {
         const tool = this.findTool(req.toolName) ?? backendTool(req.toolName, req.title);
         const input = req.input;
-        // One of the harness's agents Claude Code runs: its own permissionMode, as when the harness runs it.
+        // One of Cavvy's agents Claude Code runs: its own permissionMode, as when Cavvy runs it.
         const own = req.agentType ? this.nativeDefs.get(req.agentType) : undefined;
         const mode = childMode(this.o.mode.get(), own?.permissionMode);
         const cwd = this.state.cwd;
@@ -2883,7 +2883,7 @@ export class Agent {
             const reads = !req.widens && (tool.category === "read" || tool.category === "network" || (tool.name === "Bash" && isReadOnlyCommand(String(input.command ?? ""))));
             if (!reads) return { allow: false, message: readOnlyRefusal(tool.name, String(input.command ?? ""), req.widens ? "it asks for more access than the sandbox gives" : undefined), stop: false };
         }
-        // Approved without asking: by an allow rule, or an edit the harness's mode approves (accept edits: inside the workspace).
+        // Approved without asking: by an allow rule, or an edit Cavvy's mode approves (accept edits: inside the workspace).
         const approves = (d: Decision) => d.behavior === "allow" && (Boolean(d.rule) || d.remembered === true || tool.category === "edit");
         const memory = { memoryDir: this.o.memoryDir };
         let decision = this.o.checker.check(tool, input, mode, cwd, memory);
@@ -2910,7 +2910,7 @@ export class Agent {
                     const abs = expandPath(p, cwd);
                     const rule = deniedWithin(deny, abs, this.state.projectRoot, kind);
                     if (rule) return { allow: false, message: `Denied: the permission rule ${rule} covers ${abs}.`, stop: false };
-                    if (this.o.checker.isProtectedArea(abs)) return { allow: false, message: `Denied: ${abs} holds the harness's credential store.`, stop: false };
+                    if (this.o.checker.isProtectedArea(abs)) return { allow: false, message: `Denied: ${abs} holds Cavvy's credential store.`, stop: false };
                 }
             }
             ruled = false;
@@ -2927,7 +2927,7 @@ export class Agent {
         // A PreToolUse hook that asks wants the user, whatever the rules say.
         if (req.hookDecision === "ask") ruled = false;
         if (ruled) return { allow: true };
-        // A PreToolUse hook approved it: as for the harness's own tools, past everything but deny rules and dangerous commands.
+        // A PreToolUse hook approved it: as for Cavvy's own tools, past everything but deny rules and dangerous commands.
         if (req.hookDecision === "allow" && !decision.dangerous) return { allow: true };
         if (this.o.settings().hooks?.PermissionRequest?.length) {
             const h = await this.hooks("PermissionRequest", { tool_name: tool.name, tool_input: input, ...(tool.category === "mcp" ? { mcp_server: mcpServerOf(tool.name) } : {}) }, signal);
@@ -3076,7 +3076,7 @@ export class Agent {
 
     /**
      * Validate and get permission. Either an approved job or a ready result.
-     * `served`: the tool, for a call a backend made through the harness MCP server (it shows as the backend's own tool call).
+     * `served`: the tool, for a call a backend made through Cavvy MCP server (it shows as the backend's own tool call).
      */
     private async prepare(
         call: ToolCallPart,
@@ -3237,7 +3237,7 @@ export class Agent {
         };
     }
 
-    /** `served`: a call a backend made through the harness MCP server (no events; hook context is collected here). */
+    /** `served`: a call a backend made through Cavvy MCP server (no events; hook context is collected here). */
     private async runTool(call: ToolCallPart, tool: Tool<any>, input: any, signal: AbortSignal, auto?: string, sandboxed?: boolean, served?: string[]): Promise<ToolResultPart> {
         const quiet = Boolean(served);
         const started = Date.now();
@@ -3248,7 +3248,7 @@ export class Agent {
             const kind = sandboxKind();
             // Approved on the condition that it's contained: never fall back to running it bare.
             if (!kind) return this.errorResult(call, "The sandbox this command was approved for isn't available. Run it with dangerouslyDisableSandbox: true to have it reviewed instead.", undefined, quiet);
-            sandbox = { kind, policy: sandboxPolicy(this.o.checker.workspaceRoots(), { harnessHome: harnessHome() }) };
+            sandbox = { kind, policy: sandboxPolicy(this.o.checker.workspaceRoots(), { cavvyHome: cavvyHome() }) };
         }
         let result: ToolResult;
         const cwdBefore = this.state.cwd;
@@ -3557,9 +3557,9 @@ export class Agent {
             parentFastMode: () => this.fastMode(),
             subagent: { type, description: req.description, parentSessionId: this.session.meta.id },
             readOnly: def.readOnly,
-            // A read-only agent on Claude Code or Codex runs in a mode where they ask before changing anything (and the harness refuses).
+            // A read-only agent on Claude Code or Codex runs in a mode where they ask before changing anything (and Cavvy refuses).
             // In auto, Codex's is its read-only auto mode: reads run in its read-only sandbox without asking. Claude Code's
-            // stays in default, where every command comes to the harness, which runs read-only ones without asking.
+            // stays in default, where every command comes to Cavvy, which runs read-only ones without asking.
             // One whose definition sets a mode runs in it, unless the session's is bypass, auto or plan (childMode).
             mode: backend && def.readOnly
                 ? { get: () => readOnlyBackendMode(parentMode.get(), model.provider), set: () => {} }
@@ -3713,7 +3713,7 @@ const MEMORY_TOOLS = new Set(["Read", "Write", "Edit"]);
 const BACKEND_SUBAGENT = `You are working as a sub-agent of ${APP_TITLE}: another agent gave you one self-contained task. Complete it, then reply with a final report. The other agent sees only your last message, so make it complete: findings, file paths with line numbers, what you changed (if anything), and anything left unresolved. Don't commit, push or make changes outside the task's scope.`;
 const BACKEND_READ_ONLY = "This task is read-only: read, search and run read-only commands, but don't change any files, and don't run tests, builds or scripts; those will be refused. Report what should be changed or run instead.";
 
-/** Stands in for a backend tool the harness has no tool of its own for (rules still match its name). */
+/** Stands in for a backend tool Cavvy has no tool of its own for (rules still match its name). */
 function backendTool(name: string, title?: string): Tool<any> {
     return {
         name,
@@ -3734,7 +3734,7 @@ function redactResult(r: ToolResult): ToolResult {
 }
 
 /**
- * A backend's event with its output redacted, as the harness's own tools
+ * A backend's event with its output redacted, as Cavvy's own tools
  * redact theirs (keys in a file the backend read, say): its sub-agents'
  * tool output and what they say too.
  */
@@ -3775,9 +3775,9 @@ export function errorType(message: string): string {
 }
 
 /**
- * The events Claude Code runs the harness's hooks for itself, over its control
+ * The events Claude Code runs Cavvy's hooks for itself, over its control
  * protocol: its tool calls, sub-agents, compactions, worktrees and cd. The
- * harness keeps the rest (prompts, Stop, the session's start and end,
+ * Cavvy keeps the rest (prompts, Stop, the session's start and end,
  * permission prompts, notifications, the files it watches), so none runs twice.
  */
 export const CLAUDE_CODE_HOOK_EVENTS: HookEvent[] = ["PreToolUse", "PostToolUse", "PostToolUseFailure", "PostToolBatch", "PermissionDenied", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "CwdChanged", "WorktreeCreate", "WorktreeRemove"];

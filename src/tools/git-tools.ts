@@ -415,9 +415,9 @@ export const UnwatchPullRequestTool: Tool<{ pr?: string | number }> = {
 
 /**
  * WatchPullRequest and UnwatchPullRequest for Claude Code and Codex, through
- * the harness MCP server: neither CLI can watch a pull request itself, and
+ * Cavvy MCP server: neither CLI can watch a pull request itself, and
  * their process ends with each turn. Committing, pushing and opening one they
- * do with their own shells, under the harness's permission prompts.
+ * do with their own shells, under Cavvy's permission prompts.
  */
 export function watchServerTools(context: (signal: AbortSignal) => ToolContext): ServerTool[] {
     const wrap = (r: { content: string; isError?: boolean }): ServerToolResult => ({ text: r.content, isError: r.isError });
@@ -443,6 +443,6 @@ export function watchServerTools(context: (signal: AbortSignal) => ToolContext):
     ];
 }
 
-export const WATCH_INSTRUCTIONS = `# Watching pull requests (harness)
+export const WATCH_INSTRUCTIONS = `# Watching pull requests (cavvy)
 
-To follow a pull request's checks and reviews ("watch the PR", "tell me when CI finishes", "babysit it"), call watch_pull_request and end your turn: Harness wakes you with a message when a check fails or passes, someone comments or reviews, the branch conflicts, or it merges or closes. Don't poll, sleep, or set a Monitor or ScheduleWakeup for it: this CLI process ends after each turn. A wake is news from the harness, not the user's request.`;
+To follow a pull request's checks and reviews ("watch the PR", "tell me when CI finishes", "babysit it"), call watch_pull_request and end your turn: Cavvy wakes you with a message when a check fails or passes, someone comments or reviews, the branch conflicts, or it merges or closes. Don't poll, sleep, or set a Monitor or ScheduleWakeup for it: this CLI process ends after each turn. A wake is news from Cavvy, not the user's request.`;

@@ -47,7 +47,7 @@ export function queueRow(mode: QueuedMode | undefined, busy: boolean, why?: stri
             return {
                 hint: "Held",
                 // Held for an account (the session's was removed, #410): the server says so.
-                detail: why || "Not sent before Harness restarted. It waits for you: send it, edit it or remove it",
+                detail: why || "Not sent before Cavvy restarted. It waits for you: send it, edit it or remove it",
                 action: busy ? { label: "Steer", title: "Add to the current turn at its next step (a command runs right after the turn)" } : { label: "Send now", title: "Send now: run it as a new turn" },
             };
     }

@@ -31,7 +31,7 @@
 
     var saved;
     try {
-        saved = JSON.parse(localStorage.getItem("harness.prefs") || "{}");
+        saved = JSON.parse(localStorage.getItem("cavvy.prefs") || "{}");
     } catch (e) {
         saved = {};
     }

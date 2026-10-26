@@ -1,4 +1,4 @@
-// #375: a named CLI account only selects the wrapped CLI's config folder. What Harness asks, allows
+// #375: a named CLI account only selects the wrapped CLI's config folder. What Cavvy asks, allows
 // and injects into Claude Code is the same with and without named accounts; only direct access to
 // an account's folder or a sign-in file stays denied.
 import { afterAll, expect, test } from "bun:test";

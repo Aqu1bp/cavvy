@@ -13,7 +13,7 @@ const { paths } = await import("../src/config/paths");
 const { startSseMcpServer, startWsMcpServer, startOAuthMcpServer, browse } = await import("./fixtures/mcp-remote-servers");
 import type { McpClient as McpClientT } from "../src/mcp/client";
 
-const WORK = tempDir("harness-mcp-remote-");
+const WORK = tempDir("cavvy-mcp-remote-");
 const clients: McpClientT[] = [];
 const stops: (() => void)[] = [];
 function client(cfg: ConstructorParameters<typeof McpClient>[1], opts: ConstructorParameters<typeof McpClient>[4] = {}): McpClientT {
@@ -600,7 +600,7 @@ describe("the token store is part of the credential store", () => {
             expect(c.check(Read, { file_path: paths.mcpOAuth() }, mode, WORK).behavior).toBe("deny");
             expect(c.check(Grep, { pattern: "x", path: paths.mcpOAuth() }, mode, WORK).behavior).toBe("deny");
         }
-        const p = sandboxPolicy([WORK], { harnessHome: paths.home() });
+        const p = sandboxPolicy([WORK], { cavvyHome: paths.home() });
         expect(p.unreadable.some((x: string) => x.endsWith("mcp-oauth.json"))).toBe(true);
     });
 });

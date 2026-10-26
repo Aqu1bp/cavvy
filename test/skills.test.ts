@@ -28,7 +28,7 @@ function write(file: string, text: string) {
     writeFileSync(file, text);
 }
 const skill = (root: string, name: string, front: string, body = "Do the thing.") => write(join(root, name, "SKILL.md"), front ? `---\n${front}\n---\n${body}\n` : `${body}\n`);
-const project = () => tempDir("harness-skills-proj-");
+const project = () => tempDir("cavvy-skills-proj-");
 const ctx = { signal: new AbortController().signal } as any;
 
 describe("loading skills", () => {
@@ -36,21 +36,21 @@ describe("loading skills", () => {
         const cwd = project();
         skill(claudeSkills, "pdf", "description: Claude's pdf");
         skill(claudeSkills, "only-claude", "description: From Claude Code");
-        skill(userSkills, "pdf", "description: Harness pdf");
+        skill(userSkills, "pdf", "description: Cavvy pdf");
         skill(join(cwd, ".claude", "skills"), "deploy", "description: Project deploy (claude)");
-        skill(join(cwd, ".harness", "skills"), "deploy", "description: Project deploy (harness)");
-        skill(join(cwd, ".harness", "skills"), "pdf", "description: Project pdf");
+        skill(join(cwd, ".cavvy", "skills"), "deploy", "description: Project deploy (cavvy)");
+        skill(join(cwd, ".cavvy", "skills"), "pdf", "description: Project pdf");
 
         const untrusted = loadSkills(cwd, false);
-        expect(untrusted.map((s) => `${s.name}:${s.source}:${s.description}`)).toEqual(["only-claude:user:From Claude Code", "pdf:user:Harness pdf"]);
+        expect(untrusted.map((s) => `${s.name}:${s.source}:${s.description}`)).toEqual(["only-claude:user:From Claude Code", "pdf:user:Cavvy pdf"]);
         const trusted = loadSkills(cwd, true);
-        expect(trusted.map((s) => `${s.name}:${s.source}:${s.description}`)).toEqual(["deploy:project:Project deploy (harness)", "only-claude:user:From Claude Code", "pdf:project:Project pdf"]);
-        expect(trusted.find((s) => s.name === "pdf")!.dir).toBe(join(cwd, ".harness", "skills", "pdf"));
+        expect(trusted.map((s) => `${s.name}:${s.source}:${s.description}`)).toEqual(["deploy:project:Project deploy (cavvy)", "only-claude:user:From Claude Code", "pdf:project:Project pdf"]);
+        expect(trusted.find((s) => s.name === "pdf")!.dir).toBe(join(cwd, ".cavvy", "skills", "pdf"));
         expect(findSkill("PDF", cwd, true)?.source).toBe("project");
     });
 
     test("a plugin can name one skill's own folder", () => {
-        const plugin = tempDir("harness-skills-plugin-");
+        const plugin = tempDir("cavvy-skills-plugin-");
         skill(plugin, "local-ai-use", "description: One skill");
         const all = loadSkills(project(), false, [{ dir: join(plugin, "local-ai-use"), namespace: "acme", single: true }]);
         expect(all.map((s) => `${s.name}:${s.source}`)).toEqual(["acme:local-ai-use:plugin"]);
@@ -58,7 +58,7 @@ describe("loading skills", () => {
 
     test("plugin folders are namespaced and override nothing of the user's", () => {
         const cwd = project();
-        const plugin = tempDir("harness-skills-plugin-");
+        const plugin = tempDir("cavvy-skills-plugin-");
         skill(plugin, "review", "description: Plugin review");
         skill(userSkills, "review", "description: Mine");
         const all = loadSkills(cwd, true, [{ dir: plugin, namespace: "Acme" }]);
@@ -87,7 +87,7 @@ describe("loading skills", () => {
         write(join(userSkills, "huge", "SKILL.md"), `---\ndescription: Too big\n---\n${"x".repeat(300_000)}`);
         write(join(userSkills, "loose-file.md"), "not in a folder");
         // A link to another skill folder works; a link loop doesn't hang or throw.
-        skill(tempDir("harness-skills-linked-"), "linked", "description: Through a link");
+        skill(tempDir("cavvy-skills-linked-"), "linked", "description: Through a link");
         symlinkSync(join(dirname(join(userSkills, "x")), "..", "nowhere"), join(userSkills, "dangling"));
         mkdirSync(join(userSkills, "loop"));
         symlinkSync(join(userSkills, "loop"), join(userSkills, "loop", "SKILL.md"));
@@ -95,7 +95,7 @@ describe("loading skills", () => {
     });
 
     test("a linked skill folder loads", () => {
-        const elsewhere = tempDir("harness-skills-linked-");
+        const elsewhere = tempDir("cavvy-skills-linked-");
         skill(elsewhere, "linked", "description: Through a link");
         mkdirSync(userSkills, { recursive: true });
         symlinkSync(join(elsewhere, "linked"), join(userSkills, "linked"));
@@ -170,7 +170,7 @@ describe("frontmatter YAML", () => {
 
 describe("the skill's text", () => {
     test("arguments, the skill's folder, and edits made since it was listed", () => {
-        skill(userSkills, "fix", "description: Fix", "Fix issue $1 in ${HARNESS_SKILL_DIR}/scripts (also ${CLAUDE_SKILL_DIR}). All: $ARGUMENTS");
+        skill(userSkills, "fix", "description: Fix", "Fix issue $1 in ${CAVVY_SKILL_DIR}/scripts (also ${CLAUDE_SKILL_DIR}). All: $ARGUMENTS");
         const [s] = loadSkills(project(), false);
         const text = formatSkill(s!, "42 urgent")!;
         expect(text).toStartWith(`<skill name="fix">\nBase directory for this skill: ${s!.dir}\n\n`);
@@ -340,13 +340,13 @@ describe("in the TUI", () => {
 
     test("on Claude Code and Codex, every skill's /name goes to the CLI as typed (the backend runs it natively)", async () => {
         skill(claudeSkills, "cc-skill", "description: Claude Code has it", "CC body");
-        skill(userSkills, "harness-skill", "description: Only here", "Harness only");
+        skill(userSkills, "cavvy-skill", "description: Only here", "Cavvy only");
         for (const provider of ["claude-code", "codex"]) {
             const { app, turns } = testApp();
             app.model = { id: "default", provider } as any;
             await runCommand(app, "/cc-skill a");
-            await runCommand(app, "/harness-skill b");
-            expect(turns.map((t) => t.text)).toEqual(["/cc-skill a", "/harness-skill b"]);
+            await runCommand(app, "/cavvy-skill b");
+            expect(turns.map((t) => t.text)).toEqual(["/cc-skill a", "/cavvy-skill b"]);
         }
     });
 
@@ -366,7 +366,7 @@ describe("in the TUI", () => {
     });
 
     test("on Claude Code, its own commands and skills go to it instead of being refused", async () => {
-        skill(userSkills, "shared", "description: Both have it", "Harness body");
+        skill(userSkills, "shared", "description: Both have it", "Cavvy body");
         const { app, turns, notices } = testApp();
         app.model = { id: "default", provider: "claude-code" } as any;
         // Before it has listed its commands: let it resolve the name.
@@ -382,7 +382,7 @@ describe("in the TUI", () => {
         app.model = { id: "m", provider: "anthropic" } as any;
         expect(await runCommand(app, "/code-review")).toBe(true);
         await runCommand(app, "/shared y");
-        expect(turns[1]!.text).toContain("Harness body");
+        expect(turns[1]!.text).toContain("Cavvy body");
     });
 
     test("/skills lists them with where they come from, and says how to add one when there are none", async () => {

@@ -41,7 +41,7 @@ export interface AgentCliStatus {
 
 /**
  * Is the CLI installed, and is it signed in? Both answers come from the CLI
- * (claude auth status, codex app-server account/read); the harness reads no
+ * (claude auth status, codex app-server account/read); Cavvy reads no
  * credential files.
  */
 export async function checkAgentCli(providerId: string, signal?: AbortSignal, accountId?: string): Promise<AgentCliStatus> {

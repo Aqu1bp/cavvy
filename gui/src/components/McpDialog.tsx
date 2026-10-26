@@ -209,7 +209,7 @@ export function McpDialog() {
                     when={servers().length}
                     fallback={
                         <div class="panel-empty">
-                            No MCP servers for this folder. Add one with <code>harness mcp add</code>, or in a project <code>.mcp.json</code>.
+                            No MCP servers for this folder. Add one with <code>cavvy mcp add</code>, or in a project <code>.mcp.json</code>.
                         </div>
                     }
                 >
@@ -293,7 +293,7 @@ function Detail(p: DetailProps) {
                     <Show when={p.list.trusted && !p.list.userTrusted}>
                         <div class="mcp-note warn">
                             <AlertTriangle size={13} />
-                            <span>You haven't trusted this folder yourself: Harness trusted it for this session only, because it had nothing to protect when it was opened. Trust it to approve its servers.</span>
+                            <span>You haven't trusted this folder yourself: Cavvy trusted it for this session only, because it had nothing to protect when it was opened. Trust it to approve its servers.</span>
                         </div>
                     </Show>
                     <div class="dialog-actions">

@@ -202,7 +202,7 @@ describe("a CLI backend, back after another model answered (the Engine, a script
 
 // The real backends against the fake CLIs (test/fixtures), on live CLI sessions and with a process per turn.
 /** A fake CLI for the provider, and an Agent on a new session: on live CLI sessions, or a process per turn. */
-async function harness(provider: "claude-code" | "codex", live: boolean, name: string) {
+async function cavvy(provider: "claude-code" | "codex", live: boolean, name: string) {
     const binary = join(root, provider);
     const fixture = join(import.meta.dir, "fixtures", provider === "codex" ? "fake-codex.ts" : "fake-claude.ts");
     // FAKE_EXIT_AT_START=1: the CLI exits as it starts, before it reads anything (a crash at launch).
@@ -271,7 +271,7 @@ for (const provider of ["claude-code", "codex"] as const)
             for (const f of failures)
                 test(`#407 ${f.name}: the missed turn reaches the CLI once (${f.refused ? "with the retry" : "with the failed prompt, which it kept"})`, async () => {
                     setEnv({ ...CLEAR, ...OK[provider] });
-                    const h = await harness(provider, live, `${tag}-${f.name.replace(/\W+/g, "-")}`);
+                    const h = await cavvy(provider, live, `${tag}-${f.name.replace(/\W+/g, "-")}`);
                     try {
                         expect(await h.run("first")).toBe("done");
                         h.otherModel();
@@ -294,7 +294,7 @@ for (const provider of ["claude-code", "codex"] as const)
             for (const idle of [false, true])
                 test(`#406 ${idle ? "an idle compaction" : "/compact"} before the next prompt: that prompt carries the missed turn, once`, async () => {
                     setEnv({ ...CLEAR, ...OK[provider] });
-                    const h = await harness(provider, live, `${tag}-compact-${idle ? "idle" : "manual"}`);
+                    const h = await cavvy(provider, live, `${tag}-compact-${idle ? "idle" : "manual"}`);
                     try {
                         expect(await h.run("first")).toBe("done");
                         h.otherModel();
@@ -314,11 +314,11 @@ for (const provider of ["claude-code", "codex"] as const)
 // PR #417 review: a prompt counts as refused only when it's known not to have reached the CLI.
 describe("delivered or not, as known (#417 review)", () => {
     /** The fake's processes started so far (not its `auth status` checks). */
-    const runs = (h: Awaited<ReturnType<typeof harness>>) => h.lines().filter((l) => l.pid && l.argv?.[0] !== "auth").length;
+    const runs = (h: Awaited<ReturnType<typeof cavvy>>) => h.lines().filter((l) => l.pid && l.argv?.[0] !== "auth").length;
 
     test("Codex live: turn/start answered, then making the /goal active fails: delivered, so it isn't sent again", async () => {
         setEnv({ ...CLEAR, ...OK.codex, FAKE_GOAL_ACTIVATE_FAIL: "1" });
-        const h = await harness("codex", true, "cx-live-goal-activate-fails");
+        const h = await cavvy("codex", true, "cx-live-goal-activate-fails");
         try {
             expect(await h.run("first")).toBe("done");
             h.otherModel();
@@ -339,7 +339,7 @@ describe("delivered or not, as known (#417 review)", () => {
         test(`Codex ${live ? "live" : "per run"}: gone while turn/start waited for its answer: counted delivered`, async () => {
             const crash = join(root, `crash-${live ? "live" : "run"}`);
             setEnv({ ...CLEAR, ...OK.codex });
-            const h = await harness("codex", live, `cx-${live ? "live" : "run"}-gone-during-turn-start`);
+            const h = await cavvy("codex", live, `cx-${live ? "live" : "run"}-gone-during-turn-start`);
             try {
                 expect(await h.run("first")).toBe("done");
                 h.otherModel();
@@ -364,7 +364,7 @@ describe("delivered or not, as known (#417 review)", () => {
     for (const provider of ["codex", "claude-code"] as const)
         test(`${provider} live, shared with a fork, then compacted: the next prompt carries the missed turn, once`, async () => {
             setEnv({ ...CLEAR, ...OK[provider] });
-            const h = await harness(provider, true, `${provider}-live-fork-compact`);
+            const h = await cavvy(provider, true, `${provider}-live-fork-compact`);
             try {
                 expect(await h.run("first")).toBe("done");
                 h.otherModel();
@@ -394,7 +394,7 @@ describe("delivered or not, as known (#417 review)", () => {
     for (const c of stuck)
         test(`${c.provider} ${c.live ? "live" : "per run"}: stopped while it was starting, before the prompt went: the next prompt carries the missed turn`, async () => {
             setEnv({ ...CLEAR, ...OK[c.provider] });
-            const h = await harness(c.provider, c.live, `${c.provider}-${c.live ? "live" : "run"}-stopped-starting`);
+            const h = await cavvy(c.provider, c.live, `${c.provider}-${c.live ? "live" : "run"}-stopped-starting`);
             try {
                 expect(await h.run("first")).toBe("done");
                 h.otherModel();
@@ -424,7 +424,7 @@ describe("delivered or not, as known (#417 review)", () => {
 // other model answered (TOKEN) once.
 describe("#424: Esc on a live prompt, in each window of its delivery: the CLI's thread has the message once", () => {
     type Provider = "claude-code" | "codex";
-    type H = Awaited<ReturnType<typeof harness>>;
+    type H = Awaited<ReturnType<typeof cavvy>>;
     /** The fake's processes started so far (not its `auth status` checks). */
     const runs = (h: H) => h.lines().filter((l) => l.pid && l.argv?.[0] !== "auth").length;
     /** Each thread's transcript: what its model was sent since `since`, by file. */
@@ -552,7 +552,7 @@ describe("#424: Esc on a live prompt, in each window of its delivery: the CLI's 
                     }
                     const deadline = stopTiming.interruptMs;
                     if (w.deadlineMs) stopTiming.interruptMs = w.deadlineMs;
-                    const h = await harness(provider, true, `424-${stop}`);
+                    const h = await cavvy(provider, true, `424-${stop}`);
                     try {
                         if (!fresh) {
                             expect(await h.run("first")).toBe("done");

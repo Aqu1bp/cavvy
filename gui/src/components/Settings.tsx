@@ -278,7 +278,7 @@ function General() {
                 </Row>
             </Section>
             <Section title="This computer">
-                <Row title="Open files with" desc="For file links in replies, changed files and tool rows. It opens on the computer running Harness.">
+                <Row title="Open files with" desc="For file links in replies, changed files and tool rows. It opens on the computer running Cavvy.">
                     {/* Each option says whether it's the one chosen: the list arrives after the
                         saved choice, and a select's value set before its options matches nothing. */}
                     <SelectButton>
@@ -599,7 +599,7 @@ function ProviderRow(p: { pr: ProviderInfo }) {
                 busy={removingProviders().has(p.pr.id)}
                 onConfirm={remove}
             >
-                {p.pr.agentCli ? `Stops using ${p.pr.name} in Harness. It stays signed in.` : `Removes the stored ${p.pr.name} key from Harness. You'll need to add it again to use this provider.`}
+                {p.pr.agentCli ? `Stops using ${p.pr.name} in Cavvy. It stays signed in.` : `Removes the stored ${p.pr.name} key from Cavvy. You'll need to add it again to use this provider.`}
             </ConfirmDialog>
             {/* Claude Code and Codex: their row, accounts and menus are in Accounts. */}
             <Show
@@ -741,7 +741,7 @@ function Providers() {
             </For>
             <div class="set-note">Keys are checked with one cheap request, then stored in your OS keychain (or a private file when there's none). They're only ever sent to their own provider and are masked everywhere else.</div>
             <div class="set-note">
-                Claude Code and Codex use your own Claude subscription or ChatGPT plan through the CLI installed on this computer; it stays signed in on its own and nothing secret is stored here. Gemini on Google Cloud (Vertex AI) is set up from the terminal with <code>harness auth add vertex</code>. Custom OpenAI-compatible endpoints: <code>/login custom</code> in the terminal app.
+                Claude Code and Codex use your own Claude subscription or ChatGPT plan through the CLI installed on this computer; it stays signed in on its own and nothing secret is stored here. Gemini on Google Cloud (Vertex AI) is set up from the terminal with <code>cavvy auth add vertex</code>. Custom OpenAI-compatible endpoints: <code>/login custom</code> in the terminal app.
             </div>
         </>
     );
@@ -780,7 +780,7 @@ function KeySeq(p: { keys: string }) {
 
 function Shortcuts() {
     const [creating, setCreating] = createSignal(false);
-    const path = () => keybindingsFile()?.path ?? "~/.harness/keybindings.json";
+    const path = () => keybindingsFile()?.path ?? "~/.cavvy/keybindings.json";
     const exists = () => keybindingsFile()?.text !== undefined;
     const issues = () => keymap().issues;
     const create = async () => {
@@ -874,7 +874,7 @@ function Shortcuts() {
 /**
  * The desktop app updating itself from main (src/server/app-update.ts): what's
  * new since this build, and Update & restart. The build runs while you work;
- * Harness restarts once it's installed. Only the desktop app shows why it can't
+ * Cavvy restarts once it's installed. Only the desktop app shows why it can't
  * (a browser's server never updates an app).
  */
 function Updates() {

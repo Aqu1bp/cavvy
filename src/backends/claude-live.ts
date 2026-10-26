@@ -1,5 +1,5 @@
 // Claude Code on the live CLI layer (#219 PR 4): one `claude -p` process per
-// harness session (src/backends/live), kept between turns, so what Claude Code
+// Cavvy session (src/backends/live), kept between turns, so what Claude Code
 // runs in the background (sub-agents, shells, monitors) outlives the turn that
 // started it, and reports in a turn Claude Code starts by itself (a wake).
 //
@@ -25,7 +25,7 @@ import { createHash, randomUUID } from "crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readlinkSync, readSync, realpathSync, writeFileSync, type Stats } from "fs";
 import { basename, dirname, join } from "path";
 import type { HookConfig } from "../config/settings";
-import { harnessHome } from "../config/paths";
+import { cavvyHome } from "../config/paths";
 import { backendMatcher, claudeCodeHookOutput, type HookEvent } from "../agent/hooks";
 import type { AgentEvent, TurnEndReason } from "../agent/agent";
 import { formatSkill } from "../agent/skills";
@@ -70,7 +70,7 @@ import {
     resultText,
     splitPreamble,
     titleFor,
-    toHarness,
+    toCavvy,
     type PendingTool,
 } from "./claude-code";
 
@@ -183,15 +183,15 @@ export function outputTail(dir: string, taskId: string): { text: string; partial
     }
 }
 
-/** Wake refs, unique in the harness process: a session keeps an unadopted wake across a restart of its CLI process. */
+/** Wake refs, unique in Cavvy process: a session keeps an unadopted wake across a restart of its CLI process. */
 let wakeRefs = 0;
 
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
-/** The harness's agents for --agents, in a file named by what's in it: the same agents, the same arguments (and spawn fingerprint). */
+/** Cavvy's agents for --agents, in a file named by what's in it: the same agents, the same arguments (and spawn fingerprint). */
 function agentsFileFor(agents: Record<string, unknown>): string {
     const json = JSON.stringify(agents);
-    const dir = join(harnessHome(), "cache", "claude-agents");
+    const dir = join(cavvyHome(), "cache", "claude-agents");
     const path = join(dir, `${createHash("sha256").update(json).digest("hex").slice(0, 16)}.json`);
     if (!existsSync(path)) {
         mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -219,7 +219,7 @@ function taskKind(type: string, agent: boolean): BackgroundTaskInfo["kind"] {
 }
 
 interface PromptInfo {
-    /** The harness turn it belongs to (its own uuid for a prompt; the turn it steers for a steering message). */
+    /** Cavvy turn it belongs to (its own uuid for a prompt; the turn it steers for a steering message). */
     ref: string;
     kind: "prompt" | "steer" | "carrier";
     state: "sent" | "queued" | "started" | "done" | "cancelled";
@@ -278,16 +278,16 @@ export class ClaudeConnection implements CliConnection {
     private ended = false;
     private controls = new Map<string, (r: Record<string, any> | undefined) => void>();
     private prompts = new Map<string, PromptInfo>();
-    /** Each harness turn's prompts not answered yet. */
+    /** Each Cavvy turn's prompts not answered yet. */
     private outstanding = new Map<string, Set<string>>();
-    /** Each harness turn's prompts answered so far. */
+    /** Each Cavvy turn's prompts answered so far. */
     private answeredBy = new Map<string, string[]>();
-    /** Harness turns being interrupted. */
+    /** Cavvy turns being interrupted. */
     private stopping = new Set<string>();
     /** Prompts Esc withdrew before Claude Code started them: stopped if it starts one anyway. */
     private withdrawn = new Set<string>();
     /**
-     * Harness turns Esc stopped after Claude Code took their prompt, before its system/init (#424): stopped as that
+     * Cavvy turns Esc stopped after Claude Code took their prompt, before its system/init (#424): stopped as that
      * comes (startTurn), with the message to send in its place (sendNow), if any.
      */
     private stopOnStart = new Map<string, string | undefined>();
@@ -380,7 +380,7 @@ export class ClaudeConnection implements CliConnection {
         return this.turn().t;
     }
 
-    /** Send initialize (registering the harness's hooks) and wait for its answer. Rejects when the CLI ends first (a session it can't resume). */
+    /** Send initialize (registering Cavvy's hooks) and wait for its answer. Rejects when the CLI ends first (a session it can't resume). */
     initialize(): Promise<void> {
         return (this.initialized ??= (async () => {
             const r = await this.control({ subtype: "initialize", ...this.hookRegistration() }, Number.POSITIVE_INFINITY);
@@ -478,7 +478,7 @@ export class ClaudeConnection implements CliConnection {
      *   `cancelled: false`): it's in Claude Code's transcript, and the system/init naming its session is on its way.
      *   The turn is stopped as that comes (startTurn) and ends with its result, as one stopped after its start does,
      *   so its session is known and the prompt counts as delivered. Ended here instead, it would leave the prompt
-     *   in a session Harness doesn't know of, and the next prompt would bring it again as context;
+     *   in a session Cavvy doesn't know of, and the next prompt would bring it again as context;
      * - dropped (`cancelled: true`, or its lifecycle said cancelled, not started: onLifecycle, at once, whenever the
      *   answer comes): never in its transcript, so the turn ends refused (LiveTurnResult.refused), and the prompt goes
      *   again with the next;
@@ -580,7 +580,7 @@ export class ClaudeConnection implements CliConnection {
         return "applied";
     }
 
-    /** The harness's mode changed: Claude Code takes it now, between turns too (its background sub-agents follow it). */
+    /** Cavvy's mode changed: Claude Code takes it now, between turns too (its background sub-agents follow it). */
     setMode(mode: Parameters<SessionHost["setMode"]>[0]): void {
         void this.control({ subtype: "set_permission_mode", mode: MODES[mode] });
     }
@@ -590,7 +590,7 @@ export class ClaudeConnection implements CliConnection {
         this.proc.end();
     }
 
-    /** Whether a running Claude Code turn is one of the harness's (a prompt's or an adopted wake's), so Esc has something to stop. */
+    /** Whether a running Claude Code turn is one of Cavvy's (a prompt's or an adopted wake's), so Esc has something to stop. */
     running(): boolean {
         return Boolean(this.cur && this.cur.kind !== "hidden");
     }
@@ -731,7 +731,7 @@ export class ClaudeConnection implements CliConnection {
     private onInit(m: Record<string, any>) {
         this.startTurn(m);
         // It runs these itself when one is the prompt (/context, a skill): they aren't mistyped commands.
-        // Not the harness's own skills (harness:name): the menus have those already.
+        // Not Cavvy's own skills (cavvy:name): the menus have those already.
         const names = cliCommandNames(m.slash_commands)?.filter((n) => !n.startsWith(CLAUDE_PREFIX));
         if (names) this.emit({ type: "cli_commands", provider: this.def.id, names });
     }
@@ -907,7 +907,7 @@ export class ClaudeConnection implements CliConnection {
             }
         } else answered.push(...ids);
         this.answeredBy.set(ref, answered);
-        // A steering message Claude Code runs as a turn of its own after this one: still this harness turn.
+        // A steering message Claude Code runs as a turn of its own after this one: still this Cavvy turn.
         const left = [...(pending ?? [])].filter((id) => {
             const s = this.prompts.get(id)?.state;
             return s === "sent" || s === "queued";
@@ -919,7 +919,7 @@ export class ClaudeConnection implements CliConnection {
         this.endTurn(ref, reason, reason === "error" ? failure : undefined, reason === "error" && this.limitHit ? limitStopOf(this.limits, this.limits?.reached ? this.limits.resetsAt : undefined) : undefined);
     }
 
-    /** The harness turn is over: once only. `refused`: its prompt never reached Claude Code's session (unstartedPrompt). */
+    /** Cavvy turn is over: once only. `refused`: its prompt never reached Claude Code's session (unstartedPrompt). */
     private endTurn(ref: string, reason: TurnEndReason, error?: string, limit?: { resetsAt?: number; window?: string }, refused = false) {
         this.stopOnStart.delete(ref);
         const answers = this.answeredBy.get(ref) ?? [ref];
@@ -1228,7 +1228,7 @@ export class ClaudeConnection implements CliConnection {
             case "content_block_start":
                 if (e.content_block?.type === "tool_use") {
                     this.streamingTools.set(e.index, e.content_block.id);
-                    this.emit({ type: "tool_call_start", id: e.content_block.id, name: toHarness(String(e.content_block.name ?? ""), {}).name });
+                    this.emit({ type: "tool_call_start", id: e.content_block.id, name: toCavvy(String(e.content_block.name ?? ""), {}).name });
                 }
                 break;
             case "content_block_delta": {
@@ -1262,7 +1262,7 @@ export class ClaudeConnection implements CliConnection {
                     continue;
                 }
                 if (over) continue;
-                const { name, input } = toHarness(b.name, b.input ?? {});
+                const { name, input } = toCavvy(b.name, b.input ?? {});
                 const title = titleFor(name, input);
                 this.subTools.set(b.id, { name, input, title, started: Date.now(), parent });
                 this.emit({ type: "subagent", parentId: parent, label, event: { type: "tool_start", call: { type: "tool_call", id: b.id, name, input }, title } });
@@ -1285,7 +1285,7 @@ export class ClaudeConnection implements CliConnection {
             if (b?.type === "text" && typeof b.text === "string" && b.text.trim()) {
                 this.emit({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: b.text }], provider: this.def.id, model: this.cfg.model.id } });
             } else if (b?.type === "tool_use" && typeof b.id === "string") {
-                const { name, input } = toHarness(b.name, b.input ?? {});
+                const { name, input } = toCavvy(b.name, b.input ?? {});
                 const title = titleFor(name, input);
                 this.tools.set(b.id, { name, input, title, started: Date.now() });
                 if (b.name === "Agent" || b.name === "Task") this.agentLabels.set(b.id, String(input.description ?? input.subagent_type ?? "sub-agent"));
@@ -1580,7 +1580,7 @@ export class ClaudeConnection implements CliConnection {
         });
     }
 
-    /** The harness's MCP server for delegation: set when it's new or its tools changed, before a prompt goes. */
+    /** Cavvy's MCP server for delegation: set when it's new or its tools changed, before a prompt goes. */
     private async attach() {
         const o = this.cfg.orchestrator;
         const servers = o && !this.cfg.readOnly
@@ -1618,7 +1618,7 @@ export class ClaudeConnection implements CliConnection {
             const called = list.filter((hook) => hook.type !== "prompt");
             if (!called.length) continue;
             hooks[event] = called.map((hook) => {
-                const id = `harness_${n++}`;
+                const id = `cavvy_${n++}`;
                 this.hookCallbacks.set(id, { event, hook });
                 return { ...(hook.matcher ? { matcher: backendMatcher(event, hook.matcher) } : {}), hookCallbackIds: [id], timeout: hook.timeout ?? 60 };
             });
@@ -1634,7 +1634,7 @@ export class ClaudeConnection implements CliConnection {
             const handler = this.host.hookHandler;
             if (!cb || !handler) return reply({});
             const input: Record<string, unknown> = req.input && typeof req.input === "object" ? req.input : {};
-            // Harness's browser tools run the hooks themselves, as BrowserAct and the rest: this CLI's run would be a second one.
+            // Cavvy's browser tools run the hooks themselves, as BrowserAct and the rest: this CLI's run would be a second one.
             if (servedBrowserTool(this.cfg.orchestrator?.name, input.tool_name)) return reply({});
             // The session's signal, not a turn's: a background sub-agent's hooks run between turns too.
             const r = await handler(cb.event, cb.hook, input, this.hookAbort.signal).catch(() => undefined);
@@ -1679,7 +1679,7 @@ export class ClaudeConnection implements CliConnection {
         }
         const own = this.cfg.orchestrator;
         if (own && own.tools.some((t) => req.tool_name === `mcp__${own.name}__${t}`)) return { behavior: "allow", updatedInput: raw };
-        const { name, input } = toHarness(String(req.tool_name ?? ""), raw);
+        const { name, input } = toCavvy(String(req.tool_name ?? ""), raw);
         const reason = typeof req.decision_reason === "string" && req.decision_reason.trim() ? req.decision_reason : undefined;
         const agentType = typeof req.agent_id === "string" ? this.agentTypes.get(req.agent_id) : undefined;
         // One of a background sub-agent's (its task is running in the background): not the turn's to withdraw.
@@ -1691,7 +1691,7 @@ export class ClaudeConnection implements CliConnection {
     }
 }
 
-/** How a live session's process is started, and spoken to: one per harness session, as each has its own turn settings. */
+/** How a live session's process is started, and spoken to: one per Cavvy session, as each has its own turn settings. */
 class ClaudeCliAdapter implements AgentCliAdapter {
     readonly def: AgentCliDef;
     /** The turn under way, or the last one (set before each). */
@@ -1754,7 +1754,7 @@ function claudeAccountKey(provider: string, t: Pick<BackendTurn, "accountId" | "
     }
 }
 
-/** The harness's skills Claude Code doesn't read itself, as a plugin of their own; and the name it runs each by. */
+/** Cavvy's skills Claude Code doesn't read itself, as a plugin of their own; and the name it runs each by. */
 function claudeSkills(provider: string, t: Pick<BackendTurn, "skills" | "cwd" | "trusted" | "accountId">): { pluginDir?: string; names: Map<string, string> } {
     const configDir = t.skills?.length ? claudeConfigDir(provider, t as BackendTurn) : undefined;
     const plugged = t.skills?.length ? forClaudeCode(t.skills, t.cwd, t.trusted, configDir) : [];
@@ -1795,7 +1795,7 @@ class TurnRecord {
     }
 }
 
-/** Claude Code's live sessions (one per harness session) for a ClaudeCodeBackend. */
+/** Claude Code's live sessions (one per Cavvy session) for a ClaudeCodeBackend. */
 export class ClaudeLive {
     readonly pool: LiveCliPool;
     /** The host each session's last turn bound: wakes and session events go to it. */
@@ -1868,7 +1868,7 @@ export class ClaudeLive {
         this.watch(key, live);
         const rec = new TurnRecord(t.sink);
         const { names } = claudeSkills(this.provider.id, t);
-        // What Harness put before the user's words goes in a block of its own before theirs (see textBlocks).
+        // What Cavvy put before the user's words goes in a block of its own before theirs (see textBlocks).
         const { preamble, text: prompt } = splitPreamble(claudePrompt(t.prompt, t.request, t.skills ?? [], names, formatSkill, t.requestAfter), t.preamble);
         adapter.current = {
             t,

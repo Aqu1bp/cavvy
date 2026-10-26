@@ -31,7 +31,7 @@ export function canonical(p: string, hops = 0): string {
     }
 }
 
-/** macOS and Windows volumes ignore case by default: `.HARNESS` is `.harness` there. */
+/** macOS and Windows volumes ignore case by default: `.CAVVY` is `.cavvy` there. */
 export const CASE_INSENSITIVE_FS = process.platform === "darwin" || process.platform === "win32";
 
 const INVISIBLE = /\p{Default_Ignorable_Code_Point}/gu;

@@ -523,7 +523,7 @@ test("a running command shows its last line under the row; a failed one says Exi
 test("a command running in the background says so, with Stop for its task; finished, it says that", () => {
     const h = setup([{ ...finished("bg", "ok", "Command running in background with ID: bash_1"), input: { command: "npm run dev", run_in_background: true } }], false, [], "session-bg");
     try {
-        h.setView("state", "backgroundTasks", [{ id: "bash_1", provider: "harness", kind: "shell", label: "npm run dev", toolUseId: "bg", startedAt: 1000, status: "running", stoppable: true }]);
+        h.setView("state", "backgroundTasks", [{ id: "bash_1", provider: "cavvy", kind: "shell", label: "npm run dev", toolUseId: "bg", startedAt: 1000, status: "running", stoppable: true }]);
         const card = row(h.root, "bg");
         expect(has(card, "bg")).toBe(true);
         expect(text(head(card))).toContain("In the background");
@@ -547,9 +547,9 @@ test("a command running in the background says so, with Stop for its task; finis
         h.setView("state", "backgroundTasks", []);
         expect(has(card, "bg")).toBe(false);
         expect(text(head(card))).toContain("Started in the background");
-        // A Harness shell isn't linked to its call: its result names it, and its summary isn't said twice.
+        // A Cavvy shell isn't linked to its call: its result names it, and its summary isn't said twice.
         h.op({ op: "block", block: { ...finished("shell", "ok", "Started background shell bash_2 (pid 7)."), summary: "Running in background as bash_2", input: { command: "tail -f log", run_in_background: true } } });
-        h.setView("state", "backgroundTasks", [{ id: "bash_2", provider: "harness", kind: "shell", label: "tail -f log", startedAt: 1000, status: "running", stoppable: true }]);
+        h.setView("state", "backgroundTasks", [{ id: "bash_2", provider: "cavvy", kind: "shell", label: "tail -f log", startedAt: 1000, status: "running", stoppable: true }]);
         const shell = row(h.root, "shell");
         expect(text(head(shell))).toContain("In the background");
         expect(text(head(shell))).not.toContain("Running in background as");

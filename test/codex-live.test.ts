@@ -1,6 +1,6 @@
 // Codex on the live CLI layer (#219 PR 3): one app-server per session, kept across turns. What must hold
 // when things go wrong: Esc never ends the app-server or its background work, a stop and a command's own
-// end can race, the app-server can crash (mid-turn, idle), Harness can quit, the account can change, and
+// end can race, the app-server can crash (mid-turn, idle), Cavvy can quit, the account can change, and
 // wakes meet the user's own messages, steering, forks, rewinds and compactions. Fake Codex
 // (test/fixtures/fake-codex.ts, persistent); no network.
 
@@ -463,7 +463,7 @@ describe("the app-server goes away", () => {
         expect(turnTexts()[1]).toMatch(/background command `sleep 1; echo bg 1` \(exec-turn-1-1\) stopped when Codex's app-server stopped[\s\S]*is it done\?/);
     });
 
-    test("Harness quits with a background command running: the log keeps it running, and the reopened session tells Codex it stopped", async () => {
+    test("Cavvy quits with a background command running: the log keeps it running, and the reopened session tells Codex it stopped", async () => {
         process.env.FAKE_CODEX_SCENARIOS = "bg,cmd";
         process.env.FAKE_BG_MS = "never";
         const session = Session.create(cwd, {});
@@ -485,7 +485,7 @@ describe("the app-server goes away", () => {
         expect(await b.run("where were we?")).toBe("done");
         expect(pids()).toHaveLength(2);
         expect(calls("thread/resume").map((p) => p.threadId)).toEqual(["thr-new"]);
-        expect(turnTexts()[1]).toContain("These background tasks stopped when Harness quit: background command: sleep 1; echo bg 1 (exec-turn-1-1).");
+        expect(turnTexts()[1]).toContain("These background tasks stopped when Cavvy quit: background command: sleep 1; echo bg 1 (exec-turn-1-1).");
         reopened.release();
     });
 
@@ -550,7 +550,7 @@ describe("the account changes during background work", () => {
         expect(calls("thread/start")).toHaveLength(2);
     });
 
-    test("another account sharing the history (Harness-made): the same thread, resumed on a new app-server signed in as it; the old one and its background work stop, and the user is told (#377)", async () => {
+    test("another account sharing the history (Cavvy-made): the same thread, resumed on a new app-server signed in as it; the old one and its background work stop, and the user is told (#377)", async () => {
         const { addAccount } = await import("../src/providers/accounts");
         process.env.FAKE_CODEX_SCENARIOS = "bg,cmd";
         process.env.FAKE_BG_MS = "never";
@@ -776,11 +776,11 @@ describe("review round 1 (#293)", () => {
         expect(a.notices().join("\n")).toContain("background task");
     });
 
-    test("HARNESS_DEBUG: a wake's label (a command, perhaps with a credential in it) isn't logged", async () => {
+    test("CAVVY_DEBUG: a wake's label (a command, perhaps with a credential in it) isn't logged", async () => {
         const file = join(bin, "live-cli.log");
         rmSync(file, { force: true });
-        process.env.HARNESS_DEBUG = "1";
-        process.env.HARNESS_DEBUG_FILE = file;
+        process.env.CAVVY_DEBUG = "1";
+        process.env.CAVVY_DEBUG_FILE = file;
         try {
             process.env.FAKE_CODEX_SCENARIOS = "bg,cmd";
             process.env.FAKE_BG_MS = "100";
@@ -791,8 +791,8 @@ describe("review round 1 (#293)", () => {
             await until(() => existsSync(file) && readFileSync(file, "utf-8").includes('"what":"wake"'), "the wake's line");
             expect(readFileSync(file, "utf-8")).not.toContain("private-password");
         } finally {
-            delete process.env.HARNESS_DEBUG;
-            delete process.env.HARNESS_DEBUG_FILE;
+            delete process.env.CAVVY_DEBUG;
+            delete process.env.CAVVY_DEBUG_FILE;
         }
     });
 

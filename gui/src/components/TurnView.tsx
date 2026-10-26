@@ -651,7 +651,7 @@ function TurnViewContent(p: TurnViewProps) {
             </Show>
             <Show when={hasOutput()}>
                 <div class="reply">
-                    <h2 class="sr-only" data-find-skip>{running() ? "Harness is working" : "Harness replied"}</h2>
+                    <h2 class="sr-only" data-find-skip>{running() ? "Cavvy is working" : "Cavvy replied"}</h2>
                     {/* Notices from before its first step, where they happened: above "Worked for". */}
                     <Index each={segs().slice(0, lead())}>{renderSeg}</Index>
                     <Show when={foldable() && hasWork() && !folding()}>

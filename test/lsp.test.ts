@@ -22,7 +22,7 @@ afterAll(async () => {
 });
 
 function project(): string {
-    const d = realpathSync(tempDir("harness-lsp-"));
+    const d = realpathSync(tempDir("cavvy-lsp-"));
     dirs.push(d);
     return d;
 }
@@ -198,14 +198,14 @@ describe("which server", () => {
 
     test("settings layers add servers by name; an untrusted project's servers don't count", () => {
         const root = project();
-        mkdirSync(join(root, ".harness"), { recursive: true });
+        mkdirSync(join(root, ".cavvy"), { recursive: true });
         writeFileSync(join(iso.home, "settings.json"), JSON.stringify({ lsp: { servers: { deno: fakeServer() } } }));
-        writeFileSync(join(root, ".harness", "settings.json"), JSON.stringify({ lsp: { servers: { evil: fakeServer({}, { ".rs": "rust" }) } } }));
+        writeFileSync(join(root, ".cavvy", "settings.json"), JSON.stringify({ lsp: { servers: { evil: fakeServer({}, { ".rs": "rust" }) } } }));
         const trusted = loadSettings(root, { trusted: true });
         expect(Object.keys((trusted.lsp as any).servers).sort()).toEqual(["deno", "evil"]);
         const untrusted = loadSettings(root, { trusted: false });
         expect(Object.keys((untrusted.lsp as any).servers)).toEqual(["deno"]);
-        writeFileSync(join(root, ".harness", "settings.json"), JSON.stringify({ lsp: false }));
+        writeFileSync(join(root, ".cavvy", "settings.json"), JSON.stringify({ lsp: false }));
         expect(lspEnabled(loadSettings(root, { trusted: true }))).toBe(false);
         rmSync(join(iso.home, "settings.json"));
     });
@@ -214,8 +214,8 @@ describe("which server", () => {
         const { App } = await import("../src/ui/app");
         const { runCommand } = await import("../src/commands/index");
         const root = project();
-        mkdirSync(join(root, ".harness"), { recursive: true });
-        writeFileSync(join(root, ".harness", "settings.json"), JSON.stringify({ lsp: { servers: { mine: fakeServer() } } }));
+        mkdirSync(join(root, ".cavvy"), { recursive: true });
+        writeFileSync(join(root, ".cavvy", "settings.json"), JSON.stringify({ lsp: { servers: { mine: fakeServer() } } }));
         const notices: string[] = [];
         const app: any = { cwd: root, init: { trusted: false }, settings: loadSettings(root, { trusted: false }), classifier: { clearCache() {} }, applyCliRules() {}, customCommands: [], skills: [], notice: (t: string) => notices.push(t), showDialog: async () => true, print() {}, renderLive() {} };
         app.projectTrusted = App.prototype.projectTrusted.bind(app);

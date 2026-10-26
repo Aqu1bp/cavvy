@@ -1,9 +1,9 @@
 // Test isolation. Call isolate() at the top of every test file, BEFORE any
 // src module is imported (src modules are loaded with dynamic import()).
 //
-// - HARNESS_HOME points at a fresh temp dir, so ~/.harness is never touched.
-// - HARNESS_NO_KEYCHAIN keeps the credential store off the OS keychain.
-// - HARNESS_BROWSER names no browser, so the Browser tools aren't offered unless a test sets it.
+// - CAVVY_HOME points at a fresh temp dir, so ~/.cavvy is never touched.
+// - CAVVY_NO_KEYCHAIN keeps the credential store off the OS keychain.
+// - CAVVY_BROWSER names no browser, so the Browser tools aren't offered unless a test sets it.
 // - Every API-key-like variable is removed from the environment.
 // - CLI config and secure-storage selectors point at fresh empty folders, so nothing
 //   (listing CLI sessions, say) can reach the real Claude Code or Codex stores.
@@ -15,18 +15,18 @@ import { tmpdir } from "os";
 import { join, resolve, sep } from "path";
 
 const SECRETISH = /(_API_KEY|_AUTH_TOKEN|_BASE_URL)$/;
-const EXTRA = ["API_KEY", "BASE_URL", "MODEL", "HARNESS_MODEL"];
+const EXTRA = ["API_KEY", "BASE_URL", "MODEL", "CAVVY_MODEL"];
 
 export function isolate(): { home: string; cleanup: () => void } {
-    const home = mkdtempSync(join(tmpdir(), "harness-test-"));
-    if (!resolve(home).startsWith(resolve(tmpdir()) + sep)) throw new Error(`refusing to use ${home} as HARNESS_HOME`);
-    process.env.HARNESS_HOME = home;
-    process.env.HARNESS_NO_KEYCHAIN = "1";
+    const home = mkdtempSync(join(tmpdir(), "cavvy-test-"));
+    if (!resolve(home).startsWith(resolve(tmpdir()) + sep)) throw new Error(`refusing to use ${home} as CAVVY_HOME`);
+    process.env.CAVVY_HOME = home;
+    process.env.CAVVY_NO_KEYCHAIN = "1";
     // No test finds the machine's own Chrome (the Browser tools would be offered, and served to agent CLIs, wherever one is
-    // installed): only a test that points HARNESS_BROWSER at one gets a browser.
-    process.env.HARNESS_BROWSER = join(home, "no-browser");
-    const claude = mkdtempSync(join(tmpdir(), "harness-test-claude-"));
-    const codex = mkdtempSync(join(tmpdir(), "harness-test-codex-"));
+    // installed): only a test that points CAVVY_BROWSER at one gets a browser.
+    process.env.CAVVY_BROWSER = join(home, "no-browser");
+    const claude = mkdtempSync(join(tmpdir(), "cavvy-test-claude-"));
+    const codex = mkdtempSync(join(tmpdir(), "cavvy-test-codex-"));
     process.env.CLAUDE_CONFIG_DIR = claude;
     process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = claude;
     process.env.CODEX_HOME = codex;
@@ -43,7 +43,7 @@ export function isolate(): { home: string; cleanup: () => void } {
 }
 
 /** A fresh temp directory (project dirs, .env files, ...). */
-export function tempDir(prefix = "harness-test-"): string {
+export function tempDir(prefix = "cavvy-test-"): string {
     return mkdtempSync(join(tmpdir(), prefix));
 }
 

@@ -1,6 +1,6 @@
 // What the SDK costs: importing it, starting a query, and each turn, measured
 // against the mock model (scripts/mock-llm.ts, no delay) so the numbers are
-// the harness's own overhead rather than a provider's.
+// Cavvy's own overhead rather than a provider's.
 //
 //   bun run sdk:bench [--turns 50]
 
@@ -11,7 +11,7 @@ import { startMockLlm } from "./mock-llm";
 
 const turns = Number(process.argv[process.argv.indexOf("--turns") + 1]) || 50;
 const repo = resolve(import.meta.dir, "..");
-const root = mkdtempSync(join(tmpdir(), "harness-sdk-bench-"));
+const root = mkdtempSync(join(tmpdir(), "cavvy-sdk-bench-"));
 const home = join(root, "home");
 const project = join(root, "project");
 mkdirSync(home, { recursive: true });
@@ -19,8 +19,8 @@ mkdirSync(project, { recursive: true });
 const mock = startMockLlm({ delayMs: 0 });
 writeFileSync(join(home, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock", baseUrl: mock.url, requiresKey: false }] }));
 writeFileSync(join(home, "settings.json"), JSON.stringify({ model: "mock:mock-opus", smallModel: "mock:mock-haiku" }));
-process.env.HARNESS_HOME = home;
-process.env.HARNESS_NO_KEYCHAIN = "1";
+process.env.CAVVY_HOME = home;
+process.env.CAVVY_NO_KEYCHAIN = "1";
 
 const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]!;
 const ms = (n: number) => `${n.toFixed(1)} ms`;
@@ -88,7 +88,7 @@ try {
         }
     }
 
-    // ---- the same prompt through `harness -p`, a process each
+    // ---- the same prompt through `cavvy -p`, a process each
     const headless: number[] = [];
     for (let i = 0; i < 5; i++) {
         const t = performance.now();
@@ -99,15 +99,15 @@ try {
 
     const rows: [string, string][] = [
         ["bun process, nothing imported", ms(bare)],
-        ["import my-own-harness/sdk (entry only)", `${ms(entry)} (+${ms(entry - bare)})`],
+        ["import cavvy/sdk (entry only)", `${ms(entry)} (+${ms(entry - bare)})`],
         ["import the engine (loaded on first query)", `${ms(engine)} (+${ms(engine - bare)})`],
-        ["import headless.ts (harness -p), for comparison", `${ms(cli)} (+${ms(cli - bare)})`],
+        ["import headless.ts (cavvy -p), for comparison", `${ms(cli)} (+${ms(cli - bare)})`],
         ["raw streamed request to the mock", ms(median(raw))],
         ["query(): first message (setup)", ms(median(firstMessage))],
         ["query(): one-shot, start to end (incl. cleanup)", ms(median(oneShot))],
         [`one turn in a streaming query (median of ${turns})`, ms(median(turnTimes))],
         ["  overhead over the raw request", ms(median(turnTimes) - median(raw))],
-        ["harness -p, a process per prompt", ms(median(headless))],
+        ["cavvy -p, a process per prompt", ms(median(headless))],
     ];
     const w = Math.max(...rows.map(([k]) => k.length));
     console.log(`Bun ${Bun.version}, ${process.platform}/${process.arch}\n`);

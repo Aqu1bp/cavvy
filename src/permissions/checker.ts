@@ -3,12 +3,12 @@
 // Order of precedence:
 //   1. deny rules                       -> deny (every mode, including bypass;
 //                                          matched on the path and its symlink target)
-//   2. protected harness files          -> deny (also searching their directory)
+//   2. protected Cavvy files          -> deny (also searching their directory)
 //   3. catastrophic shell patterns      -> ask (every mode, including bypass)
 //   4. plan mode restrictions           -> deny writes
 //   5. ask rules                        -> ask (except bypass)
 //   6. bypassPermissions                -> allow
-//   7. edits to harness / git config    -> ask
+//   7. edits to cavvy / git config    -> ask
 //   8. allow rules                      -> allow
 //   9. per-category defaults by mode (below)
 //
@@ -22,17 +22,18 @@
 
 import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "fs";
 import { homedir, tmpdir } from "os";
-import { dirname, join, resolve } from "path";
+import { basename, dirname, join, resolve } from "path";
 import type { HiddenReason, Tool } from "../tools/types";
 import type { PermissionMode } from "./modes";
 import { sandboxAllowedHosts, sandboxExcludedCommands, type Settings } from "../config/settings";
 import { findMatch, EDIT_TOOLS, READ_TOOLS, toolPath, type RuleTarget } from "./rules";
-import { accountTarget, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, type CommandAnalysis, HARNESS_FILES, harnessHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, suggestBashRules, withoutHeredocData } from "./bash-safety";
+import { accountTarget, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, type CommandAnalysis, CAVVY_FILES, cavvyHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, suggestBashRules, withoutHeredocData } from "./bash-safety";
 import { accessNeeded, looksDestructive, sandboxEnabled, sandboxKind, sandboxPolicy, type SandboxKind, type SandboxPolicy } from "./sandbox";
 import { stableStringify, type ApprovedAction } from "./classifier";
 import { isBrowserTool, isQuietBrowserCall, isReadOnly, isShellTool } from "../tools/types";
 import { canonical, expandPath, isInside, spellings } from "../util/files";
-import { harnessHome, paths } from "../config/paths";
+import { cavvyHome, paths } from "../config/paths";
+import { homeAliases, LEGACY } from "../config/legacy";
 import { childEnv } from "../util/env";
 import { accountCredentialFiles, accountFolders, accountProtectedPaths } from "../providers/accounts";
 import { fileUrlPath, hostOf, navigationTarget, type BrowserApproval } from "../browser/url-policy";
@@ -60,7 +61,7 @@ export interface Decision {
     hosts?: string[];
     /** Hosts the command listed that nothing opens by itself: the reason for the review. */
     listedHosts?: string[];
-    /** Changes the harness's own configuration: only the exact action can be approved, never a wider grant. */
+    /** Changes Cavvy's own configuration: only the exact action can be approved, never a wider grant. */
     config?: boolean;
     /** The "allow this for the session" choice the popup offers. */
     grant?: SessionGrant;
@@ -83,7 +84,7 @@ const SENSITIVE_HOME = [".ssh", ".aws", ".gnupg", ".kube", ".docker/config.json"
 
 /**
  * The path as given and with symlinks resolved, each in its spellings: on a
- * case-insensitive volume `.HARNESS` and `.harneſſ` are `.harness`, and
+ * case-insensitive volume `.CAVVY` is `.cavvy` (and `.harneſſ` is `.harness`), and
  * resolving can't show it for a folder that doesn't exist yet.
  */
 function pathForms(p: string): string[] {
@@ -94,7 +95,7 @@ function pathForms(p: string): string[] {
  * In a sub-agent's own memory folder, as written and where its symlinks lead:
  * notes it keeps for its own prompt, not configuration (for that agent alone).
  * The folder and the agent-memory folder holding it must be real folders: a
- * link there could make `.harness` itself (or its agents) the "memory".
+ * link there could make `.cavvy` itself (or its agents) the "memory".
  */
 function inMemory(p: string, dir: string): boolean {
     const real = resolve(dir);
@@ -112,10 +113,10 @@ function isLink(p: string): boolean {
     }
 }
 
-/** What isHarnessConfig looks for in a path. */
+/** What isCavvyConfig looks for in a path. */
 /** Tools whose yes covers only the call it answered (see approve). */
 const ONE_CALL_APPROVAL = new Set(["GitCommit", "GitPush", "CreatePullRequest", "BrowserAct", "BrowserEval"]);
-const CONFIG_NAMES = new Set([".harness", ".claude", ".codex", ".git", ".mcp.json"]);
+const CONFIG_NAMES = new Set([".cavvy", LEGACY.dir, ".claude", ".codex", ".git", ".mcp.json"]);
 
 /**
  * The path with each git checkout Claude Code keeps at …/.claude/worktrees/<name>
@@ -124,7 +125,7 @@ const CONFIG_NAMES = new Set([".harness", ".claude", ".codex", ".git", ".mcp.jso
  * .claude/, .git and .mcp.json, and anything protected around it (one kept inside
  * a .git/ is still in there). A git repo elsewhere in ~/.claude (a plugin's hooks)
  * isn't one of these, and nor is one named like the config itself: in a session
- * run from .claude/worktrees, its .harness/ is that project's config even if it
+ * run from .claude/worktrees, its .cavvy/ is that project's config even if it
  * has a .git of its own. Only what's in the folder is set aside, not the folder
  * itself. Looked up as given: folding case first would find another folder on a
  * case-sensitive volume.
@@ -281,7 +282,7 @@ export class PermissionChecker {
 
     /**
      * The scoped grant a popup offers. None for what must stay exact: dangerous
-     * commands, rules that ask every time and changes to the harness's own
+     * commands, rules that ask every time and changes to Cavvy's own
      * configuration (a grant there would let the model widen its permissions).
      */
     private grantFor(tool: Tool<any>, input: any, d: Decision, cwd: string): SessionGrant | undefined {
@@ -313,9 +314,9 @@ export class PermissionChecker {
         const look = shellVars(cmd, this.shellEnv());
         const out: { word: string; abs: string }[] = [];
         for (const word of new Set([...a.commands.flatMap((c) => c.argv), ...a.redirects])) {
-            // Variables by their values, as the shell gets them: `$HARNESS_HOME/credentials.json`.
+            // Variables by their values, as the shell gets them: `$CAVVY_HOME/credentials.json`.
             const value = /[$~]/.test(word) ? expandWord(word, look, cwd) : word;
-            if (value === undefined || !sensitiveWord(value, harnessHome())) continue;
+            if (value === undefined || !sensitiveWord(value, cavvyHome())) continue;
             const abs = wordPath(value, cwd);
             if (abs) out.push({ word, abs });
         }
@@ -335,12 +336,12 @@ export class PermissionChecker {
      */
     private sensitiveTarget(cmd: string, cwd: string, sandboxed: boolean): string | undefined {
         // The policy the command will run under, built as the agent builds it.
-        const policy = sandboxed ? sandboxPolicy(this.workspaceRoots(), { harnessHome: harnessHome() }) : undefined;
-        return this.secretTarget(cmd, cwd, policy) ?? this.harnessFilesTarget(cmd, cwd, policy);
+        const policy = sandboxed ? sandboxPolicy(this.workspaceRoots(), { cavvyHome: cavvyHome() }) : undefined;
+        return this.secretTarget(cmd, cwd, policy) ?? this.cavvyFilesTarget(cmd, cwd, policy);
     }
 
     private secretTarget(cmd: string, cwd: string, policy: SandboxPolicy | undefined): string | undefined {
-        const opts = { cwd, harnessHome: harnessHome(), env: this.shellEnv() };
+        const opts = { cwd, cavvyHome: cavvyHome(), env: this.shellEnv() };
         const found = sensitiveTarget(cmd, opts);
         // Without the sandbox a recursive search of a folder holding the secrets reads them too.
         if (!found) return policy ? undefined : this.searchesStore(cmd, cwd);
@@ -368,24 +369,24 @@ export class PermissionChecker {
     }
 
     /**
-     * Reading the harness home's other files (settings, session logs). Listing them is fine. In the
+     * Reading Cavvy home's other files (settings, session logs). Listing them is fine. In the
      * sandbox, only if its policy doesn't already keep the home's file contents from being read.
      */
-    private harnessFilesTarget(cmd: string, cwd: string, policy: SandboxPolicy | undefined): string | undefined {
-        const reads = harnessHomeReads(cmd, cwd, harnessHome(), this.shellEnv());
+    private cavvyFilesTarget(cmd: string, cwd: string, policy: SandboxPolicy | undefined): string | undefined {
+        const reads = cavvyHomeReads(cmd, cwd, cavvyHome(), this.shellEnv());
         if (!reads) return undefined;
-        if (!policy) return HARNESS_FILES;
+        if (!policy) return CAVVY_FILES;
         // Each path by where it leads; what it can't pin down (a folder, a pattern, an expansion) only when no symlink leads out of the home.
-        const home = harnessHome();
-        if (reads.unsure && !blocks(policy, home, true)) return HARNESS_FILES;
-        return reads.paths.every((p) => blocks(policy, p, true)) ? undefined : HARNESS_FILES;
+        const home = cavvyHome();
+        if (reads.unsure && !blocks(policy, home, true)) return CAVVY_FILES;
+        return reads.paths.every((p) => blocks(policy, p, true)) ? undefined : CAVVY_FILES;
     }
 
-    /** Does a search command (rg, grep -r, find) have a folder that holds the harness's secret files as an operand? */
+    /** Does a search command (rg, grep -r, find) have a folder that holds Cavvy's secret files as an operand? */
     private searchesStore(cmd: string, cwd: string): string | undefined {
         const a = analyzeCommand(cmd);
         if (a.unparsable || a.hasSubstitution || a.unsafeExpansion) return undefined;
-        const store = [paths.credentialsFile(), paths.mcpOAuth(), paths.providers(), harnessAccounts(), ...accountCredentialFiles()].flatMap(pathForms);
+        const store = [...storeFiles(), ...cavvyAccounts(), ...accountCredentialFiles()].flatMap(pathForms);
         for (const c of a.commands) {
             const argv = effectiveArgv(c.argv);
             const prog = (argv[0] ?? "").split("/").pop()!;
@@ -394,7 +395,7 @@ export class PermissionChecker {
             if (/^(find|fd)$/.test(prog) && !argv.some((w) => /^(-(exec|execdir|ok|okdir|delete|fprint0?|fprintf|fls|x|X)|--exec(-batch)?)(=|$)/.test(w))) continue;
             for (const word of argv.slice(1)) {
                 const abs = word.startsWith("-") ? undefined : wordPath(word, cwd);
-                if (abs && pathForms(abs).some((f) => store.some((file) => isInside(file, f)))) return "the harness credential store";
+                if (abs && pathForms(abs).some((f) => store.some((file) => isInside(file, f)))) return "Cavvy credential store";
             }
         }
         return undefined;
@@ -425,14 +426,14 @@ export class PermissionChecker {
         if (denied) return { behavior: "deny", rule: denied, reason: `Denied by permission rule ${denied}` };
 
         if (t.path && this.isProtected(t.path, tool.name, tool.name === "Grep", true)) {
-            return { behavior: "deny", reason: "Access to the harness credential store is blocked." };
+            return { behavior: "deny", reason: "Access to Cavvy credential store is blocked." };
         }
         // A page opened from a file shows the file: the rules for reading it apply as they do to Read.
         const opened = tool.name === "BrowserNavigate" ? this.openedFile(input) : undefined;
         if (opened) {
             const rule = findMatch(deny, opened, this.root, "deny") ?? findMatch(deny, { ...opened, path: canonical(opened.path!) }, this.root, "deny");
             if (rule) return { behavior: "deny", rule, reason: `Denied by permission rule ${rule}` };
-            if (this.isProtected(opened.path!, "Read", false, true)) return { behavior: "deny", reason: "Access to the harness credential store is blocked." };
+            if (this.isProtected(opened.path!, "Read", false, true)) return { behavior: "deny", reason: "Access to Cavvy credential store is blocked." };
         }
         // What the content checks read: a here-document's data blanked when nothing on the line can run it.
         const judged = isShellTool(tool.name) ? heredocDataBlanked(t.command ?? "") : "";
@@ -475,11 +476,11 @@ export class PermissionChecker {
 
         // The model must not be able to widen its own permissions (settings,
         // hooks, MCP servers) or plant git hooks without the user seeing it.
-        if (tool.category === "edit" && t.path && this.isHarnessConfig(t.path) && !(memoryDir && inMemory(t.path, memoryDir))) {
-            return { behavior: "ask", config: true, reason: "This file configures the harness or git itself (permissions, hooks, MCP servers); changes always need your approval." };
+        if (tool.category === "edit" && t.path && this.isCavvyConfig(t.path) && !(memoryDir && inMemory(t.path, memoryDir))) {
+            return { behavior: "ask", config: true, reason: "This file configures Cavvy or git itself (permissions, hooks, MCP servers); changes always need your approval." };
         }
         if (isShellTool(tool.name)) {
-            const cfg = configTarget(judged, harnessHome());
+            const cfg = configTarget(judged, cavvyHome());
             if (cfg) return { behavior: "ask", config: true, reason: `This command changes ${cfg} (permissions, hooks, MCP servers or programs git runs); it always needs your approval.` };
         }
 
@@ -633,7 +634,7 @@ export class PermissionChecker {
         const deny = this.settings().permissions?.deny ?? [];
         const rule = findMatch(deny, t, this.root, "deny") ?? (c !== abs ? findMatch(deny, { ...t, path: c }, this.root, "deny") : undefined);
         if (rule) return `denied by permission rule ${rule}`;
-        if (this.isProtected(abs, toolName)) return "access to the harness credential store is blocked";
+        if (this.isProtected(abs, toolName)) return "access to Cavvy credential store is blocked";
         if (opts.sensitive && this.isSensitive(abs)) return "it may contain credentials";
         return undefined;
     }
@@ -651,22 +652,22 @@ export class PermissionChecker {
             // Variables, globs and `~user` can't be resolved here: assume the worst.
             if (!r || /[$`*?[{]/.test(r) || /~/.test(r.startsWith("~/") ? r.slice(2) : r)) return true;
             const abs = expandPath(r, cwd);
-            return !this.inWorkspace(abs) || this.isHarnessConfig(abs);
+            return !this.inWorkspace(abs) || this.isCavvyConfig(abs);
         });
     }
 
-    /** A folder that is, or holds, the harness's credential store (for grants of whole folders). */
+    /** A folder that is, or holds, Cavvy's credential store (for grants of whole folders). */
     isProtectedArea(dir: string): boolean {
         const forms = pathForms(dir);
-        const store = [paths.credentialsFile(), paths.mcpOAuth(), paths.providers(), ...accountCredentialFiles()].flatMap(pathForms);
-        const accounts = [harnessAccounts(), ...accountFolders()].flatMap(pathForms);
+        const store = [...storeFiles(), ...accountCredentialFiles()].flatMap(pathForms);
+        const accounts = [...cavvyAccounts(), ...accountFolders()].flatMap(pathForms);
         return store.some((f) => forms.some((d) => isInside(f, d))) || accounts.some((f) => forms.some((d) => isInside(f, d) || isInside(d, f)));
     }
 
     /**
      * Is this a secret file or inside a secret folder (accounts/, registered or not)? For the
      * read tools the user settings count too: they can hold env values and MCP auth headers.
-     * The rest of the harness home doesn't. A search root that merely holds some (`root`)
+     * The rest of Cavvy home doesn't. A search root that merely holds some (`root`)
      * isn't refused, wherever it is (a home folder holding an account, #375): its secrets are
      * hidden file by file (hiddenFromSearch).
      */
@@ -677,20 +678,20 @@ export class PermissionChecker {
         if (forms.some((f) => credentials.some((a) => f === a || (contents && !root && isInside(a, f))))) return true;
         const search = toolName === "Grep" || toolName === "Glob" || toolName === "LS";
         if (forms.some((f) => accounts.some((a) => isInside(f, a) || (search && !root && isInside(a, f))))) return true;
-        if (forms.some((f) => pathForms(harnessAccounts()).some((a) => isInside(f, a)))) return true;
-        const store = [paths.credentialsFile(), paths.mcpOAuth(), paths.providers(), ...(READ_TOOLS.has(toolName) ? [paths.userSettings()] : [])].flatMap(pathForms);
+        if (forms.some((f) => cavvyAccounts().flatMap(pathForms).some((a) => isInside(f, a)))) return true;
+        const store = storeFiles(READ_TOOLS.has(toolName)).flatMap(pathForms);
         return forms.some((f) => store.includes(f));
     }
 
-    private isHarnessConfig(p: string): boolean {
+    private isCavvyConfig(p: string): boolean {
         const forms = pathForms(p);
-        const home = pathForms(harnessHome());
+        const home = homes().flatMap(pathForms);
         if (forms.some((f) => home.some((h) => isInside(f, h)))) return true;
         if (accountProtectedPaths().flatMap(pathForms).some((a) => forms.some((f) => isInside(f, a)))) return true;
         // `.git` may be a file too (worktrees, submodules): it says where the repo lives.
-        // .claude/ and .codex/ configure the agent CLIs the harness can run (hooks, skills, rules).
+        // .claude/ and .codex/ configure the agent CLIs Cavvy can run (hooks, skills, rules).
         const judged = new Set([p, canonical(p)].map(withoutWorktrees).flatMap(spellings));
-        return [...judged].some((c) => /(^|\/)\.(harness|claude|codex)\//.test(c) || /(^|\/)\.mcp\.json$/.test(c) || /(^|\/)\.git(\/|$)/.test(c));
+        return [...judged].some((c) => /(^|\/)\.(cavvy|harness|claude|codex)\//.test(c) || /(^|\/)\.mcp\.json$/.test(c) || /(^|\/)\.git(\/|$)/.test(c));
     }
 
     private isSensitive(p: string): boolean {
@@ -755,9 +756,20 @@ function heredocDataBlanked(cmd: string): string {
     return withoutHeredocData(cmd) ?? cmd;
 }
 
-/** The harness's own accounts folder: private whether or not any account is registered. */
-function harnessAccounts(): string {
-    return join(harnessHome(), "accounts");
+/** Cavvy's home, and its other names (legacy.ts homeAliases): each is protected as the home. */
+function homes(): string[] {
+    return [cavvyHome(), ...homeAliases(cavvyHome())];
+}
+
+/** The credential store's files in each of homes(); `settings`: the user settings too. */
+function storeFiles(settings = false): string[] {
+    const names = [paths.credentialsFile(), paths.mcpOAuth(), paths.providers(), ...(settings ? [paths.userSettings()] : [])].map((f) => basename(f));
+    return homes().flatMap((h) => names.map((n) => join(h, n)));
+}
+
+/** Cavvy's own accounts folder, in each of homes(): private whether or not any account is registered. */
+function cavvyAccounts(): string[] {
+    return homes().map((h) => join(h, "accounts"));
 }
 
 /** An approval as the reviewer hears it: the exact action and what it granted, nothing model-written. */

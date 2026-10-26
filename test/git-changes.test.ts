@@ -9,7 +9,7 @@ const { coalesce } = await import("../src/server/coalesce");
 const { gitArgv, gitEnv } = await import("../src/util/git");
 afterAll(() => iso.cleanup());
 
-const IDENTITY = ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Harness Test", "-c", "user.email=test@example.invalid", "-c", "protocol.file.allow=always"];
+const IDENTITY = ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Cavvy Test", "-c", "user.email=test@example.invalid", "-c", "protocol.file.allow=always"];
 
 function git(cwd: string, ...args: string[]): string {
     const r = Bun.spawnSync(gitArgv([...IDENTITY, ...args]), { cwd, env: gitEnv(), stdout: "pipe", stderr: "pipe" });
@@ -85,7 +85,7 @@ describe("git changes", () => {
         const { gitCommit } = await import("../src/server/git-commit");
         const dir = repo({ "selected.txt": "old\n" });
         git(dir, "tag", "main");
-        git(dir, "config", "user.name", "Harness Test");
+        git(dir, "config", "user.name", "Cavvy Test");
         git(dir, "config", "user.email", "test@example.invalid");
         git(dir, "config", "commit.gpgsign", "false");
         git(dir, "config", "core.hooksPath", "/dev/null");
@@ -124,7 +124,7 @@ describe("git changes", () => {
     });
 
     test("symlinks are diffed as links and never followed out of the repo", async () => {
-        const outside = tempDir("harness-outside-");
+        const outside = tempDir("cavvy-outside-");
         writeFileSync(join(outside, "secret.txt"), "TOP SECRET\n");
         const dir = repo({ "keep.txt": "k\n", "sub/inner.txt": "i\n" });
         symlinkSync("keep.txt", join(dir, "link"));
@@ -667,17 +667,17 @@ describe("branch scope", () => {
 
     test("a base git doesn't list is refused, options included", async () => {
         const dir = branched();
-        for (const base of ["nope", "-x", "--output=/tmp/harness-x", "main~1", "HEAD", "refs/heads/main"]) {
+        for (const base of ["nope", "-x", "--output=/tmp/cavvy-x", "main~1", "HEAD", "refs/heads/main"]) {
             await expect(gitChanges(dir, { scope: "branch", base })).rejects.toThrow(/isn't a branch/);
         }
-        expect(existsSync("/tmp/harness-x")).toBe(false);
+        expect(existsSync("/tmp/cavvy-x")).toBe(false);
     });
 });
 
 describe("files git converts on check-in", () => {
     /** The Git LFS shape: the blob holds the clean form, the disk the smudged one. */
     function filtered() {
-        const marks = tempDir("harness-marks-");
+        const marks = tempDir("cavvy-marks-");
         const dir = repo();
         git(dir, "config", "filter.up.clean", `touch ${join(marks, "clean")}; tr a-z A-Z`);
         git(dir, "config", "filter.up.smudge", `touch ${join(marks, "smudge")}; tr A-Z a-z`);
@@ -811,8 +811,8 @@ describe("coalescing", () => {
 });
 
 describe("outside a repository", () => {
-    test("says why, so the pane can fall back to Harness's edits", async () => {
-        const r = await gitChanges(tempDir("harness-plain-"), { scope: "uncommitted" });
+    test("says why, so the pane can fall back to Cavvy's edits", async () => {
+        const r = await gitChanges(tempDir("cavvy-plain-"), { scope: "uncommitted" });
         expect(r.repo).toBe(false);
         expect(r.reason).toMatch(/isn't a Git repository/);
         expect(r.files).toEqual([]);
@@ -850,7 +850,7 @@ describe("repository config never runs a program", () => {
     });
 
     test("filters, textconv, external diff and fsmonitor stay unrun", async () => {
-        const marks = tempDir("harness-marks-");
+        const marks = tempDir("cavvy-marks-");
         const dir = repo({ "a.txt": "hi\n", "b.txt": "same size\n", ".gitattributes": "* filter=evil diff=evil\n" });
         const touch = (name: string) => `touch ${join(marks, name)}; cat`;
         git(dir, "config", "filter.evil.clean", touch("clean"));

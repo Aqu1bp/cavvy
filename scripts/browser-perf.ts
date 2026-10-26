@@ -8,16 +8,16 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-const scratch = realpathSync(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "harness-browser-perf-")));
-process.env.HARNESS_HOME = join(scratch, "home");
-process.env.HARNESS_NO_KEYCHAIN = "1";
-mkdirSync(process.env.HARNESS_HOME);
+const scratch = realpathSync(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "cavvy-browser-perf-")));
+process.env.CAVVY_HOME = join(scratch, "home");
+process.env.CAVVY_NO_KEYCHAIN = "1";
+mkdirSync(process.env.CAVVY_HOME);
 const { startServer } = await import("../src/server/server");
 const { findChrome } = await import("../src/browser/chrome");
 const found = findChrome(undefined);
 if (!found.ok) throw new Error(found.error);
 const chrome = found.path;
-process.env.HARNESS_BROWSER = chrome;
+process.env.CAVVY_BROWSER = chrome;
 
 const sections = Array.from({ length: 120 }, (_, i) => `<section><h2>Section ${i + 1}: the quick brown fox</h2>
 <p>${"Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. ".repeat(4)}</p>

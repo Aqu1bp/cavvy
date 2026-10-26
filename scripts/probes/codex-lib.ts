@@ -1,4 +1,4 @@
-// Spawns `codex app-server` and speaks JSON-RPC to it the way Harness does (src/backends/codex.ts spawnRpc + handshake).
+// Spawns `codex app-server` and speaks JSON-RPC to it the way Cavvy does (src/backends/codex.ts spawnRpc + handshake).
 import { JsonProc, Log, SCRATCH } from "./lib";
 
 export function startCodex(log: Log, opts: { experimentalApi?: boolean } = {}) {
@@ -14,7 +14,7 @@ export function startCodex(log: Log, opts: { experimentalApi?: boolean } = {}) {
             .then((f) => (f ? (f.error ? { error: f.error } : { result: f.result }) : { timeout: true }));
     };
     const handshake = async () => {
-        const r = await request("initialize", { clientInfo: { name: "harness_probe", title: "Harness probe", version: "0.0.0" }, capabilities: opts.experimentalApi ? { experimentalApi: true } : null });
+        const r = await request("initialize", { clientInfo: { name: "cavvy_probe", title: "Cavvy probe", version: "0.0.0" }, capabilities: opts.experimentalApi ? { experimentalApi: true } : null });
         p.send({ method: "initialized" });
         return r;
     };

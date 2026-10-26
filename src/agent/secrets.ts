@@ -18,7 +18,7 @@ const CREDENTIAL_NAME = /_?(TOKEN|KEY|SECRET|PASSWORD|PASSWD|PASS|PWD|PAT|CREDEN
 const NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 
 // Variables that change how a shell, a runtime or a tool runs, or that the
-// harness sets itself: a "secret" by one of these names would be a way in.
+// Cavvy sets itself: a "secret" by one of these names would be a way in.
 const RESERVED = new Set([
     "PATH", "HOME", "SHELL", "USER", "LOGNAME", "PWD", "OLDPWD", "TMPDIR", "TERM", "LANG", "TZ", "IFS", "ENV", "CDPATH", "FPATH", "MANPATH",
     "PS1", "PS2", "PS3", "PS4", "PROMPT_COMMAND", "SHELLOPTS", "BASHOPTS", "GLOBIGNORE", "HISTFILE", "ZDOTDIR", "MAIL", "MAILPATH",
@@ -28,13 +28,13 @@ const RESERVED = new Set([
     "CLASSPATH", "JAVA_HOME", "JAVA_TOOL_OPTIONS", "JAVA_OPTIONS", "JDK_JAVA_OPTIONS", "JDK_JAVAC_OPTIONS", "MAVEN_OPTS", "GRADLE_OPTS", "ANT_OPTS", "PHPRC", "PHP_INI_SCAN_DIR", "GOFLAGS", "GODEBUG", "RUSTFLAGS", "RUSTDOCFLAGS", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "CARGO_HOME", "RUSTUP_HOME",
     "PERL_USE_UNSAFE_INC", "PERL5LIB", "PERL5OPT", "PERLLIB", "PERL_LOCAL_LIB_ROOT", "PERL_MB_OPT", "PERL_MM_OPT", "RUBYOPT", "RUBYLIB", "RUBYGEMS_GEMDEPS", "GEM_HOME", "GEM_PATH", "COREPACK_HOME", "UV_CACHE_DIR", "PIP_CACHE_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR",
 ]);
-const RESERVED_PREFIXES = ["DOTNET_", "COMPLUS_", "CORECLR_", "COR_", "MALLOC_", "NODE_", "LUA_INIT", "LUA_PATH_", "LUA_CPATH_", "LD_", "DYLD_", "GIT_", "HARNESS", "BASH_", "ZSH_", "LC_", "NPM_CONFIG_", "BUN_", "PYTHON", "CLAUDE_", "CODEX_", "ANTHROPIC_", "OPENAI_"];
+const RESERVED_PREFIXES = ["DOTNET_", "COMPLUS_", "CORECLR_", "COR_", "MALLOC_", "NODE_", "LUA_INIT", "LUA_PATH_", "LUA_CPATH_", "LD_", "DYLD_", "GIT_", "CAVVY", "BASH_", "ZSH_", "LC_", "NPM_CONFIG_", "BUN_", "PYTHON", "CLAUDE_", "CODEX_", "ANTHROPIC_", "OPENAI_"];
 
 /** Why `name` can't be a secret's name, or undefined if it can. */
 export function secretNameError(name: unknown): string | undefined {
     if (typeof name !== "string" || !NAME.test(name)) return "name must be an environment variable name: capital letters, digits and underscores, starting with a letter, at most 64 characters (e.g. GITHUB_TOKEN).";
     if (RESERVED.has(name) || RESERVED_PREFIXES.some((p) => name.startsWith(p)) || secretEnvVarNames().includes(name)) {
-        return `${name} changes how programs run or belongs to Harness, so it can't hold a secret. Pick a name of its own (e.g. MY_SERVICE_TOKEN) and use it in the command.`;
+        return `${name} changes how programs run or belongs to Cavvy, so it can't hold a secret. Pick a name of its own (e.g. MY_SERVICE_TOKEN) and use it in the command.`;
     }
     if (name !== "DATABASE_URL" && !CREDENTIAL_NAME.test(name)) return SECRET_NAME_RULE;
     return undefined;
@@ -86,7 +86,7 @@ function forms(value: string): string[] {
     return [...new Set([value, uri, quote, quote.replace(/%2F/g, "/"), quote.replace(/%20/g, "+"), b64(value), b64(value + "\n"), b64url(value), b64url(value + "\n")])];
 }
 
-/** Every form of every value any session was given: they stay redacted, and out of Harness's own copies of files, for as long as it runs. */
+/** Every form of every value any session was given: they stay redacted, and out of Cavvy's own copies of files, for as long as it runs. */
 const given = new Set<string>();
 
 /** Whether `data` holds a value a user gave (in any form above). */
@@ -180,7 +180,7 @@ export async function requestSecret(o: { store?: SecretStore; ask?: SecretAsk; n
     const use =
         o.using === "bash"
             ? `Shell commands (Bash) in this session see it as $${name}: refer to it by that name in the command.`
-            : `Run commands that need it with the harness run_with_secrets tool (secrets: ["${name}"]) and refer to it as $${name} in the command. Your own shell doesn't have it.`;
+            : `Run commands that need it with Cavvy run_with_secrets tool (secrets: ["${name}"]) and refer to it as $${name} in the command. Your own shell doesn't have it.`;
     return {
         text: `The user provided ${name}. ${use} Its value is never shown to you: wherever it appears in output it's replaced with a [REDACTED …] marker. Don't try to print, encode or copy it elsewhere. It's kept only while this session is open; if a command finds it empty, ask again.`,
         provided: true,

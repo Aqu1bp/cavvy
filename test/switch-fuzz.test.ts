@@ -2,7 +2,7 @@
 // provider and CLI-account switches, forks, compactions, rewinds, failures, interrupts, steering, background
 // wakes, account removal and reloads, with the fake Claude Code and Codex CLIs and the mock model, and checks
 // invariants after every step. What each CLI thread received is read from the fakes' own transcripts
-// (FAKE_TRANSCRIPTS), never from Harness's view of it. The generator favours #413's round trip (away from a CLI
+// (FAKE_TRANSCRIPTS), never from Cavvy's view of it. The generator favours #413's round trip (away from a CLI
 // thread to another model or account, a message there, back, a message): the thread must go on, sent only what it
 // missed.
 //
@@ -192,7 +192,7 @@ interface Sent { text: string; home: string | null; at: number; pid: number }
 interface Thread { file: string; provider: Cli; id: string; sent: Sent[]; headers: string[] }
 
 const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
-/** History folders to look in: Default's, and each existing-folder account's (Harness-made ones link Default's). */
+/** History folders to look in: Default's, and each existing-folder account's (Cavvy-made ones link Default's). */
 function historyRoots(w: World): { provider: Cli; dir: string }[] {
     const out: { provider: Cli; dir: string }[] = [];
     for (const provider of CLIS) {
@@ -224,13 +224,13 @@ const count = (hay: string, needle: string) => hay.split(needle).length - 1;
 const command = (s: Sent) => /^\/\w/.test(s.text.trim());
 
 // ---------------------------------------------------------------------------
-// Harness's side, only to pick operations and to check reloads and the session's own record.
+// Cavvy's side, only to pick operations and to check reloads and the session's own record.
 
 const rtOf = (w: World, s: FuzzSession) => w.engine.runtimes.get(s.id);
 const textOf = (m: any): string => (Array.isArray(m.content) ? m.content.map((p: any) => (typeof p.text === "string" ? p.text : "")).join("\n") : typeof m.content === "string" ? m.content : "");
 function userText(w: World, s: FuzzSession): string {
     const rt = rtOf(w, s);
-    // Not Harness's reminders: one quotes a steered message its turn ended before taking, for the next prompt (#438).
+    // Not Cavvy's reminders: one quotes a steered message its turn ended before taking, for the next prompt (#438).
     return rt ? rt.session.messages.filter((m: any) => m.role === "user" && m.meta?.kind !== "reminder").map(textOf).join("\n") : "";
 }
 /** The account a session has selected for a CLI, and its folder (undefined: the account is gone). */
@@ -470,7 +470,7 @@ async function apply(w: World, op: Op): Promise<boolean | string> {
             if (rt.session.messages.length < 2) return false;
             if (op.idle) await rt.compact(undefined, { idle: true });
             else await rpc(w, "session.compact", { id: s.id });
-            // Harness's own compaction (an API model's) leaves a summary: the messages before it are no longer the conversation,
+            // Cavvy's own compaction (an API model's) leaves a summary: the messages before it are no longer the conversation,
             // and the CLI threads start over from it.
             prune(w, s);
             if (!isCli(model)) forgetSlots(w, s);
@@ -701,7 +701,7 @@ function check(w: World, start: StepStart, threads: Thread[]) {
         w.slots.set(key, t.id);
     }
 }
-/** #413: the session's threads no longer go on (a compaction or rewind of Harness's, a thread the CLI lost): forgotten. */
+/** #413: the session's threads no longer go on (a compaction or rewind of Cavvy's, a thread the CLI lost): forgotten. */
 function forgetSlots(w: World, s: FuzzSession, provider?: Cli) {
     for (const key of [...w.slots.keys()]) if (key.startsWith(`${s.id}|${provider ?? ""}`)) w.slots.delete(key);
 }
@@ -771,7 +771,7 @@ async function runOnce(seed: number, steps: number, replay?: Plan): Promise<{ fa
                 check(w, start, readThreads(w));
             } catch (e) {
                 // Anything else thrown is reported the same way, with where it was thrown.
-                const v = e instanceof Violation ? e : new Violation("harness error", `${(e as Error).stack?.split("\n").slice(0, 4).join("\n") ?? e}`);
+                const v = e instanceof Violation ? e : new Violation("cavvy error", `${(e as Error).stack?.split("\n").slice(0, 4).join("\n") ?? e}`);
                 notes.push(`${step}: ${op ? describe(op) : "(generating)"} FAILED ${v.message}`);
                 failure = { seed, step, invariant: v.invariant, message: v.message };
                 break;

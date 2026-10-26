@@ -101,7 +101,7 @@ export function gitEnvironment(o: { env?: Record<string, string>; privateEnv?: R
     // be fetched (and no ssh command run) even where git predates GIT_NO_LAZY_FETCH: listing
     // protocols allows only those, and this one doesn't exist.
     env.GIT_NO_LAZY_FETCH = "1";
-    env.GIT_ALLOW_PROTOCOL = "harness-none";
+    env.GIT_ALLOW_PROTOCOL = "cavvy-none";
     return env;
 }
 
@@ -167,7 +167,7 @@ interface Refs {
     default?: string;
 }
 
-/** What the Branch view compares with when no base is picked: Harness's main branch, as a short name and its full ref. */
+/** What the Branch view compares with when no base is picked: Cavvy's main branch, as a short name and its full ref. */
 export async function defaultBase(root: string): Promise<{ name: string; ref: string } | undefined> {
     const refs = await listRefs(root, Date.now() + DEADLINE_MS);
     return refs.default ? { name: refs.default, ref: refs.full.get(refs.default)! } : undefined;
@@ -186,7 +186,7 @@ async function listRefs(root: string, deadline: number): Promise<Refs> {
         const short = ref.replace(/^refs\/(heads|remotes)\//, "");
         if (!full.has(short)) full.set(short, ref);
     }
-    // Harness's main branch (as in gitSnapshot): what origin/HEAD points at,
+    // Cavvy's main branch (as in gitSnapshot): what origin/HEAD points at,
     // else main or master. The remote's copy, when there is one, is what a
     // branch was usually cut from; the local one is often behind.
     const fromOrigin = originHead.code === 0 ? trimNl(originHead.out).replace(/^refs\/remotes\//, "") : undefined;
@@ -666,10 +666,10 @@ async function collect(cwd: string, req: { scope: GitScope; base?: string; path?
         top = await git(cwd, ["rev-parse", "--show-toplevel"], { deadline });
     } catch (e) {
         if (e instanceof RpcError) throw e;
-        return notRepo(req.scope, "Git isn't available, so this shows the edits Harness made.");
+        return notRepo(req.scope, "Git isn't available, so this shows the edits Cavvy made.");
     }
     if (top.code !== 0 || !top.out.length) {
-        const reason = /dubious ownership/.test(top.err) ? "Git won't read this folder because another user owns it, so this shows the edits Harness made." : "This folder isn't a Git repository, so this shows the edits Harness made.";
+        const reason = /dubious ownership/.test(top.err) ? "Git won't read this folder because another user owns it, so this shows the edits Cavvy made." : "This folder isn't a Git repository, so this shows the edits Cavvy made.";
         return notRepo(req.scope, reason);
     }
     // A folder's name can end in a newline; only git's own is taken off.

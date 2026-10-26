@@ -2,9 +2,9 @@ import { knownSecrets } from "./redact";
 import { secretEnvVarNames } from "../auth/credentials";
 
 /**
- * Environment for every process the harness starts (shell, hooks, MCP
+ * Environment for every process Cavvy starts (shell, hooks, MCP
  * servers, git, ripgrep, editors): inherited, minus anything that holds an
- * API key the harness knows about. `extra` (settings `env`) may set any
+ * API key Cavvy knows about. `extra` (settings `env`) may set any
  * variable, but not to one of those keys: the model can read the shell's env.
  */
 export function childEnv(extra?: Record<string, string>): Record<string, string> {
@@ -21,6 +21,6 @@ export function childEnv(extra?: Record<string, string>): Record<string, string>
     env.PAGER = "cat";
     env.GIT_PAGER = "cat";
     env.GIT_TERMINAL_PROMPT = "0";
-    env.HARNESS = "1";
+    env.CAVVY = "1";
     return env;
 }

@@ -20,14 +20,14 @@ const repos: string[] = [];
 afterAll(() => { iso.cleanup(); for (const path of repos) rmSync(path, { recursive: true, force: true }); });
 
 function git(cwd: string, ...args: string[]): string {
-    const r = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Harness Test", "-c", "user.email=test@example.invalid", ...args]), { cwd, env: gitEnv(), stdout: "pipe", stderr: "pipe" });
+    const r = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Cavvy Test", "-c", "user.email=test@example.invalid", ...args]), { cwd, env: gitEnv(), stdout: "pipe", stderr: "pipe" });
     if (r.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr.toString()}`);
     return r.stdout.toString().trim();
 }
 
 /** A temp repository with one commit (realpath: macOS's /var is a link, and worktree paths come back resolved). */
 function repo(files: Record<string, string> = {}): string {
-    const dir = realpathSync(tempDir("harness-run-repo-"));
+    const dir = realpathSync(tempDir("cavvy-run-repo-"));
     repos.push(dir);
     git(dir, "init", "-q", "-b", "main");
     writeFileSync(join(dir, "README.md"), "# demo\n");
@@ -347,7 +347,7 @@ describe("run orchestration without sockets", () => {
     });
 
     test("non-Git folders, bypass mode and overlapping starts refuse without extra worktrees", async () => {
-        const plain = realpathSync(tempDir("harness-run-plain-"));
+        const plain = realpathSync(tempDir("cavvy-run-plain-"));
         repos.push(plain);
         const h = host({ setModel: () => true });
         await expect(startRun(h.h, request(plain))).rejects.toMatchObject({ code: "not_git" });
@@ -392,7 +392,7 @@ describe("current main compatibility", () => {
 
     test("an external linked Home with unsafe Git config refuses before creating anything", async () => {
         const main = repo({ ".mcp.json": '{"mcpServers":{}}' });
-        const parent = realpathSync(tempDir("harness-run-linked-"));
+        const parent = realpathSync(tempDir("cavvy-run-linked-"));
         repos.push(parent);
         const home = join(parent, "home");
         git(main, "worktree", "add", "-b", "external", home);
@@ -419,10 +419,10 @@ test("a store failure keeps that worktree unsent and the next model still starts
 
 test("committed project configuration behind a symlink is checked even when missing from dirty Home", async () => {
     const main = repo({ "config/settings.json": '{"hooks":{}}' });
-    symlinkSync("config", join(main, ".harness"));
-    git(main, "add", ".harness");
+    symlinkSync("config", join(main, ".cavvy"));
+    git(main, "add", ".cavvy");
     git(main, "commit", "-m", "Linked project configuration");
-    rmSync(join(main, ".harness"));
+    rmSync(join(main, ".cavvy"));
     const h = host({ setModel: () => true });
     await expect(startRun(h.h, request(main))).rejects.toMatchObject({ code: "needs_project_trust", folder: main });
     expect(worktreesOf(main)).toEqual([]);

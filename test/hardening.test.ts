@@ -7,7 +7,7 @@ import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
-const { home: HARNESS_HOME, cleanup } = isolate();
+const { home: CAVVY_HOME, cleanup } = isolate();
 const { dangerousReason, isReadOnlyCommand, sensitiveTarget, substitutionBodies } = await import("../src/permissions/bash-safety");
 const { bashRuleMatches, matchPath } = await import("../src/permissions/rules");
 const { PermissionChecker } = await import("../src/permissions/checker");
@@ -18,7 +18,7 @@ const { lineRedactor, registerSecret, unregisterSecret } = await import("../src/
 afterAll(cleanup);
 
 describe("Bash PWD", () => {
-    test("a stale PWD in the harness's environment doesn't reach the shell", async () => {
+    test("a stale PWD in Cavvy's environment doesn't reach the shell", async () => {
         const dir = realpathSync(tempDir());
         const link = join(tempDir(), "link");
         symlinkSync(dir, link);
@@ -147,13 +147,13 @@ describe("sensitiveTarget expands globs", () => {
         // bash's * skips dotfiles, so this never reads .env
         expect(sensitiveTarget("cat *", { cwd: proj })).toBeUndefined();
     });
-    test("only the harness's secrets are sensitive, not the rest of its home", () => {
-        const o = { cwd: proj, harnessHome: HARNESS_HOME };
-        expect(sensitiveTarget(`ls ${HARNESS_HOME}`, o)).toBeUndefined();
-        expect(sensitiveTarget(`ls ${HARNESS_HOME}/projects`, o)).toBeUndefined();
-        expect(sensitiveTarget(`cat ${HARNESS_HOME}/providers.json`, o)).toBe("the harness credential store");
-        expect(sensitiveTarget(`ls ${HARNESS_HOME}/accounts`, o)).toBe("the harness credential store");
-        expect(sensitiveTarget(`cat ${HARNESS_HOME}-other/x`, { cwd: proj, harnessHome: HARNESS_HOME })).toBeUndefined();
+    test("only Cavvy's secrets are sensitive, not the rest of its home", () => {
+        const o = { cwd: proj, cavvyHome: CAVVY_HOME };
+        expect(sensitiveTarget(`ls ${CAVVY_HOME}`, o)).toBeUndefined();
+        expect(sensitiveTarget(`ls ${CAVVY_HOME}/projects`, o)).toBeUndefined();
+        expect(sensitiveTarget(`cat ${CAVVY_HOME}/providers.json`, o)).toBe("Cavvy credential store");
+        expect(sensitiveTarget(`ls ${CAVVY_HOME}/accounts`, o)).toBe("Cavvy credential store");
+        expect(sensitiveTarget(`cat ${CAVVY_HOME}-other/x`, { cwd: proj, cavvyHome: CAVVY_HOME })).toBeUndefined();
     });
 });
 
@@ -169,9 +169,9 @@ describe("checker path handling", () => {
     test("a deny rule follows symlinks", () => {
         expect(checker.check(tool("Read", "read"), { file_path: join(proj, "innocent.txt") }, "auto", proj).behavior).toBe("deny");
     });
-    test("Grep over the harness home runs; Grep of a secret file is blocked", () => {
-        expect(checker.check(tool("Grep", "read"), { pattern: "sk-", path: HARNESS_HOME }, "bypassPermissions", proj).behavior).toBe("allow");
-        expect(checker.check(tool("Grep", "read"), { pattern: "sk-", path: join(HARNESS_HOME, "providers.json") }, "bypassPermissions", proj).behavior).toBe("deny");
+    test("Grep over Cavvy home runs; Grep of a secret file is blocked", () => {
+        expect(checker.check(tool("Grep", "read"), { pattern: "sk-", path: CAVVY_HOME }, "bypassPermissions", proj).behavior).toBe("allow");
+        expect(checker.check(tool("Grep", "read"), { pattern: "sk-", path: join(CAVVY_HOME, "providers.json") }, "bypassPermissions", proj).behavior).toBe("deny");
     });
     test("a .git file (worktree pointer) asks before edits", () => {
         expect(checker.check(tool("Write", "edit"), { file_path: join(proj, ".git"), content: "gitdir: /tmp/x" }, "acceptEdits", proj).behavior).toBe("ask");

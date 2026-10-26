@@ -61,7 +61,7 @@ export interface PlanState {
 const APPROVED_IN: Record<string, string> = { "accept edits": "auto-accept edits", manual: "ask for edits", auto: "auto mode" };
 
 /**
- * The plan's state, from its ExitPlanMode call: `waiting` while its request card is up. Harness's own agent
+ * The plan's state, from its ExitPlanMode call: `waiting` while its request card is up. Cavvy's own agent
  * names the mode it went on in ("permission mode: Accept edits"); Claude Code's result doesn't, so that's
  * just "Approved". Undefined while the call is still on its way to the card, or when it never got there.
  */

@@ -1,6 +1,6 @@
-// Secret redaction. Every API key the harness knows about is registered here,
+// Secret redaction. Every API key Cavvy knows about is registered here,
 // and all tool output / transcript text passes through `redact` before it is
-// shown, stored, or sent to a model. Known-format keys that the harness does
+// shown, stored, or sent to a model. Known-format keys that Cavvy does
 // not own (e.g. a teammate's key in a .env file) are caught by pattern.
 
 import { SECRET_PATTERNS as PATTERNS } from "./secret-patterns";

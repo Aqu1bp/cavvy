@@ -15,7 +15,7 @@ const bounds = { ...usageBounds };
 const now = Date.parse("2026-10-15T16:30:00Z");
 const fixture = (name: string) => readFileSync(join(import.meta.dir, "fixtures/usage", name), "utf8");
 function write(file: string, data: string) { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, data); return file; }
-const harnessLine = (model = "anthropic:claude-opus-5-5", cost = 1) => JSON.stringify({ t: "usage", at: now - 1000, model, cost, usage: { inputTokens: 100, outputTokens: 10 } }) + "\n";
+const cavvyLine = (model = "anthropic:claude-opus-5-5", cost = 1) => JSON.stringify({ t: "usage", at: now - 1000, model, cost, usage: { inputTokens: 100, outputTokens: 10 } }) + "\n";
 
 test("Anthropic search fees survive session reload and dashboard cost breakdown", async () => {
     const { Session } = await import("../src/agent/session");
@@ -58,7 +58,7 @@ test("cached Anthropic metadata cannot retain stale static prices", async () => 
 });
 beforeEach(() => {
     for (const root of [iso.home, claude, codex]) { rmSync(root, { recursive: true, force: true }); mkdirSync(root, { recursive: true }); }
-    process.env.HARNESS_HOME = iso.home; process.env.CLAUDE_CONFIG_DIR = claude; process.env.CODEX_HOME = codex;
+    process.env.CAVVY_HOME = iso.home; process.env.CLAUDE_CONFIG_DIR = claude; process.env.CODEX_HOME = codex;
     clearUsageCache(); Object.assign(usageBounds, bounds);
 });
 afterAll(() => { Object.assign(usageBounds, bounds); clearUsageCache(); iso.cleanup(); });
@@ -86,7 +86,7 @@ test("CLI fixtures: message/request dedupe, cumulative deltas, model switches an
 });
 
 test("CLI providers come exclusively from CLI transcripts; API providers keep recorded spend", async () => {
-    write(join(iso.home, "projects/p/harness.jsonl"), harnessLine("claude-code:claude-opus-5-5", 99) + harnessLine("codex:gpt-6-astra", 99) + harnessLine("openrouter:custom", 2));
+    write(join(iso.home, "projects/p/cavvy.jsonl"), cavvyLine("claude-code:claude-opus-5-5", 99) + cavvyLine("codex:gpt-6-astra", 99) + cavvyLine("openrouter:custom", 2));
     write(join(claude, "projects/p/a.jsonl"), fixture("claude-current.jsonl"));
     write(join(codex, "sessions/rollout-a.jsonl"), fixture("codex-current.jsonl"));
     const s = await usageSummary(1, now);
@@ -113,7 +113,7 @@ test("default selectors and named account folders contribute separate account/ti
     expect(usageDays(90)).toBe(90);
 });
 
-// A Harness-made account that shares Default's history (account-layout.ts): its history folders link Default's.
+// A Cavvy-made account that shares Default's history (account-layout.ts): its history folders link Default's.
 function sharedAccount(id: string) {
     const folders = { claude: join(iso.home, "accounts/claude", id), codex: join(iso.home, "accounts/codex", id) };
     for (const [folder, from, subs] of [[folders.claude, claude, ["projects"]], [folders.codex, codex, ["sessions", "archived_sessions"]]] as const) {
@@ -122,8 +122,8 @@ function sharedAccount(id: string) {
     saveAgentConfig("claude-code", { accounts: [{ id, name: id, folder: folders.claude, managed: true }] });
     saveAgentConfig("codex", { accounts: [{ id, name: id, folder: folders.codex, managed: true }] });
 }
-// The Harness session that ran native threads, through Session's own API; `steps` run with the clock at `at`.
-async function harnessSession(steps: [at: string, step: (s: any) => void][]) {
+// The Cavvy session that ran native threads, through Session's own API; `steps` run with the clock at `at`.
+async function cavvySession(steps: [at: string, step: (s: any) => void][]) {
     const { Session } = await import("../src/agent/session");
     const clock = spyOn(Date, "now");
     try {
@@ -143,10 +143,10 @@ function byAccount(s: Awaited<ReturnType<typeof usageSummary>>, source: string) 
     return out;
 }
 
-test("a Harness-made account sharing Default's history gets its own usage rows (#428)", async () => {
+test("a Cavvy-made account sharing Default's history gets its own usage rows (#428)", async () => {
     sharedAccount("second");
     try {
-        await harnessSession([
+        await cavvySession([
             ["2026-10-15T11:00:00Z", s => { s.setAccount("claude-code", "second"); s.setAccount("codex", "second"); }],
             ["2026-10-15T11:00:01Z", s => { s.setBackendSession("claude-code", "claude-session", 1); s.setBackendSession("codex", "codex-session", 1); }],
             ["2026-10-15T13:00:02Z", cliUsage("claude-code:claude-opus-5-5")],
@@ -154,9 +154,9 @@ test("a Harness-made account sharing Default's history gets its own usage rows (
         ]);
         write(join(claude, "projects/p/a.jsonl"), fixture("claude-current.jsonl"));
         write(join(codex, "sessions/rollout-a.jsonl"), fixture("codex-current.jsonl"));
-        // A Codex sub-agent or fork of the thread Harness ran goes with it.
+        // A Codex sub-agent or fork of the thread Cavvy ran goes with it.
         write(join(codex, "sessions/rollout-child.jsonl"), fixture("codex-fork.jsonl"));
-        // A plain terminal `claude` in the shared folder: no Harness session ran it, so it stays Default's.
+        // A plain terminal `claude` in the shared folder: no Cavvy session ran it, so it stays Default's.
         write(join(claude, "projects/p/terminal.jsonl"), fixture("claude-current.jsonl").replaceAll("claude-session", "terminal-session").replaceAll("msg-1", "msg-9"));
         const s = await usageSummary(1, now);
         expect(byAccount(s, "claude-code")).toEqual({ second: 150, default: 150 });
@@ -170,7 +170,7 @@ test("a Harness-made account sharing Default's history gets its own usage rows (
 test("a native thread moved to a sharing account (#399) splits its usage at the switch (#428)", async () => {
     sharedAccount("second");
     try {
-        const session = await harnessSession([
+        const session = await cavvySession([
             ["2026-10-15T11:00:00Z", s => { for (const p of ["claude-code", "codex"]) s.setBackendSession(p, p === "codex" ? "codex-session" : "claude-session", 1, accountPlace(p)); }],
             ["2026-10-15T12:00:01Z", cliUsage("claude-code:claude-opus-5-5")],
             ["2026-10-15T12:01:01Z", cliUsage("codex:gpt-6-astra")],
@@ -185,7 +185,7 @@ test("a native thread moved to a sharing account (#399) splits its usage at the 
         write(join(codex, "sessions/rollout-a.jsonl"), fixture("codex-current.jsonl"));
         const s = await usageSummary(1, now);
         expect(byAccount(s, "claude-code")).toEqual({ default: 100, second: 50 });
-        // A turn after the last one Harness recorded (still running, say) is the account's the session is on now.
+        // A turn after the last one Cavvy recorded (still running, say) is the account's the session is on now.
         expect(byAccount(s, "codex")).toEqual({ default: 800, second: 1000 });
         expect(s.sources.find(s => s.source === "claude-code")).toMatchObject({ sessions: 1, inputTokens: 150 });
         expect(s.sources.find(s => s.source === "codex")).toMatchObject({ sessions: 1, inputTokens: 1800 });
@@ -196,7 +196,7 @@ test("a fork on another sharing account keeps the history its native fork copied
     sharedAccount("second");
     try {
         let fork: any;
-        await harnessSession([
+        await cavvySession([
             ["2026-10-15T11:00:00Z", s => s.setBackendSession("claude-code", "claude-session", 1, accountPlace("claude-code"))],
             ["2026-10-15T13:00:01Z", cliUsage("claude-code:claude-opus-5-5")],
             ["2026-10-15T14:00:00Z", s => { fork = s.fork({ shareBackends: true }); fork.setAccount("claude-code", "second"); }],
@@ -219,10 +219,10 @@ const claudeReply = (at: string, session: string, id: string, input: number) =>
     JSON.stringify({ type: "assistant", timestamp: at, sessionId: session, requestId: `req-${id}`, message: { id: `msg-${id}`, model: "claude-opus-5-5", usage: { input_tokens: input, output_tokens: 1 } } }) + "\n";
 const resetAccounts = () => { saveAgentConfig("claude-code", { accounts: [] }); saveAgentConfig("codex", { accounts: [] }); };
 
-test("a Harness session file read only in part never moves usage already counted (#428)", async () => {
+test("a Cavvy session file read only in part never moves usage already counted (#428)", async () => {
     sharedAccount("second");
     try {
-        const session = await harnessSession([
+        const session = await cavvySession([
             ["2026-10-15T11:00:00Z", s => s.setBackendSession("claude-code", "claude-session", 1, accountPlace("claude-code"))],
             ["2026-10-15T12:00:01Z", cliUsage("claude-code:claude-opus-5-5")],
             ["2026-10-15T12:30:00Z", s => s.setAccount("claude-code", "second")],
@@ -244,7 +244,7 @@ test("a Harness session file read only in part never moves usage already counted
     } finally { resetAccounts(); }
 });
 
-test("nested native Codex agents go with the thread Harness ran (#428)", async () => {
+test("nested native Codex agents go with the thread Cavvy ran (#428)", async () => {
     sharedAccount("second");
     const rollout = (id: string, parent: string, minute: number, input: number) => [
         { timestamp: `2026-10-15T15:${minute}:00Z`, type: "session_meta", payload: { id, source: { subagent: { thread_spawn: { parent_thread_id: parent } } } } },
@@ -252,7 +252,7 @@ test("nested native Codex agents go with the thread Harness ran (#428)", async (
         { timestamp: `2026-10-15T15:${minute}:10Z`, type: "event_msg", payload: { type: "token_count", info: { total_token_usage: { input_tokens: input, output_tokens: 1 } } } },
     ].map(l => JSON.stringify(l)).join("\n") + "\n";
     try {
-        await harnessSession([
+        await cavvySession([
             ["2026-10-15T11:00:00Z", s => { s.setAccount("codex", "second"); s.setBackendSession("codex", "codex-root", 1); }],
             ["2026-10-15T15:30:00Z", cliUsage("codex:gpt-6-astra")],
         ]);
@@ -266,7 +266,7 @@ test("nested native Codex agents go with the thread Harness ran (#428)", async (
 test("a reply right after a switch is the new account's, though within the slack of the old one's last (#428)", async () => {
     sharedAccount("second");
     try {
-        await harnessSession([
+        await cavvySession([
             ["2026-10-15T11:00:00Z", s => s.setBackendSession("claude-code", "claude-session", 1, accountPlace("claude-code"))],
             ["2026-10-15T12:01:40Z", cliUsage("claude-code:claude-opus-5-5")],
             ["2026-10-15T12:01:41Z", s => s.setAccount("claude-code", "second")],
@@ -281,7 +281,7 @@ test.each([true, false])("a quick fork's copied history stays the original's, re
     sharedAccount("second");
     try {
         let fork: any;
-        await harnessSession([
+        await cavvySession([
             ["2026-10-15T12:00:00Z", s => s.setBackendSession("claude-code", "claude-session", 1, accountPlace("claude-code"))],
             ["2026-10-15T12:01:41Z", cliUsage("claude-code:claude-opus-5-5")],
             ["2026-10-15T12:01:42Z", s => { fork = s.fork({ shareBackends: true }); fork.setAccount("claude-code", "second"); }],
@@ -325,7 +325,7 @@ test("incremental cache resumes appends, keeps reducer state and ignores torn ta
 });
 
 test("bounds are strict, partial scans resume, and changed/truncated files invalidate cached state", async () => {
-    const line = harnessLine();
+    const line = cavvyLine();
     const file = write(join(iso.home, "projects/p/a.jsonl"), line.repeat(20));
     usageBounds.maxBytes = line.length * 3;
     const first = await scanUsage();
@@ -334,17 +334,17 @@ test("bounds are strict, partial scans resume, and changed/truncated files inval
     expect(first.files[0]!.records).toHaveLength(3);
     Object.assign(usageBounds, bounds);
     expect((await usageSummary(1, now)).totals.cost).toBe(20);
-    writeFileSync(file, harnessLine(undefined, 7));
+    writeFileSync(file, cavvyLine(undefined, 7));
     expect((await usageSummary(1, now)).totals.cost).toBe(7);
     // A growing rewrite with a different guard must restart, not append stale records.
-    writeFileSync(file, harnessLine(undefined, 9).repeat(4));
+    writeFileSync(file, cavvyLine(undefined, 9).repeat(4));
     expect((await usageSummary(1, now)).totals.cost).toBe(36);
     usageBounds.maxMs = -1;
     expect((await usageSummary(1, now)).truncated).toContain("took too long");
 });
 
 test("file discovery is bounded; symlinks are not followed into arbitrary files", async () => {
-    for (let i = 0; i < 6; i++) write(join(iso.home, `projects/p/${i}.jsonl`), harnessLine());
+    for (let i = 0; i < 6; i++) write(join(iso.home, `projects/p/${i}.jsonl`), cavvyLine());
     usageBounds.maxFiles = 2;
     const s = await usageSummary(1, now);
     expect(s.sessions).toBe(2); expect(s.truncated).toContain("2");
@@ -378,7 +378,7 @@ test("cache-write TTL and long-context pricing use all prompt tokens to choose t
 
 test("concrete historical models stay pinned, unresolved aliases and unknown API prices stay unknown", async () => {
     write(join(claude, "projects/p/a.jsonl"), fixture("claude-current.jsonl").replaceAll("claude-opus-5-5", "opus"));
-    write(join(iso.home, "projects/p/a.jsonl"), harnessLine("anthropic:claude-unreleased", 0));
+    write(join(iso.home, "projects/p/a.jsonl"), cavvyLine("anthropic:claude-unreleased", 0));
     const s = await usageSummary(1, now);
     expect(s.rows.every(r => r.unknown && r.cost === 0)).toBe(true);
     expect(s.approxPriced).toBe(2);
@@ -428,9 +428,9 @@ test("mixed last-only/cumulative events reconcile, counter resets and fast servi
     expect(s.totals.cost).toBeCloseTo(400 * 10 / 1e6 + 40 * 50 / 1e6 + 50 * 20 / 1e6 + 5 * 100 / 1e6, 10);
 });
 
-test("old Harness archives cannot exhaust the file budget before current CLI transcripts", async () => {
+test("old Cavvy archives cannot exhaust the file budget before current CLI transcripts", async () => {
     for (let i = 0; i < 10; i++) {
-        const path = write(join(iso.home, `projects/p/old-${i}.jsonl`), harnessLine());
+        const path = write(join(iso.home, `projects/p/old-${i}.jsonl`), cavvyLine());
         utimesSync(path, (now - 365 * 86400000) / 1000, (now - 365 * 86400000) / 1000);
     }
     write(join(claude, "projects/p/current.jsonl"), fixture("claude-current.jsonl"));
@@ -441,7 +441,7 @@ test("old Harness archives cannot exhaust the file budget before current CLI tra
     expect(s.truncated).toBeUndefined();
 });
 
-test("excluded Harness CLI usage still dates earlier undated API records", async () => {
+test("excluded Cavvy CLI usage still dates earlier undated API records", async () => {
     const undated = JSON.stringify({ t: "usage", model: "custom:model", cost: 1, usage: { inputTokens: 5, outputTokens: 0 } });
     const cli = JSON.stringify({ t: "usage", model: "codex:gpt-6-astra", at: now - 2 * 86400000, usage: { inputTokens: 99, outputTokens: 0 } });
     write(join(iso.home, "projects/p/old.jsonl"), undated + "\n" + cli + "\n");
@@ -467,18 +467,18 @@ test("append guards retain only a digest and length, including after skipped pro
     const reader = await readerWith();
     const secret = "private prompt never retained";
     const line = JSON.stringify({ type: "user", content: secret }) + "\n";
-    const file = write(join(iso.home, "projects/p/private.jsonl"), harnessLine() + line);
+    const file = write(join(iso.home, "projects/p/private.jsonl"), cavvyLine() + line);
     try {
         await reader.scanUsage();
         const entry = reader.cache.get(await (await import("fs/promises")).realpath(file));
-        const bytes = Buffer.from(harnessLine() + line).subarray(-64);
+        const bytes = Buffer.from(cavvyLine() + line).subarray(-64);
         expect(entry.guard).toEqual({ digest: (await import("crypto")).createHash("sha256").update(bytes).digest("hex"), length: bytes.length });
         expect(JSON.stringify([...reader.cache.values()])).not.toContain(secret);
-        appendFileSync(file, harnessLine());
+        appendFileSync(file, cavvyLine());
         const appended = await reader.scanUsage();
         expect(appended.files[0].records).toHaveLength(2);
-        expect(appended.bytesRead).toBe(64 + Buffer.byteLength(harnessLine()));
-        writeFileSync(file, harnessLine(undefined, 9).repeat(4));
+        expect(appended.bytesRead).toBe(64 + Buffer.byteLength(cavvyLine()));
+        writeFileSync(file, cavvyLine(undefined, 9).repeat(4));
         expect((await reader.scanUsage()).files[0].records.map((r: any) => r.cost)).toEqual([9, 9, 9, 9]);
     } finally { reader.clearUsageCache(); }
 });
@@ -524,7 +524,7 @@ test("discovery reserves reading time, resumes across refreshes and keeps cached
             for await (const entry of await opendir(dir)) { elapsed += 10; yield entry; }
         } }) });
     reader.usageBounds.maxMs = 40;
-    for (let i = 0; i < 12; i++) write(join(iso.home, `projects/p/${i}.jsonl`), harnessLine());
+    for (let i = 0; i < 12; i++) write(join(iso.home, `projects/p/${i}.jsonl`), cavvyLine());
     try {
         let scan = await reader.scanUsage(now - 86400000);
         expect(scan.truncated).toContain("took too long");
@@ -555,7 +555,7 @@ test("discovery restarts when the range narrows then widens between refreshes", 
     reader.usageBounds.maxMs = 40;
     const wide = now - 3 * 86400000, narrow = now - 86400000;
     for (let i = 0; i < 9; i++) {
-        const file = write(join(iso.home, `projects/${i}.jsonl`), harnessLine());
+        const file = write(join(iso.home, `projects/${i}.jsonl`), cavvyLine());
         utimesSync(file, (now - 2 * 86400000) / 1000, (now - 2 * 86400000) / 1000);
     }
     try {
@@ -577,7 +577,7 @@ test.each(["ENOENT", "EACCES"])("a discovery stat %s failure preserves surviving
         if (fail) { fail = false; failedFile = file; throw Object.assign(new Error(code), { code }); }
         return stat(file);
     } });
-    for (let i = 0; i < 3; i++) write(join(iso.home, `projects/${i}.jsonl`), harnessLine());
+    for (let i = 0; i < 3; i++) write(join(iso.home, `projects/${i}.jsonl`), cavvyLine());
     try {
         expect((await reader.scanUsage()).files).toHaveLength(3);
         fail = true;
@@ -592,7 +592,7 @@ test.each(["ENOENT", "EACCES"])("a discovery stat %s failure preserves surviving
 test("every refresh over the file budget reports truncation including cached candidates", async () => {
     const reader = await readerWith({ listAccounts: () => [] });
     reader.usageBounds.maxFiles = 2;
-    for (let i = 0; i < 3; i++) write(join(iso.home, `projects/${i}.jsonl`), harnessLine());
+    for (let i = 0; i < 3; i++) write(join(iso.home, `projects/${i}.jsonl`), cavvyLine());
     try {
         for (let refresh = 0; refresh < 6; refresh++) {
             const scan = await reader.scanUsage(now - 86400000);
@@ -609,7 +609,7 @@ test.each([false, true])("changing roots clears retired cache entries with disco
         paths: { projectsDir: () => root }, listAccounts: () => [],
         stat: async (file: string) => { elapsed += 30; return stat(file); } });
     for (const dir of ["original", "migrated"]) {
-        for (let i = 0; i < 2; i++) write(join(iso.home, dir, `${i}.jsonl`), harnessLine());
+        for (let i = 0; i < 2; i++) write(join(iso.home, dir, `${i}.jsonl`), cavvyLine());
     }
     try {
         reader.usageBounds.maxMs = paused ? 40 : 4000;
@@ -629,7 +629,7 @@ test.each([false, true])("changing roots clears retired cache entries with disco
 });
 
 test("aggregation yields a macrotask between bounded batches of cached records", async () => {
-    write(join(iso.home, "projects/p/batches.jsonl"), harnessLine().repeat(4001));
+    write(join(iso.home, "projects/p/batches.jsonl"), cavvyLine().repeat(4001));
     const records = (await scanUsage()).files[0]!.records;
     let yielded = false, observedYield = false;
     Object.defineProperty(records[0], "at", { get() { setImmediate(() => { yielded = true; }); return now - 1000; } });
@@ -647,11 +647,11 @@ test.each([14, 15])("slow %d ms metadata checks leave time to read and discovery
     const reader = await readerWith({ Date: { now: () => elapsed, parse: Date.parse },
         stat: async (file: string) => { elapsed += latency; return stat(file); } });
     reader.usageBounds.maxMs = 40;
-    for (let i = 0; i < 5; i++) write(join(iso.home, `projects/p/${i}.jsonl`), harnessLine());
+    for (let i = 0; i < 5; i++) write(join(iso.home, `projects/p/${i}.jsonl`), cavvyLine());
     try {
         let count = 0;
         for (let round = 1; round <= 2; round++) {
-            if (round === 2) for (let i = 0; i < 5; i++) appendFileSync(join(iso.home, `projects/p/${i}.jsonl`), harnessLine());
+            if (round === 2) for (let i = 0; i < 5; i++) appendFileSync(join(iso.home, `projects/p/${i}.jsonl`), cavvyLine());
             for (let refresh = 0; refresh < 8; refresh++) {
                 const scan = await reader.scanUsage(now - 86400000);
                 const records = scan.files.reduce((sum: number, f: any) => sum + f.records.length, 0);
@@ -666,7 +666,7 @@ test.each([14, 15])("slow %d ms metadata checks leave time to read and discovery
 });
 
 test("aggregation keeps its deadline after yielding between batches", async () => {
-    write(join(iso.home, "projects/p/deadline.jsonl"), harnessLine().repeat(4001));
+    write(join(iso.home, "projects/p/deadline.jsonl"), cavvyLine().repeat(4001));
     const records = (await scanUsage()).files[0]!.records;
     let elapsed = now;
     const clock = spyOn(Date, "now").mockImplementation(() => elapsed);

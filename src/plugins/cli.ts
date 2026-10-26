@@ -1,4 +1,4 @@
-// `harness plugin …` and `/plugin …`: one parser and one set of messages for
+// `cavvy plugin …` and `/plugin …`: one parser and one set of messages for
 // both. The TUI's bare /plugin opens a browser instead (src/commands/plugins.ts).
 
 import { existsSync, statSync } from "fs";
@@ -82,14 +82,14 @@ export async function runPluginCli(argv: string[], cwd: string, trusted: boolean
                 const l = listPlugins(cwd, trusted);
                 const mine = l.plugins.filter((p) => p.installed || p.missing);
                 if (!mine.length) {
-                    out(st.muted(l.marketplaces.length ? `No plugins installed. ${l.plugins.length} available: browse with /plugin, or harness plugin install <name>.` : "No plugins installed, and no marketplaces added. Add one with: harness plugin marketplace add <owner/repo | git URL | folder>"));
+                    out(st.muted(l.marketplaces.length ? `No plugins installed. ${l.plugins.length} available: browse with /plugin, or cavvy plugin install <name>.` : "No plugins installed, and no marketplaces added. Add one with: cavvy plugin marketplace add <owner/repo | git URL | folder>"));
                     return done(false);
                 }
                 for (const p of mine) {
                     const state = p.missing ? st.warning("not installed") : p.enabled ? st.success("on") : st.muted("off");
                     out(`${st.bold(p.id)}${p.installed ? st.muted(` v${p.installed.version}`) : ""}  ${state}${scopesText(p) ? st.muted(`  · ${scopesText(p)}`) : ""}`);
                     if (p.installed) out(st.muted(`  ${countsText(p.installed.counts)}${p.description ? ` · ${p.description.length > 90 ? `${p.description.slice(0, 89)}…` : p.description}` : ""}`));
-                    if (p.missing) out(st.muted(`  turned on in settings; install it with: harness plugin install ${p.id}`));
+                    if (p.missing) out(st.muted(`  turned on in settings; install it with: cavvy plugin install ${p.id}`));
                     if (p.orphaned) out(st.muted("  no longer listed by its marketplace"));
                     for (const e of p.errors) out(st.warning(`  ${e}`));
                 }

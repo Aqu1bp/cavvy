@@ -1,4 +1,4 @@
-// Starts configured MCP servers and exposes their tools as harness tools
+// Starts configured MCP servers and exposes their tools as Cavvy tools
 // named mcp__<server>__<tool>.
 //
 // Sources: "mcpServers" in user/local settings (trusted), and the project's
@@ -252,7 +252,7 @@ export class McpManager {
 
     /** Start permission, independent of connection status except "disable for this session"; copy the raw approved config without resolving or masking it. */
     approvedServers(): ApprovedMcpServers {
-        // Approvals as saved now: another Harness process may have revoked one (or blanket approval) since load().
+        // Approvals as saved now: another Cavvy process may have revoked one (or blanket approval) since load().
         let still: (st: ServerState) => boolean;
         try {
             const settings = this.reloadSettings ? loadSettings(this.cwd, { trusted: this.trusted }) : this.settings();
@@ -536,7 +536,7 @@ export class McpManager {
         // Its saved approval wouldn't count until then.
         if (a.reason === "unreadable") throw new McpApprovalError(approvalReason(a)!, "blocked");
         // Trusted for this session only, for having had nothing to protect when it was opened, isn't the user's say-so.
-        if (!trustedByUser(this.cwd)) throw new McpApprovalError("You haven't trusted this folder yourself: Harness trusted it for this session only, because it had nothing to protect when it was opened. Trust the folder first, then approve its servers.", "needs_trust");
+        if (!trustedByUser(this.cwd)) throw new McpApprovalError("You haven't trusted this folder yourself: Cavvy trusted it for this session only, because it had nothing to protect when it was opened. Trust the folder first, then approve its servers.", "needs_trust");
         if (st.config.disabled === true) throw new McpApprovalError(`"${name}" is turned off in .mcp.json ("disabled": true).`, "blocked");
         if (a.fingerprint !== fingerprint) throw new McpApprovalError(`What "${name}" runs changed since it was shown to you. Look at it again before approving.`, "changed");
         saveApproval(this.cwd, name, a.fingerprint);
@@ -571,7 +571,7 @@ export class McpManager {
         await Promise.all([...this.servers.values()].map((s) => s.client?.close()));
     }
 
-    /** Harness tool wrappers for every connected server's tools. */
+    /** Cavvy tool wrappers for every connected server's tools. */
     tools(): Tool<any>[] {
         const out: Tool<any>[] = [];
         const self = this;

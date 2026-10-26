@@ -28,7 +28,7 @@ export function publishFixtures(home: string) {
         const remote = `${cwd}-remote`; mkdirSync(remote);
         git(remote, "init", "--bare", "-q", "-b", "main");
         git(cwd, "init", "-q", "-b", "main");
-        git(cwd, "config", "user.name", "Harness Test"); git(cwd, "config", "user.email", "test@example.invalid"); git(cwd, "config", "commit.gpgsign", "false");
+        git(cwd, "config", "user.name", "Cavvy Test"); git(cwd, "config", "user.email", "test@example.invalid"); git(cwd, "config", "commit.gpgsign", "false");
         git(cwd, "commit", "--allow-empty", "-qm", "Initial");
         git(cwd, "remote", "add", "origin", remote);
         git(cwd, "push", "-qu", "origin", "main");

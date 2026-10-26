@@ -1,6 +1,6 @@
 // What a run without a terminal needs before its first prompt: settings, the
 // session (new or resumed), the model and its client, tools, permissions and
-// MCP servers, and the agent on top. `harness -p` (headless.ts) and the SDK
+// MCP servers, and the agent on top. `cavvy -p` (headless.ts) and the SDK
 // (src/sdk) both start here, so a feature added to one reaches the other.
 
 import { Agent, type AgentHost } from "./agent/agent";
@@ -152,9 +152,9 @@ async function setupWith(o: RunSetupOptions, settings: Settings, resumed: Sessio
         }
         if (pick) ref = modelRef(pick);
     }
-    if (!ref) throw new SetupError("No model configured. Add a key with `harness auth add` (or run `harness` and use /login), or pass --model provider:model.");
+    if (!ref) throw new SetupError("No model configured. Add a key with `cavvy auth add` (or run `cavvy` and use /login), or pass --model provider:model.");
     const parsed = parseModelRef(ref);
-    if (!parsed || !getProvider(parsed.provider)) throw new SetupError(`Invalid model "${ref}". Use provider:model, e.g. anthropic:claude-opus-5-5. See \`harness models\`.`);
+    if (!parsed || !getProvider(parsed.provider)) throw new SetupError(`Invalid model "${ref}". Use provider:model, e.g. anthropic:claude-opus-5-5. See \`cavvy models\`.`);
     let client: ProviderClient;
     try {
         client = await clientFor(parsed.provider);
@@ -184,7 +184,7 @@ async function setupWith(o: RunSetupOptions, settings: Settings, resumed: Sessio
     await within(mcp.startAll(), 15_000);
     for (const s of mcp.servers.values()) {
         if (s.status === "failed") o.warn(`MCP server ${s.name} failed: ${(s.error ?? "").split("\n")[0]}`);
-        if (s.status === "needs-approval") o.warn(`MCP server ${s.name} from .mcp.json is not approved${s.approval?.reason === "changed" ? " (what it runs changed since it was approved)" : ""}; run harness interactively and use /mcp to approve it.`);
+        if (s.status === "needs-approval") o.warn(`MCP server ${s.name} from .mcp.json is not approved${s.approval?.reason === "changed" ? " (what it runs changed since it was approved)" : ""}; run cavvy interactively and use /mcp to approve it.`);
     }
 
     const provider = getProvider(model.provider)!;

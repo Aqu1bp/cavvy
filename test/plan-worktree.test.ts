@@ -40,7 +40,7 @@ class Client {
     views = new Map<string, View>();
     private listeners = new Set<() => void>();
     constructor() {
-        this.ws = new WebSocket(`ws://127.0.0.1:${srv.port}/ws`, { protocols: ["harness.v1", `auth.${TOKEN}`] } as any);
+        this.ws = new WebSocket(`ws://127.0.0.1:${srv.port}/ws`, { protocols: ["cavvy.v1", `auth.${TOKEN}`] } as any);
         this.ws.onmessage = (m) => {
             const msg = JSON.parse(String(m.data));
             if ("event" in msg) {
@@ -114,14 +114,14 @@ const done = (v: View) => !v.state.busy && v.turns.length > 0 && lastTurn(v).sta
 const tools = (t: Turn) => t.blocks.filter((b): b is ToolBlock => b.t === "tool");
 
 function git(cwd: string, ...args: string[]): string {
-    const r = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Harness Test", "-c", "user.email=test@example.invalid", ...args]), { cwd, env: gitEnv(), stdout: "pipe", stderr: "pipe" });
+    const r = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Cavvy Test", "-c", "user.email=test@example.invalid", ...args]), { cwd, env: gitEnv(), stdout: "pipe", stderr: "pipe" });
     if (r.exitCode !== 0) throw new Error(r.stderr.toString());
     return r.stdout.toString().trim();
 }
 
 /** A repository with a few files, and (with `origin`) a bare remote its main branch is pushed to. */
 function repo(name: string, o: { origin?: boolean } = {}): string {
-    const root = realpathSync(tempDir("harness-plan-"));
+    const root = realpathSync(tempDir("cavvy-plan-"));
     const path = join(root, name);
     mkdirSync(join(path, "src", "auth"), { recursive: true });
     writeFileSync(join(path, "src", "auth", "index.ts"), "export const strategies = [emailStrategy];\n");
@@ -253,7 +253,7 @@ describe("implementing a plan in a new worktree", () => {
         expect(c.view(id).state.interactions).toHaveLength(1);
         await c.call("session.interrupt", { id });
 
-        const plain = realpathSync(tempDir("harness-plan-plain-"));
+        const plain = realpathSync(tempDir("cavvy-plan-plain-"));
         writeFileSync(join(plain, "a.ts"), "");
         const other = await planningSession(c, plain);
         const info = await c.call<PlanInfo>("session.planInfo", { id: other.id });
@@ -277,8 +277,8 @@ describe("implementing a plan in a new worktree", () => {
         // Project config checked in: the worktree is made, but its session waits for trust. Nothing is deleted.
         const repo2 = repo("configured");
         // Project config is the folder's own: the session will work in src/, as the planning one does.
-        mkdirSync(join(repo2, "src", ".harness"));
-        writeFileSync(join(repo2, "src", ".harness", "settings.json"), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: "true" }] }] } }));
+        mkdirSync(join(repo2, "src", ".cavvy"));
+        writeFileSync(join(repo2, "src", ".cavvy", "settings.json"), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: "true" }] }] } }));
         git(repo2, "add", "-A");
         git(repo2, "commit", "-q", "-m", "config");
         // The planning folder itself is trusted; the new worktree, a different folder, isn't (until trusted).
@@ -302,7 +302,7 @@ describe("implementing a plan in a new worktree", () => {
 });
 
 describe("saving a plan", () => {
-    test("by default in the Harness home, privately; or a chosen file; never overwriting without asking", async () => {
+    test("by default in the Cavvy home, privately; or a chosen file; never overwriting without asking", async () => {
         const main = repo("save");
         const c = await client();
         const { id } = await planningSession(c, main);
@@ -329,7 +329,7 @@ describe("saving a plan", () => {
 
     test("refuses escapes, links out, .git and other names, writing nothing outside", async () => {
         const main = repo("escape");
-        const outside = realpathSync(tempDir("harness-plan-outside-"));
+        const outside = realpathSync(tempDir("cavvy-plan-outside-"));
         symlinkSync(outside, join(main, "linked"));
         symlinkSync(join(outside, "target.md"), join(main, "link.md"));
         const c = await client();

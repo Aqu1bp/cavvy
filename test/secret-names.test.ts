@@ -74,7 +74,7 @@ function repo(cwd: string) {
         return r.stdout.toString();
     };
     git("init", "-q", "-b", "main");
-    git("config", "user.name", "Harness Test");
+    git("config", "user.name", "Cavvy Test");
     git("config", "user.email", "test@example.invalid");
     git("config", "commit.gpgsign", "false");
     git("config", "core.hooksPath", join(cwd, ".git", "hooks"));

@@ -281,7 +281,7 @@ function mainCalls(...calls: [string, string, Record<string, unknown>][]) {
 }
 
 function defineAgent(name: string, front: string, body = "You are a test agent.", where: "project" | "user" = "project") {
-    const dir = where === "project" ? join(cwd, ".harness", "agents") : join(home, "agents");
+    const dir = where === "project" ? join(cwd, ".cavvy", "agents") : join(home, "agents");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, `${name}.md`), file(`name: ${name}\ndescription: test\n${front}`, body));
 }
@@ -418,7 +418,7 @@ describe("running", () => {
         expect(result("t2")!.content).toContain("parent");
     });
 
-    test("memory: MEMORY.md in its prompt, file tools added, and writes there aren't harness config", async () => {
+    test("memory: MEMORY.md in its prompt, file tools added, and writes there aren't Cavvy config", async () => {
         defineAgent("rememberer", "memory: project\ntools: Grep");
         const dir = agentMemoryDir("project", "rememberer", cwd);
         mkdirSync(dir, { recursive: true });
@@ -431,7 +431,7 @@ describe("running", () => {
         expect(system).toContain(`You keep a memory for this project (it can be checked in and shared) in ${dir}`);
         expect(system).toContain("- The tests live in test/.");
         expect(childRequests[0]!.tools.map((t) => t.name).sort()).toEqual(["Edit", "Grep", "Read", "Write"]);
-        // .harness/ is config, which always asks; its agent-memory/ isn't.
+        // .cavvy/ is config, which always asks; its agent-memory/ isn't.
         expect(asked).toHaveLength(0);
         expect(readFileSync(join(dir, "testing.md"), "utf-8")).toContain("Use bun.");
     });
@@ -441,7 +441,7 @@ describe("running", () => {
         mainCalls(["t1", "Task", task("private")]);
         const { run } = await makeAgent();
         await run("go");
-        expect(readFileSync(join(cwd, ".harness", "agent-memory-local", ".gitignore"), "utf-8")).toBe("*\n");
+        expect(readFileSync(join(cwd, ".cavvy", "agent-memory-local", ".gitignore"), "utf-8")).toBe("*\n");
         expect(childRequests[0]!.system).toContain("MEMORY.md is empty or doesn't exist yet.");
     });
 
@@ -786,7 +786,7 @@ describe("background", () => {
 // The permission checker and memory folders
 
 describe("checker", () => {
-    test("an agent's memory folder isn't harness config for that agent alone; a link out still is", () => {
+    test("an agent's memory folder isn't Cavvy config for that agent alone; a link out still is", () => {
         const settings = {};
         const checker = new PermissionChecker(() => settings, cwd);
         const write = BUILTIN_TOOLS.find((t) => t.name === "Write")!;
@@ -794,13 +794,13 @@ describe("checker", () => {
         const decide = (p: string, memoryDir: string | null = mem) => checker.check(write, { file_path: p, content: "x" }, "acceptEdits", cwd, { memoryDir: memoryDir ?? undefined });
         mkdirSync(mem, { recursive: true });
         expect(decide(join(mem, "MEMORY.md")).behavior).toBe("allow");
-        // Another agent (or the main one) is asked, as for any harness config.
+        // Another agent (or the main one) is asked, as for any Cavvy config.
         expect(decide(join(mem, "MEMORY.md"), agentMemoryDir("project", "other", cwd)).behavior).toBe("ask");
         expect(decide(join(mem, "MEMORY.md"), null).behavior).toBe("ask");
-        expect(decide(join(cwd, ".harness", "settings.json")).behavior).toBe("ask");
-        symlinkSync(join(cwd, ".harness", "settings.json"), join(mem, "evil.md"));
+        expect(decide(join(cwd, ".cavvy", "settings.json")).behavior).toBe("ask");
+        symlinkSync(join(cwd, ".cavvy", "settings.json"), join(mem, "evil.md"));
         expect(decide(join(mem, "evil.md")).behavior).toBe("ask");
-        // User memory lives in the harness home: the same holds there.
+        // User memory lives in Cavvy home: the same holds there.
         const user = agentMemoryDir("user", "r", cwd);
         expect(decide(join(user, "MEMORY.md"), user).behavior).not.toBe("deny");
         expect(decide(join(user, "MEMORY.md"), null).behavior).toBe("ask");
@@ -811,15 +811,15 @@ describe("checker", () => {
         const checker = new PermissionChecker(() => settings, cwd);
         const write = BUILTIN_TOOLS.find((t) => t.name === "Write")!;
         const decide = (p: string, memoryDir: string) => checker.check(write, { file_path: p, content: "x" }, "acceptEdits", cwd, { memoryDir });
-        mkdirSync(join(cwd, ".harness", "agent-memory"), { recursive: true });
-        // worker -> .harness: its "settings.json" is the project's settings.
+        mkdirSync(join(cwd, ".cavvy", "agent-memory"), { recursive: true });
+        // worker -> .cavvy: its "settings.json" is the project's settings.
         const worker = agentMemoryDir("project", "worker", cwd);
-        symlinkSync(join(cwd, ".harness"), worker);
+        symlinkSync(join(cwd, ".cavvy"), worker);
         const d = decide(join(worker, "settings.json"), worker);
         expect(d.behavior).toBe("ask");
         expect((d as any).config).toBe(true);
-        // agent-memory-local -> .harness: an agent named "agents" would write agent definitions.
-        symlinkSync(join(cwd, ".harness"), join(cwd, ".harness", "agent-memory-local"));
+        // agent-memory-local -> .cavvy: an agent named "agents" would write agent definitions.
+        symlinkSync(join(cwd, ".cavvy"), join(cwd, ".cavvy", "agent-memory-local"));
         const agents = agentMemoryDir("local", "agents", cwd);
         expect(decide(join(agents, "evil.md"), agents).behavior).toBe("ask");
     });

@@ -37,7 +37,7 @@ test("a heredoc's body is one kind, whole, up to its end word; what follows is a
     expect(kinds(highlightShell("cat <<-END\nnot END\n\tEND\nls"), "f")).toEqual(["cat", "ls"]);
 });
 
-test("the exit code is the last one the output or summary says, in Harness's words or Codex's", () => {
+test("the exit code is the last one the output or summary says, in Cavvy's words or Codex's", () => {
     expect(exitCode({ output: "error: x\n\nExit code: 1" })).toBe(1);
     expect(exitCode({ output: "Exit code 127" })).toBe(127);
     expect(exitCode({ summary: "Exit code 2", output: "" })).toBe(2);
@@ -95,13 +95,13 @@ test("a command the server cut short isn't offered for copying", () => {
     expect(commandCut("bun test")).toBe(false);
 });
 
-test("a command's background task: the one linked to its call, else the Harness shell its result names", () => {
-    const task = (o: Record<string, unknown>) => ({ provider: "harness", kind: "shell", label: "npm run dev", startedAt: 1, status: "running", stoppable: true, ...o }) as any;
+test("a command's background task: the one linked to its call, else the Cavvy shell its result names", () => {
+    const task = (o: Record<string, unknown>) => ({ provider: "cavvy", kind: "shell", label: "npm run dev", startedAt: 1, status: "running", stoppable: true, ...o }) as any;
     const linked = task({ id: "b7", toolUseId: "call1", provider: "claude-code" });
     const shell = task({ id: "bash_2" });
     const tasks = [task({ id: "bash_1" }), shell, linked];
     expect(taskOf({ id: "call1", input: { command: "npm run dev" } }, tasks)).toBe(linked);
-    // Harness's shells aren't linked to their call: its result names the shell.
+    // Cavvy's shells aren't linked to their call: its result names the shell.
     const started = { id: "call2", input: { command: "npm run dev", run_in_background: true }, output: "Started background shell bash_2 (pid 41). Use BashOutput…", startedAt: 1, durationMs: 20 };
     expect(taskOf(started, tasks)).toBe(shell);
     expect(taskOf({ ...started, output: undefined, summary: "Running in background as bash_2" }, tasks)).toBe(shell);
@@ -112,9 +112,9 @@ test("a command's background task: the one linked to its call, else the Harness 
     expect(taskOf({ id: "call3", input: { command: "ls" } }, tasks)).toBeUndefined();
 });
 
-test("a Harness shell id used again after a restart doesn't link an old command's row to the new shell", () => {
+test("a Cavvy shell id used again after a restart doesn't link an old command's row to the new shell", () => {
     // Shell ids are counted per process: before a restart, call2 started bash_1 at t=1000; after it, a new bash_1 starts at t=900000.
-    const fresh = { id: "bash_1", provider: "harness", kind: "shell", label: "npm run dev", startedAt: 900_000, status: "running", stoppable: true } as any;
+    const fresh = { id: "bash_1", provider: "cavvy", kind: "shell", label: "npm run dev", startedAt: 900_000, status: "running", stoppable: true } as any;
     const old = { id: "call2", input: { command: "npm run dev", run_in_background: true }, output: "Started background shell bash_1 (pid 41).", startedAt: 1000, durationMs: 15 };
     expect(taskOf(old, [fresh])).toBeUndefined();
     // Its own shell, started while the call ran, still matches; a call with no start time can't be matched by id at all.

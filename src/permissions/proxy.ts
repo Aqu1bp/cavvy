@@ -149,7 +149,7 @@ export async function startProxy(rules: HostRule[]): Promise<CommandProxy> {
     // command could reach it too; the password keeps each to its own hosts.
     // (A program running as the user can read it from the command's environment.)
     const password = randomBytes(18).toString("base64url");
-    const expected = `Basic ${Buffer.from(`harness:${password}`).toString("base64")}`;
+    const expected = `Basic ${Buffer.from(`cavvy:${password}`).toString("base64")}`;
     const sockets = new Set<Socket>();
     let closed = false;
     const track = (s: Socket) => {
@@ -181,7 +181,7 @@ export async function startProxy(rules: HostRule[]): Promise<CommandProxy> {
         const [method = "", target = "", version = "HTTP/1.1"] = requestLine.split(" ");
         const auth = headers.find((h) => /^proxy-authorization:/i.test(h))?.replace(/^[^:]*:\s*/, "");
         // Some clients (git) only send credentials once asked for them.
-        if (auth !== expected) return reply(client, 407, "Proxy authentication required", ['Proxy-Authenticate: Basic realm="harness"']);
+        if (auth !== expected) return reply(client, 407, "Proxy authentication required", ['Proxy-Authenticate: Basic realm="cavvy"']);
         let host: string;
         let port: number;
         let forward: string | undefined;
@@ -209,7 +209,7 @@ export async function startProxy(rules: HostRule[]): Promise<CommandProxy> {
         const label = hostPort(host, port);
         if (!rules.some((r) => ruleMatches(r, host, port))) {
             refuse({ host, port });
-            return reply(client, 403, `The harness sandbox doesn't allow ${label}. List the host in allowedHosts to ask for it.`);
+            return reply(client, 403, `Cavvy sandbox doesn't allow ${label}. List the host in allowedHosts to ask for it.`);
         }
         let addresses = [host];
         if (!isIP(host)) {
@@ -244,12 +244,12 @@ export async function startProxy(rules: HostRule[]): Promise<CommandProxy> {
         server.listen(0, "127.0.0.1", () => resolve());
     });
     const { port } = server.address() as { port: number };
-    // A failed accept (too many open files, say) mustn't take the harness down.
+    // A failed accept (too many open files, say) mustn't take Cavvy down.
     server.on("error", () => {});
-    // The proxy mustn't keep the harness alive on its own.
+    // The proxy mustn't keep Cavvy alive on its own.
     server.unref();
     return {
-        url: `http://harness:${password}@127.0.0.1:${port}`,
+        url: `http://cavvy:${password}@127.0.0.1:${port}`,
         refused: () => [...refused.values()],
         close: () => {
             closed = true;

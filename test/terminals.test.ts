@@ -304,9 +304,9 @@ describe("embedded terminals", () => {
             delete process.env.GIT_PAGER;
             delete process.env.GIT_TERMINAL_PROMPT;
             const env = terminalEnv();
-            for (const k of ["TMUX", "ITERM_SESSION_ID", "VSCODE_PID", "GIT_PAGER", "GIT_TERMINAL_PROMPT", "HARNESS"]) expect(env[k]).toBeUndefined();
+            for (const k of ["TMUX", "ITERM_SESSION_ID", "VSCODE_PID", "GIT_PAGER", "GIT_TERMINAL_PROMPT", "CAVVY"]) expect(env[k]).toBeUndefined();
             expect(env.PAGER).toBe("less -R");
-            expect(env.TERM_PROGRAM).toBe("Harness");
+            expect(env.TERM_PROGRAM).toBe("Cavvy");
             expect(env.TERM).toBe("xterm-256color");
         } finally { for (const k of keys) if (before[k] === undefined) delete process.env[k]; else process.env[k] = before[k]; }
     });

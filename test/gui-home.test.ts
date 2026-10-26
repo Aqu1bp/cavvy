@@ -1,4 +1,4 @@
-// Home (gui/src/components/Home.tsx, CliSessions.tsx, ComposerMeter.tsx), rendered by the harness (no browser):
+// Home (gui/src/components/Home.tsx, CliSessions.tsx, ComposerMeter.tsx), rendered by Cavvy (no browser):
 // the composer's strip and its prefixes, the cards before the first message, the sessions from this project's
 // terminal to carry on here, and the limit pill Home shows in place of the context ring.
 import { expect, test } from "bun:test";
@@ -25,7 +25,7 @@ const stub = () => undefined;
 
 const MIN = 60_000;
 const session = (id: string, o: Partial<CliSessionInfo> = {}): CliSessionInfo => ({ source: "claude-code", id, title: `Session ${id}`, updatedAt: Date.now() - 10 * MIN, messages: 4, partial: false, recent: false, ...o });
-const source = (o: Partial<CliSourceInfo> = {}): CliSourceInfo => ({ source: "claude-code", name: "Claude Code", enabled: true, more: 0, moreInHarness: 0, ...o });
+const source = (o: Partial<CliSourceInfo> = {}): CliSourceInfo => ({ source: "claude-code", name: "Claude Code", enabled: true, more: 0, moreInCavvy: 0, ...o });
 
 function cli(sessions: CliSessionInfo[], sources: CliSourceInfo[] = [source()], rows?: number, providers: { id: string; configured: boolean }[] = []) {
     const continued: string[] = [];
@@ -47,20 +47,20 @@ function cli(sessions: CliSessionInfo[], sources: CliSourceInfo[] = [source()], 
         basename: (p: string) => p.split("/").pop(),
         now: () => Date.now(),
     });
-    const tree = CliSessions({ cwd: "/work/harness", rows, onShown: (n: number) => void shown.push(n) });
+    const tree = CliSessions({ cwd: "/work/cavvy", rows, onShown: (n: number) => void shown.push(n) });
     const rowsOf = () => byClass(tree, "div", "cli-row");
     return { tree, continued, tabs, shown, refetched: () => refetched, rows: rowsOf, text: text(tree) };
 }
 
-test("Home lists the three newest sessions not yet in Harness, each with its mark, messages and model", () => {
+test("Home lists the three newest sessions not yet in Cavvy, each with its mark, messages and model", () => {
     const r = cli([
         session("old", { updatedAt: Date.now() - 3 * 1440 * MIN }),
         session("new", { updatedAt: Date.now() - 6 * MIN, messages: 5, partial: true, model: "Opus 5.5", recent: true }),
         session("mid", { source: "codex", updatedAt: Date.now() - 2 * 60 * MIN, messages: 1, model: "GPT-6" }),
         session("older", { updatedAt: Date.now() - 4 * 1440 * MIN }),
-        session("here", { updatedAt: Date.now(), harnessId: "s1" }),
+        session("here", { updatedAt: Date.now(), cavvyId: "s1" }),
     ], [source(), source({ source: "codex", name: "Codex" })]);
-    // Newest first; the one already in Harness isn't offered here.
+    // Newest first; the one already in Cavvy isn't offered here.
     expect(r.rows().map((row) => row.props["aria-label"])).toEqual(["Import “Session new” from Claude Code", "Import “Session mid” from Codex", "Import “Session old” from Claude Code"]);
     expect(r.shown).toEqual([3]);
     expect(elements(elements(r.tree, "section"), "ProviderIcon").map((i) => i.props.id)).toEqual(["claude-code", "codex", "claude-code"]);
@@ -110,8 +110,8 @@ test("a CLI turned on in Settings while Home is up imports at once: the provider
     expect(gone.tabs).toEqual(["providers"]);
 });
 
-test("with nothing to import the section is gone, even with sessions already in Harness", () => {
-    const r = cli([session("here", { harnessId: "s1" })]);
+test("with nothing to import the section is gone, even with sessions already in Cavvy", () => {
+    const r = cli([session("here", { cavvyId: "s1" })]);
     expect(elements(r.tree, "section")).toHaveLength(0);
     // The dialog stays mounted (closed), so an open one survives the list reloading.
     expect(elements(r.tree, "Dialog").map((d) => d.props.open)).toEqual([false]);
@@ -132,16 +132,16 @@ test("a short column shows fewer rows; Show all is there only when it lists more
     expect(short.shown).toEqual([1]);
     expect(short.text).toContain("Show all 3");
     expect(cli([session("a")], [source()], 0).rows()).toHaveLength(0);
-    // Everything shows, and nothing is in Harness or left out: no Show all.
+    // Everything shows, and nothing is in Cavvy or left out: no Show all.
     expect(cli([session("a"), session("b")]).text).not.toContain("Show all");
     expect(cli([session("a")], [source({ more: 2 })]).text).toContain("Show all 1");
-    expect(cli([session("a"), session("h", { harnessId: "s1" })]).text).toContain("Show all 1");
+    expect(cli([session("a"), session("h", { cavvyId: "s1" })]).text).toContain("Show all 1");
 });
 
-test("Show all lists every one to import, then those already in Harness (Open), and what isn't listed", async () => {
+test("Show all lists every one to import, then those already in Cavvy (Open), and what isn't listed", async () => {
     const r = cli(
-        [session("a", { updatedAt: Date.now() - 30 * MIN }), session("b", { updatedAt: Date.now() - 2 * MIN }), session("h", { harnessId: "s9", title: "Already here" })],
-        [source({ more: 1, moreInHarness: 2 }), source({ source: "codex", name: "Codex", more: 3 })],
+        [session("a", { updatedAt: Date.now() - 30 * MIN }), session("b", { updatedAt: Date.now() - 2 * MIN }), session("h", { cavvyId: "s9", title: "Already here" })],
+        [source({ more: 1, moreInCavvy: 2 }), source({ source: "codex", name: "Codex", more: 3 })],
     );
     const all = elements(r.tree, "button").find((b) => text(b) === "Show all 2")!;
     all.props.onClick();
@@ -149,12 +149,12 @@ test("Show all lists every one to import, then those already in Harness (Open), 
     const dialog = elements(r.tree, "Dialog")[0]!;
     expect(dialog.props.title).toBe("Continue from your terminal");
     const body = text(dialog.children);
-    expect(body).toStartWith("Claude Code and Codex sessions started in harness. Importing one opens it here on the same session.");
+    expect(body).toStartWith("Claude Code and Codex sessions started in cavvy. Importing one opens it here on the same session.");
     const items = byClass(dialog, "button", "cl-item");
     expect(items.map((i) => text(byClass(i, "span", "cl-act")))).toEqual(["Import", "Import", "Open"]);
     expect(text(items[0]!)).toContain("Session b");
-    expect(text(byClass(dialog, "div", "cl-sub"))).toBe("Already in Harness");
-    expect(byClass(dialog, "div", "cl-note").map(text)).toEqual(["2 more already in Harness not shown", "1 more Claude Code session not shown", "3 more Codex sessions not shown"]);
+    expect(text(byClass(dialog, "div", "cl-sub"))).toBe("Already in Cavvy");
+    expect(byClass(dialog, "div", "cl-note").map(text)).toEqual(["2 more already in Cavvy not shown", "1 more Claude Code session not shown", "3 more Codex sessions not shown"]);
     items[2]!.props.onClick();
     await Bun.sleep(0);
     expect(r.continued).toEqual(["h"]);
@@ -198,7 +198,7 @@ function home(o: { cwd?: string; needsTrust?: string[]; models?: unknown[]; prov
         node, Show, For, createSignal, onCleanup: stub, onMount: stub, React: { Fragment: "Fragment" },
         createResource: () => [() => ({ needsTrust: o.needsTrust ?? [], git: true, branch: "main" }), { refetch: stub }],
         ChevronDown: "ChevronDown", Folder: "Folder", FolderGit2: "FolderGit2", FolderOpen: "FolderOpen", KeyRound: "KeyRound", Plug: "Plug", ShieldAlert: "ShieldAlert",
-        app: { conn: "open", homeCwd: o.cwd === undefined ? "/work/harness" : o.cwd || undefined, providers: o.providers ?? [], projects: [], models: o.models ?? [{ models: [{}] }], modelsLoaded: true, modelsLoading: false },
+        app: { conn: "open", homeCwd: o.cwd === undefined ? "/work/cavvy" : o.cwd || undefined, providers: o.providers ?? [], projects: [], models: o.models ?? [{ models: [{}] }], modelsLoaded: true, modelsLoading: false },
         refreshProjects: stub, reportError: stub, rpc: {}, chooseProject: stub,
         connectCli: async (pr: { id: string }) => (connected.push(pr.id), true),
         openProject: stub,
@@ -222,8 +222,8 @@ test("Home is the question, then the composer with the project, its worktree and
     expect(h.composer.props.placeholder).toBe("Describe a task or ask a question");
     expect(h.composer.props.variant).toBe("home");
     const chip = byClass(h.strip, "button", "strip-ctl")[0]!;
-    expect(text(chip)).toBe("harness");
-    expect(elements(h.strip, "WorktreePicker")[0]!.props).toMatchObject({ cwd: "/work/harness", branch: "main" });
+    expect(text(chip)).toBe("cavvy");
+    expect(elements(h.strip, "WorktreePicker")[0]!.props).toMatchObject({ cwd: "/work/cavvy", branch: "main" });
     const hints = elements(byClass(h.strip, "span", "strip-hints"), "button");
     expect(hints.map((b) => [text(elements(b, "kbd")), text(b)])).toEqual([["/", "/commands"], ["@", "@files"], ["!", "!shell"]]);
     // Pressing one leaves the caret in the composer.
@@ -232,7 +232,7 @@ test("Home is the question, then the composer with the project, its worktree and
     expect(prevented).toBe(true);
     // No cards when there's nothing to ask.
     expect(byClass(h.tree, "div", "hcard")).toHaveLength(0);
-    expect(h.cliProps[0]).toMatchObject({ cwd: "/work/harness", rows: 3 });
+    expect(h.cliProps[0]).toMatchObject({ cwd: "/work/cavvy", rows: 3 });
 });
 
 test("/ and ! type only into an empty composer, as it is when clicked, whatever filled or cleared it; @ goes anywhere", () => {
@@ -280,7 +280,7 @@ test("the trust card lists the folder's files and keeps both answers", async () 
     expect(trust!.props.class).toBe("pbtn primary");
     await skip!.props.onClick();
     await trust!.props.onClick();
-    expect(h.trusts).toEqual([["/work/harness", false], ["/work/harness", true]]);
+    expect(h.trusts).toEqual([["/work/cavvy", false], ["/work/cavvy", true]]);
     // A card above the composer leaves less room for terminal rows.
     expect(home({ needsTrust: [".mcp.json"], height: 600 }).cliProps[0]!.rows).toBeLessThan(home({ height: 600 }).cliProps[0]!.rows);
 });

@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { appendFileSync, realpathSync } from "fs";
 import { isolate, tempDir } from "./helpers/isolate";
 
-const { home: HARNESS_HOME, cleanup } = isolate();
+const { home: CAVVY_HOME, cleanup } = isolate();
 const { App } = await import("../src/ui/app");
 const { Session, listSessions, findSession } = await import("../src/agent/session");
 const { summaryMessage } = await import("../src/agent/compact");
@@ -18,7 +18,7 @@ import type { AssistantMessage, ChatRequest, Message } from "../src/providers/ty
 import type { TodoItem } from "../src/tools/types";
 
 beforeAll(() => {
-    process.env.HARNESS_HOME = HARNESS_HOME;
+    process.env.CAVVY_HOME = CAVVY_HOME;
 });
 afterAll(cleanup);
 

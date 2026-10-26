@@ -2,7 +2,7 @@
 // tests (#409): a session switched between models, providers and accounts, and what each CLI was sent.
 //
 // Call switchKit(isolate()) at the top of the test file, after isolate() and before any other src import: src
-// modules are loaded here with import(), so they see the isolated HARNESS_HOME. It registers its own cleanup.
+// modules are loaded here with import(), so they see the isolated CAVVY_HOME. It registers its own cleanup.
 
 import { afterAll, afterEach } from "bun:test";
 import { chmodSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
@@ -73,7 +73,7 @@ export async function switchKit(iso: { home: string; cleanup: () => void }) {
     /**
      * A session in the Runtime on `provider`, live (a process kept for the session) or a process per turn. The fakes
      * keep transcripts in each home's history folder (FAKE_TRANSCRIPTS) and resume only what they find there, as the
-     * CLIs do: Default's home is the isolated CLAUDE_CONFIG_DIR / CODEX_HOME, which Harness-made accounts link.
+     * CLIs do: Default's home is the isolated CLAUDE_CONFIG_DIR / CODEX_HOME, which Cavvy-made accounts link.
      */
     async function app(provider: Cli, live: boolean, o: { env?: Record<string, string>; settings?: Record<string, unknown> } = {}) {
         for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_")) delete process.env[k];
@@ -171,7 +171,7 @@ export async function switchKit(iso: { home: string; cleanup: () => void }) {
         };
     }
 
-    /** A Harness-made account (its CLI shares Default's history), or one on an existing folder (a history of its own). */
+    /** A Cavvy-made account (its CLI shares Default's history), or one on an existing folder (a history of its own). */
     function account(provider: Cli, kind: "shared" | "own") {
         const id = `gap-${kind}-${++seq}`;
         const a = addAccount(provider, { id, name: id, ...(kind === "own" ? { folder: join(iso.home, `${provider}-${id}`) } : {}) });

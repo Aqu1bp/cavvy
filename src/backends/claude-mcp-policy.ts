@@ -14,14 +14,14 @@ interface ClaudeMcpPolicy {
 const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 
 /**
- * The definition fields Harness's approval fingerprint covers (mcpFingerprint), plus ones that
+ * The definition fields Cavvy's approval fingerprint covers (mcpFingerprint), plus ones that
  * run nothing. Claude Code acts on others (headersHelper runs a program), which an approval
  * doesn't bind, so a definition with any other field isn't passed on. `oauth` is fingerprinted:
  * Claude Code signs in to such a server itself.
  */
 const BOUND_FIELDS = new Set(["command", "args", "env", "cwd", "url", "headers", "type", "disabled", "oauth"]);
 
-/** Claude Code expands ${VAR} in definitions; Harness doesn't, so an approval binds only the literal text. */
+/** Claude Code expands ${VAR} in definitions; Cavvy doesn't, so an approval binds only the literal text. */
 const expands = (v: unknown): boolean => typeof v === "string" ? v.includes("${") : Array.isArray(v) ? v.some(expands) : record(v) ? Object.values(v).some(expands) : false;
 
 /** One transport, as Claude Code will read it: `type` isn't fingerprinted, so it may not pick between a command and a URL. */
@@ -35,7 +35,7 @@ function oneTransport(config: Record<string, unknown>): boolean {
 }
 
 /**
- * An oauth block Claude Code reads as Harness does: its schema has scopes as one string and no
+ * An oauth block Claude Code reads as Cavvy does: its schema has scopes as one string and no
  * inline clientSecret (it keeps that in its own credential store), so a block with either isn't passed on.
  */
 const claudeOAuth = (oauth: unknown) => oauth === undefined || (record(oauth) && Object.keys(oauth).every((k) => ["clientId", "callbackPort", "scopes"].includes(k)) && (oauth.scopes === undefined || typeof oauth.scopes === "string"));
@@ -98,7 +98,7 @@ export function claudeMcpPolicy(cwd: string, approved: ApprovedMcpServers | unde
                         disabled.add(name);
                         stale = true;
                     }
-                    // Claude ignores server cwd; compare the directory Harness would actually use (a relative one is the project's).
+                    // Claude ignores server cwd; compare the directory Cavvy would actually use (a relative one is the project's).
                     else if (serverCwd(entry.config, approved.cwd) === real) enabled.push(name);
                     else {
                         disabled.add(name);
@@ -115,7 +115,7 @@ export function claudeMcpPolicy(cwd: string, approved: ApprovedMcpServers | unde
             ...(incompatibleCwd || unboundField || stale ? { warning: [
                 incompatibleCwd && "Claude Code skipped approved project MCP servers whose working directory differs from the project root because it ignores server cwd.",
                 stale && "Claude Code skipped approved project MCP servers whose definitions no longer resolve to what was approved (a symlinked working directory may point elsewhere now); reopen /mcp to review them.",
-                unboundField && "Claude Code skipped approved project MCP servers that it would read differently from what Harness approved: fields an approval doesn't cover (such as headersHelper) or an oauth block it reads differently (an inline clientSecret, scopes as a list), ${VAR} expansion, or a type that doesn't match a single command or URL.",
+                unboundField && "Claude Code skipped approved project MCP servers that it would read differently from what Cavvy approved: fields an approval doesn't cover (such as headersHelper) or an oauth block it reads differently (an inline clientSecret, scopes as a list), ${VAR} expansion, or a type that doesn't match a single command or URL.",
             ].filter(Boolean).join(" ") } : {}),
         };
     } catch {

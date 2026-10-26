@@ -1,5 +1,5 @@
 // Diagnostics after Codex's edits: Codex has no language servers of its own,
-// so the harness checks the files it changed and steers new problems into
+// so Cavvy checks the files it changed and steers new problems into
 // its running turn (or, once that has ended, tells the user). A fake `codex`
 // and a fake language server (test/fixtures); no network.
 

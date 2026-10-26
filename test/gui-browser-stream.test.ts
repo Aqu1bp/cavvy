@@ -12,9 +12,9 @@ const { startServer } = await import("../src/server/server");
 const { forgetChromeLookup } = await import("../src/browser/chrome");
 
 test.skipIf(!chromePath)("Retina pane paints real remote clicks, text and scroll; stream reconnect and resize preserve chat", async () => {
-    const scratch = realpathSync(mkdtempSync(join(tmpdir(), "harness-stream-e2e-")));
-    const before = process.env.HARNESS_BROWSER;
-    process.env.HARNESS_BROWSER = chromePath!;
+    const scratch = realpathSync(mkdtempSync(join(tmpdir(), "cavvy-stream-e2e-")));
+    const before = process.env.CAVVY_BROWSER;
+    process.env.CAVVY_BROWSER = chromePath!;
     forgetChromeLookup();
     const profile = join(scratch, "viewer");
     let browser: ReturnType<typeof Bun.spawn> | undefined;
@@ -59,7 +59,7 @@ test.skipIf(!chromePath)("Retina pane paints real remote clicks, text and scroll
         if (browser) await browser.exited;
         await server?.stop();
         site?.stop(true);
-        process.env.HARNESS_BROWSER = before;
+        process.env.CAVVY_BROWSER = before;
         forgetChromeLookup();
         rmSync(scratch, { recursive: true, force: true });
     }

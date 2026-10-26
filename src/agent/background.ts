@@ -1,12 +1,12 @@
-// A harness session's background work as one list (#219 §2): what agent CLIs
+// A Cavvy session's background work as one list (#219 §2): what agent CLIs
 // report (Claude Code's background sub-agents, shells and monitors), the tasks
 // the session delegated to other models, and its own background shells and
 // monitors. It's held per session, not per turn or per Agent: a task outlives
 // the turn that started it, and the model it ran under.
 //
 // The list is kept in the session log ({t:"bgtask"} lines, src/agent/session.ts).
-// None of these outlive the harness process, so a task the log has as running
-// when the session is opened again stopped when Harness quit: it's shown as
+// None of these outlive Cavvy process, so a task the log has as running
+// when the session is opened again stopped when Cavvy quit: it's shown as
 // such, and the agent is told with the next prompt.
 
 import type { BackgroundStop } from "../backends/types";
@@ -39,7 +39,7 @@ const RECENT_KEPT = 20;
 export class SessionBackground {
     /** What agent CLIs reported, by id. */
     private reported = new Map<string, BackgroundTaskInfo>();
-    /** Running when the session was last open: they stopped when Harness quit, and the agent hasn't been told yet. */
+    /** Running when the session was last open: they stopped when Cavvy quit, and the agent hasn't been told yet. */
     private lost: BackgroundTaskInfo[] = [];
     /** The user cleared the finished ones from the list (the lost ones too, though the agent is still told of those). */
     private lostCleared = false;
@@ -116,7 +116,7 @@ export class SessionBackground {
     /**
      * What the session's views show: the tasks running now; those that ended since the session was opened,
      * until the user clears them; and (until the agent is told with the next prompt, or they're cleared)
-     * those that stopped when Harness quit.
+     * those that stopped when Cavvy quit.
      */
     shown(src: BackgroundSources = {}): BackgroundTaskInfo[] {
         const running = this.list(src).filter((t) => t.status === "running");
@@ -153,7 +153,7 @@ export class SessionBackground {
             if (!now) {
                 // Taken out of its list while running (the agent's KillShell removes the shell it stops; a rebuilt
                 // Agent's delegated tasks go with the old one): it was stopped. Kept so in the log, or reopening
-                // would say Harness's quitting stopped it.
+                // would say Cavvy's quitting stopped it.
                 const ended: BackgroundTaskInfo = { ...was, status: "stopped", endedAt: this.now() };
                 const logged = this.log?.backgroundTasks.get(id);
                 if (logged?.status === "running" && logged.startedAt === was.startedAt) this.log!.recordBackgroundTask(ended);
@@ -265,11 +265,11 @@ export class SessionBackground {
         }
     }
 
-    /** Tasks that stopped when Harness quit that the agent hasn't been told of: told now, so the log has them stopped. */
+    /** Tasks that stopped when Cavvy quit that the agent hasn't been told of: told now, so the log has them stopped. */
     takeLost(): BackgroundTaskInfo[] {
         const lost = this.lost.splice(0);
         for (const t of lost) {
-            // Not if a newer task has its id (ids start again with each harness process).
+            // Not if a newer task has its id (ids start again with each Cavvy process).
             const logged = this.log?.backgroundTasks.get(t.id);
             if (logged?.status === "running" && logged.startedAt === t.startedAt) this.log!.recordBackgroundTask(t);
         }
@@ -288,7 +288,7 @@ export class SessionBackground {
     }
 }
 
-/** A task by its id and start: ids start again (a shell's with each harness process, a delegated task's with each Agent). */
+/** A task by its id and start: ids start again (a shell's with each Cavvy process, a delegated task's with each Agent). */
 function taskKey(t: Pick<BackgroundTaskInfo, "id" | "startedAt">): string {
     return `${t.id}@${t.startedAt}`;
 }
@@ -298,7 +298,7 @@ function matches(at: number | undefined, t: Pick<BackgroundTaskInfo, "startedAt"
     return at === undefined || at === t.startedAt;
 }
 
-/** A shell by its id and start: ids start again with each harness process. */
+/** A shell by its id and start: ids start again with each Cavvy process. */
 function shellKey(s: Pick<BackgroundShell, "id" | "startedAt">): string {
     return `${s.id}@${s.startedAt}`;
 }
@@ -306,7 +306,7 @@ function shellKey(s: Pick<BackgroundShell, "id" | "startedAt">): string {
 /**
  * Leaving the session while its shells run on (the TUI's /new and /resume): they're no longer followed here,
  * so its log has them stopped. Otherwise, reopened in another process after they ended, the session would say
- * Harness's quitting stopped them; opened again in this one while they run, they're its own again.
+ * Cavvy's quitting stopped them; opened again in this one while they run, they're its own again.
  */
 export function leaveShells(log: BackgroundLog, shells: ReadonlyMap<string, BackgroundShell>, now = Date.now()): void {
     for (const s of shells.values()) {
@@ -317,7 +317,7 @@ export function leaveShells(log: BackgroundLog, shells: ReadonlyMap<string, Back
 
 /**
  * Leaving the session (the TUI's /new and /resume) with an Agent that's replaced: the delegated tasks it runs stop
- * with it, after the log is left. Its log has them stopped now, or reopening would say Harness's quitting stopped them.
+ * with it, after the log is left. Its log has them stopped now, or reopening would say Cavvy's quitting stopped them.
  */
 export function leaveDelegated(log: BackgroundLog, tasks: readonly DelegatedTask[], now = Date.now()): void {
     for (const d of tasks) {
@@ -341,11 +341,11 @@ export function delegatedInfo(t: DelegatedTask): BackgroundTaskInfo {
     };
 }
 
-/** A background shell or monitor of the harness's own as a background task. */
+/** A background shell or monitor of Cavvy's own as a background task. */
 export function shellInfo(s: BackgroundShell): BackgroundTaskInfo {
     return {
         id: s.id,
-        provider: "harness",
+        provider: "cavvy",
         kind: s.monitor ? "monitor" : "shell",
         label: (s.monitor?.description ?? s.command).trim().split("\n")[0]!.slice(0, 200),
         startedAt: s.startedAt,
@@ -375,7 +375,7 @@ function span(ms: number): string {
     return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 }
 
-/** For the agent, with the next prompt: what stopped when Harness quit (as a backend's stopped work is said, agent.ts recordBackendTurn). */
+/** For the agent, with the next prompt: what stopped when Cavvy quit (as a backend's stopped work is said, agent.ts recordBackendTurn). */
 export function lostNote(tasks: readonly BackgroundTaskInfo[]): string {
     return `These background tasks stopped when ${APP_TITLE} quit: ${tasks.map((t) => `${describeTask(t)} (${t.id})`).join("; ")}. They are no longer running and will not produce further results. Restart them only if still needed; do not wait for their old task IDs.`;
 }

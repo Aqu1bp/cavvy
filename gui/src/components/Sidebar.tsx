@@ -252,7 +252,7 @@ function PlanGauge(p: { plan: RailPlan }) {
 }
 
 /**
- * Beside Settings while the desktop app has an update from main, or one is running: one click updates it, and Harness
+ * Beside Settings while the desktop app has an update from main, or one is running: one click updates it, and Cavvy
  * restarts once the new build is installed. Its look says how it stands (the accent: ready; a spinner: building or
  * restarting; red: the last one failed, click to try again), its tooltip the rest. Settings → About has the detail.
  */

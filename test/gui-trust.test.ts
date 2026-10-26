@@ -8,7 +8,7 @@ function dialog(purpose?: "mcp-approval") {
     const TrustDialog = componentCode("TrustDialog", {
         createUniqueId: () => "trust-title",
         node, Show: "Show", ShieldAlert: "ShieldAlert", Dialog: "Dialog",
-        createResource: () => [() => ({ needsTrust: [".mcp.json", ".harness/settings.json"] })],
+        createResource: () => [() => ({ needsTrust: [".mcp.json", ".cavvy/settings.json"] })],
         trustRequest: () => request,
         setTrustRequest: (next: unknown) => { request = next; },
         trustAndContinue: async (...args: unknown[]) => { decisions.push(args); },

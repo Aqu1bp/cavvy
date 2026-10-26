@@ -9,7 +9,7 @@
 
 import type { HookConfig } from "./settings";
 
-/** Every event the harness runs hooks for, in the order /hooks lists them. */
+/** Every event Cavvy runs hooks for, in the order /hooks lists them. */
 export const HOOK_EVENTS = [
     "SessionStart",
     "InstructionsLoaded",
@@ -124,7 +124,7 @@ export function normalizeHooks(raw: unknown, warn?: (msg: string) => void, extra
     const out: Partial<Record<HookEvent, HookConfig[]>> = {};
     for (const [event, list] of Object.entries(r)) {
         if (!isHookEvent(event)) {
-            warn?.(`hooks: ${event} isn't a hook event the harness runs`);
+            warn?.(`hooks: ${event} isn't a hook event Cavvy runs`);
             continue;
         }
         const l = normalizeHookList(list, warn && ((msg) => warn(msg.replace(/^hooks: /, `hooks: ${event}: `))), extra);

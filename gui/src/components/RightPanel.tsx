@@ -71,7 +71,7 @@ function WorkspaceButton(p: { handle: SessionHandle }) {
 type Listed = { path: string; change: Change; added: number; removed: number; kind?: GitFileDiff["kind"]; from?: string; pathToken?: string };
 
 /**
- * What changed in the folder: Git's uncommitted changes, whoever made them, or Harness's own
+ * What changed in the folder: Git's uncommitted changes, whoever made them, or Cavvy's own
  * record of its edits outside a repository. The files open the diff reader.
  */
 function useFolderChanges(handle: () => SessionHandle) {
@@ -132,8 +132,8 @@ function FileRow(p: { f: Listed; onOpen: () => void }) {
 /** The Changes pane: the counts, then each file; a file opens the diff reader on it. */
 function ChangesPane(p: { changes: ReturnType<ReturnType<typeof useFolderChanges>> }) {
     const c = () => p.changes;
-    // Git's uncommitted view, or (outside a repository) Harness's own record.
-    const open = (path?: string, token?: string) => openReview(path, c()?.repo === false ? "harness" : "uncommitted", undefined, token);
+    // Git's uncommitted view, or (outside a repository) Cavvy's own record.
+    const open = (path?: string, token?: string) => openReview(path, c()?.repo === false ? "cavvy" : "uncommitted", undefined, token);
     return (
         <Show when={c()} fallback={<div class="blank" aria-busy="true"><Spinner size={16} /></div>}>
             {(ch) => (
@@ -152,7 +152,7 @@ function ChangesPane(p: { changes: ReturnType<ReturnType<typeof useFolderChanges
                                 }
                             >
                                 <b>No changes yet</b>
-                                {ch().repo ? "The working tree matches the last commit." : ch().untracked ? "This session isn't saved yet." : "Files Harness edits in this session show up here."}
+                                {ch().repo ? "The working tree matches the last commit." : ch().untracked ? "This session isn't saved yet." : "Files Cavvy edits in this session show up here."}
                             </Show>
                             <button class="link-btn" onClick={() => open()}>
                                 {ch().repo ? "Review the branch or a turn" : "Open the diff reader"}

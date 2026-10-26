@@ -1,4 +1,4 @@
-// `harness --worktree [name]`: start the session in a worktree of its own,
+// `cavvy --worktree [name]`: start the session in a worktree of its own,
 // and on exit remove it when nothing was done there, or ask, or keep it.
 // The Git side is src/server/worktrees.ts (shared with the GUI); this is the
 // terminal side: the questions, and what's printed.

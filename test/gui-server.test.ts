@@ -26,7 +26,7 @@ writeFileSync(join(iso.home, "settings.json"), JSON.stringify({ model: "mock:moc
 let srv: Awaited<ReturnType<typeof startServer>>;
 const projects: string[] = [];
 function project(): string {
-    const dir = createDemoProject(tempDir("harness-gui-proj-"), { git: false });
+    const dir = createDemoProject(tempDir("cavvy-gui-proj-"), { git: false });
     projects.push(dir);
     return dir;
 }
@@ -52,7 +52,7 @@ function commitRepo(cwd: string) {
         return result.stdout.toString();
     };
     git("init", "-q", "-b", "main");
-    git("config", "user.name", "Harness Test");
+    git("config", "user.name", "Cavvy Test");
     git("config", "user.email", "test@example.invalid");
     git("config", "commit.gpgsign", "false");
     git("config", "core.hooksPath", join(cwd, ".git", "hooks"));
@@ -84,7 +84,7 @@ class Client {
 
     /** `window`: the window's key, presented as the GUI does. */
     constructor(token = TOKEN, headers: Record<string, string> = {}, port = srv.port, window?: string) {
-        this.ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { protocols: ["harness.v1", `auth.${token}`, ...(window ? [`window.${window}`] : [])], headers } as any);
+        this.ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { protocols: ["cavvy.v1", `auth.${token}`, ...(window ? [`window.${window}`] : [])], headers } as any);
         // Calls the connection took with it fail then, saying why, rather than waiting out the test's timeout.
         this.ws.addEventListener("close", (e) => {
             const closed = new Error(`The connection closed before the reply came (${(e as CloseEvent).code} ${(e as CloseEvent).reason})`.trim());
@@ -189,7 +189,7 @@ class Client {
 /** A fake `claude` (test/fixtures) in a folder of its own, with none of other test files' FAKE_* settings. */
 function fakeClaude(): string {
     for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_")) delete process.env[k];
-    const bin = tempDir("harness-gui-cli-");
+    const bin = tempDir("cavvy-gui-cli-");
     writeFileSync(join(bin, "claude"), `#!/bin/sh\nexec "${process.execPath}" "${join(import.meta.dir, "fixtures", "fake-claude.ts")}" "$@"\n`);
     chmodSync(join(bin, "claude"), 0o755);
     return join(bin, "claude");
@@ -198,7 +198,7 @@ function fakeClaude(): string {
 /** A fake `codex` (test/fixtures) in a folder of its own, with none of other test files' FAKE_* settings. */
 function fakeCodex(): string {
     for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_")) delete process.env[k];
-    const bin = tempDir("harness-gui-cli-");
+    const bin = tempDir("cavvy-gui-cli-");
     writeFileSync(join(bin, "codex"), `#!/bin/sh\nexec "${process.execPath}" "${join(import.meta.dir, "fixtures", "fake-codex.ts")}" "$@"\n`);
     chmodSync(join(bin, "codex"), 0o755);
     return join(bin, "codex");
@@ -230,11 +230,11 @@ describe("connecting", () => {
         const { redact } = await import("../src/util/redact");
         const { childEnv } = await import("../src/util/env");
         expect(redact(`token ${TOKEN}`)).not.toContain(TOKEN);
-        process.env.HARNESS_GUI_TOKEN = TOKEN;
+        process.env.CAVVY_GUI_TOKEN = TOKEN;
         try {
             expect(Object.values(childEnv())).not.toContain(TOKEN);
         } finally {
-            delete process.env.HARNESS_GUI_TOKEN;
+            delete process.env.CAVVY_GUI_TOKEN;
         }
     });
 
@@ -1261,8 +1261,8 @@ describe("connecting", () => {
         await engine.stop();
     });
 
-    test("a short HARNESS_GUI_TOKEN is refused", () => {
-        const r = Bun.spawnSync([process.execPath, "--no-env-file", join(import.meta.dir, "..", "src", "index.ts"), "serve", "--handshake"], { env: { ...process.env, HARNESS_GUI_TOKEN: "dev" } as Record<string, string>, stdin: "ignore" });
+    test("a short CAVVY_GUI_TOKEN is refused", () => {
+        const r = Bun.spawnSync([process.execPath, "--no-env-file", join(import.meta.dir, "..", "src", "index.ts"), "serve", "--handshake"], { env: { ...process.env, CAVVY_GUI_TOKEN: "dev" } as Record<string, string>, stdin: "ignore" });
         expect(r.exitCode).toBe(1);
         expect(r.stderr.toString()).toContain("at least 16 characters");
     });
@@ -1309,7 +1309,7 @@ describe("sessions", () => {
     test("stopping a first turn while its git snapshot is read ends it then, and stops its git calls", async () => {
         const cwd = project();
         commitRepo(cwd);
-        const bin = tempDir("harness-slow-git-");
+        const bin = tempDir("cavvy-slow-git-");
         const finished = join(bin, "log-finished");
         // `git log` (the snapshot's recent commits) takes a while; everything else is git as usual.
         writeFileSync(join(bin, "git"), `#!/bin/sh\ncase " $* " in *" log "*) sleep 1.5; touch '${finished}';; esac\nexec '${Bun.which("git")}' "$@"\n`, { mode: 0o700 });
@@ -1833,11 +1833,11 @@ describe("sessions", () => {
 
     test("a folder with configuration needs a trust decision first", async () => {
         const dir = project();
-        mkdirSync(join(dir, ".harness"), { recursive: true });
-        writeFileSync(join(dir, ".harness/settings.json"), JSON.stringify({ permissions: { allow: ["Bash"] } }));
+        mkdirSync(join(dir, ".cavvy"), { recursive: true });
+        writeFileSync(join(dir, ".cavvy/settings.json"), JSON.stringify({ permissions: { allow: ["Bash"] } }));
         const c = await client();
         const info = await c.call("projects.inspect", { path: dir });
-        expect(info.needsTrust).toEqual([".harness/settings.json"]);
+        expect(info.needsTrust).toEqual([".cavvy/settings.json"]);
         await expect(c.call("session.create", { cwd: dir })).rejects.toThrow(/Trust the folder/);
         await c.call("projects.trust", { path: dir, trust: false });
         const id = await c.open("session.create", { cwd: dir });
@@ -1853,9 +1853,9 @@ describe("sessions", () => {
         c.close();
     });
 
-    test("the git view shows what a shell command changed, which Harness's own record can't", async () => {
+    test("the git view shows what a shell command changed, which Cavvy's own record can't", async () => {
         const dir = project();
-        const git = (...args: string[]) => Bun.spawnSync(["git", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Harness Test", "-c", "user.email=test@example.invalid", ...args], { cwd: dir, stdout: "ignore", stderr: "ignore" });
+        const git = (...args: string[]) => Bun.spawnSync(["git", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Cavvy Test", "-c", "user.email=test@example.invalid", ...args], { cwd: dir, stdout: "ignore", stderr: "ignore" });
         git("init", "-q", "-b", "main");
         git("add", "-A");
         git("commit", "-q", "-m", "Initial commit");
@@ -2237,7 +2237,7 @@ describe("continuing a Claude Code session", () => {
             await c.call("session.archive", { id: sid, archived: false });
             await expect(c.call("cliSessions.import", { cwd, source: "claude-code", id: "../etc" })).rejects.toThrow(/session id/);
             const again = await c.call<CliSessionsList>("cliSessions.list", { cwd });
-            expect(again.sessions[0]!.harnessId).toBe(sid);
+            expect(again.sessions[0]!.cavvyId).toBe(sid);
             await c.call("session.send", { id: sid, text: "now the tests" });
             await c.answer(sid, { kind: "permission", choice: "yes" });
             await c.until(sid, (x) => done(x) && x.turns.length > 2, 30_000);
@@ -3067,9 +3067,9 @@ describe("reopening a Claude Code session", () => {
         }
     }, 60_000);
 
-    test("rewinding past turns of another model and Claude Code: files Harness restores go back whole, and the model is told which", async () => {
+    test("rewinding past turns of another model and Claude Code: files Cavvy restores go back whole, and the model is told which", async () => {
         const { saveAgentConfig } = await import("../src/providers/registry");
-        const log = join(tempDir("harness-gui-log-"), "claude.log");
+        const log = join(tempDir("cavvy-gui-log-"), "claude.log");
         try {
             const dir = project();
             const before = readFileSync(join(dir, "src/auth/index.ts"), "utf-8");
@@ -3085,7 +3085,7 @@ describe("reopening a Claude Code session", () => {
             await c.call("session.setModel", { id, ref: "claude-code:default", persist: false });
             await c.call("session.send", { id, text: "write the notes" });
             await c.until(id, (v) => done(v) && v.turns.filter((t) => t.prompt).length === 2, 30_000);
-            // Claude Code changing a file Harness changed before (the fake only writes out.txt itself).
+            // Claude Code changing a file Cavvy changed before (the fake only writes out.txt itself).
             writeFileSync(join(dir, "src/auth/index.ts"), readFileSync(join(dir, "src/auth/index.ts"), "utf-8") + "// from Claude Code\n");
             const targets = await c.call<any[]>("session.rewindTargets", { id });
             expect(targets.map((t) => [t.text, t.backends])).toEqual([
@@ -3121,7 +3121,7 @@ describe("reopening a Claude Code session", () => {
             await c.call("session.rewind", { id, index: 0, planId: plan.planId, code: false, conversation: true });
             // Its change is still there; the next turn is told so.
             expect(existsSync(join(dir, "out.txt"))).toBe(true);
-            const log = join(tempDir("harness-gui-log-"), "claude.log");
+            const log = join(tempDir("cavvy-gui-log-"), "claude.log");
             process.env.FAKE_LOG = log;
             await c.call("session.send", { id, text: "and now?" });
             await c.until(id, (v) => done(v) && v.turns.length === 1 && v.turns[0]!.prompt?.text === "and now?", 30_000);
@@ -3218,7 +3218,7 @@ describe("reopening a Claude Code session", () => {
         const { saveAgentConfig } = await import("../src/providers/registry");
         saveAgentConfig("claude-code", { path: fakeClaude() });
         process.env.FAKE_SCENARIO = "write-hang";
-        const log = join(tempDir("harness-gui-log-"), "claude.log");
+        const log = join(tempDir("cavvy-gui-log-"), "claude.log");
         // The server in a process of its own, to kill outright (the fake CLI it starts exits once its stdin closes).
         const child = Bun.spawn([process.execPath, join(import.meta.dir, "fixtures", "gui-server-child.ts")], { env: { ...process.env, CHILD_TOKEN: TOKEN }, stdout: "pipe", stderr: "ignore" });
         try {
@@ -3280,7 +3280,7 @@ describe("reopening a Claude Code session", () => {
     }, 90_000);
 
     test("the effort it was left at comes back too; choosing the mode it already has tells the model nothing new", async () => {
-        const log = join(tempDir("harness-gui-log-"), "claude.log");
+        const log = join(tempDir("cavvy-gui-log-"), "claude.log");
         try {
             const { c, id } = await claudeCodeSession("write", "acceptEdits");
             await c.call("session.setEffort", { id, effort: "high" });
@@ -3443,10 +3443,10 @@ describe("project scripts", () => {
     async function repoWithWorktree() {
         const { gitArgv, gitEnv } = await import("../src/util/git");
         const git = (cwd: string, ...args: string[]) => {
-            const r = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Harness Test", "-c", "user.email=test@example.invalid", ...args]), { cwd, env: gitEnv(), stdout: "pipe", stderr: "pipe" });
+            const r = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Cavvy Test", "-c", "user.email=test@example.invalid", ...args]), { cwd, env: gitEnv(), stdout: "pipe", stderr: "pipe" });
             if (r.exitCode !== 0) throw new Error(r.stderr.toString());
         };
-        const base = realpathSync(tempDir("harness-gui-scripts-"));
+        const base = realpathSync(tempDir("cavvy-gui-scripts-"));
         const main = join(base, "repo");
         const linked = join(base, "repo-wt");
         mkdirSync(main);
@@ -3576,7 +3576,7 @@ describe("project scripts", () => {
         } finally { c.close(); }
     }, 20_000);
 
-    test("running a script in a project with entries this Harness can't use leaves the file as it was", async () => {
+    test("running a script in a project with entries this Cavvy can't use leaves the file as it was", async () => {
         const c = await client();
         const file = join(iso.home, "scripts.json");
         const saved = existsSync(file) ? readFileSync(file, "utf-8") : undefined;
@@ -3633,10 +3633,10 @@ describe("the setup script, run in a worktree created from the GUI", () => {
     /** A repository with one commit and nothing for trust to protect, by its real path. */
     async function repo() {
         const { gitArgv, gitEnv } = await import("../src/util/git");
-        const main = join(realpathSync(tempDir("harness-gui-setup-")), "repo");
+        const main = join(realpathSync(tempDir("cavvy-gui-setup-")), "repo");
         mkdirSync(main);
         for (const args of [["init", "-b", "main"], ["commit", "--allow-empty", "-m", "Initial commit"]]) {
-            const r = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Harness Test", "-c", "user.email=test@example.invalid", ...args]), { cwd: main, env: gitEnv(), stdout: "pipe", stderr: "pipe" });
+            const r = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Cavvy Test", "-c", "user.email=test@example.invalid", ...args]), { cwd: main, env: gitEnv(), stdout: "pipe", stderr: "pipe" });
             if (r.exitCode !== 0) throw new Error(r.stderr.toString());
         }
         return main;
@@ -4147,8 +4147,8 @@ describe("a project's MCP servers (.mcp.json approval)", () => {
 
         const list = await c.call<McpListInfo>("session.mcp", { id });
         expect(list.trusted).toBe(true);
-        expect(list.savedIn).toBe(join(dir, ".harness", "settings.local.json"));
-        expect(list.meaning).toContain("Harness's own models");
+        expect(list.savedIn).toBe(join(dir, ".cavvy", "settings.local.json"));
+        expect(list.meaning).toContain("Cavvy's own models");
         const card = list.servers.find((s) => s.name === "srv")!;
         expect(card).toMatchObject({ source: "project", status: "needs-approval", transport: "stdio", command: process.execPath, args: ["--no-env-file", FIXTURE], cwd: realpathSync(dir), envNames: ["MCP_FIXTURE_ERA", "MCP_FIXTURE_MARKER"], declaredIn: join(dir, ".mcp.json"), approval: { state: "needs-approval", reason: "new" } });
 
@@ -4165,7 +4165,7 @@ describe("a project's MCP servers (.mcp.json approval)", () => {
         await c.until(id, (v) => srvOf(v)?.status === "connected" && srvOf(v)!.tools > 0);
         await c2.until(id2, (v) => srvOf(v)?.status === "connected");
         expect(srvOf(c.view(id))!.approval).toEqual({ state: "approved" });
-        expect(JSON.parse(readFileSync(join(dir, ".harness", "settings.local.json"), "utf-8")).approvedMcpjsonServers.srv).toBe(card.fingerprint);
+        expect(JSON.parse(readFileSync(join(dir, ".cavvy", "settings.local.json"), "utf-8")).approvedMcpjsonServers.srv).toBe(card.fingerprint);
         c.close();
         c2.close();
     }, 20_000);
@@ -4255,7 +4255,7 @@ describe("a project's MCP servers (.mcp.json approval)", () => {
         await c.call("session.mcpReconnect", { id, name: "srv" });
         await Bun.sleep(400);
         expect(existsSync(marker)).toBe(false);
-        expect(existsSync(join(dir, ".harness", "settings.local.json"))).toBe(false);
+        expect(existsSync(join(dir, ".cavvy", "settings.local.json"))).toBe(false);
 
         // The existing trust flow works for a workspace already trusted in that weaker sense.
         await c.call("projects.trust", { path: dir, trust: true });
@@ -4308,9 +4308,9 @@ describe("a project's MCP servers (.mcp.json approval)", () => {
 
         expect(c.raw.length).toBeGreaterThan(5);
         for (const m of c.raw) expect(m).not.toContain(SENTINEL);
-        // Nor the local settings (only a keyed hash), the session's transcript, or anything else in the harness home.
+        // Nor the local settings (only a keyed hash), the session's transcript, or anything else in Cavvy home.
         const files = (d: string): string[] => readdirSync(d).flatMap((f) => (statSync(join(d, f)).isDirectory() ? files(join(d, f)) : [join(d, f)]));
-        for (const f of [...files(join(dir, ".harness")), ...files(iso.home)]) expect(readFileSync(f, "utf-8")).not.toContain(SENTINEL);
+        for (const f of [...files(join(dir, ".cavvy")), ...files(iso.home)]) expect(readFileSync(f, "utf-8")).not.toContain(SENTINEL);
         c.close();
     }, 30_000);
 

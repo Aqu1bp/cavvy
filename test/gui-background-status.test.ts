@@ -54,8 +54,8 @@ test("from a server without backgroundTasks, the panel lists its running shells 
         { id: "monitor_1", command: "tail -f log", running: true, exitCode: null, startedAt: 7, monitor: { description: "Watch the log", events: 2, expiresAt: 100_000 } },
     ];
     expect(backgroundOf({ shells })).toEqual([
-        { id: "bash_1", provider: "harness", kind: "shell", label: "npm run dev", startedAt: 5, status: "running", stoppable: true },
-        { id: "monitor_1", provider: "harness", kind: "monitor", label: "Watch the log", startedAt: 7, status: "running", stoppable: true },
+        { id: "bash_1", provider: "cavvy", kind: "shell", label: "npm run dev", startedAt: 5, status: "running", stoppable: true },
+        { id: "monitor_1", provider: "cavvy", kind: "monitor", label: "Watch the log", startedAt: 7, status: "running", stoppable: true },
     ]);
 });
 
@@ -66,10 +66,10 @@ test("a task's row says its kind, who runs it, and how long it's run (a monitor'
     expect(kindName(task({ kind: "other" }))).toBe("Task");
     expect(runnerName(task(), providers)).toBe("Claude Code");
     expect(runnerName(task({ provider: "gemini" }), providers)).toBe("Gemini");
-    expect(runnerName(task({ provider: "harness" }), providers)).toBe("Harness");
+    expect(runnerName(task({ provider: "cavvy" }), providers)).toBe("Cavvy");
     const dur = (ms: number) => `${ms / 1000}s`;
     expect(taskMeta(task({ startedAt: 1000 }), [], 6000, dur)).toBe("5s");
-    expect(taskMeta(task({ status: "stopped", lost: true }), [], 6000, dur)).toBe("Stopped when Harness quit");
+    expect(taskMeta(task({ status: "stopped", lost: true }), [], 6000, dur)).toBe("Stopped when Cavvy quit");
     // A finished one: how it ended, and after how long.
     expect(taskMeta(task({ status: "done", startedAt: 1000, endedAt: 4000 }), [], 9000, dur)).toBe("Done · 3s");
     expect(taskMeta(task({ status: "failed", startedAt: 1000, endedAt: 2000 }), [], 9000, dur)).toBe("Failed · 1s");
@@ -122,7 +122,7 @@ test("the side panel lists background work in its Agents and Commands tabs, and 
     expect(list).toContain("await stopAgent(p.handle.id, t.agent)");
 });
 
-// A tab's list itself, rendered by the harness (no browser): its rows, Stop on each, and Stop all behind a confirm.
+// A tab's list itself, rendered by Cavvy (no browser): its rows, Stop on each, and Stop all behind a confirm.
 
 function renderList(tasks: BackgroundTaskInfo[], agents: AgentRun[] = [], tab: WorkTab = "agents") {
     const stops: { id: string; ids?: string[] }[] = [];
@@ -214,24 +214,24 @@ test("a sub-agent resumed with SendMessage is its run's row, which opens it; a t
 });
 
 test("no row has a tooltip that says what it shows", () => {
-    const r = renderList([task({ id: "bash_1", provider: "harness", kind: "shell", label: "npm run dev" })], [], "commands");
-    expect(r.text).toContain("Shell · Harness");
+    const r = renderList([task({ id: "bash_1", provider: "cavvy", kind: "shell", label: "npm run dev" })], [], "commands");
+    expect(r.text).toContain("Shell · Cavvy");
     const titled = (t: any): string[] => (Array.isArray(t) ? t.flatMap(titled) : t && typeof t === "object" ? [...(t.props?.title ? [String(t.props.title)] : []), ...titled(t.children)] : []);
     expect(titled(elements(r.tree, "div").filter((d) => String(d.props.class).startsWith("task ")))).toEqual(["Stop"]);
 });
 
-test("with one task there's no Stop all, and one lost when Harness quit says so and has no Stop", () => {
+test("with one task there's no Stop all, and one lost when Cavvy quit says so and has no Stop", () => {
     const one = renderList([task()]);
     expect(one.buttons.some((b) => text(b.children) === "Stop all")).toBe(false);
     const lost = renderList([task({ status: "stopped", lost: true })]);
-    expect(lost.text).toContain("Stopped when Harness quit");
+    expect(lost.text).toContain("Stopped when Cavvy quit");
     expect(stopsOf(lost)).toEqual([]);
     expect(renderList([]).text).toBe("");
 });
 
 test("finished ones stay under the running ones, in a fold closed while something runs, with how they ended, and can be cleared", async () => {
-    const finished = [task({ id: "d1", label: "Write docs", status: "done", startedAt: 1000, endedAt: 4000 }), task({ id: "f1", label: "Lint", kind: "shell", provider: "harness", status: "failed", startedAt: 1000, endedAt: 2000 })];
-    const folded = renderList([task({ id: "sh", kind: "shell", provider: "harness" }), ...finished], [], "commands");
+    const finished = [task({ id: "d1", label: "Write docs", status: "done", startedAt: 1000, endedAt: 4000 }), task({ id: "f1", label: "Lint", kind: "shell", provider: "cavvy", status: "failed", startedAt: 1000, endedAt: 2000 })];
+    const folded = renderList([task({ id: "sh", kind: "shell", provider: "cavvy" }), ...finished], [], "commands");
     expect(folded.text).toContain("Finished1");
     expect(folded.text).toContain("1 failed");
     // In the DOM, folded: the fold opens in place rather than being drawn when opened.

@@ -9,7 +9,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readSync, realpathSync, sta
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
 import { appSourceDir, noPromptGit, readInstallRecord, runningUpdate, type InstallRecord } from "../config/desktop-install";
-import { harnessHome, paths } from "../config/paths";
+import { cavvyHome, paths } from "../config/paths";
 import { REPO_VARS } from "../util/git";
 import type { AppUpdateChange, AppUpdateInfo } from "./protocol";
 
@@ -26,14 +26,14 @@ const STALL_MS = 30 * 60_000;
 const TICK_CAP_MS = 5_000;
 const SHOWN = 20;
 
-/** The .app bundle a program runs from (…/Harness.app/Contents/MacOS/harness), if it does. */
+/** The .app bundle a program runs from (…/Cavvy.app/Contents/MacOS/cavvy), if it does. */
 export function bundleOf(execPath: string): string | undefined {
     return /^(.+\.app)\/Contents\/MacOS\/[^/]+$/.exec(execPath)?.[1];
 }
 
 export interface AppUpdatesOptions {
     emit: (info: AppUpdateInfo) => void;
-    /** The running app's bundle: by default HARNESS_APP_BUNDLE (gui:demo --update), else the one this program runs from. */
+    /** The running app's bundle: by default CAVVY_APP_BUNDLE (gui:demo --update), else the one this program runs from. */
     bundle?: string;
     platform?: NodeJS.Platform;
     /** bun, to run the update with: by default from PATH, or ~/.bun/bin. */
@@ -215,9 +215,9 @@ export class AppUpdates {
         const ours = kept !== undefined && kept === (await repositoryOf(w.record.source, signal));
         const dir = [...(ours ? [appSourceDir()] : []), w.record.source].find((d) => existsSync(join(d, "scripts", "update-desktop.ts")));
         if (!dir) return this.patch({ failed: `${w.record.source} has no scripts/update-desktop.ts yet: pull main there, then update.` });
-        // One started before Harness last opened (quit while it built) still runs: a second would build over it.
+        // One started before Cavvy last opened (quit while it built) still runs: a second would build over it.
         const running = runningUpdate();
-        if (running) return this.patch({ failed: `An update started earlier is still running${running.pid ? ` (process ${running.pid})` : ""}: Harness restarts when it's done.` });
+        if (running) return this.patch({ failed: `An update started earlier is still running${running.pid ? ` (process ${running.pid})` : ""}: Cavvy restarts when it's done.` });
 
         const log = join(paths.logs(), "app-update.log");
         const startedAt = Date.now();
@@ -231,7 +231,7 @@ export class AppUpdates {
                     // Its own session: the app quitting to restart doesn't take it along.
                     detached: true,
                     stdio: ["ignore", fd, fd],
-                    env: repoEnv({ HARNESS_HOME: harnessHome(), GIT_TERMINAL_PROMPT: "0" }),
+                    env: repoEnv({ CAVVY_HOME: cavvyHome(), GIT_TERMINAL_PROMPT: "0" }),
                 });
             } finally {
                 closeSync(fd);
@@ -284,9 +284,9 @@ export class AppUpdates {
         if (code === 0) {
             const record = await readInstallRecord();
             if (record && Date.parse(record.installedAt) >= startedAt) {
-                this.patch({ updating: { startedAt, line: "Installed. Restarting Harness…", restarting: true } });
+                this.patch({ updating: { startedAt, line: "Installed. Restarting Cavvy…", restarting: true } });
                 // This process ends with the restart; if it's still here a while later, the restart didn't happen.
-                const t = setTimeout(() => this.patch({ updating: undefined, failed: "The new build is installed, but Harness didn't restart: quit it and open it again." }), this.o.restartWaitMs ?? RESTART_WAIT_MS);
+                const t = setTimeout(() => this.patch({ updating: undefined, failed: "The new build is installed, but Cavvy didn't restart: quit it and open it again." }), this.o.restartWaitMs ?? RESTART_WAIT_MS);
                 t.unref?.();
                 return;
             }
@@ -301,7 +301,7 @@ export class AppUpdates {
     /** This install's record, and the checkout to ask about main; or why this copy can't update itself. */
     private async where(): Promise<{ record: InstallRecord } | { unavailable: string }> {
         if ((this.o.platform ?? process.platform) !== "darwin") return { unavailable: "Updating from main is for the macOS desktop app." };
-        const bundle = this.o.bundle ?? (process.env.HARNESS_APP_BUNDLE || bundleOf(process.execPath));
+        const bundle = this.o.bundle ?? (process.env.CAVVY_APP_BUNDLE || bundleOf(process.execPath));
         if (!bundle) return { unavailable: "Only the installed desktop app updates itself." };
         const record = await readInstallRecord();
         if (!record) return { unavailable: "There's no record of the checkout this app was built from. Install it once with bun run desktop:install or desktop:update, and it can update itself after that." };

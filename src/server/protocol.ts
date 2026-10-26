@@ -1,4 +1,4 @@
-// The GUI protocol: what the harness server and the GUI say to each other over
+// The GUI protocol: what Cavvy server and the GUI say to each other over
 // the WebSocket. Shared by both sides, so it must stay pure TypeScript: no
 // Bun, Node or DOM imports (the GUI bundles this file).
 //
@@ -643,7 +643,7 @@ export interface SessionState {
     /**
      * Context, in tokens, at which this session compacts on its own: an agent CLI's auto-compact setting for
      * this model and account (Claude Code's /autocompact window, Codex's model_auto_compact_token_limit), or
-     * Harness's own threshold. Absent when compaction is off here, or the CLI decides.
+     * Cavvy's own threshold. Absent when compaction is off here, or the CLI decides.
      */
     compactAt?: number;
     cost: number;
@@ -671,8 +671,8 @@ export interface SessionState {
     watches?: WatchInfo[];
     /**
      * The session's background work, whoever runs it: an agent CLI's background sub-agents, shells and monitors,
-     * the tasks it delegated to other models, and the harness's own background shells and monitors. Running ones,
-     * and those that stopped when Harness quit (lost) until the agent is told. Missing from older servers.
+     * the tasks it delegated to other models, and Cavvy's own background shells and monitors. Running ones,
+     * and those that stopped when Cavvy quit (lost) until the agent is told. Missing from older servers.
      */
     backgroundTasks?: BackgroundTaskInfo[];
     plan?: PlanRef;
@@ -788,8 +788,8 @@ export interface CliSessionInfo {
     messages: number;
     partial: boolean;
     model?: string;
-    /** The Harness session that already holds it. */
-    harnessId?: string;
+    /** The Cavvy session that already holds it. */
+    cavvyId?: string;
     /** Changed in the last couple of minutes: it may still be open in a terminal. */
     recent: boolean;
 }
@@ -802,13 +802,13 @@ export interface CliSourceInfo {
     enabled: boolean;
     /** Sessions of this folder not listed. */
     more: number;
-    /** Ones already in Harness not listed (they have a limit of their own). */
-    moreInHarness: number;
+    /** Ones already in Cavvy not listed (they have a limit of their own). */
+    moreInCavvy: number;
 }
 
 export interface CliSessionsList {
     sources: CliSourceInfo[];
-    /** Both sources, newest first; ones already in Harness have `harnessId` (and don't count toward the limit). */
+    /** Both sources, newest first; ones already in Cavvy have `cavvyId` (and don't count toward the limit). */
     sessions: CliSessionInfo[];
 }
 
@@ -882,7 +882,7 @@ export interface WorktreeInfo {
     prunable?: string;
     /** The repository's main worktree (Git lists it first). */
     main: boolean;
-    /** Inside <main worktree>/.claude/worktrees/, where Harness creates them and may remove them. */
+    /** Inside <main worktree>/.claude/worktrees/, where Cavvy creates them and may remove them. */
     managed: boolean;
 }
 
@@ -976,7 +976,7 @@ export interface PlanInfo {
     modeWhy: string;
     /** Where Save plan writes by default (a free name). */
     savePath: string;
-    /** The Harness home, the other folder (with the session's) plans may be saved in. */
+    /** The Cavvy home, the other folder (with the session's) plans may be saved in. */
     home: string;
 }
 
@@ -1027,7 +1027,7 @@ export interface AccountInfo {
     plan?: string;
     /** Signed in with an API key: usage is billed to that key, so there's no plan to show. */
     apiKey?: boolean;
-    /** A Harness-made account's folder keeps some entries of its own instead of linking Default's. */
+    /** A Cavvy-made account's folder keeps some entries of its own instead of linking Default's. */
     sharing?: string;
 }
 
@@ -1216,7 +1216,7 @@ export interface AppUpdateInfo {
     note?: string;
     checkedAt?: number;
     checking: boolean;
-    /** An update running: since when, and the last line it printed. `restarting`: built and installed, Harness restarts next. */
+    /** An update running: since when, and the last line it printed. `restarting`: built and installed, Cavvy restarts next. */
     updating?: { startedAt: number; line: string; restarting: boolean };
     /** The last check failed (couldn't fetch main, say): the rest is as of the fetch before. */
     error?: string;
@@ -1229,7 +1229,7 @@ export interface AppUpdateInfo {
 export interface RewindTargetInfo {
     index: number;
     text: string;
-    /** Files Harness's own tools changed answering it. */
+    /** Files Cavvy's own tools changed answering it. */
     files: number;
     tracked: boolean;
     /** From before this session was forked: files changed then are restored from the original session, not here. */
@@ -1297,7 +1297,7 @@ export interface GitChangesInfo extends ChangesInfo {
     bases: string[];
     /** Beside `bases`, when a name there hides a registered value: its handle (send it as `baseToken`), else null. */
     baseTokens?: (string | null)[];
-    /** What Harness treats as the main branch. */
+    /** What Cavvy treats as the main branch. */
     defaultBase?: string;
     defaultBaseToken?: string;
     /** Changed files not listed; `moreAtLeast` when even the count was cut short. */
@@ -1415,7 +1415,7 @@ export interface GuiSettings {
     editor?: string;
 }
 
-/** An editor Harness knows, and whether it's on this machine (the server's). */
+/** An editor Cavvy knows, and whether it's on this machine (the server's). */
 export interface EditorInfo {
     id: string;
     name: string;
@@ -1425,7 +1425,7 @@ export interface EditorInfo {
 }
 
 // ---------------------------------------------------------------------------
-// Project scripts: named shell commands per project, kept in the Harness home
+// Project scripts: named shell commands per project, kept in the Cavvy home
 // (never in the repository) and run only from the GUI, in a terminal tab.
 
 export const SCRIPT_ICONS = ["play", "test", "lint", "build", "setup", "debug"] as const;
@@ -1706,7 +1706,7 @@ export interface Methods {
     "session.planInfo": { params: { id: string; toolId?: string }; result: PlanInfo };
     /** A managed worktree on a new branch, and a new session there working on the plan; the plan card is answered so the planning session stops. */
     "session.implementPlan": { params: ImplementPlanParams; result: ImplementPlanResult };
-    /** Writes the plan as Markdown, in the session's folder or the Harness home; an existing file only with `replace`. */
+    /** Writes the plan as Markdown, in the session's folder or the Cavvy home; an existing file only with `replace`. */
     "session.savePlan": { params: { id: string; toolId?: string; path?: string; replace?: boolean }; result: { path: string } };
     "session.settle": { params: { id: string; settled: boolean }; result: null };
     /** Moves its files to the trash (sessions.remove follows); session.restore puts them back for a week. */
@@ -1751,7 +1751,7 @@ export interface Methods {
     "providers.connectCli": { params: { provider: string }; result: { description: string; warning?: string; model?: string } };
     /** Recent Claude Code and Codex sessions that ran in this folder. */
     "cliSessions.list": { params: { cwd: string }; result: CliSessionsList };
-    /** Import one into a Harness session (or open the one that already holds it). */
+    /** Import one into a Cavvy session (or open the one that already holds it). */
     "cliSessions.import": { params: { cwd: string; source: string; id: string }; result: SessionSnapshot };
     "projects.recent": { params: Record<string, never>; result: ProjectInfo[] };
     "projects.inspect": { params: { path: string }; result: ProjectInfo };
@@ -1773,12 +1773,12 @@ export interface Methods {
     "projects.forget": { params: { path: string }; result: null };
     "fs.mentions": { params: { cwd: string; query: string }; result: string[] };
     "fs.dirs": { params: { path: string }; result: { path: string; parent?: string; dirs: string[] } };
-    /** The editors Harness knows, and the one chosen in settings. */
+    /** The editors Cavvy knows, and the one chosen in settings. */
     "editors.list": { params: Record<string, never>; result: { editors: EditorInfo[]; selected?: string } };
     /**
      * Open a file (at a line) or a project folder in the chosen editor, on the
      * server's machine. The path is resolved against the session's folder (or
-     * `cwd`, a project open in Harness) and must be inside its workspace roots.
+     * `cwd`, a project open in Cavvy) and must be inside its workspace roots.
      */
     /** `gitToken`: a file a Git listing showed redacted (GitFileDiff.pathToken), instead of `path`. */
     "fs.open": { params: { sessionId?: string; cwd?: string; path?: string; gitToken?: string; line?: number; col?: number; folder?: boolean }; result: { editor: string } };

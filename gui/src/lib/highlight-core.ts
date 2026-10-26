@@ -83,7 +83,7 @@ const MAX_CHARS = 200_000;
 async function highlighter(): Promise<HighlighterCore> {
     core ??= (async () => {
         const [{ createHighlighterCore, createCssVariablesTheme }, { createJavaScriptRegexEngine }] = await Promise.all([import("shiki/core"), import("shiki/engine/javascript")]);
-        const theme = createCssVariablesTheme({ name: "harness", variablePrefix: "--shiki-", variableDefaults: {}, fontStyle: true });
+        const theme = createCssVariablesTheme({ name: "cavvy", variablePrefix: "--shiki-", variableDefaults: {}, fontStyle: true });
         return createHighlighterCore({ themes: [theme], langs: [], engine: createJavaScriptRegexEngine({ forgiving: true }) });
     })().catch((error) => {
         // Chunk loading can fail transiently. Keep successful initialization shared,
@@ -135,7 +135,7 @@ export async function highlight(code: string, lang: string | undefined): Promise
     const id = await ensure(lang);
     if (!id) return undefined;
     const h = await highlighter();
-    const html = h.codeToHtml(code, { lang: id, theme: "harness" });
+    const html = h.codeToHtml(code, { lang: id, theme: "cavvy" });
     // Keep just the code: the <pre> is ours.
     const inner = html.replace(/^<pre[^>]*><code[^>]*>/, "").replace(/<\/code><\/pre>\s*$/, "");
     return remember(cache, key, inner);
@@ -191,7 +191,7 @@ export async function highlightLineChunks(code: string, lang: string | undefined
     let state: GrammarState | undefined;
     for (let i = 0; i < lines.length; ) {
         const n = i ? CHUNK : first;
-        const { tokens, grammarState } = h.codeToTokens(lines.slice(i, i + n).join("\n"), { lang: id, theme: "harness", tokenizeMaxLineLength: MAX_LINE, ...(state ? { grammarState: state } : {}) });
+        const { tokens, grammarState } = h.codeToTokens(lines.slice(i, i + n).join("\n"), { lang: id, theme: "cavvy", tokenizeMaxLineLength: MAX_LINE, ...(state ? { grammarState: state } : {}) });
         state = grammarState;
         const html = tokens.map((line) => line.map(tokenHtml).join(""));
         emit(i, html);

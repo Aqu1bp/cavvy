@@ -1,7 +1,7 @@
 // Provider clients and the combined model catalog behind /model.
 //
 // Every configured provider is queried in parallel; results are cached in
-// ~/.harness/cache/models.json (no keys, only a short fingerprint so a new key
+// ~/.cavvy/cache/models.json (no keys, only a short fingerprint so a new key
 // invalidates the cache). Local servers are always probed live with a short
 // timeout because they come and go.
 

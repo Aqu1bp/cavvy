@@ -9,7 +9,7 @@ const chromeLimits = { startupMs: 90_000, fixtureMs: 30_000 };
 const buildLimitMs = 30_000;
 // The test's own limit is the sum of the build's, Chrome's startup and the page's, plus 20 s for cleanup.
 test.skipIf(!chromePath)("the mounted browser pane draws frames and cleans up decoding, drag, keys and IME", async () => {
-    const scratch = mkdtempSync(join(tmpdir(), "harness-browser-pane-"));
+    const scratch = mkdtempSync(join(tmpdir(), "cavvy-browser-pane-"));
     const profile = join(scratch, "chrome");
     let browser: ReturnType<typeof Bun.spawn> | undefined;
     let server: ReturnType<typeof Bun.serve> | undefined;

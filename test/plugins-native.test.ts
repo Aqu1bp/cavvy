@@ -1,6 +1,6 @@
-// Claude Code loads the harness's plugins itself (--plugin-dir), through the
+// Claude Code loads Cavvy's plugins itself (--plugin-dir), through the
 // real Agent loop and a fake `claude` (test/fixtures/fake-claude.ts). Codex and
-// read-only sub-agents get none; the harness doesn't run hooks Claude Code runs.
+// read-only sub-agents get none; Cavvy doesn't run hooks Claude Code runs.
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
@@ -116,22 +116,22 @@ async function runAgent(provider: "claude-code" | "codex", o: { readOnly?: boole
 const threadMcp = () => (existsSync(LOG) ? readFileSync(LOG, "utf-8").trim().split("\n").map((l) => JSON.parse(l)) : []).find((l) => "threadMcp" in l)?.threadMcp;
 
 describe("Claude Code loads the plugins itself", () => {
-    test("each enabled plugin's folder goes to it, with a manifest naming it as the harness does", async () => {
+    test("each enabled plugin's folder goes to it, with a manifest naming it as Cavvy does", async () => {
         const argv = await run("claude-code");
         const installed = readInstalled();
         expect(pluginDirs(argv).sort()).toEqual([installed["bare@demo"]!.installPath, installed["fmt@demo"]!.installPath].sort());
-        // Its own manifest's fields are kept (Claude Code reads ones the harness doesn't).
+        // Its own manifest's fields are kept (Claude Code reads ones Cavvy doesn't).
         expect(JSON.parse(readFileSync(claudeManifest(installed["fmt@demo"]!.installPath), "utf-8"))).toMatchObject({ name: "fmt", version: "1.0.0", outputStyles: "./styles" });
         // A plugin with no manifest gets one named after its marketplace entry, not its version folder.
         expect(JSON.parse(readFileSync(claudeManifest(installed["bare@demo"]!.installPath), "utf-8"))).toMatchObject({ name: "bare", description: "No manifest" });
     });
 
-    test("the harness doesn't also run the plugins' hooks on a Claude Code turn", async () => {
+    test("Cavvy doesn't also run the plugins' hooks on a Claude Code turn", async () => {
         await run("claude-code");
         expect(existsSync(marker)).toBe(false);
     });
 
-    test("the plugins' hooks aren't also registered with Claude Code as the harness's own", async () => {
+    test("the plugins' hooks aren't also registered with Claude Code as Cavvy's own", async () => {
         const root = readInstalled()["fmt@demo"]!.installPath;
         write(join(root, "hooks", "hooks.json"), { hooks: { PostToolUse: [{ hooks: [{ type: "prompt", prompt: "PLUGIN-PROMPT-HOOK" }] }] } });
         write(paths.userSettings(), { ...JSON.parse(readFileSync(paths.userSettings(), "utf-8")), hooks: { PostToolUse: [{ hooks: [{ type: "prompt", prompt: "MY-PROMPT-HOOK" }] }] } });
@@ -158,12 +158,12 @@ describe("Claude Code loads the plugins itself", () => {
         expect(pluginDirs(await run("claude-code", { readOnly: true }))).toEqual([]);
     });
 
-    test("Codex gets none, and the harness runs the plugin's hooks for it", async () => {
+    test("Codex gets none, and Cavvy runs the plugin's hooks for it", async () => {
         expect(pluginDirs(await run("codex"))).toEqual([]);
         expect(existsSync(marker)).toBe(true);
     });
 
-    test("Codex's threads get no servers from the harness's plugins: it takes MCP only from its own config", async () => {
+    test("Codex's threads get no servers from Cavvy's plugins: it takes MCP only from its own config", async () => {
         const root = readInstalled()["fmt@demo"]!.installPath;
         write(join(root, ".mcp.json"), { mcpServers: { echo: { command: "node", args: ["x.js"] } } });
         clearPluginCache();
@@ -181,7 +181,7 @@ describe("session hooks", () => {
         return existsSync(`${marker}-start`);
     };
 
-    test("on Claude Code the harness leaves a plugin's SessionStart to it; on Codex it runs it", async () => {
+    test("on Claude Code Cavvy leaves a plugin's SessionStart to it; on Codex it runs it", async () => {
         trust.trustForSession(cwd);
         await headless("claude-code:default");
         expect(await started()).toBe(false);
@@ -190,7 +190,7 @@ describe("session hooks", () => {
     });
 });
 
-describe("what the harness hands to Claude Code", () => {
+describe("what Cavvy hands to Claude Code", () => {
     test("plugin commands and skills go to Claude Code as typed, unless it lists them without", () => {
         expect(runsPluginCommand("claude-code", "fmt:tidy", undefined)).toBe(true);
         expect(runsPluginCommand("claude-code", "fmt:tidy", new Set(["fmt:tidy"]))).toBe(true);

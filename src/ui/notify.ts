@@ -1,4 +1,4 @@
-// Notifications: a long turn finished, the harness is waiting for you, or a
+// Notifications: a long turn finished, Cavvy is waiting for you, or a
 // turn stopped with an error. Only while the terminal window isn't focused
 // (or focus is unknown), and never in -p mode.
 //
@@ -67,7 +67,7 @@ export function notificationText(kind: NotifyKind, elapsedMs?: number): string {
     return kind === "done" && elapsedMs !== undefined ? `done (${formatDuration(elapsedMs)})` : TEXT[kind];
 }
 
-/** "Harness: done (2m 10s)" */
+/** "Cavvy: done (2m 10s)" */
 export function notificationMessage(kind: NotifyKind, elapsedMs?: number): string {
     return clean(`${APP_TITLE}: ${notificationText(kind, elapsedMs)}`);
 }
@@ -116,7 +116,7 @@ export function tmuxPassthrough(seq: string): string {
     return `\x1bPtmux;${seq.replace(/\x1b/g, "\x1b\x1b")}\x1b\\`;
 }
 
-/** The desktop notifier command, titled "Harness". The text is an argument, never part of a script or shell string. */
+/** The desktop notifier command, titled "Cavvy". The text is an argument, never part of a script or shell string. */
 export function systemCommand(body: string, platform: NodeJS.Platform): string[] | undefined {
     const text = clean(body);
     if (platform === "darwin") return ["osascript", "-e", "on run argv", "-e", "display notification (item 1 of argv) with title (item 2 of argv)", "-e", "end run", text, APP_TITLE];

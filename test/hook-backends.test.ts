@@ -1,6 +1,6 @@
 // Hooks on the agent backends, with the fake `claude` and `codex` programs:
-// Claude Code runs the harness's tool hooks itself, calling back for each
-// handler (hook_callback); Codex's items run them on the harness's side.
+// Claude Code runs Cavvy's tool hooks itself, calling back for each
+// handler (hook_callback); Codex's items run them on Cavvy's side.
 // Also the worktree hooks, which stand in for Git when they're configured.
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -89,14 +89,14 @@ async function makeAgent(provider: "claude-code" | "codex", settings: any, mode:
     return { agent, events, asked, session, run };
 }
 
-describe("Claude Code runs the harness's tool hooks itself", () => {
+describe("Claude Code runs Cavvy's tool hooks itself", () => {
     test("only the events it owns are registered, one callback per handler, with Claude Code's timeouts", () => {
         const hooks = { UserPromptSubmit: [{ command: "a" }], Stop: [{ command: "b" }], PreToolUse: [{ matcher: "Bash", command: "c" }], PostToolUse: [{ command: "d" }], SessionStart: [{ command: "e" }], CwdChanged: [{ command: "f" }] };
         expect(Object.keys(backendOwnedHooks({ hooks } as any) ?? {})).toEqual(["PreToolUse", "PostToolUse", "CwdChanged", "SessionStart"]);
         // SessionStart only for compaction (Claude Code's own too), and only handlers that match it.
         const starts = { SessionStart: [{ command: "a" }, { matcher: "startup", command: "b" }, { matcher: "compact|resume", command: "c" }] };
         expect(backendOwnedHooks({ hooks: starts } as any)?.SessionStart).toEqual([{ command: "a", matcher: "compact" }, { matcher: "compact", command: "c" }]);
-        // The harness keeps the prompt, the turn's end, the session and its own watchers.
+        // Cavvy keeps the prompt, the turn's end, the session and its own watchers.
         for (const own of ["UserPromptSubmit", "Stop", "SessionStart", "SessionEnd", "Notification", "PermissionRequest", "FileChanged", "InstructionsLoaded"]) expect(CLAUDE_CODE_HOOK_EVENTS).not.toContain(own as any);
         expect(backendOwnedHooks({} as any)).toBeUndefined();
     });
@@ -113,9 +113,9 @@ describe("Claude Code runs the harness's tool hooks itself", () => {
         const { run, events, session } = await makeAgent("claude-code", settings);
         expect(await run("test it")).toBe("done");
         const init = received().find((m) => m.request?.subtype === "initialize")!.request;
-        expect(init.hooks).toEqual({ PreToolUse: [{ matcher: "Bash|Monitor", hookCallbackIds: ["harness_0"], timeout: 60 }] });
+        expect(init.hooks).toEqual({ PreToolUse: [{ matcher: "Bash|Monitor", hookCallbackIds: ["cavvy_0"], timeout: 60 }] });
         expect(toolEnds(events)[0]!.result).toMatchObject({ isError: true, content: "no npm here" });
-        // The handler saw Claude Code's input, under the harness's session id (Claude Code's is kept beside it).
+        // The handler saw Claude Code's input, under Cavvy's session id (Claude Code's is kept beside it).
         const [input] = jsonl(seen);
         expect(input).toMatchObject({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "npm test" }, tool_use_id: "toolu_b", session_id: session.meta.id });
         expect(input.backend_session_id).toMatch(/^sess-/);
@@ -143,10 +143,10 @@ describe("Claude Code runs the harness's tool hooks itself", () => {
         const { run } = await makeAgent("claude-code", settings);
         expect(await run("test it")).toBe("done");
         const init = received().find((m) => m.request?.subtype === "initialize")!.request;
-        expect(init.hooks).toEqual({ PreToolUse: [{ matcher: "Bash|Monitor", hookCallbackIds: ["harness_0"], timeout: 60 }] });
+        expect(init.hooks).toEqual({ PreToolUse: [{ matcher: "Bash|Monitor", hookCallbackIds: ["cavvy_0"], timeout: 60 }] });
         const argv = logLines()[0].argv as string[];
         const given = JSON.parse(argv[argv.indexOf("--settings") + 1]!);
-        // A harness model reference (provider:model) is left to Claude Code's default.
+        // A Cavvy model reference (provider:model) is left to Claude Code's default.
         expect(given.hooks).toEqual({
             PreToolUse: [
                 { matcher: "Bash|Monitor", hooks: [{ type: "prompt", prompt: "Refuse rm. $ARGUMENTS", timeout: 30, model: "haiku", if: "Bash(rm *)" }] },
@@ -193,7 +193,7 @@ describe("Claude Code runs the harness's tool hooks itself", () => {
         expect(answer).toMatchObject({ behavior: "allow", updatedInput: { command: "printf safe-replacement" } });
     });
 
-    test("an `if` condition the backend can't express is checked on the harness's side", async () => {
+    test("an `if` condition the backend can't express is checked on Cavvy's side", async () => {
         process.env.FAKE_SCENARIO = "bash";
         const settings = { hooks: { PreToolUse: [{ matcher: "Bash", if: "Bash(git *)", command: say({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "no git" } }) }] } };
         const { run, events } = await makeAgent("claude-code", settings);
@@ -248,7 +248,7 @@ describe("one-off requests on Claude Code and Codex (prompt hooks, MCP sampling)
     });
 });
 
-describe("Codex's items run the harness's hooks", () => {
+describe("Codex's items run Cavvy's hooks", () => {
     const turnStarts = () => received().filter((m) => m.method === "turn/start").map((m) => m.params);
     const decision = () => received().find((m) => m.result?.decision)?.result.decision;
 
@@ -267,15 +267,15 @@ describe("Codex's items run the harness's hooks", () => {
         expect(asked).toEqual([]);
         expect(jsonl(seen)[0]).toMatchObject({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "touch x" }, tool_use_id: "cmd-turn-1" });
         expect(ranLine()).toMatchObject({ ran: false, blockedByHook: expect.stringContaining("touching is banned") });
-        // Codex reports no item for a call it never started: the harness shows it, refused.
+        // Codex reports no item for a call it never started: Cavvy shows it, refused.
         expect(toolEnds(events)[0]).toMatchObject({ call: { name: "Bash", input: { command: "touch x" } }, result: { isError: true, content: expect.stringContaining("touching is banned") } });
     });
 
-    test("the hook's tool is the harness's and hidden from the model; its server's token goes over stdin, not in arguments", async () => {
+    test("the hook's tool is Cavvy's and hidden from the model; its server's token goes over stdin, not in arguments", async () => {
         const { run } = await makeAgent("codex", { hooks: { PreToolUse: [{ command: "true" }] } });
         expect(await run("make x")).toBe("done");
         const start = received().find((m) => m.method === "thread/start")!.params;
-        const server = start.config.mcp_servers.harness_hooks;
+        const server = start.config.mcp_servers.cavvy_hooks;
         const { url, http_headers: { Authorization: auth } } = server;
         expect(url).toStartWith("http://127.0.0.1:");
         expect(server.default_tools_approval_mode).toBe("approve");
@@ -286,7 +286,7 @@ describe("Codex's items run the harness's hooks", () => {
         // Closed with the app-server: the token no longer works.
         await stopLiveCodex();
         expect((await list()).status).toBe(401);
-        expect(logLines().find((l) => l.mcpConnected === "harness_hooks")?.tools).toEqual(["pre_tool_use"]);
+        expect(logLines().find((l) => l.mcpConnected === "cavvy_hooks")?.tools).toEqual(["pre_tool_use"]);
     });
 
     test("bypass mode: a hook that says nothing lets the command run without asking, as bypass would", async () => {
@@ -310,7 +310,7 @@ describe("Codex's items run the harness's hooks", () => {
         expect(await run("make x")).toBe("done");
         expect(turnStarts()[0]).toMatchObject({ approvalPolicy: "never" });
         expect(hookArg()).toBeUndefined();
-        expect(received().find((m) => m.method === "thread/start")!.params.config?.mcp_servers?.harness_hooks).toBeUndefined();
+        expect(received().find((m) => m.method === "thread/start")!.params.config?.mcp_servers?.cavvy_hooks).toBeUndefined();
     });
 
     test("default mode: a hook's allow approves without asking the user; a deny rule still wins", async () => {
@@ -431,14 +431,14 @@ describe("Codex's items run the harness's hooks", () => {
         expect(logLines().find((l) => l.subagentContext)?.subagentContext).toEqual(["use the fast path"]);
         expect(logLines().find((l) => l.subagentKeptGoing)?.subagentKeptGoing).toBe("check the tests too");
         expect(jsonl(starts)).toEqual([expect.objectContaining({ hook_event_name: "SubagentStart", agent_id: "thr-child", agent_type: "codex" })]);
-        // Once with its answer, then again (stop_hook_active) after it kept going; the harness doesn't run them a third time.
+        // Once with its answer, then again (stop_hook_active) after it kept going; Cavvy doesn't run them a third time.
         expect(jsonl(stops).map((l) => [l.agent_type, l.stop_hook_active, l.last_assistant_message])).toEqual([
             ["codex", false, "CHILD_REPORT: 2 files."],
             ["codex", true, "CHILD_REPORT: checked again."],
         ]);
     });
 
-    describe("a Codex that doesn't run the harness's hooks itself (before 0.160)", () => {
+    describe("a Codex that doesn't run Cavvy's hooks itself (before 0.160)", () => {
         beforeEach(() => (process.env.FAKE_NO_HOOKS = "1"));
 
         test("bypass mode: Codex is made to ask about each command, so a hook can still refuse it", async () => {
@@ -447,7 +447,7 @@ describe("Codex's items run the harness's hooks", () => {
             const { run, events, asked } = await makeAgent("codex", settings, "bypassPermissions", () => ({ allow: true }));
             expect(await run("make x")).toBe("done");
             expect(turnStarts()[0]).toMatchObject({ approvalPolicy: "untrusted", sandboxPolicy: { type: "dangerFullAccess" } });
-            expect(received().find((m) => m.method === "thread/start")!.params.config?.mcp_servers?.harness_hooks).toBeUndefined();
+            expect(received().find((m) => m.method === "thread/start")!.params.config?.mcp_servers?.cavvy_hooks).toBeUndefined();
             expect(decision()).toBe("decline");
             expect(asked).toEqual([]);
             expect(jsonl(seen)[0]).toMatchObject({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "touch x" } });
@@ -455,7 +455,7 @@ describe("Codex's items run the harness's hooks", () => {
             expect(ranLine()).toMatchObject({ ran: false });
         });
 
-        test("sub-agent hooks run in the harness, once each, and can't add context or keep it going", async () => {
+        test("sub-agent hooks run in Cavvy, once each, and can't add context or keep it going", async () => {
             process.env.FAKE_SCENARIO = "subagent";
             const stops = join(cwd, "stop.jsonl");
             const settings = { hooks: { SubagentStart: [{ command: say({ hookSpecificOutput: { hookEventName: "SubagentStart", additionalContext: "ctx" } }) }], SubagentStop: [{ command: `${record(stops)}; echo 'more' >&2; exit 2` }] } };

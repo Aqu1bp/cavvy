@@ -2,10 +2,10 @@
 
 import { existsSync, mkdirSync, readFileSync, watch, writeFileSync, type FSWatcher } from "fs";
 import { dirname, join } from "path";
-import { harnessHome } from "../config/paths";
+import { cavvyHome } from "../config/paths";
 import { KEYBINDINGS_TEMPLATE } from "./core";
 
-export const keybindingsPath = () => join(harnessHome(), "keybindings.json");
+export const keybindingsPath = () => join(cavvyHome(), "keybindings.json");
 
 /** The file's text, or undefined when there's none (or it can't be read; `error` says why). */
 export function readKeybindings(path = keybindingsPath()): { text?: string; error?: string } {

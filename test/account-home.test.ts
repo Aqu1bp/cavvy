@@ -5,22 +5,22 @@ import { homedir, tmpdir } from "os";
 import { dirname, join, sep } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
-if (!process.env.HARNESS_TEST_ACCOUNT_HOME) {
+if (!process.env.CAVVY_TEST_ACCOUNT_HOME) {
     test("desktop account folders in an isolated home", () => {
         const home = realpathSync(tempDir());
         try {
             const result = Bun.spawnSync([process.execPath, "--no-env-file", "test", import.meta.path], {
-                env: { ...process.env, HOME: home, HARNESS_HOME: join(home, ".harness"), HARNESS_NO_KEYCHAIN: "1", HARNESS_TEST_ACCOUNT_HOME: home },
+                env: { ...process.env, HOME: home, CAVVY_HOME: join(home, ".cavvy"), CAVVY_NO_KEYCHAIN: "1", CAVVY_TEST_ACCOUNT_HOME: home },
                 timeout: 15000,
             });
             expect({ code: result.exitCode, output: result.stderr.toString() }).toMatchObject({ code: 0 });
         } finally { rmSync(home, { recursive: true, force: true }); }
     });
 } else {
-    const home = process.env.HARNESS_TEST_ACCOUNT_HOME;
+    const home = process.env.CAVVY_TEST_ACCOUNT_HOME;
     if (!home.startsWith(realpathSync(tmpdir()) + sep) || home !== realpathSync(homedir())) throw new Error("Expected an isolated temporary home");
     const iso = isolate();
-    process.env.HARNESS_HOME = join(home, ".harness");
+    process.env.CAVVY_HOME = join(home, ".cavvy");
     mkdirSync(join(home, ".git"));
     const { addAccount, removeAccount, accountEnv } = await import("../src/providers/accounts");
     const { Engine } = await import("../src/server/engine");
@@ -54,7 +54,7 @@ if (!process.env.HARNESS_TEST_ACCOUNT_HOME) {
             process.chdir(elsewhere);
             for (const key of ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CODEX_HOME"]) {
                 const previous = process.env[key];
-                process.env[key] = ".harness/accounts/claude-code/work";
+                process.env[key] = ".cavvy/accounts/claude-code/work";
                 try {
                     expect(() => removeAccount("claude-code", a.id, a.folder)).toThrow(/default CLI folder/);
                     expect(existsSync(sentinel)).toBe(true);
@@ -64,11 +64,11 @@ if (!process.env.HARNESS_TEST_ACCOUNT_HOME) {
     });
 
     for (const provider of ["claude-code", "codex"]) test(`${provider}: broad home roots allow accounts but repositories and project roots remain protected`, () => {
-        const previousHarness = process.env.HARNESS_HOME;
-        process.env.HARNESS_HOME = join(home, ".harness");
+        const previousCavvy = process.env.CAVVY_HOME;
+        process.env.CAVVY_HOME = join(home, ".cavvy");
         try {
             // A dotfiles repository at home must not turn the whole home into a project.
-            const roots = [home, dirname(home), process.env.HARNESS_HOME, join(process.env.HARNESS_HOME, "accounts", provider)];
+            const roots = [home, dirname(home), process.env.CAVVY_HOME, join(process.env.CAVVY_HOME, "accounts", provider)];
             const managed = addAccount(provider, { id: "desktop", name: "Desktop" }, roots);
             removeAccount(provider, managed.id, managed.folder, roots);
             expect(existsSync(managed.folder)).toBe(false);
@@ -79,30 +79,30 @@ if (!process.env.HARNESS_TEST_ACCOUNT_HOME) {
             const repo = join(home, `${provider}-repo`);
             mkdirSync(repo); writeFileSync(join(repo, ".git"), "gitdir: elsewhere");
             const project = join(home, `${provider}-project`); mkdirSync(project);
-            process.env.HARNESS_HOME = join(project, "state");
+            process.env.CAVVY_HOME = join(project, "state");
             expect(() => addAccount(provider, { id: "chosen", name: "Chosen", folder: join(project, "cli-home") }, [project])).toThrow(/projects/);
             const managedInProject = addAccount(provider, { id: "managed", name: "Managed" }, [project]);
             removeAccount(provider, managedInProject.id, managedInProject.folder, [project]);
             expect(existsSync(managedInProject.folder)).toBe(false);
-            process.env.HARNESS_HOME = join(home, ".harness");
+            process.env.CAVVY_HOME = join(home, ".cavvy");
             const alias = join(home, `${provider}-repo-link`); symlinkSync(repo, alias);
             for (const folder of [repo, join(repo, "account"), join(alias, "account"), project, join(project, "account")]) {
                 expect(() => addAccount(provider, { id: "refused", name: "Refused", folder }, [...roots, project])).toThrow(/projects/);
             }
             // A managed home inside a repository is still usable; chosen folders are not exempt.
-            process.env.HARNESS_HOME = join(repo, "state");
+            process.env.CAVVY_HOME = join(repo, "state");
             const nested = addAccount(provider, { id: "nested", name: "Nested" }, [repo]);
             removeAccount(provider, nested.id, nested.folder, [repo]);
             expect(existsSync(nested.folder)).toBe(false);
             expect(() => addAccount(provider, { id: "chosen", name: "Chosen", folder: join(repo, "state", "chosen") }, [repo])).toThrow(/projects/);
         } finally {
-            process.env.HARNESS_HOME = previousHarness;
+            process.env.CAVVY_HOME = previousCavvy;
         }
     });
 
     for (const provider of ["claude-code", "codex"]) test(`${provider}: desktop home cwd and home workspace allow managed add and remove`, async () => {
-        const previousHarness = process.env.HARNESS_HOME;
-        process.env.HARNESS_HOME = join(home, ".harness");
+        const previousCavvy = process.env.CAVVY_HOME;
+        process.env.CAVVY_HOME = join(home, ".cavvy");
         const engine = new Engine({ startCwd: home, listModels: async () => [] });
         // Exercise both sources of accountProjects without starting a CLI or reading project config.
         engine.workspaces.set(home, { cwd: home } as any);
@@ -118,7 +118,7 @@ if (!process.env.HARNESS_TEST_ACCOUNT_HOME) {
         } finally {
             engine.workspaces.clear();
             await engine.stop();
-            process.env.HARNESS_HOME = previousHarness;
+            process.env.CAVVY_HOME = previousCavvy;
         }
     });
 }

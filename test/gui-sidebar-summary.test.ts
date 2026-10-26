@@ -37,7 +37,7 @@ function fixture() {
 describe("sidebar summaries", () => {
     test("run metadata and outcome coexist with waiting kinds and visible turn timing", async () => {
         const { engine, rt, view } = fixture();
-        writeFileSync(join(process.env.HARNESS_HOME!, "gui.json"), JSON.stringify({ runs: [{
+        writeFileSync(join(process.env.CAVVY_HOME!, "gui.json"), JSON.stringify({ runs: [{
             id: "run", label: "Compare models", cwd: "/original", sessions: [{ id: rt.id, model: "mock:a", modelName: "Model A" }],
         }] }));
         view.state.status = "waiting";

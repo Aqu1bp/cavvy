@@ -1,4 +1,4 @@
-// The engine behind query(): a run like `harness -p` (run-setup.ts), kept open
+// The engine behind query(): a run like `cavvy -p` (run-setup.ts), kept open
 // for more prompts, with permission prompts going to canUseTool. Loaded on a
 // query's first use, so importing the SDK stays cheap.
 
@@ -6,8 +6,8 @@ import { dirname, resolve } from "path";
 import { existsSync, statSync } from "fs";
 import type { Admitted, Agent, AgentEvent, PermissionRequest, PermissionResponse, TurnEndReason } from "../agent/agent";
 import { findSession, listSessions } from "../agent/session";
-import { loadHarnessEnv, preloadKeys } from "../auth/credentials";
-import { harnessHome } from "../config/paths";
+import { loadCavvyEnv, preloadKeys } from "../auth/credentials";
+import { cavvyHome } from "../config/paths";
 import { isTrusted, projectConfigSummary, trustUntilExit } from "../config/trust";
 import { PERMISSION_MODES, startMode, type PermissionMode } from "../permissions/modes";
 import { BUILTIN_TOOLS } from "../tools/index";
@@ -17,7 +17,7 @@ import { expandMentions } from "../ui/mentions";
 import { expandMcpMentions } from "../mcp/mentions";
 import { createRunAgent, endRun, setupRun, startRun, SetupError, type RunSetup } from "../run-setup";
 import { messageOf, TurnTally, type MapOptions, type SDKMessage } from "./messages";
-import { HarnessSdkError } from "./errors";
+import { CavvySdkError } from "./errors";
 import type { SdkTool } from "./tool";
 import type { CanUseTool, Options, QueryParams, SDKUserMessage } from "./types";
 
@@ -45,11 +45,11 @@ let noted = false;
 
 let envLoaded: Promise<{ legacyModel?: string; notes: string[] }> | undefined;
 
-/** The harness's own .env files and stored keys, once a process, as the CLI loads them: the legacy .env model, and notes about them for the first query. */
+/** Cavvy's own .env files and stored keys, once a process, as the CLI loads them: the legacy .env model, and notes about them for the first query. */
 function loadEnv(): Promise<{ legacyModel?: string; notes: string[] }> {
     return (envLoaded ??= (async () => {
         const installDir = resolve(dirname(import.meta.dir), "..");
-        const env = loadHarnessEnv([resolve(harnessHome(), ".env"), resolve(installDir, ".env")]);
+        const env = loadCavvyEnv([resolve(cavvyHome(), ".env"), resolve(installDir, ".env")]);
         await preloadKeys();
         return env;
     })());
@@ -60,7 +60,7 @@ const RESERVED_TOOLS = ["Skill"];
 
 function checkOptions(o: Options): void {
     const fail = (m: string): never => {
-        throw new HarnessSdkError(m);
+        throw new CavvySdkError(m);
     };
     if (o.cwd !== undefined && (typeof o.cwd !== "string" || !existsSync(o.cwd) || !statSync(o.cwd).isDirectory())) fail(`cwd "${o.cwd}" is not a folder.`);
     if (o.permissionMode !== undefined && !PERMISSION_MODES.includes(o.permissionMode)) fail(`Unknown permissionMode "${o.permissionMode}". Use one of: ${PERMISSION_MODES.join(", ")}.`);
@@ -109,7 +109,7 @@ function toAgentTool(t: SdkTool): Tool<any> {
 function textOfInput(m: SDKUserMessage): string {
     if (typeof m === "string") return m;
     if (m && typeof m === "object" && m.type === "user" && typeof m.content === "string") return m.content;
-    throw new HarnessSdkError('A prompt message must be a string or { type: "user", content: string }.');
+    throw new CavvySdkError('A prompt message must be a string or { type: "user", content: string }.');
 }
 
 /** One query. Its methods are safe to call at any point, including after it ended. */
@@ -221,7 +221,7 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
             if (!noted) for (const n of env.notes) warn(n);
             noted = true;
 
-            // Trust, as `harness -p`, but a folder trusted for having nothing to protect is trusted for
+            // Trust, as `cavvy -p`, but a folder trusted for having nothing to protect is trusted for
             // this query only: one that has project configuration by the next query is judged again.
             let trusted = o.trusted;
             // Said by the caller, as the user saying yes to the trust prompt: agent CLIs get the project's configuration too.
@@ -229,15 +229,15 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
             else if (trusted === undefined) {
                 const found = projectConfigSummary(cwd);
                 trusted = isTrusted(cwd) || !found.length;
-                if (!trusted) warn(`This folder isn't trusted, so ${found.join(", ")} and its memory files are ignored (except deny/ask rules). Pass trusted: true, or run harness there once to trust it.`);
+                if (!trusted) warn(`This folder isn't trusted, so ${found.join(", ")} and its memory files are ignored (except deny/ask rules). Pass trusted: true, or run cavvy there once to trust it.`);
             }
 
             let resumeFile: string | undefined;
             if (o.resume !== undefined) {
                 resumeFile = findSession(cwd, o.resume);
-                if (!resumeFile) throw new HarnessSdkError(`No session matching "${o.resume}" in ${cwd}.`);
+                if (!resumeFile) throw new CavvySdkError(`No session matching "${o.resume}" in ${cwd}.`);
             } else if (o.continue) resumeFile = listSessions(cwd, 1)[0]?.file;
-            if (resumeFile && openSessions.has(resumeFile)) throw new HarnessSdkError(`Session ${o.resume ?? resumeFile} is open in another query in this process. Close that one first.`);
+            if (resumeFile && openSessions.has(resumeFile)) throw new CavvySdkError(`Session ${o.resume ?? resumeFile} is open in another query in this process. Close that one first.`);
             if (closed.signal.aborted) {
                 if (inputFailure) throw inputFailure.error;
                 return;
@@ -261,12 +261,12 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
                     onUsage: (u, usd) => tally?.addUsage(u, usd),
                 });
             } catch (e) {
-                throw e instanceof SetupError ? new HarnessSdkError(e.message.replace("pass --model provider:model", 'set the model option ("provider:model")')) : e;
+                throw e instanceof SetupError ? new CavvySdkError(e.message.replace("pass --model provider:model", 'set the model option ("provider:model")')) : e;
             }
             const s = setup;
             // An unsaved copy holds its original too: the copy forks the original's agent backend sessions.
             const files = [s.session.path, ...(s.original ? [s.original.path] : [])];
-            if (files.some((f) => openSessions.has(f))) throw new HarnessSdkError(`Session ${s.original?.meta.id ?? s.session.meta.id} is open in another query in this process. Close that one first.`);
+            if (files.some((f) => openSessions.has(f))) throw new CavvySdkError(`Session ${s.original?.meta.id ?? s.session.meta.id} is open in another query in this process. Close that one first.`);
             held = files;
             for (const f of files) openSessions.add(f);
             resolveId(s.session.meta.id);
@@ -340,7 +340,7 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
                 let reason: TurnEndReason;
                 try {
                     const { parts, notices } = await expandMentions(prompt, s.toolState, [cwd, ...(s.settings.permissions?.additionalDirectories ?? [])], s.checker);
-                    // @server:resource mentions, as in `harness -p`; nobody answers a server's form here, so those are declined.
+                    // @server:resource mentions, as in `cavvy -p`; nobody answers a server's form here, so those are declined.
                     const mcp = await expandMcpMentions(prompt, s.mcp, {}, turn.signal);
                     parts.push(...mcp.parts);
                     for (const n of [...notices, ...mcp.notices]) warn(n);
@@ -373,7 +373,7 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
                 setup.session.release();
             }
             for (const f of held ?? []) openSessions.delete(f);
-            rejectId(new HarnessSdkError("The query ended before its session started."));
+            rejectId(new CavvySdkError("The query ended before its session started."));
         }
     }
 
@@ -393,7 +393,7 @@ export function startQuery(params: QueryParams, sink: Sink): RunControl {
             return true;
         },
         setPermissionMode: (m) => {
-            if (!PERMISSION_MODES.includes(m)) throw new HarnessSdkError(`Unknown permission mode "${m}".`);
+            if (!PERMISSION_MODES.includes(m)) throw new CavvySdkError(`Unknown permission mode "${m}".`);
             if (setMode) setMode(m);
             else pendingMode = m;
         },

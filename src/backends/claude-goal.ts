@@ -1,6 +1,6 @@
 // Claude Code's /goal, as its session transcript records it. In -p mode Claude Code reports
 // its goal as it goes (active_goal) only in its own remote sessions (CLAUDE_CODE_REMOTE, checked
-// with 2.1.305), so the harness reads the goal_status entries Claude Code writes to the
+// with 2.1.305), so Cavvy reads the goal_status entries Claude Code writes to the
 // transcript instead, the ones its own --resume restores the goal from:
 //   set        { sentinel: true, met: false, condition }
 //   not met    { met: false, condition, reason }

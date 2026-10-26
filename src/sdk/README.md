@@ -1,18 +1,18 @@
-# Harness SDK (TypeScript)
+# Cavvy SDK (TypeScript)
 
-Drive the harness from your own code: run prompts, stream what the agent does, answer its permission prompts, and give it tools of your own. It's the same agent as the `harness` CLI, in your process, with the same keys, settings, providers, MCP servers, hooks, permission rules and session files. The API follows Claude Code's Agent SDK (`query()` returning an async generator of messages).
+Drive Cavvy from your own code: run prompts, stream what the agent does, answer its permission prompts, and give it tools of your own. It's the same agent as the `cavvy` CLI, in your process, with the same keys, settings, providers, MCP servers, hooks, permission rules and session files. The API follows Claude Code's Agent SDK (`query()` returning an async generator of messages).
 
 ```ts
-import { query } from "my-own-harness/sdk";
+import { query } from "cavvy/sdk";
 
 for await (const m of query({ prompt: "Why does test/auth.test.ts fail?", options: { cwd: "/path/to/project" } })) {
     if (m.type === "result") console.log(m.result);
 }
 ```
 
-**Runtime:** Bun 1.4 or newer. The harness is a Bun program (it uses `Bun.spawn`, `Bun.serve` and friends), so the SDK runs in Bun only, not Node.
+**Runtime:** Bun 1.4 or newer. Cavvy is a Bun program (it uses `Bun.spawn`, `Bun.serve` and friends), so the SDK runs in Bun only, not Node.
 
-**Installing:** the package isn't published. Depend on this repository (`bun add github:Aqu1bp/my-own-harness`, or `bun add /path/to/my-own-harness`) and import `my-own-harness/sdk`. Keys come from the same place as the CLI's: `harness auth add`, the environment, or `~/.harness/.env`.
+**Installing:** the package isn't published. Depend on this repository (`bun add github:Aqu1bp/cavvy`, or `bun add /path/to/cavvy`) and import `cavvy/sdk`. Keys come from the same place as the CLI's: `cavvy auth add`, the environment, or `~/.cavvy/.env`.
 
 ## Examples
 
@@ -32,19 +32,19 @@ Returns a `Query`, an async generator of `SDKMessage`. Nothing runs until you st
 | Option | |
 |---|---|
 | `cwd` | The project folder. Default `process.cwd()`. |
-| `model` | `"provider:model"`, as in `harness models`. Default: as the CLI (your settings, then the first model with a key). |
+| `model` | `"provider:model"`, as in `cavvy models`. Default: as the CLI (your settings, then the first model with a key). |
 | `permissionMode` | `"default"`, `"acceptEdits"`, `"plan"`, `"auto"` or `"bypassPermissions"`. Default: your settings' `defaultMode` (bypass only from user settings), else `"default"`. |
 | `allowedTools`, `disallowedTools` | Permission rules, as `--allowedTools` and `--disallowedTools`: `"Bash(npm test:*)"`, `"Edit(src/**)"`, `"WebFetch"`. Deny rules beat everything. |
 | `additionalDirectories` | More folders the agent may work in, as `--add-dir`. |
-| `canUseTool` | Answers the calls that would otherwise prompt you. Without it they're denied, as in `harness -p`. |
+| `canUseTool` | Answers the calls that would otherwise prompt you. Without it they're denied, as in `cavvy -p`. |
 | `tools` | Tools of your own, made with `tool()`. |
 | `maxTurns` | Most model responses in one turn (`error_max_turns` when reached). |
 | `appendSystemPrompt` | Added to the system prompt on every request, not saved in the session. |
 | `effort`, `fastMode` | As the CLI flags. |
 | `resume` | A session id, or the start of one, in `cwd`. |
 | `continue` | Continue the latest session in `cwd`. |
-| `persistSession` | Default `true`: saved like the CLI's sessions, so `harness -r <id>` and the GUI open it. `false` with `resume` goes on in an unsaved copy and writes nothing to the original. Claude Code and Codex fork their own session for it (`--fork-session`, `thread/fork`), so they keep the conversation's context. |
-| `trusted` | Load the project's `.harness/settings.json`, `.mcp.json`, memory files, agents and skills. `true` trusts the folder until the process exits, as answering yes to the trust prompt does (not saved), so Claude Code and Codex get the project's own configuration too. `false` keeps all of it out, even in a folder you trusted, and a resumed session is sent without the memory files its saved prompt was made with. Default: as `harness -p`, which trusts folders you trusted and, for that query only, folders with no project configuration. |
+| `persistSession` | Default `true`: saved like the CLI's sessions, so `cavvy -r <id>` and the GUI open it. `false` with `resume` goes on in an unsaved copy and writes nothing to the original. Claude Code and Codex fork their own session for it (`--fork-session`, `thread/fork`), so they keep the conversation's context. |
+| `trusted` | Load the project's `.cavvy/settings.json`, `.mcp.json`, memory files, agents and skills. `true` trusts the folder until the process exits, as answering yes to the trust prompt does (not saved), so Claude Code and Codex get the project's own configuration too. `false` keeps all of it out, even in a folder you trusted, and a resumed session is sent without the memory files its saved prompt was made with. Default: as `cavvy -p`, which trusts folders you trusted and, for that query only, folders with no project configuration. |
 | `settings` | Settings over those loaded from disk: `hooks`, `mcpServers`, `env`, `permissions`, … Rule lists and hooks add up; maps merge by key. |
 | `abortController` | Aborting it ends the query. |
 | `includePartialMessages` | Also yield `stream_event` messages as text streams in. |
@@ -61,7 +61,7 @@ Returns a `Query`, an async generator of `SDKMessage`. Nothing runs until you st
 
 ## Messages
 
-These are also what `harness -p --output-format stream-json` prints, one per line.
+These are also what `cavvy -p --output-format stream-json` prints, one per line.
 
 | `type` | |
 |---|---|
@@ -92,7 +92,7 @@ const canUseTool: CanUseTool = async (toolName, input, { title, reason, suggesti
 ## Custom tools
 
 ```ts
-import { tool } from "my-own-harness/sdk";
+import { tool } from "cavvy/sdk";
 
 const lookup = tool(
     "lookup_customer",
@@ -107,7 +107,7 @@ The input schema is JSON Schema. The handler returns a string, or `{ content, is
 
 ## Errors
 
-- A query that can't start (bad options, an unknown model, no key, a session that doesn't exist or is open in another query) throws `HarnessSdkError` from the iterator.
+- A query that can't start (bad options, an unknown model, no key, a session that doesn't exist or is open in another query) throws `CavvySdkError` from the iterator.
 - A turn that fails (the provider refused the request, a hook blocked the prompt) ends with an error `result`. Its `errors` hold the turn's error notices; warnings come as `system` / `notice` messages. A conversation goes on with the next message.
 - An input iterable that throws ends the query with that error, after cleaning up.
 
@@ -121,7 +121,7 @@ Queries are independent: run as many at once as you like, in the same folder or 
 
 | | |
 |---|---|
-| Importing `my-own-harness/sdk` | ~1 ms (the engine loads on the first query, ~110 ms once, the same as `harness -p`) |
+| Importing `cavvy/sdk` | ~1 ms (the engine loads on the first query, ~110 ms once, the same as `cavvy -p`) |
 | Starting a query (to the init message) | ~1.5 ms |
 | A turn, beyond the provider's own time | ~1.3 ms |
-| For comparison: `harness -p`, a process per prompt | ~160 ms |
+| For comparison: `cavvy -p`, a process per prompt | ~160 ms |

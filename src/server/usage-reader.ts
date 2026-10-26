@@ -12,12 +12,12 @@ export interface UsageRecord {
     at: number; approx: boolean; model: string; usage: Usage; cost: number; unknown: boolean;
     session: string; dedupe?: string; serviceTier?: string;
 }
-/** `accounts`: every account whose history folder is this file's (Default and the Harness-made accounts linking it), when more than one. */
+/** `accounts`: every account whose history folder is this file's (Default and the Cavvy-made accounts linking it), when more than one. */
 interface File { file: string; source: Source; account: string; accounts?: string[]; size: number; mtimeMs: number; ino: number; dev: number }
-/** `parent`: the Codex thread this one was forked or spawned from. `ran`: a Harness session file's (Ran). */
+/** `parent`: the Codex thread this one was forked or spawned from. `ran`: a Cavvy session file's (Ran). */
 interface State { model: string; session: string; total?: number[]; signature?: string; undated: number[]; sawMeta?: boolean; forkAnchor?: number; serviceTier?: string; unmodeled?: UsageRecord[]; parent?: string; ran?: Ran }
 /**
- * What a Harness session file says about the native threads it ran (#428), by CLI: the account it's on as its lines
+ * What a Cavvy session file says about the native threads it ran (#428), by CLI: the account it's on as its lines
  * go (account lines; none is Default), the threads that were its own ("provider id": backend and parked lines, not a
  * fork's shared one; its sub-agents' runs), and when it was on which account. Its CLI usage lines, each written as a
  * reply came in, are kept as runs of one account: [the last one's time, account]. `created`: when the session was
@@ -46,17 +46,17 @@ function ran(l: any, at: number, s: State) {
         else runs.push([at, account]);
     }
 }
-// A transcript line is written before Harness records the reply it carries; allow for the two clocks' reads.
+// A transcript line is written before Cavvy records the reply it carries; allow for the two clocks' reads.
 const RAN_SLACK_MS = 5000;
-/** A Harness session's Ran, and whether its file was read to its end (only then is its account now known). */
+/** A Cavvy session's Ran, and whether its file was read to its end (only then is its account now known). */
 type Owner = { ran: Ran; whole: boolean };
 /**
- * The account a Harness session ran `thread` under at `at`: the one of the first run that ends then or later (an
+ * The account a Cavvy session ran `thread` under at `at`: the one of the first run that ends then or later (an
  * account switch comes between turns, so the turn that run ends is the one `at` is in). Failing that, the last run's
  * if `at` is within the slack of its end. Later still (a turn still going), the account the session is on now, if its
  * file was read to its end. `copy`: from before the session was made, so history a native fork copied (Claude Code's
  * --fork-session keeps the original timestamps): it's the account of the thread forked, if that's known.
- * Undefined when no Harness session ran the thread.
+ * Undefined when no Cavvy session ran the thread.
  */
 function ranUnder(owners: Map<string, Owner[]>, f: File, thread: string | undefined, at: number, depth = 0): { account?: string; copy: boolean } | undefined {
     let best: [number, string] | undefined, copied: { account?: string } | undefined;
@@ -79,7 +79,7 @@ function parse(l: any, f: File, s: State): UsageRecord | undefined {
     if (f.source === "api") {
         ran(l, at, s);
         if (l.t !== "usage" || !l.usage || typeof l.model !== "string") return;
-        // CLI transcripts are authoritative, including for Harness-run sessions.
+        // CLI transcripts are authoritative, including for Cavvy-run sessions.
         if (/^(claude-code|codex):/.test(l.model)) return;
         model = str(l.model);
         const u = l.usage;
@@ -250,7 +250,7 @@ async function scan(since: number) {
     const files = [...discovery.files.values()].sort((a, b) => b.mtimeMs - a.mtimeMs || a.file.localeCompare(b.file));
     for (const [path, entry] of cache) if (entry.file.mtimeMs >= since && !discovery.files.has(path)) files.push(entry.file);
     if (files.length > usageBounds.maxFiles) truncated ??= `Only ${usageBounds.maxFiles} transcript files could be scanned; some sessions are left out.`;
-    // Files not known to be read to their end this refresh. Harness's session files go first: they say which account
+    // Files not known to be read to their end this refresh. Cavvy's session files go first: they say which account
     // ran each CLI thread (attribute()), so a transcript isn't read ahead of the record of who ran it.
     const unread = new Set(files.map(f => f.file));
     const batch = files.slice(0, Math.max(0, usageBounds.maxFiles));
@@ -296,7 +296,7 @@ async function scan(since: number) {
                             parser.feed(chunk.subarray(from, nl));
                             const projected = parser.finish();
                             // A skipped CLI record can still date preceding legacy
-                            // API usage in the same Harness transcript.
+                            // API usage in the same Cavvy transcript.
                             const dated = f.source === "api" && projected?.t === "usage" ? timestamp(projected.at) : 0;
                             if (dated) { for (const i of entry.state.undated) entry.records[i]!.at = dated; entry.state.undated = []; }
                             const r = parse(projected, f, entry.state);
@@ -339,10 +339,10 @@ async function scan(since: number) {
  * account sharing it; a reply is counted once there, whichever account it's under. Copies a native fork made come
  * after everything else, so the original's account is the one a reply is counted under, whichever is read first.
  *
- * A folder shared by several accounts (#428) can't say which one a transcript is: Harness's own session files, read
- * by this scan as the "api" source anyway, say which account ran each native thread when (Ran). A thread no Harness
+ * A folder shared by several accounts (#428) can't say which one a transcript is: Cavvy's own session files, read
+ * by this scan as the "api" source anyway, say which account ran each native thread when (Ran). A thread no Cavvy
  * session ran (a plain terminal `claude` or `codex` in the shared folder, or a session whose file wasn't read yet) is
- * the folder's first account's: Default's, for Harness-made accounts linking its history.
+ * the folder's first account's: Default's, for Cavvy-made accounts linking its history.
  */
 function attribute(since: number, unread: Set<string>) {
     const owners = new Map<string, Owner[]>(), parents = new Map<string, string>();
@@ -362,7 +362,7 @@ function attribute(since: number, unread: Set<string>) {
         if (!f.accounts || f.source === "api") { files.push({ source: f.source, account: f.account, scope, records: e.records }); continue; }
         const split = new Map<string, { account: string; copy: boolean; records: UsageRecord[] }>();
         for (const r of e.records) {
-            // A Codex sub-agent's or fork's thread Harness didn't record goes with the nearest one it came from that it did.
+            // A Codex sub-agent's or fork's thread Cavvy didn't record goes with the nearest one it came from that it did.
             let found: ReturnType<typeof ranUnder>;
             for (let thread: string | undefined = r.session, i = 0; !found && thread && i < 8; thread = parents.get(thread) ?? (i ? undefined : e.state.parent), i++) found = ranUnder(owners, f, thread, r.at);
             const account = found?.account && f.accounts.includes(found.account) ? found.account : f.account, copy = found?.copy === true;

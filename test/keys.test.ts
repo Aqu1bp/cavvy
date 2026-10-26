@@ -179,7 +179,7 @@ describe("CSI u (kitty) and modifyOtherKeys", () => {
     });
 });
 
-// What a terminal sends once the harness pushes the kitty protocol's
+// What a terminal sends once Cavvy pushes the kitty protocol's
 // "disambiguate escape codes" flag (CSI > 1 u): Esc, ctrl+key and alt+key
 // become CSI u; plain Enter, Tab and Backspace keep their legacy bytes; the
 // modifier number is 1 + shift 1, alt 2, ctrl 4, super 8, caps lock 64, num lock 128.

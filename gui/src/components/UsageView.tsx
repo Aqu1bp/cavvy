@@ -129,7 +129,7 @@ export function UsageDashboard(p: { data: UsageSummary; metric: Metric }) {
         <div class="set-h usage-bar"><h3>By {breakdown() === "model" ? "model" : p.data.interval === "hour" ? "hour" : "day"}</h3><span class="spacer" /><Segmented label="Usage breakdown" size="sm" value={breakdown()} onChange={setBreakdown} options={[{ value: "model", label: "Model" }, { value: "time", label: p.data.interval === "hour" ? "Hour" : "Day" }]} /></div>
         <UsageTable data={p.data} metric={m()} by={breakdown()} hl={setHl} />
         <p class="set-note u-notes">
-            Counted on this computer from Claude Code and Codex transcripts, sessions run in Harness included, and from Harness's own API sessions. Costs use API list prices; plans don't bill per token, so a plan's cost is what the same usage would cost on the API. {p.data.interval === "hour" ? "Hours" : "Days"} are UTC; the first and last are partial.
+            Counted on this computer from Claude Code and Codex transcripts, sessions run in Cavvy included, and from Cavvy's own API sessions. Costs use API list prices; plans don't bill per token, so a plan's cost is what the same usage would cost on the API. {p.data.interval === "hour" ? "Hours" : "Days"} are UTC; the first and last are partial.
             <Show when={p.data.totals.unknown}> Unpriced usage is excluded from cost, cost shares, and cost charts. The Tokens view includes it. Known amounts are partial; unknown does not mean free.</Show>
             {p.data.approxDated ? ` ${p.data.approxDated} older records have approximate timestamps.` : ""}{p.data.approxPriced ? ` ${p.data.approxPriced} alias-only records lack a historical model resolution and may be unpriced.` : ""}
         </p>

@@ -45,7 +45,7 @@ export interface ProviderDef {
     /**
      * No API key. gcloud: short-lived tokens from the gcloud CLI, for the
      * account set up with /login. cli: the user's own agent CLI, signed in
-     * through that CLI; the harness never handles its credentials.
+     * through that CLI; Cavvy never handles its credentials.
      */
     auth?: "gcloud" | "cli";
     /** The model listing already comes newest first. */
@@ -136,7 +136,7 @@ export const BUILTIN_PROVIDERS: ProviderDef[] = [
         // own installed Claude Code, which runs each turn with its own tools.
         // Anthropic's terms allow signing in to the unmodified Claude Code
         // binary with your own plan; they don't allow other programs to use
-        // its sign-in, so the harness never touches it (src/backends).
+        // its sign-in, so Cavvy never touches it (src/backends).
         id: "claude-code",
         name: "Claude Code",
         kind: "agent",
@@ -171,9 +171,9 @@ export const BUILTIN_PROVIDERS: ProviderDef[] = [
         keyUrl: "https://openrouter.ai/keys",
         requiresKey: true,
         headers: {
-            "HTTP-Referer": "https://github.com/harness-cli",
-            "X-OpenRouter-Title": "Harness CLI",
-            "X-Title": "Harness CLI",
+            "HTTP-Referer": "https://cavvy.dev",
+            "X-OpenRouter-Title": "Cavvy CLI",
+            "X-Title": "Cavvy CLI",
             "X-OpenRouter-Categories": "cli-agent",
         },
         streamUsage: true,
@@ -341,7 +341,7 @@ export interface VertexConfig {
 export interface AgentCliConfig {
     /** The CLI's path, when it isn't the one on PATH. */
     path?: string;
-    /** Extra arguments, placed before the harness's own. */
+    /** Extra arguments, placed before Cavvy's own. */
     args?: string[];
     accounts?: CliAccount[];
     defaultAccount?: string;

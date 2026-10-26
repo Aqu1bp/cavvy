@@ -1,6 +1,6 @@
 // #409's switch matrix, the catch-up cursor (BackendSession.synced; the rules by refusedBackendTurn in
 // src/agent/agent.ts): back on a CLI after other models (or the other CLI) answered, its next prompt carries what it
-// missed, once. Through a cut-off turn, CLI-to-CLI chains, Harness's /compact, a rewind, a lost native session and a
+// missed, once. Through a cut-off turn, CLI-to-CLI chains, Cavvy's /compact, a rewind, a lost native session and a
 // Stop hook's continuation. In the GUI server's Runtime with the fake CLIs and the mock API (test/helpers/switch-app.ts).
 
 import { describe, expect, test } from "bun:test";
@@ -37,7 +37,7 @@ for (const provider of CLIS)
                     expect(count(p, answer)).toBe(1);
                     expect(count(p, "go on now")).toBe(1);
                     expect(p.indexOf("</conversation-so-far>")).toBeLessThan(p.indexOf("go on now"));
-                    // Then only Harness's notes (that the model was switched), after the user's words.
+                    // Then only Cavvy's notes (that the model was switched), after the user's words.
                     expect(p.slice(p.indexOf("go on now") + "go on now".length)).toMatch(/^(\s*<system-reminder>[\s\S]*?<\/system-reminder>)*\s*$/);
                     expect((await h.send("and again")).status).toBe("done");
                     expect(h.prompts().at(-1)).toBe("and again");
@@ -45,7 +45,7 @@ for (const provider of CLIS)
             }, 30_000);
         });
 
-// Gap 2, the interrupt-only case: all the CLI missed is that its last turn was cut off (Harness stopped part way: the
+// Gap 2, the interrupt-only case: all the CLI missed is that its last turn was cut off (Cavvy stopped part way: the
 // session's Runtime notes it as it opens, runtime.ts). Said plainly, not as another model's turn.
 for (const provider of CLIS)
     for (const live of [true, false])
@@ -102,7 +102,7 @@ for (const live of [true, false])
         });
     }, 30_000);
 
-// Gap 4: Harness's own /compact on an API model, then back on the CLI: a new native session from the summary.
+// Gap 4: Cavvy's own /compact on an API model, then back on the CLI: a new native session from the summary.
 for (const provider of CLIS)
     for (const live of [true, false])
         test(`gap 4: ${provider}, ${mode(live)}: /compact on an API model, then the CLI: a new session, handed the summary; the old one is never used`, async () => {

@@ -1416,7 +1416,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "harness-desktop"
+name = "cavvy-desktop"
 version = "1.0.0"
 dependencies = [
  "serde",

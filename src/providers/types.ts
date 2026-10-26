@@ -61,7 +61,7 @@ export type AssistantContent = TextPart | ThinkingPart | ToolCallPart;
 export interface UserMessage {
     role: "user";
     content: UserContent[];
-    /** Harness-only bookkeeping, never sent to providers. */
+    /** Cavvy-only bookkeeping, never sent to providers. */
     meta?: {
         kind?: "prompt" | "tool_results" | "interrupt" | "summary" | "command" | "reminder" | "continuation" | "wake";
         display?: string;
@@ -205,7 +205,7 @@ export interface ModelInfo {
     fastPricingLong?: ModelInfo["pricing"];
     pricingLong?: ModelInfo["pricing"];
     longContextThreshold?: number;
-    /** Effort levels offered by Harness, including mapped manual thinking budgets. */
+    /** Effort levels offered by Cavvy, including mapped manual thinking budgets. */
     effortLevels?: Effort[];
     /** Anthropic native output_config.effort support, separate from budget controls. */
     nativeEffortLevels?: Effort[];

@@ -27,13 +27,13 @@ test("launch checker rejects a Default probe that observes the named folder", ()
     expect(() => assertIntendedLaunch({ ...entry, intendedAccount: "work" }, defaults, { codex: "/fake/work" })).not.toThrow();
 });
 
-const scenario = process.env.HARNESS_TEST_ISOLATION_CASE;
+const scenario = process.env.CAVVY_TEST_ISOLATION_CASE;
 if (!scenario) {
     for (const mode of ["unset", "custom", "empty-secure", "empty", "relative"]) test(`account isolation lifecycle: ${mode}`, async () => {
         const root = realpathSync(mkdtempSync(join(tmpdir(), "account-isolation-")));
         const home = join(root, "home");
         mkdirSync(home);
-        const env = { ...process.env, HOME: home, HARNESS_HOME: join(root, "state"), HARNESS_NO_KEYCHAIN: "1", HARNESS_TEST_ISOLATION_ROOT: root, HARNESS_TEST_ISOLATION_CASE: mode };
+        const env = { ...process.env, HOME: home, CAVVY_HOME: join(root, "state"), CAVVY_NO_KEYCHAIN: "1", CAVVY_TEST_ISOLATION_ROOT: root, CAVVY_TEST_ISOLATION_CASE: mode };
         for (const key of selectors) delete env[key];
         // Do not carry credentials or fixture switches from the invoking test process.
         for (const key of Object.keys(env)) if (/(API_KEY|AUTH_TOKEN|ACCESS_TOKEN|BASE_URL)$/.test(key) || key.startsWith("FAKE_")) delete env[key];
@@ -50,13 +50,13 @@ if (!scenario) {
         } finally { rmSync(root, { recursive: true, force: true }); }
     }, 60_000);
 } else {
-    const root = process.env.HARNESS_TEST_ISOLATION_ROOT!;
+    const root = process.env.CAVVY_TEST_ISOLATION_ROOT!;
     const home = realpathSync(homedir());
-    if (!root?.startsWith(realpathSync(tmpdir()) + sep) || home !== join(root, "home") || process.env.HARNESS_NO_KEYCHAIN !== "1") throw new Error("Expected temporary HOME and disabled keychain");
+    if (!root?.startsWith(realpathSync(tmpdir()) + sep) || home !== join(root, "home") || process.env.CAVVY_NO_KEYCHAIN !== "1") throw new Error("Expected temporary HOME and disabled keychain");
     const parent = Object.fromEntries(["HOME", ...selectors].map((key) => [key, process.env[key] ?? null]));
     const defaultEnv = parent;
     const bin = join(root, "bin"), cwd = join(home, "project");
-    for (const dir of [bin, cwd, process.env.HARNESS_HOME!]) mkdirSync(dir, { recursive: true });
+    for (const dir of [bin, cwd, process.env.CAVVY_HOME!]) mkdirSync(dir, { recursive: true });
     const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
     for (const [name, provider] of [["claude", "claude-code"], ["codex", "codex"]]) {
         const path = join(bin, name!);
@@ -68,7 +68,7 @@ if (!scenario) {
     process.env.FAKE_SCENARIO = "silent";
     process.env.FAKE_CODEX_SCENARIO = "web";
     process.env.FAKE_LOG = join(root, "protocol.jsonl");
-    const log = process.env.HARNESS_TEST_ISOLATION_LOG = join(root, "starts.jsonl");
+    const log = process.env.CAVVY_TEST_ISOLATION_LOG = join(root, "starts.jsonl");
     const claudeHome = defaultEnv.CLAUDE_CONFIG_DIR || join(home, ".claude");
     const codexHome = defaultEnv.CODEX_HOME || join(home, ".codex");
     const protectedDirs = [...new Set([join(home, ".claude"), join(home, ".codex"), claudeHome, codexHome, ...(defaultEnv.CLAUDE_SECURESTORAGE_CONFIG_DIR ? [defaultEnv.CLAUDE_SECURESTORAGE_CONFIG_DIR] : [])])];
@@ -79,13 +79,13 @@ if (!scenario) {
     writeFileSync(join(home, ".claude.json"), '{"defaultLogin":"must survive"}\n');
     for (const [folder, provider] of [[claudeHome, "claude-code"], [codexHome, "codex"]]) writeFileSync(join(folder!, "cli-canary"), `${provider}\n`);
     // History folders each CLI makes on its first run: a named account's links share them (account-layout.ts),
-    // and Harness makes them in Default only when missing.
+    // and Cavvy makes them in Default only when missing.
     for (const d of ["projects", "file-history", "plans", "tasks", "paste-cache"]) mkdirSync(join(claudeHome, d), { recursive: true });
     for (const d of ["sessions", "archived_sessions", "thread-writer-locks"]) mkdirSync(join(codexHome, d), { recursive: true });
     const { claudeSession, codexSession } = await import("./helpers/cli-stores");
     const native = {
-        "claude-code": claudeSession(claudeHome, { cwd, turns: [{ prompt: "Before Harness", reply: "Existing Claude conversation" }] }),
-        codex: codexSession(codexHome, { cwd, turns: [{ prompt: "Before Harness", reply: "Existing Codex conversation" }] }),
+        "claude-code": claudeSession(claudeHome, { cwd, turns: [{ prompt: "Before Cavvy", reply: "Existing Claude conversation" }] }),
+        codex: codexSession(codexHome, { cwd, turns: [{ prompt: "Before Cavvy", reply: "Existing Codex conversation" }] }),
     };
     const hashTree = (path: string): unknown => statSync(path).isDirectory()
         ? Object.fromEntries(readdirSync(path).sort().map((name) => [name, hashTree(join(path, name))]))
@@ -98,11 +98,11 @@ if (!scenario) {
     const { accountEnv } = await import("../src/providers/accounts");
     const providers = ["claude-code", "codex"] as const;
     for (const provider of providers) saveAgentConfig(provider, {});
-    writeFileSync(join(process.env.HARNESS_HOME!, "settings.json"), JSON.stringify({ delegation: false }));
+    writeFileSync(join(process.env.CAVVY_HOME!, "settings.json"), JSON.stringify({ delegation: false }));
     const starts = (): any[] => existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
     const until = async (check: () => boolean) => {
         const end = Date.now() + 10000;
-        while (!check()) { if (Date.now() > end) throw new Error(`Timed out: ${process.env.HARNESS_TEST_ISOLATION_PHASE}`); await Bun.sleep(10); }
+        while (!check()) { if (Date.now() > end) throw new Error(`Timed out: ${process.env.CAVVY_TEST_ISOLATION_PHASE}`); await Bun.sleep(10); }
     };
 
     test.skipIf(scenario !== "relative")("relative Default selectors refuse login, probes and models before spawning", async () => {
@@ -138,8 +138,8 @@ if (!scenario) {
             if (provider) {
                 const planned = pending[provider];
                 const intendedAccount = typeof planned === "string" ? planned : planned?.shift();
-                if (!intendedAccount) unexpected.push(`${process.env.HARNESS_TEST_ISOLATION_PHASE}: ${provider}`);
-                opts = { ...opts, env: { ...opts.env, HARNESS_TEST_INTENDED_ACCOUNT: intendedAccount ?? "UNPLANNED" } };
+                if (!intendedAccount) unexpected.push(`${process.env.CAVVY_TEST_ISOLATION_PHASE}: ${provider}`);
+                opts = { ...opts, env: { ...opts.env, CAVVY_TEST_INTENDED_ACCOUNT: intendedAccount ?? "UNPLANNED" } };
             }
             return spawn(argv, opts);
         }) as typeof Bun.spawn);
@@ -147,7 +147,7 @@ if (!scenario) {
             expect(unexpected).toEqual([]);
             expect(Object.values(pending).filter(Array.isArray).flat()).toEqual([]);
             pending = plan;
-            process.env.HARNESS_TEST_ISOLATION_PHASE = label;
+            process.env.CAVVY_TEST_ISOLATION_PHASE = label;
             return starts().length;
         };
         const catalogs = (provider?: string, id = "default") => Object.fromEntries(providers.map((p) => [p, [p === provider ? id : "default"]]));

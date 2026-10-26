@@ -1,6 +1,6 @@
 // Agent backends: providers that run a whole coding agent rather than answer
 // single model requests. Claude Code and Codex are run as the user's own
-// installed CLIs, signed in by the user through those CLIs. The harness never
+// installed CLIs, signed in by the user through those CLIs. Cavvy never
 // sees, reads or stores their credentials; it starts the official program,
 // sends it the prompt, shows what it does and answers its permission prompts.
 
@@ -27,15 +27,15 @@ export interface BackendPermission {
     background?: boolean;
     /** With background: aborts when the request no longer matters (its sub-agent's turn ended), withdrawing the prompt. */
     signal?: AbortSignal;
-    /** The harness tool whose rules apply: Bash, Edit, Write, Read, WebFetch, mcp__server__tool, or the backend's own name. */
+    /** Cavvy tool whose rules apply: Bash, Edit, Write, Read, WebFetch, mcp__server__tool, or the backend's own name. */
     toolName: string;
     /** Input in that tool's shape (command, file_path, url, …). */
     input: Record<string, unknown>;
-    /** Shown in the prompt when the harness has no tool of that name. */
+    /** Shown in the prompt when Cavvy has no tool of that name. */
     title?: string;
     /** Why the backend asks. */
     reason?: string;
-    /** A preview the harness can't compute itself (a patch). */
+    /** A preview Cavvy can't compute itself (a patch). */
     preview?: ToolDisplay;
     /** More files the same change writes: deny rules for any of them refuse it, and only rules covering all of them approve it. */
     otherPaths?: string[];
@@ -47,10 +47,10 @@ export interface BackendPermission {
     widens?: { read: string[]; write: string[] };
     /**
      * The backend asks about every command (Codex in untrusted mode), so the
-     * ask says nothing of its own: a command the harness would run without
+     * ask says nothing of its own: a command Cavvy would run without
      * asking for its own models is approved. False: it does say something.
      * Left out, a read-only agent's asks count as saying nothing (they come
-     * from the harness's own rule).
+     * from Cavvy's own rule).
      */
     asksAlways?: boolean;
     /** One of the backend's own sub-agents asks (Codex's): the prompt says which, and a no stops only it. */
@@ -61,7 +61,7 @@ export interface BackendPermission {
     hookDecision?: "allow" | "ask";
     /** The backend asked only because PreToolUse hooks needed to see it: approve what the mode allows. */
     hooksOnly?: boolean;
-    /** The backend's sub-agent asking, by its type (a harness agent Claude Code runs natively): its own mode applies. */
+    /** The backend's sub-agent asking, by its type (a Cavvy agent Claude Code runs natively): its own mode applies. */
     agentType?: string;
 }
 
@@ -145,13 +145,13 @@ export interface BackendWake {
 }
 
 /**
- * What a backend asks of the harness about the session, whichever turn is running or none (a background
+ * What a backend asks of Cavvy about the session, whichever turn is running or none (a background
  * sub-agent's permission prompt between turns): permissions, questions, the mode, hooks, usage, its own
  * session id, plan limits, session-level events and wakes. Bound once a live session (#219); the per-turn
  * backends get one with each turn.
  */
 export interface SessionHost {
-    /** The harness's permission mode now (it can change during a turn). */
+    /** Cavvy's permission mode now (it can change during a turn). */
     mode(): PermissionMode;
     /** Fast mode now: a sub-agent's follows its session, which can change during its turn. BackendTurn.fastMode otherwise. */
     fastMode?(): boolean;
@@ -169,7 +169,7 @@ export interface SessionHost {
     sessionId(id: string): void;
     /** The plan's usage limits, as the CLI reported them (`partial`: only some windows). */
     limits?(limits: PlanLimits, partial: boolean): void;
-    /** Run the harness's hooks for something the backend did (Codex's items). */
+    /** Run Cavvy's hooks for something the backend did (Codex's items). */
     hooks?(event: HookEvent, payload: Record<string, unknown>): Promise<HookOutcome | undefined>;
     /** Run one hook handler the backend called back for (Claude Code's hook_callback), with the backend's input. */
     hookHandler?(event: HookEvent, h: HookConfig, input: Record<string, unknown>, signal: AbortSignal): Promise<HookResult>;
@@ -190,7 +190,7 @@ export interface TurnSink {
      * For when the CLI is between its turns, waiting only on background work: nothing is mid-step, so
      * the next message the user queued goes now as a prompt of its own, whatever its mode, with what's
      * attached (drainQueued's rules are for a running step). Undefined when none can: held ones, and
-     * commands and `!commands` (Harness runs those itself, after the run). Records the output before
+     * commands and `!commands` (Cavvy runs those itself, after the run). Records the output before
      * it, as drainQueued does. `live`: whether the backend can still send it (not stopped, its CLI not gone),
      * checked last before it's taken; from then to the send nothing is awaited.
      */
@@ -222,7 +222,7 @@ export interface BackendTurn {
     /** The CLI config folder selection; omitted means its Default account. */
     accountId?: string;
     prompt: string;
-    /** With a /goal command as the prompt: what Harness would have put before it (the conversation so far), kept apart. */
+    /** With a /goal command as the prompt: what Cavvy would have put before it (the conversation so far), kept apart. */
     goalContext?: string;
     /**
      * The prompt isn't the user's at all (a turn for wakes: an event a watch raised, others' words): Claude Code
@@ -230,7 +230,7 @@ export interface BackendTurn {
      */
     synthetic?: boolean;
     /**
-     * What Harness put before the user's words at the start of `prompt` (the conversation so far, its notes to the
+     * What Cavvy put before the user's words at the start of `prompt` (the conversation so far, its notes to the
      * model). A backend that sends blocks sends it as one of its own before theirs: Claude Code reads only the last
      * text block as what the user typed (a /command), so others' words in it aren't taken as the user's.
      */
@@ -257,21 +257,21 @@ export interface BackendTurn {
     /** The user trusts this folder's configuration. */
     trusted: boolean;
     /**
-     * The harness's skills (src/agent/skills.ts), for the backend to hand its
+     * Cavvy's skills (src/agent/skills.ts), for the backend to hand its
      * CLI so the CLI runs them itself (src/backends/native-skills.ts).
      */
     skills?: readonly Skill[];
     /** The user's message as typed: its /name or $name are read from this. `prompt` ends with it and then `requestAfter`. */
     request?: string;
-    /** What follows the user's message in `prompt`: its attached files' text and the harness's notes, which name no skills. */
+    /** What follows the user's message in `prompt`: its attached files' text and Cavvy's notes, which name no skills. */
     requestAfter?: string;
-    /** Enabled harness plugins' folders, for a backend that loads them itself (Claude Code's --plugin-dir). */
+    /** Enabled Cavvy plugins' folders, for a backend that loads them itself (Claude Code's --plugin-dir). */
     pluginDirs?: string[];
     /** Snapshot of the MCP manager’s folder and approved definitions; absent means strict MCP isolation. */
     approvedMcpServers?: ApprovedMcpServers;
-    /** The harness's deny and ask rules, and the root their paths are relative to. */
+    /** Cavvy's deny and ask rules, and the root their paths are relative to. */
     rules: { deny: string[]; ask: string[]; root: string };
-    /** The harness's hooks the backend runs itself, at its own lifecycle points (Claude Code). */
+    /** Cavvy's hooks the backend runs itself, at its own lifecycle points (Claude Code). */
     hooks?: Partial<Record<HookEvent, HookConfig[]>>;
     /** Stop after this many model turns (Claude Code). */
     maxTurns?: number;
@@ -280,25 +280,25 @@ export interface BackendTurn {
     /** It's shared with a forked session: continue a copy of it (a new id), never the session itself. */
     forkSession?: boolean;
     /**
-     * The harness's MCP server, with its tools for delegating to other
+     * Cavvy's MCP server, with its tools for delegating to other
      * providers' models (src/agent/delegation.ts). The backend attaches it
      * for the turn without putting the token in its arguments or environment.
      */
     orchestrator?: OrchestratorServer;
     /**
      * A read-only sub-agent (explore). Its mode asks before any change and
-     * the harness refuses them; the backend also turns off what could change
+     * Cavvy refuses them; the backend also turns off what could change
      * files without asking (Claude Code's edit tools, its user allow rules and
      * sandbox auto-approval for commands, MCP servers from its own config).
      */
     readOnly?: boolean;
     /**
-     * The harness's agent definitions for Claude Code to run with its own
+     * Cavvy's agent definitions for Claude Code to run with its own
      * Agent tool (src/backends/claude-agents.ts). Codex ignores them.
      */
     agents?: Record<string, ClaudeAgentDefinition>;
     signal: AbortSignal;
-    /** The harness session (or child agent) the turn belongs to: a live CLI process is kept per key. */
+    /** Cavvy session (or child agent) the turn belongs to: a live CLI process is kept per key. */
     sessionKey: string;
     /**
      * Send nothing: the CLI started this turn itself (BackendWake.ref), and this run takes its events
@@ -306,7 +306,7 @@ export interface BackendTurn {
      */
     adopt?: string;
     /**
-     * Nothing will take a report after this turn (-p, the SDK runner, a harness sub-agent): the turn itself should
+     * Nothing will take a report after this turn (-p, the SDK runner, a Cavvy sub-agent): the turn itself should
      * wait for the work it leaves in the background. A backend may run it on a process of its own with the per-turn
      * path's bounded wait (backgroundWaitSec, #193's timeouts, servers stopped at the answer), as Claude Code does
      * (#219 PR 4); one that ignores it ends the turn at its answer, and what's left in the background stops at release.
@@ -393,14 +393,14 @@ export interface AgentBackendClient extends ProviderClient {
      */
     wakeReport?(w: BackendWake): Promise<string | undefined>;
     /**
-     * The harness is done with this session (closed, cleared or replaced, the harness quitting) or sub-agent
+     * Cavvy is done with this session (closed, cleared or replaced, Cavvy quitting) or sub-agent
      * (its run is over): stop the CLI process kept for it. What ran in it stopped with it, and is reported so
      * (SessionEvent background_task, status stopped, withProcess), as any loss of the process is. A session
      * already let go records nothing more: its log keeps those tasks running, so when it's opened again they
-     * show as stopped when Harness quit, and the agent is told (src/agent/background.ts).
+     * show as stopped when Cavvy quit, and the agent is told (src/agent/background.ts).
      */
     release?(sessionKey: string): Promise<void>;
-    /** Stop every live CLI process it keeps (the client is dropped, or the harness quits), reported as release's are. */
+    /** Stop every live CLI process it keeps (the client is dropped, or Cavvy quits), reported as release's are. */
     shutdown?(): Promise<void>;
 }
 

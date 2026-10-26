@@ -1,7 +1,7 @@
-// Claude Code loads the harness's plugins itself: the format is its own, so
+// Claude Code loads Cavvy's plugins itself: the format is its own, so
 // each enabled plugin's folder goes to it with --plugin-dir, and its commands,
 // agents, skills, hooks, MCP and language servers run natively there. The
-// harness then doesn't run the same hooks a second time, and sends a plugin's
+// Cavvy then doesn't run the same hooks a second time, and sends a plugin's
 // slash commands and skills to Claude Code as they were typed.
 
 import { existsSync, lstatSync, readFileSync, rmSync, writeFileSync } from "fs";
@@ -11,7 +11,7 @@ import { loadPlugins } from "./loader";
 
 /**
  * The backend that loads plugins itself. Codex reads the same format but only
- * from its own installs (codex plugin add), so it gets the harness's loading,
+ * from its own installs (codex plugin add), so it gets Cavvy's loading,
  * as does every API provider. Its MCP servers come only from its own config,
  * so a plugin's servers reach it only when the plugin is installed in Codex too.
  */
@@ -37,9 +37,9 @@ export function withPluginCommands(listed: ReadonlySet<string>, commands: readon
 }
 
 /**
- * Settings for the harness's own hook runs on a turn Claude Code runs with the
+ * Settings for Cavvy's own hook runs on a turn Claude Code runs with the
  * plugins loaded: their hooks are left out, since Claude Code runs them.
- * Notification hooks stay: those are the harness's notices, which Claude Code
+ * Notification hooks stay: those are Cavvy's notices, which Claude Code
  * never sees.
  */
 export function withoutPluginHooks(s: Settings): Settings {
@@ -75,7 +75,7 @@ export const claudeManifest = (root: string) => join(root, ".claude-plugin", "pl
  * The folders of the plugins enabled for this folder, for --plugin-dir. Each
  * has the .claude-plugin/plugin.json Claude Code names it by (an install
  * writes one; a plugin installed before that gets it now, from the manifest
- * the harness reads).
+ * Cavvy reads).
  */
 export function claudePluginDirs(cwd: string, trusted: boolean): string[] {
     const out: string[] = [];
@@ -101,13 +101,14 @@ export function writeClaudeManifest(root: string, manifest: object) {
     writeJson(claudeManifest(root), manifest);
 }
 
-const HARNESS_ROOT = /\$\{HARNESS_PLUGIN_ROOT\}|\$HARNESS_PLUGIN_ROOT\b/g;
+// Harness's name for it too (legacy.ts).
+const CAVVY_ROOT = /\$\{(?:CAVVY|HARNESS)_PLUGIN_ROOT\}|\$(?:CAVVY|HARNESS)_PLUGIN_ROOT\b/g;
 
 /**
  * In an installed copy's configuration (its manifests, hooks, MCP and language
- * server files), ${HARNESS_PLUGIN_ROOT} spelled as Claude Code knows it
+ * server files), ${CAVVY_PLUGIN_ROOT} spelled as Claude Code knows it
  * (${CLAUDE_PLUGIN_ROOT}): Claude Code substitutes and sets only its own name,
- * and the harness treats the two alike. Scripts and other files are left as
+ * and Cavvy treats the two alike. Scripts and other files are left as
  * they are. Links are never written through.
  */
 export function useClaudeRootName(files: readonly string[]) {
@@ -115,11 +116,11 @@ export function useClaudeRootName(files: readonly string[]) {
         try {
             if (!lstatSync(f).isFile()) continue;
             const text = readFileSync(f, "utf-8");
-            HARNESS_ROOT.lastIndex = 0;
-            if (!HARNESS_ROOT.test(text)) continue;
-            writeFileSync(f, text.replace(HARNESS_ROOT, (m) => (m.startsWith("${") ? "${CLAUDE_PLUGIN_ROOT}" : "$CLAUDE_PLUGIN_ROOT")));
+            CAVVY_ROOT.lastIndex = 0;
+            if (!CAVVY_ROOT.test(text)) continue;
+            writeFileSync(f, text.replace(CAVVY_ROOT, (m) => (m.startsWith("${") ? "${CLAUDE_PLUGIN_ROOT}" : "$CLAUDE_PLUGIN_ROOT")));
         } catch {
-            // unreadable: the harness reports it when it loads the plugin
+            // unreadable: Cavvy reports it when it loads the plugin
         }
     }
 }
@@ -128,7 +129,7 @@ const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typ
 
 /**
  * Hooks in Claude Code's format ({ hooks: { Event: [{ matcher, hooks: [{ type, command }] }] } }).
- * The harness also reads its own flat one ({ Event: [{ matcher, command }] }),
+ * Cavvy also reads its own flat one ({ Event: [{ matcher, command }] }),
  * which Claude Code refuses to load, so an installed copy is converted.
  */
 export function claudeHooks(j: unknown): unknown {
@@ -149,7 +150,7 @@ export function claudeHooks(j: unknown): unknown {
 
 /**
  * Ready an installed copy for Claude Code: its hooks files in Claude Code's
- * format, and ${HARNESS_PLUGIN_ROOT} spelled its way in the configuration
+ * format, and ${CAVVY_PLUGIN_ROOT} spelled its way in the configuration
  * files. `hookFiles` must be among `configFiles` (inside the plugin).
  */
 export function prepareForClaudeCode(p: { root: string; manifest: { hooks?: unknown }; configFiles: readonly string[] }) {
@@ -162,7 +163,7 @@ export function prepareForClaudeCode(p: { root: string; manifest: { hooks?: unkn
             const converted = claudeHooks(j);
             if (converted !== j) writeFileSync(f, JSON.stringify(converted, null, 2));
         } catch {
-            // unreadable: the harness reports it when it loads the plugin
+            // unreadable: Cavvy reports it when it loads the plugin
         }
     }
     useClaudeRootName(p.configFiles);

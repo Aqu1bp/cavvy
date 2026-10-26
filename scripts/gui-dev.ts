@@ -1,4 +1,4 @@
-// Work on the GUI with hot reload: the harness server (from source) and the
+// Work on the GUI with hot reload: Cavvy server (from source) and the
 // Vite dev server, wired together with a token made for this run.
 //
 //   bun run gui:dev                  then open http://localhost:5173
@@ -17,13 +17,13 @@ const server = demo
     ? Bun.spawn(["bun", "--no-env-file", `--config=${join(root, "bunfig.toml")}`, join(root, "scripts/gui-demo.ts"), "--port", PORT, "--token", TOKEN, "--dev-origin", "http://localhost:5173"], { cwd: root, stdout: "inherit", stderr: "inherit" })
     : Bun.spawn(["bun", "--no-env-file", `--config=${join(root, "bunfig.toml")}`, join(root, "src/index.ts"), "serve", "--port", PORT, "--dev-origin", "http://localhost:5173"], {
           cwd: process.cwd(),
-          env: { ...(process.env as Record<string, string>), HARNESS_GUI_TOKEN: TOKEN },
+          env: { ...(process.env as Record<string, string>), CAVVY_GUI_TOKEN: TOKEN },
           stdout: "inherit",
           stderr: "inherit",
       });
 const vite = Bun.spawn(["bun", "run", "dev"], {
     cwd: join(root, "gui"),
-    env: { ...(process.env as Record<string, string>), VITE_HARNESS_URL: `ws://127.0.0.1:${PORT}/ws`, VITE_HARNESS_TOKEN: TOKEN },
+    env: { ...(process.env as Record<string, string>), VITE_CAVVY_URL: `ws://127.0.0.1:${PORT}/ws`, VITE_CAVVY_TOKEN: TOKEN },
     stdout: "inherit",
     stderr: "inherit",
 });

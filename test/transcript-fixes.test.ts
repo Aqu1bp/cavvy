@@ -71,7 +71,7 @@ describe("a failed turn leaves its reason on disk", () => {
         const notice = fileLines(a.session.path).find((l) => l.t === "notice");
         expect(notice).toMatchObject({ level: "error", text: "Google Gemini: API key not valid (400)", index: 1 });
 
-        // The next prompt: the model gets the prompts, not the harness's note about the failure.
+        // The next prompt: the model gets the prompts, not Cavvy's note about the failure.
         expect(await a.run("try again")).toBe("done");
         const sent = JSON.stringify(a.requests.at(-1)!.messages);
         expect(sent).toContain("try again");

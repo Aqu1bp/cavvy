@@ -2,9 +2,9 @@
 // front end shows. A plugin is fetched once into the cache; scopes turn it
 // on in settings ("enabledPlugins"):
 //
-//   user     ~/.harness/settings.json              every folder
-//   project  <project>/.harness/settings.json      everyone working in the repo
-//   local    <project>/.harness/settings.local.json  just you, in this repo
+//   user     ~/.cavvy/settings.json              every folder
+//   project  <project>/.cavvy/settings.json      everyone working in the repo
+//   local    <project>/.cavvy/settings.local.json  just you, in this repo
 
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "fs";
 import { dirname, join, resolve } from "path";
@@ -142,13 +142,13 @@ export async function fetchPlugin(entry: MarketplaceEntry, m: LoadedMarketplace)
         const version = own?.version ?? entry.version ?? fetchedVersion ?? (commit ? commit.slice(0, 12) : "local");
         manifest.version ??= version;
         // A real folder and a fresh file: never written through a link (pruneSymlinks kept only links inside the plugin).
-        const ownDir = join(dir, ".harness-plugin");
+        const ownDir = join(dir, ".cavvy-plugin");
         if (existsSync(ownDir) && !lstatSync(ownDir).isDirectory()) rmSync(ownDir, { recursive: true, force: true });
         rmSync(join(ownDir, "plugin.json"), { force: true });
         writeJson(join(ownDir, "plugin.json"), manifest);
         // Claude Code loads the plugin from this folder too (src/plugins/native.ts): the same merge, keeping the fields only it reads.
         const native: Record<string, unknown> = { ...entryRaw, ...fields, ...ownRaw, name: entry.name, version: manifest.version };
-        // Inline hooks in Claude Code's format (it refuses the harness's flat one).
+        // Inline hooks in Claude Code's format (it refuses Cavvy's flat one).
         if (native.hooks !== undefined && typeof native.hooks !== "string") native.hooks = (claudeHooks(native.hooks) as { hooks?: unknown }).hooks ?? native.hooks;
         writeClaudeManifest(dir, native);
         clearPluginCache();
@@ -269,7 +269,7 @@ export function enablePlugin(spec: string, on: boolean, cwd: string, trusted: bo
 
 /**
  * Remove a plugin from a scope, or from every scope of this folder when none
- * is given. Its files go once no scope this harness knows of uses it.
+ * is given. Its files go once no scope this Cavvy knows of uses it.
  */
 export function uninstallPlugin(spec: string, cwd: string, trusted: boolean, scope?: SettingsScope): { id: string; scopes: SettingsScope[]; removed: boolean } {
     if ((scope === "project" || scope === "local") && !trusted) throw new PluginError(`This folder isn't trusted, so its ${scope} settings don't load. Trust it first, or use --scope user.`);

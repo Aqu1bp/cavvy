@@ -184,7 +184,7 @@ export function ReviewWorktreePicker(p: {
                             </Show>
                         </Show>
                     </div>
-                    <div class="menu-note">Other worktrees show their branch and uncommitted changes; turns and Harness edits are this session's.</div>
+                    <div class="menu-note">Other worktrees show their branch and uncommitted changes; turns and Cavvy edits are this session's.</div>
                 </div>
             </Popover>
         </>

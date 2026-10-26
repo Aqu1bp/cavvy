@@ -19,7 +19,7 @@ function repo(initial = true) {
     const cwd = join(realpathSync(iso.home), `timeout-${next++}`);
     mkdirSync(cwd);
     git(cwd, "init", "-q", "-b", "main");
-    git(cwd, "config", "user.name", "Harness Test");
+    git(cwd, "config", "user.name", "Cavvy Test");
     git(cwd, "config", "user.email", "test@example.invalid");
     git(cwd, "config", "commit.gpgsign", "false");
     git(cwd, "config", "core.hooksPath", join(cwd, ".git", "hooks"));
@@ -180,7 +180,7 @@ test("uncertain publication preserves the prepared index and reports recovery fi
         await hookStopped(cwd, true);
         expect(readFileSync(join(cwd, ".git", "index"))).toEqual(index);
         expect(git(cwd, "rev-parse", "HEAD").trim()).toBe(replacement);
-        const recovery = readdirSync(join(cwd, ".git")).find((name) => name.startsWith("harness-commit-"));
+        const recovery = readdirSync(join(cwd, ".git")).find((name) => name.startsWith("cavvy-commit-"));
         expect(recovery).toBeDefined();
         expect(result.message).toContain(join(cwd, ".git", recovery!));
         const prepared = Bun.spawnSync(gitArgv(["show", ":selected.txt"]), {

@@ -4,7 +4,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSy
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 const iso = isolate();
-const outside = tempDir("harness-shared-layout-");
+const outside = tempDir("cavvy-shared-layout-");
 const claudeDefault = process.env.CLAUDE_CONFIG_DIR!;
 const codexDefault = process.env.CODEX_HOME!;
 const { addAccount, accountEnv, accountSharingWarning, removeAccount } = await import("../src/providers/accounts");
@@ -98,7 +98,7 @@ test("a new managed Codex account links everything in Default's home except sign
     expect(readlinkSync(join(a.folder, "state_5.sqlite-wal"))).toBe(join(codexDefault, "state_5.sqlite-wal"));
     expect(readlinkSync(join(a.folder, "config.toml"))).toBe(join(codexDefault, "config.toml"));
     for (const d of ["sessions", "archived_sessions"]) expect(lstatSync(join(codexDefault, d)).isDirectory()).toBe(true);
-    // The linked config.toml is Harness's own link to Default and is accepted.
+    // The linked config.toml is Cavvy's own link to Default and is accepted.
     expect(accountEnv("codex", a.id).CODEX_HOME).toBe(a.folder);
     removeAccount("codex", a.id, a.folder);
 });
@@ -221,7 +221,7 @@ test("existing-folder accounts are used as they are", () => {
         const a = addAccount(provider, { id: "custom", name: "Custom", folder });
         accountEnv(provider, a.id);
         expect(readdirSync(folder)).toEqual([]);
-        // Nor does editing the saved metadata to claim it is Harness's make it so.
+        // Nor does editing the saved metadata to claim it is Cavvy's make it so.
         saveAgentConfig(provider, { accounts: [{ ...a, managed: true }] });
         accountEnv(provider, a.id);
         expect(readdirSync(folder)).toEqual([]);
@@ -305,7 +305,7 @@ test("Default's settings.json isn't shared while it carries a sign-in, and its v
     removeAccount("claude-code", a.id, a.folder);
 });
 
-test("Codex secrets stay the account's: Harness's old link is removed, nothing else is", () => {
+test("Codex secrets stay the account's: Cavvy's old link is removed, nothing else is", () => {
     seedCodex();
     write(join(codexDefault, "secrets", "local.age"), "default secrets");
     const a = addAccount("codex", { id: "secrets", name: "Secrets" });
@@ -357,7 +357,7 @@ test("Codex rollout writer locks are always shared, and the account's own are re
     removeAccount("codex", a.id, a.folder);
 });
 
-test("when Default moves, Harness's links follow it and foreign links are still refused", () => {
+test("when Default moves, Cavvy's links follow it and foreign links are still refused", () => {
     seedClaude();
     seedCodex();
     const a = addAccount("codex", { id: "moved", name: "Moved" });
@@ -382,7 +382,7 @@ test("when Default moves, Harness's links follow it and foreign links are still 
         expect(isLink(join(c.folder, "rules"))).toBe(false);
         expect(readlinkSync(join(c.folder, "skills", "fresh"))).toBe(join(claudeNew, "skills", "fresh"));
         expect(isLink(join(c.folder, "skills", "mine"))).toBe(false);
-        // A config.toml link that isn't Harness's is refused, whichever Default it names.
+        // A config.toml link that isn't Cavvy's is refused, whichever Default it names.
         rmSync(join(a.folder, "config.toml"));
         symlinkSync(join(outside, "elsewhere.toml"), join(a.folder, "config.toml"));
         writeFileSync(join(outside, "elsewhere.toml"), "");

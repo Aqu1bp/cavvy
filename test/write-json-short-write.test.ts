@@ -5,7 +5,7 @@ import { isolate, tempDir } from "./helpers/isolate";
 
 // Runs in a child process, so the fs patch can't leak into other test files.
 const iso = isolate();
-const ROOT = tempDir("harness-writejson-short-");
+const ROOT = tempDir("cavvy-writejson-short-");
 afterAll(() => {
     rmSync(ROOT, { recursive: true, force: true });
     iso.cleanup();

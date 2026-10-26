@@ -95,7 +95,7 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
         // A new worktree's setup run that can't start: the worktree is there, and the script can be run by hand.
         const cant = (why: string, plain: string) => (setup ? toast(`The worktree was created, but its setup script “${script.name}” didn't run: ${why} You can run it from the project scripts menu.`, "warn") : toast(plain, "error"));
         if (!restored()) return cant("terminal tabs are reconnecting.", "Terminal tabs are reconnecting. Try again in a moment.");
-        if (app.conn !== "open") return cant("not connected to the harness server.", `Not connected to the harness server, so “${script.name}” can't start.`);
+        if (app.conn !== "open") return cant("not connected to Cavvy server.", `Not connected to Cavvy server, so “${script.name}” can't start.`);
         if (full()) return cant(`${MAX_TABS} terminals are open in this window.`, `${MAX_TABS} terminals are open in this window, some maybe in other projects. Close one to run “${script.name}”.`);
         const id = crypto.randomUUID();
         const tab = { id, terminal: id, cwd, number: next++, script: { id: script.id, name: script.name, ...(setup ? { setup: { label: setup.label, command: setup.command } } : {}) } };
@@ -177,7 +177,7 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
             </div>
             <Show when={!currentTabs().length}>
                 <div class="terminal-message">
-                    <span>{full() ? `${MAX_TABS} terminals are open in this window, some in other projects. Close one to open a terminal here.` : app.conn !== "open" ? "Not connected to the harness server." : "No terminal in this project."}</span>
+                    <span>{full() ? `${MAX_TABS} terminals are open in this window, some in other projects. Close one to open a terminal here.` : app.conn !== "open" ? "Not connected to Cavvy server." : "No terminal in this project."}</span>
                     <Show when={!full()}><button class="btn secondary sm" disabled={!restored() || app.conn !== "open"} onClick={add}><Plus size={12} /> New terminal</button></Show>
                 </div>
             </Show>
@@ -324,7 +324,7 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
                 return;
             }
             attach = false;
-            setEnded(e instanceof RpcError && e.code === "terminal_not_open" ? "This shell is no longer running: it was stopped while the window was away, or the harness server restarted." : (e as Error).message);
+            setEnded(e instanceof RpcError && e.code === "terminal_not_open" ? "This shell is no longer running: it was stopped while the window was away, or Cavvy server restarted." : (e as Error).message);
         } finally { if (attempt === attachment) attaching = false; }
     };
     const start = async () => {
@@ -340,7 +340,7 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
             return;
         }
         if (app.conn !== "open") {
-            if (run) setEnded(failed("not connected to the harness server."));
+            if (run) setEnded(failed("not connected to Cavvy server."));
             return;
         }
         setEnded(undefined);

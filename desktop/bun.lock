@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "harness-desktop",
+      "name": "cavvy-desktop",
       "devDependencies": {
         "@tauri-apps/cli": "^2.12.3",
       },

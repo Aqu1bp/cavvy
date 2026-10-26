@@ -7,7 +7,7 @@ import { rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate } from "./helpers/isolate";
 
-const { home: HARNESS_HOME, cleanup } = isolate();
+const { home: CAVVY_HOME, cleanup } = isolate();
 const { eventStrokes } = await import("../gui/src/lib/keystrokes");
 const kb = await import("../gui/src/state/keybindings");
 const { os } = await import("../gui/src/lib/platform");
@@ -163,7 +163,7 @@ describe("the window's keymap", () => {
 
 describe("server", () => {
     test("keybindings.get, keybindings.create, and every save sent to every window", async () => {
-        const path = join(HARNESS_HOME, "keybindings.json");
+        const path = join(CAVVY_HOME, "keybindings.json");
         rmSync(path, { force: true });
         const engine = new Engine({ listModels: async () => [] });
         const events: any[] = [];

@@ -1,11 +1,11 @@
-// A conversation through the harness SDK: each message from the prompt
+// A conversation through Cavvy SDK: each message from the prompt
 // iterable is a turn in one session, steer() reaches the turn that's running,
 // and interrupt() stops it. Afterwards the session can be opened with
-// `harness -r <id>`.
+// `cavvy -r <id>`.
 //
 //   bun examples/sdk/conversation.ts [--cwd path/to/project] [--model provider:model]
 
-import { query, type SDKUserMessage } from "my-own-harness/sdk";
+import { query, type SDKUserMessage } from "cavvy/sdk";
 
 const args = process.argv.slice(2);
 const flag = (name: string) => {

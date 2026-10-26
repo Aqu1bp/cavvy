@@ -1,4 +1,4 @@
-// Sessions are append-only JSONL files under ~/.harness/projects/<slug>/.
+// Sessions are append-only JSONL files under ~/.cavvy/projects/<slug>/.
 // Each line is one record; a "compact" record starts a fresh history and a
 // "rewind" record cuts it back (/rewind).
 // Everything is passed through the redactor before it touches disk.
@@ -6,7 +6,8 @@
 import { appendFileSync, existsSync, openSync, readSync, closeSync, readdirSync, readFileSync, statSync, chmodSync, linkSync, unlinkSync, writeFileSync, writeSync } from "fs";
 import { join, resolve } from "path";
 import { randomBytes } from "crypto";
-import { ensureDir, paths, projectStateDir, APP_TITLE, APP_VERSION } from "../config/paths";
+import { ensureDir, paths, projectStateDir, APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
+import { LEGACY } from "../config/legacy";
 import type { Message, Usage } from "../providers/types";
 import { accountNoticeText, stoppedText, type NoticeAccount, type NoticeData, type NoticeLimit, type NoticeStopped, type PlanLink, type StoppedTask } from "../server/protocol";
 import type { GoalRecord } from "./goal";
@@ -91,7 +92,7 @@ export interface TurnNotice extends NoticeData {
     level: "info" | "warn" | "error";
     text: string;
     at: number;
-    /** What it's about, one short line each (the background tasks Harness stopped): shown folded under the text. */
+    /** What it's about, one short line each (the background tasks Cavvy stopped): shown folded under the text. */
     details?: string[];
 }
 
@@ -280,7 +281,7 @@ export class Session {
     goal?: GoalRecord;
     /**
      * The session a sub-agent runs for. Its own isn't saved, so the backend
-     * sessions it starts are recorded in that one: they're Harness's, not
+     * sessions it starts are recorded in that one: they're Cavvy's, not
      * conversations to pick up from the CLI.
      */
     runsFor?: Session;
@@ -887,7 +888,8 @@ function validTask(t: unknown): BackgroundTaskInfo | undefined {
     if (!TASK_KINDS.includes(v.kind as string) || !TASK_STATUSES.includes(v.status as string)) return undefined;
     return {
         id: v.id,
-        provider: v.provider,
+        // A shell of Harness's own, saved before the rename (src/config/legacy.ts), is Cavvy's.
+        provider: v.provider === LEGACY.name ? APP_NAME : v.provider,
         kind: v.kind!,
         label: v.label,
         ...(typeof v.toolUseId === "string" ? { toolUseId: v.toolUseId } : {}),
@@ -1475,7 +1477,7 @@ export function heldSessionFolders(): string[] {
 /**
  * Sessions from every project, newest first (the GUI's sidebar). Each
  * session records its own folder, so the lossy folder names under
- * ~/.harness/projects/ don't matter. Only the newest `limit` files are read.
+ * ~/.cavvy/projects/ don't matter. Only the newest `limit` files are read.
  */
 export function listAllSessions(limit = 200): SessionSummary[] {
     const root = paths.projectsDir();

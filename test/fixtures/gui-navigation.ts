@@ -6,7 +6,7 @@ import { all, component, node, renderer, text } from "../helpers/gui-render";
 import { columnSteps, COLUMN_NARROW, COLUMN_SHORT } from "../../gui/src/lib/layout";
 
 const mode = process.argv[2];
-const key = "harness.navigation";
+const key = "cavvy.navigation";
 const values = new Map<string, string>();
 const otherTab = new Map([[key, JSON.stringify({ activeId: "other-tab", homeCwd: "/other" })]]);
 let tabValues = values;

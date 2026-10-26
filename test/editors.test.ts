@@ -120,10 +120,10 @@ describe("argv per editor", () => {
 
 describe("detection", () => {
     test("a launcher on PATH, else (macOS) the app's own CLI, else the app", () => {
-        const bin = tempDir("harness-ed-bin-");
+        const bin = tempDir("cavvy-ed-bin-");
         writeFileSync(join(bin, "zed"), "#!/bin/sh\nexit 0\n");
         chmodSync(join(bin, "zed"), 0o755);
-        const apps = tempDir("harness-ed-apps-");
+        const apps = tempDir("cavvy-ed-apps-");
         mkdirSync(join(apps, "Visual Studio Code.app/Contents/Resources/app/bin"), { recursive: true });
         writeFileSync(join(apps, "Visual Studio Code.app/Contents/Resources/app/bin/code"), "#!/bin/sh\n");
         mkdirSync(join(apps, "Sublime Text.app"), { recursive: true });
@@ -142,8 +142,8 @@ describe("detection", () => {
 });
 
 describe("confinement", () => {
-    const root = realpathSync(tempDir("harness-ed-root-"));
-    const outside = realpathSync(tempDir("harness-ed-out-"));
+    const root = realpathSync(tempDir("cavvy-ed-root-"));
+    const outside = realpathSync(tempDir("cavvy-ed-out-"));
     mkdirSync(join(root, "src"));
     writeFileSync(join(root, "src/a.ts"), "x");
     writeFileSync(join(outside, "secret.txt"), "x");

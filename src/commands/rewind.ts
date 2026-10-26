@@ -1,5 +1,5 @@
 // /rewind (also esc esc on an empty prompt): go back to before one of the
-// session's prompts, restoring the files the harness changed since then, the
+// session's prompts, restoring the files Cavvy changed since then, the
 // conversation, or both.
 
 import type { App } from "../ui/app";

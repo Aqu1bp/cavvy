@@ -1,5 +1,5 @@
 {"t":1,"dir":"note","frame":"spawn codex app-server (experimentalApi=false)"}
-{"t":3,"dir":"out","frame":{"id":1,"method":"initialize","params":{"clientInfo":{"name":"harness_probe","title":"Harness probe","version":"0.0.0"},"capabilities":null}}}
+{"t":3,"dir":"out","frame":{"id":1,"method":"initialize","params":{"clientInfo":{"name":"cavvy_probe","title":"Cavvy probe","version":"0.0.0"},"capabilities":null}}}
 {"t":50,"dir":"in","frame":{"id":1,"result":"<initialize ok>"}}
 {"t":51,"dir":"out","frame":{"id":2,"method":"thread/start","params":{"cwd":"<scratch>","model":"gpt-6-luna","approvalPolicy":"never","sandbox":"workspace-write","ephemeral":true}}}
 {"t":160,"dir":"in","frame":{"id":2,"result":{"thread":{"id":"01a1619e-3e94-7bb3-bee7-b4f26ed9a6cf"}}}}

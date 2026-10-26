@@ -32,7 +32,7 @@ async function measure(name: string, ms: number, setup: () => void) {
     const ended = [...state.shells.values()].filter((s) => s.exitCode !== null).length;
     Bun.gc(true);
     const rss = process.memoryUsage().rss;
-    console.log(`${name}: harness CPU ${((cpu.user + cpu.system) / 1000).toFixed(0)}ms over ${(wall / 1000).toFixed(1)}s (${(((cpu.user + cpu.system) / 1000 / wall) * 100).toFixed(2)}%), ${events} events, ${pushed} wakes, ${ended} ended, RSS ${(rss0 / 1e6).toFixed(0)}→${(rss / 1e6).toFixed(0)} MB`);
+    console.log(`${name}: cavvy CPU ${((cpu.user + cpu.system) / 1000).toFixed(0)}ms over ${(wall / 1000).toFixed(1)}s (${(((cpu.user + cpu.system) / 1000 / wall) * 100).toFixed(2)}%), ${events} events, ${pushed} wakes, ${ended} ended, RSS ${(rss0 / 1e6).toFixed(0)}→${(rss / 1e6).toFixed(0)} MB`);
     await killAllShells({ state });
 }
 

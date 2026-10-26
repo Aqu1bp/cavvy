@@ -3,11 +3,11 @@
 //
 // Each turn starts `codex app-server`, the JSON-RPC interface OpenAI ships for
 // driving Codex from editors and other programs, starts or resumes a thread
-// and runs one turn. Codex runs it with its own tools and sandbox; the harness
+// and runs one turn. Codex runs it with its own tools and sandbox; Cavvy
 // maps its permission mode to Codex's approval policy and sandbox, shows the
 // items as they stream, and answers Codex's approval requests through the
-// harness's own permission rules and prompt (in auto mode, Codex's own
-// reviewer answers them instead). The harness never reads Codex's
+// Cavvy's own permission rules and prompt (in auto mode, Codex's own
+// reviewer answers them instead). Cavvy never reads Codex's
 // credentials (~/.codex/auth.json) and never signs in on its behalf.
 
 import { randomUUID } from "crypto";
@@ -61,7 +61,7 @@ export class Rpc {
         readonly proc: JsonLinesProcess,
         private onNotification: (method: string, params: any) => void,
         private onRequest: (method: string, params: any) => Promise<unknown>,
-        /** Sees every message both ways (HARNESS_DEBUG). */
+        /** Sees every message both ways (CAVVY_DEBUG). */
         private tap?: (dir: "in" | "out", m: any) => void,
     ) {
         this.done = this.pump();
@@ -248,18 +248,18 @@ interface Policy {
     approvalPolicy: "untrusted" | "on-request" | "never";
     sandbox: "read-only" | "workspace-write" | "danger-full-access";
     sandboxPolicy: Record<string, unknown>;
-    /** Who answers its approval requests: the harness (its rules, then the user), or Codex's own reviewer. It stays with the thread, so every mode says. */
+    /** Who answers its approval requests: Cavvy (its rules, then the user), or Codex's own reviewer. It stays with the thread, so every mode says. */
     approvalsReviewer: "user" | "auto_review";
 }
 
-/** The harness's permission mode as Codex's approval policy and sandbox. */
+/** Cavvy's permission mode as Codex's approval policy and sandbox. */
 export function codexPolicy(mode: PermissionMode, additionalDirectories: string[], readOnly = false, preToolUse = false): Policy {
-    // A read-only agent in auto: reads run in the read-only sandbox without asking; anything more asks the harness, which refuses it.
+    // A read-only agent in auto: reads run in the read-only sandbox without asking; anything more asks Cavvy, which refuses it.
     if (mode === "auto" && readOnly) return { approvalPolicy: "on-request", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: false }, approvalsReviewer: "user" };
     const workspaceWrite = { type: "workspaceWrite", writableRoots: additionalDirectories, networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false };
     switch (mode) {
         case "acceptEdits":
-            // Edits inside the workspace; commands other than known read-only ones still ask (the harness approves the edits).
+            // Edits inside the workspace; commands other than known read-only ones still ask (Cavvy approves the edits).
             return { approvalPolicy: "untrusted", sandbox: "workspace-write", sandboxPolicy: workspaceWrite, approvalsReviewer: "user" };
         case "auto":
             // Edits and commands inside the workspace run in Codex's sandbox; going beyond it, Codex's own reviewer decides.
@@ -307,7 +307,7 @@ export function modeNote(mode: PermissionMode, readOnly: boolean): string | unde
 
 /** A hook rewrote a call Codex asked about: Codex can only run what it asked, so the call is refused. */
 const CANT_REWRITE = "A hook rewrote this call, and Codex can only run the call as it asked, so neither the rewrite nor the original ran.";
-/** A PreToolUse rewrite Codex can't take: a patch (the harness sees it as an edit), a sub-agent, or a command without one. */
+/** A PreToolUse rewrite Codex can't take: a patch (Cavvy sees it as an edit), a sub-agent, or a command without one. */
 const CANT_REWRITE_NATIVE = "A PreToolUse hook rewrote this call into something Codex can't run in its place, so neither the rewrite nor the original ran.";
 
 /** Codex's fast service tiers: "priority" in its catalog (0.163), "fast" in older ones. */
@@ -434,7 +434,7 @@ export class CodexBackend implements AgentBackendClient {
     /** Codex's own sub-agents' labels, by thread: one resumed in a later turn is shown by the name it had. */
     readonly labels = new Map<string, string>();
 
-    /** It takes over turns Codex starts by itself (goal turns, and turns the harness starts to tell it of finished background commands). */
+    /** It takes over turns Codex starts by itself (goal turns, and turns Cavvy starts to tell it of finished background commands). */
     readonly adoptsTurns = true;
     /** The live sessions (codex-live.ts), once a turn has used them. */
     private live?: CodexLive;
@@ -583,16 +583,16 @@ const SHOWN_FROM_SUBAGENTS = new Set(["turn/started", "turn/completed", "item/st
 
 export class CodexTurn {
     protected rpc!: Rpc;
-    /** Running the compaction the harness asked for. */
+    /** Running the compaction Cavvy asked for. */
     protected compacting = false;
     protected threadId?: string;
     protected turnId?: string;
     protected items = new Map<string, OpenItem>();
     /** PostToolUse hooks still running: the turn waits for them. */
     protected hookRuns = new Set<Promise<void>>();
-    /** Codex runs the harness's PreToolUse hooks itself, calling back to this server; without it, they see only what Codex asks about. */
+    /** Codex runs Cavvy's PreToolUse hooks itself, calling back to this server; without it, they see only what Codex asks about. */
     protected hookServer?: Registration;
-    /** Codex runs the harness's hooks for these events itself (they're given to it, and it took them). */
+    /** Codex runs Cavvy's hooks for these events itself (they're given to it, and it took them). */
     protected nativeHooks = false;
     protected nativeEvents: CodexHookEvent[] = [];
     /** What PreToolUse hooks (or the user, asked from one) already said of a call, for when Codex then asks about it. */
@@ -825,7 +825,7 @@ export class CodexTurn {
     async run(opts: { compact?: boolean } = {}): Promise<BackendResult> {
         const t = this.t;
         if (t.signal.aborted) return { reason: "aborted", text: "", actions: [], refused: true };
-        // PreToolUse and sub-agent hooks go to Codex as its own, calling back to the harness, which runs them.
+        // PreToolUse and sub-agent hooks go to Codex as its own, calling back to Cavvy, which runs them.
         this.nativeEvents = CODEX_HOOK_EVENTS.filter((e) => this.hooked(e));
         if (this.nativeEvents.length) this.hookServer = registerTools(this.nativeEvents.map((e) => this.hookTool(e)));
         this.rpc = spawnRpc(this.def.id, t.cwd, (m, p) => this.onNotification(m, p), (m, p) => this.onRequest(m, p), { trusted: t.trusted, accountId: t.accountId, hooks: this.nativeEvents });
@@ -873,7 +873,7 @@ export class CodexTurn {
             }
             const policy = codexPolicy(startMode, t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse") && !this.nativeHooks);
             if (o && overrides.collisions.includes(o.name)) {
-                this.sink.emit({ type: "notice", level: "warn", message: "Codex already has a server named harness; it is disabled and this turn runs without Harness delegation to avoid merging server configurations." });
+                this.sink.emit({ type: "notice", level: "warn", message: "Codex already has a server named cavvy; it is disabled and this turn runs without Cavvy delegation to avoid merging server configurations." });
                 o = undefined;
             }
             const baseInstructions = [t.appendSystemPrompt, LISTENER_NOTE].filter(Boolean).join("\n\n") || undefined;
@@ -901,7 +901,7 @@ export class CodexTurn {
                     return r;
                 }
             };
-            // The harness's skills go to Codex as a skills root of its own, so it lists them to its model and runs them itself.
+            // Cavvy's skills go to Codex as a skills root of its own, so it lists them to its model and runs them itself.
             const skills = opts.compact ? [] : await this.nativeSkills(t);
             if (t.resumeId) {
                 try {
@@ -1261,7 +1261,7 @@ export class CodexTurn {
     }
 
     /**
-     * The harness's skills registered (skills/extraRoots/set), then all the
+     * Cavvy's skills registered (skills/extraRoots/set), then all the
      * skills Codex has; Codex's own are listed for the menus. Undefined when
      * this Codex can't take them (they're pasted in instead).
      */
@@ -1269,7 +1269,7 @@ export class CodexTurn {
         // A project's own skills only where the user trusted it (the session's list may come from implicit trust): those are pasted in.
         const folder = skillFolder((t.skills ?? []).filter((s) => t.trusted || s.source !== "project"));
         try {
-            // Every turn, an empty list too: the harness's skills are the session's as they are now.
+            // Every turn, an empty list too: Cavvy's skills are the session's as they are now.
             await withTimeout(this.rpc.request("skills/extraRoots/set", { extraRoots: folder ? [join(folder, "skills")] : [] }), 10_000, "Codex didn't answer skills/extraRoots/set");
             const r: any = await withTimeout(this.rpc.request("skills/list", { cwds: [t.cwd] }), 10_000, "Codex didn't answer skills/list");
             const listed: CodexSkill[] = (Array.isArray(r?.data) ? r.data : []).flatMap((e: any) => (Array.isArray(e?.skills) ? e.skills : [])).filter((x: any) => typeof x?.name === "string" && typeof x?.path === "string");
@@ -1428,7 +1428,7 @@ export class CodexTurn {
                 break;
             case "thread/compacted":
                 this.sink.emit({ type: "notice", level: "info", message: "Codex compacted its context." });
-                // One the harness asked for (compact) runs the hooks itself.
+                // One Cavvy asked for (compact) runs the hooks itself.
                 if (!this.compacting && this.hooked("PostCompact")) void this.cliSession.hooks!("PostCompact", { trigger: "auto", compact_summary: "" });
                 this.status ??= "completed";
                 this.turnDone?.();
@@ -1846,12 +1846,12 @@ export class CodexTurn {
         }
     }
 
-    /** The harness has hooks for this event. */
+    /** Cavvy has hooks for this event. */
     protected hooked(event: HookEvent): boolean {
         return Boolean(this.t.hooks?.[event]?.length && this.cliSession.hooks);
     }
 
-    /** Codex took the harness's PreToolUse hook, trusted (an older Codex doesn't list hooks, or doesn't run them). */
+    /** Codex took Cavvy's PreToolUse hook, trusted (an older Codex doesn't list hooks, or doesn't run them). */
     protected async hooksTaken(cwd: string): Promise<boolean> {
         try {
             if (codexHookTaken(await withTimeout(this.rpc.request("hooks/list", { cwds: [cwd] }), 20_000, "Codex didn't list its hooks"), this.nativeEvents)) return true;
@@ -1897,7 +1897,7 @@ export class CodexTurn {
     }
 
     /**
-     * Codex starts or finishes a sub-agent: the harness's hooks run, and what
+     * Codex starts or finishes a sub-agent: Cavvy's hooks run, and what
      * they say goes back as Codex's own answer. SubagentStart's context is
      * given to the sub-agent; a SubagentStop block keeps it going, with the
      * reason as what to do next.
@@ -1918,7 +1918,7 @@ export class CodexTurn {
     }
 
     /**
-     * Codex is about to make a tool call (any thread, any mode): the harness's
+     * Codex is about to make a tool call (any thread, any mode): Cavvy's
      * PreToolUse hooks run, and what they say goes back as Codex's own hook
      * answer. A rewrite is checked as the call it becomes (rules, read-only,
      * the mode), and a hook that asks gets the user now: Codex itself may not ask.
@@ -1945,11 +1945,11 @@ export class CodexTurn {
         if (h?.decision === "deny") return deny(`Denied by PreToolUse hook${h.reason ? `: ${h.reason}` : ""}`);
         const bypass = (this.turnMode ?? this.cliSession.mode()) === "bypassPermissions";
         const hookDecision = h?.decision === "allow" || h?.decision === "ask" ? h.decision : undefined;
-        // Codex runs a rewrite in the call's place only where its input is the harness's (a command, an MCP call).
+        // Codex runs a rewrite in the call's place only where its input is Cavvy's (a command, an MCP call).
         const runnable = (input: Record<string, unknown>) => call.rewritable && (call.toolName !== "Bash" || typeof input.command === "string");
         if (h?.updatedInput && !runnable(h.updatedInput)) return deny(CANT_REWRITE_NATIVE);
         if (h?.updatedInput || hookDecision === "ask") {
-            // A rewrite is checked as the call it now is, as one for the harness's own models is; a hook that
+            // A rewrite is checked as the call it now is, as one for Cavvy's own models is; a hook that
             // asks gets the user now, since Codex may not ask (bypass never does). Either way a PermissionRequest
             // hook may answer, and may rewrite it again: what it approved is what runs.
             const input = h?.updatedInput ?? call.input;
@@ -1998,7 +1998,7 @@ export class CodexTurn {
         return this.cliSession.permission({ ...req, hookDecision, hooksOnly: (this.turnMode ?? this.cliSession.mode()) === "bypassPermissions" });
     }
 
-    /** Harness's Monitor and browser tools run the hooks themselves, as Monitor, BashOutput, KillShell or BrowserAct: Codex's run would be a second one. */
+    /** Cavvy's Monitor and browser tools run the hooks themselves, as Monitor, BashOutput, KillShell or BrowserAct: Codex's run would be a second one. */
     protected hooksItself(toolName: string): boolean {
         const server = this.t?.orchestrator?.name;
         return (Boolean(server) && MONITOR_SERVER_TOOLS.some((t) => toolName === `mcp__${server}__${t}`)) || servedBrowserTool(server, toolName);
@@ -2128,7 +2128,7 @@ export class CodexTurn {
     /**
      * An MCP elicitation Codex passes on. Codex asks this way itself before
      * an MCP tool call that needs approval (_meta.codex_approval_kind
-     * "mcp_tool_call", seen with 0.163): the harness's rules for that tool,
+     * "mcp_tool_call", seen with 0.163): Cavvy's rules for that tool,
      * then the user, answer it, as with a command. An MCP server's own form
      * or link goes to the question dialog. With nobody to ask (a
      * non-interactive run), or a form the dialog can't show, it's declined.
@@ -2197,14 +2197,14 @@ export class CodexTurn {
     }
 
     /**
-     * Codex's decision for the harness's answer. Refused by the user with
-     * nothing to add: cancel (the turn stops, as with the harness's own
+     * Codex's decision for Cavvy's answer. Refused by the user with
+     * nothing to add: cancel (the turn stops, as with Cavvy's own
      * tools). Refused by a rule, a read-only agent or a non-interactive run,
      * or with the user saying what to do instead: decline, so the turn goes
      * on (with their words). In untrusted mode a command's availableDecisions
      * leaves decline out, but Codex takes it anyway: the list is for its own
      * UI, and it doesn't check the answer against it. Codex tells the model
-     * only "rejected by user", so the harness's reason goes into the turn too:
+     * only "rejected by user", so Cavvy's reason goes into the turn too:
      * without it the model gives up, or tries the next way of doing the same.
      * A sub-agent's turn gets what's said about its own requests.
      */
@@ -2341,7 +2341,7 @@ export class CodexTurn {
     /**
      * Add text to the running turn (turn/steer). The user's words start the
      * next turn if Codex refuses them or drops them (its turn ended or was
-     * stopped before it took them, #438); the harness's own notes (followUp false) don't.
+     * stopped before it took them, #438); Cavvy's own notes (followUp false) don't.
      * A sub-agent's turn is steered the same way (checked with 0.163), but
      * nothing starts another of its turns.
      */
@@ -2378,7 +2378,7 @@ export interface Origin {
 }
 
 /**
- * The harness's MCP server as Codex config for the thread (sent over the
+ * Cavvy's MCP server as Codex config for the thread (sent over the
  * app-server's stdin, never in arguments). Its tools run without Codex's
  * approval prompt: what a delegated agent does is checked when it does it, and run_with_secrets checks its command itself.
  */
@@ -2397,7 +2397,7 @@ export function orchestratorConfig(o: OrchestratorServer): Record<string, unknow
     };
 }
 
-/** Said once: a Codex that doesn't run the harness's hooks itself doesn't start to. */
+/** Said once: a Codex that doesn't run Cavvy's hooks itself doesn't start to. */
 let saidNoNativeHooks = false;
 
 /** The server Codex's PreToolUse hook calls (thread config, over stdin like the delegation server's token). */
@@ -2455,7 +2455,7 @@ function writtenPaths(changes: FileChange[]): string[] {
 }
 
 /** A sub-agent's usage, already counted, kept for its chip until its thread is claimed (not a Codex method). */
-const SHOWN_USAGE = "harness/subagentUsage";
+const SHOWN_USAGE = "cavvy/subagentUsage";
 
 /** Notifications about any thread's actions (its reviewer's verdicts): shown whichever thread they're for. */
 const ANY_THREAD = new Set(["guardianWarning", "item/autoApprovalReview/started", "item/autoApprovalReview/completed"]);
@@ -2554,7 +2554,7 @@ export function requestedPaths(permissions: any, roots: string[]): { read: strin
 
 /**
  * The folders one sandbox entry covers: a path; a glob's folder up to its
- * first wildcard; or a special path the harness knows. Undefined for one it
+ * first wildcard; or a special path Cavvy knows. Undefined for one it
  * can't map to folders (Codex's "minimal" system paths, or kinds it doesn't
  * know), which then can't be checked against the rules.
  */

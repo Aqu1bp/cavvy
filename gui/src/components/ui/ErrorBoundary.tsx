@@ -23,7 +23,7 @@ function RenderFallback(p: Omit<Props, "children"> & { error: unknown; reset: ()
     };
     return (
         <div class={`render-error ${p.app ? "render-error-app" : ""}`} role="alert">
-            <p>{p.app ? "Couldn't render Harness. Reload to try again." : "Couldn't render this part."}</p>
+            <p>{p.app ? "Couldn't render Cavvy. Reload to try again." : "Couldn't render this part."}</p>
             <Show when={p.raw}><pre>{raw()}</pre></Show>
             <div class="render-error-actions">
                 <button class="ghost-btn" onClick={() => p.app ? location.reload() : p.reset()}>{p.app ? "Reload" : "Retry"}</button>

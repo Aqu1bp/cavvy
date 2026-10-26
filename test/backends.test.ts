@@ -56,7 +56,7 @@ const claudeBin = wrapper("claude", "fake-claude.ts");
 const codexBin = wrapper("codex", "fake-codex.ts");
 /** The fakes' FAKE_* settings as this process has them: a live Codex app-server reads them again with every message. */
 const ENV_FILE = join(bin, "fake-env.json");
-/** Stop the live Codex app-servers (as Harness quitting does): the next turn starts one that resumes the thread. */
+/** Stop the live Codex app-servers (as Cavvy quitting does): the next turn starts one that resumes the thread. */
 async function newAppServer() {
     await (await import("../src/backends/codex-live")).shutdownCodexLive();
 }
@@ -175,12 +175,12 @@ async function makeAgent(o: Opts) {
 
 const notices = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "notice" ? [`${e.level}: ${e.message}`] : []));
 const toolEnds = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "tool_end" ? [e] : []));
-/** Each user message's text: its text blocks (Harness's catch-up in one of its own, then the user's words) joined. */
+/** Each user message's text: its text blocks (Cavvy's catch-up in one of its own, then the user's words) joined. */
 const userTexts = () => received().flatMap((m) => (m.type === "user" && Array.isArray(m.message.content) && m.message.content.some((c: any) => c.type === "text") ? [m.message.content.filter((c: any) => c.type === "text").map((c: any) => c.text as string).join("\n\n")] : []));
 const permissionReplies = () => received().filter((m) => m.type === "control_response").map((m) => m.response.response);
 
 describe("agent providers", () => {
-    test("are off until turned on, and can't answer a request that offers the harness's tools", async () => {
+    test("are off until turned on, and can't answer a request that offers Cavvy's tools", async () => {
         registry.removeAgentConfig("claude-code");
         forgetClient("claude-code");
         await expect(clientFor("claude-code")).rejects.toThrow(/isn't turned on. Run \/login claude-code/);
@@ -300,7 +300,7 @@ describe("Claude Code backend", () => {
         const end = toolEnds(events)[0]!;
         expect(end.result.isError).toBe(false);
         expect(end.result.display?.diff?.after).toBe("hi\n");
-        // The harness's history: the prompt, and the turn as text (what it said and did).
+        // Cavvy's history: the prompt, and the turn as text (what it said and did).
         expect(session.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
         const said = session.messages[1]!.content.map((p) => (p as any).text).join("\n");
         expect(said).toContain("Working on it.");
@@ -324,7 +324,7 @@ describe("Claude Code backend", () => {
         expect(session.cost).toBe(0.5);
     });
 
-    test("the harness's provider keys never reach the CLI", async () => {
+    test("Cavvy's provider keys never reach the CLI", async () => {
         process.env.ANTHROPIC_API_KEY = FAKE.anthropic;
         process.env.OPENAI_API_KEY = FAKE.openai;
         try {
@@ -457,7 +457,7 @@ describe("Claude Code backend", () => {
         expect((session.messages.at(-1)!.content[0] as any).text).toBe("[Request interrupted by user]");
     });
 
-    test("AskUserQuestion goes to the harness's question dialog", async () => {
+    test("AskUserQuestion goes to Cavvy's question dialog", async () => {
         process.env.FAKE_SCENARIO = "ask";
         const seen: string[] = [];
         const { run } = await makeAgent({ provider: "claude-code", ui: { askQuestion: async (q: string) => (seen.push(q), ["Blue"]) } });
@@ -473,7 +473,7 @@ describe("Claude Code backend", () => {
         await a.run("plan it");
         expect(plan).toBe("1. Do the thing");
         expect(a.mode()).toBe("acceptEdits");
-        // The harness's accept-edits runs Claude Code in its default mode (the harness approves the edits).
+        // Cavvy's accept-edits runs Claude Code in its default mode (Cavvy approves the edits).
         expect(permissionReplies()[0]).toMatchObject({ behavior: "allow", updatedPermissions: [{ type: "setMode", mode: "default", destination: "session" }] });
     });
 
@@ -648,7 +648,7 @@ describe("Claude Code's background work (live test findings)", () => {
             expect(await run("map the auth module")).toBe("done");
             expect(subEnds(events)).toEqual(["aborted"]);
             expect(taskEnd(events).result.isError).toBe(true);
-            expect(notices(events).join("\n")).toMatch(/^warn: Harness stopped 1 background sub-agent \(Map auth\) after waiting 1s, its limit for background work, and Claude Code with it\. It won't report back\./m);
+            expect(notices(events).join("\n")).toMatch(/^warn: Cavvy stopped 1 background sub-agent \(Map auth\) after waiting 1s, its limit for background work, and Claude Code with it\. It won't report back\./m);
         } finally {
             Object.assign(backgroundTiming, saved);
         }
@@ -1026,7 +1026,7 @@ describe("Claude Code's background work (live test findings)", () => {
             q.items.push({ text: "then ship it with $deploy", mode: "queue" });
             expect(await before(() => Boolean(userSent("then ship it with $deploy")), done)).toBe(true);
             await done;
-            expect(userSent("then ship it with $deploy").message.content[0].text).toBe('then ship it with $deploy\n\nLoad the "harness:deploy" skill with the Skill tool and follow it.');
+            expect(userSent("then ship it with $deploy").message.content[0].text).toBe('then ship it with $deploy\n\nLoad the "cavvy:deploy" skill with the Skill tool and follow it.');
         }, 20_000);
 
         test("during a step, a queue-mode message still waits for the run's end and a steer message joins at the tool result", async () => {
@@ -1204,7 +1204,7 @@ describe("Claude Code's background work (live test findings)", () => {
 describe("Codex backend", () => {
     const turnStarts = () => received().filter((m) => m.method === "turn/start").map((m) => m.params);
 
-    test("a turn: harness rules answer Codex's approval; manual mode is untrusted + read-only", async () => {
+    test("a turn: Cavvy rules answer Codex's approval; manual mode is untrusted + read-only", async () => {
         const { run, events, session, asked } = await makeAgent({ provider: "codex", model: { id: "gpt-test" }, settings: { permissions: { allow: ["Bash(touch:*)"] } }, ask: () => ({ allow: true }) });
         expect(await run("make x")).toBe("done");
         expect(asked).toHaveLength(0);
@@ -1229,7 +1229,7 @@ describe("Codex backend", () => {
         expect(insideWorkspace(join(home, "proj", "src"), "/elsewhere", ["~/proj"])).toBe(true);
         expect(insideWorkspace(join(home, "other"), "/elsewhere", ["~/proj"])).toBe(false);
         expect(insideWorkspace(join(realpathSync(tmpdir()), "ws", "lib"), join(realpathSync(tmpdir()), "ws", "app"), ["../lib"])).toBe(true);
-        // A read-only agent in auto: reads run in the read-only sandbox; anything more asks the harness, never Codex's reviewer.
+        // A read-only agent in auto: reads run in the read-only sandbox; anything more asks Cavvy, never Codex's reviewer.
         expect(codexPolicy("auto", ["/x"], true)).toEqual({ approvalPolicy: "on-request", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: false }, approvalsReviewer: "user" });
         expect(codexPolicy("auto", ["/x"])).toMatchObject({ approvalPolicy: "on-request", sandbox: "workspace-write", approvalsReviewer: "auto_review" });
         expect(codexPolicy("plan", [])).toMatchObject({ approvalPolicy: "untrusted", sandbox: "read-only", approvalsReviewer: "user" });
@@ -1251,7 +1251,7 @@ describe("Codex backend", () => {
         expect(notices(a.events).filter((n) => n.includes("(risk: "))).toEqual([]);
         expect(notices(a.events).filter((n) => /blocked|denied/.test(n))).toHaveLength(1);
         expect(notices(a.events)).toContain("warn: Codex's reviewer: Automatic approval review failed: the reviewer didn't answer");
-        // The reviewer stays with the thread: manual mode says it's the user again, and the harness asks.
+        // The reviewer stays with the thread: manual mode says it's the user again, and Cavvy asks.
         a.setMode("default");
         expect(await a.run("make x again")).toBe("done");
         expect(turnStarts().at(-1)).toMatchObject({ approvalPolicy: "untrusted", approvalsReviewer: "user" });
@@ -1290,10 +1290,10 @@ describe("Codex backend", () => {
         expect(session.messages.at(-1)!.content.map((x) => (x as any).text).join("\n")).toContain("Finished.");
         expect(turnStarts()).toHaveLength(1);
         // Codex tells its model only "rejected by user": the reason goes into the turn.
-        expect(received().find((m) => m.method === "turn/steer")?.params.input[0].text).toMatch(/^<system-reminder>\nHarness refused that: Permission to use Bash was not granted \(non-interactive session\)/);
+        expect(received().find((m) => m.method === "turn/steer")?.params.input[0].text).toMatch(/^<system-reminder>\nCavvy refused that: Permission to use Bash was not granted \(non-interactive session\)/);
     });
 
-    test("the harness's reason is only steered in: when the turn is over, it doesn't start another (the user's words do)", async () => {
+    test("Cavvy's reason is only steered in: when the turn is over, it doesn't start another (the user's words do)", async () => {
         process.env.FAKE_STEER_FAIL = "1";
         const headless = await makeAgent({ provider: "codex" });
         expect(await headless.run("make x")).toBe("done");
@@ -1324,7 +1324,7 @@ describe("Codex backend", () => {
         expect(turnStarts()).toHaveLength(1);
     });
 
-    test("untrusted mode asks about every command: one the harness runs for its own models runs without asking", async () => {
+    test("untrusted mode asks about every command: one Cavvy runs for its own models runs without asking", async () => {
         process.env.FAKE_COMMAND = "cat greet.py";
         const { run, asked } = await makeAgent({ provider: "codex", ask: () => ({ allow: false }) });
         expect(await run("read it")).toBe("done");
@@ -1492,7 +1492,7 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
         expect(events.flatMap((e) => (e.type === "assistant" ? [(e.message.content[0] as any).text] : []))).toEqual(["Running it.", "Finished."]);
         // Its warning and error are its own: not the main agent's notices, and they don't fail the turn.
         expect(notices(events).join("\n")).not.toMatch(/hiccup|Model metadata/);
-        expect(events.filter((e) => e.type === "request_start")).toHaveLength(2); // the harness's and the main turn's
+        expect(events.filter((e) => e.type === "request_start")).toHaveLength(2); // Cavvy's and the main turn's
         // The spawn is a sub-agent (Task) with its activity under it, and its answer is its report.
         const spawn = events.find((e) => e.type === "tool_start" && e.call.name === "Task") as Extract<AgentEvent, { type: "tool_start" }>;
         expect(spawn.call.input).toEqual({ description: "Count the files", prompt: "Count the files\nin src, then report." });
@@ -1610,7 +1610,7 @@ describe("Codex: its own sub-agents, usage, MCP questions, what a turn did (tran
     });
 
     // Several CLI subprocesses run sequentially; startup and teardown need time on busy machines.
-    test("an MCP tool call Codex asks about goes to the harness's rules and the user, not declined unasked", async () => {
+    test("an MCP tool call Codex asks about goes to Cavvy's rules and the user, not declined unasked", async () => {
         process.env.FAKE_SCENARIO = "elicit";
         const yes = await makeAgent({ provider: "codex", ask: () => ({ allow: true }) });
         expect(await yes.run("go")).toBe("done");
@@ -1871,14 +1871,14 @@ describe("review findings (PR #1)", () => {
         expect(toolEnds(b.events)[0]!.result.content).toContain("TOPSECRET");
     });
 
-    test("2. harness rules as Claude Code rules", () => {
+    test("2. Cavvy rules as Claude Code rules", () => {
         const root = "/proj";
         expect(claudeRule("Read(secret.txt)", root)).toEqual(["Read(//proj/**/secret.txt)", "Read(//proj/**/secret.txt/**)"]);
         expect(claudeRule("Edit(src/**)", root)).toEqual(["Edit(//proj/src/**)"]);
         expect(claudeRule("Write(//etc/hosts)", root)).toEqual(["Edit(//etc/hosts)", "Edit(//etc/hosts/**)"]);
         expect(claudeRule("Grep(./docs/)", root)).toEqual(["Read(//proj/docs/)", "Read(//proj/docs/**)"]);
         expect(claudeRule("Bash(git push:*)", root)).toEqual(["Bash(git push:*)"]);
-        // The harness's domain rule covers subdomains; Claude Code's needs *. for those.
+        // Cavvy's domain rule covers subdomains; Claude Code's needs *. for those.
         expect(claudeRule("WebFetch(domain:example.com)", root)).toEqual(["WebFetch(domain:example.com)", "WebFetch(domain:*.example.com)"]);
         expect(claudeRule("WebFetch(domain:*.example.com)", root)).toEqual(["WebFetch(domain:*.example.com)"]);
         expect(claudeRule("Task(explore)", root)).toEqual(["Agent(explore)"]);
@@ -1889,7 +1889,7 @@ describe("review findings (PR #1)", () => {
         expect(claudeRule("*(domain:evil.com)", root)).toEqual(["WebFetch(domain:evil.com)", "WebFetch(domain:*.evil.com)"]);
         const p = claudePermissions({ deny: ["Bash(rm:*)"], ask: ["Edit(src/**)"], root });
         expect(p.ask).toEqual(["Edit(//proj/src/**)"]);
-        // The harness's credential store is always denied.
+        // Cavvy's credential store is always denied.
         expect(p.deny[0]).toBe("Bash(rm:*)");
         expect(p.deny.some((r) => r.includes("credentials.json"))).toBe(true);
     });
@@ -2057,7 +2057,7 @@ describe("review findings, round 2", () => {
 
     test("Codex's special paths are resolved; ones that can't be are refused without asking", async () => {
         process.env.FAKE_SCENARIO = "perms";
-        // The filesystem root holds the harness's credential store.
+        // The filesystem root holds Cavvy's credential store.
         process.env.FAKE_PERMS = JSON.stringify({ network: null, fileSystem: { read: null, write: null, entries: [{ path: { type: "special", value: { kind: "root" } }, access: "write" }] } });
         const root = await makeAgent({ provider: "codex", ask: () => ({ allow: true }) });
         await root.run("go");
@@ -2071,8 +2071,8 @@ describe("review findings, round 2", () => {
         expect(granted()).toEqual({ permissions: {}, scope: "turn" });
         expect(notices(minimal.events).join("\n")).toMatch(/Refused Codex's request for access to the special path "minimal"/);
         rmSync(LOG, { force: true });
-        // An absolute subpath is the folder Codex opens (it replaces the project root), here the harness's own home.
-        process.env.FAKE_PERMS = JSON.stringify({ network: null, fileSystem: { read: null, write: null, entries: [{ path: { type: "special", value: { kind: "project_roots", subpath: process.env.HARNESS_HOME } }, access: "write" }] } });
+        // An absolute subpath is the folder Codex opens (it replaces the project root), here Cavvy's own home.
+        process.env.FAKE_PERMS = JSON.stringify({ network: null, fileSystem: { read: null, write: null, entries: [{ path: { type: "special", value: { kind: "project_roots", subpath: process.env.CAVVY_HOME } }, access: "write" }] } });
         const store = await makeAgent({ provider: "codex", ask: () => ({ allow: true }) });
         await store.run("go");
         expect(store.asked).toHaveLength(0);
@@ -2095,7 +2095,7 @@ describe("review findings, round 2", () => {
         const a = await makeAgent({ provider: "codex", settings: { permissions: { allow: ["Bash(touch:*)"] } } });
         await a.run("one");
         expect(a.session.backends.get("codex")?.id).toBe("thr-new");
-        // A new app-server (Harness restarted) resumes the thread.
+        // A new app-server (Cavvy restarted) resumes the thread.
         await newAppServer();
         process.env.FAKE_SLOW_RESUME = "3000";
         const ac = new AbortController();
@@ -2250,7 +2250,7 @@ describe("forked sessions", () => {
     for (const provider of ["claude-code", "codex"] as const) for (const change of ["none", "shared", "selection", "folder"] as const) test(`${provider}: named-account fork with ${change} change respects the source folder`, async () => {
         const { accountPlace, addAccount, removeAccount } = await import("../src/providers/accounts");
         const selected = addAccount(provider, { id: "fork-work", name: "Fork work" });
-        // An existing folder keeps a history of its own; a Harness-made account shares Default's, as fork-work does (#377).
+        // An existing folder keeps a history of its own; a Cavvy-made account shares Default's, as fork-work does (#377).
         const other = addAccount(provider, { id: "fork-other", name: "Fork other", folder: join(bin, `${provider}-other`) });
         const sharing = addAccount(provider, { id: "fork-sharing", name: "Fork sharing" });
         const source = Session.create(cwd);
@@ -2484,7 +2484,7 @@ describe("Claude Code project MCP settings", () => {
         expect(await run("hello")).toBe("done");
         const argv = starts()[0].argv;
         expect(argv).not.toContain("--strict-mcp-config");
-        expect(JSON.parse(argv[argv.indexOf("--settings") + 1])).toMatchObject({ enabledMcpjsonServers: ["approved"], disabledMcpjsonServers: ["harness", "pending"] });
+        expect(JSON.parse(argv[argv.indexOf("--settings") + 1])).toMatchObject({ enabledMcpjsonServers: ["approved"], disabledMcpjsonServers: ["cavvy", "pending"] });
         expect(JSON.stringify(argv)).not.toContain("not-in-argv");
         expect(received().some((m) => m.request?.subtype === "mcp_set_servers")).toBe(false);
     });
@@ -2553,7 +2553,7 @@ describe("Claude Code MCP approval boundary", () => {
         expect(await run("hello")).toBe("done");
         expect(starts()[0].argv).toEqual(expect.arrayContaining(["--add-dir", extra]));
         expect(starts()[0].argv).not.toContain("--strict-mcp-config");
-        expect(settingsFor(starts()[0])).toMatchObject({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["harness"] });
+        expect(settingsFor(starts()[0])).toMatchObject({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["cavvy"] });
     });
 
     test("only unchanged project approvals reach settings, and changes apply next turn", async () => {
@@ -2561,11 +2561,11 @@ describe("Claude Code MCP approval boundary", () => {
         const cfg = config();
         writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: {
             approved: cfg, pending: cfg, rejected: cfg, disabled: { ...cfg, disabled: true },
-            same__name: cfg, shadowed: cfg, harness: cfg,
+            same__name: cfg, shadowed: cfg, cavvy: cfg,
         } }));
         const settings = {
             mcpServers: { settings: cfg, same_name: cfg, shadowed: cfg },
-            approvedMcpjsonServers: Object.fromEntries(["approved", "disabled", "same__name", "shadowed", "harness"].map((name) => [name, mcpFingerprint(cfg, cwd)])),
+            approvedMcpjsonServers: Object.fromEntries(["approved", "disabled", "same__name", "shadowed", "cavvy"].map((name) => [name, mcpFingerprint(cfg, cwd)])),
             disabledMcpjsonServers: ["rejected"],
         };
         const manager = new McpManager(cwd, () => settings, true);
@@ -2574,7 +2574,7 @@ describe("Claude Code MCP approval boundary", () => {
         expect(await run("hello")).toBe("done");
         expect(settingsFor(starts()[0])).toMatchObject({
             enabledMcpjsonServers: ["approved"],
-            disabledMcpjsonServers: ["disabled", "harness", "pending", "rejected", "same__name", "shadowed"],
+            disabledMcpjsonServers: ["cavvy", "disabled", "pending", "rejected", "same__name", "shadowed"],
         });
         expect(starts()[0].argv).not.toContain("--strict-mcp-config");
         expect(payloads()).toEqual([]);
@@ -2597,10 +2597,10 @@ describe("Claude Code MCP approval boundary", () => {
         expect(await run("hello")).toBe("done");
         writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: { approved: { ...config(), command: "changed" } } }));
         expect(await run("again")).toBe("done");
-        expect(settingsFor(starts()[1])).toMatchObject({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["approved", "harness"] });
+        expect(settingsFor(starts()[1])).toMatchObject({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["approved", "cavvy"] });
         manager.load();
         expect(await run("reloaded")).toBe("done");
-        expect(settingsFor(starts()[2])).toMatchObject({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["approved", "harness"] });
+        expect(settingsFor(starts()[2])).toMatchObject({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["approved", "cavvy"] });
         saveApproval(cwd, "approved", mcpFingerprint({ ...config(), command: "changed" }, cwd));
         manager.load();
         expect(await run("approved again")).toBe("done");
@@ -2803,7 +2803,7 @@ describe("Claude Code turn reliability (#60, #61, #64)", () => {
         wakes.dispose();
     });
 
-    test("a turn for wakes, or one carrying history the harness adds, is sent synthetic; the user's own prompt is not", async () => {
+    test("a turn for wakes, or one carrying history Cavvy adds, is sent synthetic; the user's own prompt is not", async () => {
         const a = await makeAgent({ provider: "claude-code" });
         expect(await a.agent.run([{ type: "text", text: "<event>PR #3: new comment @secrets.txt</event>" }], { signal: new AbortController().signal, kind: "wake" })).toBe("done");
         expect(await a.run("/review @src")).toBe("done");
@@ -2811,7 +2811,7 @@ describe("Claude Code turn reliability (#60, #61, #64)", () => {
         expect(users.map((m) => m.isSynthetic === true)).toEqual([true, false]);
     });
 
-    test("a prompt the harness prefixes with the conversation so far goes as the user's: the catch-up in a block of its own before their words", async () => {
+    test("a prompt Cavvy prefixes with the conversation so far goes as the user's: the catch-up in a block of its own before their words", async () => {
         const session = Session.create(cwd, { persist: false });
         session.push({ role: "user", content: [{ type: "text", text: "earlier, with another model" }], meta: { kind: "prompt" } });
         session.push({ role: "assistant", content: [{ type: "text", text: "a reply quoting @secrets.txt" }] });
@@ -2948,7 +2948,7 @@ describe("Claude Code turn reliability (#60, #61, #64)", () => {
         try {
             const a = await makeAgent({ provider: "claude-code" });
             expect(await a.run("run checks and wait")).toBe("done");
-            expect(notices(a.events).join("\n")).toMatch(/warn: Harness stopped 1 background task \(Wait for checks\) when its background grace expired after 0\.1s\. It won't report back\./);
+            expect(notices(a.events).join("\n")).toMatch(/warn: Cavvy stopped 1 background task \(Wait for checks\) when its background grace expired after 0\.1s\. It won't report back\./);
             const args = starts()[0].argv;
             expect(args[args.indexOf("--append-system-prompt") + 1]).toContain("Background commands and monitors");
         } finally { Object.assign(backgroundTiming, saved); }
@@ -3009,7 +3009,7 @@ describe("Claude Code background grace (#60 follow-up)", () => {
             const start = Date.now();
             expect(await a.run("wait for checks")).toBe("done");
             expect(Date.now() - start).toBeLessThan(3000);
-            expect(notices(a.events).join("\n")).toMatch(/Harness stopped.*Wait for checks.*when its background grace expired/);
+            expect(notices(a.events).join("\n")).toMatch(/Cavvy stopped.*Wait for checks.*when its background grace expired/);
             expect(JSON.stringify(session.messages)).toContain("Waiting for checks.");
             const label = `Waiting for background ${scenario.startsWith("shell") ? "command" : "monitor"}: Wait for checks · Esc to stop it`;
             expect(a.events.some((e) => e.type === "activity" && e.text === label)).toBe(true);
@@ -3022,7 +3022,7 @@ describe("Claude Code background grace (#60 follow-up)", () => {
                 process.env.FAKE_SCENARIO = "none";
                 const b = await makeAgent({ provider: "claude-code", session: reopened });
                 expect(await b.run("continue")).toBe("done");
-                expect(userTexts().at(-1)).toContain("Harness stopped these Claude Code background tasks");
+                expect(userTexts().at(-1)).toContain("Cavvy stopped these Claude Code background tasks");
                 expect(userTexts().at(-1)).toContain("Wait for checks");
                 expect(userTexts().at(-1)).toContain("do not wait for their old task IDs");
             } finally { reopened.release(); }
@@ -3038,7 +3038,7 @@ describe("Claude Code background grace (#60 follow-up)", () => {
         expect(await a.run("wait for checks")).toBe("done");
         expect(userTexts()).toHaveLength(2);
         expect(userTexts()[1]).toContain("A Stop hook asked you to keep going");
-        expect(userTexts()[1]).toContain("Harness stopped these Claude Code background tasks");
+        expect(userTexts()[1]).toContain("Cavvy stopped these Claude Code background tasks");
         expect(userTexts()[1]).toContain("Wait for checks");
     });
 
@@ -3078,7 +3078,7 @@ describe("Claude Code background grace (#60 follow-up)", () => {
         expect(notices(a.events).join("\n")).toContain("recognized long-lived server/watcher");
         process.env.FAKE_SCENARIO = "none";
         await a.run("continue");
-        expect(userTexts().at(-1)).toContain("Harness stopped these Claude Code background tasks");
+        expect(userTexts().at(-1)).toContain("Cavvy stopped these Claude Code background tasks");
     });
 
     test("finite commands are not classified by a word in output or a Vite build", async () => {
@@ -3167,7 +3167,7 @@ describe("Claude Code background commands' own timeouts (#193)", () => {
             const took = Date.now() - start;
             expect(took).toBeGreaterThanOrEqual(400);
             expect(took).toBeLessThan(3000);
-            expect(notices(a.events).join("\n")).toMatch(/Harness stopped 1 background task \(Wait for checks\) when its background timeout of 1s ran out\. It won't report back\./);
+            expect(notices(a.events).join("\n")).toMatch(/Cavvy stopped 1 background task \(Wait for checks\) when its background timeout of 1s ran out\. It won't report back\./);
             expect(notices(a.events).join("\n")).not.toContain("Stopped waiting for");
         } finally { restore(); }
     });
@@ -3228,7 +3228,7 @@ describe("Claude Code background commands' own timeouts (#193)", () => {
             expect(await a.run("start both")).toBe("done");
             expect(Date.now() - start).toBeLessThan(5000);
             expect(stops()).toEqual(["agent-1"]);
-            expect(notices(a.events).join("\n")).toMatch(/Harness stopped 1 background sub-agent \(Map auth\) after waiting 1s, its limit for background work\. It won't report back\./);
+            expect(notices(a.events).join("\n")).toMatch(/Cavvy stopped 1 background sub-agent \(Map auth\) after waiting 1s, its limit for background work\. It won't report back\./);
             expect(notices(a.events).some((n) => /stopped.*Wait for checks/i.test(n))).toBe(false);
             expect(JSON.stringify(a.session.messages)).toContain("Background checks passed.");
             expect(a.events.some((e) => e.type === "subagent" && e.event.type === "turn_end" && e.event.reason === "aborted")).toBe(true);
@@ -3353,14 +3353,14 @@ describe("Claude Code reviewed grace fixes", () => {
             const outcome = await a.run("monitor checks", abort.signal);
             expect(outcome).toBe("done");
             expect(JSON.stringify(a.session.messages)).toContain("Monitor notification 2.");
-            expect(notices(a.events).join("\n")).toMatch(/Harness stopped 1 background task \(Watch checks\) after waiting 1s, its limit for background work, and Claude Code with it\./);
+            expect(notices(a.events).join("\n")).toMatch(/Cavvy stopped 1 background task \(Watch checks\) after waiting 1s, its limit for background work, and Claude Code with it\./);
             expect(notices(a.events).join("\n")).not.toContain("grace expired");
             expect(a.session.messages.at(-1)).toMatchObject({ role: "user", meta: { kind: "reminder" } });
             expect(JSON.stringify(a.session.messages.at(-1))).toContain("background monitor: Watch checks");
             process.env.FAKE_SCENARIO = "none";
             const b = await makeAgent({ provider: "claude-code", session: a.session });
             expect(await b.run("continue")).toBe("done");
-            expect(userTexts().at(-1)).toContain("Harness stopped these Claude Code background tasks: background monitor: Watch checks");
+            expect(userTexts().at(-1)).toContain("Cavvy stopped these Claude Code background tasks: background monitor: Watch checks");
         } finally {
             clearTimeout(timeout);
             Object.assign(backgroundTiming, saved);
@@ -3690,7 +3690,7 @@ describe("Codex mid-turn steering", () => {
         expect(delivered(false)).toEqual([imageItem]);
     });
 
-    test("a wake while the turn runs steers it at once, marked as the harness's and not as a prompt", async () => {
+    test("a wake while the turn runs steers it at once, marked as Cavvy's and not as a prompt", async () => {
         process.env.FAKE_SCENARIO = "slow";
         process.env.FAKE_STEER_WAKES = "1";
         const wakes = new WakeQueue({ coalesceMs: 0 });
@@ -3784,7 +3784,7 @@ describe("Codex mid-turn steering", () => {
         expect(transcript(a.session).filter((l) => l === "user: refused words")).toHaveLength(1);
     });
 
-    test("a refused steer still reaches Codex after Harness restarts: it's saved in the session, past what Codex has seen", async () => {
+    test("a refused steer still reaches Codex after Cavvy restarts: it's saved in the session, past what Codex has seen", async () => {
         process.env.FAKE_SCENARIO = "slow";
         process.env.FAKE_STEER_FAIL = "1";
         const host: string[] = [];
@@ -3930,14 +3930,14 @@ describe("Claude Code: a steer with attachments", () => {
 });
 
 const { paths } = await import("../src/config/paths");
-describe("the harness's agents on Claude Code", () => {
+describe("Cavvy's agents on Claude Code", () => {
     const agentLogs = () => logLines().filter((l) => "agents" in l);
     function writeAgents() {
         mkdirSync(paths.userAgents(), { recursive: true });
         writeFileSync(join(paths.userAgents(), "mine.md"), "---\nname: mine\ndescription: Mine\nmaxTurns: 3\n---\nBe brief.\n");
         writeFileSync(join(paths.userAgents(), "gpt.md"), "---\nname: gpt\ndescription: On GPT\nmodel: openai:gpt-5\n---\nx\n");
-        mkdirSync(join(cwd, ".harness", "agents"), { recursive: true });
-        writeFileSync(join(cwd, ".harness", "agents", "repo.md"), "---\nname: repo\ndescription: The repo's\n---\ny\n");
+        mkdirSync(join(cwd, ".cavvy", "agents"), { recursive: true });
+        writeFileSync(join(cwd, ".cavvy", "agents", "repo.md"), "---\nname: repo\ndescription: The repo's\n---\ny\n");
     }
     afterEach(() => rmSync(paths.userAgents(), { recursive: true, force: true }));
 
@@ -3965,7 +3965,7 @@ describe("the harness's agents on Claude Code", () => {
         expect(starts()[0].argv).not.toContain("--agents");
     });
 
-    test("each agent's own permissionMode decides its asks, as when the harness runs it", async () => {
+    test("each agent's own permissionMode decides its asks, as when Cavvy runs it", async () => {
         mkdirSync(paths.userAgents(), { recursive: true });
         writeFileSync(join(paths.userAgents(), "writer.md"), "---\nname: writer\ndescription: Writes\npermissionMode: acceptEdits\n---\nWrite.\n");
         writeFileSync(join(paths.userAgents(), "careful.md"), "---\nname: careful\ndescription: Asks\npermissionMode: default\n---\nWrite.\n");
@@ -3978,7 +3978,7 @@ describe("the harness's agents on Claude Code", () => {
             await a.run("go");
             return { asked: a.asked.length, answer: answers()[0] };
         };
-        // An acceptEdits agent in a default session: its edit in the workspace goes through, as the harness's own run would.
+        // An acceptEdits agent in a default session: its edit in the workspace goes through, as Cavvy's own run would.
         expect(await run("writer", "default")).toEqual({ asked: 0, answer: "allow" });
         // The reverse: a default agent in an acceptEdits session is asked.
         expect(await run("careful", "acceptEdits")).toEqual({ asked: 1, answer: "deny" });
@@ -4004,7 +4004,7 @@ describe("Claude Code background tasks: #282 review round 2", () => {
         return () => Object.assign(backgroundTiming, saved);
     };
 
-    test("a background sub-agent ended by Esc is the user's stop, with Claude Code: not 'Stopped when Harness quit', and no notice (A5)", async () => {
+    test("a background sub-agent ended by Esc is the user's stop, with Claude Code: not 'Stopped when Cavvy quit', and no notice (A5)", async () => {
         const { taskMeta } = await import("../gui/src/lib/background");
         process.env.FAKE_SCENARIO = "agent-background-stuck";
         const a = await makeAgent({ provider: "claude-code" });
@@ -4023,7 +4023,7 @@ describe("Claude Code background tasks: #282 review round 2", () => {
         expect(bg.sync()).toEqual([]);
     });
 
-    test("a background task that goes with Claude Code's process (not Esc, not Harness quitting) says so (A5)", async () => {
+    test("a background task that goes with Claude Code's process (not Esc, not Cavvy quitting) says so (A5)", async () => {
         const { taskMeta } = await import("../gui/src/lib/background");
         process.env.FAKE_SCENARIO = "agent-background-stuck";
         process.env.FAKE_EXIT_AFTER_MS = "400";
@@ -4070,12 +4070,12 @@ describe("Claude Code background tasks: #282 review round 2", () => {
         expect(a.agent.backgroundTasks().map((t) => [t.id, t.status, t.withProcess])).toEqual([["toolu_gone", "stopped", true]]);
     });
 
-    test("overlapping stops of one task ask once: the user's late success stands, and Harness's own stop doesn't end the run (B1)", async () => {
+    test("overlapping stops of one task ask once: the user's late success stands, and Cavvy's own stop doesn't end the run (B1)", async () => {
         process.env.FAKE_SCENARIO = "shell-background-mixed";
         process.env.FAKE_COMMAND = "sleep 150";
         process.env.FAKE_STOP_TASK = "late";
-        // The user's stop times out (300 ms); Harness's own stop of it comes at the grace (350 ms, not while the
-        // user's is pending); the user's answer comes (500 ms) before Harness's own stop would time out.
+        // The user's stop times out (300 ms); Cavvy's own stop of it comes at the grace (350 ms, not while the
+        // user's is pending); the user's answer comes (500 ms) before Cavvy's own stop would time out.
         process.env.FAKE_STOP_MS = "500";
         process.env.FAKE_BACKGROUND_MS = "1500";
         const restore = timing({ stopTimeoutMs: 300, pollMs: 10 });
@@ -4084,7 +4084,7 @@ describe("Claude Code background tasks: #282 review round 2", () => {
             a.agent.state.background = new SessionBackground();
             const done = a.run("start both");
             for (let i = 0; i < 500 && !a.agent.backgroundTasks().some((t) => t.id === "background-1" && t.status === "running"); i++) await Bun.sleep(5);
-            // The user's stop isn't answered in time; Harness then stops the same task at its grace; the user's answer comes.
+            // The user's stop isn't answered in time; Cavvy then stops the same task at its grace; the user's answer comes.
             expect(await a.agent.stopBackground(["background-1"])).toEqual({ "background-1": "timeout" });
             expect(await done).toBe("done");
             expect(stops()).toEqual(["background-1"]);
@@ -4220,7 +4220,7 @@ describe("Claude Code background tasks: #282 review round 3", () => {
         }
     }, 15_000);
 
-    test("Harness's own stop goes unanswered, but the task said meanwhile it completed: a look past the stop's timeout doesn't end the run as unconfirmed (D1)", async () => {
+    test("Cavvy's own stop goes unanswered, but the task said meanwhile it completed: a look past the stop's timeout doesn't end the run as unconfirmed (D1)", async () => {
         process.env.FAKE_SCENARIO = "shell-background-mixed";
         process.env.FAKE_COMMAND = "sleep 150";
         process.env.FAKE_STOP_TASK = "hang";
@@ -4232,7 +4232,7 @@ describe("Claude Code background tasks: #282 review round 3", () => {
             const a = await makeAgent({ provider: "claude-code", settings: { claudeCode: { backgroundWaitSec: 0.1 } } });
             a.agent.state.background = new SessionBackground();
             const done = a.run("start both");
-            // Harness stops the shell at its grace; it then says it completed (held for the stop).
+            // Cavvy stops the shell at its grace; it then says it completed (held for the stop).
             await until(() => stops().length === 1);
             await Bun.sleep(400);
             // The idle check looks at the clock past the stop's timeout before the stop's own timer runs (it raced it).
@@ -4250,13 +4250,13 @@ describe("Claude Code background tasks: #282 review round 3", () => {
         }
     }, 15_000);
 
-    test("the user's stop times out, Harness's own stop of the task takes the same answer, and the task completed first: the run isn't ended as unconfirmed (B1, !over())", async () => {
+    test("the user's stop times out, Cavvy's own stop of the task takes the same answer, and the task completed first: the run isn't ended as unconfirmed (B1, !over())", async () => {
         process.env.FAKE_SCENARIO = "shell-background-mixed";
         process.env.FAKE_COMMAND = "sleep 150";
         process.env.FAKE_STOP_TASK = "complete-first";
         process.env.FAKE_STOP_ANSWER = "error";
         process.env.FAKE_FOLLOWUP_MS = "20";
-        // The user's stop (at the wait's start) times out at 400 ms; Harness's own stop at the grace (450 ms)
+        // The user's stop (at the wait's start) times out at 400 ms; Cavvy's own stop at the grace (450 ms)
         // shares its request; Claude Code says the task completed, then refuses, at 650 ms.
         process.env.FAKE_STOP_MS = "650";
         process.env.FAKE_BACKGROUND_MS = "1500";
@@ -4304,7 +4304,7 @@ describe("Claude Code background tasks: #282 review round 4", () => {
     const running = (a: { agent: InstanceType<typeof Agent> }, id: string) => a.agent.backgroundTasks().some((t) => t.id === id && t.status === "running" && t.stoppable);
 
     for (const said of [true, false]) {
-        test(`Harness's own stop goes unanswered while Claude Code takes a turn of its own; ${said ? "the task says it completed after the stop's timeout: that end settles it, and the run ends (Bug A)" : "nothing is said: the run ends as unconfirmed"}`, async () => {
+        test(`Cavvy's own stop goes unanswered while Claude Code takes a turn of its own; ${said ? "the task says it completed after the stop's timeout: that end settles it, and the run ends (Bug A)" : "nothing is said: the run ends as unconfirmed"}`, async () => {
             process.env.FAKE_SCENARIO = "shell-background-mixed";
             process.env.FAKE_COMMAND = "sleep 150";
             process.env.FAKE_BACKGROUND_MS = "1500";
@@ -4374,7 +4374,7 @@ describe("Claude Code background tasks: #282 review round 4", () => {
         }, 15_000);
     }
 
-    test("Harness's own stop is refused, but the task said meanwhile it stopped: not an unconfirmed stop that ends the run (C1c)", async () => {
+    test("Cavvy's own stop is refused, but the task said meanwhile it stopped: not an unconfirmed stop that ends the run (C1c)", async () => {
         process.env.FAKE_SCENARIO = "shell-background-mixed";
         process.env.FAKE_COMMAND = "sleep 150";
         process.env.FAKE_STOP_TASK = "complete-first";

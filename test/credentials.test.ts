@@ -14,14 +14,14 @@ const { childEnv } = await import("../src/tools/bash");
 const { paths } = await import("../src/config/paths");
 import type { ProviderDef } from "../src/providers/registry";
 
-const WORK = tempDir("harness-cred-");
+const WORK = tempDir("cavvy-cred-");
 afterAll(() => {
     restoreSecrets();
     rmSync(WORK, { recursive: true, force: true });
     iso.cleanup();
 });
 
-// Restore process.env after every test (loadHarnessEnv and the env tests set variables).
+// Restore process.env after every test (loadCavvyEnv and the env tests set variables).
 let envSnapshot: Record<string, string | undefined> = {};
 beforeEach(() => {
     envSnapshot = { ...process.env };
@@ -42,8 +42,8 @@ const uncached = (id: string) => creds.removeKey(id);
 
 // ---------------------------------------------------------------------------
 
-describe("credential store (file backend, HARNESS_NO_KEYCHAIN)", () => {
-    test("the store lives under the isolated HARNESS_HOME", () => {
+describe("credential store (file backend, CAVVY_NO_KEYCHAIN)", () => {
+    test("the store lives under the isolated CAVVY_HOME", () => {
         expect(credFile()).toBe(join(iso.home, "credentials.json"));
     });
 
@@ -298,7 +298,7 @@ describe("validateKey", () => {
         expect(await validateKey(def("openrouter", `${origin}/api/v1`), FAKE.openrouter)).toEqual({ ok: true });
         expect(seen[0]!.path).toBe("/api/v1/key");
         expect(seen[0]!.headers.authorization).toBe(`Bearer ${FAKE.openrouter}`);
-        expect(seen[0]!.headers["x-title"]).toBe("Harness CLI");
+        expect(seen[0]!.headers["x-title"]).toBe("Cavvy CLI");
     });
 
     test("others: GET /models with a bearer token", async () => {
@@ -331,7 +331,7 @@ describe("validateKey", () => {
 
 // ---------------------------------------------------------------------------
 
-describe("loadHarnessEnv / parseDotenv", () => {
+describe("loadCavvyEnv / parseDotenv", () => {
     let n = 0;
     const envFile = (text: string) => {
         const f = join(WORK, `env-${++n}`);
@@ -347,13 +347,13 @@ describe("loadHarnessEnv / parseDotenv", () => {
         ).toEqual({ A: "1", B: "two words", C: "single # not a comment", D: "4", E: "5", F: "", G: "spaced", H: "a#b" });
     });
 
-    test("only provider keys, base URLs, search keys and HARNESS_MODEL are loaded", () => {
+    test("only provider keys, base URLs, search keys and CAVVY_MODEL are loaded", () => {
         const f = envFile(
             [
                 `ANTHROPIC_API_KEY="${FAKE.anthropic}"`,
                 "export OPENAI_BASE_URL=http://127.0.0.1:9/v1",
                 `TAVILY_API_KEY='tvly-${"t".repeat(24)}'`,
-                "HARNESS_MODEL=anthropic:claude-x  # default model",
+                "CAVVY_MODEL=anthropic:claude-x  # default model",
                 "NODE_OPTIONS=--require /tmp/evil.js",
                 "PATH=/evil/bin",
                 "BUN_OPTIONS=--preload /tmp/evil.ts",
@@ -364,12 +364,12 @@ describe("loadHarnessEnv / parseDotenv", () => {
         const pathBefore = process.env.PATH;
         const nodeOptsBefore = process.env.NODE_OPTIONS;
         const bunOptsBefore = process.env.BUN_OPTIONS;
-        const r = creds.loadHarnessEnv([f]);
+        const r = creds.loadCavvyEnv([f]);
         expect(r).toEqual({ legacyModel: "anthropic:claude-x", notes: [] });
         expect(process.env.ANTHROPIC_API_KEY).toBe(FAKE.anthropic);
         expect(process.env.OPENAI_BASE_URL).toBe("http://127.0.0.1:9/v1");
         expect(process.env.TAVILY_API_KEY).toBe(`tvly-${"t".repeat(24)}`);
-        expect(process.env.HARNESS_MODEL).toBe("anthropic:claude-x");
+        expect(process.env.CAVVY_MODEL).toBe("anthropic:claude-x");
         expect(process.env.PATH).toBe(pathBefore);
         expect(process.env.NODE_OPTIONS).toBe(nodeOptsBefore);
         expect(process.env.BUN_OPTIONS).toBe(bunOptsBefore);
@@ -380,14 +380,14 @@ describe("loadHarnessEnv / parseDotenv", () => {
     test("existing environment variables are not overwritten", () => {
         process.env.XAI_API_KEY = "from-the-shell";
         const f = envFile(`XAI_API_KEY=xai-${"f".repeat(40)}\nMISTRAL_API_KEY=m-from-file`);
-        creds.loadHarnessEnv([f]);
+        creds.loadCavvyEnv([f]);
         expect(process.env.XAI_API_KEY).toBe("from-the-shell");
         expect(process.env.MISTRAL_API_KEY).toBe("m-from-file");
     });
 
     test("legacy BASE_URL/API_KEY/MODEL is mapped to a known provider by host", () => {
-        const f = envFile(`BASE_URL=https://openrouter.ai/api/v1\nAPI_KEY=${FAKE.openrouter}\nMODEL=vendor/some-model\nHARNESS_MODEL=ignored:because-legacy-wins`);
-        const r = creds.loadHarnessEnv([f]);
+        const f = envFile(`BASE_URL=https://openrouter.ai/api/v1\nAPI_KEY=${FAKE.openrouter}\nMODEL=vendor/some-model\nCAVVY_MODEL=ignored:because-legacy-wins`);
+        const r = creds.loadCavvyEnv([f]);
         expect(r.legacyModel).toBe("openrouter:vendor/some-model");
         expect(r.notes).toEqual([]);
         expect(process.env.OPENROUTER_API_KEY).toBe(FAKE.openrouter);
@@ -406,14 +406,14 @@ describe("loadHarnessEnv / parseDotenv", () => {
         ["https://api.x.ai/v1", "XAI_API_KEY"],
     ])("legacy host %s -> %s", (url, envVar) => {
         const f = envFile(`BASE_URL=${url}\nAPI_KEY=legacy-key-value`);
-        creds.loadHarnessEnv([f]);
+        creds.loadCavvyEnv([f]);
         expect(process.env[envVar]).toBe("legacy-key-value");
     });
 
     test.each(["https://llm.example.com/v1", "https://api.anthropic.com.evil.io", "https://evil-anthropic.com", "http://localhost:8080/v1", "not a url"])("unknown host %s: key ignored with a note", (url) => {
         const f = envFile(`BASE_URL=${url}\nAPI_KEY=legacy-key-value\nMODEL=m`);
         const before = { ...process.env };
-        const r = creds.loadHarnessEnv([f]);
+        const r = creds.loadCavvyEnv([f]);
         expect(r.legacyModel).toBeUndefined();
         expect(r.notes).toHaveLength(1);
         expect(r.notes[0]).toContain(`Ignored API_KEY in ${f}`);
@@ -424,14 +424,14 @@ describe("loadHarnessEnv / parseDotenv", () => {
 
     test("a legacy key never overrides an existing provider variable", () => {
         process.env.ANTHROPIC_API_KEY = "already-set";
-        creds.loadHarnessEnv([envFile(`BASE_URL=https://api.anthropic.com\nAPI_KEY=legacy`)]);
+        creds.loadCavvyEnv([envFile(`BASE_URL=https://api.anthropic.com\nAPI_KEY=legacy`)]);
         expect(process.env.ANTHROPIC_API_KEY).toBe("already-set");
     });
 
     test("missing files are skipped; the first file's legacy model wins", () => {
-        const a = envFile("HARNESS_MODEL=openai:first");
-        const b = envFile("HARNESS_MODEL=openai:second");
-        const r = creds.loadHarnessEnv([join(WORK, "does-not-exist"), a, b]);
+        const a = envFile("CAVVY_MODEL=openai:first");
+        const b = envFile("CAVVY_MODEL=openai:second");
+        const r = creds.loadCavvyEnv([join(WORK, "does-not-exist"), a, b]);
         expect(r.legacyModel).toBe("openai:first");
     });
 });
@@ -467,19 +467,19 @@ describe("secret env vars and the Bash child environment", () => {
             process.env.API_KEY = "generic-api-key";
             process.env.BRAVE_SEARCH_API_KEY = "BSA" + "z".repeat(25);
             process.env.MY_LLM_API_KEY = "custom-provider-key";
-            process.env.HARNESS_TEST_INNOCENT_NAME = registered;
-            process.env.HARNESS_TEST_HARMLESS = "keep-me";
+            process.env.CAVVY_TEST_INNOCENT_NAME = registered;
+            process.env.CAVVY_TEST_HARMLESS = "keep-me";
             const env = childEnv({ EXTRA_VAR: "1", PAGER: "less" });
-            for (const k of ["OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN", "API_KEY", "BRAVE_SEARCH_API_KEY", "MY_LLM_API_KEY", "HARNESS_TEST_INNOCENT_NAME"]) expect(env[k]).toBeUndefined();
+            for (const k of ["OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN", "API_KEY", "BRAVE_SEARCH_API_KEY", "MY_LLM_API_KEY", "CAVVY_TEST_INNOCENT_NAME"]) expect(env[k]).toBeUndefined();
             expect(Object.values(env)).not.toContain(FAKE.openai);
-            expect(env.HARNESS_TEST_HARMLESS).toBe("keep-me");
+            expect(env.CAVVY_TEST_HARMLESS).toBe("keep-me");
             expect(env.EXTRA_VAR).toBe("1");
             expect(env.PATH).toBe(process.env.PATH!);
             // Fixed variables win over extras.
             expect(env.PAGER).toBe("cat");
             expect(env.GIT_PAGER).toBe("cat");
             expect(env.GIT_TERMINAL_PROMPT).toBe("0");
-            expect(env.HARNESS).toBe("1");
+            expect(env.CAVVY).toBe("1");
         } finally {
             unregisterSecret(registered);
         }

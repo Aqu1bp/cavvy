@@ -4,7 +4,7 @@
 // Each turn starts `claude -p` with stream-json input and output, the protocol
 // Anthropic documents for driving Claude Code from another program (the Agent
 // SDK speaks it too). Claude Code runs the turn with its own system prompt,
-// tools and context management; the harness shows the stream and answers the
+// tools and context management; Cavvy shows the stream and answers the
 // permission prompts Claude Code sends over stdio (can_use_tool). Sessions
 // continue with --resume.
 //
@@ -24,12 +24,13 @@
 // Anthropic's API with them, or change the binary. Anthropic's terms allow an
 // end user to sign in to the unmodified Claude Code binary with their own
 // subscription, and forbid other programs collecting or routing requests
-// through those credentials. The harness's own provider keys are removed from
+// through those credentials. Cavvy's own provider keys are removed from
 // the CLI's environment (childEnv), so it can't be pointed at one of those.
 
 import type { HookConfig } from "../config/settings";
 import { backendMatcher, claudeCodeHookOutput, type HookEvent } from "../agent/hooks";
 import { homedir } from "os";
+import { basename, join } from "path";
 import type { AssistantMessage, ChatRequest, ImagePart, ModelInfo, PdfPart, Usage } from "../providers/types";
 import { ONE_OFF_TIMEOUT_MS, oneOffAnswer, oneOffPrompt, oneOffRefusal } from "./one-off";
 import { ProviderError } from "../providers/types";
@@ -44,7 +45,8 @@ import type { PermissionMode } from "../permissions/modes";
 import type { ToolDisplay } from "../tools/types";
 import { diffLines, diffStats } from "../util/diff";
 import { parseRule, pathPattern } from "../permissions/rules";
-import { APP_TITLE, paths } from "../config/paths";
+import { APP_NAME, APP_TITLE, cavvyHome, paths } from "../config/paths";
+import { currentMcpName, homeAliases } from "../config/legacy";
 import { redact } from "../util/redact";
 import { cliCommandNames } from "../commands/custom";
 import { formatSkill } from "../agent/skills";
@@ -184,10 +186,10 @@ export const CLAUDE_SCHEDULE_TOOLS = ["CronCreate", "CronDelete", "CronList", "S
 const STREAM_ARGS = ["-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose"];
 
 /**
- * Claude Code's modes for the harness's. Not acceptEdits for acceptEdits:
+ * Claude Code's modes for Cavvy's. Not acceptEdits for acceptEdits:
  * Claude Code's own also runs file commands (rm, mv, sed) without asking,
- * where the harness's still asks for shell commands. It runs in default mode
- * instead, and the harness approves its edits inside the workspace itself.
+ * where Cavvy's still asks for shell commands. It runs in default mode
+ * instead, and Cavvy approves its edits inside the workspace itself.
  */
 export const MODES: Record<PermissionMode, string> = {
     default: "default",
@@ -247,9 +249,9 @@ export function claudeVersionAtLeast(version: unknown, minPatch: number): boolea
 }
 
 /**
- * The harness's prompt hooks for the events Claude Code runs, in Claude Code's
+ * Cavvy's prompt hooks for the events Claude Code runs, in Claude Code's
  * own settings format: it asks its own small model, as it would for one of
- * its own prompt hooks. A model named as a harness model (provider:model) is
+ * its own prompt hooks. A model named as a Cavvy model (provider:model) is
  * left to Claude Code's default.
  */
 export function claudePromptHooks(hooks: BackendTurn["hooks"]): { hooks?: Record<string, { matcher?: string; hooks: Record<string, unknown>[] }[]> } {
@@ -267,7 +269,7 @@ export function claudePromptHooks(hooks: BackendTurn["hooks"]): { hooks?: Record
 }
 
 let requestSeq = 0;
-export const requestId = () => `harness-${Date.now().toString(36)}-${(++requestSeq).toString(36)}`;
+export const requestId = () => `cavvy-${Date.now().toString(36)}-${(++requestSeq).toString(36)}`;
 
 export class ClaudeCodeBackend implements AgentBackendClient {
     readonly agentBackend = true as const;
@@ -386,7 +388,7 @@ export class ClaudeCodeBackend implements AgentBackendClient {
         await this._live?.release(sessionKey);
     }
 
-    /** Stop every live process (the harness is quitting). */
+    /** Stop every live process (Cavvy is quitting). */
     async shutdown(): Promise<void> {
         await this._live?.shutdown();
     }
@@ -409,11 +411,11 @@ export class ClaudeCodeBackend implements AgentBackendClient {
         }
         const bin = requireCli(this.def.id, CLAUDE_CLI);
         const key = (id: string) => `${t.accountId ?? "default"}:${id}`;
-        // The harness's skills Claude Code doesn't read itself come as a plugin of their own, so it runs them like its own.
+        // Cavvy's skills Claude Code doesn't read itself come as a plugin of their own, so it runs them like its own.
         const configDir = t.skills?.length ? claudeConfigDir(this.def.id, t) : undefined;
         const plugged = t.skills?.length ? forClaudeCode(t.skills, t.cwd, t.trusted, configDir) : [];
         const pluginDir = skillFolder(plugged, { plugin: true });
-        // One it has under no name (the plugin couldn't be made, an untrusted project's) is pasted in, as for the harness's models.
+        // One it has under no name (the plugin couldn't be made, an untrusted project's) is pasted in, as for Cavvy's models.
         const names = claudeNames(t.skills ?? [], pluginDir ? plugged : [], t.cwd, t.trusted, configDir);
         const prompt = claudePrompt(t.prompt, t.request, t.skills ?? [], names, formatSkill, t.requestAfter);
         const turn = new ClaudeTurn(this.def, bin, { ...t, prompt }, t.resumeId ? this.spent.get(key(t.resumeId)) : undefined, this.limitSeen);
@@ -553,11 +555,11 @@ class ClaudeTurn {
     private finishing = false;
     /** The user was told the background sub-agents were stopped. */
     private toldStopped = false;
-    /** The harness's hooks registered with Claude Code, by the callback id it sends back. */
+    /** Cavvy's hooks registered with Claude Code, by the callback id it sends back. */
     private hookCallbacks = new Map<string, { event: HookEvent; hook: HookConfig }>();
-    /** The harness's skills, as a plugin folder (src/backends/native-skills.ts). */
+    /** Cavvy's skills, as a plugin folder (src/backends/native-skills.ts). */
     pluginDir?: string;
-    /** The name Claude Code runs each of the harness's skills by (claudeNames), for the prompts sent during the run. */
+    /** The name Claude Code runs each of Cavvy's skills by (claudeNames), for the prompts sent during the run. */
     skillNames: ReadonlyMap<string, string> = new Map();
     /** Each sub-agent's type, by the id it asks permission with. */
     private agentTypes = new Map<string, string>();
@@ -701,13 +703,13 @@ class ClaudeTurn {
 
     private args(): string[] {
         const t = this.t;
-        // The harness's agents, for its own Agent tool (a file: -p reads one, and prompts can outgrow an argument).
+        // Cavvy's agents, for its own Agent tool (a file: -p reads one, and prompts can outgrow an argument).
         if (t.agents && Object.keys(t.agents).length && !t.readOnly) this.agentsFile ??= writeAgentsFile(t.agents);
         const { args, mcpWarning } = claudeArgs(this.def.id, t, {
             pluginDir: this.pluginDir,
             agentsPath: this.agentsFile?.path,
             append: [t.appendSystemPrompt, t.goalContext,
-                `After an answer, Harness waits for a reported background Bash command until its own \`timeout\` runs out, counted from its start (at most ${span(backgroundTiming.commandMaxTimeoutMs)}); for one without a timeout, and for each monitor, it waits up to ${claudeBackgroundWaitMs(t.backgroundWaitSec) / 1000} seconds after the answer. ${Number.isFinite(backgroundTiming.maxWaitMs) ? `Sub-agents and other background work have a ${span(backgroundTiming.maxWaitMs)} limit, which doesn't cut short a command still within its own timeout (nor, while one is, any sub-agent or workflow).` : "Sub-agents and other background work run until they finish or the user stops them, with no time limit."} For a long finite job in the background (a test suite, a build, a benchmark), pass \`timeout\` with \`run_in_background\`, set to how long it may take. Background commands and monitors do not survive process shutdown, a user interrupt, or the end of their wait. Recognized dev servers/watchers are stopped without waiting after the answer, timeout or not. Consume finite-work results before declaring success; do not expect a background server to outlive the turn. Work not reported by the CLI cannot be waited for.`,
+                `After an answer, Cavvy waits for a reported background Bash command until its own \`timeout\` runs out, counted from its start (at most ${span(backgroundTiming.commandMaxTimeoutMs)}); for one without a timeout, and for each monitor, it waits up to ${claudeBackgroundWaitMs(t.backgroundWaitSec) / 1000} seconds after the answer. ${Number.isFinite(backgroundTiming.maxWaitMs) ? `Sub-agents and other background work have a ${span(backgroundTiming.maxWaitMs)} limit, which doesn't cut short a command still within its own timeout (nor, while one is, any sub-agent or workflow).` : "Sub-agents and other background work run until they finish or the user stops them, with no time limit."} For a long finite job in the background (a test suite, a build, a benchmark), pass \`timeout\` with \`run_in_background\`, set to how long it may take. Background commands and monitors do not survive process shutdown, a user interrupt, or the end of their wait. Recognized dev servers/watchers are stopped without waiting after the answer, timeout or not. Consume finite-work results before declaring success; do not expect a background server to outlive the turn. Work not reported by the CLI cannot be waited for.`,
             ],
         });
         if (mcpWarning) this.sink.emit({ type: "notice", level: "warn", message: mcpWarning });
@@ -779,7 +781,7 @@ class ClaudeTurn {
 
     /** Background sub-agents Claude Code hasn't said are over. */
     private unreported(): string[] {
-        // One Harness stopped (at the overall cap) is over too, whatever Claude Code says of it later.
+        // One Cavvy stopped (at the overall cap) is over too, whatever Claude Code says of it later.
         return [...this.backgroundAgents].filter((id) => this.liveAgents.has(id) && !this.stoppedTaskIds.has(this.agentTasks.get(id) ?? ""));
     }
 
@@ -806,13 +808,13 @@ class ClaudeTurn {
         if (this.aborted || this.finishing) return false;
         // A timer may have awaited a snapshot while the message loop received fresh work.
         if (this.busy || this.unanswered.size || !this.answered) return false;
-        // Harness's own stops past their timeout. One whose task said how it ended while it was pending (before
+        // Cavvy's own stops past their timeout. One whose task said how it ended while it was pending (before
         // the timeout or after it) is settled by that end, here, whichever of this and the stop's timer comes first.
         for (const [id, p] of [...this.pendingStops]) if (!p.byUser && this.heldEnds.has(id) && Date.now() - p.since >= backgroundTiming.stopTimeoutMs) p.release();
         const left = this.inBackground();
-        // The rest end the run: only Harness's own stops do when they go unanswered; the user's never do.
+        // The rest end the run: only Cavvy's own stops do when they go unanswered; the user's never do.
         if (this.stopFailed || [...this.pendingStops.values()].some((p) => !p.byUser && Date.now() - p.since >= backgroundTiming.stopTimeoutMs)) {
-            this.noteStopped(left, "harness", "because Claude Code did not confirm a task stop, so its process was ended");
+            this.noteStopped(left, "cavvy", "because Claude Code did not confirm a task stop, so its process was ended");
             this.toldStopped = true;
             return true;
         }
@@ -843,7 +845,7 @@ class ClaudeTurn {
             // All that's left is stopped, unless a task's report is still due: then they're stopped by task id and
             // that turn is waited for, as at the overall cap below (#308).
             if (stopping.length === left.length && !this.reportDue()) {
-                for (const { task, why } of stopping) this.noteStopped([task], "harness", why);
+                for (const { task, why } of stopping) this.noteStopped([task], "cavvy", why);
                 this.toldStopped = true;
                 return true;
             }
@@ -974,26 +976,26 @@ class ClaudeTurn {
     }
 
     /**
-     * Say that background tasks were stopped, and by whom (#285): Harness (`why`: at a limit, or a command's own
+     * Say that background tasks were stopped, and by whom (#285): Cavvy (`why`: at a limit, or a command's own
      * timeout), the user (their Stop, or Esc), or the process ending under them.
      */
-    private noteStopped(tasks: BackgroundWork[], by: "harness" | "user" | "esc" | "process", why = "") {
+    private noteStopped(tasks: BackgroundWork[], by: "cavvy" | "user" | "esc" | "process", why = "") {
         if (!tasks.length) return;
         this.rememberStopped(tasks);
         const what = describeBackground(tasks);
-        const said = by === "harness" ? `${APP_TITLE} stopped ${what}${why ? ` ${why}` : ""}.` : by === "user" ? `You stopped ${what}.` : by === "esc" ? `Stopped ${what} when you pressed Esc.` : `Claude Code's process ended, and with it ${what}.`;
+        const said = by === "cavvy" ? `${APP_TITLE} stopped ${what}${why ? ` ${why}` : ""}.` : by === "user" ? `You stopped ${what}.` : by === "esc" ? `Stopped ${what} when you pressed Esc.` : `Claude Code's process ended, and with it ${what}.`;
         this.sink.emit({ type: "notice", level: by === "user" ? "info" : "warn", message: `${said} ${tasks.length === 1 ? "It won't" : "They won't"} report back.` });
     }
 
     /**
-     * Ask Claude Code to stop a background task: how it went. One Harness stops (at a cap) that Claude Code
+     * Ask Claude Code to stop a background task: how it went. One Cavvy stops (at a cap) that Claude Code
      * doesn't stop ends the run; one the user stops (`byUser`) that doesn't stop is only said to have failed.
-     * A second stop of a task whose stop is still unanswered (the user's timed out, then Harness's at a cap)
+     * A second stop of a task whose stop is still unanswered (the user's timed out, then Cavvy's at a cap)
      * asks nothing more: both take the one answer. Once it's stopped, or has said how it ended, a failure or
      * a silence after doesn't count against the run.
      */
     private stopTask(task: BackgroundWork, why: string, byUser = false): Promise<BackgroundStop> {
-        // `why`: Harness's reason (noteStopped); the user's stop needs none.
+        // `why`: Cavvy's reason (noteStopped); the user's stop needs none.
         if (!task.id) {
             if (!byUser) this.stopFailed = true;
             return Promise.resolve("not_stoppable");
@@ -1001,7 +1003,7 @@ class ClaudeTurn {
         const id = task.id;
         if (this.stoppedTaskIds.has(id)) return Promise.resolve("stopped");
         const pending = { task, since: Date.now(), byUser, release: () => notStopped() };
-        // Harness's own stop decides what an unanswered one does (it ends the run, checkIdle): the user's doesn't take its place.
+        // Cavvy's own stop decides what an unanswered one does (it ends the run, checkIdle): the user's doesn't take its place.
         const before = this.pendingStops.get(id);
         if (!before || before.byUser) this.pendingStops.set(id, pending);
         const mine = () => this.pendingStops.get(id) === pending;
@@ -1045,7 +1047,7 @@ class ClaudeTurn {
             this.stoppedTaskIds.add(id);
             // A sub-agent stopped (at the overall cap, or by the user): over, without a report.
             if (task.toolUseId) this.endAgent(task.toolUseId, "aborted");
-            this.noteStopped([task], byUser ? "user" : "harness", why);
+            this.noteStopped([task], byUser ? "user" : "cavvy", why);
             this.syncBackground();
             return "stopped";
         });
@@ -1060,7 +1062,7 @@ class ClaudeTurn {
         const late = new Promise<BackgroundStop>(
             (resolve) =>
                 (timer = setTimeout(() => {
-                    // The user's: the task runs on as far as Harness knows, and the run with it (an automatic
+                    // The user's: the task runs on as far as Cavvy knows, and the run with it (an automatic
                     // stop's timeout ends the run, checkIdle, unless the task said meanwhile how it ended). A
                     // late answer still counts.
                     const held = mine() ? this.heldEnds.get(id) : undefined;
@@ -1216,7 +1218,7 @@ class ClaudeTurn {
         };
         signal.addEventListener("abort", onAbort, { once: true });
         this.proc.send({ type: "control_request", request_id: requestId(), request: { subtype: "initialize", ...this.hookRegistration() } });
-        // The prompt waits for the MCP server, so its first request has the harness's tools.
+        // The prompt waits for the MCP server, so its first request has Cavvy's tools.
         void this.attach().then(() => this.aborted || this.sendUser(content, this.t.synthetic));
         const goalTimer = setInterval(() => this.goals?.poll(), GOAL_POLL_MS);
         let threw = true;
@@ -1389,7 +1391,7 @@ class ClaudeTurn {
                 this.billedToPlan = m.apiKeySource === "none";
                 if (typeof m.model === "string") this.resolvedModel = m.model;
                 // It runs these itself when one is the prompt (/context, a skill): they aren't mistyped commands.
-                // Not the harness's own skills (harness:name): the menus have those already.
+                // Not Cavvy's own skills (cavvy:name): the menus have those already.
                 const names = cliCommandNames(m.slash_commands)?.filter((n) => !n.startsWith(CLAUDE_PREFIX));
                 if (names) this.sink.emit({ type: "cli_commands", provider: this.def.id, names });
                 break;
@@ -1488,8 +1490,8 @@ class ClaudeTurn {
             case "content_block_start":
                 if (e.content_block?.type === "tool_use") {
                     this.streamingTools.set(e.index, e.content_block.id);
-                    // Under the harness's name from the start (Agent is a sub-agent's Task), as its call will be.
-                    this.sink.emit({ type: "tool_call_start", id: e.content_block.id, name: toHarness(String(e.content_block.name ?? ""), {}).name });
+                    // Under Cavvy's name from the start (Agent is a sub-agent's Task), as its call will be.
+                    this.sink.emit({ type: "tool_call_start", id: e.content_block.id, name: toCavvy(String(e.content_block.name ?? ""), {}).name });
                 }
                 break;
             case "content_block_delta": {
@@ -1527,7 +1529,7 @@ class ClaudeTurn {
                     continue;
                 }
                 if (over) continue;
-                const { name, input } = toHarness(b.name, b.input ?? {});
+                const { name, input } = toCavvy(b.name, b.input ?? {});
                 const title = titleFor(name, input);
                 if (b.name === "Bash" && typeof input.command === "string") this.shellCommands.set(b.id, { command: input.command, timeoutMs: claudeCommandTimeoutMs(input) });
                 this.subTools.set(b.id, { name, input, title, started: Date.now(), parent });
@@ -1555,7 +1557,7 @@ class ClaudeTurn {
                 this.texts.push(b.text);
                 this.sink.emit({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: b.text }], provider: this.def.id, model: this.t.model.id } });
             } else if (b?.type === "tool_use" && typeof b.id === "string") {
-                const { name, input } = toHarness(b.name, b.input ?? {});
+                const { name, input } = toCavvy(b.name, b.input ?? {});
                 const title = titleFor(name, input);
                 this.tools.set(b.id, { name, input, title, started: Date.now() });
                 if (b.name === "Bash" && typeof input.command === "string") this.shellCommands.set(b.id, { command: input.command, timeoutMs: claudeCommandTimeoutMs(input) });
@@ -1801,7 +1803,7 @@ class ClaudeTurn {
     }
 
     /**
-     * The harness's hooks for the events Claude Code runs itself, one matcher
+     * Cavvy's hooks for the events Claude Code runs itself, one matcher
      * group per handler: Claude Code matches, runs them at once and merges
      * their answers, calling back (hook_callback) for each.
      */
@@ -1814,7 +1816,7 @@ class ClaudeTurn {
             const called = list.filter((hook) => hook.type !== "prompt");
             if (!called.length) continue;
             hooks[event] = called.map((hook) => {
-                const id = `harness_${n++}`;
+                const id = `cavvy_${n++}`;
                 this.hookCallbacks.set(id, { event, hook });
                 return { ...(hook.matcher ? { matcher: backendMatcher(event, hook.matcher) } : {}), hookCallbackIds: [id], timeout: hook.timeout ?? 60 };
             });
@@ -1826,7 +1828,7 @@ class ClaudeTurn {
         const cb = this.hookCallbacks.get(String(req.callback_id ?? ""));
         if (!cb || !this.cliSession.hookHandler) return {};
         const input: Record<string, unknown> = req.input && typeof req.input === "object" ? req.input : {};
-        // Harness's browser tools run the hooks themselves, as BrowserAct and the rest: this CLI's run would be a second one.
+        // Cavvy's browser tools run the hooks themselves, as BrowserAct and the rest: this CLI's run would be a second one.
         if (servedBrowserTool(this.t.orchestrator?.name, input.tool_name)) return {};
         const r = await this.cliSession.hookHandler(cb.event, cb.hook, input, this.t.signal);
         return claudeCodeHookOutput(cb.event, r);
@@ -1836,7 +1838,7 @@ class ClaudeTurn {
         const req = m.request ?? {};
         const reply = (response: Record<string, unknown>) => this.proc.send({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response } });
         if (req.subtype === "hook_callback") {
-            // A hook that fails says nothing (the harness has shown why): Claude Code goes on as if it weren't there.
+            // A hook that fails says nothing (Cavvy has shown why): Claude Code goes on as if it weren't there.
             reply(await this.hookCallback(req).catch(() => ({})));
             return;
         }
@@ -1877,10 +1879,10 @@ class ClaudeTurn {
             if (r.handoff) return { behavior: "deny", message: `The user is carrying out this plan in another session instead. ${fb ?? ""} Don't continue it here.`, interrupt: true };
             return fb ? { behavior: "deny", message: `The user wants changes to the plan:\n${fb}` } : { behavior: "deny", message: "The user rejected the plan. Wait for them to say how to proceed.", interrupt: true };
         }
-        // The harness's own tools: what a delegated agent does is checked when it does it, and run_with_secrets checks its command itself.
+        // Cavvy's own tools: what a delegated agent does is checked when it does it, and run_with_secrets checks its command itself.
         const own = this.t.orchestrator;
         if (own && own.tools.some((t) => req.tool_name === `mcp__${own.name}__${t}`)) return { behavior: "allow", updatedInput: raw };
-        const { name, input } = toHarness(String(req.tool_name ?? ""), raw);
+        const { name, input } = toCavvy(String(req.tool_name ?? ""), raw);
         const reason = typeof req.decision_reason === "string" && req.decision_reason.trim() ? req.decision_reason : undefined;
         const agentType = typeof req.agent_id === "string" ? this.agentTypes.get(req.agent_id) : undefined;
         const a = await this.cliSession.permission({ toolName: name, input, title: titleFor(name, input), reason, callId: typeof req.tool_use_id === "string" ? req.tool_use_id : undefined, ...(agentType ? { agentType } : {}) });
@@ -1890,9 +1892,9 @@ class ClaudeTurn {
 }
 
 /**
- * The prompt as text blocks: what Harness put before the user's words (BackendTurn.preamble) in one of its own, then
+ * The prompt as text blocks: what Cavvy put before the user's words (BackendTurn.preamble) in one of its own, then
  * theirs, last. Claude Code reads only the last text block as what the user typed (a /command; the blocks before it
- * go along as they are), and the message stays the user's: it isn't marked synthetic for Harness's catch-up.
+ * go along as they are), and the message stays the user's: it isn't marked synthetic for Cavvy's catch-up.
  */
 export function textBlocks(prompt: string, preamble?: string): Record<string, unknown>[] {
     const split = splitPreamble(prompt, preamble);
@@ -1911,7 +1913,7 @@ export type ClaudeSpawnSettings = Pick<BackendTurn, "mode" | "model" | "effort" 
 
 /**
  * `claude -p`'s arguments for a turn's settings: the stream-json protocol, the mode, model and effort, the
- * session to resume, and what keeps it within the harness's rules (--settings: permissions, the sandbox,
+ * session to resume, and what keeps it within Cavvy's rules (--settings: permissions, the sandbox,
  * MCP policy, prompt hooks). `append`: the parts of --append-system-prompt (empty ones left out).
  * `mcpWarning`: what the MCP policy says the user should know. `accountDenies: false` leaves out the deny
  * rules for CLI account folders (a live process's fingerprint: accounts added or removed restart nothing).
@@ -1926,16 +1928,16 @@ export function claudeArgs(defId: string, t: ClaudeSpawnSettings, o: { pluginDir
     if (append) a.push("--append-system-prompt", append);
     for (const d of t.additionalDirectories) a.push("--add-dir", d);
     if (o.pluginDir) a.push("--plugin-dir", o.pluginDir);
-    // The harness's plugins, in Claude Code's own format: it runs their commands, agents, skills, hooks and servers.
+    // Cavvy's plugins, in Claude Code's own format: it runs their commands, agents, skills, hooks and servers.
     if (!t.readOnly) for (const d of t.pluginDirs ?? []) a.push("--plugin-dir", d);
     // An untrusted folder's Claude Code settings (hooks, permission rules), skills, agents and .mcp.json stay off.
     if (!t.trusted) a.push("--setting-sources", "user");
-    // The harness's agents, for its own Agent tool.
+    // Cavvy's agents, for its own Agent tool.
     if (o.agentsPath && t.agents && Object.keys(t.agents).length && !t.readOnly) a.push("--agents", o.agentsPath);
-    // The harness's deny and ask rules also cover what Claude Code would do without asking.
+    // Cavvy's deny and ask rules also cover what Claude Code would do without asking.
     // Named accounts add only deny rules for their folders (#375): nothing that changes how Claude Code asks or sandboxes.
     const permissions = claudePermissions(t.rules, o.accountDenies !== false);
-    // Its own schedules would fire only while its process runs (it's stopped at a turn's end, or when idle): Harness's schedule tools keep them instead.
+    // Its own schedules would fire only while its process runs (it's stopped at a turn's end, or when idle): Cavvy's schedule tools keep them instead.
     if (t.orchestrator?.tools.includes("schedule_create")) permissions.deny.push(...CLAUDE_SCHEDULE_TOOLS);
     // Always override external preferences: an unsupported model must not silently switch to Opus.
     const fastMode = Boolean(t.fastMode && t.model.supportsFastMode);
@@ -1945,7 +1947,7 @@ export function claudeArgs(defId: string, t: ClaudeSpawnSettings, o: { pluginDir
         a.push("--settings", JSON.stringify({ permissions, fastMode, ...mcp.settings, ...claudePromptHooks(t.hooks) }));
         return { args: a, mcpWarning: mcp.warning };
     }
-    // A read-only sub-agent: no edit tools, no MCP servers of its own, and every command asks (the harness lets read-only ones run).
+    // A read-only sub-agent: no edit tools, no MCP servers of its own, and every command asks (Cavvy lets read-only ones run).
     a.push("--disallowedTools", READ_ONLY_DENY.join(","));
     const settings = { fastMode, permissions: { deny: [...permissions.deny, ...READ_ONLY_DENY], ask: [...permissions.ask, "Bash"] }, sandbox: { autoAllowBashIfSandboxed: false }, ...claudePromptHooks(t.hooks) };
     a.push("--settings", JSON.stringify(settings));
@@ -1981,10 +1983,10 @@ export function handedBack(m: Record<string, any>): string | undefined {
 const PATH_RULE: Record<string, "Read" | "Edit"> = { Read: "Read", Glob: "Read", Grep: "Read", LS: "Read", Edit: "Edit", Write: "Edit", MultiEdit: "Edit", NotebookEdit: "Edit" };
 
 /**
- * One harness rule as Claude Code permission rules, or none when Claude Code
+ * One Cavvy rule as Claude Code permission rules, or none when Claude Code
  * has no equivalent (those still apply to whatever it asks about). Paths are
- * resolved the way the harness resolves them and passed as absolute (//…)
- * patterns, plus everything under them for a plain path, as the harness
+ * resolved the way Cavvy resolves them and passed as absolute (//…)
+ * patterns, plus everything under them for a plain path, as Cavvy
  * matches; edit and read rules widen to all of Claude Code's edit or read
  * tools, which only makes a deny or ask rule stricter.
  */
@@ -2003,7 +2005,7 @@ export function claudeRule(raw: string, root: string): string[] {
         if (!spec) return ["WebFetch"];
         const domain = spec.match(/^domain:(.+)$/)?.[1];
         if (!domain) return [];
-        // The harness's domain:example.com covers its subdomains; Claude Code's needs *.example.com for those.
+        // Cavvy's domain:example.com covers its subdomains; Claude Code's needs *.example.com for those.
         return domain.startsWith("*.") ? [`WebFetch(${spec})`] : [`WebFetch(${spec})`, `WebFetch(domain:*.${domain})`];
     }
     // Every tool: Claude Code takes a bare *; with a path (or a domain), every tool that reads or edits it.
@@ -2013,28 +2015,31 @@ export function claudeRule(raw: string, root: string): string[] {
         return [...claudeRule(`Read(${spec})`, root), ...claudeRule(`Edit(${spec})`, root)];
     }
     if (tool === "Task") return [spec ? `Agent(${spec})` : "Agent"];
-    if (tool.startsWith("mcp__")) return [tool];
+    // A rule for Harness's server (mcp__harness__…) is Cavvy's too (legacy.ts); as written, it may be a server of the user's own.
+    if (tool.startsWith("mcp__")) return [...new Set([tool, currentMcpName(tool, APP_NAME)])];
     return [];
 }
 
 /**
- * The harness's deny and ask rules for Claude Code, with its credential store denied outright, and with
+ * Cavvy's deny and ask rules for Claude Code, with its credential store denied outright, and with
  * `accounts`, CLI account folders and sign-in files too.
  */
 export function claudePermissions(r: { deny: string[]; ask: string[]; root: string }, accounts = true): { deny: string[]; ask: string[] } {
-    const store = [paths.credentialsFile(), paths.mcpOAuth(), paths.providers()].flatMap((f) => [`Read(/${f})`, `Edit(/${f})`]);
-    const folders = (accounts ? accountProtectionFolders() : []).flatMap((folder) => [`Read(/${folder})`, `Read(/${folder}/**)`, `Edit(/${folder})`, `Edit(/${folder}/**)`]);
+    // In ~/.harness too, where it's another name for the home or Harness's own beside it (legacy.ts).
+    const aliases = homeAliases(cavvyHome());
+    const store = [paths.credentialsFile(), paths.mcpOAuth(), paths.providers()].flatMap((f) => [f, ...aliases.map((h) => join(h, basename(f)))]).flatMap((f) => [`Read(/${f})`, `Edit(/${f})`]);
+    const folders = (accounts ? [...accountProtectionFolders(), ...aliases.map((h) => join(h, "accounts"))] : []).flatMap((folder) => [`Read(/${folder})`, `Read(/${folder}/**)`, `Edit(/${folder})`, `Edit(/${folder}/**)`]);
     const map = (rules: string[]) => [...new Set(rules.flatMap((x) => claudeRule(x, r.root)))];
     return { deny: [...map(r.deny), ...store, ...folders], ask: map(r.ask) };
 }
 
-/** Claude Code's tool name and input as the harness's own tool sees them (for rules, titles, previews). */
-export function toHarness(name: string, input: Record<string, unknown>): { name: string; input: Record<string, unknown> } {
+/** Claude Code's tool name and input as Cavvy's own tool sees them (for rules, titles, previews). */
+export function toCavvy(name: string, input: Record<string, unknown>): { name: string; input: Record<string, unknown> } {
     if (name === "Agent") return { name: "Task", input };
     return { name, input };
 }
 
-/** A transcript title like the harness's own tools use. */
+/** A transcript title like Cavvy's own tools use. */
 export function titleFor(name: string, input: Record<string, unknown>): string {
     const s = (k: string) => (typeof input[k] === "string" ? (input[k] as string) : "");
     switch (name) {
@@ -2100,7 +2105,7 @@ export function resultDisplay(p: PendingTool, r: unknown, cwd: string): ToolDisp
         const after = x.replaceAll ? original.split(x.oldString).join(newString) : original.replace(x.oldString, () => newString);
         return { summary: summary(original, after), diff: { path: rel(path, cwd), before: original, after } };
     }
-    // Reads and searches: a count, like the harness's own tools, rather than the contents.
+    // Reads and searches: a count, like Cavvy's own tools, rather than the contents.
     const file = x.file && typeof x.file === "object" ? (x.file as Record<string, unknown>) : undefined;
     if (p.name === "Read" && typeof file?.numLines === "number") {
         const n = file.numLines;

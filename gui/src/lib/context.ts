@@ -11,7 +11,7 @@ export interface ContextView {
     full?: number;
     /** The model's whole window, when known. */
     window?: number;
-    /** It compacts before the window is full (a setting, or Harness's room for the answer). */
+    /** It compacts before the window is full (a setting, or Cavvy's room for the answer). */
     early?: boolean;
     line: string;
 }

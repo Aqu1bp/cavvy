@@ -30,7 +30,7 @@ let outputCounter = 0;
 /** Recover artifacts from crashed processes, without touching another live process's sessions. */
 function cleanupShellOutputDirs(root: string) {
     for (const entry of readdirSync(root, { withFileTypes: true })) {
-        const pid = /^harness-output-(\d+)-/.exec(entry.name)?.[1];
+        const pid = /^cavvy-output-(\d+)-/.exec(entry.name)?.[1];
         if (!entry.isDirectory() || !pid || Number(pid) === process.pid) continue;
         try { process.kill(Number(pid), 0); }
         catch (e) {
@@ -63,7 +63,7 @@ class OutputFile {
             if (!owner) {
                 const root = tmpdir();
                 cleanupShellOutputDirs(root);
-                owner = { dir: mkdtempSync(join(root, `harness-output-${process.pid}-`)), bytes: 0, files: 0 };
+                owner = { dir: mkdtempSync(join(root, `cavvy-output-${process.pid}-`)), bytes: 0, files: 0 };
                 this.shells[OUTPUT_OWNER] = owner;
             }
             this.owner = owner;
@@ -462,7 +462,7 @@ function makeSpareFifos() {
 }
 
 function fifoPaths(count: number) {
-    const dir = mkdtempSync(join(tmpdir(), "harness-pipe-"));
+    const dir = mkdtempSync(join(tmpdir(), "cavvy-pipe-"));
     return { dir, paths: Array.from({ length: count }, (_, i) => join(dir, String(i))) };
 }
 
@@ -848,8 +848,8 @@ export function withPwd(env: Record<string, string>, cwd: string): Record<string
 }
 
 export function runShell(opts: RunOpts): Promise<RunResult> {
-    const cwdFile = join(tmpdir(), `harness-cwd-${process.pid}-${++cwdFileCounter}`);
-    const script = `${opts.command}\n__harness_ec=$?\npwd -P > '${cwdFile}' 2>/dev/null\nexit $__harness_ec\n`;
+    const cwdFile = join(tmpdir(), `cavvy-cwd-${process.pid}-${++cwdFileCounter}`);
+    const script = `${opts.command}\n__cavvy_ec=$?\npwd -P > '${cwdFile}' 2>/dev/null\nexit $__cavvy_ec\n`;
     return new Promise((resolvePromise) => {
         const [file, ...args] = shellArgv(script, opts.sandbox);
         const { child, stdout, stderr, onClose } = spawnPaced(file!, args, { cwd: opts.cwd, env: withPwd(opts.env, opts.cwd), detached: true }, { paced: opts.paced, combined: true });

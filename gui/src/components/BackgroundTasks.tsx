@@ -1,6 +1,6 @@
 // The side panel's lists of background work, for its Agents and Commands tabs:
 // what runs (Claude Code's or Codex's background sub-agents, shells and
-// monitors; tasks delegated to other models; Harness's own sub-agents, shells
+// monitors; tasks delegated to other models; Cavvy's own sub-agents, shells
 // and monitors), with Stop on each and Stop all. Esc stops only the turn: this
 // is where background work is stopped. Finished ones fold away under the
 // running ones, with how they ended, until cleared. The Agents tab lists each
@@ -39,7 +39,7 @@ function Item(p: { handle: SessionHandle; at: Placed }) {
     const live = () => rowLive(r());
     const target = () => stopTarget(r());
     const provider = () => rowProvider(r(), p.handle.view.state.model?.provider, p.handle.view.agents);
-    const runner = () => (provider() ? runnerName({ provider: provider()! }, app.providers) : "Harness");
+    const runner = () => (provider() ? runnerName({ provider: provider()! }, app.providers) : "Cavvy");
     const command = () => r().kind === "shell" || r().kind === "monitor";
     // Who runs it: the provider and model for a sub-agent; a command's (or another task's) kind and runner.
     const who = () => (r().kind === "agent" ? [runner(), shortModelRef(r().agent?.model)].filter(Boolean).join(" · ") : `${kindName(r())} · ${runner()}`);

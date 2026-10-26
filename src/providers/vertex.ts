@@ -2,7 +2,7 @@
 // Gemini models through Vertex's OpenAI-compatible endpoint, billed to a Google
 // Cloud project. There's no API key. Each request carries a short-lived OAuth
 // token from the gcloud CLI, for the Google account picked in /login vertex;
-// the harness keeps tokens in memory only and registers them with the redactor.
+// Cavvy keeps tokens in memory only and registers them with the redactor.
 
 import { homedir } from "os";
 import { OpenAICompatProvider, httpError } from "./openai-compat";
@@ -42,7 +42,7 @@ export interface GcloudResult {
 
 /**
  * Run gcloud with arguments (never a shell string), from the home directory,
- * with the harness's secrets removed from its environment and prompts off.
+ * with Cavvy's secrets removed from its environment and prompts off.
  * gcloud's file log is turned off for these runs: it records each command's
  * output, which would put tokens in ~/.config/gcloud/logs.
  */

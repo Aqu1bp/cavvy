@@ -24,7 +24,7 @@ function noFragments(text: string, value = VALUE) {
     for (let i = 0; i <= value.length - 6; i++) expect(text).not.toContain(value.slice(i, i + 6));
 }
 function setup(value = VALUE) {
-    const dir = realpathSync(tempDir("harness-output-"));
+    const dir = realpathSync(tempDir("cavvy-output-"));
     dirs.push(dir);
     const secrets = new SecretStore();
     secrets.set("OUTPUT_TOKEN", value);
@@ -405,8 +405,8 @@ test("review: dense colored output is saved as readable text, including split es
 test("review: new sessions clean crashed output owners and preserve live ones in tmpdir", async () => {
     const root = tmpdir();
     mkdirSync(root, { recursive: true });
-    const dead = mkdtempSync(join(root, "harness-output-2147483647-"));
-    const live = mkdtempSync(join(root, `harness-output-${process.pid}-`));
+    const dead = mkdtempSync(join(root, "cavvy-output-2147483647-"));
+    const live = mkdtempSync(join(root, `cavvy-output-${process.pid}-`));
     writeFileSync(join(dead, "leftover.txt"), "stale output");
     writeFileSync(join(live, "active.txt"), "active output");
     try {

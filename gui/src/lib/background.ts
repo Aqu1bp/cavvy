@@ -1,8 +1,8 @@
 // The session's background work, as the side panel's Agents and Commands tabs
 // show it: every task running in the background (an agent CLI's sub-agents,
-// shells and monitors; tasks delegated to other models; Harness's own
+// shells and monitors; tasks delegated to other models; Cavvy's own
 // background shells and monitors), then those that finished since the session
-// was opened (until cleared) and those that stopped when Harness quit. A server
+// was opened (until cleared) and those that stopped when Cavvy quit. A server
 // older than SessionState.backgroundTasks sends only its shells: the list is
 // made from those. The Agents tab lists them with the session's sub-agents,
 // each agent once (agentRows). And where the news of one ending goes: a toast,
@@ -19,7 +19,7 @@ export function backgroundOf(state: Pick<SessionState, "backgroundTasks" | "shel
     if (state.backgroundTasks) return state.backgroundTasks;
     return state.shells
         .filter((s) => s.running)
-        .map((s) => ({ id: s.id, provider: "harness", kind: s.monitor ? "monitor" : "shell", label: s.monitor?.description ?? s.command, startedAt: s.startedAt, status: "running", stoppable: true }));
+        .map((s) => ({ id: s.id, provider: "cavvy", kind: s.monitor ? "monitor" : "shell", label: s.monitor?.description ?? s.command, startedAt: s.startedAt, status: "running", stoppable: true }));
 }
 
 /** The server calls a stop needs: the RPCs it uses, as Rpc.call has them (a test passes its own). */
@@ -62,9 +62,9 @@ export function kindName(t: Pick<BackgroundTaskInfo, "kind">): string {
     return t.kind === "agent" ? "Sub-agent" : t.kind === "shell" ? "Shell" : t.kind === "monitor" ? "Monitor" : t.kind === "workflow" ? "Workflow" : "Task";
 }
 
-/** Who runs it: the agent CLI's name, the delegated model's provider, or Harness. */
+/** Who runs it: the agent CLI's name, the delegated model's provider, or Cavvy. */
 export function runnerName(t: Pick<BackgroundTaskInfo, "provider">, providers: readonly { id: string; name: string }[]): string {
-    if (t.provider === "harness") return "Harness";
+    if (t.provider === "cavvy") return "Cavvy";
     return providers.find((p) => p.id === t.provider)?.name ?? t.provider;
 }
 
@@ -76,7 +76,7 @@ function timeLeft(ms: number): string {
 
 /** The row's right-hand text: how long it's run (a monitor's time left), or how it ended and after how long. `runner`: who ran it (runnerName). */
 export function taskMeta(t: BackgroundTaskInfo, shells: readonly Shell[], at: number, duration: (ms: number) => string, runner = "its process"): string {
-    if (t.lost) return "Stopped when Harness quit";
+    if (t.lost) return "Stopped when Cavvy quit";
     if (t.withProcess && t.status === "stopped") return `Stopped with ${runner}`;
     if (t.status !== "running") return `${t.status === "done" ? "Done" : t.status === "failed" ? "Failed" : "Stopped"} · ${duration(Math.max(0, (t.endedAt ?? t.startedAt) - t.startedAt))}`;
     const monitor = t.kind === "monitor" ? shells.find((s) => s.id === t.id)?.monitor : undefined;
@@ -124,7 +124,7 @@ export function combineEnded(bodies: readonly string[]): string {
 // The side panel's Agents and Commands tabs: the background tasks and the session's sub-agents (AgentRun) as one
 // list of rows, each sub-agent once. A background sub-agent's task and its run are the same agent: an agent CLI's
 // task names the call that launched it (toolUseId), and that call's id is the run's (Claude Code's Task call, Codex's
-// spawn, Harness's delegate call). A delegated task is also its run's taskId.
+// spawn, Cavvy's delegate call). A delegated task is also its run's taskId.
 
 /** The tabs background work is listed in: sub-agents (and tasks given to other models), and commands. */
 export type WorkTab = "agents" | "commands";
@@ -302,9 +302,9 @@ export function endedAllCleared(rows: readonly WorkRow[], cleared: ReadonlySet<s
     return rows.every((r) => rowLive(r) || !r.tasks.length || cleared.has(clearKey(r)));
 }
 
-/** Who runs a row: its task's runner (an agent CLI, or a delegated model's provider), else its run's model's provider, else the session's. Harness's own commands: none. */
+/** Who runs a row: its task's runner (an agent CLI, or a delegated model's provider), else its run's model's provider, else the session's. Cavvy's own commands: none. */
 export function rowProvider(r: WorkRow, own?: string, agents: readonly AgentRun[] = []): string | undefined {
-    const t = r.tasks.find((x) => x.provider !== "harness");
+    const t = r.tasks.find((x) => x.provider !== "cavvy");
     if (t) return t.provider;
     return r.agent ? agentProvider(r.agent, own, agents) : undefined;
 }

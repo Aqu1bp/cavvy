@@ -1,6 +1,6 @@
 {"t":1,"dir":"note","frame":"spawn codex app-server (experimentalApi=false)"}
-{"t":3,"dir":"out","frame":{"id":1,"method":"initialize","params":{"clientInfo":{"name":"harness_probe","title":"Harness probe","version":"0.0.0"},"capabilities":null}}}
-{"t":151,"dir":"in","frame":{"id":1,"result":{"userAgent":"harness_probe/0.163.0 (Mac OS 27.0.0; arm64) unknown (harness_probe; 0.0.0)","codexHome":"/Users/<user>/.codex","platformFamily":"unix","platformOs":"macos"}}}
+{"t":3,"dir":"out","frame":{"id":1,"method":"initialize","params":{"clientInfo":{"name":"cavvy_probe","title":"Cavvy probe","version":"0.0.0"},"capabilities":null}}}
+{"t":151,"dir":"in","frame":{"id":1,"result":{"userAgent":"cavvy_probe/0.163.0 (Mac OS 27.0.0; arm64) unknown (cavvy_probe; 0.0.0)","codexHome":"/Users/<user>/.codex","platformFamily":"unix","platformOs":"macos"}}}
 {"t":151,"dir":"out","frame":{"method":"initialized"}}
 {"t":151,"dir":"note","frame":"initialize -> ok"}
 {"t":151,"dir":"out","frame":{"id":2,"method":"model/list","params":{}}}

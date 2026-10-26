@@ -8,7 +8,7 @@ import { fakeChromeProgram } from "./helpers/fake-chrome";
 import { FAKE, isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
-const root = tempDir("harness-browser-tools-project-");
+const root = tempDir("cavvy-browser-tools-project-");
 const { BUILTIN_TOOLS, EXPLORE_TOOLS, offered } = await import("../src/tools/index");
 const tools = await import("../src/tools/browser-tools");
 const { PermissionChecker } = await import("../src/permissions/checker");
@@ -70,9 +70,9 @@ describe("the tools", () => {
     });
 
     test("are offered only with the setting on and a browser found, and the lookup is remembered", () => {
-        const saved = process.env.HARNESS_BROWSER;
+        const saved = process.env.CAVVY_BROWSER;
         try {
-            process.env.HARNESS_BROWSER = fakeChromeProgram();
+            process.env.CAVVY_BROWSER = fakeChromeProgram();
             forgetChromeLookup();
             for (const t of BROWSER_TOOLS) {
                 expect(offered(t, {}), t.name).toBe(true);
@@ -81,14 +81,14 @@ describe("the tools", () => {
             // malformed settings are the defaults
             expect(offered(BrowserNavigateTool, { browser: "off" as never })).toBe(true);
             // a browser found stays found for a moment: removing the setting doesn't show at once, but the key does
-            process.env.HARNESS_BROWSER = join(root, "missing");
+            process.env.CAVVY_BROWSER = join(root, "missing");
             expect(offered(BrowserNavigateTool, {})).toBe(false);
             forgetChromeLookup();
             expect(offered(BrowserNavigateTool, {})).toBe(false);
             // other tools are offered regardless
             expect(offered(BUILTIN_TOOLS.find((t) => t.name === "Read")!, {})).toBe(true);
         } finally {
-            process.env.HARNESS_BROWSER = saved;
+            process.env.CAVVY_BROWSER = saved;
             forgetChromeLookup();
         }
     });
@@ -250,9 +250,9 @@ describe("what asks", () => {
         expect(BROWSER_TOOLS.map((t) => servedBrowserName(t.name))).toEqual(tools.BROWSER_SERVER_TOOLS);
         expect(servedBrowserName("Read")).toBeUndefined();
         const rules = await import("../src/permissions/rules");
-        for (const pattern of ["mcp__harness", "mcp__harness__*", "mcp__harness__browser_act"]) expect(rules.mcpToolMatches(pattern, "mcp__harness__browser_act"), pattern).toBe(true);
-        expect(rules.mcpToolMatches("mcp__harness__browser_act", "mcp__harness__browser_eval")).toBe(false);
-        expect(rules.mcpToolMatches("mcp__harness__browser_act", "BrowserAct")).toBe(false);
+        for (const pattern of ["mcp__cavvy", "mcp__cavvy__*", "mcp__cavvy__browser_act"]) expect(rules.mcpToolMatches(pattern, "mcp__cavvy__browser_act"), pattern).toBe(true);
+        expect(rules.mcpToolMatches("mcp__cavvy__browser_act", "mcp__cavvy__browser_eval")).toBe(false);
+        expect(rules.mcpToolMatches("mcp__cavvy__browser_act", "BrowserAct")).toBe(false);
     });
 });
 
@@ -285,9 +285,9 @@ describe("files a page is opened from", () => {
         expect(decide(BrowserNavigateTool, { url: url(".env.example") }).behavior).toBe("allow");
     });
 
-    test("never show the harness's own credential files", () => {
+    test("never show Cavvy's own credential files", () => {
         const d = decide(BrowserNavigateTool, { url: `file://${paths.credentialsFile()}` });
-        expect(d).toMatchObject({ behavior: "deny", reason: "Access to the harness credential store is blocked." });
+        expect(d).toMatchObject({ behavior: "deny", reason: "Access to Cavvy credential store is blocked." });
         expect(decide(BrowserNavigateTool, { url: `file://${paths.providers()}` }).behavior).toBe("deny");
     });
 
@@ -298,7 +298,7 @@ describe("files a page is opened from", () => {
         expect(c.urlRefusal(url("docs", "shortcut", "x.html"))).toContain("Read(private/**)");
         expect(c.urlRefusal(url("public.html"))).toBeUndefined();
         expect(c.urlRefusal(url(".env"))).toBe("It may contain credentials");
-        expect(c.urlRefusal(`file://${paths.credentialsFile()}`)).toBe("Access to the harness credential store is blocked");
+        expect(c.urlRefusal(`file://${paths.credentialsFile()}`)).toBe("Access to Cavvy credential store is blocked");
         // a folder's listing is a read of the folder
         expect(checker({ permissions: { deny: ["Read(private)"] } }).urlRefusal(url("private"))).toContain("Denied by permission rule");
         // a page cannot answer an ask: the file must be requested explicitly
@@ -353,7 +353,7 @@ describe("served to Claude Code and Codex", () => {
         for (const name of ["browser_navigate", "browser_act", "browser_eval"]) expect(hints[name], name).toEqual({ readOnlyHint: false, destructiveHint: false, openWorldHint: true });
     });
 
-    test("pass a call to Harness's checks as the tool it is, with Codex's call id", async () => {
+    test("pass a call to Cavvy's checks as the tool it is, with Codex's call id", async () => {
         const seen: [string, unknown, string | undefined][] = [];
         const wired = tools.browserServerTools(async (tool, input, _signal, callId) => (seen.push([tool.name, input, callId]), { text: "ran" }));
         const signal = new AbortController().signal;
@@ -363,15 +363,15 @@ describe("served to Claude Code and Codex", () => {
         expect(seen).toEqual([["BrowserAct", { action: "click", ref: "e1" }, "mcp-1"], ["BrowserSnapshot", {}, undefined], ["BrowserNavigate", { url: "http://localhost/" }, undefined]]);
     });
 
-    test("show in the transcript as the Harness tools, and run their hooks once", () => {
+    test("show in the transcript as the Cavvy tools, and run their hooks once", () => {
         expect(tools.nativeBrowserCall("browser_act", { action: "wait" })).toEqual({ name: "BrowserAct", input: { action: "wait" } });
         expect(tools.nativeBrowserCall("browser_navigate", {})?.name).toBe("BrowserNavigate");
         expect(tools.nativeBrowserCall("monitor", {})).toBeUndefined();
-        expect(tools.servedBrowserTool("harness", "mcp__harness__browser_eval")).toBe(true);
-        expect(tools.servedBrowserTool("harness", "mcp__harness__monitor")).toBe(false);
-        expect(tools.servedBrowserTool("harness", "mcp__other__browser_eval")).toBe(false);
-        expect(tools.servedBrowserTool(undefined, "mcp__harness__browser_eval")).toBe(false);
-        expect(tools.servedBrowserTool("harness", 5)).toBe(false);
+        expect(tools.servedBrowserTool("cavvy", "mcp__cavvy__browser_eval")).toBe(true);
+        expect(tools.servedBrowserTool("cavvy", "mcp__cavvy__monitor")).toBe(false);
+        expect(tools.servedBrowserTool("cavvy", "mcp__other__browser_eval")).toBe(false);
+        expect(tools.servedBrowserTool(undefined, "mcp__cavvy__browser_eval")).toBe(false);
+        expect(tools.servedBrowserTool("cavvy", 5)).toBe(false);
     });
 });
 

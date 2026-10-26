@@ -10,7 +10,7 @@
 // The risk rules adapt those of OpenAI Codex's auto-review policy
 // (codex-rs/prompts/templates/guardian/policy.md in github.com/openai/codex,
 // Copyright OpenAI, Apache License 2.0, https://www.apache.org/licenses/LICENSE-2.0),
-// changed to fit this reviewer's verdicts and merged with the harness's own.
+// changed to fit this reviewer's verdicts and merged with Cavvy's own.
 
 import { textOf, type AssistantMessage, type ChatRequest } from "../providers/types";
 import { isShellTool } from "../tools/types";
@@ -49,7 +49,7 @@ export interface ClassifierInput {
     context: ReviewContext;
     /** If allowed, the command runs in the sandbox (no network beyond its allowedHosts, writes only in the project and temp dirs). */
     sandboxed?: boolean;
-    /** The sensitive target the command names (a .env file, the harness credential store), when that's why it's reviewed. */
+    /** The sensitive target the command names (a .env file, Cavvy credential store), when that's why it's reviewed. */
     sensitive?: string;
 }
 

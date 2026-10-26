@@ -30,7 +30,7 @@ async function session() {
     const events: ServerEvent[] = [];
     const c = { subs: new Set<string>(), send: (e: ServerEvent) => void events.push(e) };
     engine.clients.add(c as never);
-    const cwd = createDemoProject(tempDir("harness-wake-proj-"), { git: false });
+    const cwd = createDemoProject(tempDir("cavvy-wake-proj-"), { git: false });
     writeFileSync(join(cwd, "secret-notes.txt"), "TOP-SECRET-CONTENTS\n");
     const snap = (await engine.handle(c as never, "session.create", { cwd })) as SessionSnapshot;
     const id = snap.state.id;
@@ -358,7 +358,7 @@ test("an adopted wake's steps are logged, so it comes back with them, not as one
     }
 });
 
-test("an adopted wake sends nothing, so Harness's notes and what the CLI wasn't sent go with the next prompt (#282 review round 2, B7)", async () => {
+test("an adopted wake sends nothing, so Cavvy's notes and what the CLI wasn't sent go with the next prompt (#282 review round 2, B7)", async () => {
     const { engine, c, id, rt } = await session();
     try {
         await rt.ready;

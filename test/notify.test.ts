@@ -1,4 +1,4 @@
-// Notifications (a long turn finished, the harness is waiting, a turn
+// Notifications (a long turn finished, Cavvy is waiting, a turn
 // failed) and the terminal focus reporting that decides whether to send them.
 
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
@@ -53,11 +53,11 @@ describe("when to notify", () => {
 
 describe("messages", () => {
     test("short, with the duration for a finished turn", () => {
-        expect(notificationMessage("done", 130_000)).toBe("Harness: done (2m 10s)");
-        expect(notificationMessage("permission")).toBe("Harness: waiting for your approval");
-        expect(notificationMessage("question")).toBe("Harness: waiting for your answer");
-        expect(notificationMessage("plan")).toBe("Harness: plan ready for your review");
-        expect(notificationMessage("error")).toBe("Harness: stopped with an error");
+        expect(notificationMessage("done", 130_000)).toBe("Cavvy: done (2m 10s)");
+        expect(notificationMessage("permission")).toBe("Cavvy: waiting for your approval");
+        expect(notificationMessage("question")).toBe("Cavvy: waiting for your answer");
+        expect(notificationMessage("plan")).toBe("Cavvy: plan ready for your review");
+        expect(notificationMessage("error")).toBe("Cavvy: stopped with an error");
     });
     test("control characters are stripped", () => {
         expect(clean("a\x1b]0;x\x07b\nc\x9bd")).toBe("a ]0;x b c d");
@@ -89,15 +89,15 @@ describe("what gets written", () => {
         expect(resolveChannel("off", iterm, "darwin")).toBe("off");
     });
     test("OSC 9, OSC 99 (kitty) and BEL", () => {
-        expect(terminalSequence("osc9", "Harness: done (2m 10s)", {})).toBe("\x1b]9;Harness: done (2m 10s)\x07");
-        expect(terminalSequence("osc99", "Harness: done (2m 10s)", {})).toBe("\x1b]99;;Harness: done (2m 10s)\x1b\\");
-        expect(terminalSequence("bell", "Harness: done", {})).toBe("\x07");
+        expect(terminalSequence("osc9", "Cavvy: done (2m 10s)", {})).toBe("\x1b]9;Cavvy: done (2m 10s)\x07");
+        expect(terminalSequence("osc99", "Cavvy: done (2m 10s)", {})).toBe("\x1b]99;;Cavvy: done (2m 10s)\x1b\\");
+        expect(terminalSequence("bell", "Cavvy: done", {})).toBe("\x07");
     });
     test("inside tmux, OSC sequences are wrapped for passthrough with every ESC doubled; the bell isn't", () => {
         const tmux = { TMUX: "/tmp/tmux-501/default,1,0" };
-        expect(terminalSequence("osc9", "Harness: done", tmux)).toBe("\x1bPtmux;\x1b\x1b]9;Harness: done\x07\x1b\\");
-        expect(terminalSequence("osc99", "Harness: done", tmux)).toBe("\x1bPtmux;\x1b\x1b]99;;Harness: done\x1b\x1b\\\x1b\\");
-        expect(terminalSequence("bell", "Harness: done", tmux)).toBe("\x07");
+        expect(terminalSequence("osc9", "Cavvy: done", tmux)).toBe("\x1bPtmux;\x1b\x1b]9;Cavvy: done\x07\x1b\\");
+        expect(terminalSequence("osc99", "Cavvy: done", tmux)).toBe("\x1bPtmux;\x1b\x1b]99;;Cavvy: done\x1b\x1b\\\x1b\\");
+        expect(terminalSequence("bell", "Cavvy: done", tmux)).toBe("\x07");
         expect(tmuxPassthrough("\x1b]1337;X\x07")).toBe("\x1bPtmux;\x1b\x1b]1337;X\x07\x1b\\");
     });
     test("system: the text is an argument, never part of the script", () => {
@@ -106,9 +106,9 @@ describe("what gets written", () => {
         expect(mac[0]).toBe("osascript");
         expect(mac.filter((a) => a.includes("rm -rf"))).toEqual([body]);
         expect(mac.at(-2)).toBe(body);
-        expect(mac.at(-1)).toBe("Harness");
+        expect(mac.at(-1)).toBe("Cavvy");
         const linux = systemCommand(body, "linux")!;
-        expect(linux).toEqual(["notify-send", "--app-name", "Harness", "--", "Harness", body]);
+        expect(linux).toEqual(["notify-send", "--app-name", "Cavvy", "--", "Cavvy", body]);
         expect(systemCommand(body, "win32")).toBeUndefined();
     });
 });
@@ -139,7 +139,7 @@ describe("Notifier", () => {
         const { n, written } = notifier();
         expect(await n.turnEnded("done", 130_000)).toBe(true);
         expect(await n.turnEnded("done", 2_000)).toBe(false);
-        expect(written).toEqual(["\x1b]9;Harness: done (2m 10s)\x07"]);
+        expect(written).toEqual(["\x1b]9;Cavvy: done (2m 10s)\x07"]);
         const focused = notifier({ focus: () => true });
         expect(await focused.n.turnEnded("done", 130_000)).toBe(false);
         expect(await focused.n.notify("permission")).toBe(false);
@@ -152,13 +152,13 @@ describe("Notifier", () => {
         await n.notify("question");
         await n.notify("plan");
         expect(await n.turnEnded("aborted", 10 * MIN)).toBe(false);
-        expect(written.map((w) => w.slice(4, -1))).toEqual(["Harness: stopped with an error", "Harness: waiting for your approval", "Harness: waiting for your answer", "Harness: plan ready for your review"]);
+        expect(written.map((w) => w.slice(4, -1))).toEqual(["Cavvy: stopped with an error", "Cavvy: waiting for your approval", "Cavvy: waiting for your answer", "Cavvy: plan ready for your review"]);
     });
     test("other ends of a turn (denied, max turns, blocked) count as done", async () => {
         const { n, written } = notifier();
         for (const r of ["denied", "max_turns", "blocked"] as const) await n.turnEnded(r, MIN);
         expect(written).toHaveLength(3);
-        expect(written.every((w) => w.includes("Harness: done (30s)"))).toBe(true);
+        expect(written.every((w) => w.includes("Cavvy: done (30s)"))).toBe(true);
     });
     test("-p mode (not interactive) never writes", async () => {
         const { n, written, ran } = notifier({ interactive: false, settings: () => ({ notifications: "system" }) });
@@ -176,7 +176,7 @@ describe("Notifier", () => {
         expect(off.written).toEqual([]);
         const tmux = notifier({ settings: () => ({ notifications: "terminal" }), env: { TERM_PROGRAM: "tmux", TMUX: "/tmp/x,1,0" } });
         await tmux.n.notify("permission");
-        expect(tmux.written).toEqual(["\x1bPtmux;\x1b\x1b]9;Harness: waiting for your approval\x07\x1b\\"]);
+        expect(tmux.written).toEqual(["\x1bPtmux;\x1b\x1b]9;Cavvy: waiting for your approval\x07\x1b\\"]);
     });
     test("system runs the notifier, and rings the bell when it fails", async () => {
         const ok = notifier({ settings: () => ({ notifications: "system" }) });
@@ -202,8 +202,8 @@ describe("Notifier", () => {
         expect(written).toEqual([]);
         const lines = (await Bun.file(out).text()).trim().split("\n").map((l) => JSON.parse(l));
         expect(lines).toEqual([
-            { hook_event_name: "Notification", cwd: dir, session_id: "sess-1", message: "Harness: waiting for your approval", kind: "permission", notification_type: "permission" },
-            { hook_event_name: "Notification", cwd: dir, session_id: "sess-1", message: "Harness: done (1m 1s)", kind: "done", notification_type: "done" },
+            { hook_event_name: "Notification", cwd: dir, session_id: "sess-1", message: "Cavvy: waiting for your approval", kind: "permission", notification_type: "permission" },
+            { hook_event_name: "Notification", cwd: dir, session_id: "sess-1", message: "Cavvy: done (1m 1s)", kind: "done", notification_type: "done" },
         ]);
     });
     test("a failing Notification hook is reported, not thrown", async () => {
@@ -317,7 +317,7 @@ describe("the app notifies at the right moments", () => {
         Object.assign((app.notifier as any).o, { interactive: true, write: (s: string) => void written.push(s), env: { TERM_PROGRAM: "iTerm.app" }, platform: "darwin" });
         return { app, screen, written };
     }
-    const msg = (text: string) => `\x1b]9;Harness: ${text}\x07`;
+    const msg = (text: string) => `\x1b]9;Cavvy: ${text}\x07`;
 
     test("a turn that ends with an error, or takes longer than the threshold", async () => {
         const { app, written } = testApp();

@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir, FAKE } from "./helpers/isolate";
 
-const { home: HARNESS_HOME, cleanup } = isolate();
+const { home: CAVVY_HOME, cleanup } = isolate();
 const { runHooks, fireHooks } = await import("../src/agent/hooks");
 const { unregisterSecret } = await import("../src/util/redact");
 const { Agent } = await import("../src/agent/agent");
@@ -81,7 +81,7 @@ describe("which events can block", () => {
         expect(warnings).toEqual(['SessionEnd hook "exit 3" exited with 3']);
     });
     test("what the hooks receive is redacted", async () => {
-        // A key the harness doesn't know, caught by its pattern (other test files may have registered this fake one).
+        // A key Cavvy doesn't know, caught by its pattern (other test files may have registered this fake one).
         unregisterSecret(FAKE.anthropic);
         const out = join(tempDir(), "in.jsonl");
         await fireHooks({ hooks: { PreCompact: [record(out)] } }, "PreCompact", { custom_instructions: `keep ${FAKE.anthropic}` }, tempDir(), () => {});
@@ -90,9 +90,9 @@ describe("which events can block", () => {
     });
     test("an untrusted project's hooks for the new events are ignored", () => {
         const proj = tempDir();
-        mkdirSync(join(proj, ".harness"), { recursive: true });
+        mkdirSync(join(proj, ".cavvy"), { recursive: true });
         const hooks = Object.fromEntries(["SessionStart", "SessionEnd", "PreCompact", "Notification", "SubagentStop"].map((e) => [e, [{ command: "touch pwned" }]]));
-        writeFileSync(join(proj, ".harness", "settings.json"), JSON.stringify({ hooks }));
+        writeFileSync(join(proj, ".cavvy", "settings.json"), JSON.stringify({ hooks }));
         expect(loadSettings(proj, { trusted: false }).hooks).toBeUndefined();
         expect(Object.keys(loadSettings(proj, { trusted: true }).hooks ?? {}).sort()).toEqual(["Notification", "PreCompact", "SessionEnd", "SessionStart", "SubagentStop"]);
     });
@@ -100,7 +100,7 @@ describe("which events can block", () => {
 
 describe("a hook that exits without reading its input", () => {
     // More input than a pipe holds, so the write can't finish before the hook
-    // exits: the harness always gets EPIPE instead of only when it loses a race.
+    // exits: Cavvy always gets EPIPE instead of only when it loses a race.
     const big = { tool_name: "Write", tool_input: { file_path: "big.txt", content: "line of file content\n".repeat(50_000) } };
 
     test("its decision is honored", async () => {
@@ -340,8 +340,8 @@ describe("SessionStart and SessionEnd", () => {
     function projectWithHooks() {
         const proj = tempDir();
         const out = join(proj, "session.jsonl");
-        mkdirSync(join(proj, ".harness"), { recursive: true });
-        writeFileSync(join(proj, ".harness", "settings.json"), JSON.stringify({ hooks: { SessionStart: [record(out)], SessionEnd: [record(out)] } }));
+        mkdirSync(join(proj, ".cavvy"), { recursive: true });
+        writeFileSync(join(proj, ".cavvy", "settings.json"), JSON.stringify({ hooks: { SessionStart: [record(out)], SessionEnd: [record(out)] } }));
         return { proj, out };
     }
 
@@ -367,8 +367,8 @@ describe("SessionStart and SessionEnd", () => {
 
     test("after /clear, a prompt waits for SessionStart even while SessionEnd still runs", async () => {
         const proj = tempDir();
-        mkdirSync(join(proj, ".harness"), { recursive: true });
-        writeFileSync(join(proj, ".harness", "settings.json"), JSON.stringify({ hooks: { SessionEnd: [{ command: "sleep 0.3" }], SessionStart: [{ command: `echo '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"codename OSPREY"}}'` }] } }));
+        mkdirSync(join(proj, ".cavvy"), { recursive: true });
+        writeFileSync(join(proj, ".cavvy", "settings.json"), JSON.stringify({ hooks: { SessionEnd: [{ command: "sleep 0.3" }], SessionStart: [{ command: `echo '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"codename OSPREY"}}'` }] } }));
         const app = testApp(proj);
         app.newSession();
         const starting = app.session.hooksStarting;
@@ -394,7 +394,7 @@ describe("SessionStart and SessionEnd", () => {
                 },
             });
             try {
-                writeFileSync(join(HARNESS_HOME, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock", baseUrl: `http://127.0.0.1:${server.port}/v1`, kind: "openai", requiresKey: false }] }));
+                writeFileSync(join(CAVVY_HOME, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock", baseUrl: `http://127.0.0.1:${server.port}/v1`, kind: "openai", requiresKey: false }] }));
                 const { proj, out } = projectWithHooks();
                 let stdout = "";
                 process.stdout.write = ((s: string) => ((stdout += s), true)) as any;

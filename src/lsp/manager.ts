@@ -421,7 +421,7 @@ export class LspPool {
         let msg: string | undefined;
         if (n >= (this.timing.maxCrashes ?? 3)) {
             this.off.add(r.server.name);
-            msg = `Language server ${what}. It stopped ${n} times, so its diagnostics are off until the harness restarts.`;
+            msg = `Language server ${what}. It stopped ${n} times, so its diagnostics are off until Cavvy restarts.`;
         } else if (n === 1) msg = `Language server ${what}. It restarts on the next edit.`;
         if (msg) for (const l of this.listeners) l("warn", msg);
     }

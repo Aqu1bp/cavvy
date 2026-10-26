@@ -176,7 +176,7 @@ function recoverySteps(hash: string, lock: string, index: string, dir: string | 
     return [
         "Git stays locked until you finish this from a terminal:",
         `1. Check that ${short} is on your branch: git branch --contains ${short}`,
-        `2. If it is, install the index Harness prepared (your other staged changes kept): mv ${sh(lock)} ${sh(index)}`,
+        `2. If it is, install the index Cavvy prepared (your other staged changes kept): mv ${sh(lock)} ${sh(index)}`,
         `   If it isn't, discard it (your index stays as it was before the commit): rm ${sh(lock)}`,
         ...(dir ? [`3. Then remove the recovery files: rm -r ${sh(dir)}`] : []),
     ].join("\n");
@@ -197,7 +197,7 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
     const index = (await git(root, ["rev-parse", "--path-format=absolute", "--git-path", "index"], { pathOutput: true })).out.replace(/\n$/, "");
     const lock = `${index}.lock`;
     const held = await open(lock, "wx").catch((e) => {
-        if (e.code === "EEXIST") throw new RpcError(`Git's index is locked by another operation (${lock}). Wait for it to finish and try again. If a commit from Harness said it kept its prepared index there, follow the steps it gave first.`, "busy");
+        if (e.code === "EEXIST") throw new RpcError(`Git's index is locked by another operation (${lock}). Wait for it to finish and try again. If a commit from Cavvy said it kept its prepared index there, follow the steps it gave first.`, "busy");
         throw e;
     });
     let dir: string | undefined;
@@ -206,7 +206,7 @@ export async function gitCommit(cwd: string, paths: string[], message: string, o
     try {
         await held.close();
         // Alongside the index, so split-index references keep resolving in the same repository.
-        dir = await mkdtemp(join(dirname(index), "harness-commit-"));
+        dir = await mkdtemp(join(dirname(index), "cavvy-commit-"));
         const privateIndex = join(dir, "index");
         // Native commit resolves and exports author identity before running hooks.
         const ident = (await git(root, ["var", "GIT_AUTHOR_IDENT"])).out.trimEnd();

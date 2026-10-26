@@ -1,3 +1,5 @@
+// First: other modules read their saved state as they load (legacy-storage.ts).
+import "./lib/legacy-storage";
 import { render } from "solid-js/web";
 import "@fontsource-variable/inter/index.css";
 import "@fontsource-variable/jetbrains-mono/index.css";

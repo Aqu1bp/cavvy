@@ -1,4 +1,4 @@
-// One prompt through the harness SDK: stream the answer, answer permission
+// One prompt through Cavvy SDK: stream the answer, answer permission
 // prompts in code, and give the agent a tool of your own.
 //
 //   bun examples/sdk/basic.ts "add SSO sign-in" [--cwd path/to/project] [--model provider:model] [--yes]
@@ -6,7 +6,7 @@
 // Without --yes, edits and commands are shown and declined. Try it without
 // keys with `bun run sdk:example`, which runs it against the mock model.
 
-import { query, tool, type CanUseTool } from "my-own-harness/sdk";
+import { query, tool, type CanUseTool } from "cavvy/sdk";
 
 const args = process.argv.slice(2);
 const flag = (name: string) => {

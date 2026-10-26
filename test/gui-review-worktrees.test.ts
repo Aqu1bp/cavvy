@@ -167,10 +167,10 @@ describe("the reader's choice of worktree", () => {
     test("another worktree opens on its branch against the default base; back home brings back the session's view", () => {
         const there = pickWorktree(own, TMP);
         expect(there).toEqual({ worktree: TMP, scope: "branch", own: { scope: "last-turn", base: "origin/main" } });
-        // Uncommitted stays selectable there; turns and Harness edits don't.
+        // Uncommitted stays selectable there; turns and Cavvy edits don't.
         const uncommitted = pickScope(there, "uncommitted");
         expect(uncommitted.scope).toBe("uncommitted");
-        expect(pickScope(there, "harness")).toBe(there);
+        expect(pickScope(there, "cavvy")).toBe(there);
         expect(pickScope(there, "last-turn")).toBe(there);
         // Moving on to a third worktree starts on its branch again, and still remembers home.
         const third = pickWorktree({ ...uncommitted, base: "ui/stack" }, NESTED);
@@ -178,7 +178,7 @@ describe("the reader's choice of worktree", () => {
         expect(pickWorktree(third, undefined)).toEqual({ scope: "last-turn", base: "origin/main" });
         // Picking the one already shown changes nothing.
         expect(pickWorktree(third, NESTED)).toBe(third);
-        expect(pickScope(own, "harness")).toEqual({ scope: "harness", base: "origin/main" });
+        expect(pickScope(own, "cavvy")).toEqual({ scope: "cavvy", base: "origin/main" });
     });
 
     test("falls back to the session's folder when the worktree is removed, its folder is gone, or it's become the session's own", () => {
@@ -205,7 +205,7 @@ describe("the reader's choice of worktree", () => {
         expect(menu(there).views.find((v) => v.on)?.scope).toBe("branch");
         expect(menu(there).turns).toEqual([]);
         expect(pickScope(there, "turn")).toBe(there);
-        expect(menu(there).views.filter((v) => v.disabled).map((v) => v.scope)).toEqual(["last-turn", "harness"]);
+        expect(menu(there).views.filter((v) => v.disabled).map((v) => v.scope)).toEqual(["last-turn", "cavvy"]);
         // Back to This session: the turn it was on.
         const home = pickWorktree(pickScope(there, "uncommitted"), undefined);
         expect(home).toEqual({ scope: "turn", base: "origin/main" });
@@ -221,8 +221,8 @@ describe("the reader's choice of worktree", () => {
         expect(ownOnScreen(undefined, "uncommitted", undefined)).toBe(true);
         // Another worktree chosen: never, even while the session's last answer is still shown.
         expect(ownOnScreen(TMP, "branch", {})).toBe(false);
-        // Harness edits come from the session's own record, not git's answer.
-        expect(ownOnScreen(undefined, "harness", { worktree: TMP })).toBe(true);
+        // Cavvy edits come from the session's own record, not git's answer.
+        expect(ownOnScreen(undefined, "cavvy", { worktree: TMP })).toBe(true);
     });
 });
 
