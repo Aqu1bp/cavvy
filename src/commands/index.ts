@@ -1104,7 +1104,11 @@ async function tasksCommand(app: App, args: string) {
     if (verb === "stop") {
         const running = (agent?.backgroundTasks() ?? []).filter((t) => t.status === "running");
         if (!id || id === "all") {
-            if (!running.length) return app.notice("No background tasks are running.");
+            // None listed yet: a background Task still being set up doesn't start either (Agent.stopBackground).
+            if (!running.length) {
+                await agent?.stopBackground();
+                return app.notice("No background tasks are running.");
+            }
         } else if (!running.some((t) => t.id === id)) return app.notice(`No running background task ${id}. /tasks lists them.`, "error");
         // The user's own stop: the ends of those it stops aren't announced.
         const stop = async () => (await agent?.stopBackground(!id || id === "all" ? undefined : [id])) ?? {};
