@@ -49,6 +49,7 @@ import {
     clientMessageId,
     codexGoalCommand,
     hookServerConfig,
+    READ_ONLY_ENV_ARGS,
     liveCodexRpcs,
     modeNote,
     modeSwitched,
@@ -1380,7 +1381,7 @@ export class CodexLiveAdapter implements AgentCliAdapter {
         const id = this.live.providerDef.id;
         const bin = requireCli(id, CODEX_CLI);
         const hooks = codexHookEvents((e) => Boolean(cfg.hooks?.[e]?.length), Boolean(cfg.readOnly));
-        const args = ["app-server", ...extraArgs(id), ...(cfg.trusted === false ? untrustedArgs(cfg.cwd) : []), ...(hooks.length ? codexHookArgs(hooks) : [])];
+        const args = ["app-server", ...extraArgs(id), ...(cfg.trusted === false ? untrustedArgs(cfg.cwd) : []), ...(hooks.length ? codexHookArgs(hooks) : []), ...(cfg.readOnly ? READ_ONLY_ENV_ARGS : [])];
         const env = accountEnv(id, cfg.accountId, cfg.cwd);
         const o = cfg.orchestrator;
         // The thread's config, set when it's opened: a change needs a new app-server (and thread/resume).

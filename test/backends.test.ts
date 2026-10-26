@@ -20,7 +20,7 @@ const { PermissionChecker } = await import("../src/permissions/checker");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const { isAgentBackend } = await import("../src/backends/types");
 const { checkAgentCli } = await import("../src/backends/index");
-const { applyHunks, codexPolicy, changePreview, insideWorkspace } = await import("../src/backends/codex");
+const { applyHunks, codexPolicy, changePreview, insideWorkspace, readOnlyRefusalOf } = await import("../src/backends/codex");
 const trust = await import("../src/config/trust");
 const { mcpFingerprint, saveApproval } = await import("../src/mcp/approval");
 const { loadSettings } = await import("../src/config/settings");
@@ -1235,6 +1235,11 @@ describe("Codex backend", () => {
         expect(codexPolicy("auto", ["/x"], true)).toEqual({ approvalPolicy: "on-request", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: false }, approvalsReviewer: "user" });
         // The hook changes nothing in other modes: Codex asks Cavvy there.
         expect(codexPolicy("default", [], true, false, true)).toMatchObject({ approvalPolicy: "untrusted", approvalsReviewer: "user" });
+        // What the hook lets a read-only agent call: read-only commands, and calls known to only read or to run sub-agents
+        // (Codex 0.164's names among them); a patch, an MCP tool, or a call Cavvy doesn't know is refused.
+        const call = (toolName: string, input: Record<string, unknown> = {}) => readOnlyRefusalOf({ toolName, input });
+        for (const ok of [call("Bash", { command: "git log -5" }), call("Task"), call("collaborationspawn_agent"), call("collaborationwait_agent"), call("web_search"), call("view_image")]) expect(ok).toBeUndefined();
+        for (const no of [call("Bash", { command: "touch x" }), call("Write"), call("Edit"), call("mcp__files__write"), call("write_stdin"), call("image_gen"), call("")]) expect(no).toContain("This is a read-only agent");
         expect(codexPolicy("auto", ["/x"])).toMatchObject({ approvalPolicy: "on-request", sandbox: "workspace-write", approvalsReviewer: "auto_review" });
         expect(codexPolicy("plan", [])).toMatchObject({ approvalPolicy: "untrusted", sandbox: "read-only", approvalsReviewer: "user" });
         expect(codexPolicy("acceptEdits", ["/x"])).toMatchObject({ approvalPolicy: "untrusted", sandbox: "workspace-write", sandboxPolicy: { type: "workspaceWrite", writableRoots: ["/x"] }, approvalsReviewer: "user" });

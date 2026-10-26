@@ -664,10 +664,15 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
             const again = `${childTurn}b`;
             notify("turn/started", { threadId: child, turn: { id: again, rootTurnId: turnId, status: "inProgress" } });
             const cmd = { type: "commandExecution", id: `c-cmd2-${turnId}`, command: "/bin/zsh -lc 'touch z'", cwd, status: "inProgress", commandActions: [{ type: "unknown", command: "touch z" }], aggregatedOutput: null, exitCode: null };
-            notify("item/started", { threadId: child, turnId: again, item: cmd });
-            const ranItself = runsItself(policy);
-            const d = ranItself ? "accept" : (await serverRequest("item/commandExecution/requestApproval", { threadId: child, turnId: again, itemId: cmd.id, command: cmd.command, cwd, commandActions: cmd.commandActions, availableDecisions: ["accept", "decline", "cancel"] }))?.decision;
-            notify("item/completed", { threadId: child, turnId: again, item: { ...cmd, status: d === "accept" ? "completed" : "declined", exitCode: d === "accept" ? 0 : null, aggregatedOutput: d === "accept" ? "ok\n" : null } });
+            // Codex runs the PreToolUse hook for a sub-agent's commands too (0.164 does): a deny stops it before it starts.
+            const blocked2 = (await preToolUse(child, again, "Bash", { command: "touch z" }, cmd.id)).deny;
+            if (blocked2 !== undefined) log({ childRan: false, childBlockedByHook: blocked2 });
+            else {
+                notify("item/started", { threadId: child, turnId: again, item: cmd });
+                const ranItself = runsItself(policy);
+                const d = ranItself ? "accept" : (await serverRequest("item/commandExecution/requestApproval", { threadId: child, turnId: again, itemId: cmd.id, command: cmd.command, cwd, commandActions: cmd.commandActions, availableDecisions: ["accept", "decline", "cancel"] }))?.decision;
+                notify("item/completed", { threadId: child, turnId: again, item: { ...cmd, status: d === "accept" ? "completed" : "declined", exitCode: d === "accept" ? 0 : null, aggregatedOutput: d === "accept" ? "ok\n" : null } });
+            }
             if (twice === "silent") notify("turn/completed", { threadId: child, turn: { id: again, rootTurnId: turnId, status: "interrupted", error: null } });
             else {
                 notify("item/completed", { threadId: child, turnId: again, item: { type: "agentMessage", id: "c-msg3", text: "CHILD_REPORT: 3 tests.", phase: "final_answer" } });
@@ -680,16 +685,20 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
             notify("error", { threadId: child, turnId: childTurn, willRetry: false, error: { message: "child stream hiccup" } });
             notify("thread/compacted", { threadId: child, turnId: childTurn });
             const cmd = { type: "commandExecution", id: `c-cmd-${turnId}`, command: "/bin/zsh -lc 'touch y'", cwd, status: "inProgress", commandActions: [{ type: "unknown", command: "touch y" }], aggregatedOutput: null, exitCode: null };
-            notify("item/started", { threadId: child, turnId: childTurn, item: cmd });
-            notify("item/commandExecution/outputDelta", { threadId: child, turnId: childTurn, itemId: cmd.id, delta: "working\n" });
-            const ranItself = runsItself(policy);
-            if (process.env.FAKE_REVIEW_APPROVE === "1") {
-                notify("item/autoApprovalReview/completed", { threadId: child, turnId: childTurn, reviewId: `rev-${childTurn}`, targetItemId: cmd.id, action: { type: "command", command: cmd.command }, review: { status: "approved", riskLevel: "low", rationale: "The delegated task needs this command." } });
-                notify("guardianWarning", { threadId: child, message: "Automatic approval review approved (risk: low, authorization: high): The delegated task needs this command." });
+            const blocked = (await preToolUse(child, childTurn, "Bash", { command: "touch y" }, cmd.id)).deny;
+            if (blocked !== undefined) log({ childRan: false, childBlockedByHook: blocked });
+            else {
+                notify("item/started", { threadId: child, turnId: childTurn, item: cmd });
+                notify("item/commandExecution/outputDelta", { threadId: child, turnId: childTurn, itemId: cmd.id, delta: "working\n" });
+                const ranItself = runsItself(policy);
+                if (process.env.FAKE_REVIEW_APPROVE === "1") {
+                    notify("item/autoApprovalReview/completed", { threadId: child, turnId: childTurn, reviewId: `rev-${childTurn}`, targetItemId: cmd.id, action: { type: "command", command: cmd.command }, review: { status: "approved", riskLevel: "low", rationale: "The delegated task needs this command." } });
+                    notify("guardianWarning", { threadId: child, message: "Automatic approval review approved (risk: low, authorization: high): The delegated task needs this command." });
+                }
+                const childDecision = ranItself ? "accept" : (await serverRequest("item/commandExecution/requestApproval", { threadId: child, turnId: childTurn, itemId: cmd.id, command: cmd.command, cwd, commandActions: cmd.commandActions, availableDecisions: ["accept", "decline", "cancel"] }))?.decision;
+                log({ childRan: childDecision === "accept" });
+                notify("item/completed", { threadId: child, turnId: childTurn, item: { ...cmd, status: childDecision === "accept" ? "completed" : "declined", exitCode: childDecision === "accept" ? 0 : null, aggregatedOutput: childDecision === "accept" ? "ok\n" : null } });
             }
-            const childDecision = ranItself ? "accept" : (await serverRequest("item/commandExecution/requestApproval", { threadId: child, turnId: childTurn, itemId: cmd.id, command: cmd.command, cwd, commandActions: cmd.commandActions, availableDecisions: ["accept", "decline", "cancel"] }))?.decision;
-            log({ childRan: childDecision === "accept" });
-            notify("item/completed", { threadId: child, turnId: childTurn, item: { ...cmd, status: childDecision === "accept" ? "completed" : "declined", exitCode: childDecision === "accept" ? 0 : null, aggregatedOutput: childDecision === "accept" ? "ok\n" : null } });
             spend(child, childTurn, tokens(5000, 1000, 50));
             notify("item/completed", { threadId: child, turnId: childTurn, item: { type: "agentMessage", id: "c-msg2", text: "CHILD_REPORT: 2 files.", phase: "final_answer" } });
             // Codex's SubagentStop: a block keeps the sub-agent going, its reason as the next prompt; once.

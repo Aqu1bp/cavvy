@@ -137,9 +137,16 @@ export function untrustedArgs(cwd: string): string[] {
 }
 
 /** Start app-server (no handshake yet). */
-function spawnRpc(providerId: string, cwd: string, onNotification: (method: string, params: any) => void, onRequest: (method: string, params: any) => Promise<unknown>, opts: { trusted?: boolean; accountId?: string; hooks?: CodexHookEvent[] } = {}): Rpc {
+/**
+ * A read-only agent's commands get no interactive pager, and less none of its shell escapes. Codex doesn't run the
+ * PreToolUse hook for what's typed into a running command (write_stdin), so a read-only one in a terminal (`git log`,
+ * `man`) mustn't open something that what's typed could make run another, outside the sandbox if it was let out.
+ */
+export const READ_ONLY_ENV_ARGS = Object.entries({ PAGER: "cat", GIT_PAGER: "cat", MANPAGER: "cat", LESSSECURE: "1" }).flatMap(([k, v]) => ["-c", `shell_environment_policy.set.${k}=${JSON.stringify(v)}`]);
+
+function spawnRpc(providerId: string, cwd: string, onNotification: (method: string, params: any) => void, onRequest: (method: string, params: any) => Promise<unknown>, opts: { trusted?: boolean; accountId?: string; hooks?: CodexHookEvent[]; readOnly?: boolean } = {}): Rpc {
     const bin = requireCli(providerId, CODEX_CLI);
-    const args = ["app-server", ...extraArgs(providerId), ...(opts.trusted === false ? untrustedArgs(cwd) : []), ...(opts.hooks?.length ? codexHookArgs(opts.hooks) : [])];
+    const args = ["app-server", ...extraArgs(providerId), ...(opts.trusted === false ? untrustedArgs(cwd) : []), ...(opts.hooks?.length ? codexHookArgs(opts.hooks) : []), ...(opts.readOnly ? READ_ONLY_ENV_ARGS : [])];
     return new Rpc(new JsonLinesProcess(bin, args, { cwd, env: accountEnv(providerId, opts.accountId, cwd) }), onNotification, onRequest);
 }
 
@@ -597,6 +604,8 @@ export class CodexTurn {
     protected hookServer?: Registration;
     /** Codex runs Cavvy's hooks for these events itself (they're given to it, and it took them). */
     protected nativeHooks = false;
+    /** A run of Cavvy's PreToolUse hook failed: it isn't counted on for the rest of the session. */
+    protected hookFailed = false;
     protected nativeEvents: CodexHookEvent[] = [];
     /** What PreToolUse hooks (or the user, asked from one) already said of a call, for when Codex then asks about it. */
     protected hookAnswers = new Map<string, "allow">();
@@ -831,7 +840,7 @@ export class CodexTurn {
         // PreToolUse and sub-agent hooks go to Codex as its own, calling back to Cavvy, which runs them.
         this.nativeEvents = this.hookEvents();
         if (this.nativeEvents.length) this.hookServer = registerTools(this.nativeEvents.map((e) => this.hookTool(e)));
-        this.rpc = spawnRpc(this.def.id, t.cwd, (m, p) => this.onNotification(m, p), (m, p) => this.onRequest(m, p), { trusted: t.trusted, accountId: t.accountId, hooks: this.nativeEvents });
+        this.rpc = spawnRpc(this.def.id, t.cwd, (m, p) => this.onNotification(m, p), (m, p) => this.onRequest(m, p), { trusted: t.trusted, accountId: t.accountId, hooks: this.nativeEvents, readOnly: t.readOnly });
         let abortTimer: ReturnType<typeof setTimeout> | undefined;
         /** Stopped by the user with the goal active: its pause, which goes in before Codex is stopped. */
         let pausing: Promise<void> | undefined;
@@ -1350,7 +1359,9 @@ export class CodexTurn {
     protected onNotification(method: string, p: any) {
         const thread = typeof p?.threadId === "string" ? p.threadId : undefined;
         if (method === "hook/completed" && this.nativeHooks && codexHookFailed(p)) {
-            // Codex goes on with a call whose hook didn't run: the turn stops instead.
+            // Codex goes on with a call whose hook didn't run: the turn stops instead, and a read-only agent's later
+            // turns ask Cavvy rather than Codex's reviewer, as the hook can't be counted on.
+            this.hookFailed = true;
             this.sink.emit({ type: "notice", level: "error", message: `${this.readsHookOnly() ? "The check that keeps a read-only agent to reads" : "Your PreToolUse hooks"} couldn't run for a Codex tool call, so the turn was stopped.` });
             this.interrupt(this.origin(p));
         }
@@ -1867,7 +1878,7 @@ export class CodexTurn {
     /** Codex's policy for a mode, given the hooks it runs. */
     protected policyFor(mode: PermissionMode): Policy {
         const readOnly = Boolean(this.t.readOnly);
-        return codexPolicy(mode, this.t.additionalDirectories, readOnly, this.hooked("PreToolUse") && !this.nativeHooks, readOnly && this.nativeHooks);
+        return codexPolicy(mode, this.t.additionalDirectories, readOnly, this.hooked("PreToolUse") && !this.nativeHooks, readOnly && this.nativeHooks && !this.hookFailed);
     }
 
     /** Codex already has a server by the hook's name: it's turned off, and the hooks run the older way. */
@@ -2470,13 +2481,20 @@ export function insideWorkspace(dir: string, cwd: string, additionalDirectories:
     return [cwd, ...additionalDirectories].some((r) => isInside(dir, canonical(expandPath(r, cwd))));
 }
 
-/** Why a read-only agent can't make one of Codex's calls: a command that isn't read-only, a patch, an MCP tool. Undefined when it can. */
-function readOnlyRefusalOf(call: { toolName: string; input: Record<string, unknown> }): string | undefined {
+/** Codex's calls that only read, or start and wait for sub-agents (whose own calls come to the hook too). */
+const READ_ONLY_CALLS = new Set(["Task", "view_image", "web_search", "update_plan"]);
+
+/**
+ * Why a read-only agent can't make one of Codex's calls: a command that isn't read-only, or any other call but those
+ * known to only read (a patch, an MCP tool, one Cavvy doesn't know). Undefined when it can.
+ */
+export function readOnlyRefusalOf(call: { toolName: string; input: Record<string, unknown> }): string | undefined {
     if (call.toolName === "Bash") {
         const command = String(call.input.command ?? "");
         return isReadOnlyCommand(command) ? undefined : readOnlyRefusal("Bash", command);
     }
-    return call.toolName === "Write" || call.toolName === "Edit" || call.toolName.startsWith("mcp__") ? readOnlyRefusal(call.toolName) : undefined;
+    // Codex 0.164 names its sub-agent tools collaborationspawn_agent, collaborationwait_agent and so on.
+    return READ_ONLY_CALLS.has(call.toolName) || call.toolName.startsWith("collaboration") ? undefined : readOnlyRefusal(call.toolName);
 }
 
 function shownCommand(x: any, cwd: string): { command: string; dir: string; elsewhere: boolean } {
