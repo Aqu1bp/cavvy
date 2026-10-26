@@ -330,7 +330,7 @@ export function loadAgents(cwd: string, trusted?: boolean): AgentDef[] {
 export function findSkill(name: string, cwd: string, trusted?: boolean): { path: string; body: string } | undefined {
     if (!/^[A-Za-z0-9][\w.:-]*$/.test(name) || name.includes("..")) return undefined;
     const root = gitRoot(cwd) ?? cwd;
-    const roots = [...((trusted ?? isTrusted(cwd)) ? [join(root, ".cavvy", "skills"), join(root, ".claude", "skills")] : []), join(cavvyHome(), "skills"), join(homedir(), ".claude", "skills")];
+    const roots = [...((trusted ?? isTrusted(cwd)) ? [join(paths.projectDir(root), "skills"), join(root, ".claude", "skills")] : []), join(cavvyHome(), "skills"), join(homedir(), ".claude", "skills")];
     for (const r of roots) {
         const path = join(r, name, "SKILL.md");
         try {
@@ -349,11 +349,11 @@ export function findSkill(name: string, cwd: string, trusted?: boolean): { path:
 export const MEMORY_LINES = 200;
 export const MEMORY_BYTES = 25_000;
 
-/** Where an agent's memory lives. Project and local memory is in the project's .cavvy/. */
+/** Where an agent's memory lives. Project and local memory is in the project's .cavvy/ (paths.projectDir). */
 export function agentMemoryDir(scope: AgentMemoryScope, name: string, projectRoot: string): string {
     const safe = name.replace(/[^\w.-]+/g, "-").replace(/^\.+/, "") || "agent";
     if (scope === "user") return join(cavvyHome(), "agent-memory", safe);
-    return join(projectRoot, ".cavvy", scope === "local" ? "agent-memory-local" : "agent-memory", safe);
+    return join(paths.projectDir(projectRoot), scope === "local" ? "agent-memory-local" : "agent-memory", safe);
 }
 
 /** The first lines of MEMORY.md, and whether there was more. */

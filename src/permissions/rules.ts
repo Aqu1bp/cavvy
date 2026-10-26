@@ -13,6 +13,8 @@ import { homedir } from "os";
 import { analyzeCommand, effectiveArgv, shellCommands, onlySafeAssignments, programNames, runLevels, runs, SHELLS, substitutionBodies } from "./bash-safety";
 import { CASE_FOLDS, canonical, spellings } from "../util/files";
 import { isShellTool } from "../tools/types";
+import { APP_NAME } from "../config/name";
+import { currentMcpName } from "../config/legacy";
 
 export interface ParsedRule {
     tool: string;
@@ -240,7 +242,8 @@ export function mcpToolMatches(pattern: string, toolName: string): boolean {
 
 export function ruleMatches(rule: ParsedRule, t: RuleTarget, root: string, mode: "allow" | "deny"): boolean {
     const tool = rule.tool;
-    if (tool.startsWith("mcp__")) return mcpToolMatches(tool, t.toolName);
+    // A rule written for Harness's own MCP server (mcp__harness__…) covers Cavvy's too, and still any server named harness.
+    if (tool.startsWith("mcp__")) return mcpToolMatches(tool, t.toolName) || mcpToolMatches(currentMcpName(tool, APP_NAME), t.toolName);
     const toolMatches =
         tool === "*" ||
         tool === t.toolName ||

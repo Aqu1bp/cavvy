@@ -33,6 +33,7 @@ import { stableStringify, type ApprovedAction } from "./classifier";
 import { isBrowserTool, isQuietBrowserCall, isReadOnly, isShellTool } from "../tools/types";
 import { canonical, expandPath, isInside, spellings } from "../util/files";
 import { cavvyHome, paths } from "../config/paths";
+import { homeAliases, LEGACY } from "../config/legacy";
 import { childEnv } from "../util/env";
 import { accountCredentialFiles, accountFolders, accountProtectedPaths } from "../providers/accounts";
 import { fileUrlPath, hostOf, navigationTarget, type BrowserApproval } from "../browser/url-policy";
@@ -83,7 +84,7 @@ const SENSITIVE_HOME = [".ssh", ".aws", ".gnupg", ".kube", ".docker/config.json"
 
 /**
  * The path as given and with symlinks resolved, each in its spellings: on a
- * case-insensitive volume `.CAVVY` and `.harneſſ` are `.cavvy`, and
+ * case-insensitive volume `.CAVVY` is `.cavvy` (and `.harneſſ` is `.harness`), and
  * resolving can't show it for a folder that doesn't exist yet.
  */
 function pathForms(p: string): string[] {
@@ -115,7 +116,7 @@ function isLink(p: string): boolean {
 /** What isCavvyConfig looks for in a path. */
 /** Tools whose yes covers only the call it answered (see approve). */
 const ONE_CALL_APPROVAL = new Set(["GitCommit", "GitPush", "CreatePullRequest", "BrowserAct", "BrowserEval"]);
-const CONFIG_NAMES = new Set([".cavvy", ".claude", ".codex", ".git", ".mcp.json"]);
+const CONFIG_NAMES = new Set([".cavvy", LEGACY.dir, ".claude", ".codex", ".git", ".mcp.json"]);
 
 /**
  * The path with each git checkout Claude Code keeps at …/.claude/worktrees/<name>
@@ -684,13 +685,13 @@ export class PermissionChecker {
 
     private isCavvyConfig(p: string): boolean {
         const forms = pathForms(p);
-        const home = pathForms(cavvyHome());
+        const home = [cavvyHome(), ...homeAliases(cavvyHome())].flatMap(pathForms);
         if (forms.some((f) => home.some((h) => isInside(f, h)))) return true;
         if (accountProtectedPaths().flatMap(pathForms).some((a) => forms.some((f) => isInside(f, a)))) return true;
         // `.git` may be a file too (worktrees, submodules): it says where the repo lives.
         // .claude/ and .codex/ configure the agent CLIs Cavvy can run (hooks, skills, rules).
         const judged = new Set([p, canonical(p)].map(withoutWorktrees).flatMap(spellings));
-        return [...judged].some((c) => /(^|\/)\.(cavvy|claude|codex)\//.test(c) || /(^|\/)\.mcp\.json$/.test(c) || /(^|\/)\.git(\/|$)/.test(c));
+        return [...judged].some((c) => /(^|\/)\.(cavvy|harness|claude|codex)\//.test(c) || /(^|\/)\.mcp\.json$/.test(c) || /(^|\/)\.git(\/|$)/.test(c));
     }
 
     private isSensitive(p: string): boolean {

@@ -20,6 +20,7 @@ import { readdirSync, realpathSync, statSync } from "fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { homedir, hostname, userInfo } from "os";
 import { APP_VERSION, cavvyHome, paths } from "../config/paths";
+import { LEGACY } from "../config/legacy";
 import { JsonFileError, loadScope, loadSettings, readJson, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
 import { fireHooks } from "../agent/hooks";
@@ -141,7 +142,8 @@ function sortCliSession(links: CavvyLinks, source: CliSource, id: string, origin
     const k = linkKey(source, id);
     if (links.held.has(k)) return "held";
     if (links.subagent.has(k)) return "hidden";
-    if (source === "codex" && originator === CODEX_CLIENT_NAME) return "hidden";
+    // Threads Cavvy started, or Harness did under its own name, are its own sessions already.
+    if (source === "codex" && (originator === CODEX_CLIENT_NAME || originator === LEGACY.codexClient)) return "hidden";
     return "new";
 }
 

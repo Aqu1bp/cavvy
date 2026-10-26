@@ -18,6 +18,7 @@ import { existsSync, realpathSync, writeFileSync } from "fs";
 import { userInfo } from "os";
 import { join, resolve } from "path";
 import { cavvyHome } from "../src/config/paths";
+import { LEGACY } from "../src/config/legacy";
 import { appSourceDir, capUpdate, lockUpdate, noPromptGit, readInstallRecord, UPDATE_CAP_MS } from "../src/config/desktop-install";
 
 if (process.platform !== "darwin") {
@@ -110,7 +111,8 @@ function linkedGitDir(): string | undefined {
 
 if (existsSync(source)) {
     const dir = linkedGitDir();
-    if (!dir || !existsSync(join(dir, MARKER))) {
+    // Harness made it under its own marker (src/config/legacy.ts).
+    if (!dir || !(existsSync(join(dir, MARKER)) || existsSync(join(dir, LEGACY.appSourceMarker)))) {
         console.error(`${source} isn't the worktree desktop:update made, so it's left alone. Move it out of the way and run desktop:update again.`);
         process.exit(1);
     }
@@ -128,7 +130,7 @@ if (existsSync(source)) {
 console.log(`Building ${short} in ${source}…`);
 
 // Inside Cavvy (its terminal, or its Update button), quitting Cavvy could end this process with it: install first, then restart from outside.
-const inCavvy = fromApp || process.env.TERM_PROGRAM === "Cavvy";
+const inCavvy = fromApp || process.env.TERM_PROGRAM === "Cavvy" || process.env.TERM_PROGRAM === "Harness";
 run([process.execPath, "--no-env-file", `--config=${join(source, "bunfig.toml")}`, join(source, "scripts", "install-desktop.ts"), ...(restart && !inCavvy ? [] : ["--no-restart"])], source);
 if (restart && inCavvy) {
     const { productName, identifier } = (await Bun.file(join(source, "desktop", "src-tauri", "tauri.conf.json")).json()) as { productName: string; identifier: string };
@@ -137,13 +139,16 @@ if (restart && inCavvy) {
     const record = await readInstallRecord();
     const app = record?.commit === target ? record.app ?? "" : "";
     // Asks the app to quit (its server closes the sessions), gives it 15 seconds as desktop:install does, then opens the new build.
+    // Harness.app too: the app from before the rename, which this update replaces when it runs from there.
     // Values go in as arguments, not into the script's text.
     const script = `
         sleep 1
         pkill -TERM -U "$1" -f "/$2.app/Contents/MacOS/cavvy-desktop"
+        pkill -TERM -U "$1" -f "/Harness.app/Contents/MacOS/harness-desktop"
         i=0
-        while pgrep -U "$1" -f "/$2.app/Contents/MacOS/cavvy" >/dev/null && [ $i -lt 150 ]; do sleep 0.1; i=$((i+1)); done
+        while pgrep -U "$1" -f "/($2.app/Contents/MacOS/cavvy|Harness.app/Contents/MacOS/harness)" >/dev/null && [ $i -lt 150 ]; do sleep 0.1; i=$((i+1)); done
         pkill -KILL -U "$1" -f "/$2.app/Contents/MacOS/cavvy"
+        pkill -KILL -U "$1" -f "/Harness.app/Contents/MacOS/harness"
         if [ -n "$3" ]; then open "$3"; else open -b "$4"; fi`;
     spawn("/bin/sh", ["-c", script, "sh", String(userInfo().uid), productName, app, identifier], { detached: true, stdio: "ignore" }).unref();
     console.log(`${productName} restarts in a moment with the new build.`);

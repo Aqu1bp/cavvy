@@ -381,7 +381,7 @@ describe("Chat Completions: streaming", () => {
         expect(r.body.reasoning).toEqual({ effort: "high" });
         expect(r.body.reasoning_effort).toBeUndefined();
         expect(r.body.max_tokens).toBe(4000);
-        expect(r.headers["http-referer"]).toBe("https://github.com/cavvy-cli");
+        expect(r.headers["http-referer"]).toBe("https://cavvy.dev");
         expect(r.headers["x-title"]).toBe("Cavvy CLI");
         expect(msg.usage?.cost).toBe(0.0012);
         expect(msg.content[0]).toEqual({ type: "thinking", text: "thinking..." });

@@ -207,9 +207,11 @@ function hookEnv(event: HookEvent, cwd: string, h: HookConfig): Record<string, s
     return childEnv({
         CAVVY_HOOK_EVENT: event,
         CAVVY_PROJECT_DIR: cwd,
-        // Scripts written for Claude Code read these.
+        // Scripts written for Claude Code read these, and ones written for Harness the HARNESS_ ones (legacy.ts).
         CLAUDE_PROJECT_DIR: cwd,
-        ...(h.pluginRoot ? { CAVVY_PLUGIN_ROOT: h.pluginRoot, CLAUDE_PLUGIN_ROOT: h.pluginRoot } : {}),
+        HARNESS_HOOK_EVENT: event,
+        HARNESS_PROJECT_DIR: cwd,
+        ...(h.pluginRoot ? { CAVVY_PLUGIN_ROOT: h.pluginRoot, CLAUDE_PLUGIN_ROOT: h.pluginRoot, HARNESS_PLUGIN_ROOT: h.pluginRoot } : {}),
     });
 }
 

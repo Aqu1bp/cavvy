@@ -4,15 +4,16 @@ import { registerTools } from "../src/mcp/server";
 
 describe("Cavvy's PreToolUse hook as one of Codex's", () => {
     test("its trust hash is the one Codex 0.163 computes for it", () => {
-        // Reported by hooks/list (currentHash) of a real Codex 0.163.0 for this handler, with trustStatus "trusted".
-        const handler = { type: "mcp_tool", server: "cavvy_hooks", tool: "pre_tool_use", input: { tool_name: "${tool_name}", tool_input: "${tool_input}", tool_use_id: "${tool_use_id}" }, timeout: 600 };
+        // Reported by hooks/list (currentHash) of a real Codex 0.163.0 for this handler, with trustStatus "trusted",
+        // when the server was named harness_hooks. The name is part of what's hashed; the algorithm is what this checks.
+        const handler = { type: "mcp_tool", server: "harness_hooks", tool: "pre_tool_use", input: { tool_name: "${tool_name}", tool_input: "${tool_input}", tool_use_id: "${tool_use_id}" }, timeout: 600 };
         expect(codexHookHash("pre_tool_use", { hooks: [handler] })).toBe("sha256:419b558bc420334071f3702580e60fff5eff3d16cff2c012c2cd215c841c38bf");
         // Key order doesn't matter, as Codex sorts it.
         expect(codexHookHash("pre_tool_use", { hooks: [{ timeout: 600, input: handler.input, tool: handler.tool, server: handler.server, type: handler.type }] })).toBe(codexHookHash("pre_tool_use", { hooks: [handler] }));
         const arg = codexHookArgs()[1]!;
         expect(codexHookArgs()[0]).toBe("-c");
         // The hook as given (an hour's timeout, so a hook that asks can wait on the user), trusted by its own hash.
-        const given = { ...handler, timeout: 3600 };
+        const given = { ...handler, server: CODEX_HOOK_SERVER, timeout: 3600 };
         expect(arg).toContain(`"/<session-flags>/config.toml:pre_tool_use:0:0"={"trusted_hash"="${codexHookHash("pre_tool_use", { hooks: [given] })}"}`);
         expect(arg).toContain('"timeout"=3600');
         expect(arg).toStartWith('hooks={"PreToolUse"=[{"hooks"=[{"type"="mcp_tool","server"="cavvy_hooks","tool"="pre_tool_use"');

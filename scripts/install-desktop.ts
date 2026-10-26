@@ -149,7 +149,11 @@ function running(): { app: number[]; server: number[] } {
             .split("\n")
             .filter(Boolean)
             .map(Number);
-    return { app: find(`/${productName}.app/Contents/MacOS/cavvy-desktop`), server: find(`/${productName}.app/Contents/MacOS/cavvy serve`) };
+    // Harness.app too: the app before the rename (src/config/legacy.ts) uses the same home folder.
+    return {
+        app: [...find(`/${productName}.app/Contents/MacOS/cavvy-desktop`), ...find("/Harness.app/Contents/MacOS/harness-desktop")],
+        server: [...find(`/${productName}.app/Contents/MacOS/cavvy serve`), ...find("/Harness.app/Contents/MacOS/harness serve")],
+    };
 }
 
 /** Sends sig to pid; false if it's gone (or isn't yours). */
@@ -187,3 +191,6 @@ console.log(`Installed ${dest}`);
 writeInstallRecord(root, dest);
 if (restart) run(["open", dest], root);
 else if (running().app.length) console.log(`${productName} is still running the build before this one: quit it and open it again to use this one.`);
+for (const old of ["/Applications/Harness.app", join(homedir(), "Applications", "Harness.app")]) {
+    if (existsSync(old)) console.log(`${old} is the app from before the rename to ${productName}. Once ${productName} works, delete it.`);
+}

@@ -11,6 +11,7 @@
 import { chmodSync, existsSync, readFileSync, statSync } from "fs";
 import { readJson, readJsonForUpdate, writeJson } from "../config/settings";
 import { paths } from "../config/paths";
+import { LEGACY } from "../config/legacy";
 import { allProviders, getProvider, readAgentConfig, readProvidersFile, readProvidersFileForUpdate, readVertexConfig, writeProvidersFile, SEARCH_PROVIDERS, type ProviderDef } from "../providers/registry";
 import { registerSecret } from "../util/redact";
 
@@ -88,7 +89,7 @@ async function lookup(providerId: string): Promise<ResolvedKey | undefined> {
     }
     if (await keychainWorks()) {
         try {
-            const v = await Bun.secrets.get({ service: SERVICE, name: providerId });
+            const v = (await Bun.secrets.get({ service: SERVICE, name: providerId })) ?? (await fromLegacyKeychain(Bun.secrets, providerId));
             if (v) return { value: v, source: "keychain" };
         } catch {
             // fall through to file store
@@ -97,6 +98,23 @@ async function lookup(providerId: string): Promise<ResolvedKey | undefined> {
     const fileVal = readFileStore()[providerId];
     if (fileVal) return { value: fileVal, source: "file" };
     return undefined;
+}
+
+/**
+ * A key Harness kept under its own service name, moved to Cavvy's: stored here
+ * first, and the old item deleted only once the new one reads back the same.
+ * If the move fails, the old item is used as it is and tried again next time.
+ */
+export async function fromLegacyKeychain(store: Pick<typeof Bun.secrets, "get" | "set" | "delete">, providerId: string): Promise<string | null> {
+    const old = await store.get({ service: LEGACY.keychainService, name: providerId });
+    if (!old) return null;
+    try {
+        await store.set({ service: SERVICE, name: providerId, value: old });
+        if ((await store.get({ service: SERVICE, name: providerId })) === old) await store.delete({ service: LEGACY.keychainService, name: providerId });
+    } catch {
+        // Keep using the old item.
+    }
+    return old;
 }
 
 /** Store a key. Returns where it was stored. */
@@ -141,10 +159,13 @@ export async function setKey(providerId: string, value: string): Promise<KeySour
 export async function removeKey(providerId: string): Promise<boolean> {
     let removed = false;
     if (await keychainWorks()) {
-        try {
-            removed = (await Bun.secrets.delete({ service: SERVICE, name: providerId })) || removed;
-        } catch {
-            // ignore
+        // Harness's item too: lookups would move it back otherwise.
+        for (const service of [SERVICE, LEGACY.keychainService]) {
+            try {
+                removed = (await Bun.secrets.delete({ service, name: providerId })) || removed;
+            } catch {
+                // ignore
+            }
         }
     }
     const store = readFileStore();

@@ -1,14 +1,33 @@
 import { homedir } from "os";
 import { join, resolve } from "path";
 import { mkdirSync } from "fs";
+import { APP_NAME } from "./name";
+import { fileIn, LEGACY, legacyEnvNotes, moveLegacyHome, projectDirIn } from "./legacy";
 
-export { APP_NAME } from "./name";
+export { APP_NAME };
 export const APP_TITLE = "Cavvy";
 export const APP_VERSION = "1.0.0";
 
-/** Root of all user-level state. Override with CAVVY_HOME. */
+let defaultHome: string | undefined;
+let envNoted = false;
+
+/**
+ * Root of all user-level state. Override with CAVVY_HOME (or HARNESS_HOME, its old
+ * name). The first look at the default moves Harness's ~/.harness here (legacy.ts).
+ */
 export function cavvyHome(): string {
-    return process.env.CAVVY_HOME ? resolve(process.env.CAVVY_HOME) : join(homedir(), ".cavvy");
+    if (!envNoted) {
+        envNoted = true;
+        for (const note of legacyEnvNotes()) process.stderr.write(`${APP_NAME}: ${note}\n`);
+    }
+    if (process.env.CAVVY_HOME) return resolve(process.env.CAVVY_HOME);
+    if (process.env.HARNESS_HOME) return resolve(process.env.HARNESS_HOME);
+    if (defaultHome === undefined) {
+        const moved = moveLegacyHome(join(homedir(), ".cavvy"), join(homedir(), LEGACY.dir));
+        for (const note of moved.notes) process.stderr.write(`${APP_NAME}: ${note}\n`);
+        defaultHome = moved.home;
+    }
+    return defaultHome;
 }
 
 export const paths = {
@@ -24,16 +43,18 @@ export const paths = {
     planLimits: () => join(cavvyHome(), "limits.json"),
     userCommands: () => join(cavvyHome(), "commands"),
     userAgents: () => join(cavvyHome(), "agents"),
-    userMemory: () => join(cavvyHome(), "CAVVY.md"),
+    /** CAVVY.md, or HARNESS.md in a home that has only Harness's. */
+    userMemory: () => fileIn(cavvyHome(), "CAVVY.md", LEGACY.memory),
     projectsDir: () => join(cavvyHome(), "projects"),
     logs: () => join(cavvyHome(), "logs"),
     plugins: () => join(cavvyHome(), "plugins"),
 
-    projectDir: (cwd: string) => join(cwd, ".cavvy"),
-    projectSettings: (cwd: string) => join(cwd, ".cavvy", "settings.json"),
-    localSettings: (cwd: string) => join(cwd, ".cavvy", "settings.local.json"),
-    projectCommands: (cwd: string) => join(cwd, ".cavvy", "commands"),
-    projectAgents: (cwd: string) => join(cwd, ".cavvy", "agents"),
+    /** .cavvy/, or .harness/ in a project that has only Harness's (legacy.ts). */
+    projectDir: (cwd: string) => projectDirIn(cwd),
+    projectSettings: (cwd: string) => join(projectDirIn(cwd), "settings.json"),
+    localSettings: (cwd: string) => join(projectDirIn(cwd), "settings.local.json"),
+    projectCommands: (cwd: string) => join(projectDirIn(cwd), "commands"),
+    projectAgents: (cwd: string) => join(projectDirIn(cwd), "agents"),
     projectMcp: (cwd: string) => join(cwd, ".mcp.json"),
 };
 

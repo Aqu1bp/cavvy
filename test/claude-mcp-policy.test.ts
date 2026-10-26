@@ -73,7 +73,7 @@ describe("Claude native project MCP policy", () => {
         expect(approved.servers.approved!.config).not.toHaveProperty("cwd");
         expect(claudeMcpPolicy(cwd, approved).settings).toEqual({
             enabledMcpjsonServers: ["approved"],
-            disabledMcpjsonServers: ["clash", "disabled", "cavvy", "legacy", "pending", "rejected", "same__name"],
+            disabledMcpjsonServers: ["cavvy", "clash", "disabled", "legacy", "pending", "rejected", "same__name"],
         });
         approved.servers.approved!.config.env!.A = "changed outside the manager";
         expect(manager.approvedServers().servers.approved!.config).toEqual(cfg);
@@ -145,7 +145,7 @@ describe("Claude native project MCP policy", () => {
     ] as const) test(`a definition Claude Code would expand (\${VAR} in ${label}) isn't passed on`, () => {
         write({ expanding: cfg });
         const policy = claudeMcpPolicy(cwd, snapshot({ expanding: cfg as McpServerConfig }));
-        expect(policy.settings).toEqual({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["expanding", "cavvy"] });
+        expect(policy.settings).toEqual({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["cavvy", "expanding"] });
         expect(policy.warning).toContain("${VAR} expansion");
     });
 
@@ -221,7 +221,7 @@ describe("Claude native project MCP policy", () => {
         };
         write(servers);
         const policy = claudeMcpPolicy(cwd, snapshot(servers));
-        expect(policy.settings?.disabledMcpjsonServers).toEqual(["elsewhere", "cavvy"]);
+        expect(policy.settings?.disabledMcpjsonServers).toEqual(["cavvy", "elsewhere"]);
         expect(policy.settings?.enabledMcpjsonServers).toEqual(["alias", "default", "same"]);
         expect(policy.strict).toBe(false);
         expect(policy.warning).toMatch(/skipped.*working directory.*ignores server cwd/);

@@ -101,7 +101,8 @@ export function writeClaudeManifest(root: string, manifest: object) {
     writeJson(claudeManifest(root), manifest);
 }
 
-const CAVVY_ROOT = /\$\{CAVVY_PLUGIN_ROOT\}|\$CAVVY_PLUGIN_ROOT\b/g;
+// Harness's name for it too (legacy.ts).
+const CAVVY_ROOT = /\$\{(?:CAVVY|HARNESS)_PLUGIN_ROOT\}|\$(?:CAVVY|HARNESS)_PLUGIN_ROOT\b/g;
 
 /**
  * In an installed copy's configuration (its manifests, hooks, MCP and language

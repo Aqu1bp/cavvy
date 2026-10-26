@@ -2574,7 +2574,7 @@ describe("Claude Code MCP approval boundary", () => {
         expect(await run("hello")).toBe("done");
         expect(settingsFor(starts()[0])).toMatchObject({
             enabledMcpjsonServers: ["approved"],
-            disabledMcpjsonServers: ["disabled", "cavvy", "pending", "rejected", "same__name", "shadowed"],
+            disabledMcpjsonServers: ["cavvy", "disabled", "pending", "rejected", "same__name", "shadowed"],
         });
         expect(starts()[0].argv).not.toContain("--strict-mcp-config");
         expect(payloads()).toEqual([]);

@@ -18,6 +18,7 @@ import { ANALYSIS_LIMIT, commandsWithDirs, gitSubcommand, programNames, readSmal
 import { CASE_INSENSITIVE_FS, canonical, spellings } from "../util/files";
 import { accountProtectedPaths } from "../providers/accounts";
 import { paths } from "../config/paths";
+import { LEGACY } from "../config/legacy";
 
 export type SandboxKind = "seatbelt" | "bwrap";
 
@@ -135,10 +136,10 @@ const UNREADABLE_IN_HOME = [
 ];
 
 /** A project's own config: Cavvy's, and the agent CLIs' (hooks, skills, MCP servers, permissions). */
-const PROJECT_CONFIG = [".cavvy", ".mcp.json"];
+const PROJECT_CONFIG = [".cavvy", LEGACY.dir, ".mcp.json"];
 const CLI_CONFIG = [".claude", ".codex"];
 /** Names checker.ts doesn't take for a worktree (see withoutWorktrees there). */
-const CONFIG_NAMES = new Set([".cavvy", ".claude", ".codex", ".git", ".mcp.json"]);
+const CONFIG_NAMES = new Set([".cavvy", LEGACY.dir, ".claude", ".codex", ".git", ".mcp.json"]);
 
 /** A path as written and, if a symlink leads elsewhere, where it leads: a rule on one alone can be sidestepped through the other. */
 function bothForms(p: string): string[] {

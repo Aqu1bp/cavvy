@@ -171,7 +171,7 @@ export const BUILTIN_PROVIDERS: ProviderDef[] = [
         keyUrl: "https://openrouter.ai/keys",
         requiresKey: true,
         headers: {
-            "HTTP-Referer": "https://github.com/cavvy-cli",
+            "HTTP-Referer": "https://cavvy.dev",
             "X-OpenRouter-Title": "Cavvy CLI",
             "X-Title": "Cavvy CLI",
             "X-OpenRouter-Categories": "cli-agent",

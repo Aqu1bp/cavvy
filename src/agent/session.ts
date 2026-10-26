@@ -6,7 +6,8 @@
 import { appendFileSync, existsSync, openSync, readSync, closeSync, readdirSync, readFileSync, statSync, chmodSync, linkSync, unlinkSync, writeFileSync, writeSync } from "fs";
 import { join, resolve } from "path";
 import { randomBytes } from "crypto";
-import { ensureDir, paths, projectStateDir, APP_TITLE, APP_VERSION } from "../config/paths";
+import { ensureDir, paths, projectStateDir, APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
+import { LEGACY } from "../config/legacy";
 import type { Message, Usage } from "../providers/types";
 import { accountNoticeText, stoppedText, type NoticeAccount, type NoticeData, type NoticeLimit, type NoticeStopped, type PlanLink, type StoppedTask } from "../server/protocol";
 import type { GoalRecord } from "./goal";
@@ -887,7 +888,8 @@ function validTask(t: unknown): BackgroundTaskInfo | undefined {
     if (!TASK_KINDS.includes(v.kind as string) || !TASK_STATUSES.includes(v.status as string)) return undefined;
     return {
         id: v.id,
-        provider: v.provider,
+        // A shell of Harness's own, saved before the rename (src/config/legacy.ts), is Cavvy's.
+        provider: v.provider === LEGACY.name ? APP_NAME : v.provider,
         kind: v.kind!,
         label: v.label,
         ...(typeof v.toolUseId === "string" ? { toolUseId: v.toolUseId } : {}),

@@ -10,9 +10,13 @@
 
 import { existsSync } from "fs";
 import { join } from "path";
+import { LEGACY } from "../config/legacy";
 
-/** Manifest folders, ours first: a plugin that ships both is read as a Cavvy plugin. */
-export const MANIFEST_DIRS = [".cavvy-plugin", ".claude-plugin"] as const;
+/**
+ * Manifest folders, ours first: a plugin that ships both is read as a Cavvy plugin.
+ * Then Harness's, which a copy installed before the rename has (legacy.ts).
+ */
+export const MANIFEST_DIRS = [".cavvy-plugin", LEGACY.pluginManifestDir, ".claude-plugin"] as const;
 
 export interface PluginAuthor {
     name?: string;

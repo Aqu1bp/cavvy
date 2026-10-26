@@ -44,7 +44,8 @@ import type { PermissionMode } from "../permissions/modes";
 import type { ToolDisplay } from "../tools/types";
 import { diffLines, diffStats } from "../util/diff";
 import { parseRule, pathPattern } from "../permissions/rules";
-import { APP_TITLE, paths } from "../config/paths";
+import { APP_NAME, APP_TITLE, paths } from "../config/paths";
+import { currentMcpName } from "../config/legacy";
 import { redact } from "../util/redact";
 import { cliCommandNames } from "../commands/custom";
 import { formatSkill } from "../agent/skills";
@@ -2013,7 +2014,8 @@ export function claudeRule(raw: string, root: string): string[] {
         return [...claudeRule(`Read(${spec})`, root), ...claudeRule(`Edit(${spec})`, root)];
     }
     if (tool === "Task") return [spec ? `Agent(${spec})` : "Agent"];
-    if (tool.startsWith("mcp__")) return [tool];
+    // A rule for Harness's server (mcp__harness__…) is Cavvy's too (legacy.ts); as written, it may be a server of the user's own.
+    if (tool.startsWith("mcp__")) return [...new Set([tool, currentMcpName(tool, APP_NAME)])];
     return [];
 }
 

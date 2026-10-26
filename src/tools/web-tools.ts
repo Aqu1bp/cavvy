@@ -5,7 +5,7 @@ import { getKey } from "../auth/credentials";
 
 const MAX_BYTES = 5 * 1024 * 1024;
 const MAX_CHARS = 40_000;
-const UA = "Mozilla/5.0 (compatible; CavvyCLI/1.0; +https://github.com/cavvy-cli)";
+const UA = "Mozilla/5.0 (compatible; CavvyCLI/1.0; +https://cavvy.dev)";
 
 function isLocalHost(h: string) {
     return h === "localhost" || h === "127.0.0.1" || h === "[::1]" || h.endsWith(".localhost");

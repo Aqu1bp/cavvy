@@ -427,7 +427,8 @@ describe("cavvy and git config edits", () => {
     // with no .cavvy/ yet, a write to a name the volume opens as .cavvy would
     // plant settings Cavvy then loads as its own, and the model could grant
     // itself permissions. APFS matches names by Unicode case folding, not
-    // toLowerCase: .harneſſ (long s), .harneẞ and .harneß are .cavvy there.
+    // toLowerCase: .harneſſ (long s), .harneẞ and .harneß are .harness (Harness's old
+    // folder, still protected) there, as .CAVVY is .cavvy.
     (caseInsensitiveFs ? test : test.skip)("case and Unicode variants of config paths ask on case-insensitive filesystems", () => {
         expect(existsSync(join(W, ".cavvy"))).toBe(false);
         const variants = [
@@ -1007,9 +1008,9 @@ describe("rules in other spellings", () => {
 
 describe("caselessFold", () => {
     test("folds the letters APFS folds that toLowerCase doesn't", () => {
-        expect(caselessFold(".harne\u017F\u017F")).toBe(".cavvy"); // ſ
-        expect(caselessFold(".harne\u1E9E")).toBe(".cavvy"); // ẞ
-        expect(caselessFold(".harne\u00DF")).toBe(".cavvy"); // ß
+        expect(caselessFold(".harne\u017F\u017F")).toBe(".harness"); // ſ
+        expect(caselessFold(".harne\u1E9E")).toBe(".harness"); // ẞ
+        expect(caselessFold(".harne\u00DF")).toBe(".harness"); // ß
         expect(caselessFold(".mcp.j\u017Fon")).toBe(".mcp.json");
         expect(caselessFold("\u212Aube")).toBe("kube"); // Kelvin sign
         expect(caselessFold("\uFB05 \uFB06 \uFB01 \uFB00")).toBe("st st fi ff"); // ligatures
@@ -1017,9 +1018,9 @@ describe("caselessFold", () => {
     });
 
     test("and more than APFS does: compatibility forms, invisible characters, dotless i", () => {
-        expect(caselessFold(".\uFF48\uFF41\uFF52\uFF4E\uFF45\uFF53\uFF53")).toBe(".cavvy"); // fullwidth
-        expect(caselessFold(".\uFF28ARNESS")).toBe(".cavvy");
-        expect(caselessFold(".har\u200Bness\uFEFF\u00AD")).toBe(".cavvy");
+        expect(caselessFold(".\uFF43\uFF41\uFF56\uFF56\uFF59")).toBe(".cavvy"); // fullwidth
+        expect(caselessFold(".\uFF23AVVY")).toBe(".cavvy");
+        expect(caselessFold(".cav\u200Bvy\uFEFF\u00AD")).toBe(".cavvy");
         expect(caselessFold(".g\u0131t")).toBe(".git");
         expect(caselessFold("caf\u00E9")).toBe(caselessFold("cafe\u0301")); // NFC and NFD
         expect(caselessFold("\u039F\u0394\u039F\u03A3")).toBe(caselessFold("\u03BF\u03B4\u03BF\u03C3x").slice(0, -1)); // final sigma: σ wherever it is
@@ -1044,7 +1045,7 @@ describe("caselessFold", () => {
     });
 
     test("spellings: lower-cased and folded where the volume ignores case, as given elsewhere", () => {
-        expect(spellings(".Harne\u017F\u017F")).toEqual(CASE_INSENSITIVE_FS ? [".harne\u017F\u017F", ".cavvy"] : [".Harne\u017F\u017F"]);
+        expect(spellings(".Harne\u017F\u017F")).toEqual(CASE_INSENSITIVE_FS ? [".harne\u017F\u017F", ".harness"] : [".Harne\u017F\u017F"]);
         expect(spellings("src/a.ts")).toEqual(["src/a.ts"]);
     });
 });

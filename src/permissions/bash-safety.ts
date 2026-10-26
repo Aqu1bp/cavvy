@@ -6,6 +6,7 @@ import { homedir } from "os";
 import { dirname, join, resolve } from "path";
 import { CASE_FOLDS, canonical, CASE_INSENSITIVE_FS, expandPath, isInside, spellings } from "../util/files";
 import { accountCredentialFiles, accountFolders } from "../providers/accounts";
+import { homeAliases } from "../config/legacy";
 
 export interface SimpleCommand {
     text: string;
@@ -1471,7 +1472,7 @@ function programsSpelled(cmd: string): string[] {
 
 /**
  * A path pattern for text that `spellings` folded: on a case-insensitive
- * volume `~/.AWS/credentials` and `~/.harneſſ` name the real thing, and the
+ * volume `~/.AWS/credentials` and `~/.CAVVY` name the real thing, and the
  * spellings are lower-cased, so the pattern ignores case too.
  */
 function anyCase(re: RegExp): RegExp {
@@ -1479,14 +1480,14 @@ function anyCase(re: RegExp): RegExp {
 }
 
 /** Matched in every spelling of the command, like SENSITIVE. */
-const CREDENTIAL_STORE = anyCase(/\.cavvy\/(credentials|providers)\.json/);
+const CREDENTIAL_STORE = anyCase(/\.(cavvy|harness)\/(credentials|providers)\.json/);
 const STARTUP_FILE = anyCase(/>\s*~\/\.(bash|zsh)(rc|_profile|env)|>\s*~\/\.profile/);
 
 /** Programs that only read or copy their input, whatever their options: a here-document's data stays data with them (not sort: --compress-program runs one). */
 const DATA_READERS = new Set(["cat", "tee", "wc", "head", "tail", "uniq", "cut", "tr", "nl", "grep", "egrep", "fgrep"]);
 
 /** Files whose contents run later: shell startup files, anything in a .git, Cavvy's and agent CLIs' configuration. */
-const RUNS_LATER = anyCase(/(^|\/)\.(bash(rc|_profile|_login|_logout|env|_aliases)|zsh(rc|env|_profile)|zprofile|zlogin|zlogout|profile|kshrc|mkshrc|envrc)$|(^|\/)\.git(\/|$)|(^|\/)\.(cavvy|claude|codex)(\/|$)|(^|\/)\.mcp\.json$|(^|\/)(crontab|\.config\/(fish|git|nvim|systemd|autostart)|Library\/LaunchAgents)(\/|$)/);
+const RUNS_LATER = anyCase(/(^|\/)\.(bash(rc|_profile|_login|_logout|env|_aliases)|zsh(rc|env|_profile)|zprofile|zlogin|zlogout|profile|kshrc|mkshrc|envrc)$|(^|\/)\.git(\/|$)|(^|\/)\.(cavvy|harness|claude|codex)(\/|$)|(^|\/)\.mcp\.json$|(^|\/)(crontab|\.config\/(fish|git|nvim|systemd|autostart)|Library\/LaunchAgents)(\/|$)/);
 
 /**
  * The line with its here-documents' data blanked (lines kept), when that data
@@ -1771,9 +1772,9 @@ const SENSITIVE = ([
     [/\.(netrc|npmrc|pypirc|pgpass|git-credentials)\b/, "a credentials file"],
     [/\bid_(rsa|ed25519|ecdsa|dsa)\b(?!\.pub)/, "an SSH private key"],
     [/Library\/Keychains|\bsecurity\s+(find|dump|export)-/, "the system keychain"],
-    [/\.cavvy\/(credentials|providers)\.json/, "Cavvy credential store"],
+    [/\.(cavvy|harness)\/(credentials|providers)\.json/, "Cavvy credential store"],
     [/\.codex\/auth\.json|\.claude\/\.credentials\.json|\.config\/gh\/hosts\.yml/, "a CLI's sign-in file"],
-    [/(^|[\s'"=:])(~|\$HOME|\$\{HOME\})\/\.cavvy\/accounts(?=$|[/\s'";|&)])/, "Cavvy credential store"],
+    [/(^|[\s'"=:])(~|\$HOME|\$\{HOME\})\/\.(cavvy|harness)\/accounts(?=$|[/\s'";|&)])/, "Cavvy credential store"],
     [/\b(grep|egrep|fgrep|rg|ag|ack)\b[^|;&\n]*\s(~|\$HOME|\$\{HOME\}|\/Users\/[^\s/]+|\/home\/[^\s/]+|\/)\/?(?=$|[\s;|&)])/, "your whole home directory"],
     [/\bkubectl\s+get\s+secrets?\b|\bkubectl\s+config\s+view\b[^|;&\n]*--raw/, "cluster secrets"],
     [/\bgcloud\b[^|;&\n]*\b(print-(access|identity|refresh)-token|config-helper)\b/, "a Google Cloud access token"],
@@ -1785,9 +1786,10 @@ const SENSITIVE = ([
  * so mentioning the home or those doesn't count.
  */
 function credentialStore(cavvyHome: string): { files: string[]; folders: string[] } {
+    const homes = [cavvyHome, ...homeAliases(cavvyHome)];
     return {
-        files: [join(cavvyHome, "credentials.json"), join(cavvyHome, "providers.json"), ...accountCredentialFiles()],
-        folders: [join(cavvyHome, "accounts"), ...accountFolders()],
+        files: [...homes.flatMap((h) => [join(h, "credentials.json"), join(h, "providers.json")]), ...accountCredentialFiles()],
+        folders: [...homes.map((h) => join(h, "accounts")), ...accountFolders()],
     };
 }
 
@@ -1908,8 +1910,8 @@ export function readsCavvyHome(cmd: string, cwd: string, cavvyHome: string, env?
 }
 
 export function cavvyHomeReads(cmd: string, cwd: string, cavvyHome: string, env?: ShellEnv): HomeReads | undefined {
-    const homes = [...new Set([cavvyHome, canonical(cavvyHome)].flatMap(spellings))];
-    const inHome = (p: string) => [p, canonical(p)].flatMap(spellings).some((f) => homes.some((h) => isInside(f, h)));
+    const homes = [...new Set([cavvyHome, canonical(cavvyHome), ...homeAliases(cavvyHome)].flatMap(spellings))];
+    const inHome =(p: string) => [p, canonical(p)].flatMap(spellings).some((f) => homes.some((h) => isInside(f, h)));
     const res = homes.map((h) => anyCase(new RegExp(`(^|[\\s'"=:<>])${h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|[/\\s'";|&)<>])`)));
     const look = shellVars(cmd, env);
     const named = (text: string, pwd = cwd) => {
@@ -2197,7 +2199,7 @@ export function sensitiveTarget(cmd: string, opts: { cwd?: string; cavvyHome?: s
 // Paths whose contents configure Cavvy, the agent CLIs it runs, or git:
 // permissions, hooks, MCP servers, skills, git hooks/fsmonitor. A shell command
 // that isn't read-only and names one asks, like an Edit of the same file would.
-const CONFIG_PATH = /(^|[\s'"=:/])(\.cavvy|\.codex|\.mcp\.json|\.git)(?=$|[/\s'";|&)>])/i;
+const CONFIG_PATH = /(^|[\s'"=:/])(\.cavvy|\.harness|\.codex|\.mcp\.json|\.git)(?=$|[/\s'";|&)>])/i;
 // .claude/ too, but see claudeConfigIn.
 const CLAUDE_DIR = /(^|[\s'"=:/])\.claude(?=$|[/\s'";|&)>])/gi;
 const WORKTREE = /\/worktrees\/([^/\s'"`;|&()<>*?[\]{}$\\]+)(?=$|[/\s'";|&)>])/iy;
@@ -2251,7 +2253,7 @@ function claudeConfigIn(text: string): boolean {
         const w = WORKTREE.exec(text);
         if (!w || (climbing ??= climbs(text))) return true;
         const name = w[1]!;
-        if (name === "." || name === ".." || spellings(name).some((n) => /^\.(cavvy|claude|codex|git|mcp\.json)$/.test(n))) return true;
+        if (name === "." || name === ".." || spellings(name).some((n) => /^\.(cavvy|harness|claude|codex|git|mcp\.json)$/.test(n))) return true;
     }
     return false;
 }
@@ -2593,8 +2595,8 @@ export function configTarget(cmd: string, cavvyHome?: string): string | undefine
     const a = analyzeCommand(cmd);
     const messages = messageWords(a);
     const unquoted = a.commands.map((c, k) => c.argv.filter((_, i) => !messages[k]!.includes(i)).join(" ")).join(" ; ");
-    // In every spelling: on a case-insensitive volume `.harneſſ/` is `.cavvy/`.
-    const homes = cavvyHome ? spellings(cavvyHome) : [];
+    // In every spelling (on a case-insensitive volume `.CAVVY/` is `.cavvy/`), and by the link at Harness's old place.
+    const homes = cavvyHome ? [cavvyHome, ...homeAliases(cavvyHome)].flatMap(spellings) : [];
     const bodies = commands.flatMap((c) => c.programs.map((argv) => argv.join(" ")));
     for (const text of [withoutMessages(cmd), unquoted, ...bodies].flatMap(spellings)) {
         if (CONFIG_PATH.test(text) || claudeConfigIn(text)) return "cavvy or git configuration";

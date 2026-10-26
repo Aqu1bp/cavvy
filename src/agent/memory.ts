@@ -22,6 +22,7 @@ import { gitRoot } from "../util/git";
 import { canonical, isInside, spellings } from "../util/files";
 import { redact } from "../util/redact";
 import { isTrusted, trustedByUser } from "../config/trust";
+import { LEGACY } from "../config/legacy";
 
 export interface MemoryFile {
     path: string;
@@ -34,8 +35,9 @@ export interface MemoryFile {
 /** What loadMemory found. `budget`: what the shared limits left out or cut short, when they did. */
 export type Memory = MemoryFile[] & { budget?: { omitted: string[]; more: boolean; cut?: string; crowded?: string } };
 
-const PROJECT_NAMES = ["CAVVY.md", "AGENTS.md", "CLAUDE.md", ".cavvy/CAVVY.md"];
-const LOCAL_NAMES = ["CAVVY.local.md", "CLAUDE.local.md"];
+// Harness's names last, for a project that still has them (legacy.ts).
+const PROJECT_NAMES = ["CAVVY.md", "AGENTS.md", "CLAUDE.md", ".cavvy/CAVVY.md", LEGACY.memory, `${LEGACY.dir}/${LEGACY.memory}`];
+const LOCAL_NAMES = ["CAVVY.local.md", "CLAUDE.local.md", LEGACY.localMemory];
 /** One file's cap, in UTF-8 bytes. */
 const MAX_BYTES = 40_000;
 /** Claude Code's limit: an imported file can import others, four hops from the file that started it. */

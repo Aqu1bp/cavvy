@@ -20,7 +20,7 @@
 import { closeSync, openSync, readdirSync, readSync, statSync } from "fs";
 import { homedir } from "os";
 import { basename, dirname, join } from "path";
-import { cavvyHome } from "../config/paths";
+import { cavvyHome, paths } from "../config/paths";
 import { expandCommand } from "../commands/custom";
 import { loadPlugins } from "../plugins/loader";
 import { withoutReviewQuotes } from "../util/review-quotes";
@@ -66,7 +66,7 @@ export function skillRoots(cwd: string, trusted: boolean): SkillRoot[] {
         { dir: join(cavvyHome(), "skills"), source: "user" },
     ];
     // A repository's skills are instructions from whoever wrote it.
-    if (trusted) roots.push({ dir: join(cwd, ".claude", "skills"), source: "project", claudeCode: true }, { dir: join(cwd, ".cavvy", "skills"), source: "project" });
+    if (trusted) roots.push({ dir: join(cwd, ".claude", "skills"), source: "project", claudeCode: true }, { dir: join(paths.projectDir(cwd), "skills"), source: "project" });
     return roots;
 }
 

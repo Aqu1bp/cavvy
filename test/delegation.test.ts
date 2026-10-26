@@ -781,7 +781,7 @@ describe("Claude Code as the main agent", () => {
         calls([]);
         expect(await run("anything back?")).toBe("done");
         const last = userTexts().at(-1)!;
-        expect(last).toContain("A task you delegated (with Cavvy delegate tool) has ended.");
+        expect(last).toContain("A task you delegated (with the cavvy delegate tool) has ended.");
         expect(last).toContain("Looks fine.");
         expect(last).toContain("anything back?");
         // Given once.

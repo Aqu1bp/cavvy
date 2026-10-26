@@ -14,6 +14,7 @@ import { homedir } from "os";
 import { join, resolve } from "path";
 import { readJson, readJsonForUpdate, writeJson } from "./settings";
 import { cavvyHome, paths } from "./paths";
+import { LEGACY } from "./legacy";
 import { isInside } from "../util/files";
 import { readAgentConfig } from "../providers/registry";
 import { externalImports } from "../agent/memory";
@@ -103,15 +104,17 @@ export function agentProjectConfig(cwd: string, provider: "claude-code" | "codex
 /** Whether the folder has anything that trust would unlock. `has` says whether a path exists (a commit's tree, for a checkout yet to be made). */
 export function projectConfigSummary(cwd: string, has: (path: string) => boolean = existsSync): string[] {
     const found: string[] = [];
-    if (has(paths.projectSettings(cwd))) found.push(".cavvy/settings.json");
-    if (has(paths.localSettings(cwd))) found.push(".cavvy/settings.local.json");
+    // Which folder holds Cavvy's files, by `has` (paths.projectDir asks the disk): Harness's .harness/ when it's the only one.
+    const dir = !has(join(cwd, ".cavvy")) && has(join(cwd, LEGACY.dir)) ? LEGACY.dir : ".cavvy";
+    if (has(join(cwd, dir, "settings.json"))) found.push(`${dir}/settings.json`);
+    if (has(join(cwd, dir, "settings.local.json"))) found.push(`${dir}/settings.local.json`);
     if (has(paths.projectMcp(cwd))) found.push(".mcp.json");
-    if (has(paths.projectCommands(cwd))) found.push(".cavvy/commands/");
-    if (has(paths.projectAgents(cwd))) found.push(".cavvy/agents/");
+    if (has(join(cwd, dir, "commands"))) found.push(`${dir}/commands/`);
+    if (has(join(cwd, dir, "agents"))) found.push(`${dir}/agents/`);
     // Agent CLIs that are turned on load their own project configuration only in a folder the user trusted.
     for (const p of ["claude-code", "codex"] as const) if (readAgentConfig(p)) found.push(...agentProjectConfig(cwd, p, has));
     // Skills are instructions for the model, read natively from both folders whatever the model (src/agent/skills.ts).
-    if (has(join(cwd, ".cavvy", "skills"))) found.push(".cavvy/skills/");
+    if (has(join(cwd, dir, "skills"))) found.push(`${dir}/skills/`);
     if (has(join(cwd, ".claude", "skills"))) found.push(".claude/skills/");
     // Memory files load in a folder with nothing to protect, but their imports stay inside the project
     // until the user trusts it (src/agent/memory.ts): one that imports from outside has something to unlock.

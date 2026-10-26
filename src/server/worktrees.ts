@@ -1,9 +1,10 @@
 import { spawn, spawnSync } from "bun";
 import { createHash } from "crypto";
-import { appendFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { cwdGitEnv, gitArgv } from "../util/git";
 import { isInside } from "../util/files";
+import { LEGACY } from "../config/legacy";
 import { isTrusted, trustedByUser } from "../config/trust";
 import { loadSettings, type Settings } from "../config/settings";
 import { runHooks } from "../agent/hooks";
@@ -756,12 +757,14 @@ export function markPresent(worktree: string): boolean {
 export function othersPresent(worktree: string): boolean {
     const dir = gitDirOf(worktree);
     if (!dir) return false;
-    let names: string[];
-    try {
-        names = readdirSync(join(dir, PRESENT));
-    } catch {
-        return false;
-    }
+    // A Harness process marks itself under its own name.
+    const names = [PRESENT, LEGACY.worktreePresent].flatMap((n) => {
+        try {
+            return readdirSync(join(dir, n));
+        } catch {
+            return [];
+        }
+    });
     return names.some((n) => {
         const pid = Number(n);
         if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
@@ -784,7 +787,9 @@ export function readMarker(worktree: string): WorktreeMarker | undefined {
     const dir = gitDirOf(worktree);
     if (!dir) return undefined;
     try {
-        const m = JSON.parse(readFileSync(join(dir, MARKER), "utf8")) as Partial<WorktreeMarker>;
+        // Harness marked the ones it made under its own name.
+        const file = [MARKER, LEGACY.worktreeMarker].map((n) => join(dir, n)).find((f) => existsSync(f)) ?? join(dir, MARKER);
+        const m = JSON.parse(readFileSync(file, "utf8")) as Partial<WorktreeMarker>;
         if (typeof m.name !== "string" || typeof m.branch !== "string" || typeof m.base !== "string" || !/^[0-9a-f]{40,64}$/.test(m.base)) return undefined;
         return { name: m.name, branch: m.branch, base: m.base, createdAt: typeof m.createdAt === "number" ? m.createdAt : 0, ownBranch: m.ownBranch !== false };
     } catch {
