@@ -5,7 +5,7 @@
 // change for the diff reader. Writes bench-ux-<label>.json.
 //
 //   bun desktop-electron/bench-ux.ts --label dev
-//   bun desktop-electron/bench-ux.ts --label packaged --app <…>/Harness.app/Contents/MacOS/Harness
+//   bun desktop-electron/bench-ux.ts --label packaged --app <…>/Cavvy.app/Contents/MacOS/Cavvy
 //   bun desktop-electron/bench-ux.ts --label traced --trace <dir>    # also a Chromium trace of each session opened
 //
 // Interactions: opening a long session; flicking through it and back; jumping to its start; unfolding a turn's work;
@@ -21,7 +21,7 @@ const args = process.argv.slice(2);
 const arg = (n: string) => (args.includes(n) ? args[args.indexOf(n) + 1] : undefined);
 const label = arg("--label") ?? "run";
 const repo = resolve(import.meta.dir, "..");
-const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "harness-ux-"));
+const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "cavvy-ux-"));
 const metricsFile = join(dir, "metrics.json");
 const project = join(dir, "acme-platform");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -31,9 +31,9 @@ const TOKEN = "ux-bench-token-12345678901";
 const demo = Bun.spawn(["bun", "--no-env-file", "scripts/gui-demo.ts", "--port", "4636", "--token", TOKEN, "--dir", dir], { cwd: repo, stdout: "ignore", stderr: Bun.file(join(dir, "demo.err.log")) });
 let app: ReturnType<typeof Bun.spawn> | undefined;
 
-/** A JSON-RPC client on a harness server's /ws. */
+/** A JSON-RPC client on a cavvy server's /ws. */
 async function rpcTo(port: number, token: string) {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, ["harness.v1", `auth.${token}`]);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, ["cavvy.v1", `auth.${token}`]);
     await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });
     let seq = 0;
     const pending = new Map<number, (v: any) => void>();
@@ -50,13 +50,13 @@ try {
     const spawnedAt = performance.now();
     app = Bun.spawn(exe ? [exe] : [join(repo, "desktop-electron/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"), join(repo, "desktop-electron")], {
         cwd: repo,
-        env: { ...process.env, HARNESS_HOME: join(dir, "home"), HARNESS_NO_KEYCHAIN: "1", HARNESS_ELECTRON_TEST_PORT: "9344", HARNESS_ELECTRON_USER_DATA: join(dir, "electron-data"), HARNESS_ELECTRON_CWD: project, HARNESS_ELECTRON_METRICS: metricsFile },
+        env: { ...process.env, CAVVY_HOME: join(dir, "home"), CAVVY_NO_KEYCHAIN: "1", CAVVY_ELECTRON_TEST_PORT: "9344", CAVVY_ELECTRON_USER_DATA: join(dir, "electron-data"), CAVVY_ELECTRON_CWD: project, CAVVY_ELECTRON_METRICS: metricsFile },
         stdout: "ignore",
         stderr: Bun.file(join(dir, "app.log")),
     });
     let gui: { webSocketDebuggerUrl: string } | undefined;
     for (let i = 0; !gui; i++) {
-        gui = ((await fetch("http://127.0.0.1:9344/json/list").then((r) => r.json(), () => [])) as { url: string; webSocketDebuggerUrl: string }[]).find((t) => t.url.startsWith("harness://app"));
+        gui = ((await fetch("http://127.0.0.1:9344/json/list").then((r) => r.json(), () => [])) as { url: string; webSocketDebuggerUrl: string }[]).find((t) => t.url.startsWith("cavvy://app"));
         if (!gui) { if (i > 2000) throw new Error("no window"); await sleep(10); }
     }
     const ws = new WebSocket(gui.webSocketDebuggerUrl);

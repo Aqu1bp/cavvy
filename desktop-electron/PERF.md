@@ -1,11 +1,14 @@
-# Electron spike: performance evidence
+# The desktop app on Electron: performance
+
+Measured while moving the desktop app from Tauri to Electron (the spike, `spike/electron-shell`); the raw results
+weren't kept in the repo.
 
 Measured on an Apple M5 MacBook Pro (macOS 26), Electron 45, against the demo (mock model, demo site), with a fresh
-profile each run. Raw results: `bench-results/`. Reproduce:
+profile each run. Reproduce (results go to `bench-results/`):
 
     bun desktop-electron/bench.ts --label <name> [--app <packaged executable>]
     bun desktop-electron/bench-startup.ts --label <name> [--app <packaged executable>]
-    bun desktop-electron/pack.ts                     # Harness.app, signed ad hoc
+    bun desktop-electron/pack.ts                     # Cavvy.app, signed ad hoc
 
 `bench.ts` phases: idle on the home screen; after the agent browsed the demo site; the Browser pane open and idle;
 frame times while the side panel is dragged; three agent sessions working at once (one streaming on screen, one

@@ -13,3 +13,5 @@ desktop-electron/node_modules
 desktop-electron/dist
 desktop-electron/out
 desktop-electron/stage
+desktop-electron/bench-results
+desktop-electron/bench-*.json

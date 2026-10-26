@@ -14,10 +14,10 @@ var app: ReturnType<typeof Bun.spawn> | undefined;
 const deadline = setTimeout(() => { report.error = "timed out"; console.log(JSON.stringify(report, null, 1)); app?.kill("SIGKILL"); demo.kill(); process.exit(1); }, 150_000);
 try {
     for (let i = 0; ; i++) { if (await fetch("http://127.0.0.1:4633/healthz").then((r) => r.ok, () => false)) break; if (i > 120) throw new Error("demo"); await sleep(500); }
-    app = Bun.spawn([`${repo}/desktop-electron/node_modules/.bin/electron`, `${repo}/desktop-electron`], { cwd: repo, env: { ...process.env, HARNESS_HOME: `${dir}/home`, HARNESS_NO_KEYCHAIN: "1", HARNESS_ELECTRON_TEST_PORT: "9341", HARNESS_ELECTRON_USER_DATA: `${dir}/electron-data`, HARNESS_ELECTRON_CWD: `${dir}/acme-platform`, HARNESS_ELECTRON_METRICS: metricsFile }, stdout: "ignore", stderr: Bun.file(`${dir}/app.log`) });
+    app = Bun.spawn([`${repo}/desktop-electron/node_modules/.bin/electron`, `${repo}/desktop-electron`], { cwd: repo, env: { ...process.env, CAVVY_HOME: `${dir}/home`, CAVVY_NO_KEYCHAIN: "1", CAVVY_ELECTRON_TEST_PORT: "9341", CAVVY_ELECTRON_USER_DATA: `${dir}/electron-data`, CAVVY_ELECTRON_CWD: `${dir}/acme-platform`, CAVVY_ELECTRON_METRICS: metricsFile }, stdout: "ignore", stderr: Bun.file(`${dir}/app.log`) });
     const targets = async () => (await fetch("http://127.0.0.1:9341/json/list").then((r) => r.json(), () => [])) as { url: string; type: string; webSocketDebuggerUrl: string }[];
     let gui: { webSocketDebuggerUrl: string } | undefined;
-    for (let i = 0; !gui; i++) { gui = (await targets()).find((t) => t.url.startsWith("harness://app")); if (i > 200) throw new Error("no window"); if (!gui) await sleep(100); }
+    for (let i = 0; !gui; i++) { gui = (await targets()).find((t) => t.url.startsWith("cavvy://app")); if (i > 200) throw new Error("no window"); if (!gui) await sleep(100); }
     const connect = async (url: string) => {
         const ws = new WebSocket(url); await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });
         let seq = 0; const pending = new Map<number, (v: any) => void>();
@@ -38,7 +38,7 @@ try {
     if (!tabTarget) throw new Error("no tab");
     const t = await connect(tabTarget.webSocketDebuggerUrl);
     const m = await Bun.file(metricsFile).json();
-    const rpc = new WebSocket(`ws://127.0.0.1:${m.server.port}/ws`, ["harness.v1", `auth.${m.server.token}`]);
+    const rpc = new WebSocket(`ws://127.0.0.1:${m.server.port}/ws`, ["cavvy.v1", `auth.${m.server.token}`]);
     await new Promise((r, j) => { rpc.onopen = r; rpc.onerror = j; });
     let rseq = 0; const rp = new Map<number, (v: any) => void>();
     rpc.onmessage = (e) => { const x = JSON.parse(String(e.data)); if (x.id) { rp.get(x.id)?.(x); rp.delete(x.id); } };
@@ -78,7 +78,7 @@ try {
 } finally {
     clearTimeout(deadline);
     app?.kill("SIGTERM"); await sleep(2000); app?.kill("SIGKILL"); demo.kill();
-    report.appLog = (await Bun.file(`${dir}/app.log`).text().catch(() => "")).split("\n").filter((l) => /error|harness\]/i.test(l)).slice(-8).join("\n");
+    report.appLog = (await Bun.file(`${dir}/app.log`).text().catch(() => "")).split("\n").filter((l) => /error|cavvy\]/i.test(l)).slice(-8).join("\n");
     console.log(JSON.stringify(report, null, 1));
     process.exit(0);
 }

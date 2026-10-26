@@ -1,4 +1,4 @@
-// Measurements for the benchmark (bench.ts): with HARNESS_ELECTRON_METRICS naming a file, the app writes to it once
+// Measurements for the benchmark (bench.ts): with CAVVY_ELECTRON_METRICS naming a file, the app writes to it once
 // a second when startup steps happened (ms since the process started) and each of its processes' memory and CPU, by
 // role: the main process, the UI's page, each browser tab's page, the GPU and network helpers, and the server. Never
 // set in normal use.
@@ -16,7 +16,7 @@ export function mark(name: string) {
 }
 
 export function startMetrics(o: { ui(): number | undefined; tabs(): number[]; server(): { pid?: number; port?: number; token?: string }; extra?(): unknown }) {
-    const file = process.env.HARNESS_ELECTRON_METRICS;
+    const file = process.env.CAVVY_ELECTRON_METRICS;
     if (!file) return;
     const write = () => {
         const ui = o.ui();

@@ -2,8 +2,6 @@
 // time limit, and events by name. One connection serves the browser and every page attached to it (a page's commands
 // and events carry its sessionId).
 
-import type { CdpTransport } from "./host";
-
 export class CdpError extends Error {
     constructor(
         message: string,

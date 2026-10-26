@@ -43,7 +43,7 @@ const source = readFileSync(new URL("../../gui/src/App.tsx", import.meta.url), "
 const builtins = new Set(["Show", "For", "Index", "Switch", "Match", "Dynamic", "Portal", "ErrorBoundary", "Suspense", "RenderBoundary"]);
 const widgets = [...new Set([...source.matchAll(/<([A-Z][A-Za-z0-9]*)[\s/>]/g)].map((m) => m[1]!))].filter((tag) => !builtins.has(tag));
 const App = component(source.slice(source.indexOf("export function App")), "App", {
-    ...appModule, RenderBoundary: boundary(), prefs: { sidebar: true }, isTauri: false, setEnterSends() {}, actionOf: () => undefined, skipCovered() {},
+    ...appModule, RenderBoundary: boundary(), prefs: { sidebar: true }, isTauri: false, isDesktop: false, isElectron: false, setEnterSends() {}, actionOf: () => undefined, skipCovered() {},
     railDrag: () => undefined, columnSteps, COLUMN_NARROW, COLUMN_SHORT, shellLayout: () => ({ railMode: "dock", railShown: true, sheet: { w: 1100, h: 860 }, column: { w: 1100, h: 860 }, inspector: { open: false, mode: "dock", width: 360, short: false, bottom: 8 }, terminal: { shown: false, height: 0, maximized: false, most: 560 } }), settingsTab: () => undefined, agentFocus: () => undefined, review: () => undefined,
     attentionCount: () => 0, setAgentFocus() {}, setReview() {}, onMount() {},
     ...Object.fromEntries(widgets.map((tag) => [tag, () => node(tag)])),

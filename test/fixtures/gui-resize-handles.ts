@@ -36,7 +36,7 @@ test("the rail's edge: shown once a frame within 220-420, saved on release; a do
         setRailDrag: (w: number | undefined) => shown.push(w),
         frameDrag: (o: Parameters<typeof frameDrag>[0]) => frameDrag({ ...o, frames }),
         SidebarTop: () => node("top"),
-        isTauri: false, os: "macos",
+        isTauri: false, isDesktop: false, isElectron: false, os: "macos",
         window: world.window, document: world.document,
     });
     const root = node("root");
@@ -86,7 +86,7 @@ test("the inspector's edge: shown once a frame within its bounds, saved on relea
     const saved: number[] = [];
     const shown: (number | undefined)[] = [];
     const Resizer = component(between("../../gui/src/App.tsx", "function InspectorResizer(", "const INSPECTOR_KEY"), "InspectorResizer", {
-        // A 1200px sheet: the conversation keeps 480, so it can widen to 620 (its most).
+        // A 1200px sheet: the conversation keeps 480, so it can widen to 720.
         shellLayout: () => ({ sheet: { w: 1200 }, inspector: { width: 360 } }),
         clampInspectorWidth, INSPECTOR_DEFAULT,
         setInspectorWidth: (w: number) => saved.push(w),
@@ -109,7 +109,8 @@ test("the inspector's edge: shown once a frame within its bounds, saved on relea
         frames.run();
         world.listeners.pointermove!({ clientX: 1400 });
         frames.run();
-        expect(shown).toEqual([420, 620, 280]);
+        // As wide as keeps the conversation at its least (a browser wants room), and no narrower than the least.
+        expect(shown).toEqual([420, 720, 280]);
         expect(saved).toEqual([]);
         world.listeners.pointermove!({ clientX: 700 });
         world.listeners.lostpointercapture!({});

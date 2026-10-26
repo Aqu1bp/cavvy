@@ -2,7 +2,7 @@
 // through a run against the demo (mock model, demo site) with a fresh profile. Writes bench-<label>.json.
 //
 //   bun desktop-electron/bench.ts --label before                       the development build (electron .)
-//   bun desktop-electron/bench.ts --label after --app <path>/Harness   a packaged app's executable
+//   bun desktop-electron/bench.ts --label after --app <path>/Cavvy   a packaged app's executable
 //
 // Memory: the working set Electron reports for each of its processes (app.getAppMetrics, via metrics.ts) and the
 // server's RSS, the median of 10 one-second samples; CPU: their mean. macOS's own footprint figure (top's MEM) is
@@ -19,7 +19,7 @@ const arg = (n: string) => (args.includes(n) ? args[args.indexOf(n) + 1] : undef
 const label = arg("--label") ?? "run";
 const repo = resolve(import.meta.dir, "..");
 const out = arg("--out") ?? join(repo, "desktop-electron");
-const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "harness-bench-"));
+const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "cavvy-bench-"));
 const metricsFile = join(dir, "metrics.json");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const report: Record<string, unknown> = { label, at: new Date().toISOString() };
@@ -88,14 +88,14 @@ try {
     const spawnedAt = performance.now();
     app = Bun.spawn(exe ? [exe] : [join(repo, "desktop-electron/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"), join(repo, "desktop-electron")], {
         cwd: repo,
-        env: { ...process.env, HARNESS_HOME: join(dir, "home"), HARNESS_NO_KEYCHAIN: "1", HARNESS_ELECTRON_TEST_PORT: "9340", HARNESS_ELECTRON_USER_DATA: join(dir, "electron-data"), HARNESS_ELECTRON_CWD: join(dir, "acme-platform"), HARNESS_ELECTRON_METRICS: metricsFile },
+        env: { ...process.env, CAVVY_HOME: join(dir, "home"), CAVVY_NO_KEYCHAIN: "1", CAVVY_ELECTRON_TEST_PORT: "9340", CAVVY_ELECTRON_USER_DATA: join(dir, "electron-data"), CAVVY_ELECTRON_CWD: join(dir, "acme-platform"), CAVVY_ELECTRON_METRICS: metricsFile },
         stdout: Bun.file(join(dir, "app.out.log")), stderr: Bun.file(join(dir, "app.log")),
     });
 
     // The UI over DevTools (the test port).
     let gui: { webSocketDebuggerUrl: string } | undefined;
     for (let i = 0; !gui; i++) {
-        gui = ((await fetch("http://127.0.0.1:9340/json/list").then((r) => r.json(), () => [])) as { url: string; webSocketDebuggerUrl: string }[]).find((t) => t.url.startsWith("harness://app"));
+        gui = ((await fetch("http://127.0.0.1:9340/json/list").then((r) => r.json(), () => [])) as { url: string; webSocketDebuggerUrl: string }[]).find((t) => t.url.startsWith("cavvy://app"));
         if (!gui) { if (i > 2400) throw new Error("no window"); await sleep(25); }
     }
     const ws = new WebSocket(gui.webSocketDebuggerUrl);
@@ -154,7 +154,7 @@ try {
     report.resizeSmoothness = { frames: frames.length, p50ms: Math.round(sorted[Math.floor(sorted.length * 0.5)] ?? 0), p95ms: Math.round(sorted[Math.floor(sorted.length * 0.95)] ?? 0), maxms: Math.round(sorted.at(-1) ?? 0), over20ms: frames.filter((f) => f > 20).length, longTasks: long.length, longTaskMs: Math.round(long.reduce((a, b) => a + b, 0)) };
 
     const m = (await metrics())!;
-    const rpc = new WebSocket(`ws://127.0.0.1:${m.server.port}/ws`, ["harness.v1", `auth.${m.server.token}`]);
+    const rpc = new WebSocket(`ws://127.0.0.1:${m.server.port}/ws`, ["cavvy.v1", `auth.${m.server.token}`]);
     await new Promise((r, j) => { rpc.onopen = r; rpc.onerror = j; });
     let rseq = 0;
     const rpending = new Map<number, (v: any) => void>();

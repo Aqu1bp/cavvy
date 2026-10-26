@@ -5,15 +5,19 @@
 //   - a tab's own commands go to its webContents.debugger, and its events come back tagged with its session;
 //   - the few browser-wide ones the pool uses are answered here: making a tab (Target.createTarget), closing and
 //     fronting one, the browser's version, and what the pool turns on (auto-attach, discovery, downloads);
-//   - Harness.viewSize tells a page its real size and scale (it is never emulated), Harness.humanInput that the person
+//   - Cavvy.viewSize tells a page its real size and scale (it is never emulated), Cavvy.humanInput that the person
 //     used it directly (the tab becomes theirs, as a click in the streamed pane makes it).
 // No DevTools port is opened: only the server, with its token, reaches these pages.
+//
+// A popup the person opens (a page's sign-in window, say: window.open asking for a window, within moments of their
+// click) is a small window of its own, with window.opener, so the page it reports back to gets the answer. Like Chrome's.
+// It goes only to web pages, and closes with its tab. One the agent opens is a tab, which it drives as any other.
 //
 // A tab nobody can see and nobody has used for a while is frozen: its timers, animations and scripts stop (it costs no
 // CPU) and it's told to give back what memory it can. Any command for it, or a pane showing it, wakes it first, so the
 // agent never finds it different. Not one still loading, nor one playing sound.
 
-import { app, session, type BrowserWindow, type Session, type WebContents } from "electron";
+import { app, session, type BrowserWindow, type BrowserWindowConstructorOptions, type Session, type WebContents } from "electron";
 import { createHash } from "node:crypto";
 import { sendToTab } from "./guest-input";
 
@@ -32,6 +36,10 @@ interface Tab {
     closed: boolean;
     /** When the agent, the person or a pane last used it (ms since the epoch). */
     usedAt: number;
+    /** When the person last used it directly (ms since the epoch): a popup it opens soon after is theirs. */
+    personAt: number;
+    /** The popup windows it opened for the person, and the ones those opened. */
+    popups: Set<BrowserWindow>;
     frozen: boolean;
     /** Chromium refused to freeze it once: it isn't tried again. */
     unfreezable?: boolean;
@@ -47,12 +55,21 @@ interface Channel {
 /** Webviews the GUI is making: will-attach-webview names them (by src), did-attach-webview hands over their page. */
 const WEBVIEW_SRC = /^about:blank#(tab-\d+)$/;
 const PERSON_INPUT = new Set(["mouseDown", "keyDown", "mouseWheel"]);
-/** A tab unseen and unused this long sleeps (checks may shorten it with HARNESS_ELECTRON_FREEZE_MS). */
-const FREEZE_AFTER_MS = Number(process.env.HARNESS_ELECTRON_FREEZE_MS ?? 30_000);
+/** A tab unseen and unused this long sleeps (checks may shorten it with CAVVY_ELECTRON_FREEZE_MS). */
+const FREEZE_AFTER_MS = Number(process.env.CAVVY_ELECTRON_FREEZE_MS ?? 30_000);
 /** An asleep tab's page process using more CPU than this (%, over the last 5s) is put back to sleep. */
 const BUSY_ASLEEP_PERCENT = 1;
 /** How long Chromium takes to take in a webview's visibility changing (a frame or two, with room). */
 const VISIBILITY_MS = 100;
+/** A popup opened this soon after the person used the page is theirs (a window); later, or by the agent, a tab. */
+const PERSON_POPUP_MS = 5000;
+/** Where a popup window may go: web pages, and the blank page a script fills in. */
+const popupUrl = (url: string) => /^https?:\/\//i.test(url) || url === "about:blank";
+/** A popup window: the page's own size (window.open's features), locked down as the tabs are. */
+const POPUP: BrowserWindowConstructorOptions = {
+    autoHideMenuBar: true,
+    webPreferences: { nodeIntegration: false, nodeIntegrationInSubFrames: false, contextIsolation: true, sandbox: true, webSecurity: true, spellcheck: false },
+};
 
 export class BrowserHost {
     private ws?: WebSocket;
@@ -76,9 +93,9 @@ export class BrowserHost {
     connect(info: { port: number; token: string }) {
         this.dropAll();
         this.ws?.close();
-        const ws = new WebSocket(`ws://127.0.0.1:${info.port}/browser-host`, ["harness.v1", `auth.${info.token}`]);
+        const ws = new WebSocket(`ws://127.0.0.1:${info.port}/browser-host`, ["cavvy.v1", `auth.${info.token}`]);
         this.ws = ws;
-        ws.onopen = () => console.error("[harness] browser host connected");
+        ws.onopen = () => console.error("[cavvy] browser host connected");
         ws.onmessage = (e) => this.receive(String(e.data));
         ws.onclose = () => {
             if (this.ws === ws) this.ws = undefined;
@@ -180,7 +197,7 @@ export class BrowserHost {
             tab.unfreezable = true;
             this.toGui({ type: "sleep", key: tab.key, asleep: false });
             this.stats.refused++;
-            console.error(`[harness] couldn't freeze a tab: ${(e as Error).message}`);
+            console.error(`[cavvy] couldn't freeze a tab: ${(e as Error).message}`);
         }
     }
 
@@ -204,7 +221,7 @@ export class BrowserHost {
     /** The GUI laid a tab's webview out at this size: its page's real viewport. */
     sized(key: string, size: { width: number; height: number; scale: number }) {
         const tab = this.tabsByKey.get(key);
-        if (tab && !tab.closed) this.event(tab.channel, "Harness.viewSize", size, tab.sid);
+        if (tab && !tab.closed) this.event(tab.channel, "Cavvy.viewSize", size, tab.sid);
     }
 
     private toGui(msg: unknown) {
@@ -259,7 +276,7 @@ export class BrowserHost {
         const partition = `persist:browser-${createHash("sha256").update(profile).digest("hex").slice(0, 16)}`;
         const ses = session.fromPartition(partition);
         // As Chrome, not as this app: no Electron or app name for sites to refuse.
-        ses.setUserAgent(app.userAgentFallback.replace(/ Electron\/\S+/, "").replace(new RegExp(` ${app.getName()}/\\S+`, "i"), "").replace(/ harness-desktop-electron\/\S+/i, ""));
+        ses.setUserAgent(app.userAgentFallback.replace(/ Electron\/\S+/, "").replace(new RegExp(` ${app.getName()}/\\S+`, "i"), "").replace(/ cavvy-desktop-electron\/\S+/i, ""));
         // A page can't put files on the disk: refused, and told to the tab it came from (as Browser.setDownloadBehavior deny).
         ses.on("will-download", (e, item, wc) => {
             e.preventDefault();
@@ -353,7 +370,7 @@ export class BrowserHost {
         if (wc.isLoading()) await new Promise<void>((r) => wc.once("did-stop-loading", () => r()));
         wc.debugger.attach("1.3");
         const { targetInfo } = (await wc.debugger.sendCommand("Target.getTargetInfo")) as { targetInfo: { targetId: string } };
-        const tab: Tab = { targetId: targetInfo.targetId, sid: `desktop-${this.seq}`, key, wc, channel, openerId, agentInputs: 0, closed: false, usedAt: Date.now(), frozen: false };
+        const tab: Tab = { targetId: targetInfo.targetId, sid: `desktop-${this.seq}`, key, wc, channel, openerId, agentInputs: 0, closed: false, usedAt: Date.now(), personAt: 0, popups: new Set(), frozen: false };
         channel.tabs.set(tab.targetId, tab);
         this.tabsById.set(tab.targetId, tab);
         this.tabsBySid.set(tab.sid, tab);
@@ -371,8 +388,10 @@ export class BrowserHost {
         wc.on("page-title-updated", changed);
         wc.on("did-navigate", changed);
         wc.on("did-navigate-in-page", changed);
-        // A page opening another opens a tab of the same session, as in Chrome (the pool adopts it by its opener).
-        wc.setWindowOpenHandler(({ url }) => {
+        // The person's popup is a window (above); otherwise a page opening another opens a tab of the same session, as in
+        // Chrome (the pool adopts it by its opener).
+        wc.setWindowOpenHandler(({ url, disposition }) => {
+            if (disposition === "new-window" && Date.now() - tab.personAt < PERSON_POPUP_MS && popupUrl(url)) return { action: "allow", overrideBrowserWindowOptions: POPUP };
             void this.openTab(channel, tab.targetId).then((child) => {
                 child.pendingUrl = url;
                 this.announce(child);
@@ -380,10 +399,11 @@ export class BrowserHost {
             return { action: "deny" };
         });
         // The person using the page directly: the tab is theirs. Input the agent sent meanwhile isn't theirs.
+        wc.on("did-create-window", (popup) => this.popup(tab, popup));
         const person = (type: string) => {
             if (tab.agentInputs > 0 || !PERSON_INPUT.has(type)) return;
-            tab.usedAt = Date.now();
-            this.event(channel, "Harness.humanInput", { type }, tab.sid);
+            tab.usedAt = tab.personAt = Date.now();
+            this.event(channel, "Cavvy.humanInput", { type }, tab.sid);
         };
         wc.on("before-input-event", (_e, input) => person(input.type));
         wc.on("before-mouse-event", (_e, mouse) => person(mouse.type));
@@ -391,6 +411,21 @@ export class BrowserHost {
         this.toGui({ type: "ready", key, targetId: tab.targetId });
         if (!openerId) this.announce(tab);
         return tab;
+    }
+
+    /** A popup window of the person's: it stays on web pages, its own popups are windows too, and it closes with its tab. */
+    private popup(tab: Tab, popup: BrowserWindow) {
+        if (tab.closed) return popup.destroy();
+        tab.popups.add(popup);
+        popup.once("closed", () => tab.popups.delete(popup));
+        const wc = popup.webContents;
+        const stay = (e: { preventDefault(): void }, url: string) => {
+            if (!popupUrl(url)) e.preventDefault();
+        };
+        wc.on("will-navigate", stay);
+        wc.on("will-redirect", stay);
+        wc.setWindowOpenHandler(({ url }) => (popupUrl(url) ? { action: "allow", overrideBrowserWindowOptions: POPUP } : { action: "deny" }));
+        wc.on("did-create-window", (child) => this.popup(tab, child));
     }
 
     /** Tells the pool about a tab, waiting for it to be set up, as Chrome's auto-attach does. */
@@ -414,6 +449,8 @@ export class BrowserHost {
         } catch {
             // already gone
         }
+        for (const popup of tab.popups) if (!popup.isDestroyed()) popup.destroy();
+        tab.popups.clear();
         // The GUI drops the webview, and its page with it.
         this.toGui({ type: "destroy", key: tab.key });
         if (tell) {

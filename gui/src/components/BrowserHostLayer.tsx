@@ -48,6 +48,8 @@ function HostedWebview(p: { tab: HostedTab }) {
         // Made by hand, so the partition is set before it loads anything (it can't change after).
         const view = document.createElement("webview");
         view.setAttribute("partition", p.tab.partition);
+        // Its page may ask for popups; the app says what becomes of each (desktop-electron/src/browser-host.ts).
+        view.setAttribute("allowpopups", "");
         view.setAttribute("src", `about:blank#${p.tab.key}`);
         view.className = "br-host-view";
         view.dataset.key = p.tab.key;

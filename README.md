@@ -317,6 +317,7 @@ Agents can open web pages, to check the UI they build. Six tools (`BrowserNaviga
 - **Permissions.** Reading (snapshot, screenshot, logs) is read-only and never asks. Opening `localhost`, `127.0.0.1`, a file or a blank page is allowed; opening any other host asks like `WebFetch`, and `WebFetch(domain:example.com)` rules cover it. Clicking, typing and `BrowserEval` run a page's own scripts and can submit its forms, so they ask like other execute-level tools ("don't ask again" allows the tool in the project), and a yes covers that call alone: the same click or script on the next page asks again; hovering, scrolling and waiting don't. Plan mode allows opening, reading and scrolling, not acting (hovering included, since a page's hover handlers run). Everything that sends the page input waits while you have the tab. Hooks run for these tools as for any other. Claude Code and Codex call them as `mcp__cavvy__browser_navigate` and so on, and rules naming those (`mcp__cavvy__*`, `mcp__cavvy__browser_act`) apply too, though the CLI approves Cavvy's tools itself.
 - **One browser per project, a profile of its own.** Chrome starts with the first page, with a profile under `~/.cavvy/projects/<project>/browser` that keeps logins and cookies between runs, and ends with the last session using it, after 10 minutes unused, or with Cavvy (on Windows, a Cavvy killed outright, from Task Manager say, leaves its browser running; elsewhere a watcher stops it). It's driven over a pipe only Cavvy holds (on Windows, over a port on 127.0.0.1, which other programs on the machine can reach). Each session has its own tabs (at most 8), closed with it. Tabs use separate Chrome windows so different sessions can stream concurrently. If Chrome dies, the tool call says so, and the next page starts a new one. The terminal UI and `-p` runs use it too.
 - **In the GUI,** the side panel's **Browser** tab shows the session's current tab (streamed as frames, only while the tab is showing) with an address bar, back, forward, reload and the tab strip, and the page takes the pane's size. A dot on the tab and a toast say when the agent opens a page. Click, type or scroll in the page and you take the tab: the agent can still read it, but its actions on it fail until you press **Hand back to agent**. Pasted text and committed IME compositions arrive as text; `Shift+Esc` leaves the page for the address bar. It works in the desktop app and in `cavvy gui` in a browser, since Chrome runs next to the server. Clipboard copy out of the page isn't supported.
+- **In the desktop app** the browser is the app's own Chromium, not a headless Chrome: each tab is a real page in the window, which you use directly (scrolling, selecting and copying, IME, as in any browser), and the agent drives the same tabs over the app's connection to the server, which opens no DevTools port. Each project keeps its own cookies and storage. A tab nobody sees and nobody has used for 30 seconds sleeps (it isn't drawn, and costs next to no CPU) and wakes when a pane shows it or the agent uses it. A popup you open (a site's sign-in window) is a window of its own that keeps `window.opener`, so the page it reports back to gets the answer; it goes only to web pages and closes with its tab. A popup the agent opens is a tab. No Chrome is needed; `cavvy gui` in a browser still uses one, streamed as above.
 - **Display quality.** The pane uses a dedicated authenticated binary stream and a Retina Chrome compositor, at one size and quality whether the page is still or moving. Wheel turns go to Chrome as they happen, and transport and decoding each keep only the newest waiting picture. Taking the tab or a page's dialog never resizes the page. Stream reconnects leave chat connected, and disconnected viewers release held keys and mouse buttons. `scripts/browser-perf.ts` measures input-to-picture latency and frame rates against a real Chrome.
 - **Sites see Chrome.** The headless browser tells sites it's the same Chrome with a window (user agent and client hints, `navigator.webdriver` false), so Google, YouTube and the like don't answer it with a robot check.
 - **Settings.** `browser.enabled` (default `true`; Settings → General → Browser; any settings file can turn it off). `browser.executable` names a browser to run instead of the one found, and `browser.headless: false` shows its window while you debug; both count only from your user settings, since a project must not choose what gets launched. The `CAVVY_BROWSER` environment variable names a browser too, and wins. Without any browser, the tools aren't offered and the pane says how to fix that.
@@ -466,11 +467,11 @@ cavvy gui                # opens it in your browser (cavvy serve: server only)
 bun run gui:demo           # try it without API keys: a mock model and a demo project
 ```
 
-The desktop app wraps the same GUI in a native window ([Tauri](https://tauri.app)); the agent runs alongside it as a sidecar, the CLI compiled with `bun build --compile`:
+The desktop app wraps the same GUI in a window of its own ([Electron](https://www.electronjs.org)), where the Browser pane is a real Chromium page that you use directly and the agent drives too (`desktop-electron/`). The agent runs alongside it, the CLI compiled with `bun build --compile`:
 
 ```bash
 bun run desktop:dev        # hot-reloading GUI, server from source
-bun run desktop:build      # installers in desktop/src-tauri/target/release/bundle
+bun run desktop:build      # macOS: the app in desktop-electron/out
 bun run desktop:install    # macOS: this checkout's app into /Applications, restarted
 bun run desktop:update     # macOS: the latest main into /Applications, restarted
 ```
@@ -481,7 +482,7 @@ bun run desktop:update     # macOS: the latest main into /Applications, restarte
 
 Once installed that way, the app updates itself: it checks `origin/main` every few hours, and when there's something new a download icon shows beside Settings. One click runs `desktop:update` in the background (its output in `~/.cavvy/logs/app-update.log`) while you keep working, and Cavvy restarts once the new build is installed; it asks first only if sessions are working. Settings → About lists what's new. `bun run gui:demo --update` walks through it with a stand-in build.
 
-Building it needs Rust ([rustup](https://rustup.rs)) and, on Linux, the WebKitGTK headers (`libwebkit2gtk-4.1-dev build-essential libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev` on Debian and Ubuntu). To distribute it on macOS, sign and notarize the app, sidecar included.
+Building it needs only Bun: the first build downloads Electron. It's built for macOS; Electron runs on Linux and Windows too, but their builds aren't set up yet. To distribute it on macOS, sign and notarize the app, server included.
 
 Using it:
 
@@ -528,8 +529,8 @@ Using it:
 How it fits together:
 
 ```
-desktop app (Rust, Tauri)          browser tab (cavvy gui)
-  native window, system webview      ─┐
+desktop app (Electron)             browser tab (cavvy gui)
+  its own window and Chromium        ─┐
   └─ GUI (gui/, SolidJS) ─────────────┴─ WebSocket on 127.0.0.1, token ─┐
                                                                         ▼
   cavvy serve  (src/server: engine.ts → runtime.ts, one per open session)
@@ -542,11 +543,11 @@ Security. Whoever can talk to the server can run commands as you, so:
 
 - It listens on 127.0.0.1 only (`--host` exposes it, with a warning). Every WebSocket needs the server's random token, sent as a subprotocol so it never appears in a URL or a log. The browser link carries a one-time code (two minutes) that the page trades for the token. Host and Origin headers are checked, so a web page that rebinds a DNS name to 127.0.0.1 can't connect, and the pages are served with a strict Content-Security-Policy.
 - Model output is untrusted: raw HTML in it is shown as text, links open in your browser (never in the app), and images in replies aren't loaded, since a remote image URL can carry data out the moment it's displayed.
-- The desktop app's webview has no shell access; only the Rust side starts the sidecar. The sidecar exits when its stdin closes, so it goes away with the app, even if the app is killed.
+- The desktop app's page has no Node or shell access (context isolation and Chromium's sandbox); it reaches the app only through a few named calls (a folder picker, opening a link, the server's address), and only from its own origin. Only the app's main process starts the server, which exits when its stdin closes, so it goes away with the app, even if the app is killed. The Browser pane's pages are sandboxed too, in a session of their own per project, and the server drives them over the app's connection (`/browser-host`, with the server's token): no DevTools port is opened.
 - Open in editor: a path from a reply is linked only if it's a file inside the session's folder or its `additionalDirectories` (symlinks followed), and the server checks again before opening it. The GUI sends only an editor id from a fixed list, never a program or arguments; editors start from argument lists, never a shell, and nothing goes to the system's default handler (Finder only reveals). A file the chosen editor would open as a project (`.code-workspace` in VS Code and Cursor, `.sublime-project` in Sublime Text, a solution, `.csproj`, `pom.xml` or `build.gradle` in the JetBrains IDEs) isn't opened or linked, since it can name other folders; only folders open as projects. With `--host`, the editor opens on the server's machine, not the one with the browser.
 - Apps started outside a terminal don't get your shell's `PATH`; the desktop sidecar asks your login shell for it (`--login-env`), so the agent finds your tools.
 
-`CAVVY_GUI_DEBUG=1` makes the server say why it refused a connection. On Linux, if the window stays blank, try `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
+`CAVVY_GUI_DEBUG=1` makes the server say why it refused a connection.
 
 **Terminal and worktrees.** The terminal button in the title bar (or Ctrl+backtick, on every platform) opens a resizable bottom panel with interactive shell tabs in the current project's directory. Drag its top edge to resize it; hiding the panel keeps shells running. Each project/worktree has its own tabs: opening the panel starts a shell where there is none, and going to another project with the panel open doesn't (click **New terminal** there). A window has up to 12 terminals across all its projects, with 48 across the server. Closing a tab stops its shell; if disconnected, that close is remembered across reloads and sent when the connection returns.
 
@@ -640,7 +641,8 @@ Layout:
 | `src/commands` | Slash commands |
 | `src/server` | GUI server: protocol, multi-session engine, WebSocket server (`cavvy gui` / `serve`) |
 | `gui` | The GUI (SolidJS, Vite). `bun run gui:dev` (add `--demo` for the mock model) runs it with hot reload at http://localhost:5173 |
-| `desktop` | The desktop app (Tauri): Rust shell, icons, capabilities |
+| `desktop-electron` | The desktop app (Electron): its window, the Browser pane's pages, packaging and benchmarks |
+| `desktop` | The app's icons, and the Tauri shell it replaces |
 | `scripts` | Mock model and demo project (`gui:demo`), sidecar build |
 
 ### Fast mode

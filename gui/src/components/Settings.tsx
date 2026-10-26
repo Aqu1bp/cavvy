@@ -12,7 +12,7 @@ import { updateView } from "../lib/app-update";
 import { connectCli, editors, refreshEditors } from "../state/actions";
 import { ACCENTS, CHAT_WIDTHS, prefs, PREF_DEFAULTS, setPrefs, type AccentId, type Scheme } from "../state/prefs";
 import { setSettingsTab, settingsTab, type SettingsTab } from "../state/ui";
-import { canReveal, copyText, isTauri, mod, openExternal, os, revealPath } from "../lib/platform";
+import { canReveal, copyText, isDesktop, mod, openExternal, os, revealPath } from "../lib/platform";
 import { keybindingsFile, keymap, withShortcut } from "../state/keybindings";
 import { ACTIONS, CONTEXTS, KEYBINDINGS_DOCS, formatKeys } from "../../../src/keybindings/core";
 import { ConfirmDialog } from "./ui/ConfirmDialog";
@@ -896,7 +896,7 @@ function Updates() {
         }
     }
     return (
-        <Show when={v() && (isTauri || !app.update?.unavailable) ? v() : undefined}>
+        <Show when={v() && (isDesktop || !app.update?.unavailable) ? v() : undefined}>
             {(v) => (
                 <Section title="Updates" class="upd-group">
                     <Row title={v().title} desc={v().detail} class={`upd-row ${u().updating ? "running" : ""}`}>
@@ -943,7 +943,7 @@ function About() {
     return (
         <>
             <Updates />
-            <Section title={app.update && (isTauri || !app.update.unavailable) ? "Details" : undefined}>
+            <Section title={app.update && (isDesktop || !app.update.unavailable) ? "Details" : undefined}>
                 <Row title="Version">
                     <span class="set-val">{app.hello?.version ?? "—"}</span>
                 </Row>

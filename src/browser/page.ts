@@ -415,10 +415,10 @@ export class Page {
             this.wake();
         });
         // Only from the desktop app's view of the page (host.ts): its real size, and the person using it directly.
-        this.on("Harness.viewSize", (p: { width: number; height: number; scale: number }) => {
+        this.on("Cavvy.viewSize", (p: { width: number; height: number; scale: number }) => {
             if (this.o.hosted && p.width > 0 && p.height > 0) this.viewport = { width: p.width, height: p.height, scale: p.scale > 0 ? p.scale : 1 };
         });
-        this.on("Harness.humanInput", () => {
+        this.on("Cavvy.humanInput", () => {
             if (this.o.hosted && !this.closed) this.o.hooks.taken?.(this);
         });
         this.on("Page.screencastFrame", (p: { data: string; sessionId: number; metadata: { deviceWidth: number; deviceHeight: number } }) => {
@@ -610,7 +610,7 @@ export class Page {
     }
 
     async setViewport(v: Viewport) {
-        // A view in the desktop app is the size the window gives it (Harness.viewSize says what that is).
+        // A view in the desktop app is the size the window gives it (Cavvy.viewSize says what that is).
         if (this.o.hosted) return;
         this.viewport = v;
         await this.send("Emulation.setDeviceMetricsOverride", { width: v.width, height: v.height, deviceScaleFactor: v.scale, mobile: false });

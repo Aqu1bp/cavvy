@@ -1,4 +1,4 @@
-// Where the GUI runs: the desktop app (Tauri) or a browser tab opened by
+// Where the GUI runs: the desktop app (Electron, or the Tauri one it replaces) or a browser tab opened by
 // `cavvy gui`. Everything that differs between the two lives here.
 
 import type { Credentials } from "./rpc";
@@ -9,6 +9,8 @@ export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in
 export interface ElectronBridge {
     sidecarInfo(): Promise<{ port: number; token: string }>;
     windowReady(): void;
+    /** Shows and focuses the window (a notification clicked). */
+    focusWindow(): void;
     pickFolder(o: { defaultPath?: string; title: string }): Promise<string | null>;
     openExternal(url: string): Promise<void>;
     revealPath(path: string): Promise<void>;
@@ -21,7 +23,7 @@ export interface ElectronBridge {
     browserSized(key: string, size: { width: number; height: number; scale: number }): void;
 }
 
-export const electron: ElectronBridge | undefined = typeof window !== "undefined" ? (window as unknown as { harnessDesktop?: ElectronBridge }).harnessDesktop : undefined;
+export const electron: ElectronBridge | undefined = typeof window !== "undefined" ? (window as unknown as { cavvyDesktop?: ElectronBridge }).cavvyDesktop : undefined;
 export const isElectron = electron !== undefined;
 /** The desktop app, either shell: a window of its own, the server beside it, native dialogs. */
 export const isDesktop = isTauri || isElectron;
@@ -217,7 +219,9 @@ export async function notify(title: string, body: string, onClick?: () => void, 
     if (Notification.permission !== "granted") return;
     const note = new Notification(title, { body, silent: false, ...(opts.tag ? { tag: opts.tag } : {}) });
     note.onclick = () => {
-        window.focus();
+        // The page alone can't bring the desktop app's window forward.
+        if (electron) electron.focusWindow();
+        else window.focus();
         onClick?.();
         note.close();
     };

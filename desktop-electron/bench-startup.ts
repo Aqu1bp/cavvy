@@ -2,7 +2,7 @@
 // it's spawned: the server ready, the window shown, and the composer there to type in. Writes bench-startup-<label>.json.
 //
 //   bun desktop-electron/bench-startup.ts --label dev
-//   bun desktop-electron/bench-startup.ts --label packaged --app <…>/Harness.app/Contents/MacOS/Harness
+//   bun desktop-electron/bench-startup.ts --label packaged --app <…>/Cavvy.app/Contents/MacOS/Cavvy
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,7 +13,7 @@ const arg = (n: string) => (args.includes(n) ? args[args.indexOf(n) + 1] : undef
 const label = arg("--label") ?? "run";
 const launches = Number(arg("--launches") ?? 6);
 const repo = resolve(import.meta.dir, "..");
-const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "harness-startup-"));
+const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "cavvy-startup-"));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const report: Record<string, unknown> = { label, launches: [] as unknown[] };
 const demo = Bun.spawn(["bun", "--no-env-file", "scripts/gui-demo.ts", "--port", "4635", "--token", "startup-bench-token-1234567", "--dir", dir], { cwd: repo, stdout: "ignore", stderr: "ignore" });
@@ -25,13 +25,13 @@ try {
         const spawnedAt = performance.now();
         const app = Bun.spawn(exe ? [exe] : [join(repo, "desktop-electron/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"), join(repo, "desktop-electron")], {
             cwd: repo,
-            env: { ...process.env, HARNESS_HOME: join(dir, "home"), HARNESS_NO_KEYCHAIN: "1", HARNESS_ELECTRON_TEST_PORT: "9343", HARNESS_ELECTRON_USER_DATA: join(dir, "electron-data"), HARNESS_ELECTRON_CWD: join(dir, "acme-platform"), HARNESS_ELECTRON_METRICS: metricsFile },
+            env: { ...process.env, CAVVY_HOME: join(dir, "home"), CAVVY_NO_KEYCHAIN: "1", CAVVY_ELECTRON_TEST_PORT: "9343", CAVVY_ELECTRON_USER_DATA: join(dir, "electron-data"), CAVVY_ELECTRON_CWD: join(dir, "acme-platform"), CAVVY_ELECTRON_METRICS: metricsFile },
             stdout: "ignore",
             stderr: "ignore",
         });
         let ws: WebSocket | undefined;
         for (let i = 0; !ws; i++) {
-            const t = ((await fetch("http://127.0.0.1:9343/json/list").then((r) => r.json(), () => [])) as { url: string; webSocketDebuggerUrl: string }[]).find((x) => x.url.startsWith("harness://app"));
+            const t = ((await fetch("http://127.0.0.1:9343/json/list").then((r) => r.json(), () => [])) as { url: string; webSocketDebuggerUrl: string }[]).find((x) => x.url.startsWith("cavvy://app"));
             if (t) ws = new WebSocket(t.webSocketDebuggerUrl);
             else { if (i > 3000) throw new Error("no window"); await sleep(5); }
         }

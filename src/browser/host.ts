@@ -8,20 +8,12 @@
 // { channel, data } with a DevTools message, { channel, close: true }. App → server: { channel, data } with a
 // DevTools answer or event, { channel, closed: true } when the app has dropped it (its window closed, say).
 
+import { CdpClient, type CdpTransport } from "./cdp";
 import type { ChromeProcess } from "./chrome";
 
 export interface HostSocket {
     send(text: string): void;
     close(code?: number, reason?: string): void;
-}
-
-/** What CdpClient needs of a connection: a WebSocket, or a channel to the desktop app. */
-export interface CdpTransport {
-    send(text: string): void;
-    close(): void;
-    onmessage: ((event: { data: string }) => void) | null;
-    onclose: (() => void) | null;
-    onerror: (() => void) | null;
 }
 
 class Channel implements CdpTransport {
