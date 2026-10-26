@@ -4,7 +4,7 @@
 // decision, MCP servers and file index, shared by its sessions.
 
 import { noteScheduleIndex, readScheduleIndex } from "../agent/schedule-host";
-import { ACCOUNT_PROVIDERS, account, accountProvider, accountSharingWarning, addAccount, defaultAccount, holdLogin, listAccounts, removeAccount, renameAccount, setDefaultAccount, registerAccountRoots } from "../providers/accounts";
+import { ACCOUNT_PROVIDERS, account, accountProvider, accountSharingWarning, accountUnshared, addAccount, defaultAccount, holdLogin, listAccounts, removeAccount, renameAccount, setDefaultAccount, registerAccountRoots } from "../providers/accounts";
 import { loginCommand } from "../backends/account-login";
 import { redactedError } from "./git-handles";
 import { sessionWorktree } from "./session-worktrees";
@@ -1563,7 +1563,7 @@ export class Engine {
                 }
             }
             const sharing = accountSharingWarning(provider, a.id);
-            return { ...a, ...this.accountStatus.get(key), ...(sharing ? { sharing } : {}) };
+            return { ...a, ...this.accountStatus.get(key), ...(sharing ? { sharing, unshared: accountUnshared(provider, a.id) } : {}) };
         }));
     }
 

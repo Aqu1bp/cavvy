@@ -186,6 +186,12 @@ export function accountSharingWarning(provider: string, id: string): string | un
     }
     return said.join(" ");
 }
+/** The entries of Default a Cavvy-made account doesn't share (accountSharingWarning says why), by name. */
+export function accountUnshared(provider: string, id: string): string[] {
+    const layout = sharingConflicts.get(`${provider}:${id}`);
+    if (!layout) return [];
+    return [...new Set([...layout.withheld.map((w) => w.split(",")[0]!), ...layout.conflicts])];
+}
 export function hasNamedAccounts(): boolean {
     return ACCOUNT_PROVIDERS.some((p) => readAgentConfig(p)?.accounts?.length);
 }

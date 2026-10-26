@@ -15,6 +15,12 @@ const nameError = (name: string) => /^[a-zA-Z0-9][a-zA-Z0-9 _.-]{0,63}$/.test(na
 /** The CLIs report plans in lower case ("max", "plus"). */
 const planLabel = (plan?: string) => plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : undefined;
 /** What's wrong with an account, if anything: signed in says nothing. */
+/** What of Default's setup an account doesn't share, by name ("settings.json not shared with Default"); why is in its tooltip. */
+const unsharedLabel = (names?: string[]) => {
+    if (!names?.length) return undefined;
+    const list = names.length <= 2 ? names.join(" and ") : `${names.slice(0, 2).join(", ")} and ${names.length - 2} more`;
+    return `${list} not shared with Default`;
+};
 const accountStatus = (a: AccountInfo) => a.invalid ? "Unavailable" : a.signedIn === false ? "Not signed in" : a.signedIn === undefined ? "Status not checked" : undefined;
 
 /**
@@ -180,7 +186,7 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
                 <For each={accounts()}>{(a) => {
                     let anchor: HTMLButtonElement | undefined;
                     // The email names an account best; a named account keeps its name beside it.
-                    const meta = () => [a.email && a.id !== "default" ? a.name : undefined, planLabel(a.plan), accountStatus(a), a.sharing ? "Not all shared" : undefined].filter(Boolean).join(" · ");
+                    const meta = () => [a.email && a.id !== "default" ? a.name : undefined, planLabel(a.plan), accountStatus(a), unsharedLabel(a.unshared)].filter(Boolean).join(" · ");
                     return <div class="account-row" role="listitem" classList={{ open: menu() === a.id }}>
                         <div class="account-identity" title={[a.description, a.sharing].filter(Boolean).join("\n") || undefined}>
                             <span class="account-name truncate">{a.email ?? a.name}</span>

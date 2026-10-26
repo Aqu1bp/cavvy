@@ -338,3 +338,17 @@ test("invalid accounts remain visible as unavailable and removal promises to lea
         expect(f.calls).toContainEqual({ method: "accounts.remove", params: { provider: "claude-code", id: "personal", confirmedFolder: "/fake/personal" } });
     } finally { f.dispose(); }
 });
+
+test("an account that doesn't share all of Default's setup says which, with why in its tooltip", () => {
+    const sharing = "Not shared with Default: settings.json, because Default's sets apiKeyHelper, which would sign this account in as Default.";
+    const f = fixture([defaultAccount, { ...personal, sharing, unshared: ["settings.json"] }]);
+    try {
+        expect(text(f.root)).toContain("settings.json not shared with Default");
+        expect(text(f.root)).not.toContain("Not all shared");
+        expect(f.nodes().find((n) => n.props.class === "account-identity" && String(n.props.title ?? "").includes(sharing))).toBeDefined();
+    } finally { f.dispose(); }
+    const many = fixture([defaultAccount, { ...personal, sharing, unshared: ["settings.json", "CLAUDE.md", "rules", "agents"] }]);
+    try {
+        expect(text(many.root)).toContain("settings.json, CLAUDE.md and 2 more not shared with Default");
+    } finally { many.dispose(); }
+});
