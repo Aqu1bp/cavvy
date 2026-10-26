@@ -128,6 +128,8 @@ export type Line =
     | { t: "schedules"; jobs: ScheduledJob[] }
     /** The /goal set in this session; null when it ended. Older versions skip these lines. */
     | { t: "goal"; goal: GoalRecord | null }
+    /** When it last did work (Session.worked): the sidebar's order. Older versions skip these lines. */
+    | { t: "worked"; at: number }
     /** A background task as it is now (the last line for its id wins): started, or ended. Older versions skip these lines. */
     | { t: "bgtask"; task: BackgroundTaskInfo }
     /** `model` refused a request for the images of the messages at `indexes` (see refuseImages). Older versions skip these lines. */
@@ -346,12 +348,37 @@ export class Session {
         return this.persist;
     }
 
+    /** When it last did work, as its file says (worked lines); undefined for one from before they were written. */
+    workedAt?: number;
+    /** Its file's time when it was loaded, before loading repaired anything: when one from before last worked. */
+    writtenAt?: number;
+    private savedWorkedAt?: number;
+
+    /**
+     * It did work at `at` (a turn, the person's shell command, a compaction they asked for). The sidebar goes by this,
+     * not by when the file was last written: opening a session can repair it, and idle compaction, a rename or its
+     * schedules write to it too. While it works, a line a minute at most; `now`: this one goes down at once (a turn's
+     * start and end). The last is saved when it's let go.
+     */
+    worked(at = Date.now(), now = false) {
+        if (this.workedAt === undefined || at > this.workedAt) this.workedAt = at;
+        if (now || this.savedWorkedAt === undefined || this.workedAt - this.savedWorkedAt >= WORKED_EVERY_MS) this.saveWorked();
+    }
+
+    private saveWorked() {
+        if (this.workedAt === undefined || this.workedAt === this.savedWorkedAt) return;
+        const at = this.workedAt;
+        this.savedWorkedAt = at;
+        this.write({ t: "worked", at });
+    }
+
     /**
      * Done writing it (another session took its place, or it was closed):
      * another process may open it now. Anything this copy is still asked to
      * write (a title arriving late, say) is dropped.
      */
     release() {
+        this.saveWorked();
         this.released = true;
         if (!this.holding) return;
         this.holding = false;
@@ -379,6 +406,12 @@ export class Session {
         if (!this.started && line.t !== "msg" && !existsSync(this.file)) {
             this.pending.push(line);
             return false;
+        }
+        // One from before worked lines, written to for something else (a repair, a rename): when it last worked goes first,
+        // or the sidebar would take this write's time for it.
+        if (line.t !== "worked" && this.workedAt === undefined && this.writtenAt !== undefined) {
+            this.workedAt = this.savedWorkedAt = this.writtenAt;
+            this.pending.push({ t: "worked", at: this.writtenAt });
         }
         try {
             if (!this.started) {
@@ -775,6 +808,7 @@ export class Session {
     }
 
     private static read(file: string, persist = true): Session {
+        const writtenAt = statSync(file).mtimeMs;
         const text = readFileSync(file, "utf-8");
         let meta: SessionMeta | undefined;
         const lines: Line[] = [];
@@ -790,16 +824,25 @@ export class Session {
         }
         if (!meta) throw new Error(`Not a session file: ${file}`);
         const s = new Session(meta, { file, persist });
+        s.started = true;
+        for (const l of lines) if (l.t === "worked" && typeof l.at === "number" && Number.isFinite(l.at)) s.workedAt = Math.max(s.workedAt ?? -Infinity, l.at);
+        // Never after the file was last written (a clock set back since): the listing counts on it (newestByWork).
+        if (s.workedAt !== undefined) s.workedAt = Math.min(s.workedAt, writtenAt);
+        s.savedWorkedAt = s.workedAt;
+        s.writtenAt = writtenAt;
         // End a torn last line, or the next record appended would join it and
-        // both would be unreadable on the following load.
+        // both would be unreadable on the following load. (Written through write(), so one from before worked lines
+        // keeps its time.)
         if (persist && text && !text.endsWith("\n")) {
             try {
-                appendFileSync(file, "\n");
+                if (s.workedAt === undefined) appendFileSync(file, "\n" + redactedJson({ t: "worked", at: writtenAt }) + "\n");
+                else appendFileSync(file, "\n");
+                s.workedAt ??= writtenAt;
+                s.savedWorkedAt ??= writtenAt;
             } catch {
                 // read-only file: nothing will be appended either
             }
         }
-        s.started = true;
         for (const l of lines) {
             if (l.t === "msg") s.messages.push(l.m);
             else if (l.t === "compact") {
@@ -1228,6 +1271,8 @@ function repairTail(s: Session) {
     });
 }
 
+/** While a session works, how often at most a worked line goes down (Session.worked). */
+const WORKED_EVERY_MS = 60_000;
 const CHUNK_BYTES = 256 * 1024;
 const MAX_LINE_BYTES = 64 * 1024 * 1024;
 /** Enough of a line to see its record type. */
@@ -1244,6 +1289,8 @@ interface SessionHead {
     firstAt?: number;
     /** Messages after rewinds and compactions, as load() would have them. */
     count: number;
+    /** When it last worked (worked lines). */
+    workedAt?: number;
 }
 
 /**
@@ -1314,6 +1361,7 @@ function readHeadLine(raw: string, head: SessionHead) {
     if (l.t === "meta") head.cwd = l.cwd;
     else if (l.t === "title") head.title = l.title;
     else if (l.t === "model") head.model = l.model;
+    else if (l.t === "worked" && typeof l.at === "number" && Number.isFinite(l.at)) head.workedAt = Math.max(head.workedAt ?? -Infinity, l.at);
     else if (l.t === "msg") {
         if (!head.first && l.m.role === "user" && (l.m.meta?.kind ?? "prompt") === "prompt") {
             head.first = l.m.meta?.display ?? textOf(l.m);
@@ -1407,28 +1455,20 @@ export function listSessions(cwd: string, limit = 50): SessionSummary[] {
             // vanished or unreadable
         }
     }
-    // Newest first, so only as many files are read as are listed.
-    files.sort((a, b) => b.mtimeMs - a.mtimeMs);
-    const out: SessionSummary[] = [];
-    for (const { f, file, mtimeMs, createdAt } of files) {
-        if (out.length >= limit) break;
-        try {
-            const head = sessionHead(file);
-            if (!head.count || !sameProject(head, cwd)) continue;
-            out.push({
-                id: f.replace(/\.jsonl$/, ""),
-                file,
-                cwd,
-                createdAt,
-                updatedAt: mtimeMs,
-                title: (head.title ?? head.first ?? "(untitled)").replace(/\s+/g, " ").trim().slice(0, 120),
-                messages: head.count,
-                model: head.model,
-            });
-        } catch {
-            // skip unreadable files
-        }
-    }
+    const out = newestByWork(files, limit, ({ f, file, mtimeMs, createdAt }) => {
+        const head = sessionHead(file);
+        if (!head.count || !sameProject(head, cwd)) return;
+        return {
+            id: f.replace(/\.jsonl$/, ""),
+            file,
+            cwd,
+            createdAt,
+            updatedAt: workTime(head, mtimeMs),
+            title: (head.title ?? head.first ?? "(untitled)").replace(/\s+/g, " ").trim().slice(0, 120),
+            messages: head.count,
+            model: head.model,
+        };
+    });
     out.sort((a, b) => b.updatedAt - a.updatedAt);
     return out.slice(0, limit);
 }
@@ -1508,28 +1548,48 @@ export function listAllSessions(limit = 200): SessionSummary[] {
             }
         }
     }
+    return newestByWork(files, limit, ({ f, file, mtimeMs, createdAt }) => {
+        const head = sessionHead(file);
+        if (!head.count || !head.cwd) return;
+        return {
+            id: f.replace(/\.jsonl$/, ""),
+            file,
+            cwd: head.cwd,
+            createdAt,
+            updatedAt: workTime(head, mtimeMs),
+            title: (head.title ?? head.first ?? "(untitled)").replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").replace(/\s+/g, " ").trim().slice(0, 120),
+            messages: head.count,
+            model: head.model,
+        };
+    });
+}
+
+/** When it last worked: never after its file was last written (a clock set back since), so newestByWork can stop early. */
+function workTime(head: SessionHead, mtimeMs: number): number {
+    return Math.min(head.workedAt ?? mtimeMs, mtimeMs);
+}
+
+/**
+ * The `limit` sessions that worked last, newest first. A file is never older than its last worked line, so files are
+ * read newest first, and only until the rest can't be among them: as few as are listed when nothing but work wrote.
+ */
+function newestByWork<F extends { mtimeMs: number }>(files: F[], limit: number, summary: (f: F) => SessionSummary | undefined): SessionSummary[] {
     files.sort((a, b) => b.mtimeMs - a.mtimeMs);
     const out: SessionSummary[] = [];
-    for (const { f, file, mtimeMs, createdAt } of files) {
-        if (out.length >= limit) break;
+    const byWork = (a: SessionSummary, b: SessionSummary) => b.updatedAt - a.updatedAt;
+    for (const f of files) {
+        if (out.length >= limit) {
+            out.sort(byWork).length = limit;
+            if (limit === 0 || f.mtimeMs < out[limit - 1]!.updatedAt) break;
+        }
         try {
-            const head = sessionHead(file);
-            if (!head.count || !head.cwd) continue;
-            out.push({
-                id: f.replace(/\.jsonl$/, ""),
-                file,
-                cwd: head.cwd,
-                createdAt,
-                updatedAt: mtimeMs,
-                title: (head.title ?? head.first ?? "(untitled)").replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").replace(/\s+/g, " ").trim().slice(0, 120),
-                messages: head.count,
-                model: head.model,
-            });
+            const s = summary(f);
+            if (s) out.push(s);
         } catch {
             // skip unreadable files
         }
     }
-    return out;
+    return out.sort(byWork).slice(0, limit);
 }
 
 /** A session file by id, in any project (ids are unique: timestamp and random suffix). */

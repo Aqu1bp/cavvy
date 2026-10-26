@@ -833,6 +833,8 @@ describe("connecting", () => {
             await engine.handle(c, "session.send", { id, text: "first prompt" });
             await whenIdle(rt);
             await engine.handle(c, "session.close", { id });
+            // Closed all the way: letting it go writes when it last worked.
+            while ((engine as any).closing.has(id)) await (engine as any).afterClosing(id);
             const file = findSessionAnywhere(id)!;
             const lines = readFileSync(file, "utf8").split("\n");
             expect(lines.some((l) => l.includes('"t":"fastMode"'))).toBe(true);

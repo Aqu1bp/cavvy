@@ -779,7 +779,8 @@ export class Engine {
             projectName: basename(rt.ws.cwd) || rt.ws.cwd,
             title: rt.title ?? rt.firstPrompt()?.replace(/\s+/g, " ").slice(0, 120) ?? "New session",
             createdAt: rt.session.meta.createdAt,
-            updatedAt: rt.lastActive,
+            // Its file's time can be a moment later (a turn's end, saved once the turn is put away).
+            updatedAt: Math.max(rt.lastActive, rt.session.workedAt ?? -Infinity),
             messages: rt.session.messages.length,
             status: rt.status,
             waitingKind: rt.waitingKind,
@@ -805,9 +806,8 @@ export class Engine {
         }
         for (const rt of this.runtimes.values()) {
             if (!rt.session.messages.length && !rt.busy) continue;
-            const disk = out.get(rt.id);
-            const live = this.summaryOf(rt);
-            out.set(rt.id, { ...live, updatedAt: Math.max(live.updatedAt, disk?.updatedAt ?? 0) });
+            // By when it last worked, which its file can't say yet while it works (Session.worked writes a line a minute).
+            out.set(rt.id, this.summaryOf(rt));
         }
         return [...out.values()].filter((s) => s.archived === archived).sort((a, b) => b.updatedAt - a.updatedAt).filter((s, i) => i < limit || s.status === "waiting");
     }
@@ -910,6 +910,8 @@ export class Engine {
             throw new RpcError(`Couldn't fork the session: ${redact((e as Error).message)}`);
         }
         forkUiLog({ file: original.session.path, id: original.id }, { file: session.path, id: session.meta.id });
+        // Made now, by the person: it goes to the top of the sidebar, and stays there until something else works.
+        session.worked(Date.now(), true);
         // The original's folder, already trusted to open it; bypass mode still needs allowing (the constructor checks).
         let rt: Runtime;
         try {

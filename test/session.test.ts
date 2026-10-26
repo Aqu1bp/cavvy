@@ -441,7 +441,8 @@ describe("Session persistence", () => {
         l.setFastMode(false);
         l.setFastMode(true);
         l.setModel("anthropic:claude-b");
-        expect(lines(s.path).slice(4)).toEqual([{ t: "fastMode", enabled: true }, { t: "model", model: "anthropic:claude-b" }]);
+        // From before worked lines: its first write after loading keeps when it last worked (Session.worked).
+        expect(lines(s.path).slice(4)).toEqual([{ t: "worked", at: expect.any(Number) }, { t: "fastMode", enabled: true }, { t: "model", model: "anthropic:claude-b" }]);
         // A speed held only in memory (a chat from before speeds were saved) is written once chosen.
         const legacy = Session.create(project());
         legacy.push(user("y"));

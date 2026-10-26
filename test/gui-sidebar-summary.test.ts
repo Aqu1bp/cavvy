@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { writeFileSync } from "fs";
+import { realpathSync, statSync, utimesSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 import type { Interaction, SessionOp, SessionState, SessionSummary, Turn } from "../src/server/protocol";
@@ -7,7 +7,7 @@ import type { Interaction, SessionOp, SessionState, SessionSummary, Turn } from 
 const iso = isolate();
 const { Engine } = await import("../src/server/engine");
 const { Runtime } = await import("../src/server/runtime");
-const { Session } = await import("../src/agent/session");
+const { Session, listAllSessions } = await import("../src/agent/session");
 const { applyOp } = await import("../src/server/timeline");
 afterAll(() => iso.cleanup());
 
@@ -120,4 +120,53 @@ describe("sidebar summaries", () => {
         await engine.stop();
     });
 
+    test("opening, repairing or renaming a saved session isn't work: it keeps its place, below one that worked since", async () => {
+        const engine = new Engine({ listModels: async () => [] });
+        const now = Date.now();
+        const HOUR = 3_600_000;
+        /** A saved session last written `ago` ms ago; `dangling`: it ends on a tool call without its result (a crash). */
+        const saved = (text: string, ago: number, dangling = false) => {
+            const s = Session.create(realpathSync(tempDir()));
+            s.push({ role: "user", content: [{ type: "text", text }] });
+            s.push({ role: "assistant", content: dangling ? [{ type: "tool_call", id: "call-1", name: "Bash", input: { command: "ls" } }] : [{ type: "text", text: "Done." }] } as never);
+            s.release();
+            utimesSync(s.path, (now - ago) / 1000, (now - ago) / 1000);
+            return s;
+        };
+        const order = () => engine.listSessions().map((s) => s.id);
+        const crashed = saved("Crashed two hours ago", 2 * HOUR, true);
+        const older = saved("Worked an hour ago", HOUR);
+        const renamed = saved("Worked three hours ago", 3 * HOUR);
+        const newer = saved("Worked a minute ago", 60_000);
+        try {
+            const rt = engine.openSession(older.meta.id);
+            await rt.ready;
+            expect(Math.round(engine.summaryOf(rt).updatedAt)).toBe(Math.round(now - HOUR));
+            // What opening it writes (its model, a title) doesn't move it, open or closed again.
+            rt.rename("A new name");
+            expect(statSync(older.path).mtimeMs).toBeGreaterThan(now - 1000);
+            expect(order().indexOf(newer.meta.id)).toBeLessThan(order().indexOf(older.meta.id));
+            // As its file says, for when it's closed again.
+            expect(Math.round(listAllSessions().find((s) => s.id === older.meta.id)!.updatedAt)).toBe(Math.round(now - HOUR));
+
+            // Loading repairs a crashed session's file before anything else: still where it was.
+            const repaired = engine.openSession(crashed.meta.id);
+            await repaired.ready;
+            expect(repaired.session.messages.length).toBe(3);
+            expect(statSync(crashed.path).mtimeMs).toBeGreaterThan(now - 1000);
+            expect(Math.round(engine.summaryOf(repaired).updatedAt)).toBe(Math.round(now - 2 * HOUR));
+
+            // Renamed from the sidebar without opening it.
+            const client = { subs: new Set<string>(), send() {} } as never;
+            await engine.handle(client, "session.rename", { id: renamed.meta.id, title: "Renamed" });
+            expect(statSync(renamed.path).mtimeMs).toBeGreaterThan(now - 1000);
+            // All four in the order they last worked.
+            const ids = order();
+            const places = [newer, older, crashed, renamed].map((s) => ids.indexOf(s.meta.id));
+            expect(places).not.toContain(-1);
+            expect(places).toEqual([...places].sort((a, b) => a - b));
+        } finally {
+            await engine.stop();
+        }
+    });
 });

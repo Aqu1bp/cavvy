@@ -52,6 +52,8 @@ const COPIED: Record<Line["t"], boolean> = {
     goal: false,
     // Written afresh from the original's messages as they are now (refusals()): one can come after the cut.
     imagesRefused: false,
+    // When the original worked: the fork works from when it's made.
+    worked: false,
 };
 
 const REMINDERS = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
