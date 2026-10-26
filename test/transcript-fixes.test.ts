@@ -497,7 +497,7 @@ describe("a request that doesn't answer fails visibly, in bounded time", () => {
         const event = { type: "retry", attempt: 1, delayMs: 120_000, reason: "Rate limited" };
         const ops: any[] = [];
         const activity: string[] = [];
-        const runtime = { turnId: "turn", responseBlocks: ["partial-text", "partial-tool"], openText: "partial-text", openThinking: "thinking", op: (o: any) => ops.push(o), activity: (label: string) => activity.push(label) };
+        const runtime = { turnId: "turn", responseBlocks: ["partial-text", "partial-tool"], openText: "partial-text", openThinking: "thinking", op: (o: any) => ops.push(o), activity: (label: string) => activity.push(label), worked() {} };
         (Runtime.prototype as any).onEvent.call(runtime, event);
         expect(ops).toEqual(["partial-text", "partial-tool"].map((blockId) => ({ op: "block.remove", turnId: "turn", blockId })));
         expect(runtime.responseBlocks).toEqual([]);
