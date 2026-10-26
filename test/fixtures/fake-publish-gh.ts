@@ -1,12 +1,14 @@
 // Installed as gh by git-publish tests. No network or credential/config reads.
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from "fs";
 const args = process.argv.slice(2);
 const state = process.env.FAKE_PUBLISH_STATE!;
 const mode = process.env.FAKE_PUBLISH_MODE;
 appendFileSync(`${state}.calls`, JSON.stringify(args) + "\n");
+appendFileSync(`${state}.cwds`, JSON.stringify({ cwd: process.cwd(), empty: !readdirSync(process.cwd()).length }) + "\n");
 if (args[0] === "auth") {
     if (mode === "install-ssh-config") {
-        const result = Bun.spawnSync([process.env.FAKE_PUBLISH_GIT!, "config", "core.sshCommand", "sh ./payload.sh"], { stdout: "pipe", stderr: "pipe" });
+        // gh runs from a folder of its own: the repository is the one the state is kept beside (<repo>-pr.json).
+        const result = Bun.spawnSync([process.env.FAKE_PUBLISH_GIT!, "-C", state.replace(/-pr\.json$/, ""), "config", "core.sshCommand", "sh ./payload.sh"], { stdout: "pipe", stderr: "pipe" });
         if (result.exitCode) process.exit(result.exitCode);
     }
     process.exit(mode === "unauthenticated" ? 1 : 0);

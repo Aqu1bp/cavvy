@@ -20,7 +20,7 @@ async function checkNetworkTrust(cwd: string) {
     if (reason) throw new RpcError(`Trust this folder explicitly before publishing or reading remote state: ${reason}.`, "needs_trust", cwd);
 }
 
-async function run(cwd: string, args: string[], network = false, signal?: AbortSignal, extraEnv: Record<string, string> = {}) {
+async function run(cwd: string, args: string[], network = false, signal?: AbortSignal, extraEnv: Record<string, string> = {}): Promise<{ out: string; err: string; code: number }> {
     if (signal?.aborted) throw fail("Publishing cancelled; check the remote before retrying.", "git_cancelled");
     if (network) await checkNetworkTrust(cwd);
     const env = gitEnv();
@@ -35,15 +35,22 @@ async function run(cwd: string, args: string[], network = false, signal?: AbortS
         delete env.GH_HOST;
     }
     if (!network) env.GIT_ALLOW_PROTOCOL = "harness-none";
-    const argv = args[0] === "git" ? gitArgv(["-c", "core.hooksPath=/dev/null", ...args.slice(1)]) : args;
+    // A network call runs from an empty folder of its own, git told the repository by --git-dir: git runs a helper
+    // (an ssh command, a credential helper, a proxy) from where it is, so one the user's own settings name by a
+    // relative path can't reach the repository's files (#107). In the repository, git would run it at its top.
+    let away: string | undefined;
+    const gitDir = network && args[0] === "git" ? await git(cwd, ["rev-parse", "--absolute-git-dir"], signal) : undefined;
+    const argv = args[0] === "git" ? gitArgv([...(gitDir ? [`--git-dir=${gitDir}`] : []), "-c", "core.hooksPath=/dev/null", ...args.slice(1)]) : args;
     // Resolve with the same sanitized PATH passed to the child; do not fall back
     // to the server's startup PATH when a CLI disappears or PATH changes.
     const executable = Bun.which(argv[0]!, { PATH: env.PATH ?? "", cwd });
     if (!executable) throw fail(`${args[0]} is not installed or could not be started.`, "unavailable");
+    if (network) away = mkdtempSync(join(tmpdir(), "harness-net-"));
     let proc;
     try {
-        proc = Bun.spawn([executable, ...argv.slice(1)], { cwd, env, detached: true, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+        proc = Bun.spawn([executable, ...argv.slice(1)], { cwd: away ?? cwd, env, detached: true, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     } catch {
+        if (away) rmSync(away, { recursive: true, force: true });
         throw fail(`${args[0]} is not installed or could not be started.`, "unavailable");
     }
     let stopping: Promise<void> | undefined;
@@ -66,6 +73,7 @@ async function run(cwd: string, args: string[], network = false, signal?: AbortS
     } finally {
         clearTimeout(timer);
         signal?.removeEventListener("abort", stop);
+        if (away) rmSync(away, { recursive: true, force: true });
     }
 }
 /** One `gh` call with the publish rules: inherited credentials only, no prompts, the folder's network trust checked. */

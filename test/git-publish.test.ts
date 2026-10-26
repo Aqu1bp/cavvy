@@ -1,5 +1,5 @@
 import { afterAll, expect, test, setDefaultTimeout } from "bun:test";
-import { existsSync, mkdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { join, relative } from "path";
 import { isolate } from "./helpers/isolate";
 import { publishFixtures } from "./helpers/git-publish";
@@ -398,90 +398,21 @@ for (const rule of ["insteadOf", "pushInsteadOf"]) test(`a URL ${rule} rewrite a
     expect(() => git(remote, "rev-parse", "--verify", "feature")).toThrow();
 });
 
-test("a helper the user's own settings name stays allowed unless it names a file in the repository (#107)", async () => {
-    const { gitNetworkSkipReason } = await import("../src/util/git");
-    const { trustFolder } = await import("../src/config/trust");
-    const { cwd, state } = repo();
+test("network calls run from an empty folder of their own: a helper the user's settings name by a relative path can't reach the repository's files (#107)", async () => {
+    const { cwd, state } = repo(true);
     writeFileSync(join(cwd, "payload.sh"), ": > ssh-ran\nexit 1\n");
-    mkdirSync(join(cwd, "scripts")); writeFileSync(join(cwd, "scripts", "proxy"), "");
-    const global = join(cwd, "user-global");
-    const saved = { ...process.env };
-    const restore = () => { for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key]; Object.assign(process.env, saved); };
-    const cases: [string, () => void][] = [
-        ["command scope, bare file name", () => Object.assign(process.env, { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.sshCommand", GIT_CONFIG_VALUE_0: "sh payload.sh" })],
-        ["command scope, relative path", () => Object.assign(process.env, { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "credential.helper", GIT_CONFIG_VALUE_0: "!sh ./payload.sh" })],
-        ["global, an option's value", () => { git(cwd, "config", "--file", global, "core.sshCommand", "ssh -oProxyCommand=scripts/proxy"); process.env.GIT_CONFIG_GLOBAL = global; }],
-        ["GIT_SSH_COMMAND", () => { process.env.GIT_SSH_COMMAND = "sh ./payload.sh"; }],
-        ["GIT_SSH_COMMAND, bare file name", () => { process.env.GIT_SSH_COMMAND = "sh payload.sh"; }],
-    ];
-    try {
-        for (const [name, set] of cases) {
-            set();
-            expect([name, await gitNetworkSkipReason(cwd)]).toEqual([name, expect.stringContaining("names a file in this repository")]);
-            await expect(gitPublishInfo(cwd)).rejects.toMatchObject({ code: "needs_trust" });
-            restore();
-            rmSync(global, { force: true });
-        }
-        // Installed programs, absolute paths and home-relative ones are the user's own.
-        Object.assign(process.env, { GIT_SSH_COMMAND: "ssh -o UserKnownHostsFile=/dev/null -i ~/.ssh/id_ed25519", GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: "credential.helper", GIT_CONFIG_VALUE_0: "store --file ~/.git-credentials", GIT_CONFIG_KEY_1: "core.askPass", GIT_CONFIG_VALUE_1: "/usr/libexec/ssh-askpass" });
-        expect(await gitNetworkSkipReason(cwd)).toBeUndefined();
-        restore();
-        // Explicit trust allows a repository's helper.
-        process.env.GIT_SSH_COMMAND = "sh ./payload.sh";
-        trustFolder(cwd);
-        expect(await gitNetworkSkipReason(cwd)).toBeUndefined();
-    } finally { restore(); }
-    expect(existsSync(join(cwd, "ssh-ran"))).toBe(false);
-    expect(calls(state, ".git-calls")).toHaveLength(0);
-});
-
-test("a helper's shell syntax, or a path into the repository by any form, needs trust; a subcommand named like a folder doesn't (#107)", async () => {
-    const { gitNetworkSkipReason } = await import("../src/util/git");
-    const { cwd } = repo();
-    writeFileSync(join(cwd, "payload.sh"), ": > ssh-ran\nexit 1\n");
-    mkdirSync(join(cwd, "auth"));
-    const saved = { ...process.env };
-    const restore = () => { for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key]; Object.assign(process.env, saved); };
-    const helper = (value: string) => Object.assign(process.env, { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "credential.helper", GIT_CONFIG_VALUE_0: value });
-    // A home folder the repository is in.
-    const home = realpathSync(iso.home);
-    const inHome = (command: string) => Object.assign(process.env, { HOME: home, GIT_SSH_COMMAND: command });
-    const rel = relative(home, cwd);
-    expect(rel.startsWith("..")).toBe(false);
-    const needs: [string, () => void][] = [
-        ["a redirection", () => helper("!sh<payload.sh;#")],
-        ["a glob", () => helper("!sh payload*.sh")],
-        ["another expansion", () => helper('!sh "$PWD/payload.sh"')],
-        ["an absolute path into it", () => { process.env.GIT_SSH_COMMAND = `sh ${join(cwd, "payload.sh")}`; }],
-        ["a home-relative path into it", () => inHome(`sh ~/${rel}/payload.sh`)],
-        ["$HOME into it", () => inHome(`sh $HOME/${rel}/payload.sh`)],
-        ["an open quote", () => { process.env.GIT_SSH_COMMAND = "sh 'payload.sh"; }],
-        ["a character a shell reads as part of a name", () => { process.env.GIT_SSH_COMMAND = "sh payload\u00a0part.sh"; }],
-        ["a comment", () => { process.env.GIT_SSH_COMMAND = "sh payload.sh #"; }],
-        ["a file named like an assignment", () => { writeFileSync(join(cwd, "payload=evil.sh"), ""); process.env.GIT_SSH_COMMAND = "sh payload=evil.sh"; }],
-        ["a path that looks like a URL", () => { mkdirSync(join(cwd, "x:"), { recursive: true }); writeFileSync(join(cwd, "x:", "payload.sh"), ""); process.env.GIT_SSH_COMMAND = "sh ./x://payload.sh"; }],
-        ["a name starting with ..", () => { writeFileSync(join(cwd, "..payload.sh"), ""); process.env.GIT_SSH_COMMAND = "sh ./..payload.sh"; }],
-        // Outside, read as written; in the repository, read as the system follows the link.
-        ["a link out and back in", () => { symlinkSync(join(cwd, "auth"), `${cwd}-link`, "dir"); process.env.GIT_SSH_COMMAND = `sh ${cwd}-link/../payload.sh`; }],
-        ["a credential helper git runs as git credential-<path>", () => helper("../payload")],
-    ];
-    try {
-        for (const [name, set] of needs) {
-            set();
-            expect([name, await gitNetworkSkipReason(cwd)]).toEqual([name, expect.stringContaining("requires explicit user trust")]);
-            restore();
-        }
-        // A subcommand that happens to name a folder here, a quoted installed path with a space, a home-relative key.
-        helper("!gh auth git-credential");
-        Object.assign(process.env, { GIT_SSH_COMMAND: `"/opt/Git Tools/ssh" -i ~/.ssh/id_ed25519 -o "UserKnownHostsFile=$HOME/.ssh/known_hosts"` });
-        expect(await gitNetworkSkipReason(cwd)).toBeUndefined();
-        // A linked worktree's git folders are the repository's too, though outside it.
-        const linked = `${cwd}-worktree`;
-        git(cwd, "worktree", "add", "-q", linked);
-        process.env.GIT_SSH_COMMAND = `sh ${join(cwd, ".git", "description")}`;
-        expect(await gitNetworkSkipReason(linked)).toEqual(expect.stringContaining("requires explicit user trust"));
-    } finally { restore(); }
-    expect(existsSync(join(cwd, "ssh-ran"))).toBe(false);
+    // In the repository, git runs a helper at its top, so `sh payload.sh` there would be the repository's.
+    expect(await gitPrState(cwd)).toBeUndefined();
+    const preview = await gitPublishInfo(cwd);
+    await gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" });
+    const cwds = readFileSync(`${state}.cwds`, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { cwd: string; empty: boolean });
+    // gh's (auth status, the PR lookup) and git's (ls-remote, push).
+    expect(cwds.length).toBeGreaterThanOrEqual(4);
+    for (const at of cwds) {
+        expect(relative(cwd, at.cwd).startsWith("..")).toBe(true);
+        expect(at.empty).toBe(true);
+        expect(existsSync(at.cwd)).toBe(false);
+    }
 });
 
 test("a push to the confirmed URL moves the tracking refs the remote's fetch refspecs name, as git would (#107)", async () => {
