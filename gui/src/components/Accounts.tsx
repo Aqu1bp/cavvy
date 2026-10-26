@@ -1,6 +1,6 @@
 import "../styles/accounts.css";
 import { createEffect, createSignal, createUniqueId, For, onMount, Show } from "solid-js";
-import { Check, ExternalLink, MoreHorizontal } from "lucide-solid";
+import { Check, ExternalLink, Info, MoreHorizontal } from "lucide-solid";
 import type { AccountInfo, ProviderInfo } from "@shared/protocol";
 import { refreshModels, refreshProviders, rpc } from "../state/app";
 import { addAccountFor, setAddAccountFor, terminalActions } from "../state/ui";
@@ -180,12 +180,17 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
                 <For each={accounts()}>{(a) => {
                     let anchor: HTMLButtonElement | undefined;
                     // The email names an account best; a named account keeps its name beside it.
-                    const meta = () => [a.email && a.id !== "default" ? a.name : undefined, planLabel(a.plan), accountStatus(a), a.sharing ? "Not all shared" : undefined].filter(Boolean).join(" · ");
+                    const meta = () => [a.email && a.id !== "default" ? a.name : undefined, planLabel(a.plan), accountStatus(a)].filter(Boolean).join(" · ");
                     return <div class="account-row" role="listitem" classList={{ open: menu() === a.id }}>
-                        <div class="account-identity" title={[a.description, a.sharing].filter(Boolean).join("\n") || undefined}>
+                        <div class="account-identity" title={a.description}>
                             <span class="account-name truncate">{a.email ?? a.name}</span>
                             <Show when={meta()}><span class="account-meta truncate">{meta()}</span></Show>
                         </div>
+                        {/* Some of Default's setup isn't linked into this account: what, and why, on hover. */}
+                        <Show when={a.sharing}>{(why) => {
+                            const said = () => `Some of your ${p.provider.name} setup isn't shared with this account.\n\n${why()}`;
+                            return <span class="account-sharing" role="img" tabIndex={0} aria-label={said()} title={said()}><Info size={14} /></span>;
+                        }}</Show>
                         <Show when={isDefault(a)}><span class="account-default" role="img" aria-label="Default" title="Used for new sessions"><Check size={14} /></span></Show>
                         <button ref={anchor} class="hb sm account-more" disabled={busy()} aria-label={`Actions for ${a.name}`} aria-haspopup="menu" aria-expanded={menu() === a.id} onClick={() => setMenu(menu() === a.id ? undefined : a.id)}><MoreHorizontal size={16} /></button>
                         <Menu open={menu() === a.id} anchor={() => anchor} onClose={() => setMenu(undefined)} label={`${a.name} account actions`} width={200} align="end">{accountItems(a)}</Menu>

@@ -45,7 +45,7 @@ function fixture(initial = [defaultAccount], provider = "claude-code", extra: { 
         terminalActions: { loginAccount: (...args: any[]) => logins.push(args) },
         Menu: (p: any) => { menus.push(p); return solid.createMemo(() => p.open ? p.children : null); },
         Dialog: (p: any) => solid.createMemo(() => p.open ? p.children : null),
-        MoreHorizontal: () => null, Check: () => null, ExternalLink: () => null, ProviderIcon: () => null, Spinner: () => node("spinner"),
+        MoreHorizontal: () => null, Check: () => null, ExternalLink: () => null, Info: () => null, ProviderIcon: () => null, Spinner: () => node("spinner"),
         openExternal: (url: string) => opened.push(url),
         addAccountFor, setAddAccountFor, requestAnimationFrame: () => 0,
     });
@@ -336,5 +336,17 @@ test("invalid accounts remain visible as unavailable and removal promises to lea
         f.button("Confirm removal").props.onClick();
         await settle();
         expect(f.calls).toContainEqual({ method: "accounts.remove", params: { provider: "claude-code", id: "personal", confirmedFolder: "/fake/personal" } });
+    } finally { f.dispose(); }
+});
+
+test("an account that doesn't share all of Default's setup has an info mark saying so, and why, not a label", () => {
+    const sharing = "Not shared with Default: settings.json, because Default's sets apiKeyHelper, which would sign this account in as Default.";
+    const f = fixture([defaultAccount, { ...personal, sharing }]);
+    try {
+        expect(text(f.root)).not.toContain("Not all shared");
+        const marks = f.nodes().filter((n) => n.props.class === "account-sharing");
+        expect(marks).toHaveLength(1);
+        expect(marks[0]!.props.title).toBe(`Some of your Claude Code setup isn't shared with this account.\n\n${sharing}`);
+        expect(marks[0]!.props["aria-label"]).toBe(marks[0]!.props.title);
     } finally { f.dispose(); }
 });
