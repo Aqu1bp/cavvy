@@ -736,18 +736,23 @@ const PRESENT = "cavvy-present";
 export function markPresent(worktree: string): boolean {
     const dir = gitDirOf(worktree);
     if (!dir) return false;
-    const file = join(dir, PRESENT, String(process.pid));
-    try {
-        mkdirSync(join(dir, PRESENT), { recursive: true });
-        writeFileSync(file, "");
-    } catch {
-        return false;
+    // Under Harness's name too (best effort), so a Harness still running leaves it alone as well.
+    const files = [PRESENT, LEGACY.worktreePresent].map((n) => join(dir, n, String(process.pid)));
+    for (const [i, file] of files.entries()) {
+        try {
+            mkdirSync(dirname(file), { recursive: true });
+            writeFileSync(file, "");
+        } catch {
+            if (i === 0) return false;
+        }
     }
     process.once("exit", () => {
-        try {
-            rmSync(file, { force: true });
-        } catch {
-            // the worktree went first
+        for (const file of files) {
+            try {
+                rmSync(file, { force: true });
+            } catch {
+                // the worktree went first
+            }
         }
     });
     return true;

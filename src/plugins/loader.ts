@@ -240,7 +240,8 @@ function parsePlugin(root: string, who: { id: string; name: string; marketplace:
 /**
  * Hooks in either format: Cavvy's flat one ({ Event: [{ matcher, command }] })
  * or Claude Code's ({ hooks: { Event: [{ matcher, hooks: [{ type, command }] }] } }).
- * Hook commands run in a shell with CAVVY_PLUGIN_ROOT and CLAUDE_PLUGIN_ROOT set.
+ * Hook commands run in a shell with CAVVY_PLUGIN_ROOT and CLAUDE_PLUGIN_ROOT set
+ * (and HARNESS_PLUGIN_ROOT, Cavvy's old name for it: legacy.ts).
  */
 function addHooks(p: LoadedPlugin, j: unknown) {
     const events = record(j) && record(j.hooks) ? j.hooks : j;
@@ -253,7 +254,7 @@ function addHooks(p: LoadedPlugin, j: unknown) {
     for (const [event, list] of Object.entries(hooks ?? {})) if (list?.length) p.hooks[event] = [...(p.hooks[event] ?? []), ...list];
 }
 
-const ROOT_VARS = /\$\{(?:CAVVY|CLAUDE)_PLUGIN_ROOT\}/g;
+const ROOT_VARS = /\$\{(?:CAVVY|CLAUDE|HARNESS)_PLUGIN_ROOT\}/g;
 
 function substitute(v: unknown, root: string): unknown {
     if (typeof v === "string") return v.replace(ROOT_VARS, () => root);

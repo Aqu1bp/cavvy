@@ -66,7 +66,7 @@ export function skillRoots(cwd: string, trusted: boolean): SkillRoot[] {
         { dir: join(cavvyHome(), "skills"), source: "user" },
     ];
     // A repository's skills are instructions from whoever wrote it.
-    if (trusted) roots.push({ dir: join(cwd, ".claude", "skills"), source: "project", claudeCode: true }, { dir: join(paths.projectDir(cwd), "skills"), source: "project" });
+    if (trusted) roots.push({ dir: join(cwd, ".claude", "skills"), source: "project", claudeCode: true }, { dir: paths.projectSkills(cwd), source: "project" });
     return roots;
 }
 
@@ -219,7 +219,7 @@ export function skillBody(skill: Skill): string | undefined {
 export function formatSkill(skill: Skill, args = ""): string | undefined {
     const body = skillBody(skill);
     if (body === undefined) return undefined;
-    const withDir = body.replace(/\$\{(?:CAVVY|CLAUDE)_SKILL_DIR\}/g, () => skill.dir);
+    const withDir = body.replace(/\$\{(?:CAVVY|CLAUDE|HARNESS)_SKILL_DIR\}/g, () => skill.dir);
     // Without arguments the body is left as written: `awk '{print $1}'` in a skill is a shell snippet.
     const text = args ? expandCommand(withDir, args) : withDir;
     return `<skill name="${skill.name}">\nBase directory for this skill: ${skill.dir}\n\n${text.trim()}\n</skill>`;

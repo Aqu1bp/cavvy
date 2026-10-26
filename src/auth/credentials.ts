@@ -29,7 +29,7 @@ let keychainAvailable: boolean | undefined;
 
 async function keychainWorks(): Promise<boolean> {
     if (keychainAvailable !== undefined) return keychainAvailable;
-    if (process.env.CAVVY_NO_KEYCHAIN) return (keychainAvailable = false);
+    if (process.env.CAVVY_NO_KEYCHAIN || process.env.HARNESS_NO_KEYCHAIN) return (keychainAvailable = false);
     try {
         await Bun.secrets.get({ service: SERVICE, name: "__probe__" });
         keychainAvailable = true;
@@ -101,16 +101,15 @@ async function lookup(providerId: string): Promise<ResolvedKey | undefined> {
 }
 
 /**
- * A key Harness kept under its own service name, moved to Cavvy's: stored here
- * first, and the old item deleted only once the new one reads back the same.
- * If the move fails, the old item is used as it is and tried again next time.
+ * A key Harness kept under its own service name, copied to Cavvy's. The old item
+ * stays, for a Harness that's still installed (removeKey deletes both). If the
+ * copy fails, the old item is used as it is and copied again next time.
  */
-export async function fromLegacyKeychain(store: Pick<typeof Bun.secrets, "get" | "set" | "delete">, providerId: string): Promise<string | null> {
+export async function fromLegacyKeychain(store: Pick<typeof Bun.secrets, "get" | "set">, providerId: string): Promise<string | null> {
     const old = await store.get({ service: LEGACY.keychainService, name: providerId });
     if (!old) return null;
     try {
         await store.set({ service: SERVICE, name: providerId, value: old });
-        if ((await store.get({ service: SERVICE, name: providerId })) === old) await store.delete({ service: LEGACY.keychainService, name: providerId });
     } catch {
         // Keep using the old item.
     }

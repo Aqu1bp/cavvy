@@ -14,6 +14,9 @@ import type { PermissionMode } from "../permissions/modes";
 import { parseModelRef } from "../providers/types";
 import { findSkill, type AgentDef } from "../agent/agents";
 import { MCP_SERVER_NAME } from "../agent/delegation";
+import { matcherOr } from "../agent/hooks";
+import { APP_NAME } from "../config/name";
+import { legacyMcpMatcher } from "../config/legacy";
 
 /** One entry of --agents: the fields Claude Code reads from a sub-agent file, plus its prompt. */
 export interface ClaudeAgentDefinition {
@@ -117,6 +120,12 @@ function claudeAgent(def: AgentDef, model: string, o: ClaudeAgentsOptions): Clau
     return a;
 }
 
+/** A hook matcher, also matching Cavvy's MCP tools where it names Harness's. */
+function currentMatcher(m: string): string {
+    const renamed = legacyMcpMatcher(m, APP_NAME);
+    return renamed === m ? m : matcherOr(m, [renamed]);
+}
+
 /** Claude Code's nested form; an agent's Stop hooks are its SubagentStop there, as Cavvy reads them. */
 function claudeHooks(def: AgentDef): ClaudeAgentDefinition["hooks"] {
     if (!def.hooks) return undefined;
@@ -125,11 +134,12 @@ function claudeHooks(def: AgentDef): ClaudeAgentDefinition["hooks"] {
         if (!list?.length) continue;
         const name = event === "SubagentStop" ? "Stop" : event;
         for (const h of list) {
-            // Every handler type as written (http, prompt, mcp_tool too); the matcher is the group's, and a
-            // prompt hook's Cavvy model ref ("provider:model") means nothing to Claude Code, so its own is used.
+            // Every handler type as written (http, prompt, mcp_tool too); the matcher is the group's (one for
+            // Harness's MCP tools covers Cavvy's: legacy.ts), and a prompt hook's Cavvy model ref
+            // ("provider:model") means nothing to Claude Code, so its own is used.
             const { matcher, pluginRoot: _, type, ...rest } = h;
             if (type === "prompt" && typeof rest.model === "string" && rest.model.includes(":")) delete rest.model;
-            (out[name] ??= []).push({ ...(matcher ? { matcher } : {}), hooks: [{ type: type ?? "command", ...rest }] });
+            (out[name] ??= []).push({ ...(matcher ? { matcher: currentMatcher(matcher) } : {}), hooks: [{ type: type ?? "command", ...rest }] });
         }
     }
     return Object.keys(out).length ? out : undefined;

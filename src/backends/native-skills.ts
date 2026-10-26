@@ -26,7 +26,8 @@ export function cliRunsSkills(provider: string | undefined): boolean {
     return provider === "claude-code" || provider === "codex";
 }
 
-const DIR_VAR = /\$\{(CAVVY|CLAUDE)_SKILL_DIR\}/g;
+/** HARNESS_SKILL_DIR: Cavvy's old name for it (legacy.ts). */
+const DIR_VAR = /\$\{(CAVVY|CLAUDE|HARNESS)_SKILL_DIR\}/g;
 /** Folders are removed after this long unused (another process may be using one: a day is far longer than a turn). */
 const STALE_MS = 24 * 60 * 60 * 1000;
 const built = new Map<string, string>();
@@ -36,7 +37,8 @@ export function skillFolder(skills: readonly Skill[], opts: { plugin?: boolean }
     if (!skills.length) return undefined;
     const sorted = [...skills].sort((a, b) => a.name.localeCompare(b.name));
     const hash = createHash("sha256");
-    hash.update(opts.plugin ? "plugin\0" : "skills\0");
+    // The plugin's name too: a folder built when it was Harness's names its skills harness:<name>.
+    hash.update(opts.plugin ? `plugin\0${CLAUDE_PLUGIN}\0` : "skills\0");
     // The folder's time too: a file added beside a SKILL.md that's copied (below) needs linking.
     for (const s of sorted) hash.update(`${s.name}\0${s.dir}\0${mtime(s.file)}\0${mtime(s.dir)}\0${copiedTimes(s)}\0`);
     const key = hash.digest("hex").slice(0, 16);
@@ -255,7 +257,7 @@ function runnable(s: Skill, names: ReadonlyMap<string, string>): string | undefi
     const name = names.get(s.name);
     if (name !== s.name) return name;
     try {
-        return /\$\{CAVVY_SKILL_DIR\}/.test(readFileSync(s.file, "utf8")) ? undefined : name;
+        return /\$\{(?:CAVVY|HARNESS)_SKILL_DIR\}/.test(readFileSync(s.file, "utf8")) ? undefined : name;
     } catch {
         return name;
     }

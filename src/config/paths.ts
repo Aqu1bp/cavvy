@@ -2,7 +2,7 @@ import { homedir } from "os";
 import { join, resolve } from "path";
 import { mkdirSync } from "fs";
 import { APP_NAME } from "./name";
-import { fileIn, LEGACY, legacyEnvNotes, moveLegacyHome, projectDirIn } from "./legacy";
+import { fileIn, inProjectDir, LEGACY, legacyEnvNotes, moveLegacyHome } from "./legacy";
 
 export { APP_NAME };
 export const APP_TITLE = "Cavvy";
@@ -49,12 +49,12 @@ export const paths = {
     logs: () => join(cavvyHome(), "logs"),
     plugins: () => join(cavvyHome(), "plugins"),
 
-    /** .cavvy/, or .harness/ in a project that has only Harness's (legacy.ts). */
-    projectDir: (cwd: string) => projectDirIn(cwd),
-    projectSettings: (cwd: string) => join(projectDirIn(cwd), "settings.json"),
-    localSettings: (cwd: string) => join(projectDirIn(cwd), "settings.local.json"),
-    projectCommands: (cwd: string) => join(projectDirIn(cwd), "commands"),
-    projectAgents: (cwd: string) => join(projectDirIn(cwd), "agents"),
+    /** Each in the project's .cavvy/, or in .harness/ when only that one has it (legacy.ts). */
+    projectSettings: (cwd: string) => inProjectDir(cwd, "settings.json"),
+    localSettings: (cwd: string) => inProjectDir(cwd, "settings.local.json"),
+    projectCommands: (cwd: string) => inProjectDir(cwd, "commands"),
+    projectAgents: (cwd: string) => inProjectDir(cwd, "agents"),
+    projectSkills: (cwd: string) => inProjectDir(cwd, "skills"),
     projectMcp: (cwd: string) => join(cwd, ".mcp.json"),
 };
 

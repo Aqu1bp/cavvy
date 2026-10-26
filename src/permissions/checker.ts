@@ -22,7 +22,7 @@
 
 import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "fs";
 import { homedir, tmpdir } from "os";
-import { dirname, join, resolve } from "path";
+import { basename, dirname, join, resolve } from "path";
 import type { HiddenReason, Tool } from "../tools/types";
 import type { PermissionMode } from "./modes";
 import { sandboxAllowedHosts, sandboxExcludedCommands, type Settings } from "../config/settings";
@@ -386,7 +386,7 @@ export class PermissionChecker {
     private searchesStore(cmd: string, cwd: string): string | undefined {
         const a = analyzeCommand(cmd);
         if (a.unparsable || a.hasSubstitution || a.unsafeExpansion) return undefined;
-        const store = [paths.credentialsFile(), paths.mcpOAuth(), paths.providers(), cavvyAccounts(), ...accountCredentialFiles()].flatMap(pathForms);
+        const store = [...storeFiles(), ...cavvyAccounts(), ...accountCredentialFiles()].flatMap(pathForms);
         for (const c of a.commands) {
             const argv = effectiveArgv(c.argv);
             const prog = (argv[0] ?? "").split("/").pop()!;
@@ -659,8 +659,8 @@ export class PermissionChecker {
     /** A folder that is, or holds, Cavvy's credential store (for grants of whole folders). */
     isProtectedArea(dir: string): boolean {
         const forms = pathForms(dir);
-        const store = [paths.credentialsFile(), paths.mcpOAuth(), paths.providers(), ...accountCredentialFiles()].flatMap(pathForms);
-        const accounts = [cavvyAccounts(), ...accountFolders()].flatMap(pathForms);
+        const store = [...storeFiles(), ...accountCredentialFiles()].flatMap(pathForms);
+        const accounts = [...cavvyAccounts(), ...accountFolders()].flatMap(pathForms);
         return store.some((f) => forms.some((d) => isInside(f, d))) || accounts.some((f) => forms.some((d) => isInside(f, d) || isInside(d, f)));
     }
 
@@ -678,14 +678,14 @@ export class PermissionChecker {
         if (forms.some((f) => credentials.some((a) => f === a || (contents && !root && isInside(a, f))))) return true;
         const search = toolName === "Grep" || toolName === "Glob" || toolName === "LS";
         if (forms.some((f) => accounts.some((a) => isInside(f, a) || (search && !root && isInside(a, f))))) return true;
-        if (forms.some((f) => pathForms(cavvyAccounts()).some((a) => isInside(f, a)))) return true;
-        const store = [paths.credentialsFile(), paths.mcpOAuth(), paths.providers(), ...(READ_TOOLS.has(toolName) ? [paths.userSettings()] : [])].flatMap(pathForms);
+        if (forms.some((f) => cavvyAccounts().flatMap(pathForms).some((a) => isInside(f, a)))) return true;
+        const store = storeFiles(READ_TOOLS.has(toolName)).flatMap(pathForms);
         return forms.some((f) => store.includes(f));
     }
 
     private isCavvyConfig(p: string): boolean {
         const forms = pathForms(p);
-        const home = [cavvyHome(), ...homeAliases(cavvyHome())].flatMap(pathForms);
+        const home = homes().flatMap(pathForms);
         if (forms.some((f) => home.some((h) => isInside(f, h)))) return true;
         if (accountProtectedPaths().flatMap(pathForms).some((a) => forms.some((f) => isInside(f, a)))) return true;
         // `.git` may be a file too (worktrees, submodules): it says where the repo lives.
@@ -756,9 +756,20 @@ function heredocDataBlanked(cmd: string): string {
     return withoutHeredocData(cmd) ?? cmd;
 }
 
-/** Cavvy's own accounts folder: private whether or not any account is registered. */
-function cavvyAccounts(): string {
-    return join(cavvyHome(), "accounts");
+/** Cavvy's home, and its other names (legacy.ts homeAliases): each is protected as the home. */
+function homes(): string[] {
+    return [cavvyHome(), ...homeAliases(cavvyHome())];
+}
+
+/** The credential store's files in each of homes(); `settings`: the user settings too. */
+function storeFiles(settings = false): string[] {
+    const names = [paths.credentialsFile(), paths.mcpOAuth(), paths.providers(), ...(settings ? [paths.userSettings()] : [])].map((f) => basename(f));
+    return homes().flatMap((h) => names.map((n) => join(h, n)));
+}
+
+/** Cavvy's own accounts folder, in each of homes(): private whether or not any account is registered. */
+function cavvyAccounts(): string[] {
+    return homes().map((h) => join(h, "accounts"));
 }
 
 /** An approval as the reviewer hears it: the exact action and what it granted, nothing model-written. */

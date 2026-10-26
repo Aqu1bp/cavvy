@@ -1,10 +1,12 @@
 // Moving from Harness, Cavvy's old name (src/config/legacy.ts): the home folder
 // and what stores paths into it, and what's still read by the old names.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { currentMcpName, fileIn, homeAliases, LEGACY, legacyEnvNotes, moveLegacyHome, projectDirIn, rewritePaths } from "../src/config/legacy";
+import { currentMcpName, fileIn, homeAliases, inProjectDir, LEGACY, legacyEnvNotes, moveLegacyHome, rewritePaths } from "../src/config/legacy";
+import { backendMatcher, hookApplies } from "../src/agent/hooks";
+import { parseAgentFile } from "../src/agent/agents";
 import { parseRule, ruleMatches } from "../src/permissions/rules";
 import { moveLegacyKeys } from "../gui/src/lib/legacy-storage";
 import { fromLegacyKeychain } from "../src/auth/credentials";
@@ -69,11 +71,14 @@ describe("moving the home folder", () => {
         expect(r.notes.some((n) => n.includes("sign-in again"))).toBe(true);
     });
 
-    test("does nothing when ~/.cavvy exists, or there's no ~/.harness", () => {
+    test("moves nothing when ~/.cavvy exists, and says both are there; nothing to do without ~/.harness", () => {
         const old = harnessHome();
         const home = join(T, ".cavvy");
         mkdirSync(home);
-        expect(moveLegacyHome(home, old)).toEqual({ home, notes: [] });
+        const r = moveLegacyHome(home, old);
+        expect(r.home).toBe(home);
+        expect(r.notes).toHaveLength(1);
+        expect(r.notes[0]).toContain(`Both ${old} (Harness's) and ${home} exist`);
         expect(lstatSync(old).isDirectory()).toBe(true);
         expect(moveLegacyHome(join(T, "other"), join(T, "missing"))).toEqual({ home: join(T, "other"), notes: [] });
     });
@@ -82,7 +87,35 @@ describe("moving the home folder", () => {
         const old = harnessHome();
         const home = join(T, ".cavvy");
         moveLegacyHome(home, old);
+        expect(existsSync(join(home, ".moving-from-harness.json"))).toBe(false);
         expect(moveLegacyHome(home, old)).toEqual({ home, notes: [] });
+    });
+
+    test("a move that stopped after the rename is finished by the next call", () => {
+        const old = harnessHome();
+        const home = join(T, ".cavvy");
+        // As a process that renamed it and then crashed leaves it: the marker, no link, nothing rewritten.
+        writeFileSync(join(old, ".moving-from-harness.json"), JSON.stringify({ from: old }));
+        renameSync(old, home);
+        const r = moveLegacyHome(home, old);
+        expect(r.notes[0]).toContain("Harness is now Cavvy");
+        expect(readlinkSync(old)).toBe(home);
+        expect(json(join(home, "providers.json")).agents["claude-code"].accounts[0].folder).toBe(join(home, "accounts", "claude-code", "work"));
+        expect(existsSync(join(home, "accounts", "claude-code", "work", ".cavvy-shared-from"))).toBe(true);
+        expect(existsSync(join(home, ".moving-from-harness.json"))).toBe(false);
+    });
+
+    test("a step that fails leaves the move to be finished next time", () => {
+        const old = harnessHome();
+        const home = join(T, ".cavvy");
+        writeFileSync(join(old, "providers.json"), "{ not json");
+        const r = moveLegacyHome(home, old);
+        expect(r.notes.join("\n")).toContain("isn't finished");
+        expect(existsSync(join(home, ".moving-from-harness.json"))).toBe(true);
+        writeFileSync(join(home, "providers.json"), JSON.stringify({ agents: { codex: { accounts: [{ id: "w", folder: join(old, "accounts", "codex", "w") }] } } }));
+        expect(moveLegacyHome(home, old).notes[0]).toContain("Harness is now Cavvy");
+        expect(json(join(home, "providers.json")).agents.codex.accounts[0].folder).toBe(join(home, "accounts", "codex", "w"));
+        expect(existsSync(join(home, ".moving-from-harness.json"))).toBe(false);
     });
 
     test("keeps using ~/.harness when it can't be moved", () => {
@@ -92,6 +125,7 @@ describe("moving the home folder", () => {
         expect(r.home).toBe(old);
         expect(r.notes[0]).toContain("Couldn't move");
         expect(lstatSync(old).isDirectory()).toBe(true);
+        expect(existsSync(join(old, ".moving-from-harness.json"))).toBe(false);
     });
 
     test("an unchanged file isn't rewritten", () => {
@@ -110,26 +144,41 @@ describe("moving the home folder", () => {
     });
 });
 
-describe("the link at the old place", () => {
-    test("is another name for the home folder while it leads there", () => {
+describe("~/.harness, protected as the home", () => {
+    test("the link at the old place, while it leads to the home", () => {
         const home = join(T, ".cavvy");
         mkdirSync(home);
         expect(homeAliases(home, T)).toEqual([]);
         symlinkSync(home, join(T, ".harness"));
         expect(homeAliases(home, T)).toEqual([join(T, ".harness")]);
-        // Not a name for a home it doesn't lead to.
+        // Not a name for a home it doesn't lead to (CAVVY_HOME elsewhere).
         mkdirSync(join(T, "elsewhere"));
         expect(homeAliases(join(T, "elsewhere"), T)).toEqual([]);
+    });
+
+    test("Harness's own, left beside the default home: its credentials stay protected", () => {
+        const old = harnessHome();
+        const home = join(T, ".cavvy");
+        mkdirSync(home);
+        expect(homeAliases(home, T)).toEqual([old]);
+        // Beside a home set elsewhere, it's no more Cavvy's than any folder.
+        expect(homeAliases(join(T, "elsewhere"), T)).toEqual([]);
+        // The home itself, when it couldn't be moved, isn't another name for itself.
+        expect(homeAliases(old, T)).toEqual([]);
     });
 });
 
 describe("old names still read", () => {
-    test("a project's .harness/ until it has a .cavvy/", () => {
-        expect(projectDirIn(T)).toBe(join(T, ".cavvy"));
+    test("a project's .harness/, file by file: a .cavvy/ with other files doesn't hide its settings", () => {
+        expect(inProjectDir(T, "settings.local.json")).toBe(join(T, ".cavvy", "settings.local.json"));
         mkdirSync(join(T, ".harness"));
-        expect(projectDirIn(T)).toBe(join(T, ".harness"));
-        mkdirSync(join(T, ".cavvy"));
-        expect(projectDirIn(T)).toBe(join(T, ".cavvy"));
+        writeFileSync(join(T, ".harness", "settings.local.json"), '{"permissions":{"deny":["Bash(rm:*)"]}}');
+        expect(inProjectDir(T, "settings.local.json")).toBe(join(T, ".harness", "settings.local.json"));
+        mkdirSync(join(T, ".cavvy", "skills"), { recursive: true });
+        expect(inProjectDir(T, "settings.local.json")).toBe(join(T, ".harness", "settings.local.json"));
+        expect(inProjectDir(T, "skills")).toBe(join(T, ".cavvy", "skills"));
+        writeFileSync(join(T, ".cavvy", "settings.local.json"), "{}");
+        expect(inProjectDir(T, "settings.local.json")).toBe(join(T, ".cavvy", "settings.local.json"));
     });
 
     test("a file by its old name only when the new one isn't there", () => {
@@ -151,13 +200,34 @@ describe("old names still read", () => {
     });
 });
 
+describe("names of Harness's MCP tools elsewhere", () => {
+    test("an agent's tools and disallowedTools cover Cavvy's", () => {
+        const def = parseAgentFile("---\nname: a\ntools: Read, mcp__harness__delegate\ndisallowedTools: mcp__harness__browser_eval\n---\nHi", "a", "user");
+        expect(def.tools).toEqual(["Read", "mcp__harness__delegate", "mcp__cavvy__delegate"]);
+        expect(def.disallowedTools).toEqual(["mcp__harness__browser_eval", "mcp__cavvy__browser_eval"]);
+    });
+
+    test("a hook's matcher covers Cavvy's, run by Cavvy or by Claude Code", () => {
+        const h = { type: "command" as const, command: "x", matcher: "mcp__harness__delegate" };
+        expect(hookApplies(h, "PreToolUse", { tool_name: "mcp__cavvy__delegate" }, T)).toBe(true);
+        expect(hookApplies(h, "PreToolUse", { tool_name: "mcp__cavvy__browser_act" }, T)).toBe(false);
+        expect(hookApplies({ ...h, matcher: "mcp__harness__.*" }, "PreToolUse", { tool_name: "mcp__cavvy__x" }, T)).toBe(true);
+        expect(backendMatcher("PreToolUse", "mcp__harness__delegate")).toBe("mcp__harness__delegate|mcp__cavvy__delegate");
+        expect(backendMatcher("PreToolUse", "mcp__harness__.*")).toBe("(?:mcp__harness__.*)|(?:mcp__cavvy__.*)");
+        expect(backendMatcher("PreToolUse", "Bash")).toBe("Bash|Monitor");
+        expect(backendMatcher("PreToolUse", "Edit")).toBe("Edit");
+        expect(backendMatcher("SessionStart", "mcp__harness__x")).toBe("mcp__harness__x");
+    });
+});
+
 describe("HARNESS_ variables", () => {
     test("each one set is named with its CAVVY_ name; the ones Cavvy sets for hooks aren't", () => {
         expect(legacyEnvNotes({})).toEqual([]);
         expect(legacyEnvNotes({ HARNESS_HOOK_EVENT: "Stop", HARNESS_PLUGIN_ROOT: "/p" })).toEqual([]);
         const [note] = legacyEnvNotes({ HARNESS_MODEL: "x", HARNESS_HOME: "/h" });
         expect(note).toContain("CAVVY_MODEL, CAVVY_HOME instead of HARNESS_MODEL, HARNESS_HOME");
-        expect(note).toContain("HARNESS_HOME is still used");
+        expect(note).toContain("(HARNESS_HOME still works meanwhile)");
+        expect(legacyEnvNotes({ HARNESS_HOME: "/h", HARNESS_NO_KEYCHAIN: "1" })[0]).toContain("(HARNESS_HOME and HARNESS_NO_KEYCHAIN still work meanwhile)");
     });
 });
 
@@ -205,10 +275,10 @@ describe("keychain items under Harness's name", () => {
         };
     }
 
-    test("one is moved to Cavvy's service when first read, then the old one deleted", async () => {
+    test("one is copied to Cavvy's service when first read, and kept for a Harness still installed", async () => {
         const k = keychain({ [`${LEGACY.keychainService}/groq`]: "gsk_old_key" });
         expect(await fromLegacyKeychain(k, "groq")).toBe("gsk_old_key");
-        expect(Object.fromEntries(k.items)).toEqual({ "cavvy-cli/groq": "gsk_old_key" });
+        expect(Object.fromEntries(k.items)).toEqual({ [`${LEGACY.keychainService}/groq`]: "gsk_old_key", "cavvy-cli/groq": "gsk_old_key" });
         expect(await fromLegacyKeychain(k, "openai")).toBeNull();
     });
 

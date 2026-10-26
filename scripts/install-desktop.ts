@@ -16,6 +16,7 @@
 // certificate it keeps to the one the installed copy has; to pick another,
 // set CAVVY_SIGNING_IDENTITY to its name or SHA-1 (security find-identity -v -p codesigning).
 
+import { spawn } from "child_process";
 import { accessSync, constants, existsSync, readdirSync } from "fs";
 import { homedir, userInfo } from "os";
 import { join, resolve } from "path";
@@ -189,7 +190,21 @@ if (restart) {
 replaceBundle(built, dest, (from, to) => run(["ditto", from, to], root));
 console.log(`Installed ${dest}`);
 writeInstallRecord(root, dest);
-if (restart) run(["open", dest], root);
+// Harness.app's updater (from before the rename; it sets HARNESS_HOME, this one's sets CAVVY_HOME) installs with
+// --no-restart, then quits the app by the new name, which Harness.app doesn't have, and opens the new one: Harness.app
+// would keep running beside it. It's quit from outside, as that updater does, since it may be running this, and
+// first, so it has closed its sessions before the new app starts.
+const harnessApp = "/Harness.app/Contents/MacOS/harness";
+if (!restart && process.env.HARNESS_HOME !== undefined && process.env.CAVVY_HOME === undefined && Bun.spawnSync(["pgrep", "-U", String(userInfo().uid), "-f", `${harnessApp}-desktop`]).exitCode === 0) {
+    const script = `
+        sleep 0.5
+        pkill -TERM -U "$1" -f "$2-desktop"
+        i=0
+        while pgrep -U "$1" -f "$2" >/dev/null && [ $i -lt 150 ]; do sleep 0.1; i=$((i+1)); done
+        pkill -KILL -U "$1" -f "$2"`;
+    spawn("/bin/sh", ["-c", script, "sh", String(userInfo().uid), harnessApp], { detached: true, stdio: "ignore" }).unref();
+    console.log(`Harness quits in a moment: ${productName} replaces it.`);
+} else if (restart) run(["open", dest], root);
 else if (running().app.length) console.log(`${productName} is still running the build before this one: quit it and open it again to use this one.`);
 for (const old of ["/Applications/Harness.app", join(homedir(), "Applications", "Harness.app")]) {
     if (existsSync(old)) console.log(`${old} is the app from before the rename to ${productName}. Once ${productName} works, delete it.`);

@@ -4,7 +4,7 @@
 // worktree markers, keychain items (moved when first read), rules and hooks
 // written with the old names. Everything that knows the old name is here or
 // names this module.
-import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, sep } from "path";
 
@@ -35,9 +35,16 @@ const PATH_FILES = ["providers.json", join("plugins", "installed_plugins.json"),
 export interface HomeMove {
     /** The folder to use: `home`, or `legacy` when it couldn't be moved. */
     home: string;
-    /** What happened, for the user; empty when there was nothing to move. */
+    /** What happened, for the user; empty when there was nothing to do. */
     notes: string[];
 }
+
+/**
+ * Written into Harness's home just before it moves, and removed once what follows
+ * the move is done: a move that stopped partway (a crash, a file that couldn't be
+ * written, another process that moved it first) is finished by the next start.
+ */
+const MOVING = ".moving-from-harness.json";
 
 /**
  * Moves Harness's home folder (`legacy`) to Cavvy's (`home`) when only the old one
@@ -45,33 +52,58 @@ export interface HomeMove {
  * session, plugin or account stored keep leading to the files. The paths in the
  * files that check them exactly (accounts, plugins) are rewritten, and the account
  * folders' markers renamed. Safe to call from several processes at once: one
- * rename wins, and the others find the new folder.
+ * rename wins, and each finishes what follows it (every step can be done twice).
  */
 export function moveLegacyHome(home: string, legacy: string): HomeMove {
-    if (exists(home) || !exists(legacy)) return { home, notes: [] };
-    let from: string;
+    if (!exists(home) && exists(legacy)) {
+        let from: string;
+        try {
+            from = realpathSync(legacy);
+        } catch {
+            return { home, notes: [] }; // a link to nowhere: nothing to move
+        }
+        try {
+            writeFileSync(join(legacy, MOVING), JSON.stringify({ from }) + "\n");
+            renameSync(legacy, home);
+        } catch (e: any) {
+            if (!exists(home)) {
+                rmSync(join(legacy, MOVING), { force: true });
+                return { home: legacy, notes: [`Couldn't move ${legacy} to ${home} (${e?.code ?? e?.message ?? e}); using ${legacy} for now.`] };
+            }
+            // Another process moved it: this one finishes the move too.
+        }
+    }
+    if (exists(join(home, MOVING))) return { home, notes: finishMove(home, legacy) };
+    if (exists(legacy) && !sameFolder(legacy, home)) {
+        return { home, notes: [`Both ${legacy} (Harness's) and ${home} exist. Cavvy uses ${home}, and protects ${legacy} as it does its own; move what you need from it, then delete it.`] };
+    }
+    return { home, notes: [] };
+}
+
+/** What follows the move. Each step leaves what's done as it is; the marker goes only once all are. */
+function finishMove(home: string, legacy: string): string[] {
+    const moving = join(home, MOVING);
+    let from: string | undefined;
     try {
-        from = realpathSync(legacy);
+        from = JSON.parse(readFileSync(moving, "utf8")).from;
     } catch {
-        return { home, notes: [] }; // a link to nowhere: nothing to move
+        // Only the old place, then.
     }
-    try {
-        renameSync(legacy, home);
-    } catch (e: any) {
-        if (exists(home)) return { home, notes: [] }; // another process moved it
-        return { home: legacy, notes: [`Couldn't move ${legacy} to ${home} (${e?.code ?? e?.message ?? e}); using ${legacy} for now.`] };
+    const notes: string[] = [];
+    let done = true;
+    if (!exists(legacy)) {
+        try {
+            symlinkSync(home, legacy);
+        } catch (e: any) {
+            if (!exists(legacy)) notes.push(`Couldn't leave a link at ${legacy} (${e?.code ?? e}): files that name it won't be found there.`);
+        }
     }
-    const notes = [`Harness is now Cavvy: moved ${legacy} to ${home}.`];
-    try {
-        symlinkSync(home, legacy);
-    } catch (e: any) {
-        notes.push(`Couldn't leave a link at ${legacy} (${e?.code ?? e}): files that name it won't be found there.`);
-    }
-    const to = realpathSync(home);
+    const olds = [...new Set([legacy, ...(typeof from === "string" ? [from] : [])])];
     for (const file of PATH_FILES) {
         try {
-            rewritePaths(join(home, file), [from, legacy], to);
+            rewritePaths(join(home, file), olds, home);
         } catch (e: any) {
+            done = false;
             notes.push(`Couldn't update the paths in ${join(home, file)} (${e?.message ?? e}).`);
         }
     }
@@ -83,9 +115,19 @@ export function moveLegacyHome(home: string, legacy: string): HomeMove {
             // Still read by its old name (paths.userMemory).
         }
     }
-    const renamed = renameAccountMarkers(join(home, "accounts"));
-    if (renamed) notes.push(`Named Claude Code accounts need one sign-in again: their sign-in is kept under their folder's path, which moved.`);
-    return { home, notes };
+    const accounts = renameAccountMarkers(join(home, "accounts"));
+    if (!accounts.renamed) done = false;
+    if (!done) return [...notes, `Moving ${legacy} to ${home} isn't finished; Cavvy tries again when it next starts.`];
+    rmSync(moving, { force: true });
+    return [`Harness is now Cavvy: moved ${legacy} to ${home}.`, ...notes, ...(accounts.claude ? [`Named Claude Code accounts need one sign-in again: their sign-in is kept under their folder's path, which moved.`] : [])];
+}
+
+function sameFolder(a: string, b: string): boolean {
+    try {
+        return realpathSync(a) === realpathSync(b);
+    } catch {
+        return false;
+    }
 }
 
 function exists(p: string): boolean {
@@ -123,9 +165,10 @@ export function rewritePaths(file: string, olds: string[], to: string): void {
     renameSync(tmp, file);
 }
 
-/** accounts/<provider>/<id>/.harness-shared-from → .cavvy-shared-from. Returns whether a Claude Code account was there. */
-function renameAccountMarkers(accounts: string): boolean {
+/** accounts/<provider>/<id>/.harness-shared-from → .cavvy-shared-from. Says whether a Claude Code account was there, and whether each marker was renamed. */
+function renameAccountMarkers(accounts: string): { claude: boolean; renamed: boolean } {
     let claude = false;
+    let renamed = true;
     for (const provider of list(accounts)) {
         for (const id of list(join(accounts, provider))) {
             if (id.startsWith(".")) continue; // .leases
@@ -136,12 +179,12 @@ function renameAccountMarkers(accounts: string): boolean {
                 try {
                     renameSync(old, now);
                 } catch {
-                    // The layout is checked again before each use; a missing marker only stops sharing.
+                    renamed = false; // tried again next start; meanwhile the account doesn't share the default folder's files
                 }
             }
         }
     }
-    return claude;
+    return { claude, renamed };
 }
 
 function list(dir: string): string[] {
@@ -158,14 +201,18 @@ function list(dir: string): string[] {
     }
 }
 
+/** The HARNESS_* variables still honored: where the state is (cavvyHome), and keeping keys out of the keychain (credentials.ts). */
+const HONORED = ["HARNESS_HOME", "HARNESS_NO_KEYCHAIN"];
+
 /**
  * HARNESS_* variables set in this environment that Cavvy reads as CAVVY_* now.
- * HARNESS_HOME is still honored (see cavvyHome); the rest are only reported.
+ * The HONORED ones still work; the rest are only reported.
  */
 export function legacyEnvNotes(env: NodeJS.ProcessEnv = process.env): string[] {
     const names = Object.keys(env).filter((k) => k.startsWith(LEGACY.envPrefix) && env[k] !== undefined && !HOOK_ENV.has(k));
     if (!names.length) return [];
-    return [`Harness is now Cavvy: set ${names.map((n) => "CAVVY_" + n.slice(LEGACY.envPrefix.length)).join(", ")} instead of ${names.join(", ")}${names.includes("HARNESS_HOME") ? " (HARNESS_HOME is still used while CAVVY_HOME isn't set)" : ""}.`];
+    const honored = names.filter((n) => HONORED.includes(n));
+    return [`Harness is now Cavvy: set ${names.map((n) => "CAVVY_" + n.slice(LEGACY.envPrefix.length)).join(", ")} instead of ${names.join(", ")}${honored.length ? ` (${honored.join(" and ")} still ${honored.length > 1 ? "work" : "works"} meanwhile)` : ""}.`];
 }
 
 /** What Cavvy sets for hooks and plugins, also under the old names so ones written for Harness still run. */
@@ -178,9 +225,15 @@ export function fileIn(dir: string, name: string, legacyName: string): string {
     return !exists(now) && exists(old) ? old : now;
 }
 
-/** A project's own folder for Cavvy's files: .cavvy/, or .harness/ in a project that has only that. */
-export function projectDirIn(cwd: string): string {
-    return fileIn(cwd, ".cavvy", LEGACY.dir);
+/**
+ * A file or folder in a project's own folder: in .cavvy/, or in .harness/ when only
+ * that one has it. File by file, so a .cavvy/ a repository adds (skills, say)
+ * doesn't hide the settings, and the rules in them, still in .harness/.
+ */
+export function inProjectDir(cwd: string, ...rel: string[]): string {
+    const now = join(cwd, ".cavvy", ...rel);
+    const old = join(cwd, LEGACY.dir, ...rel);
+    return !exists(now) && exists(old) ? old : now;
 }
 
 /**
@@ -194,17 +247,31 @@ export function currentMcpName(name: string, server: string): string {
     return name.startsWith(old + "__") ? `mcp__${server}__` + name.slice(old.length + 2) : name;
 }
 
+/** The name Harness gave a tool of Cavvy's MCP server (mcp__cavvy__x → mcp__harness__x), for hooks written for it; undefined for other tools. */
+export function legacyMcpName(name: string, server: string): string | undefined {
+    const now = `mcp__${server}__`;
+    return name.startsWith(now) ? `mcp__${LEGACY.mcpServer}__` + name.slice(now.length) : undefined;
+}
+
+/** A hook matcher (a list of names or a regex) with each mcp__harness__ in it naming Cavvy's server instead. */
+export function legacyMcpMatcher(matcher: string, server: string): string {
+    return matcher.replace(new RegExp(`\\bmcp__${LEGACY.mcpServer}(?=__)`, "g"), `mcp__${server}`);
+}
+
+/** Tool names as written, each mcp__harness… one followed by its name now (an agent's tools and disallowedTools). */
+export function withCurrentMcpNames(names: string[], server: string): string[] {
+    return [...new Set(names.flatMap((n) => [n, currentMcpName(n, server)]))];
+}
+
 /**
- * Other names for `home`: the link moveLegacyHome left at ~/.harness, while it
- * still leads there. A path through it is a path into the home folder, so
- * whatever protects the home's files protects them by this name too.
+ * Other folders protected as `home` is: the link moveLegacyHome left at ~/.harness,
+ * while it leads there (a path through it is a path into the home), and, beside the
+ * default home, a ~/.harness that wasn't moved: Harness's own, with its credentials
+ * and accounts.
  */
 export function homeAliases(home: string, userHome = homedir()): string[] {
-    const link = join(userHome, LEGACY.dir);
-    try {
-        if (!lstatSync(link).isSymbolicLink()) return [];
-        return realpathSync(link) === realpathSync(home) ? [link] : [];
-    } catch {
-        return [];
-    }
+    const old = join(userHome, LEGACY.dir);
+    if (!exists(old)) return [];
+    if (sameFolder(old, home)) return lstatSync(old).isSymbolicLink() ? [old] : [];
+    return home === join(userHome, ".cavvy") ? [old] : [];
 }

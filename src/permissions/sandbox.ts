@@ -18,7 +18,7 @@ import { ANALYSIS_LIMIT, commandsWithDirs, gitSubcommand, programNames, readSmal
 import { CASE_INSENSITIVE_FS, canonical, spellings } from "../util/files";
 import { accountProtectedPaths } from "../providers/accounts";
 import { paths } from "../config/paths";
-import { LEGACY } from "../config/legacy";
+import { homeAliases, LEGACY } from "../config/legacy";
 
 export type SandboxKind = "seatbelt" | "bwrap";
 
@@ -184,23 +184,25 @@ export function sandboxPolicy(roots: string[], opts: { home?: string; cavvyHome:
     const git = [...new Set([...ws.map((w) => join(w, ".git")), ...ws.flatMap(gitDirs)])];
     const temp = [...new Set([process.platform === "darwin" ? "/private/tmp" : "/tmp", real(tmpdir())])];
     const cavvy = real(opts.cavvyHome);
+    // Its other names (legacy.ts): a ~/.harness Harness left beside it is protected as it is.
+    const homes = [...new Set([cavvy, ...homeAliases(opts.cavvyHome).map(real)])];
     // Resolve afresh so newly added accounts are protected in running sessions.
     const allAccounts = [...new Set(accountProtectedPaths().map(canonical))];
     const accounts = allAccounts.filter((a) => !isWithin(a, cavvy));
     const worktrees = [...new Set(ws.flatMap(claudeWorktrees))];
     // The secrets and accounts/ (registered or not) can't even be listed; the rest of the
     // home can, but not read: settings and session logs may hold secrets too.
-    const secrets = [basename(paths.credentialsFile()), basename(paths.mcpOAuth()), basename(paths.providers()), "accounts"].flatMap((f) => bothForms(join(cavvy, f)));
+    const secrets = homes.flatMap((h) => [basename(paths.credentialsFile()), basename(paths.mcpOAuth()), basename(paths.providers()), "accounts"].flatMap((f) => bothForms(join(h, f))));
     // Seatbelt matches where a path leads: a settings.json symlinked out of the home is covered where it points.
     const settings = linkedFile(join(cavvy, basename(paths.userSettings())));
     return {
         writable: [...new Set([...ws, ...git.filter((g) => !ws.some((w) => isWithin(g, w))), ...temp])],
         // A worktree's own config and its .git pointer stay read-only, as in the project around it.
-        readOnly: [...new Set([...ws.flatMap((w) => PROJECT_CONFIG.flatMap((c) => bothForms(join(w, c)))), ...worktrees.flatMap((t) => [...PROJECT_CONFIG, ...CLI_CONFIG, ".git"].flatMap((c) => bothForms(join(t, c)))), cavvy, ...accounts])],
+        readOnly: [...new Set([...ws.flatMap((w) => PROJECT_CONFIG.flatMap((c) => bothForms(join(w, c)))), ...worktrees.flatMap((t) => [...PROJECT_CONFIG, ...CLI_CONFIG, ".git"].flatMap((c) => bothForms(join(t, c)))), ...homes, ...accounts])],
         cliConfig: [...new Set(ws.flatMap((w) => CLI_CONFIG.flatMap((c) => bothForms(join(w, c)))))],
         worktrees,
         unreadable: [...new Set([...UNREADABLE_IN_HOME.map((p) => join(home, p)), ...secrets, ...allAccounts])],
-        contentsUnreadable: [...new Set([cavvy, ...settings].filter((x, i) => i === 0 || !isWithin(x, cavvy)))],
+        contentsUnreadable: [...new Set([...homes, ...settings.filter((x) => !isWithin(x, cavvy))])],
         gitDirs: git,
     };
 }

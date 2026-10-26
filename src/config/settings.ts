@@ -562,7 +562,7 @@ export function updateSettings(scope: SettingsScope, cwd: string, fn: (s: Settin
 
 /** Keep settings.local.json out of git without touching the user's root .gitignore. */
 function ensureLocalGitignore(cwd: string) {
-    const gi = join(paths.projectDir(cwd), ".gitignore");
+    const gi = join(dirname(paths.localSettings(cwd)), ".gitignore");
     try {
         if (!existsSync(gi)) writeFileSync(gi, "settings.local.json\n");
     } catch {

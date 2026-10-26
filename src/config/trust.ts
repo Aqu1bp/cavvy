@@ -104,17 +104,19 @@ export function agentProjectConfig(cwd: string, provider: "claude-code" | "codex
 /** Whether the folder has anything that trust would unlock. `has` says whether a path exists (a commit's tree, for a checkout yet to be made). */
 export function projectConfigSummary(cwd: string, has: (path: string) => boolean = existsSync): string[] {
     const found: string[] = [];
-    // Which folder holds Cavvy's files, by `has` (paths.projectDir asks the disk): Harness's .harness/ when it's the only one.
-    const dir = !has(join(cwd, ".cavvy")) && has(join(cwd, LEGACY.dir)) ? LEGACY.dir : ".cavvy";
-    if (has(join(cwd, dir, "settings.json"))) found.push(`${dir}/settings.json`);
-    if (has(join(cwd, dir, "settings.local.json"))) found.push(`${dir}/settings.local.json`);
+    // Each of Cavvy's files where it's read from, by `has` (inProjectDir asks the disk): in Harness's .harness/ when only that has it.
+    const own = (name: string, suffix = "") => {
+        for (const dir of [".cavvy", LEGACY.dir]) if (has(join(cwd, dir, name))) return found.push(`${dir}/${name}${suffix}`);
+    };
+    own("settings.json");
+    own("settings.local.json");
     if (has(paths.projectMcp(cwd))) found.push(".mcp.json");
-    if (has(join(cwd, dir, "commands"))) found.push(`${dir}/commands/`);
-    if (has(join(cwd, dir, "agents"))) found.push(`${dir}/agents/`);
+    own("commands", "/");
+    own("agents", "/");
     // Agent CLIs that are turned on load their own project configuration only in a folder the user trusted.
     for (const p of ["claude-code", "codex"] as const) if (readAgentConfig(p)) found.push(...agentProjectConfig(cwd, p, has));
     // Skills are instructions for the model, read natively from both folders whatever the model (src/agent/skills.ts).
-    if (has(join(cwd, dir, "skills"))) found.push(`${dir}/skills/`);
+    own("skills", "/");
     if (has(join(cwd, ".claude", "skills"))) found.push(".claude/skills/");
     // Memory files load in a folder with nothing to protect, but their imports stay inside the project
     // until the user trusts it (src/agent/memory.ts): one that imports from outside has something to unlock.
