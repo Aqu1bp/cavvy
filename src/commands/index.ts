@@ -2085,6 +2085,8 @@ const BUILTIN: Command[] = [
         run: async (app, args) => {
             if (!app.agent) return app.notice("No model configured.", "error");
             if (app.session.messages.length < 2) return app.notice("Nothing to compact yet.");
+            // Asked for: work, unlike a compaction while idle (Session.worked).
+            app.session.worked(Date.now(), true);
             await app.runTask("Compacting conversation", (signal) => app.agent!.compact({ auto: false, signal, instructions: args || undefined }));
         },
     },

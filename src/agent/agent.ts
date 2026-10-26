@@ -693,6 +693,8 @@ export class Agent {
         this.lastEnd = undefined;
         this.turnError = undefined;
         this.autoCompactBlocked = false;
+        // A turn is work: the session goes up the sidebar (Session.worked), wherever it runs (the app, the terminal, cavvy run).
+        if (!this.o.isSubagent) this.session.worked(Date.now(), true);
         try {
             if (!this.o.isSubagent) {
                 // SessionStart hooks still running (a first prompt sent at once): their context and watch paths come first.
@@ -717,6 +719,7 @@ export class Agent {
             opts.signal.removeEventListener("abort", onAbort);
             this.running = false;
             this.prompted = false;
+            if (!this.o.isSubagent) this.session.worked(Date.now(), true);
         }
     }
 

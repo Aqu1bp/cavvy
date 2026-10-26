@@ -377,6 +377,8 @@ export class Runtime {
         opts: { mode?: PermissionMode; resumed: boolean },
     ) {
         this.session = session;
+        // Opened from disk: last active when it last worked, not now. Opening it isn't work: it keeps its place in the sidebar.
+        if (opts.resumed) this.lastActive = session.workedAt ?? session.writtenAt ?? this.lastActive;
         // Capture new-session defaults so changing Home settings cannot change an open chat’s speed.
         // A chat from before speeds were saved keeps it in memory: opening one doesn't write to it.
         if (session.fastMode === undefined) {
@@ -1629,9 +1631,15 @@ export class Runtime {
         this.openThinking = undefined;
     }
 
+    /** It did work: it goes up the sidebar, and its file says so (Session.worked). */
+    private worked(at: number) {
+        this.lastActive = at;
+        this.session.worked(at);
+    }
+
     private onEvent(e: AgentEvent) {
         // An idle compaction isn't the user's doing: the session doesn't move up the sidebar for it.
-        if (!this.idleCompacting) this.lastActive = Date.now();
+        if (!this.idleCompacting) this.worked(Date.now());
         switch (e.type) {
             case "activity":
                 if (e.text) this.activity(e.text);
@@ -2640,7 +2648,7 @@ export class Runtime {
         // Where it starts: its own prompt, or the tool results it rides along with.
         this.uiTurn = { seg: this.segment, index: this.session.messages.length, at: turn.startedAt! };
         this.ui.write({ t: "turn", ...this.uiTurn });
-        this.lastActive = turn.startedAt!;
+        this.worked(turn.startedAt!);
         this.engine.sessionChanged(this);
         return turn;
     }
@@ -2834,7 +2842,7 @@ export class Runtime {
         this.turnDone = new Promise<void>((r) => (settled = r));
         const ac = (this.abort = new AbortController());
         this.turnStartedAt = Date.now();
-        this.lastActive = this.turnStartedAt;
+        this.worked(this.turnStartedAt);
         const display = opts.display ?? text;
         const index = this.session.messages.length;
         this.turnSnapshotFloor = this.latestCheckpoint();
@@ -3273,7 +3281,7 @@ export class Runtime {
         const blockId = this.newId();
         this.op({ op: "block", turnId: turn.id, block: { t: "shell", id: blockId, command, output: "", running: true } });
         this.setState({ busy: true, status: "running", activity: { label: "Running", since: Date.now(), detail: command.slice(0, 80) } });
-        this.lastActive = turn.startedAt!;
+        this.worked(turn.startedAt!);
         this.engine.sessionChanged(this);
         this.flush();
         let status: TurnStatus = "done";
@@ -3338,7 +3346,7 @@ export class Runtime {
         // Idle, it isn't "working" in the sidebar: nothing the user started.
         this.setState(idle ? { busy: true, activity } : { busy: true, status: "running", activity });
         // Not the user's doing: the session doesn't move up the sidebar for it.
-        if (!idle) this.lastActive = Date.now();
+        if (!idle) this.worked(Date.now());
         this.engine.sessionChanged(this);
         try {
             await this.agent.compact({ auto: idle, signal: ac.signal, instructions, idle });
