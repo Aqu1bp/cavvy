@@ -1,3 +1,25 @@
+// Formatters built once: toLocale*String builds one on every call, and opening a long session formats every turn's
+// time (a long session's open spent ~10 ms of its slow frame there, measured). A formatter keeps the time zone it was
+// built in, so at most once a minute the zone is looked up, and they're built again if the computer's moved.
+const build = () => ({
+    clock: new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }),
+    day: new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }),
+    dayYear: new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }),
+    dayTime: new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }),
+    dayYearTime: new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }),
+});
+let zone: string | undefined;
+let checked = -Infinity;
+let built: ReturnType<typeof build> | undefined;
+function formats() {
+    const now = Date.now();
+    if (built && now - checked < 60_000) return built;
+    checked = now;
+    const here = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (!built || here !== zone) { zone = here; built = build(); }
+    return built;
+}
+
 export function ago(ms: number, now = Date.now()): string {
     const s = Math.max(0, Math.round((now - ms) / 1000));
     if (s < 45) return "now";
@@ -5,11 +27,12 @@ export function ago(ms: number, now = Date.now()): string {
     if (s < 86400) return `${Math.round(s / 3600)}h`;
     if (s < 86400 * 7) return `${Math.round(s / 86400)}d`;
     const d = new Date(ms);
-    return d.toLocaleDateString(undefined, { month: "short", day: "numeric", ...(d.getFullYear() !== new Date(now).getFullYear() ? { year: "numeric" } : {}) });
+    const f = formats();
+    return (d.getFullYear() !== new Date(now).getFullYear() ? f.dayYear : f.day).format(d);
 }
 
 export function clock(ms: number): string {
-    return new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    return formats().clock.format(ms);
 }
 
 /** When a prompt was sent, under it: the time today, with the day before that (and the year before this one). */
@@ -17,7 +40,8 @@ export function promptTime(ms: number, now = Date.now()): string {
     const d = new Date(ms);
     const today = new Date(now);
     if (d.toDateString() === today.toDateString()) return clock(ms);
-    return d.toLocaleString(undefined, { month: "short", day: "numeric", ...(d.getFullYear() !== today.getFullYear() ? { year: "numeric" } : {}), hour: "numeric", minute: "2-digit" });
+    const f = formats();
+    return (d.getFullYear() !== today.getFullYear() ? f.dayYearTime : f.dayTime).format(d);
 }
 
 /** A prompt short enough to be a rounder bubble, like a message: one line of under 60 characters. */

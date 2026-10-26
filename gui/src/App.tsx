@@ -13,6 +13,7 @@ import { canStop } from "./lib/session-status";
 import { actionOf, setEnterSends } from "./state/keybindings";
 import { clampInspectorWidth, closesOnShrink, columnSteps, heldSizes, requestCloses, tracks, COLUMN_NARROW, COLUMN_SHORT, INSPECTOR_DEFAULT, windowLayout } from "./lib/layout";
 import { warmUp } from "./lib/highlight";
+import { warmMarkdown } from "./lib/markdown";
 import { frameDrag } from "./lib/drag";
 import { skipCovered } from "./lib/cover";
 import { Sidebar } from "./components/Sidebar";
@@ -391,8 +392,9 @@ export function App() {
             window.removeEventListener("keydown", drawerKeys, true);
             window.removeEventListener("keydown", onKey);
         });
-        // Highlighting is ready by the time the first reply arrives.
+        // Highlighting and markdown are ready by the time the first reply arrives.
         setTimeout(warmUp, 1500);
+        setTimeout(warmMarkdown, 1500);
     });
 
     // "(2) Cavvy" while sessions wait for you.

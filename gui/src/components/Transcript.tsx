@@ -6,7 +6,7 @@ import { activate, app, toast, type SessionHandle } from "../state/app";
 import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setJumpTarget, setRewindOpen, takeDockGlide } from "../state/ui";
 import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
-import { anchoredTop, atBottom, FAR, firstBelow, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
+import { anchoredTop, atBottom, FAR, firstBelow, firstWindow, MORE_TURNS, restoredShown, turnHeight, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
 import { turnAt } from "../lib/find";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
 import { revealing } from "../lib/reveal";
@@ -50,7 +50,18 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     const [stick, setStick] = createSignal(saved?.bottom ?? true);
     /** Scrolled all the way down: "Latest" has nothing to jump to, following the end or not. */
     const [scrolledDown, setScrolledDown] = createSignal(true);
-    const [shown, setShown] = createSignal(restoredShown(p.handle.view.turns.map((t) => t.id), saved));
+    // At first only about two screens of turns: the last ones, or (reopened where it was being read) those around the
+    // place read. The rest of the page goes in a moment after (grow, below).
+    const ids = p.handle.view.turns.map((t) => t.id);
+    const target = restoredShown(ids, saved);
+    const opensAtEnd = saved?.bottom ?? true;
+    const anchorIndex = !opensAtEnd && saved?.anchor ? ids.indexOf(saved.anchor.turnId) : -1;
+    const first = !opensAtEnd && anchorIndex < 0
+        ? { shown: target, trimmed: 0 }
+        : firstWindow(p.handle.view.turns.map(turnHeight), target, opensAtEnd ? undefined : anchorIndex, window.innerHeight, -(saved?.anchor?.offset ?? 0));
+    const [shown, setShown] = createSignal(first.shown);
+    /** Turns at the very end not mounted yet (reopened mid-way: those below the place read go in first). */
+    const [trimmed, setTrimmed] = createSignal(first.trimmed);
     let reading = saved?.anchor;
     let ready = false;
     let smoothScroll = false;
@@ -70,8 +81,9 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     let mutatedAt = -Infinity;
     let repinned: number[] = [];
     const gapOf = (el: HTMLElement) => el.scrollHeight - el.clientHeight - el.scrollTop;
-    /** Measured after every scroll and size change: the button goes by what's in view, not only by following. */
-    const measureEnd = () => scroller && setScrolledDown(gapOf(scroller) <= 1);
+    /** Measured after every scroll and size change: the button goes by what's in view, not only by following. The end of
+     * what's mounted isn't the end while turns below it are still held back (trimmed). */
+    const measureEnd = () => scroller && setScrolledDown(trimmed() === 0 && gapOf(scroller) <= 1);
     const wrote = () => {
         if (!scroller) return;
         lastTop = scroller.scrollTop;
@@ -92,9 +104,10 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     const turns = () => p.handle.view.turns;
     const visible = createMemo(() => {
         const t = turns();
-        return t.length > shown() ? t.slice(t.length - shown()) : t;
+        return t.slice(Math.max(0, t.length - shown()), t.length - trimmed());
     });
-    const hidden = () => Math.max(0, turns().length - shown());
+    /** Turns above the page, for "Show earlier" (not those still going in at first: grow, in onMount). */
+    const hidden = () => Math.max(0, turns().length - Math.max(shown(), target));
 
     const toBottom = (smooth = false) => {
         if (!scroller) return;
@@ -324,7 +337,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                 restore();
                 // Nothing left to scroll (something folded until it all fits): no scroll event will come to say the
                 // end is in view, so it's followed again here.
-                if (scroller!.scrollHeight <= scroller!.clientHeight + 1) setStick(true);
+                if (trimmed() === 0 && scroller!.scrollHeight <= scroller!.clientHeight + 1) setStick(true);
             }
             measureEnd();
         });
@@ -344,6 +357,30 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             if (stick()) toBottom();
             else { scroller!.scrollTop = saved?.top ?? 0; restore(); }
         });
+        // The rest of the turns this view shows, a few at a time once the first screen is painted: each batch goes in
+        // above, between frames. Followed at the end, the end stays in view; read further up, the place read stays put.
+        let growing = 0;
+        let gone = false;
+        const pending = () => trimmed() > 0 || shown() < target;
+        const grow = () => {
+            growing = 0;
+            if (gone || !pending()) return;
+            if (!stick()) reading = capture();
+            // Below the place read first, then above it.
+            if (trimmed() > 0) setTrimmed((n) => Math.max(0, n - MORE_TURNS));
+            else setShown((n) => (n >= target ? n : Math.min(target, n + MORE_TURNS)));
+            // Solid has inserted them; before paint, the end (or the place read) where it was.
+            if (stick()) toBottom();
+            else restore();
+            if (pending()) later();
+        };
+        // After the frame paints: a frame, then a task.
+        const later = () => (growing = requestAnimationFrame(() => setTimeout(grow, 0)));
+        if (pending()) later();
+        onCleanup(() => {
+            gone = true;
+            cancelAnimationFrame(growing);
+        });
     });
     onCleanup(() => {
         cancelAnimationFrame(frame);
@@ -360,7 +397,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         reading = capture();
         smoothScroll = false;
         setStick(false);
-        setShown((n) => n + PAGE);
+        setShown((n) => Math.max(n, target) + PAGE);
         // Solid has inserted the page synchronously; compensate before paint.
         restore();
     };
@@ -397,7 +434,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         const next = anchoredTop(scroller.scrollTop, t.el.getBoundingClientRect().top, t.top);
         if (Math.abs(next - scroller.scrollTop) > 0.5) scroller.scrollTop = next;
         // Followed again if the end is in view after it (folded with all of it showing): as a scroll there would.
-        setStick(scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= 1);
+        setStick(trimmed() === 0 && scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= 1);
         wrote();
         reading = capture();
     };
@@ -422,6 +459,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             () => turns().length,
             (n, prev) => {
                 if (prev !== undefined && n > prev && turns()[n - 1]?.prompt) {
+                    setTrimmed(0);
                     setStick(true);
                     afterLayout(() => toBottom(true));
                 }
@@ -463,7 +501,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             return;
         }
         if (up) setStick(false);
-        else if (atBottom(top, scroller.scrollHeight, scroller.clientHeight) && (gap <= 1 || top > lastTop + 0.5)) setStick(true);
+        else if (trimmed() === 0 && atBottom(top, scroller.scrollHeight, scroller.clientHeight) && (gap <= 1 || top > lastTop + 0.5)) setStick(true);
         lastTop = top;
         lastGap = gap;
         measureEnd();
@@ -505,7 +543,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     };
     /** The reader moving down where it can't go further: at the end, it follows the end again (no scroll event comes to say so). */
     const downAtEnd = (target: EventTarget | null) => {
-        if (scroller && !smoothScroll && gapOf(scroller) <= 1 && !innerTakes(target)) setStick(true);
+        if (scroller && !smoothScroll && trimmed() === 0 && gapOf(scroller) <= 1 && !innerTakes(target)) setStick(true);
     };
     /**
      * A box inside the conversation (a command's output) that takes the move down itself, or a field the keys type
@@ -551,6 +589,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         if (i < 0) return;
         reading = undefined; // Explicit navigation owns the next position.
         const need = turns().length - i;
+        setTrimmed(0);
         if (shown() < need) setShown(Math.ceil(need / PAGE) * PAGE);
         smoothScroll = false;
         setStick(false);
@@ -678,7 +717,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                 <FindBar turns={turns} scroller={() => scroller} dock={() => p.dock ?? 0} col={() => content} show={show} anchor={anchor} clearAnchor={() => setAnchor(undefined)} onNavigate={navigated} />
             </Show>
             <Show when={!stick() && !scrolledDown()}>
-                <button class="jump glass" style={{ "--dock-h": dock() }} classList={{ "is-live": running() }} title="Jump to latest" aria-label={running() ? "Jump to latest: still working" : "Jump to latest"} onClick={() => { setStick(true); toBottom(true); }}>
+                <button class="jump glass" style={{ "--dock-h": dock() }} classList={{ "is-live": running() }} title="Jump to latest" aria-label={running() ? "Jump to latest: still working" : "Jump to latest"} onClick={() => { setTrimmed(0); setStick(true); toBottom(true); }}>
                     {/* Still working down there: a spinner, where the arrow is. */}
                     <Show when={running()} fallback={<ArrowDown size={14} />}>
                         <Spinner size={12} />

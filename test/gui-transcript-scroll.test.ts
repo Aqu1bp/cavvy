@@ -72,3 +72,38 @@ test("transcript component preserves paging, session memory, completion and expl
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
     expect({ code, stdout, stderr }).toEqual({ code: 0, stdout: "", stderr: "" });
 });
+
+test("a session opening at its end mounts about two screens of its last turns first, by their text", async () => {
+    const { firstShown, turnHeight, FIRST_TURNS_MIN } = await import("../gui/src/lib/transcript-scroll");
+    const long = { prompt: { text: "explain" }, blocks: [{ t: "text", text: "x".repeat(9000) }] };
+    const short = { prompt: { text: "hi" }, blocks: [{ t: "text", text: "hello" }] };
+    expect(turnHeight(long)).toBeGreaterThan(2000);
+    expect(turnHeight(short)).toBeLessThan(120);
+    // Long replies: the minimum fills the screens already.
+    expect(firstShown(Array(40).fill(turnHeight(long)), 40, true, 800)).toBe(FIRST_TURNS_MIN);
+    // Short ones: as many as fill two screens.
+    const n = firstShown(Array(40).fill(turnHeight(short)), 40, true, 800);
+    expect(n * turnHeight(short)).toBeGreaterThanOrEqual(1600);
+    expect((n - 1) * turnHeight(short)).toBeLessThan(1600);
+    // Never more than the page, never fewer than there are; not at the end, the whole page.
+    expect(firstShown(Array(3).fill(80), 3, true, 800)).toBe(3);
+    expect(firstShown(Array(40).fill(80), 40, false, 800)).toBe(40);
+});
+
+test("a session reopened where it was being read mounts the place read and about two screens from it first", async () => {
+    const { firstWindow } = await import("../gui/src/lib/transcript-scroll");
+    const heights = Array(60).fill(400);
+    // Read at turn 30 of 60, a page of 40: the turn above (29), and 30-33, two screens (1600px) from it.
+    expect(firstWindow(heights, 40, 30, 800)).toEqual({ shown: 31, trimmed: 26 });
+    // At the end: the last turns that fill two screens, nothing trimmed.
+    expect(firstWindow(heights, 40, undefined, 800)).toEqual({ shown: 4, trimmed: 0 });
+    // A place read near the end: nothing below to hold back.
+    expect(firstWindow(heights, 40, 58, 800)).toEqual({ shown: 3, trimmed: 0 });
+    // Read near the end of a turn taller than two screens: the two screens count from the place read, so the turns
+    // below it that were in view go in too.
+    const tall = [...Array(30).fill(400), 3000, ...Array(29).fill(400)];
+    expect(firstWindow(tall, 40, 30, 800)).toEqual({ shown: 31, trimmed: 29 });
+    expect(firstWindow(tall, 40, 30, 800, 2600)).toEqual({ shown: 31, trimmed: 26 });
+    // The place read at the page's first turn: not the turn above it, which isn't in the page.
+    expect(firstWindow(heights, 40, 20, 800).shown).toBe(40);
+});

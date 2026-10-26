@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
-import { all, component, node, renderer, type Node } from "../helpers/gui-render";
-import { anchoredTop, atBottom, FAR, firstBelow, restoredShown, positionCache, TURN_PAGE } from "../../gui/src/lib/transcript-scroll";
+import { all, component, node, renderer, text, type Node } from "../helpers/gui-render";
+import { anchoredTop, atBottom, FAR, firstBelow, firstShown, firstWindow, MORE_TURNS, restoredShown, positionCache, turnHeight, TURN_PAGE } from "../../gui/src/lib/transcript-scroll";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../../gui/src/lib/live-line";
 
 // Real Solid effects/reconciliation; deterministic layout and browser scheduling
@@ -14,6 +14,9 @@ const raf = (fn: (now: number) => void) => { frames.set(++sequence, fn); return 
 // Each flush is the next frame, 16ms on (performance.now()'s clock, as in a browser).
 let clock = performance.now();
 const flush = () => { const pending = [...frames.values()]; frames.clear(); clock = Math.max(clock + 16, performance.now()); pending.forEach((fn) => fn(clock)); };
+/** Tasks (setTimeout), run when settle() lets the page go on: frames and tasks in turn until none is left. */
+const tasks: (() => void)[] = [];
+const settle = () => { for (let i = 0; i < 100 && (frames.size || tasks.length); i++) { flush(); tasks.splice(0).forEach((fn) => fn()); } };
 const resize = (target?: Node) => observers.forEach((targets, fn) => { if (!target || targets.has(target)) fn(); });
 const cache = positionCache();
 let reduced = false;
@@ -117,7 +120,7 @@ const workToggles = new Map<string, (el: any, toggle: () => void) => void>();
 const onFolds = new Map<string, (el: any, fold: () => void) => void>();
 const scope = {
     renderer: { ...solid, ...renderer, createElement: create },
-    anchoredTop, atBottom, FAR, firstBelow, restoredShown, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow,
+    anchoredTop, atBottom, FAR, firstBelow, firstWindow, MORE_TURNS, restoredShown, turnHeight, window: { innerHeight: 500 }, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow,
     LiveLine: () => node("live-line"), Spinner: () => node("spinner"),
     // A running move draws what it's on shiftNow down; anything else isn't moved.
     getComputedStyle: (el?: any) => ({ transform: `matrix(1, 0, 0, 1, 0, ${glides.some((g) => g.el === el && g.anim.playState === "running") ? shiftNow : 0})`, overflowY: el?.overflowY ?? "visible" }),
@@ -151,7 +154,7 @@ const scope = {
     openFind() {}, setFindQuery() {}, toast() { throw new Error("unexpected toast"); },
     turnAt: (turns: any[], _seg: number, index: number) => turns[index], BAR_ROOM: 48,
     rewindTarget: { set() {} }, setRewindOpen() {}, ArrowDown: () => node("icon"), FindBar: (p: any) => { findProps = p; return node("find"); }, CardFoldsProvider: (p: any) => p.children,
-    setTimeout() {},
+    setTimeout(fn: () => void) { tasks.push(fn); return 0; },
     TurnView: (p: any) => {
         restoredOpen ||= p.workOpen;
         workToggles.set(p.turn.id, p.onToggleWork);
@@ -182,7 +185,22 @@ const turns = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `turn-${
 const [aTurns, setATurns] = solid.createSignal(turns(45));
 const a = { id: "a", view: { state: {}, get turns() { return aTurns(); } } };
 const b = { id: "b", view: { state: {}, turns: turns(90) } };
-const mount = (handle: any, runFrame = true) => { top = 0; root = node("root"); const dispose = renderer.render(() => Transcript({ handle }), root); if (runFrame) flush(); return dispose; };
+/** Turns mounted in the first painted frame of the last mount (the rest come after: Transcript's grow), and its "Show earlier". */
+let firstFrameTurns = 0;
+let firstFrameEarlier: string | undefined;
+const mount = (handle: any, runFrame = true) => {
+    top = 0;
+    root = node("root");
+    const dispose = renderer.render(() => Transcript({ handle }), root);
+    if (runFrame) {
+        flush();
+        firstFrameTurns = all(root).filter((n) => n.tag === "article").length;
+        const earlier = all(root).find((n) => has(n, "earlier"));
+        firstFrameEarlier = earlier && text(earlier).trim();
+        settle();
+    }
+    return dispose;
+};
 const scroller = () => all(root).find((n) => has(n, "transcript"))!;
 /** The reader scrolling (well after any write of ours: Transcript.tsx's ENGINE_MS). */
 const scroll = (value: number) => { clock += 1000; (scroller() as any).scrollTop = value; scroller().props.onScroll(); };
@@ -192,6 +210,11 @@ const button = (cls: string) => all(root).find((n) => has(n, cls))!;
 const turn = (id: string) => all(root).find((n) => n.props["data-turn"] === id) as any;
 let dispose = mount(a);
 try {
+    // Opening at the end: a screen's worth of turns in the first frame, the rest of the page between frames after.
+    const firstScreens = firstShown(aTurns().map(turnHeight), 40, true, 500);
+    assert.ok(firstScreens > 1 && firstScreens < 40, `about two screens of turns, not the page: ${firstScreens}`);
+    assert.equal(firstFrameTurns, firstScreens, "a session opening at its end paints its last turns first");
+    assert.equal(firstFrameEarlier, "Show 5 earlier turns", "the turns still going in aren't offered as earlier ones");
     assert.equal(all(root).filter((n) => n.tag === "article").length, 40);
     assert.equal(top, 8050, "first visits follow the bottom");
     const pinnedWrites = scrollWrites;
@@ -686,8 +709,16 @@ try {
     dispose(); dispose = mount(many);
     assert.equal(articles().length, 120, "reopened, it shows the pages down from where it was read");
     assert.equal(turn("turn-300").getBoundingClientRect().top, 0, "at the same place");
+    // Opened again there, "Latest" before the turns below the place read are all in goes to the real end at once,
+    // not through them a few at a time.
+    dispose(); dispose = mount(b);
+    dispose(); dispose = mount(many, false); flush();
+    assert.equal(turn("turn-399"), undefined, "reopened mid-way, the turns far below go in after");
+    scroller().props.onScroll();
+    button("jump").props.onClick();
+    assert.ok(turn("turn-399"), "Latest shows the last turn at once");
+    settle(); scroller().props.onScroll();
     // ...and left at the end, only its last page.
-    button("jump").props.onClick(); scroller().props.onScroll();
     dispose(); dispose = mount(b);
     dispose(); dispose = mount(many);
     assert.equal(articles().length, 40, "reopened after being left at the end, it shows its last page");
