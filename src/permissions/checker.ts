@@ -30,11 +30,12 @@ import { findMatch, EDIT_TOOLS, READ_TOOLS, toolPath, type RuleTarget } from "./
 import { accountTarget, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, type CommandAnalysis, HARNESS_FILES, harnessHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, suggestBashRules, withoutHeredocData } from "./bash-safety";
 import { accessNeeded, looksDestructive, sandboxEnabled, sandboxKind, sandboxPolicy, type SandboxKind, type SandboxPolicy } from "./sandbox";
 import { stableStringify, type ApprovedAction } from "./classifier";
-import { isReadOnly, isShellTool } from "../tools/types";
+import { isBrowserTool, isQuietBrowserCall, isReadOnly, isShellTool } from "../tools/types";
 import { canonical, expandPath, isInside, spellings } from "../util/files";
 import { harnessHome, paths } from "../config/paths";
 import { childEnv } from "../util/env";
 import { accountCredentialFiles, accountFolders, accountProtectedPaths } from "../providers/accounts";
+import { fileUrlPath, hostOf, navigationTarget, type BrowserApproval } from "../browser/url-policy";
 
 export type Behavior = "allow" | "ask" | "deny";
 
@@ -113,7 +114,7 @@ function isLink(p: string): boolean {
 
 /** What isHarnessConfig looks for in a path. */
 /** Tools whose yes covers only the call it answered (see approve). */
-const ONE_CALL_APPROVAL = new Set(["GitCommit", "GitPush", "CreatePullRequest"]);
+const ONE_CALL_APPROVAL = new Set(["GitCommit", "GitPush", "CreatePullRequest", "BrowserAct", "BrowserEval"]);
 const CONFIG_NAMES = new Set([".harness", ".claude", ".codex", ".git", ".mcp.json"]);
 
 /**
@@ -172,9 +173,46 @@ export class PermissionChecker {
         const p = toolPath(tool.name, input);
         if ((EDIT_TOOLS.has(tool.name) || READ_TOOLS.has(tool.name)) && p !== undefined) t.path = expandPath(p, cwd);
         else if (READ_TOOLS.has(tool.name)) t.path = cwd;
-        if (tool.name === "WebFetch") t.url = String(input?.url ?? "");
+        if (tool.name === "WebFetch" || tool.name === "BrowserNavigate") t.url = String(input?.url ?? "");
         if (tool.name === "Task") t.agentType = String(input?.subagent_type ?? "general-purpose");
         return t;
+    }
+
+    /** The file a BrowserNavigate call to a file: URL would show, as a Read target. */
+    private openedFile(input: any): RuleTarget | undefined {
+        if ((input?.action ?? "goto") !== "goto" && input?.action !== "new_tab") return undefined;
+        const path = typeof input?.url === "string" ? fileUrlPath(input.url) : undefined;
+        return path === undefined ? undefined : { toolName: "Read", path };
+    }
+
+    /**
+     * Why a page may not go to this address by itself (a redirect, a link, a script, a popup, a frame), if it may not: a
+     * deny rule for its host, a file read restriction, or an ask rule for its host. `approved`: what the tab was opened
+     * to with a yes (or by a person): only that exact file bypasses asks and sensitivity; only that host, its ask rules.
+     */
+    urlRefusal(url: string, approved: BrowserApproval = {}): string | undefined {
+        const denied = findMatch(this.settings().permissions?.deny ?? [], { toolName: "BrowserNavigate", url }, this.root, "deny");
+        if (denied) return `Denied by permission rule ${denied}`;
+        const ask = this.settings().permissions?.ask ?? [];
+        const file = fileUrlPath(url);
+        if (file !== undefined) {
+            let dir = false;
+            try {
+                dir = statSync(file).isDirectory();
+            } catch {
+                // not there: the browser says so
+            }
+            const fileApproved = approved.file !== undefined && canonical(file) === approved.file;
+            const why = this.userReadRefusal(file, { sensitive: !fileApproved, dir });
+            if (why) return `${why[0]!.toUpperCase()}${why.slice(1)}`;
+            const target = { toolName: "Read", path: file };
+            const rule = findMatch(ask, target, this.root, "deny") ?? findMatch(ask, { ...target, path: canonical(file) }, this.root, "deny");
+            return rule && !fileApproved ? `Requires approval by permission rule ${rule}. Request this file explicitly with BrowserNavigate.` : undefined;
+        }
+        // An ask rule for a host asks before every visit, as WebFetch never follows a redirect to another host: a page
+        // can't take the agent there unasked. Within the visit that was asked for, it moves freely.
+        const rule = findMatch(ask, { toolName: "BrowserNavigate", url }, this.root, "deny");
+        return rule && !(approved.host !== undefined && hostOf(url) === approved.host) ? `Requires approval by permission rule ${rule}. Open it explicitly with BrowserNavigate.` : undefined;
     }
 
     /** A new, cleared, resumed or switched-to session: nothing approved in another one carries over. */
@@ -208,7 +246,8 @@ export class PermissionChecker {
      */
     approve(tool: Tool<any>, input: any, cwd: string, opts: { sandbox?: boolean; grant?: SessionGrant } = {}) {
         // The git tools act on whatever the repo holds when they run, so the same input can mean another
-        // branch, commit or set of files: a yes covers the call it answered. "Don't ask again" is the rule.
+        // branch, commit or set of files; a browser action, on whatever page is open, so the same click or
+        // script can do something else on the next one: a yes covers the call it answered. "Don't ask again" is the rule.
         // Nor does the reviewer hear of it: it would read close variations (a push from Bash) as approved too.
         if (ONE_CALL_APPROVAL.has(tool.name)) return;
         this.approved.add(this.actionKey(tool, input, cwd, opts.sandbox));
@@ -259,7 +298,7 @@ export class PermissionChecker {
         }
         const rules = d.suggestions ?? [];
         if (!rules.length) return undefined;
-        if (tool.name === "WebFetch") return { label: rules[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1"), rules };
+        if (tool.name === "WebFetch" || tool.name === "BrowserNavigate") return { label: rules[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1"), rules };
         return { label: tool.name, rules };
     }
 
@@ -388,6 +427,13 @@ export class PermissionChecker {
         if (t.path && this.isProtected(t.path, tool.name, tool.name === "Grep", true)) {
             return { behavior: "deny", reason: "Access to the harness credential store is blocked." };
         }
+        // A page opened from a file shows the file: the rules for reading it apply as they do to Read.
+        const opened = tool.name === "BrowserNavigate" ? this.openedFile(input) : undefined;
+        if (opened) {
+            const rule = findMatch(deny, opened, this.root, "deny") ?? findMatch(deny, { ...opened, path: canonical(opened.path!) }, this.root, "deny");
+            if (rule) return { behavior: "deny", rule, reason: `Denied by permission rule ${rule}` };
+            if (this.isProtected(opened.path!, "Read", false, true)) return { behavior: "deny", reason: "Access to the harness credential store is blocked." };
+        }
         // What the content checks read: a here-document's data blanked when nothing on the line can run it.
         const judged = isShellTool(tool.name) ? heredocDataBlanked(t.command ?? "") : "";
         if (isShellTool(tool.name) && accountTarget(judged, cwd, this.shellEnv())) {
@@ -402,6 +448,9 @@ export class PermissionChecker {
             if (tool.category === "edit") return { behavior: "deny", reason: "Plan mode is active: files can't be modified. Finish planning and call ExitPlanMode to present the plan." };
             if (isShellTool(tool.name) && !isReadOnlyCommand(t.command ?? "")) {
                 return { behavior: "deny", reason: "Plan mode is active: only read-only shell commands are allowed. Call ExitPlanMode with your plan before making changes." };
+            }
+            if (isBrowserTool(tool.name) && tool.category === "execute" && !isReadOnly(tool, input)) {
+                return { behavior: "deny", reason: "Plan mode is active: the browser can be opened and read (snapshots, screenshots, logs), but not clicked, typed into or scripted. Call ExitPlanMode with your plan first." };
             }
             // Commit, push, open a pull request.
             if (tool.category === "execute" && !isShellTool(tool.name) && !isReadOnly(tool, input)) {
@@ -419,7 +468,7 @@ export class PermissionChecker {
             return { behavior: "ask", dangerous: true, reason: `This command ${dangerous}.` };
         }
 
-        const askRule = findMatch(ask, t, this.root, "deny") ?? (resolved && findMatch(ask, resolved, this.root, "deny"));
+        const askRule = findMatch(ask, t, this.root, "deny") ?? (resolved && findMatch(ask, resolved, this.root, "deny")) ?? (opened && (findMatch(ask, opened, this.root, "deny") ?? findMatch(ask, { ...opened, path: canonical(opened.path!) }, this.root, "deny")));
         if (askRule && mode !== "bypassPermissions") return { behavior: "ask", rule: askRule, reason: `Rule ${askRule} requires confirmation` };
 
         if (mode === "bypassPermissions") return { behavior: "allow", reason: "bypass mode" };
@@ -510,6 +559,9 @@ export class PermissionChecker {
                     }
                     return { behavior: "ask", needsClassifier: true, suggestions };
                 }
+                // What a page does is the page's: clicking and typing run its scripts and can submit its forms. Hovering,
+                // scrolling and waiting change nothing, so they go unasked; the rest asks once, then "don't ask again" allows the tool.
+                if (isBrowserTool(tool.name) && (isReadOnly(tool, input) || isQuietBrowserCall(tool.name, input))) return { behavior: "allow" };
                 // GitCommit, GitPush, CreatePullRequest: "don't ask again" allows the tool in this project.
                 const suggestions = [tool.name];
                 // Publishing reaches other people and can't be taken back: auto mode's reviewer doesn't decide it, the user does.
@@ -518,6 +570,14 @@ export class PermissionChecker {
             }
             case "network": {
                 if (tool.name === "WebSearch") return { behavior: "allow" };
+                if (tool.name === "BrowserNavigate") {
+                    // A dev server, a file in the project or a blank page isn't the network; a host is (and one the browser would refuse always asks).
+                    const target = navigationTarget(input);
+                    if (opened && this.isSensitive(opened.path!)) return { behavior: "ask", reason: "This file may contain credentials." };
+                    if (!target || target.kind === "local") return { behavior: "allow" };
+                    const suggestions = target.kind === "host" ? [`WebFetch(domain:${target.host})`] : [];
+                    return mode === "auto" ? { behavior: "ask", needsClassifier: true, suggestions } : { behavior: "ask", suggestions };
+                }
                 let host = "";
                 try {
                     host = new URL(t.url ?? "").hostname;

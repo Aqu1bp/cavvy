@@ -18,8 +18,8 @@ import { Markdown } from "./blocks/Markdown";
 
 function typing(): boolean {
     const el = document.activeElement as HTMLElement | null;
-    // The find bar's buttons too: its Esc closes it, and it has no use for the number keys.
-    return Boolean(el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.isContentEditable || el.closest(".find-bar")));
+    // The find bar's buttons too: its Esc closes it, and it has no use for the number keys. And the browser's page, which takes every key.
+    return Boolean(el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.isContentEditable || el.closest(".find-bar, .br-canvas")));
 }
 
 /** A card arriving takes focus only when it's in sight and nothing is typed elsewhere (Settings covers it, kept mounted). */

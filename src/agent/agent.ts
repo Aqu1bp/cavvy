@@ -68,12 +68,15 @@ import { registerTools, type Registration, type ServerTool, type ServerToolResul
 import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./schedule-tools";
 import { WATCH_INSTRUCTIONS, watchServerTools } from "../tools/git-tools";
 import { MONITOR_INSTRUCTIONS, monitorServerTools, nativeMonitorCall, stoppedMonitorNote } from "../tools/monitor";
+import { BROWSER_INSTRUCTIONS, BrowserNavigateTool, browserServerTools, nativeBrowserCall, servedBrowserName } from "../tools/browser-tools";
+import { offered } from "../tools/index";
 import { lostNote, SessionBackground, type BackgroundTaskInfo } from "./background";
 import { SECRET_INSTRUCTIONS, secretTools, secretToolTitle } from "./secret-tools";
 import { readFile } from "fs/promises";
 import { join, relative } from "path";
 import { BashTool } from "../tools/bash";
 import { LspManager, DIAGNOSED_TOOLS, MAX_FILE_CHARS } from "../lsp/manager";
+import { BrowserSession } from "../browser/session";
 import { formatForModel, redactedReport, summaryLine } from "../lsp/diagnostics";
 import {
     DELEGATE_TOOL,
@@ -543,6 +546,8 @@ export class Agent {
             const root = this.state.projectRoot;
             this.state.lsp ??= new LspManager({ root, settings: o.settings, trusted: () => userTrusts(root) });
             this.state.lsp.attach(o.session.meta.id, (level, message) => this.emit({ type: "notice", level, message }));
+            // Its tabs in the project's browser open with its first page, and close with the session (whoever owns the tool state disposes it).
+            this.state.browser ??= new BrowserSession({ root, settings: o.settings, refuse: (url, approved) => o.checker.urlRefusal(url, approved) });
         }
     }
 
@@ -1616,7 +1621,9 @@ export class Agent {
         const watching = Boolean(this.state.wakes && this.state.watchers) && !this.oneShot;
         // Claude Code has a Monitor of its own; Codex gets Harness's.
         const monitoring = watching && caller === "codex";
-        if (!delegating && !(store && ask) && !scheduling && !watching) return undefined;
+        // Neither has a browser to show Harness's pane: its tools go to both.
+        const browsing = offered(BrowserNavigateTool, this.o.settings());
+        if (!delegating && !(store && ask) && !scheduling && !watching && !browsing) return undefined;
         const tools: ServerTool[] = [];
         const instructions: string[] = [];
         if (delegating) {
@@ -1634,7 +1641,7 @@ export class Agent {
             instructions.push(orchestrationInstructions(caller, this.oneShot));
         }
         if (store && ask) {
-            tools.push(...secretTools({ store, ask, authorize: (name, input, signal) => this.authorizeSecretTool(name, input, signal), run: (o, signal) => this.runWithSecrets(o, signal) }));
+            tools.push(...secretTools({ store, ask, authorize: (name, input, signal) => this.authorizeServedTool(name, secretToolTitle(name, input), input, signal), run: (o, signal) => this.runWithSecrets(o, signal) }));
             instructions.push(SECRET_INSTRUCTIONS);
         }
         if (scheduling) {
@@ -1648,6 +1655,10 @@ export class Agent {
         if (monitoring) {
             tools.push(...monitorServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), () => this.state));
             instructions.push(MONITOR_INSTRUCTIONS);
+        }
+        if (browsing) {
+            tools.push(...browserServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId)));
+            instructions.push(BROWSER_INSTRUCTIONS);
         }
         this.serverTools = tools;
         this.serverInstructions = instructions.join("\n\n");
@@ -2631,7 +2642,8 @@ export class Agent {
         this.noteServedCall(e, this.servedMain);
         // Harness's own tools it served (Monitor for Codex) show as those tools.
         if ((e.type === "tool_start" || e.type === "tool_end") && e.call.name.startsWith(`mcp__${MCP_SERVER_NAME}__`)) {
-            const native = nativeMonitorCall(e.call.name.slice(`mcp__${MCP_SERVER_NAME}__`.length), (e.call.input ?? {}) as Record<string, unknown>);
+            const served = e.call.name.slice(`mcp__${MCP_SERVER_NAME}__`.length);
+            const native = nativeMonitorCall(served, (e.call.input ?? {}) as Record<string, unknown>) ?? nativeBrowserCall(served, (e.call.input ?? {}) as Record<string, unknown>);
             const tool = native && this.findTool(native.name);
             if (native && tool) {
                 const call = { ...e.call, ...native };
@@ -2701,10 +2713,10 @@ export class Agent {
         this.emit({ type: "usage", usage, cost, contextTokens: this.contextTokens });
     }
 
-    /** The CLI auto-approves our MCP tools, so their explicit rules must be enforced here. */
-    private async authorizeSecretTool(name: string, input: Record<string, unknown>, signal: AbortSignal): Promise<ServerToolResult | undefined> {
+    /** The CLI auto-approves our MCP tools, so their explicit rules (mcp__harness__*, mcp__harness__browser_act) must be enforced here. */
+    private async authorizeServedTool(name: string, title: string | undefined, input: Record<string, unknown>, signal: AbortSignal): Promise<ServerToolResult | undefined> {
         const refuse = (text: string): ServerToolResult => ({ text, isError: true });
-        const tool = backendTool(`mcp__${MCP_SERVER_NAME}__${name}`, secretToolTitle(name, input));
+        const tool = backendTool(`mcp__${MCP_SERVER_NAME}__${name}`, title);
         // Like the command check below, explicit asks still apply in bypass mode.
         const decision = this.o.checker.check(tool, input, "default", this.state.cwd);
         if (decision.behavior === "deny") return refuse(decision.reason ?? "Denied by a permission rule.");
@@ -2749,7 +2761,13 @@ export class Agent {
      */
     private async runServed(tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal, callId?: string): Promise<ServerToolResult> {
         // Only the main agent can be woken, so a sub-agent gets no Monitor (Harness's sub-agents don't either). Nor can its stop end the main turn.
-        if (callId && (await this.fromBackendSubagent(callId))) return { text: "Monitor isn't available to sub-agents: only the main agent can be woken by one.", isError: true };
+        if (tool.name === "Monitor" && callId && (await this.fromBackendSubagent(callId))) return { text: "Monitor isn't available to sub-agents: only the main agent can be woken by one.", isError: true };
+        // The CLI approves Harness's tools without asking: a rule naming the tool as served is enforced here, before the checks its own name gets.
+        const served = servedBrowserName(tool.name);
+        if (served) {
+            const refused = await this.authorizeServedTool(served, tool.title(input), input, signal);
+            if (refused) return refused;
+        }
         const call: ToolCallPart = { type: "tool_call", id: callId ?? `served_${++this.servedCalls}`, name: tool.name, input };
         const prep = await this.prepare(call, signal, tool);
         if ("result" in prep) {
@@ -2762,7 +2780,7 @@ export class Agent {
         const r = await this.runTool(call, prep.tool, prep.input, signal, prep.auto, prep.sandbox, context);
         if (this.hookStop) this.stopServedTurn?.();
         // What a PostToolUse hook adds goes with the result: it's the backend that reads it.
-        return { text: [r.content, ...context].join("\n\n"), isError: r.isError };
+        return { text: [r.content, ...context].join("\n\n"), isError: r.isError, ...(r.images?.length ? { images: r.images } : {}) };
     }
 
     /**
@@ -3546,6 +3564,8 @@ export class Agent {
                 secrets: this.state.secrets,
                 // Same servers, its own record of what it edited and was told.
                 lsp: this.state.lsp?.fork(),
+                // Its pages are the session's tabs.
+                browser: this.state.browser,
             },
             host: {
                 emit: (e) => {

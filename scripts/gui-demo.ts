@@ -8,12 +8,20 @@
 // Prompts with "sso" or "demo" walk through reading, editing (with approvals)
 // and running tests; "question", "plan" and "todo" show those flows; the
 // demo skills show in the / and $ menus.
+//
+// The Browser pane (side panel, Globe tab) needs a Chrome, Chromium, Edge or Brave on this machine, and shows:
+//   empty             open the tab in a session where nothing has opened a page yet
+//   agent driving     send "check the app in the browser" (a small site it serves; the click asks for approval)
+//   you in control    click, type or scroll in the page; "Hand back to agent" gives it back
+//   errors            no browser: HARNESS_BROWSER=/nope bun run gui:demo; a failed page: enter localhost:1 in the address bar;
+//                     a crash: kill the "Chrome" process the demo started; a dialog: the page's "Send test" button
 
 import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 import { startMockLlm } from "./mock-llm";
 import { createDemoProject } from "./demo-project";
+import { startDemoSite } from "./demo-site";
 
 const args = process.argv.slice(2);
 const arg = (n: string) => {
@@ -27,7 +35,8 @@ mkdirSync(home, { recursive: true });
 mkdirSync(project, { recursive: true });
 createDemoProject(project);
 
-const mock = startMockLlm({ port: Number(arg("--mock-port") ?? 0), delayMs: Number(arg("--delay") ?? 14) });
+const site = startDemoSite();
+const mock = startMockLlm({ port: Number(arg("--mock-port") ?? 0), delayMs: Number(arg("--delay") ?? 14), site: site.url });
 writeFileSync(join(home, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock (demo)", baseUrl: mock.url, requiresKey: false }] }, null, 2));
 writeFileSync(join(home, "settings.json"), JSON.stringify({ model: "mock:mock-opus", smallModel: "mock:mock-haiku" }, null, 2));
 // A few skills for the / and $ menus ("use the release-notes skill" has the model load one).
@@ -52,13 +61,15 @@ const proc = Bun.spawn(["bun", "--no-env-file", `--config=${join(repo, "bunfig.t
     stdout: "inherit",
     stderr: "inherit",
 });
-process.stderr.write(`\n  demo project: ${project}\n  HARNESS_HOME: ${home}\n${arg("--token") ? `  fixed link:   http://127.0.0.1:${port}/#token=${arg("--token")}\n` : ""}\n`);
+process.stderr.write(`\n  demo project: ${project}\n  demo site:    ${site.url}  (for the Browser pane)\n  HARNESS_HOME: ${home}\n${arg("--token") ? `  fixed link:   http://127.0.0.1:${port}/#token=${arg("--token")}\n` : ""}\n`);
 const stop = () => {
     proc.kill();
     mock.stop();
+    site.stop();
     process.exit(0);
 };
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
 await proc.exited;
 mock.stop();
+site.stop();

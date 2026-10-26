@@ -64,6 +64,7 @@ import { usageDays, usageSummary } from "./usage";
 import type {
     ArchiveOffer,
     ArchiveResult,
+    BrowserState,
     CliSessionInfo,
     CliSessionsList,
     CommandInfo,
@@ -107,6 +108,7 @@ import { withPluginCommands } from "../plugins/native";
 import { IMPLEMENT_MODES, PROTOCOL_VERSION, SCRIPT_LIMITS } from "./protocol";
 import { modelRef, type AttachedPart, type ImagePart } from "../providers/types";
 import { checkFiles, checkMedia, toWire } from "./attachments";
+import { BrowserError } from "../browser/page";
 
 export interface EngineOptions {
     /** --dangerously-skip-permissions: bypass mode may be chosen. */
@@ -436,6 +438,11 @@ export class Engine {
 
     cliCommands(provider: string | undefined, cwd: string): ReadonlySet<string> | undefined {
         return provider ? this.cliCommandNames.get(`${provider}:${resolve(cwd)}`) : undefined;
+    }
+
+    /** The session's browser changed: the windows that have it open hear of it. */
+    sendBrowser(sessionId: string, state: BrowserState) {
+        for (const c of this.clients) if (c.subs.has(sessionId)) c.send({ type: "browser.state", sessionId, state });
     }
 
     sendOps(sessionId: string, seq: number, ops: SessionOp[]) {
@@ -1091,6 +1098,7 @@ export class Engine {
     dropClient(client: EngineClient) {
         this.clients.delete(client);
         this.terminals.drop(client);
+        for (const rt of this.runtimes.values()) rt.browser.unwatch(client);
         this.setups.drop(client);
         for (const rt of this.runtimes.values()) {
             rt.setDrafting(client, false);
@@ -1664,6 +1672,7 @@ export class Engine {
             autoCompact: s.autoCompact,
             idleCompaction: s.idleCompaction,
             webSearch: s.webSearch,
+            browser: s.browser?.enabled,
             allowBypass: s.permissions?.allowBypass,
             followUpBehavior: s.followUpBehavior,
             editor: s.editor,
@@ -1686,6 +1695,10 @@ export class Engine {
             if ("autoCompact" in patch) s.autoCompact = patch.autoCompact !== false;
             if ("idleCompaction" in patch) s.idleCompaction = patch.idleCompaction === "always" ? "always" : patch.idleCompaction === false ? false : undefined;
             if ("webSearch" in patch && ["auto", "anthropic", "brave", "tavily", "duckduckgo", "off"].includes(String(patch.webSearch))) s.webSearch = patch.webSearch as Settings["webSearch"];
+            if ("browser" in patch) {
+                const { enabled: _, ...rest } = s.browser ?? {};
+                s.browser = patch.browser === false ? { ...rest, enabled: false } : Object.keys(rest).length ? rest : undefined;
+            }
             if ("defaultMode" in patch || "allowBypass" in patch) {
                 const perms = (s.permissions ??= {});
                 if ("defaultMode" in patch) perms.defaultMode = patch.defaultMode && PERMISSION_MODES.includes(patch.defaultMode) ? patch.defaultMode : undefined;
@@ -1947,6 +1960,43 @@ export class Engine {
                 }
                 return null;
             }
+            case "browser.state":
+                return this.runtime(p.id).browser.state();
+            case "browser.watch": {
+                const rt = this.runtime(p.id);
+                // The pane's size, its scale: the page is sized to it.
+                let shownTab: number | undefined;
+                rt.browser.watch(client, (f, frameId) => {
+                    // The first picture can beat the debounced tab announcement. Publish its tab first.
+                    if (shownTab !== f.tab) {
+                        shownTab = f.tab;
+                        client.send({ type: "browser.state", sessionId: rt.id, state: rt.browser.state() });
+                    }
+                    client.send({ type: "browser.frame", sessionId: rt.id, frameId, tab: f.tab, data: f.data, width: f.width, height: f.height });
+                }, { width: num(p.width, 0), height: num(p.height, 0), scale: num(p.scale, 1) });
+                return rt.browser.state();
+            }
+            case "browser.unwatch":
+                this.runtimes.get(str(p.id, "id"))?.browser.unwatch(client);
+                return null;
+            case "browser.ack":
+                this.runtimes.get(str(p.id, "id"))?.browser.ack(client, str(p.frameId, "frameId"));
+                return null;
+            case "browser.input":
+                await this.runtime(p.id).browser.input(p.input, typeof p.tab === "number" ? p.tab : undefined);
+                return null;
+            case "browser.command": {
+                const rt = this.runtime(p.id);
+                await browserCall(() => rt.browser.command({ command: str(p.command, "command"), url: typeof p.url === "string" ? p.url : undefined, tab: typeof p.tab === "number" ? p.tab : undefined }));
+                return rt.browser.state();
+            }
+            case "browser.handBack":
+                await browserCall(async () => this.runtime(p.id).browser.handBack(typeof p.tab === "number" ? p.tab : undefined));
+                return null;
+            case "browser.dialog":
+                if (typeof p.accept !== "boolean") throw new RpcError("accept must be a boolean");
+                await browserCall(() => this.runtime(p.id).browser.answerDialog(p.accept, typeof p.text === "string" ? p.text : undefined, typeof p.tab === "number" ? p.tab : undefined));
+                return null;
             case "terminal.arm":
                 this.terminals.arm(client, str(p.id, "id"));
                 return null;
@@ -2053,6 +2103,7 @@ export class Engine {
             case "session.close": {
                 const id = str(p.id, "id");
                 client.subs.delete(id);
+                this.runtimes.get(id)?.browser.unwatch(client);
                 this.unloadIfUnused(id);
                 return null;
             }
@@ -2627,6 +2678,15 @@ function realPath(p: string): string {
 
 function optStr(v: unknown): string | undefined {
     return typeof v === "string" && v ? v : undefined;
+}
+
+/** A browser call whose refusal (not an address, no such tab) is for the window to show. */
+async function browserCall<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+        return await fn();
+    } catch (e) {
+        throw e instanceof BrowserError ? new RpcError(e.message, "browser") : e;
+    }
 }
 
 function num(v: unknown, d: number): number {

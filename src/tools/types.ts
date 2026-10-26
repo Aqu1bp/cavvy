@@ -9,6 +9,7 @@ import type { WakeQueue } from "../agent/wakes";
 import type { SessionBackground } from "../agent/background";
 import type { LspManager } from "../lsp/manager";
 import type { DiagnosticReport } from "../lsp/diagnostics";
+import type { BrowserSession } from "../browser/session";
 
 
 /** One completion on the session's own model for an MCP server's sampling request: at most `maxTokens`, with why it stopped. */
@@ -82,6 +83,8 @@ export interface ToolState {
     scheduler?: Scheduler;
     /** The project's language servers, for diagnostics after edits; shared with sub-agents, outliving any one Agent. */
     lsp?: LspManager;
+    /** The session's tabs in the project's browser (src/browser); made when the session starts, closed with it, shared with its sub-agents. */
+    browser?: BrowserSession;
     /** Events that wake the session's agent (watched pull requests, monitors); the host starts a turn for them when idle. */
     wakes?: WakeQueue;
     /** Things watching in the background for this session, by id; the host stops them when the session closes. */
@@ -180,6 +183,18 @@ export type HiddenReason = "deny" | "protected" | "sensitive" | `ask:${string}`;
 /** Tools that run a shell command: permission rules, the sandbox and the reviewer treat them alike. */
 export function isShellTool(name: string): boolean {
     return name === "Bash" || name === "Monitor";
+}
+
+/** The tools that drive the browser (src/tools/browser-tools.ts). */
+const BROWSER_TOOL_NAMES = new Set(["BrowserNavigate", "BrowserSnapshot", "BrowserAct", "BrowserScreenshot", "BrowserEval", "BrowserLogs"]);
+
+export function isBrowserTool(name: string): boolean {
+    return BROWSER_TOOL_NAMES.has(name);
+}
+
+/** A browser call that only moves the pointer over the page: it goes unasked, though not in plan mode (a page's hover handlers run). */
+export function isQuietBrowserCall(name: string, input: any): boolean {
+    return name === "BrowserAct" && input?.action === "hover";
 }
 
 export function isReadOnly(tool: Tool<any>, input: any): boolean {

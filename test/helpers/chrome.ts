@@ -12,6 +12,7 @@ export type ChromeLimits = { startupMs: number; fixtureMs: number };
 export type ChromeTimings = Record<string, number>;
 
 export async function chromeFixture(browser: { exitCode: number | null; signalCode?: string | null }, profile: string, url: string, limits: ChromeLimits, timings: ChromeTimings = {}): Promise<{ status: string; message: string }> {
+    const browserErrors: string[] = [];
     const started = performance.now();
     const mark = (name: string) => { timings[name] = Math.round(performance.now() - started); };
     const stop = new AbortController();
@@ -19,7 +20,7 @@ export async function chromeFixture(browser: { exitCode: number | null; signalCo
     let limitTimer: ReturnType<typeof setTimeout> | undefined;
     const startLimit = (phase: string, ms: number) => {
         clearTimeout(limitTimer);
-        limitTimer = setTimeout(() => stop.abort(new Error(`Chrome ${phase} timed out after ${ms} ms; steps finished at ${JSON.stringify(timings)} ms`)), ms);
+        limitTimer = setTimeout(() => stop.abort(new Error(`Chrome ${phase} timed out after ${ms} ms; steps finished at ${JSON.stringify(timings)} ms; browser errors: ${browserErrors.join(" | ") || "none"}`)), ms);
     };
     startLimit("startup", limits.startupMs);
 
@@ -58,6 +59,8 @@ export async function chromeFixture(browser: { exitCode: number | null; signalCo
         ws.onclose = () => fail(new Error("Chrome DevTools connection closed"));
         ws.onmessage = (event) => {
             const message = JSON.parse(String(event.data));
+            if (message.method === "Runtime.exceptionThrown") browserErrors.push(message.params.exceptionDetails.exception?.description ?? message.params.exceptionDetails.text);
+            if (message.method === "Log.entryAdded" && message.params.entry.level === "error") browserErrors.push(message.params.entry.text);
             const id = message.method === "Page.loadEventFired" ? -1 : message.id;
             const request = pending.get(id);
             if (!request) return;
@@ -82,6 +85,8 @@ export async function chromeFixture(browser: { exitCode: number | null; signalCo
             const { targetId } = await request("Target.createTarget", { url: "about:blank" });
             const { sessionId } = await request("Target.attachToTarget", { targetId, flatten: true });
             await request("Page.enable", {}, sessionId);
+            await request("Runtime.enable", {}, sessionId);
+            await request("Log.enable", {}, sessionId);
             mark("targetReady");
             const loaded = new Promise<void>((resolve, reject) => { pending.set(-1, { resolve, reject }); });
             await Promise.all([loaded, request("Page.navigate", { url }, sessionId)]);

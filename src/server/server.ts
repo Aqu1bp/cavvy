@@ -1,4 +1,4 @@
-// The GUI server: HTTP for the GUI's files, a WebSocket for everything else.
+// The GUI server: HTTP for files, authenticated WebSockets for RPC and the dedicated browser stream.
 //
 // Whoever can talk to this server can run commands as you, so:
 //   - it listens on loopback only (127.0.0.1) unless told otherwise;
@@ -15,8 +15,10 @@ import { existsSync, statSync } from "fs";
 import { extname, join, normalize, resolve, sep } from "path";
 import type { ServerWebSocket } from "bun";
 import { Engine, RpcError, type EngineClient, type EngineOptions } from "./engine";
-import type { ClientMessage, Method, ServerEvent, ServerMessage } from "./protocol";
+import { parseInput } from "../browser/interact";
+import type { BrowserInput, ClientMessage, Method, ServerEvent, ServerMessage } from "./protocol";
 import { redact, registerSecret } from "../util/redact";
+import { encodeBrowserFrame } from "./browser-wire";
 import { wireReplacer } from "./timeline";
 
 export interface ServeOptions extends EngineOptions {
@@ -69,6 +71,8 @@ function sameSecret(a: string, b: string): boolean {
 }
 
 interface Conn {
+    browser: boolean;
+    held: Map<string, { id: string; tab?: number; input: BrowserInput }>;
     client: EngineClient;
 }
 
@@ -154,7 +158,7 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                 debug(`refused host ${req.headers.get("host")}`);
                 return new Response("Forbidden host", { status: 403 });
             }
-            if (url.pathname === "/ws") {
+            if (url.pathname === "/ws" || url.pathname === "/browser-stream") {
                 if (!originOk(req.headers.get("origin"))) {
                     debug(`refused WebSocket from origin ${req.headers.get("origin")}`);
                     return new Response("Forbidden origin", { status: 403 });
@@ -172,7 +176,7 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                     return new Response("Bad window key", { status: 400 });
                 }
                 debug(`WebSocket from ${req.headers.get("origin") ?? "no origin"}`);
-                const conn: Conn = { client: { subs: new Set(), send: () => {}, window } };
+                const conn: Conn = { browser: url.pathname === "/browser-stream", held: new Map(), client: { subs: new Set(), send: () => {}, window } };
                 if (srv.upgrade(req, { data: conn, headers: { "Sec-WebSocket-Protocol": SUBPROTOCOL } })) return undefined;
                 return new Response("Upgrade failed", { status: 400 });
             }
@@ -205,7 +209,16 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
             open(ws: ServerWebSocket<Conn>) {
                 const c = ws.data.client;
                 c.send = (ev: ServerEvent) => {
-                    if (ws.readyState === 1) ws.send(JSON.stringify({ event: ev } satisfies ServerMessage, wireReplacer));
+                    if (ws.readyState !== 1) return;
+                    // A stalled transport is disconnected, never allowed to queue megabytes of pictures.
+                    if (ev.type === "browser.frame" && ws.getBufferedAmount() > 1024 * 1024) {
+                        ws.close(1013, "Browser viewer is too slow; reconnect");
+                        return;
+                    }
+                    if (ws.data.browser && ev.type === "browser.frame") {
+                        const { sessionId, frameId, tab, width, height, data } = ev;
+                        ws.send(encodeBrowserFrame({ sessionId, frameId, tab, width, height }, Buffer.from(data, "base64")));
+                    } else ws.send(JSON.stringify({ event: ev } satisfies ServerMessage, wireReplacer));
                 };
                 engine.clients.add(c);
             },
@@ -216,7 +229,23 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                 } catch {
                     return;
                 }
-                if (typeof msg?.id !== "number" || typeof msg.method !== "string") return;
+                if (typeof msg?.method !== "string") return;
+                if (ws.data.browser && !msg.method.startsWith("browser.")) { ws.close(1008, "Browser methods only"); return; }
+                // High-rate inputs and acknowledgements don't need a response or pending-RPC bookkeeping.
+                const notification = ws.data.browser && msg.id === undefined && (msg.method === "browser.input" || msg.method === "browser.ack");
+                if (!notification && typeof msg.id !== "number") return;
+                if (ws.data.browser && msg.method === "browser.input") {
+                    const p = msg.params as { id?: unknown; tab?: unknown; input?: unknown };
+                    const input = parseInput(p?.input);
+                    if (typeof p?.id === "string" && input && (input.kind === "key" || input.kind === "mouse")) {
+                        const tab = typeof p.tab === "number" ? p.tab : undefined;
+                        const key = `${p.id}:${tab}:${input.kind}:${input.kind === "key" ? input.code || input.key : input.button}`;
+                        if (input.type === "up") ws.data.held.delete(key);
+                        else if (input.type === "down" && ws.data.held.size < 128) ws.data.held.set(key, {
+                            id: p.id, tab, input: { ...input, type: "up", ...(input.kind === "mouse" ? { buttons: 0 } : { modifiers: 0 }) },
+                        });
+                    }
+                }
                 let reply: ServerMessage;
                 try {
                     const result = await engine.handle(ws.data.client, msg.method as Method, msg.params);
@@ -226,9 +255,13 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                     if (!(e instanceof RpcError)) log(`error in ${msg.method}: ${redact(err?.stack ?? String(e))}`);
                     reply = { id: msg.id, error: { message: redact(err?.message ?? String(e)), code: e instanceof RpcError ? e.code : undefined, folder: e instanceof RpcError ? e.folder : undefined } };
                 }
-                if (ws.readyState === 1) ws.send(JSON.stringify(reply, wireReplacer));
+                if (!notification && ws.readyState === 1) ws.send(JSON.stringify(reply, wireReplacer));
             },
             close(ws: ServerWebSocket<Conn>) {
+                // A connection can disappear while a key/button is down. Release only its held inputs;
+                // BrowserSession ignores these releases if control has already returned to the agent.
+                for (const held of ws.data.held.values()) void engine.handle(ws.data.client, "browser.input", held).catch(() => undefined);
+                ws.data.held.clear();
                 engine.dropClient(ws.data.client);
             },
         },

@@ -1,13 +1,14 @@
-// The side panel, in the sheet's inspector column: Changes | Agents | Commands
+// The side panel, in the sheet's inspector column: Changes | Agents | Commands | Browser
 // at the top. Changes: the folder's changes, each opening the diff reader, with
 // Commit and Push at the foot. Agents: every sub-agent once (a background one's
 // task and its run are one row), and tasks given to other models. Commands:
 // background shells and monitors, watched pull requests, and the session's
-// secrets and MCP servers that failed or ask for approval. Empty sections aren't
+// secrets and MCP servers that failed or ask for approval. Browser: the session's
+// browser, watched and driven by hand (BrowserPane). Empty sections aren't
 // drawn. The plan and its steps are in the conversation (Composer, Activity).
 
 import { createEffect, createMemo, createResource, createSignal, For, Match, on, onCleanup, Show, Switch } from "solid-js";
-import { Bot, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitCommitHorizontal, GitPullRequestArrow, KeyRound, Plug, SquarePen, Terminal, X } from "lucide-solid";
+import { Bot, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitCommitHorizontal, GitPullRequestArrow, Globe, KeyRound, Plug, SquarePen, Terminal, X } from "lucide-solid";
 import type { ChangesInfo, GitFileDiff } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc, toast } from "../state/app";
@@ -23,6 +24,8 @@ import { Menu } from "./ui/Menu";
 import { Segmented, Spinner } from "./ui/bits";
 import { PublishDialog } from "./PublishDialog";
 import { uncleared, WorkList } from "./BackgroundTasks";
+import { BrowserPane } from "./BrowserPane";
+import { browserUnseen, loadBrowserState } from "../state/browser";
 
 /** The folder the session works in: its actions, from the header's button (the path on hover). */
 function WorkspaceButton(p: { handle: SessionHandle }) {
@@ -368,6 +371,8 @@ export function RightPanel(p: { handle: SessionHandle }) {
     const running = (rows: readonly WorkRow[]) => rows.filter(rowLive).length;
     const asks = () => agents().some((r) => r.status === "waiting");
     const files = () => (changes()?.count ? `${changes()!.count.toLocaleString()}${changes()!.atLeast ? "+" : ""}` : undefined);
+    // What the agent does in the browser is told even while the pane isn't showing (a dot on its tab).
+    createEffect(on(() => p.handle.id, (id) => void loadBrowserState(id).catch(() => undefined)));
     const [fit, fitRef] = useTabFit();
     // Shown as icons, a tab's label is its tooltip; its name always says its count.
     const tip = (label: string) => (fit() === "icons" ? label : undefined);
@@ -437,11 +442,29 @@ export function RightPanel(p: { handle: SessionHandle }) {
                                 </>
                             ),
                         },
+                        {
+                            value: "browser",
+                            get name() {
+                                return tabName("Browser", browserUnseen(p.handle.id) && "the agent opened a page");
+                            },
+                            get title() {
+                                return tip("Browser");
+                            },
+                            label: (
+                                <>
+                                    <Globe class="seg-i" />
+                                    <span class="seg-l">Browser</span>
+                                    <Show when={browserUnseen(p.handle.id)}>
+                                        <span class="ct-dot" title="The agent opened a page" />
+                                    </Show>
+                                </>
+                            ),
+                        },
                     ]}
                 />
                 <WorkspaceButton handle={p.handle} />
             </div>
-            <div class="insp-body panel-scroll">
+            <div class="insp-body panel-scroll" classList={{ "br-body": inspectorPane() === "browser" }}>
                 {/* A pane is made when its tab is chosen, and fades in then: not when what's in it changes. */}
                 <Switch>
                     <Match when={inspectorPane() === "agents"}>
@@ -452,6 +475,11 @@ export function RightPanel(p: { handle: SessionHandle }) {
                     <Match when={inspectorPane() === "commands"}>
                         <div class="pane">
                             <CommandsPane handle={p.handle} rows={commands()} />
+                        </div>
+                    </Match>
+                    <Match when={inspectorPane() === "browser"}>
+                        <div class="pane">
+                            <BrowserPane handle={p.handle} />
                         </div>
                     </Match>
                     <Match when={inspectorPane() === "changes"}>

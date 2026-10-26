@@ -32,6 +32,7 @@ import { codexMcpOverrides } from "./codex-mcp";
 import { CODEX_HOOK_EVENTS, CODEX_HOOK_SERVER, type CodexHookEvent, codexHookArgs, codexHookFailed, codexHookTaken, codexHookTool, nativeCall, preToolUseAnswer, subagentAnswer } from "./codex-hooks";
 import { registerTools, type Registration, type ServerTool } from "../mcp/server";
 import { MONITOR_SERVER_TOOLS } from "../tools/monitor";
+import { servedBrowserTool } from "../tools/browser-tools";
 import { codexInput, codexSkills, pastedPrompt, skillFolder, type CodexSkill } from "./native-skills";
 import { accountEnv, defaultAccount } from "../providers/accounts";
 import { signInAdvice } from "./account-login";
@@ -1997,10 +1998,10 @@ export class CodexTurn {
         return this.cliSession.permission({ ...req, hookDecision, hooksOnly: (this.turnMode ?? this.cliSession.mode()) === "bypassPermissions" });
     }
 
-    /** Harness's Monitor tools run the hooks themselves, as Monitor, BashOutput or KillShell: Codex's run would be a second one. */
+    /** Harness's Monitor and browser tools run the hooks themselves, as Monitor, BashOutput, KillShell or BrowserAct: Codex's run would be a second one. */
     protected hooksItself(toolName: string): boolean {
         const server = this.t?.orchestrator?.name;
-        return Boolean(server) && MONITOR_SERVER_TOOLS.some((t) => toolName === `mcp__${server}__${t}`);
+        return (Boolean(server) && MONITOR_SERVER_TOOLS.some((t) => toolName === `mcp__${server}__${t}`)) || servedBrowserTool(server, toolName);
     }
 
     /** PostToolUse or PostToolUseFailure for a main-thread item that ran; what they say reaches Codex while it works. */

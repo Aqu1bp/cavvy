@@ -2,6 +2,7 @@
 // permission prompts, and wiring between the agent and the screen.
 
 import { GIT_TOOL_HEADINGS } from "../tools/git-tools";
+import { BROWSER_TOOL_HEADINGS } from "../tools/browser-tools";
 import { WakeQueue, WatcherMap, formatWakes, stopWatchers, wakeDisplay, type Wake } from "../agent/wakes";
 import { spawnSync } from "bun";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "fs";
@@ -48,7 +49,7 @@ import { PermissionChecker } from "../permissions/checker";
 import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "../permissions/classifier";
 import { toolPath } from "../permissions/rules";
 import { McpManager } from "../mcp/manager";
-import { BUILTIN_TOOLS } from "../tools/index";
+import { BUILTIN_TOOLS, offered } from "../tools/index";
 import type { Sampler, Tool, ToolDisplay, ToolState, TodoItem } from "../tools/types";
 import { isShellTool } from "../tools/types";
 import { killAllShells, runShell, childEnv } from "../tools/bash";
@@ -435,7 +436,7 @@ export class App {
         this.screen.flushNow();
         // SessionEnd hooks get at most 5 seconds.
         const ended = this.sessionHook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000));
-        await Promise.all([ended, disposed, killAllShells({ state: this.toolState }), this.toolState.lsp?.dispose(), Promise.race([this.mcp.closeAll(), new Promise((r) => setTimeout(r, 1500))])]);
+        await Promise.all([ended, disposed, killAllShells({ state: this.toolState }), this.toolState.lsp?.dispose(), this.toolState.browser?.dispose(), Promise.race([this.mcp.closeAll(), new Promise((r) => setTimeout(r, 1500))])]);
         if (finishWorktree) {
             for (const line of await finishWorktree().catch((e: Error) => [theme.error(`Couldn't remove the worktree: ${redact(e.message)}`)])) this.screen.print(line);
             this.screen.flushNow();
@@ -852,7 +853,7 @@ export class App {
 
     tools(): Tool<any>[] {
         const native = this.nativeSearch();
-        const builtin = BUILTIN_TOOLS.filter((t) => !(native && t.name === "WebSearch") && !(t.name === "WebSearch" && this.settings.webSearch === "off"));
+        const builtin = BUILTIN_TOOLS.filter((t) => !(native && t.name === "WebSearch") && !(t.name === "WebSearch" && this.settings.webSearch === "off") && offered(t, this.settings));
         const skill = skillTool(this.skills);
         return [...builtin, ...(skill ? [skill] : []), ...CRON_TOOLS, ...this.mcp.tools()];
     }
@@ -943,6 +944,13 @@ export class App {
         return true;
     }
 
+    /** Another conversation doesn't get the last one's browser tabs: they close, and the next page opens its own. */
+    private leaveBrowser() {
+        const browser = this.toolState.browser;
+        this.toolState.browser = undefined;
+        void browser?.dispose().catch(() => undefined);
+    }
+
     newSession() {
         const prev = this.session;
         this.leaveHeld();
@@ -955,6 +963,7 @@ export class App {
         this.toolState.fileState.clear();
         this.toolState.todos = [];
         this.toolState.secrets?.clear();
+        this.leaveBrowser();
         this.checker.resetSession();
         this.makeAgent();
         this.schedules.switchSession();
@@ -983,6 +992,7 @@ export class App {
         this.toolState.wakes?.drainRunning();
         resetToolState(this.toolState, this.session.messages);
         this.toolState.secrets?.clear();
+        this.leaveBrowser();
         this.checker.resetSession();
         if (this.agent) this.makeAgent();
         this.replayTranscript();
@@ -1771,6 +1781,12 @@ export class App {
             header.push(bold(String(input.url ?? "")));
             if (input.prompt) header.push(theme.muted(String(input.prompt).slice(0, 200)));
             if (suggestions.length) items.push({ label: `Yes, and don't ask again for ${bold(suggestions[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1"))}`, value: "always" });
+        } else if (BROWSER_TOOL_HEADINGS[tool.name]) {
+            title = BROWSER_TOOL_HEADINGS[tool.name]!;
+            header.push(bold(tool.name === "BrowserNavigate" ? String(input.url ?? "") : req.title));
+            if (req.preview?.summary && tool.name !== "BrowserNavigate") header.push(theme.muted(req.preview.summary));
+            if (req.preview?.body) header.push("", ...req.preview.body.split("\n").slice(0, 12).map((l) => "  " + l));
+            if (suggestions.length) items.push({ label: tool.name === "BrowserNavigate" ? `Yes, and don't ask again for ${bold(suggestions[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1"))}` : `Yes, and don't ask again for ${bold(tool.name)} in ${bold(projectName)}`, value: "always" });
         } else if (GIT_TOOL_HEADINGS[tool.name]) {
             title = GIT_TOOL_HEADINGS[tool.name]!;
             if (req.preview?.summary) header.push(theme.muted(req.preview.summary));
