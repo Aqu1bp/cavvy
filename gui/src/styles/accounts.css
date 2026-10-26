@@ -4,12 +4,12 @@
 .cli-prov { min-width: 0; }
 
 /* On, and nothing wrong: a small green dot after the name and plan. */
-.cli-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+.cli-dot { width: calc(7 * var(--sp)); height: calc(7 * var(--sp)); flex: none; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
 .cli-problem { flex: none; color: var(--fg-3); font-size: 0.857rem; font-weight: 400; white-space: nowrap; }
 
-.account-list { margin-top: -4px; padding-bottom: 4px; }
-.account-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 40px; margin-left: 54px; padding: 4px 14px 4px 0; border-top: 0.5px solid var(--line); }
-.account-identity { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; }
+.account-list { margin-top: calc(-4 * var(--sp)); padding-bottom: calc(4 * var(--sp)); }
+.account-row { display: flex; align-items: center; flex-wrap: wrap; gap: calc(8 * var(--sp)); min-height: calc(40 * var(--sp)); margin-left: calc(54 * var(--sp)); padding: calc(4 * var(--sp)) calc(14 * var(--sp)) calc(4 * var(--sp)) 0; border-top: 0.5px solid var(--line); }
+.account-identity { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: calc(8 * var(--sp)); }
 .account-name { flex: 0 1 auto; min-width: 0; font-size: 0.929rem; color: var(--fg); }
 .account-meta { flex: 0 1 auto; min-width: 0; font-size: 0.857rem; color: var(--fg-3); }
 .account-default { display: inline-grid; place-items: center; flex: none; color: var(--accent); }
@@ -19,29 +19,29 @@
     .account-row:not(:hover):not(:focus-within):not(.open) .account-more { opacity: 0; }
 }
 
-.account-rename { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 2px 0 8px; }
-.cli-prov > .account-rename { padding: 0 14px 12px 54px; }
-.account-rename .input { flex: 1 1 160px; min-width: 0; }
+.account-rename { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: calc(8 * var(--sp)); padding: calc(2 * var(--sp)) 0 calc(8 * var(--sp)); }
+.cli-prov > .account-rename { padding: 0 calc(14 * var(--sp)) calc(12 * var(--sp)) calc(54 * var(--sp)); }
+.account-rename .input { flex: 1 1 calc(160 * var(--sp)); min-width: 0; }
 .account-rename .account-error { flex-basis: 100%; }
 
-.account-form { display: grid; gap: 8px; margin: 2px 14px 14px 54px; padding: 12px 14px; border-radius: 12px; background: var(--sheet); box-shadow: inset 0 0 0 0.5px var(--line); }
+.account-form { display: grid; gap: calc(8 * var(--sp)); margin: calc(2 * var(--sp)) calc(14 * var(--sp)) calc(14 * var(--sp)) calc(54 * var(--sp)); padding: calc(12 * var(--sp)) calc(14 * var(--sp)); border-radius: calc(12 * var(--sp)); background: var(--sheet); box-shadow: inset 0 0 0 0.5px var(--line); }
 .account-form label { font-size: 0.857rem; font-weight: 600; color: var(--fg-2); }
 .account-form .input { width: 100%; min-width: 0; }
 .account-advanced { font-size: 0.857rem; }
 .account-advanced summary { cursor: default; width: fit-content; color: var(--fg-2); font-weight: 500; }
 .account-advanced summary:hover { color: var(--fg); }
-.account-advanced summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
-.account-advanced input { margin-top: 8px; }
-.account-hint, .account-advanced .account-error { display: block; margin-top: 6px; }
+.account-advanced summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: calc(4 * var(--sp)); }
+.account-advanced input { margin-top: calc(8 * var(--sp)); }
+.account-hint, .account-advanced .account-error { display: block; margin-top: calc(6 * var(--sp)); }
 .account-hint { font-size: 0.821rem; color: var(--fg-3); }
-.account-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.account-actions { display: flex; align-items: center; flex-wrap: wrap; gap: calc(8 * var(--sp)); }
 
 .account-error { color: var(--danger); font-size: 0.857rem; overflow-wrap: anywhere; }
-.account-note { display: block; padding: 0 14px 12px 54px; }
+.account-note { display: block; padding: 0 calc(14 * var(--sp)) calc(12 * var(--sp)) calc(54 * var(--sp)); }
 .account-path { overflow-wrap: anywhere; }
 
 :where(.main[data-narrow~="520"]) {
-    .account-row { margin-left: 14px; }
-    .account-form { margin-left: 14px; padding: 10px; }
-    .account-note, .cli-prov > .account-rename { padding-left: 14px; }
+    .account-row { margin-left: calc(14 * var(--sp)); }
+    .account-form { margin-left: calc(14 * var(--sp)); padding: calc(10 * var(--sp)); }
+    .account-note, .cli-prov > .account-rename { padding-left: calc(14 * var(--sp)); }
 }

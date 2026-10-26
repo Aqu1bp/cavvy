@@ -14,7 +14,7 @@ import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { keepSentImages } from "./images";
 import { prefs, setPrefs } from "./prefs";
-import { railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setDeleteRequest, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, setReview, setRewindOpen, setSettingsTab, shellLayout } from "./ui";
+import { railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setDeleteRequest, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, setReview, setRewindOpen, setSettingsTab, setTerminalMax, shellLayout } from "./ui";
 import { clientAction, slashName } from "../lib/commands";
 import { forkAnchor } from "../lib/fork";
 import { backgroundOf, stopOutcome, stopTasks } from "../lib/background";
@@ -132,7 +132,7 @@ function clientCommand(id: string | undefined, text: string): boolean {
                 else void stopBackground(id, task && task !== "all" ? [task] : undefined);
                 return true;
             }
-            openBackground();
+            openBackground(id);
             return true;
         }
     }
@@ -160,10 +160,32 @@ export function openAgents(agentId?: string) {
     setPrefs("panel", true);
 }
 
+/**
+ * Open a session that needs you, from Needs you (the rail's pinned rows, the title
+ * bar, Settings' top line): its conversation, where its request is. Settings closes,
+ * and so does a sub-agent's view: opening the session already open (from Settings)
+ * wouldn't change the active id, so nothing else would leave it.
+ */
+export function openWaiting(id: string) {
+    // Settings can hide a reader whose restored width would cover the request.
+    setReview(undefined);
+    if (shellLayout().inspector.mode !== "dock") setPrefs("panel", false);
+    setSettingsTab(undefined);
+    setAgentFocus(undefined);
+    setTerminalMax(false);
+    setRailOpen(false);
+    return activate(id);
+}
+
 /** The docked review pane, on a file and a view when given (else the view last used). */
 /** `token`: the file's handle when its name was shown redacted (GitFileDiff.pathToken). */
 export function openReview(path?: string, scope?: ReviewScope, turnId?: number, token?: string) {
     setReview({ path, scope, turnId, ...(path !== undefined && token ? { token } : {}) });
+}
+
+/** The diff reader on another worktree of the session's repository, on its branch: at `path` (relative to it), if given; `token` when its name was shown redacted. */
+export function openWorktreeReview(worktree: string, path?: string, token?: string) {
+    setReview({ worktree, ...(path !== undefined ? { path, ...(token ? { token } : {}) } : {}) });
 }
 
 /** Stop a delegated task (or every one running); Task sub-agents stop with the turn. */
@@ -176,7 +198,7 @@ export async function stopAgent(sessionId: string, agentId?: string) {
     }
 }
 
-/** Stop background tasks (the Background panel, /tasks stop): these, or every one running. */
+/** Stop background tasks (the side panel, /tasks stop): these, or every one running. */
 export async function stopBackground(sessionId: string, ids?: string[]) {
     try {
         const results = await stopTasks(rpc.call.bind(rpc) as never, sessionId, handleFor(sessionId)?.view.state, ids);
@@ -187,10 +209,10 @@ export async function stopBackground(sessionId: string, ids?: string[]) {
     }
 }
 
-/** The side panel, where the Background section lists what runs in the background. */
+/** The side panel, on the tab that lists what runs in the background. */
 export const openBackground = revealBackground;
 
-/** Clear the finished tasks from the Background panel. */
+/** Clear the finished tasks from the side panel. */
 export async function clearBackground(sessionId: string) {
     await rpc.call("session.clearBackground", { id: sessionId }).catch(reportError);
 }
@@ -632,17 +654,22 @@ export function activeHandle() {
  * Use the user's own plan through their installed Claude Code or Codex. The
  * CLI is asked whether it's signed in; signing in is the CLI's own business.
  */
-export async function connectCli(pr: ProviderInfo): Promise<boolean> {
+/**
+ * Turns on a CLI the user is signed in to. True once it's connected. `failed`: where a failure to connect goes, when
+ * something on screen shows it (Settings' provider row) rather than an error card.
+ */
+export async function connectCli(pr: ProviderInfo, failed: (e: unknown) => void = reportError): Promise<boolean> {
+    let r: Awaited<ReturnType<typeof rpc.call<"providers.connectCli">>>;
     try {
-        const r = await rpc.call("providers.connectCli", { provider: pr.id });
-        toast(`Using your ${pr.agentCli?.plan ?? pr.name} through ${pr.name} (${r.description})`, "success");
-        if (r.warning) toast(r.warning, "warn");
-        await Promise.all([refreshProviders(), refreshModels(), refreshSettings()]);
-        return true;
+        r = await rpc.call("providers.connectCli", { provider: pr.id });
     } catch (e) {
-        reportError(e);
+        failed(e);
         return false;
     }
+    toast(`Using your ${pr.agentCli?.plan ?? pr.name} through ${pr.name} (${r.description})`, "success");
+    if (r.warning) toast(r.warning, "warn");
+    await Promise.all([refreshProviders(), refreshModels(), refreshSettings()]).catch(reportError);
+    return true;
 }
 
 // ---------------------------------------------------------------------------

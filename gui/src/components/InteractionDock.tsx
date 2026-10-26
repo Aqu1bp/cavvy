@@ -6,18 +6,20 @@
 // anything; the number keys and Esc work when you're not typing.
 
 import { createEffect, createResource, createUniqueId, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
-import { AlertTriangle, Bot, ClipboardList, Eye, EyeOff, FilePen, FolderGit2, Globe, KeyRound, MessageCircleQuestion, Plug, Radar, Save, ShieldAlert, SquareTerminal, GitCommitHorizontal, ArrowUpFromLine, GitPullRequestArrow } from "lucide-solid";
+import { AlertTriangle, ClipboardList, Eye, EyeOff, FilePen, FolderGit2, Globe, KeyRound, MessageCircleQuestion, Plug, Radar, Save, ShieldAlert, SquareTerminal, GitCommitHorizontal, ArrowUpFromLine, GitPullRequestArrow } from "lucide-solid";
 import type { Interaction, PermissionInteraction, PlanInteraction, QuestionInteraction, SecretInteraction } from "@shared/protocol";
 import { openAgents, respond } from "../state/actions";
-import { rpc } from "../state/app";
+import { handleFor, rpc } from "../state/app";
+import { agentProvider } from "../lib/agent-marks";
+import { AgentMark } from "./ui/AgentMark";
 import { columnHeight, setPlanDialog, settingsTab } from "../state/ui";
 import { DiffView } from "./blocks/DiffView";
 import { Markdown } from "./blocks/Markdown";
 
 function typing(): boolean {
     const el = document.activeElement as HTMLElement | null;
-    // The find bar's buttons too: its Esc closes it, and it has no use for the number keys.
-    return Boolean(el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.isContentEditable || el.closest(".find-bar")));
+    // The find bar's buttons too: its Esc closes it, and it has no use for the number keys. And the browser's page, which takes every key.
+    return Boolean(el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.isContentEditable || el.closest(".find-bar, .br-canvas")));
 }
 
 /** A card arriving takes focus only when it's in sight and nothing is typed elsewhere (Settings covers it, kept mounted). */
@@ -77,26 +79,33 @@ export function InteractionTab(p: { sessionId: string; items: Interaction[] }) {
     );
 }
 
-/** An option's label, with `code` in mono. */
-function Label(p: { text: string }) {
-    return <For each={p.text.split(/(`[^`]+`)/)}>{(part) => (part.startsWith("`") && part.endsWith("`") && part.length > 2 ? <span class="mono">{part.slice(1, -1)}</span> : part)}</For>;
+/** An option's label, with `code` in mono, on one line. Short of room, the code (a rule list,
+ * a path) gives way first, cut with an ellipsis, so the sentence around it
+ * stays whole: "Always allow `cat, wc…` in project", not "… in proj".
+ */
+function FitLabel(p: { text: string }) {
+    return (
+        <span class="plabel">
+            <For each={p.text.split(/(`[^`]+`)/).filter(Boolean)}>
+                {(part) => (part.startsWith("`") && part.endsWith("`") && part.length > 2 ? <span class="mono plabel-c">{part.slice(1, -1)}</span> : <span class="plabel-t">{part}</span>)}
+            </For>
+        </span>
+    );
 }
 
-function Head(p: { icon: JSX.Element; title: string; aside?: string; sub?: JSX.Element }) {
+/** A card's title, then its lines under it: `sub` (a hint, or who asked) and `note` (why it's asking), each whole. */
+function Head(p: { icon: JSX.Element; title: string; sub?: JSX.Element; note?: string }) {
     return (
         <>
             <div class="ask-h">
                 <span class="ask-ic">{p.icon}</span>
                 <span class="ask-title selectable">{p.title}</span>
-                <span class="grow" />
-                <Show when={p.aside}>
-                    <span class="aside truncate" title={p.aside}>
-                        {p.aside}
-                    </span>
-                </Show>
             </div>
             <Show when={p.sub}>
                 <div class="itab-sub selectable">{p.sub}</div>
+            </Show>
+            <Show when={p.note}>
+                <div class="itab-sub selectable">{p.note}</div>
             </Show>
         </>
     );
@@ -135,6 +144,12 @@ function PermIcon(p: { it: PermissionInteraction }) {
 
 function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
     const [feedback, setFeedback] = createSignal<string | undefined>();
+    /** Who runs the sub-agent asking, as its row in the sub-agent card says; not known without its run. */
+    const askerProvider = () => {
+        const h = handleFor(p.sessionId);
+        const a = p.it.agentId ? h?.view.agents.find((x) => x.id === p.it.agentId) : undefined;
+        return a && agentProvider(a, h?.view.state.model?.provider, h?.view.agents);
+    };
     const [busy, setBusy] = createSignal(false);
     const answer = async (choice: PermissionInteraction["options"][number]["id"]) => {
         if (busy()) return;
@@ -166,11 +181,11 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
             <Head
                 icon={<PermIcon it={p.it} />}
                 title={p.it.heading}
-                aside={p.it.classifierReason ? `Auto mode asked because: ${p.it.classifierReason}` : undefined}
+                note={p.it.classifierReason ? `Auto mode asked because: ${p.it.classifierReason}` : undefined}
                 sub={
                     p.it.agentLabel ? (
                         <>
-                            <Bot size={12} /> Requested by sub-agent ·{" "}
+                            <AgentMark provider={askerProvider()} size={12} /> Requested by sub-agent ·{" "}
                             <Show when={p.it.agentId} fallback={p.it.agentLabel}>
                                 <button class="link-btn" tabIndex={-1} title="See what it has done so far" onClick={() => openAgents(p.it.agentId)}>
                                     {p.it.agentLabel}
@@ -261,7 +276,7 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                                     else void answer(o.id);
                                 }}
                             >
-                                <span class="truncate">{o.id === "no" && feedback() !== undefined ? "Deny" : <Label text={o.label} />}</span>
+                                <FitLabel text={o.id === "no" && feedback() !== undefined ? "Deny" : o.label} />
                                 <kbd>{o.id === "no" ? "Esc" : key}</kbd>
                             </button>
                             <Show when={o.id === "no"}>
@@ -298,7 +313,7 @@ function QuestionCard(p: { sessionId: string; it: QuestionInteraction }) {
     });
     return (
         <>
-            <Head icon={<MessageCircleQuestion size={16} />} title={p.it.question} aside={!p.it.options.length ? "Type your answer" : p.it.multi ? "Pick any that apply" : "Pick one, or type your own answer"} />
+            <Head icon={<MessageCircleQuestion size={16} />} title={p.it.question} sub={!p.it.options.length ? "Type your answer" : p.it.multi ? "Pick any that apply" : "Pick one, or type your own answer"} />
             <div class="itab-body">
                 <div class="q-options">
                     <For each={p.it.options}>
@@ -388,7 +403,7 @@ function SecretCard(p: { sessionId: string; it: SecretInteraction }) {
     });
     return (
         <>
-            <Head icon={<KeyRound size={16} />} title={`The agent asks for a secret: ${p.it.name}`} aside="Only its shell commands see the value" />
+            <Head icon={<KeyRound size={16} />} title={`The agent asks for a secret: ${p.it.name}`} sub="Only its shell commands see the value" />
             <div class="itab-body">
                 <p class="secret-purpose selectable" id={descriptionId}>{p.it.purpose}<span class="sr-only"> At least {MIN_SECRET} characters.</span></p>
                 <div class="secret-field">
@@ -460,7 +475,7 @@ function PlanCard(p: { sessionId: string; it: PlanInteraction }) {
     });
     return (
         <>
-            <Head icon={<ClipboardList size={16} />} title="Plan ready for review" aside="Nothing has been changed yet" />
+            <Head icon={<ClipboardList size={16} />} title="Plan ready for review" sub="Nothing has been changed yet" />
             <div class="itab-body">
                 <div class="plan-body" ref={body}>
                     <Markdown text={p.it.plan} />

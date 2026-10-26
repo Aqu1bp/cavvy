@@ -4,7 +4,7 @@
 // decision, MCP servers and file index, shared by its sessions.
 
 import { noteScheduleIndex, readScheduleIndex } from "../agent/schedule-host";
-import { ACCOUNT_PROVIDERS, account, accountProvider, addAccount, defaultAccount, holdLogin, listAccounts, removeAccount, renameAccount, setDefaultAccount, registerAccountRoots } from "../providers/accounts";
+import { ACCOUNT_PROVIDERS, account, accountProvider, accountSharingWarning, addAccount, defaultAccount, holdLogin, listAccounts, removeAccount, renameAccount, setDefaultAccount, registerAccountRoots } from "../providers/accounts";
 import { loginCommand } from "../backends/account-login";
 import { redactedError } from "./git-handles";
 import { sessionWorktree } from "./session-worktrees";
@@ -35,6 +35,7 @@ import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModel
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
 import { checkAgentPlan, vendorOf, type AgentCliStatus } from "../backends/index";
 import { loadPlanLimits, savePlanLimits } from "./limits-store";
+import { AppUpdates } from "./app-update";
 import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
 import { getKey, removeKey, setKey } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
@@ -64,6 +65,7 @@ import { usageDays, usageSummary } from "./usage";
 import type {
     ArchiveOffer,
     ArchiveResult,
+    BrowserState,
     CliSessionInfo,
     CliSessionsList,
     CommandInfo,
@@ -100,12 +102,14 @@ import type {
 } from "./protocol";
 import { ensureKeybindingsFile, keybindingsPath, readKeybindings, watchKeybindings } from "../keybindings/file";
 import { listPlugins } from "../plugins/install";
+import { pluginLogo } from "../plugins/logos";
 import { runPluginCli } from "../plugins/cli";
 import { pluginServerMatch } from "../plugins/loader";
 import { withPluginCommands } from "../plugins/native";
 import { IMPLEMENT_MODES, PROTOCOL_VERSION, SCRIPT_LIMITS } from "./protocol";
 import { modelRef, type AttachedPart, type ImagePart } from "../providers/types";
 import { checkFiles, checkMedia, toWire } from "./attachments";
+import { BrowserError } from "../browser/page";
 
 export interface EngineOptions {
     /** --dangerously-skip-permissions: bypass mode may be chosen. */
@@ -349,6 +353,8 @@ export class Engine {
     private closingIn = new Map<string, string>();
     /** Worktrees being removed (real paths): no session opens in them meanwhile. */
     private removing = new Set<string>();
+    /** File names of folders Home's @ searches before a session opens there (the last few, newest last). */
+    private homeFiles = new Map<string, FileIndex>();
     /** Closing everything: no new work is taken on, as it would outlive the server. */
     private stopping = false;
     /** Sessions whose plan is being taken to a worktree, and sessions being archived with theirs: one at a time each. */
@@ -360,6 +366,8 @@ export class Engine {
 
     private readonly unregisterAccountRoots: () => void;
     private stopKeybindings?: () => void;
+    /** The desktop app updating itself from main: only the installed app does. */
+    private readonly updates = new AppUpdates({ emit: (info) => this.broadcast({ type: "app.update", info }) });
 
     constructor(private o: EngineOptions = {}) {
         this.fallbackModel = o.fallbackModel;
@@ -377,6 +385,7 @@ export class Engine {
         void this.checkPlans();
         // Every window applies a save of the keybindings file at once.
         this.stopKeybindings = watchKeybindings((r) => this.broadcast({ type: "keybindings.changed", keybindings: { path: keybindingsPath(), ...r } }));
+        this.updates.start();
         this.reopenScheduled();
         purgeTrash();
         this.purgeTimer = setInterval(() => purgeTrash(), PURGE_EVERY_MS);
@@ -411,6 +420,7 @@ export class Engine {
         const terminalsStopped = this.terminals.stop();
         clearInterval(this.purgeTimer);
         this.stopKeybindings?.();
+        this.updates.stop();
         for (const t of this.unloadTimers.values()) clearTimeout(t);
         this.unloadTimers.clear();
         await Promise.all([...this.runtimes.values()].map((r) => r.close().catch(() => undefined)).concat([...this.closing.values()]));
@@ -433,6 +443,11 @@ export class Engine {
 
     cliCommands(provider: string | undefined, cwd: string): ReadonlySet<string> | undefined {
         return provider ? this.cliCommandNames.get(`${provider}:${resolve(cwd)}`) : undefined;
+    }
+
+    /** The session's browser changed: the windows that have it open hear of it. */
+    sendBrowser(sessionId: string, state: BrowserState) {
+        for (const c of this.clients) if (c.subs.has(sessionId)) c.send({ type: "browser.state", sessionId, state });
     }
 
     sendOps(sessionId: string, seq: number, ops: SessionOp[]) {
@@ -1088,6 +1103,7 @@ export class Engine {
     dropClient(client: EngineClient) {
         this.clients.delete(client);
         this.terminals.drop(client);
+        for (const rt of this.runtimes.values()) rt.browser.unwatch(client);
         this.setups.drop(client);
         for (const rt of this.runtimes.values()) {
             rt.setDrafting(client, false);
@@ -1310,7 +1326,7 @@ export class Engine {
                 if (next.model?.supportsFastMode) next.setFastMode(rt.fastModeEnabled());
                 const title = rt.title ?? rt.firstPrompt()?.replace(/\s+/g, " ").slice(0, 80);
                 const named = base ?? currentBase(from) ?? made.commit?.slice(0, 12) ?? "HEAD";
-                const link = { title, folder: from, path: made.path, branch: made.branch, base: named, at: Date.now() };
+                const link = { title, folder: from, path: made.path, branch: made.branch, base: named, at: Date.now(), plan: plan.id };
                 next.addPlanLink({ role: "from", session: rt.id, ...link });
                 rt.addPlanLink({ role: "to", session: next.id, ...link });
                 this.watch(client, next.id);
@@ -1544,7 +1560,8 @@ export class Engine {
                     this.accountStatus.set(key, { description: redact((e as Error).message).slice(0, 400) });
                 }
             }
-            return { ...a, ...this.accountStatus.get(key) };
+            const sharing = accountSharingWarning(provider, a.id);
+            return { ...a, ...this.accountStatus.get(key), ...(sharing ? { sharing } : {}) };
         }));
     }
 
@@ -1660,6 +1677,7 @@ export class Engine {
             autoCompact: s.autoCompact,
             idleCompaction: s.idleCompaction,
             webSearch: s.webSearch,
+            browser: s.browser?.enabled,
             allowBypass: s.permissions?.allowBypass,
             followUpBehavior: s.followUpBehavior,
             editor: s.editor,
@@ -1682,6 +1700,10 @@ export class Engine {
             if ("autoCompact" in patch) s.autoCompact = patch.autoCompact !== false;
             if ("idleCompaction" in patch) s.idleCompaction = patch.idleCompaction === "always" ? "always" : patch.idleCompaction === false ? false : undefined;
             if ("webSearch" in patch && ["auto", "anthropic", "brave", "tavily", "duckduckgo", "off"].includes(String(patch.webSearch))) s.webSearch = patch.webSearch as Settings["webSearch"];
+            if ("browser" in patch) {
+                const { enabled: _, ...rest } = s.browser ?? {};
+                s.browser = patch.browser === false ? { ...rest, enabled: false } : Object.keys(rest).length ? rest : undefined;
+            }
             if ("defaultMode" in patch || "allowBypass" in patch) {
                 const perms = (s.permissions ??= {});
                 if ("defaultMode" in patch) perms.defaultMode = patch.defaultMode && PERMISSION_MODES.includes(patch.defaultMode) ? patch.defaultMode : undefined;
@@ -1943,6 +1965,43 @@ export class Engine {
                 }
                 return null;
             }
+            case "browser.state":
+                return this.runtime(p.id).browser.state();
+            case "browser.watch": {
+                const rt = this.runtime(p.id);
+                // The pane's size, its scale: the page is sized to it.
+                let shownTab: number | undefined;
+                rt.browser.watch(client, (f, frameId) => {
+                    // The first picture can beat the debounced tab announcement. Publish its tab first.
+                    if (shownTab !== f.tab) {
+                        shownTab = f.tab;
+                        client.send({ type: "browser.state", sessionId: rt.id, state: rt.browser.state() });
+                    }
+                    client.send({ type: "browser.frame", sessionId: rt.id, frameId, tab: f.tab, data: f.data, width: f.width, height: f.height });
+                }, { width: num(p.width, 0), height: num(p.height, 0), scale: num(p.scale, 1) });
+                return rt.browser.state();
+            }
+            case "browser.unwatch":
+                this.runtimes.get(str(p.id, "id"))?.browser.unwatch(client);
+                return null;
+            case "browser.ack":
+                this.runtimes.get(str(p.id, "id"))?.browser.ack(client, str(p.frameId, "frameId"));
+                return null;
+            case "browser.input":
+                await this.runtime(p.id).browser.input(p.input, typeof p.tab === "number" ? p.tab : undefined);
+                return null;
+            case "browser.command": {
+                const rt = this.runtime(p.id);
+                await browserCall(() => rt.browser.command({ command: str(p.command, "command"), url: typeof p.url === "string" ? p.url : undefined, tab: typeof p.tab === "number" ? p.tab : undefined }));
+                return rt.browser.state();
+            }
+            case "browser.handBack":
+                await browserCall(async () => this.runtime(p.id).browser.handBack(typeof p.tab === "number" ? p.tab : undefined));
+                return null;
+            case "browser.dialog":
+                if (typeof p.accept !== "boolean") throw new RpcError("accept must be a boolean");
+                await browserCall(() => this.runtime(p.id).browser.answerDialog(p.accept, typeof p.text === "string" ? p.text : undefined, typeof p.tab === "number" ? p.tab : undefined));
+                return null;
             case "terminal.arm":
                 this.terminals.arm(client, str(p.id, "id"));
                 return null;
@@ -2049,6 +2108,7 @@ export class Engine {
             case "session.close": {
                 const id = str(p.id, "id");
                 client.subs.delete(id);
+                this.runtimes.get(id)?.browser.unwatch(client);
                 this.unloadIfUnused(id);
                 return null;
             }
@@ -2301,15 +2361,13 @@ export class Engine {
                 return this.modelsList();
             case "session.setAccount":
                 await this.runtime(p.id).yieldIdleCompaction();
-                this.runtime(p.id).setAccount(str(p.provider, "provider"), str(p.accountId, "accountId"));
+                await this.runtime(p.id).setAccount(str(p.provider, "provider"), str(p.accountId, "accountId"));
                 return null;
             case "accounts.list":
                 return this.accountsList(str(p.provider, "provider"), p.refresh === true);
             case "accounts.add": {
                 const provider = str(p.provider, "provider");
-                const idle = [...this.runtimes.values()].filter((rt) => rt.compactingWhileIdle);
-                if (idle.length) await Promise.all(idle.map((rt) => rt.yieldIdleCompaction()));
-                if ([...this.runtimes.values()].some((rt) => rt.busy || rt.agent?.hasCliChild())) throw new RpcError("Add accounts once running responses and CLI background tasks finish, so CLI protections can be refreshed", "busy");
+                // An account only selects a CLI's folder (#375): what's running goes on as it is.
                 const added = addAccount(provider, { id: str(p.id, "id"), name: str(p.name, "name"), folder: p.folder === undefined ? undefined : str(p.folder, "folder") }, this.accountProjects());
                 forgetClient(provider);
                 await this.refreshListings(true);
@@ -2336,9 +2394,6 @@ export class Engine {
                 // A login still running would sign in to a folder no longer registered, nor protected once it was the last.
                 // Checked with no await before the removal, so a login can't start in between.
                 if (this.terminals.signingIn(provider, id)) throw new RpcError("Close the account's sign-in terminal before removing it", "busy");
-                // Any removal changes every running CLI's protections, which restarts it: its turn fails and its background
-                // work stops. So, as adding does, it waits for them.
-                if ([...this.runtimes.values()].some((rt) => rt.busy || rt.agent?.hasCliChild())) throw new RpcError("Remove accounts once running responses and CLI background tasks finish, so running CLIs keep their protections", "busy");
                 removeAccount(provider, id, str(p.confirmedFolder, "confirmedFolder"), this.accountProjects());
                 this.accountStatus.delete(`${provider}:${id}`);
                 this.limits.delete(planLimitKey(provider, id));
@@ -2418,9 +2473,16 @@ export class Engine {
             }
             case "fs.mentions": {
                 const cwd = resolve(str(p.cwd, "cwd"));
+                const query = str(p.query ?? "", "query");
                 const ws = this.workspaces.get(cwd);
-                if (!ws) return [];
-                return ws.files.search(str(p.query ?? "", "query"), 12);
+                if (ws) return ws.files.search(query, 12);
+                // Home, before a session opens there: the folder's file names (listed, as for a session, nothing read).
+                if (!isDir(cwd) || [...this.removing].some((dir) => within(dir)(cwd))) return [];
+                const index = this.homeFiles.get(cwd) ?? new FileIndex(cwd);
+                this.homeFiles.delete(cwd);
+                this.homeFiles.set(cwd, index);
+                for (const old of this.homeFiles.keys()) if (this.homeFiles.size > 4) this.homeFiles.delete(old);
+                return index.search(query, 12);
             }
             case "fs.dirs":
                 return listDirs(str(p.path, "path"));
@@ -2491,6 +2553,8 @@ export class Engine {
                 return this.pluginsInfo(optStr(p.cwd));
             case "plugins.action":
                 return this.pluginAction(p as PluginActionParams);
+            case "plugins.logo":
+                return pluginLogo(str(p.owner, "owner"));
             case "session.mcpSignIn": {
                 const rt = this.runtime(p.id);
                 const name = str(p.name, "name");
@@ -2529,6 +2593,12 @@ export class Engine {
                 return [...this.limits.values()];
             case "usage.summary":
                 return usageSummary(usageDays(p.days), Date.now(), [...this.limits.values()]);
+            case "app.update.get":
+                return this.updates.get();
+            case "app.update.check":
+                return await this.updates.check();
+            case "app.update.start":
+                return await this.updates.update();
             default:
                 throw new RpcError(`Unknown method ${String(method)}`, "unknown_method");
         }
@@ -2619,6 +2689,15 @@ function realPath(p: string): string {
 
 function optStr(v: unknown): string | undefined {
     return typeof v === "string" && v ? v : undefined;
+}
+
+/** A browser call whose refusal (not an address, no such tab) is for the window to show. */
+async function browserCall<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+        return await fn();
+    } catch (e) {
+        throw e instanceof BrowserError ? new RpcError(e.message, "browser") : e;
+    }
 }
 
 function num(v: unknown, d: number): number {

@@ -10,12 +10,12 @@ import { dirname, join } from "path";
 import { EFFORT_LEVELS, type Effort } from "../config/settings";
 import type { Message, ToolCallPart, ToolResultPart, UserMessage } from "../providers/types";
 import { textOf, toolCallsOf } from "../providers/types";
-import { redactedJson } from "../util/redact";
+import { redact, redactedJson } from "../util/redact";
 import { attachedPrompt } from "./attachments";
 import { fileDiff, trimInput, truncateText } from "./diffs";
-import type { AgentRun, Block, EffortLevel, FileDiff, PermissionModeId, ToolBlock, ToolCategoryId, Turn, TurnStatus } from "./protocol";
+import type { AgentRun, Block, EffortLevel, FileDiff, NoticeBlock, NoticeData, PermissionModeId, ToolBlock, ToolCategoryId, Turn, TurnStatus } from "./protocol";
 import { DELEGATE_TOOL } from "../agent/delegation";
-import { noticesUpTo, turnNotice, type TurnNotice } from "../agent/session";
+import { addNotice, noticesUpTo, turnNotice, type TurnNotice } from "../agent/session";
 import { allProviders, getProvider } from "../providers/registry";
 
 /** Tool output sent inline; longer output is fetched when the row is opened. */
@@ -78,7 +78,7 @@ export function readSegments(file: string): Segment[] {
             if (cur.notices) cur.notices = noticesUpTo(cur.notices, l.count);
         } else if (l.t === "notice") {
             const n = turnNotice(l);
-            if (n) (cur.notices ??= []).push(n);
+            if (n) addNotice((cur.notices ??= []), n);
         }
         else if (l.t === "import" && typeof l.source === "string") cur.imported = { source: l.source, startedAt: typeof l.startedAt === "number" ? l.startedAt : undefined, omitted: typeof l.omitted === "number" ? l.omitted : 0 };
     }
@@ -360,7 +360,8 @@ export function agentFromCall(b: ToolBlock, turnId: string, ownModel?: string): 
     return {
         id: b.id,
         turnId,
-        description: text(i.description) ?? b.title,
+        // A skill that runs as its own agent is named by the skill ("code-review"), not its call ("Skill(code-review)").
+        description: text(i.description) ?? (b.name === "Skill" ? text(i.skill) : undefined) ?? b.title,
         agentType: text(i.subagent_type) ?? text(i.agent) ?? "general-purpose",
         model: model && model !== ownModel ? model : undefined,
         effort: EFFORT_LEVELS.includes(i.effort as Effort) ? i.effort as Effort : undefined,
@@ -521,6 +522,18 @@ export interface ReplayInput {
     newId: () => string;
 }
 
+/** A kept notice as the transcript shows it (a live one is built the same way: Runtime.notice). */
+export function noticeBlock(n: Omit<TurnNotice, "index" | "at">, id: string): NoticeBlock {
+    const { level, text, details, source, title, link, account, stopped, limit } = n;
+    return { t: "notice", id, level, text, ...(details ? { details } : {}), ...(source ? { source } : {}), ...(title ? { title } : {}), ...(link ? { link } : {}), ...(account ? { account } : {}), ...(stopped ? { stopped } : {}), ...(limit ? { limit } : {}) };
+}
+
+/** A notice as it happens (an agent's event): its text the data's, if it has one, else the message; redacted. */
+export function liveNotice(id: string, level: NoticeBlock["level"], message: string, data: NoticeData = {}): NoticeBlock {
+    const { text, title, link, ...rest } = data;
+    return noticeBlock({ level, text: redact(text ?? message), ...rest, ...(title ? { title: redact(title) } : {}), ...(link ? { link: redact(link) } : {}) }, id);
+}
+
 export function replay(o: ReplayInput): Turn[] {
     const turns: Turn[] = [];
     const last = o.segments[o.segments.length - 1];
@@ -554,10 +567,17 @@ export function replay(o: ReplayInput): Turn[] {
         const noticesBefore = (index: number) => {
             while (notices.length && notices[0]!.index <= index) {
                 const n = notices.shift()!;
+                // An account switch is between turns: a turn of its own with no prompt, as the live session shows it
+                // (Runtime.currentTurn), never the end of the turn before.
+                if (n.account) {
+                    if (!turn || turn.prompt || turn.blocks.some((b) => b.t !== "notice")) start(undefined, n.at || undefined);
+                    turn!.blocks.push(noticeBlock(n, o.newId()));
+                    continue;
+                }
                 // A notice can be the first block after compaction; it still needs a
                 // position for search, even when flushed after the last message.
                 const t = ensure(n.index);
-                t.blocks.push({ t: "notice", id: o.newId(), level: n.level, text: n.text, ...(n.details ? { details: n.details } : {}) });
+                t.blocks.push(noticeBlock(n, o.newId()));
                 if (n.level === "error" && t.status === "done") t.status = "error";
             }
         };

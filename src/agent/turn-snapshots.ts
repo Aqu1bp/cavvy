@@ -16,7 +16,8 @@ import { blobId, blobs, git, gitEnvironment, parseTree, readRegular, render, Wor
 import { gitArgv } from "../util/git";
 import { coalesce, type Slot } from "../server/coalesce";
 import { MAX_DIFF_INPUT } from "../server/diffs";
-import type { GitChangesInfo, GitScope } from "../server/protocol";
+import type { GitChangesInfo, GitScope, TurnPlace } from "../server/protocol";
+import { eachLimited, fingerprint, insideRoot, listWorktrees, nearby, summarize, UNKNOWN, WorktreeChecks, type Checked, type Worktree } from "./turn-places";
 import { redact } from "../util/redact";
 
 export interface TurnCapture {
@@ -28,6 +29,10 @@ export interface TurnCapture {
     /** Metadata only: unchanged omissions are not falsely counted as changed files. */
     skippedStamps?: Record<string, string>;
     durationMs: number;
+    /** The repository's other worktrees inside its folder, each with its fingerprint (turn-places.ts), or UNKNOWN. */
+    places?: Record<string, string>;
+    /** Not saved: at a turn's end, the worktrees it worked in, summed up then, until finish() records them. */
+    worked?: TurnPlace[];
 }
 
 export interface SnapshotTurn {
@@ -40,6 +45,8 @@ export interface SnapshotTurn {
     end?: TurnCapture;
     /** Repository-relative paths, including omitted files. Version 1 stored absolute paths. */
     changed?: string[];
+    /** The other worktrees it worked in (changed, or appeared, during it), as they were when it ended. */
+    places?: TurnPlace[];
 }
 
 export const MAX_SNAPSHOT_STORE_BYTES = 256 * 1024 * 1024;
@@ -47,6 +54,14 @@ export const MAX_SNAPSHOT_STORE_BYTES = 256 * 1024 * 1024;
 const instances = new WeakMap<FileHistory, WeakMap<Session, TurnSnapshots>>();
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const POLICY = "Ignored files are not captured. Concurrent sessions in this repository see each other's changes. Submodule and nested repository contents are not captured.";
+/** A saved turn's places: each a worktree's folder, with counts that are counts. */
+function validPlaces(value: unknown): value is TurnPlace[] {
+    const count = (n: unknown) => n === undefined || (typeof n === "number" && Number.isSafeInteger(n) && n >= 0);
+    return Array.isArray(value) && value.every((p) => !!p && typeof p === "object" && typeof p.path === "string" && isAbsolute(p.path)
+        && (p.branch === undefined || typeof p.branch === "string") && (p.base === undefined || typeof p.base === "string")
+        && count(p.files) && count(p.added) && count(p.removed) && count(p.commits)
+        && (p.top === undefined || (Array.isArray(p.top) && p.top.every((f: any) => !!f && typeof f.path === "string" && ["added", "modified", "deleted"].includes(f.change) && count(f.added) && count(f.removed)))));
+}
 const safePath = (p: string) => p.length > 0 && !p.includes("\0") && !isAbsolute(p) && !p.split("/").some((part) => part === ".." || part.toLowerCase() === ".git");
 const pathMap = (...sources: Record<string, string>[]): Record<string, string> => Object.assign(Object.create(null), ...sources);
 const own = (map: Record<string, string> | undefined, path: string) => map && Object.hasOwn(map, path) ? map[path] : undefined;
@@ -103,6 +118,13 @@ export class TurnSnapshots {
     private pending = new Set<Promise<void>>();
     private last: Promise<unknown> = Promise.resolve();
     private failure?: string;
+    /** The repository's other worktrees inside its folder, as last listed, and their folders relative to it. */
+    private worktrees: Worktree[] = [];
+    private nested = new Set<string>();
+    /** The last listing worked: a failed one isn't "no worktrees", so nothing is marked from it. */
+    private worktreesListed = false;
+    /** Which listed worktree folders really are them (turn-places.ts), kept while each folder stays the same one. */
+    private checks = new WorktreeChecks();
     private readonly storage: string;
     private readonly journal: string;
 
@@ -132,6 +154,8 @@ export class TurnSnapshots {
                     }
                     if (!r.changed.every(safePath)) continue;
                 }
+                // A record's places are shown as they are; ones that aren't well formed are let go, not the turn.
+                if (r.places !== undefined && !validPlaces(r.places)) delete r.places;
                 this.turns.set(r.id, { ...r, version: 2 });
             } catch { /* A crash may leave the last line torn. */ }
         }
@@ -159,7 +183,7 @@ export class TurnSnapshots {
 
     private validCapture(c: TurnCapture): boolean {
         const paths = (value: unknown) => !!value && typeof value === "object" && !Array.isArray(value) && Object.entries(value).every(([path, text]) => safePath(path) && typeof text === "string");
-        return !!c && typeof c.incomplete === "boolean" && this.validTime(c.durationMs) && (c.root === undefined || c.root === this.root) && (c.tree === undefined ? c.incomplete : (typeof c.tree === "string" && OID.test(c.tree) && c.root === this.root)) && Array.isArray(c.notes) && c.notes.every((note) => typeof note === "string") && paths(c.skipped) && (c.skippedStamps === undefined || paths(c.skippedStamps));
+        return !!c && typeof c.incomplete === "boolean" && this.validTime(c.durationMs) && (c.root === undefined || c.root === this.root) && (c.tree === undefined ? c.incomplete : (typeof c.tree === "string" && OID.test(c.tree) && c.root === this.root)) && Array.isArray(c.notes) && c.notes.every((note) => typeof note === "string") && paths(c.skipped) && (c.skippedStamps === undefined || paths(c.skippedStamps)) && (c.places === undefined || (!!c.places && typeof c.places === "object" && !Array.isArray(c.places) && Object.entries(c.places).every(([p, print]) => isAbsolute(p) && typeof print === "string")));
     }
 
     list(): SnapshotTurn[] {
@@ -203,7 +227,7 @@ export class TurnSnapshots {
     begin(id: number, prompt: string): Promise<void> {
         return this.record(async () => {
             if (this.stopped) return;
-            await this.open(id, prompt, await this.capture());
+            await this.open(id, prompt, await this.marks(await this.capture()));
         });
     }
 
@@ -214,7 +238,7 @@ export class TurnSnapshots {
     prepare(): Promise<TurnCapture | undefined> {
         let captured: TurnCapture | undefined;
         return this.record(async () => {
-            if (!this.stopped) captured = await this.capture();
+            if (!this.stopped) captured = await this.marks(await this.capture());
         }).then(() => captured);
     }
 
@@ -227,6 +251,8 @@ export class TurnSnapshots {
         if (!captured || this.stopped) return; // Not a repository, or this session was let go.
         if (this.active) await this.finish(structuredClone(captured));
         if (this.stopped) return;
+        // What the turn before worked in is that turn's, not part of this one's start.
+        delete captured.worked;
         this.active = { version: 2, id, prompt: redact(prompt).slice(0, 2000), startedAt: Date.now(), start: captured };
         this.persist(this.active);
     }
@@ -234,7 +260,7 @@ export class TurnSnapshots {
     end(): Promise<void> {
         return this.record(async () => {
             if (!this.active || this.stopped) return;
-            const captured = await this.capture();
+            const captured = await this.marks(await this.capture());
             if (this.stopped) return;
             await this.finish(captured ?? { incomplete: true, notes: ["The repository is no longer available."], skipped: pathMap(), durationMs: 0 });
         });
@@ -265,7 +291,35 @@ export class TurnSnapshots {
             captured.incomplete = true;
             captured.notes.push("The snapshot comparison is unavailable; some objects may be missing.");
         }
+        // The other worktrees it worked in, summed up when its end was captured (marks).
+        if (captured.worked?.length) turn.places = captured.worked;
+        delete captured.worked;
         if (!this.stopped) this.persist(turn);
+    }
+
+    /**
+     * Each nearby worktree's fingerprint (turn-places.ts); and, at the end of a turn that's open, the ones it worked
+     * in (changed, or new, since it began), summed up now: at a steering boundary the next turn may already be under
+     * way by the time this one is finished, and what it does isn't this one's. Not when either end went unmarked.
+     */
+    private async marks(captured: TurnCapture | undefined): Promise<TurnCapture | undefined> {
+        if (!captured?.root || this.stopped || !this.worktreesListed) return captured;
+        const deadline = Date.now() + 1500;
+        // Only folders that really are those worktrees are read (one swapped for a link isn't); the rest go unmarked.
+        const root = captured.root;
+        const checked = (await eachLimited(this.worktrees, 4, (w) => this.checks.check(root, w))).filter((w): w is Checked => w !== undefined);
+        const prints = await eachLimited(checked, 4, (w) => fingerprint(w, deadline));
+        const after = Object.fromEntries(checked.map((w, i) => [w.path, prints[i]!]));
+        captured.places = after;
+        const before = this.active?.start.places;
+        if (before && !this.stopped) {
+            const worked = checked.filter((w) => after[w.path] !== UNKNOWN && before[w.path] !== UNKNOWN && after[w.path] !== before[w.path]);
+            if (worked.length) {
+                const until = Date.now() + 3000;
+                captured.worked = await eachLimited(worked, 4, (w) => summarize(w, until));
+            }
+        }
+        return captured;
     }
 
     /** Scan once on reopen; failed captures' objects and temporary files count too. */
@@ -358,6 +412,11 @@ export class TurnSnapshots {
             if (top.code !== 0) return undefined;
             this.root = top.out.toString().replace(/\n$/, "");
             result.root = this.root;
+            // The repository's other worktrees in its folder are places of their own (turn-places.ts), not contents left out.
+            const listed = await listWorktrees(this.root, deadline);
+            this.worktreesListed = listed !== undefined;
+            this.worktrees = listed ? nearby(listed, this.root) : [];
+            this.nested = insideRoot(this.worktrees, this.root);
             const [format, listing] = await Promise.all([
                 git(this.root, ["rev-parse", "--show-object-format"], { deadline, privateEnv: metadataEnv }),
                 git(this.root, ["ls-files", "-z", "-t", "--stage", "--cached", "--others", "--exclude-standard"], { maxBytes: 16 * 1024 * 1024, deadline, privateEnv: metadataEnv }),
@@ -397,6 +456,7 @@ export class TurnSnapshots {
                     // A tracked file replaced by a directory is deleted; its new
                     // untracked children are separate entries, not a nested repo.
                     if (st.isDirectory() && modes.has(path) && modes.get(path) !== "160000") continue;
+                    if (st.isDirectory() && this.nested.has(path)) continue;
                     skip(st.isDirectory() ? "Submodule or nested repository contents are not captured." : "Not a regular file.");
                     continue;
                 }
@@ -499,6 +559,7 @@ export class TurnSnapshots {
             return out;
         }
         out.incomplete = turn.start.incomplete || !turn.end || turn.end.incomplete || !!this.failure;
+        if (turn.places?.length) out.places = turn.places;
         out.notes!.push(...turn.start.notes, ...(turn.end?.notes ?? []), ...(this.failure ? [this.failure] : []));
         const omissions = Object.entries({ ...turn.start.skipped, ...turn.end?.skipped });
         for (const [path, reason] of omissions.slice(0, 20)) out.notes!.push(`Not captured: ${path}: ${reason}`);

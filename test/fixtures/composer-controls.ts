@@ -18,6 +18,7 @@ import type { RunResult } from "../../src/server/protocol";
 import { applyKeybindingsFile, keymap, matchKey, shortcut, shortcutHint, withShortcut } from "../../gui/src/state/keybindings";
 import { eventStrokes } from "../../gui/src/lib/keystrokes";
 import { os } from "../../gui/src/lib/platform";
+import { expandedDown, expandedHeight, grow, GROW_MS } from "../../gui/src/lib/composer-size";
 /** The keybindings follow the OS the tests run on (Mod is Ctrl off a Mac); the steer-or-queue key is Mod+Shift+Enter. */
 const MOD = os === "macos" ? { metaKey: true } : { ctrlKey: true };
 
@@ -38,7 +39,7 @@ const renderer = {
     createElement(tag: string) {
         const node: any = { tag, props: {}, style: {}, children: [], selectionStart: 0, selectionEnd: 0, scrollHeight: 30, scrollTop: 0,
             focus() { focused = node; }, matches() { return tag === "textarea"; }, setSelectionRange(start: number, end: number) { this.selectionStart = start; this.selectionEnd = end; },
-            getBoundingClientRect: () => ({ top: 0, bottom: 100 }),
+            getBoundingClientRect: () => ({ top: 0, bottom: 100 }), closest: () => undefined,
         };
         nodes.push(node);
         return node;
@@ -60,10 +61,14 @@ const runSheet = createRunSheet({
 const replies: ReturnType<typeof Promise.withResolvers<string[]>>[] = [];
 let sends = 0;
 let commandLists = 0;
+let holdCommands = false;
 let holdSend: Promise<void> | undefined;
 const commentStore = createReviewCommentStore(() => undefined);
 const noop = () => undefined;
-const components = Object.fromEntries(["ArrowUp", "CornerDownRight", "QueueTab", "GoalTab", "FileText", "Folder", "ListEnd", "Paperclip", "Pencil", "Slash", "Sparkles", "SquareTerminal", "X", "ModelPicker", "EffortPicker", "AtSign", "ModePicker", "ComposerMeter", "AttachmentChips", "InteractionTab", "Popover", "Ring", "ReviewCommentChips", "BackgroundChip"].map((key) => [key, noop]));
+const components = Object.fromEntries(["ArrowUp", "CornerDownRight", "QueueTab", "GoalTab", "FileText", "Folder", "ListEnd", "Paperclip", "Pencil", "Slash", "Sparkles", "SquareTerminal", "X", "ModelPicker", "EffortPicker", "AtSign", "ModePicker", "ComposerMeter", "AttachmentChips", "InteractionTab", "Popover", "Ring", "ReviewCommentChips", "BackgroundChip", "Maximize2", "Minimize2"].map((key) => [key, noop]));
+/** What the Steps strip was given: the session it's in and that session's view (StepsTray.tsx decides when it shows). */
+const stepsTrays: { sessionId: string; view: any }[] = [];
+const StepsTray = (p: { sessionId: string; view: any }) => void stepsTrays.push(p);
 const [working, setWorking] = solid.createSignal(false);
 const [goal, setGoal] = solid.createSignal<any>();
 const [asks, setAsks] = solid.createSignal<any[]>([]);
@@ -76,23 +81,26 @@ const sent: { text: string; followUp?: string }[] = [];
 /** What went with each message sent. */
 const sentAttachments: unknown[][] = [];
 const calls: { method: string; params: any }[] = [];
-const appState = { conn: "open", homeCwd: "/workspace", settings: {} as { followUpBehavior?: string }, models: [] };
-const deps = { ...solid, ...components, renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken, firstSendable, followUpFor, otherFollowUp, canStop, now: () => Date.now(), turnDuration: (ms: number) => `${Math.round(ms / 1000)}s`, keymap, matchKey, withShortcut, shortcut, shortcutHint, eventStrokes,
+const [homeCwd, setHomeCwd] = solid.createSignal("/workspace");
+const appState = { conn: "open", get homeCwd() { return homeCwd(); }, settings: {} as { followUpBehavior?: string }, models: [] };
+/** The composer opening or closing its large size told the conversation to glide with it. */
+let dockGlides = 0;
+const deps = { ...solid, ...components, StepsTray, expandedDown, expandedHeight, grow, GROW_MS, motionMs: () => 0, glideDock: () => void dockGlides++, shellLayout: () => ({ column: { h: 800 } }), renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken, firstSendable, followUpFor, otherFollowUp, canStop, now: () => Date.now(), turnDuration: (ms: number) => `${Math.round(ms / 1000)}s`, keymap, matchKey, withShortcut, shortcut, shortcutHint, eventStrokes,
     comparePicks, setComparePicks, startRun: runSheet.startRun,
     splitComments, takesComments, withComments, plural, setReview: noop,
     aroundOf, reviewComments: commentStore, newCommentId: () => crypto.randomUUID(),
     createLifetimeGuard: () => (fn: any) => fn, wasDeleted: () => false,
     app: appState,
-    handleFor: () => ({ view: { state: sessionState, turns }, draft: noop }),
+    handleFor: (id?: string) => id ? ({ view: { state: sessionState, turns }, draft: noop }) : undefined,
     contextCardOpen: () => false, setContextCardOpen: noop, contextView: () => ({ ring: false }),
     focusComposer: () => 0, modelPickerOpen: () => false, modePickerOpen: () => false, settingsTab: () => undefined, columnHeight: () => "800px",
     setModelPickerOpen: noop, setModePickerOpen: noop, blockedBy: () => false,
     readAttachment: async (f: { name: string }) => ({ kind: "image", name: f.name, size: 3, mediaType: "image/png", data: "cG5n" }),
     prefs: { enterSends: true }, mod: "⌘", isMod: (e: any) => e.metaKey, interrupt: () => void interrupts++,
     send: async (text: string, attachments: unknown[], opts: { accepted: (id: string) => void; followUp?: string }) => { sends++; sent.push({ text, followUp: opts.followUp }); sentAttachments.push(attachments); if (holdSend) await holdSend; opts.accepted(session()); return true; }, toast: noop, reportError: noop,
-    rpc: { call: async (method: string, params: any) => { calls.push({ method, params }); if (method === "commands.list") { commandLists++; return [{ name: "help", description: "Help" }, { name: "pdf", description: "Read PDFs", skill: true }, { name: "compact", description: "Summarize", noAttachments: true }]; } const reply = Promise.withResolvers<string[]>(); replies.push(reply); return reply.promise; } },
+    rpc: { call: async (method: string, params: any) => { calls.push({ method, params }); if (method === "commands.list") { commandLists++; if (holdCommands) return new Promise(() => {}); return [{ name: "help", description: "Help" }, { name: "pdf", description: "Read PDFs", skill: true }, { name: "compact", description: "Summarize", noAttachments: true }]; } const reply = Promise.withResolvers<string[]>(); replies.push(reply); return reply.promise; } },
     window: { innerHeight: 800, matchMedia: () => ({ matches: narrow }) },
-    document: { get activeElement() { return focused; }, querySelector: () => modal ? {} : undefined },
+    document: { get activeElement() { return focused; }, querySelector: () => modal ? {} : undefined, documentElement: { getBoundingClientRect: () => ({ top: 0, bottom: 800 }) } },
     requestAnimationFrame: (fn: () => void) => { frames.push(fn); return frames.length; }, cancelAnimationFrame: noop,
 };
 const Composer = new Function(...Object.keys(deps), `${js}; return Composer;`)(...Object.values(deps));
@@ -104,6 +112,10 @@ const input = (text: string) => { ta.selectionStart = text.length; ta.selectionE
 const key = (key: string, extra = {}) => { const event = { key, isComposing: false, keyCode: 0, prevented: false, preventDefault() { this.prevented = true; }, stopPropagation() {}, ...extra }; ta.props.onKeyDown(event); return event; };
 tick();
 assert.equal(focused, ta);
+// The Steps strip goes in the composer's stack, with this session's view.
+assert.equal(stepsTrays.length, 1);
+assert.equal(stepsTrays[0]!.sessionId, "a");
+assert.equal(stepsTrays[0]!.view.state, sessionState);
 await Bun.sleep(0);
 input("/h");
 assert.equal(ta.props.role, "combobox");
@@ -198,6 +210,67 @@ await Bun.sleep(0);
 assert.deepEqual(composerStorage.history("f"), ["sent from F"]);
 assert.equal(composerStorage.draft("f"), "");
 assert.equal(ta.props.value, "");
+{
+    // A long draft stops at its modest height and scrolls (composer.css): the expand button shows. It, or Mod+Shift+E,
+    // opens it large (here, as far down the page as there's room) and closes it again; sending closes it.
+    const root = nodes.find((n) => typeof n.props.class === "string" && n.props.class.startsWith("composer "));
+    const cls = () => String(root.props.class).split(/\s+/);
+    const expandButtons = () => nodes.filter((n) => n.props.class === "cb c-expand").length;
+    Object.assign(ta, { scrollHeight: 400, clientHeight: 154, offsetHeight: 154 });
+    input("a long draft");
+    tick();
+    assert.ok(cls().includes("expandable"), "past the modest height the expand button shows");
+    assert.ok(!cls().includes("expanded"));
+    assert.equal(expandButtons(), 1);
+    assert.match(nodes.findLast((n) => n.props.class === "cb c-expand").props.title, /^Expand \(/, "its tooltip names its key");
+    const glidesBefore = dockGlides;
+    assert.equal(key("E", { ...MOD, shiftKey: true, code: "KeyE" }).prevented, true);
+    assert.ok(cls().includes("expanded"));
+    assert.equal(ta.style.height, "830px", "from 154px down to 24px above the page's foot (800px), less what's under the text");
+    assert.equal(dockGlides, glidesBefore + 1, "the conversation glides with the dock");
+    assert.equal(focused, ta);
+    nodes.findLast((n) => n.props.class === "cb c-expand").props.onClick();
+    assert.ok(!cls().includes("expanded"), "the button closes it");
+    assert.ok(cls().includes("expandable"));
+    key("E", { ...MOD, shiftKey: true, code: "KeyE" });
+    assert.ok(cls().includes("expanded"));
+    key("Enter");
+    await Bun.sleep(0);
+    assert.equal(sent.at(-1)!.text, "a long draft");
+    assert.ok(!cls().includes("expanded"), "sending closes it");
+    // ↑ in the empty box still brings the last message back.
+    Object.assign(ta, { scrollHeight: 30, clientHeight: 44 });
+    tick();
+    assert.ok(!cls().includes("expandable"), "a short draft fits: no button");
+    key("ArrowUp");
+    assert.equal(ta.props.value, "a long draft");
+    input("");
+    tick();
+    // A send that completes late doesn't close a newer draft opened large meanwhile.
+    const gate = Promise.withResolvers<void>();
+    holdSend = gate.promise;
+    Object.assign(ta, { scrollHeight: 400, clientHeight: 154 });
+    input("sent slowly");
+    key("Enter");
+    await Bun.sleep(0);
+    input("the next long draft");
+    tick();
+    key("E", { ...MOD, shiftKey: true, code: "KeyE" });
+    assert.ok(cls().includes("expanded"));
+    // The keys let go (mod+shift held flips the send button's way).
+    ta.props.onKeyUp({ key: "Shift", isComposing: false, keyCode: 0 });
+    gate.resolve();
+    holdSend = undefined;
+    await Bun.sleep(0);
+    tick();
+    assert.equal(ta.props.value, "the next long draft", "the newer draft stays");
+    assert.ok(cls().includes("expanded"), "and stays open large");
+    nodes.findLast((n) => n.props.class === "cb c-expand").props.onClick();
+    Object.assign(ta, { scrollHeight: 30, clientHeight: 44 });
+    input("");
+    tick();
+    assert.ok(!cls().includes("expanded"));
+}
 // While a turn runs: Enter does what the setting says (steer by default), mod+shift+enter the other; idle, neither is sent.
 assert.equal(sent.at(-1)!.followUp, undefined);
 setWorking(true);
@@ -319,6 +392,20 @@ input("");
 // Exercise the actual Home submit handler through the run-sheet controller.
 const sessionSends = sends;
 setSession(undefined);
+// Home, before a session: @ searches the project's files (and asks no session for MCP resources).
+{
+    const before = calls.length;
+    input("@READ");
+    await Bun.sleep(80);
+    assert.deepEqual(calls.slice(before).map((c) => [c.method, c.params]), [["fs.mentions", { cwd: "/workspace", query: "READ" }]]);
+    replies.at(-1)!.resolve(["README.md"]);
+    await Bun.sleep(0);
+    assert.equal(ta.props["aria-expanded"], true);
+    assert.ok(renderedText.includes("README.md"));
+    key("Enter");
+    assert.equal(ta.props.value, "@README.md ");
+    input("");
+}
 const models = ["mock:a", "mock:b"];
 const success: RunResult = { ok: true, model: models[0]!, modelName: "A", sessionId: "run-a", branch: "run-a", path: "/workspace/run-a" };
 const failure: RunResult = { ok: false, model: models[1]!, modelName: "B", error: "Unavailable" };
@@ -407,5 +494,28 @@ assert.equal(list.scrollTop, 20);
     assert.deepEqual((sentAttachments.at(-1) as { name: string }[]).map((a) => a.name), ["one.png", "two.png", "three.png"], "the command goes with the images");
     assert.equal(ta.props.value, "");
 }
+// Home switches folders without replacing its draft or waiting for commands.list.
+setSession(undefined);
+holdCommands = true;
+setHomeCwd("/project-a");
+input("@file");
+await Bun.sleep(80);
+replies.at(-1)!.resolve(["a-file.ts"]);
+await Bun.sleep(0);
+assert.ok(ta.props["aria-activedescendant"]);
+setHomeCwd("/project-b");
+assert.equal(ta.props["aria-activedescendant"], undefined, "old project's suggestions disappear immediately");
+await Bun.sleep(80);
+assert.equal(calls.filter((c) => c.method === "fs.mentions").at(-1)!.params.cwd, "/project-b");
+const oldProjectReply = replies.at(-1)!;
+setHomeCwd("/project-c");
+await Bun.sleep(80);
+const current = replies.at(-1)!;
+current.resolve(["c-file.ts"]);
+await Bun.sleep(0);
+oldProjectReply.resolve(["b-file.ts"]);
+await Bun.sleep(0);
+key("Enter");
+assert.equal(ta.props.value, "@c-file.ts ", "late suggestions from the old project cannot replace current results");
 dispose();
 composerStorage.flush();

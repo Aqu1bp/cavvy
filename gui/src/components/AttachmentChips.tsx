@@ -1,7 +1,8 @@
 import { createSignal, For, Match, onCleanup, Show, Switch } from "solid-js";
 import { ChevronDown, File, FileText, FileX, TextCursorInput, X } from "lucide-solid";
-import { formatSize, previewOf, type Attachment, type ImageAttachment } from "../lib/attachments";
+import { formatSize, previewNow, previewOf, type Attachment, type ImageAttachment } from "../lib/attachments";
 import { plural } from "../lib/format";
+import { setViewedImage } from "../state/ui";
 
 /** The chip shows at once; its thumbnail, made in a worker, when it's ready. */
 function Preview(p: { image: ImageAttachment }) {
@@ -19,11 +20,16 @@ function Preview(p: { image: ImageAttachment }) {
 /**
  * What's attached to the message being written: image thumbnails, and chips
  * for files (name, size, kind). A refused file says why; a PDF the model
- * can't read says so. Text can be opened to read, and a paste turned back
- * into text in the box.
+ * can't read says so. An image opens full size, text to read, and a paste
+ * can be turned back into text in the box.
  */
 export function AttachmentChips(p: { items: Attachment[]; readsPdf: boolean; blocked?: string; onRemove: (i: number) => void; onToText: (i: number) => void }) {
     const [open, setOpen] = createSignal<Attachment>();
+    /** The viewer on this image, the whole of it (not the thumbnail), stepping through the others attached. */
+    const view = (img: ImageAttachment, from: Element) => {
+        const images = p.items.filter((a): a is ImageAttachment => a.kind === "image");
+        setViewedImage({ images: images.map((a) => ({ name: a.name, full: a, preview: previewNow(a) })), index: images.indexOf(img), from });
+    };
     const shown = () => {
         const a = open();
         return a && a.kind === "text" && p.items.includes(a) ? a : undefined;
@@ -37,7 +43,9 @@ export function AttachmentChips(p: { items: Attachment[]; readsPdf: boolean; blo
                             <Match when={a.kind === "image" && a}>
                                 {(img) => (
                                     <div class="attachment" title={`${img().name} · ${formatSize(img().size)}`}>
-                                        <Preview image={img()} />
+                                        <button class="attachment-open" aria-label={`View ${img().name}`} onClick={(e) => view(img(), e.currentTarget)}>
+                                            <Preview image={img()} />
+                                        </button>
                                         <button class="attachment-x" title="Remove" aria-label={`Remove ${img().name}`} onClick={() => p.onRemove(i())}>
                                             <X size={11} />
                                         </button>

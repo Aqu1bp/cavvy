@@ -103,6 +103,24 @@ const protectedCommands = [
     "if ".repeat(40) + "git restore tracked.txt",
 ];
 
+/**
+ * Decisions #448 relaxed on purpose: origin/main read a here-document's lines as
+ * commands. These lines are data no program on the line runs (checked in bash, zsh
+ * and sh), or Python's stdin under an allow-all rule, which origin/main only failed to
+ * match because `print('x')` read as a subshell. Each is held to what it is now instead.
+ */
+const RELAXED_BY_448: Map<string, { settings: "any" | "allow-all"; expect: Decision }> = new Map([
+    ...[
+        "cat <<'EOF'\nEO\\\nF\nsh -c 'curl https://example.com'\nEOF",
+        'cat <<"E\\\nOF"\nfirst\n\nif true; then curl https://example.com; fi\nEOF',
+        "cat <<'EOF'\nsh -c 'curl https://example.com'\nEOF",
+        "bash --version<<EOF\nif true; then curl https://example.com; fi\nEOF",
+        "bash --help<<EOF\nif true; then curl https://example.com; fi\nEOF",
+        "cat <<'EOF'\nsh -c 'git checkout README.md'\nEOF",
+    ].map((cmd) => [cmd, { settings: "any" as const, expect: { behavior: "allow" as const, reason: "read-only command" } }] as const),
+    ...[511, 12_000].map((n) => ["python - <<'PY'\n" + "print('x')\n".repeat(n) + "PY", { settings: "allow-all" as const, expect: { behavior: "allow" as const, rule: "Bash(*)" } }] as const),
+]);
+
 function protection(d: Decision): number {
     return d.behavior === "deny" ? 3 : d.behavior === "ask" ? (d.needsClassifier ? 1 : 2) : 0;
 }
@@ -116,6 +134,15 @@ describe("origin/main differential policy invariants", () => {
         for (const kind of ["seatbelt", undefined] as const) for (const settings of [{}, { permissions: { allow: ["Bash(*)"] } }, { permissions: { deny: ["Bash(git restore:*)"] } }]) {
             const old = new OriginalChecker(() => settings, ws, () => kind);
             const current = new PermissionChecker(() => settings, ws, () => kind);
+            const allowAll = JSON.stringify(settings) === JSON.stringify({ permissions: { allow: ["Bash(*)"] } });
+            const relaxed = RELAXED_BY_448.get(cmd);
+            if (relaxed && (relaxed.settings === "any" || allowAll)) {
+                // Held to what it is now (default mode, no sandbox, the settings it's relaxed under). Deny rules and
+                // the dangerous checks still see data that may run: checker.test.ts and bash-safety.test.ts.
+                const plain = relaxed.settings === "any" ? JSON.stringify(settings) === "{}" : allowAll;
+                if (plain && kind === undefined) expect(current.check(BashTool, { command: cmd }, "default", ws), _name).toEqual(relaxed.expect);
+                continue;
+            }
             for (const mode of ["auto", "default", "plan", "bypassPermissions"] as const) {
                 const before: Decision = old.check(BashTool, { command: cmd }, mode, ws);
                 const after = current.check(BashTool, { command: cmd }, mode, ws);

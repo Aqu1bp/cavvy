@@ -645,3 +645,29 @@ describe("the session file", () => {
         expect(Session.load(s.path).goal).toBeUndefined();
     });
 });
+
+describe("notices that wrap a goal condition (#431)", () => {
+    const { sentence, nativeGoalBack, nativeGoalLeft, loopGoalDropped } = goalMod;
+    const goal = (condition: string) => ({ provider: "codex" as const, condition, status: "paused" as const, since: 1 });
+
+    test("sentence adds a period only after text that doesn't end a sentence", () => {
+        expect(sentence("ship it")).toBe("ship it.");
+        for (const end of [".", "!", "?"]) expect(sentence(`ship it${end}`)).toBe(`ship it${end}`);
+        expect(sentence("ship it. ")).toBe("ship it.");
+    });
+
+    test("a condition ending in a period doesn't get a second one", () => {
+        const c = "make the tests pass in five.";
+        expect(nativeGoalBack(goal(c))).toBe("Codex's goal is paused: make the tests pass in five. /goal resume goes on with it.");
+        expect(nativeGoalLeft(goal(c), 0)).toBe("Codex's goal is paused while this session is on another model: make the tests pass in five. Switch back to Codex and send /goal resume to go on with it.");
+        expect(nativeGoalLeft(goal(c), 2)).toContain("in five. Its 2 background tasks keep running. Switch back");
+        expect(loopGoalDropped(c, "codex")).toBe("Goal cleared: make the tests pass in five. Codex keeps goals of its own: /goal <condition> sets one there.");
+        for (const text of [nativeGoalBack(goal(c)), nativeGoalLeft(goal(c), 1), loopGoalDropped(c, "codex")]) expect(text).not.toContain("..");
+    });
+
+    test("a condition without a final period still gets one", () => {
+        expect(nativeGoalBack(goal("the docs build"))).toBe("Codex's goal is paused: the docs build. /goal resume goes on with it.");
+        expect(nativeGoalLeft(goal("the docs build"), 1)).toContain("the docs build. Its background task keeps running.");
+        expect(nativeGoalBack(goal("is it done?"))).toBe("Codex's goal is paused: is it done? /goal resume goes on with it.");
+    });
+});

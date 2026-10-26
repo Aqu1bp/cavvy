@@ -7,6 +7,8 @@ import { NO_SCHEDULES, SessionSchedules, type ScheduleAction } from "../agent/sc
 import { CRON_TOOLS, jobLine } from "../agent/schedule-tools";
 import type { ScheduledJob } from "../agent/schedule";
 import { GIT_TOOL_HEADINGS } from "../tools/git-tools";
+import { BROWSER_TOOL_HEADINGS } from "../tools/browser-tools";
+import { BrowserSession } from "../browser/session";
 import { WakeQueue, WatcherMap, formatWakes, stopWatchers, wakeDisplay, type Wake } from "../agent/wakes";
 import { turnDuration } from "./duration";
 import { existsSync, readFileSync } from "fs";
@@ -15,9 +17,9 @@ import { Agent, type Admission, type Admitted, type AgentEvent, type PermissionR
 import { backendsIn, canonical, FileHistory, promptNotes, resetToolState, rewindTargets, untrackedChangesNote, type RestoreItem } from "../agent/checkpoints";
 import { beforeFork, forkCut, forkTargets } from "../agent/fork";
 import { fireHooks, type HookEvent } from "../agent/hooks";
-import { backgroundWork, canAnswerOneOff, GoalController, goalClearedNotice, limitedCodexGoal, loopGoalDropped, nativeGoalEnd, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, queuedGoalSet, sessionTokens, type NativeGoal } from "../agent/goal";
+import { backgroundWork, canAnswerOneOff, GoalController, goalClearedNotice, limitedCodexGoal, loopGoalDropped, nativeGoalBack, nativeGoalEnd, nativeGoalLeft, nativeGoals, nativeGoalStatus, nativeGoalView, parseGoalCommand, queuedGoalSet, sessionTokens, type NativeGoal } from "../agent/goal";
 import { sessionHookServices, sessionStartHooks } from "../agent/session-hooks";
-import { Session } from "../agent/session";
+import { Session, type TurnNotice } from "../agent/session";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { INIT_PROMPT, reviewPrompt } from "../commands/index";
 import { expandCommand, pluginCommandFor, slashCommand } from "../commands/custom";
@@ -26,7 +28,7 @@ import { MODE_INFO, PERMISSION_MODES, type PermissionMode } from "../permissions
 import { PermissionChecker } from "../permissions/checker";
 import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "../permissions/classifier";
 import { toolPath } from "../permissions/rules";
-import { BUILTIN_TOOLS } from "../tools/index";
+import { BUILTIN_TOOLS, offered } from "../tools/index";
 import { skillTool } from "../tools/skill-tool";
 import { formatSkill, skillMentions, withSkills } from "../agent/skills";
 import { cliRunsSkills } from "../backends/native-skills";
@@ -42,7 +44,8 @@ import { isAgentBackend, type BackendWake, type BackgroundStop } from "../backen
 import { SessionBackground } from "../agent/background";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { agentCli, type AttachmentKind } from "../backends/defs";
-import { account, catalogNote } from "../providers/accounts";
+import { claudeCompactAt, cliCompactSetting, harnessCompactAt, modelKeys } from "../backends/compact-at";
+import { account, accountSwitch, removedAccount, removedAccountNote, switchHow } from "../providers/accounts";
 import { attachmentsNote, readsPdf } from "../providers/files";
 import { continuationGroups, modelRef, parseModelRef, textOf, toolCallsOf, assistantText, type AttachedPart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart, type UserContent } from "../providers/types";
 import { expandMentions } from "../ui/mentions";
@@ -63,11 +66,12 @@ import { GitHandles, redactedError } from "./git-handles";
 import { sessionWorktree, sessionWorktrees } from "./session-worktrees";
 import { gitPublishInfo, gitPublish, gitPrState } from "./git-publish";
 import { COMMIT_MESSAGE_SYSTEM, gitCommit, gitCommitPrompt } from "./git-commit";
-import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, isPrompt, runsAgent, promptKey, promptText, readSegments, replay, resultPatch, shownStep, STEERING, toolBlockFromCall, UiLog, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
+import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, isPrompt, runsAgent, promptKey, promptText, liveNotice, noticeBlock, readSegments, replay, resultPatch, shownStep, STEERING, toolBlockFromCall, UiLog, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
 import { TurnSnapshots } from "../agent/turn-snapshots";
 import { IdleCompactTimer } from "../agent/idle-compact";
 import type {
     AgentRun,
+    BackgroundTaskInfo,
     Block,
     ChangesInfo,
     GitChangesInfo,
@@ -96,6 +100,8 @@ import type {
     Turn,
     TurnStatus,
     WireFile,
+    NoticeData,
+    StoppedTask,
 } from "./protocol";
 import { applyOp, coalesce, findBlock, findTurn, type SessionView } from "./timeline";
 import { planTitle } from "./plans";
@@ -125,6 +131,8 @@ interface Queued {
     sending?: boolean;
     /** Its UserPromptSubmit hooks went ("go"), with what they added: not run again, should it go as a prompt of its own. */
     admitted?: { context?: string };
+    /** Held because the account this session used for this CLI (its provider id) was removed: picking one sends it (#410). */
+    account?: string;
 }
 
 const ALL_KINDS: readonly AttachmentKind[] = ["image", "text", "pdf"];
@@ -148,6 +156,11 @@ function isCommand(q: Queued): boolean {
     if (q.literal) return false;
     const t = q.text.trim();
     return (t.startsWith("!") && !q.attachments?.length) || (t.startsWith("/") && !t.startsWith("//"));
+}
+
+/** A call whose result is its sub-agent's report: a Task's, or a Skill's that ran (a failed one's says why it didn't). */
+function reportsAgent(name: string, isError: boolean | undefined): boolean {
+    return name === "Task" || (name === "Skill" && !isError);
 }
 
 /** The slash commands the server runs itself (the GUI runs the others). */
@@ -230,12 +243,19 @@ export class Runtime {
     /** A turn ended with something queued; if what was queued starts no turn, the goal goes on from that end (settleGoal). */
     private goalOwed?: { reason: TurnEndReason; from: number; goal: boolean; startedAt: number };
     readonly toolState: ToolState;
+
+    /** The session's tabs in the project's browser. */
+    get browser(): BrowserSession {
+        return this.toolState.browser!;
+    }
     readonly checker: PermissionChecker;
     readonly classifier: AutoClassifier;
     /** The reviewModel the reviewer's verdicts came from. */
     private reviewer: string | undefined;
     agent?: Agent;
     model?: ModelInfo;
+    /** The model an agent CLI served for the model asked for ("claude-opus-5-5" for "opus"), from its usage. */
+    private servedModel?: string;
     client?: ProviderClient;
     mode: PermissionMode;
     /** The mode it was in before it last entered plan mode (unknown when it started in plan mode). */
@@ -256,7 +276,8 @@ export class Runtime {
     /** Compacts a long conversation left idle before its prompt cache expires (src/agent/idle-compact.ts). */
     readonly idleCompact = new IdleCompactTimer({
         plan: (now) => this.agent?.idleCompactPlan(now) ?? null,
-        ready: () => this.idle && !this.closed && !this.drafting.size && !this.queued.length,
+        // Not on a CLI account that was removed (#410): nothing runs there.
+        ready: () => this.idle && !this.closed && !this.drafting.size && !this.queued.length && !this.needsAccount(),
         run: () => void this.compact(undefined, { idle: true }).catch((e) => this.engine.log(`session ${this.id}: idle compaction: ${(e as Error).message}`)),
     });
     /** The compaction running is an idle one: a message sent meanwhile cancels it and runs. */
@@ -373,11 +394,15 @@ export class Runtime {
         // Secrets live as long as the session is loaded: unloading it (closed, or idle with no window on it) drops them.
         this.toolState = { cwd: ws.cwd, projectRoot: ws.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore(), wakes: new WakeQueue(), watchers: new WatcherMap(), background: new SessionBackground(session) };
         this.toolState.background!.onChange(() => this.syncBackground());
+        // The browser exists from the start, so the window hears of the first page the agent opens (it makes no process until then).
+        this.toolState.browser = new BrowserSession({ root: ws.cwd, settings: () => this.settings(), refuse: (url, approved) => this.checker.urlRefusal(url, approved) });
+        this.toolState.browser.onChange(() => this.engine.sendBrowser(this.id, this.browser.state()));
         this.toolState.secrets!.onChange(() => this.setState({ secrets: this.toolState.secrets!.names() }));
         this.schedules = new SessionSchedules({
             session: () => this.session,
             settings: () => this.settings(),
             idle: () => this.schedulable(),
+            identity: () => this.limitIdentity(),
             run: (prompt, job, label) => this.runScheduled(prompt, job, label),
             notice: (text, level) => this.notice(text, level),
             changed: () => {
@@ -401,7 +426,8 @@ export class Runtime {
         if (opts.resumed && cutOffPrompt(this.ui, this.segment, session.messages, session.notices) !== undefined) session.push({ role: "user", content: [{ type: "text", text: INTERRUPTED }], meta: { kind: "interrupt" } });
         const turns = opts.resumed ? replay({ segments, current: session.messages, currentNotices: session.notices, ui: this.ui, meta: (c) => this.toolMeta(c), newId: () => this.newId() }) : [];
         this.view = { state: this.initialState(), turns, agents: agentsFromTurns(turns, session.model, this.ui.agents) };
-        // Messages that were waiting when the server stopped: back in the queue, held until the user sends them.
+        // Messages that were waiting when the server stopped: back in the queue, held until the user sends them (those
+        // held for an account, until one is picked: #410).
         if (opts.resumed) {
             this.queued = loadQueue(session.path, session.meta.id).map((q) => ({ ...q, id: ++this.queueSeq, held: true }));
             if (this.queued.length) Object.assign(this.view.state, this.queueState());
@@ -540,7 +566,8 @@ export class Runtime {
     /** A scheduled prompt may start now: nothing running (an idle compaction gives way), waiting on the user, or being set up. */
     private schedulable(): boolean {
         // A goal between its turns (checking, retrying, waiting on background work) goes first: scheduled prompts wait for it.
-        return !this.closed && (!this.busy || this.idleCompacting) && !this.pending.size && !this.switching && !this.committing && !this.queued.length && !this.goal.pending() && Boolean(this.agent);
+        // Nor while the session's CLI account is gone (#410): they run once the user picks another.
+        return !this.closed && (!this.busy || this.idleCompacting) && !this.pending.size && !this.switching && !this.committing && !this.queued.length && !this.goal.pending() && Boolean(this.agent) && !this.needsAccount();
     }
 
     private runScheduled(prompt: string, job: ScheduledJob, label: string): Promise<unknown> {
@@ -663,10 +690,11 @@ export class Runtime {
         const known = this.stepsAt.get(turnId);
         if (known) return known;
         const seg = this.backendTurns.get(turnId);
-        const index = turn.prompt?.index;
-        // Its prompt, unless the history was compacted since (it's out of reach of rewind then, and has no index).
+        // Where its prompt went, a wake's too (it has no index: it isn't one to rewind to).
+        const index = turn.pos?.index;
+        // Its prompt, unless the history was compacted since (it's out of reach of rewind then).
         const prompt = seg === this.segment && index !== undefined ? this.session.messages[index] : undefined;
-        if (seg === undefined || index === undefined || prompt?.role !== "user") return undefined;
+        if (seg === undefined || index === undefined || prompt?.role !== "user" || !isPrompt(prompt)) return undefined;
         const at = { seg, index, prompt: promptKey(prompt) };
         this.stepsAt.set(turnId, at);
         return at;
@@ -800,7 +828,46 @@ export class Runtime {
         if (!this.flushTimer) this.flushTimer = setTimeout(() => this.flush(), FLUSH_MS);
     }
 
+    /** Where this session compacts on its own, in tokens of context (SessionState.compactAt). */
+    private compactAt(): number | undefined {
+        const m = this.model;
+        if (!m) return undefined;
+        const window = m.contextWindow;
+        if (m.provider === "claude-code" || m.provider === "codex") {
+            const setting = cliCompactSetting(m.provider, this.session.accountId(m.provider), this.cliProject(), modelKeys(m, this.servedModel));
+            if (m.provider === "claude-code") return claudeCompactAt(window, setting, m.maxOutput);
+            return setting && window ? Math.min(setting, window) : setting;
+        }
+        const s = this.settings();
+        if (s.autoCompact === false || !window) return undefined;
+        return Math.floor(harnessCompactAt(window, m.maxOutput, s.autoCompactThreshold));
+    }
+
+    /** Where an agent CLI's turn runs and whether it reads that project's settings, as its turns do (Agent.backendTurn). */
+    private cliProject(): { cwd: string; trusted: boolean } {
+        const cwd = this.agent?.cliCwd ?? this.ws.cwd;
+        const now = Date.now();
+        // Trust is read from disk: again at most every few seconds, or as soon as the folder changes.
+        const hit = this.cliProjectSeen;
+        if (hit && hit.cwd === cwd && now - hit.at < 5_000) return hit;
+        let trusted = false;
+        try {
+            trusted = this.agent?.cliProjectTrusted() ?? false;
+        } catch {
+            trusted = false;
+        }
+        this.cliProjectSeen = { cwd, trusted, at: now };
+        return this.cliProjectSeen;
+    }
+    private cliProjectSeen?: { cwd: string; trusted: boolean; at: number };
+
     private setState(patch: Partial<SessionState>) {
+        // Where it compacts follows the model, its account, the model served, the folder and the settings, any of
+        // which a patch may follow (a settings reload patches MCP state): checked with each, from cached reads.
+        if (this.view && !("compactAt" in patch)) {
+            const at = this.compactAt();
+            if (at !== this.view?.state.compactAt) patch = { ...patch, compactAt: at };
+        }
         this.op({ op: "state", patch });
     }
 
@@ -873,18 +940,130 @@ export class Runtime {
         })());
     }
 
-    setAccount(provider: string, id: string) {
+    /** The model and, for a CLI, its account: what a resume waiting for a usage limit belongs to. */
+    private limitIdentity(): string {
+        return this.model ? `${modelRef(this.model)}|${this.session.accountId(this.model.provider)}` : "";
+    }
+
+    async setAccount(provider: string, id: string) {
         if (this.busy) throw new RpcError("Switch accounts once this response is done, or interrupt it first.", "busy");
         const selected = account(provider, id);
-        if (!this.session.setAccount(provider, selected.id)) return;
+        const had = this.session.backends.get(provider)?.id;
+        // Already this one (added again under the same id, #410): what waited for an account goes now.
+        if (!this.session.setAccount(provider, selected.id)) return this.releaseForAccount(provider);
+        this.schedules.cancelLimitResume("account");
+        // The new account hasn't read the history: an idle compaction planned on the earlier one's cache would read it all afresh.
+        if (this.agent?.accountChanged(provider)) this.idleCompact.disarm();
+        // Another account may serve the alias as another model: known again from its first usage.
+        this.servedModel = undefined;
         this.setState({ accounts: { "claude-code": this.session.accountId("claude-code"), codex: this.session.accountId("codex") } });
         const name = getProvider(provider)?.name ?? provider;
-        const handoff = this.session.messages.length ? `Continuing on ${name} · ${selected.name}: starting a new ${name} thread with this conversation as context.` : undefined;
-        const text = [handoff, catalogNote(provider, selected, name)].filter(Boolean).join(" ");
-        if (text) {
-            this.session.recordNotice("info", text);
-            this.notice(text);
+        const how = switchHow(had, this.session.backends.get(provider)?.id, this.session.messages.length > 0);
+        // One line between turns; where the CLI's model list comes from is the model picker's to say (#426).
+        const switched = accountSwitch(provider, selected, name, how, had !== undefined && how !== "native");
+        let line: TurnNotice | undefined;
+        if (switched) {
+            const r = this.session.recordSwitch(switched);
+            this.switchNotice(r.notice, r.merged);
+            line = r.notice;
         }
+        // The CLI's process for this session is signed in as the earlier account: it goes now, with its background
+        // work, so no turn it starts by itself (a report) can be taken over under the new account. Turns it started
+        // that are waiting to be taken over, or that it starts while it's let go of, aren't (dropAdopt, #408).
+        // Counted: a second switch meanwhile can finish first (nothing left to let go of), and this one's still going.
+        let stopped: StoppedTask[] = [];
+        this.releasing.set(provider, (this.releasing.get(provider) ?? 0) + 1);
+        try {
+            for (const w of this.adopts.filter((w) => w.provider === provider)) this.dropAdopt(w);
+            stopped = (await this.agent?.releaseAccountProcess(provider)) ?? [];
+        } finally {
+            const left = (this.releasing.get(provider) ?? 1) - 1;
+            if (left) this.releasing.set(provider, left);
+            else this.releasing.delete(provider);
+        }
+        // Said under this switch's line while it's the latest; else (a prompt came meanwhile, or another switch's
+        // line is said since) a line of their own, which says no switch: never this one's again (Session.recordStopped).
+        if (stopped.length) {
+            const r = this.session.recordStopped(line, { provider, cli: name, tasks: stopped });
+            this.switchNotice(r.notice, r.merged);
+        }
+        this.releaseForAccount(provider);
+    }
+
+    // -----------------------------------------------------------------------
+    // A removed CLI account (#410): nothing runs on an account the user didn't choose.
+
+    /** The session's model is a CLI, and the account this session selected for it was removed: the CLI and the account's id. */
+    private removedAccount(): { provider: string; id: string } | undefined {
+        const provider = this.model?.provider;
+        const id = provider ? removedAccount(provider, this.session.accountId(provider)) : undefined;
+        return provider && id ? { provider, id } : undefined;
+    }
+
+    /**
+     * Nothing may run until the user picks an account for the session's CLI: its account was removed, or messages are
+     * held for one (even if it's back, added again under its id: picking it sends them first).
+     */
+    private needsAccount(): { provider: string; id: string } | undefined {
+        const gone = this.removedAccount();
+        if (gone) return gone;
+        const provider = this.model?.provider;
+        return provider && this.queued.some((q) => q.account === provider) ? { provider, id: this.session.accountId(provider) } : undefined;
+    }
+
+    /** What the server runs itself, with no model (a `!command`, /loop, /schedules, /trust): it needs no account. */
+    private runsHere(q: { text: string; literal?: boolean; attachments?: AttachedPart[] }): boolean {
+        if (q.literal) return false;
+        const t = q.text.trim();
+        return (t.startsWith("!") && !q.attachments?.length) || /^\/(loop|schedules|trust)(?=\s|$)/i.test(t);
+    }
+
+    /**
+     * The session's CLI account was removed: `q` (a message about to go) and what waits behind it are held, not
+     * stored or sent, until the user picks an account for the CLI (releaseForAccount sends them then). The GUI's
+     * model picker opens on its accounts (accountNeeded). `say`: the notice that asks for one.
+     */
+    private holdForAccount(gone: { provider: string; id: string }, q?: Omit<Queued, "id" | "mode">, say = true) {
+        if (q) this.queued.push({ ...q, id: ++this.queueSeq, mode: "queue" });
+        // Held since a restart, they wait for the user as they did; the rest wait for the account.
+        for (const x of this.queued) if (!x.held || x.account) Object.assign(x, { held: true, account: gone.provider });
+        this.queueUpdated();
+        if (say) this.notice(removedAccountNote(getProvider(gone.provider)?.name ?? gone.provider, gone.id), "warn");
+    }
+
+    /** An account was picked for `provider`'s CLI (setAccount): the messages held for one go now, in order, each once. */
+    private releaseForAccount(provider: string) {
+        if (this.closed || this.model?.provider !== provider || this.removedAccount()) return;
+        const held = this.queued.filter((q) => q.account === provider);
+        if (!held.length) {
+            // What waited for it meanwhile (a watch's events, a schedule) can go now.
+            this.toolState.wakes?.poke();
+            this.schedules.poke();
+            return;
+        }
+        this.releaseHeld(held);
+    }
+
+    /**
+     * Messages held for an account go, in order, each once: the first now (the session is busy at once, so what's
+     * sent next waits behind them), the rest as queued ones do.
+     */
+    private releaseHeld(held: Queued[]) {
+        for (const q of held) {
+            q.held = undefined;
+            q.account = undefined;
+        }
+        this.queueUpdated();
+        // Busy (a message sent while the switch let the CLI go): they run when its turn ends, as queued ones do.
+        if (!this.busy) void this.runQueued(false);
+    }
+
+    /** Why a message held for an account waits (Queued.account), for the queue's row. */
+    private heldWhy(q: Queued): string {
+        const provider = q.account!;
+        const name = getProvider(provider)?.name ?? provider;
+        const id = removedAccount(provider, this.session.accountId(provider));
+        return id ? removedAccountNote(name, id) : `Held when this session's ${name} account was removed. Send it now, edit it or remove it.`;
     }
 
     /** Switch models. Returns false when the provider can't be used. */
@@ -908,9 +1087,12 @@ export class Runtime {
         // The model it was on, if the conversation has begun (none to tell of before the first prompt).
         const prev = this.conversationStarted ? this.model : undefined;
         this.model = info;
+        this.servedModel = undefined;
         this.client = client;
-        // A CLI's own goal stays with that CLI: another provider doesn't carry it on.
-        if (this.nativeGoal && this.nativeGoal.provider !== info.provider) this.nativeGoalReported(null);
+        this.schedules.cancelLimitResume("model");
+        // A CLI's own goal stays with that CLI: another provider doesn't carry it on, and it pauses there (#412). The
+        // pause goes on while the agent takes the new model, never with the agent still on the CLI's (waited on below).
+        const leaving = this.switchNativeGoal(this.agent?.model.provider, info);
         // Nor does the loop's go on with a CLI, which keeps goals of its own (and gets /goal and the tab's buttons).
         if (nativeGoals(info.provider)) {
             const dropped = this.goal.clear();
@@ -929,6 +1111,7 @@ export class Runtime {
             // Before it, a note still queued (one a rewind to the start kept) would be about another model.
             else this.agent.dropStateNote("model");
         }
+        await leaving;
         if (opts.persist) {
             try {
                 updateSettings("user", this.ws.cwd, (s) => (s.model = ref));
@@ -938,6 +1121,20 @@ export class Runtime {
             }
         }
         this.setState({ model: modelSummary(info), effort: this.settings().effort, fastMode: this.fastModeEnabled() });
+        // A CLI whose account this session used was removed (#410): asked for now, and what's held waits for it.
+        const gone = this.removedAccount();
+        const held = this.queued.filter((q) => q.account);
+        if (gone) {
+            for (const q of held) q.account = gone.provider;
+            if (held.length) this.queueUpdated();
+            if (!opts.quiet) this.notice(removedAccountNote(def.name, gone.id, false), "warn");
+        } else if (held.length && !opts.quiet) {
+            // The user picked a model that runs without that account: where they chose to run, so what was held for
+            // an account goes there now, once each, in order. Not as the session opens (quiet), on whatever model
+            // it could open with: that isn't the user's choice, and they stay held.
+            this.notice(`Sending ${held.length === 1 ? "the message" : `the ${held.length} messages`} held for an account to ${info.name ?? info.id}.`);
+            this.releaseHeld(held);
+        }
         return true;
     }
 
@@ -1047,6 +1244,46 @@ export class Runtime {
         }
         this.nativeGoal = g ?? undefined;
         this.goalChanged();
+    }
+
+    /** A CLI's goal paused as the session switched away from that CLI (#412): shown again, with how to go on, back on it. */
+    private goalLeft?: NativeGoal;
+
+    /**
+     * The model switched from provider `from` to `to`. A CLI's own goal stays with that CLI: another provider doesn't
+     * carry it on, and one going on pauses there, so the CLI starts no turns of its own for it while the session is on
+     * another model (its background work goes on). Back on that CLI, a goal left paused shows again, and how to go on is said.
+     */
+    private async switchNativeGoal(from: string | undefined, to: ModelInfo) {
+        const had = this.nativeGoal;
+        if (had && had.provider !== to.provider) this.nativeGoalReported(null);
+        const left = this.goalLeft;
+        if (left && left.provider === to.provider) {
+            this.goalLeft = undefined;
+            this.nativeGoalReported(left);
+            const message = nativeGoalBack(left);
+            this.session.recordNotice("info", message);
+            this.notice(message, "info");
+        }
+        if (from && from !== to.provider && nativeGoals(from) && this.agent) {
+            const name = getProvider(from)?.name ?? from;
+            let paused: NativeGoal | undefined;
+            try {
+                paused = await this.agent.pauseNativeGoal(from);
+            } catch (e) {
+                const message = `Couldn't pause ${name}'s goal (${redact((e as Error).message)}). ${name} may go on with it by itself; its turns aren't taken up while this session is on another model.`;
+                this.session.recordNotice("warn", message);
+                this.notice(message, "warn");
+            }
+            if (paused) {
+                const background = this.agent.backgroundTasks().filter((t) => t.provider === from && t.status === "running").length;
+                const message = nativeGoalLeft(paused, background);
+                this.session.recordNotice("info", message);
+                this.notice(message, "info");
+            }
+            const kept = paused ?? (had?.provider === from && had.status === "paused" ? had : undefined);
+            if (kept) this.goalLeft = kept;
+        }
     }
 
     private goalChanged() {
@@ -1173,7 +1410,7 @@ export class Runtime {
         const native = this.nativeSearch();
         const off = this.settings().webSearch === "off";
         const skill = skillTool(this.ws.skills);
-        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off))), ...(skill ? [skill] : []), ...CRON_TOOLS, ...this.ws.mcp.tools()];
+        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off)) && offered(t, this.settings())), ...(skill ? [skill] : []), ...CRON_TOOLS, ...this.ws.mcp.tools()];
     }
 
     private toolMeta(call: ToolCallPart): ToolMeta {
@@ -1319,10 +1556,41 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Timeline building
 
-    notice(text: string, level: "info" | "warn" | "error" = "info") {
+    notice(text: string, level: "info" | "warn" | "error" = "info", data?: NoticeData) {
         const turn = this.currentTurn();
         this.closeOpen();
-        this.op({ op: "block", turnId: turn.id, block: { t: "notice", id: this.newId(), level, text: redact(text) } });
+        this.op({ op: "block", turnId: turn.id, block: liveNotice(this.newId(), level, text, data) });
+    }
+
+    /**
+     * An account switch's notice (or the tasks one stopped), as the session kept it: when it took the place of the
+     * switch before it (`merged`), that switch's line says it, where it is. The session's rule decides, not what's
+     * shown since: a notice that isn't kept (a status line) doesn't split a run of switches live either, so a
+     * reopened session shows the same lines (#426).
+     */
+    private switchNotice(n: TurnNotice, merged: boolean) {
+        const provider = n.account?.provider;
+        const at = merged && provider ? this.lastSwitchBlock(provider) : undefined;
+        if (at) {
+            this.op({ op: "block.patch", turnId: at.turnId, blockId: at.blockId, patch: { text: n.text, account: n.account } });
+            return;
+        }
+        const turn = this.currentTurn();
+        this.closeOpen();
+        this.op({ op: "block", turnId: turn.id, block: noticeBlock(n, this.newId()) });
+    }
+
+    /** The line of the latest switch on `provider` the transcript shows: the one a merged switch says itself in. */
+    private lastSwitchBlock(provider: string): { turnId: string; blockId: string } | undefined {
+        for (let i = this.view.turns.length - 1; i >= 0; i--) {
+            const t = this.view.turns[i]!;
+            if (t.archived) return undefined;
+            for (let j = t.blocks.length - 1; j >= 0; j--) {
+                const b = t.blocks[j]!;
+                if (b.t === "notice" && b.account?.provider === provider) return { turnId: t.id, blockId: b.id };
+            }
+        }
+        return undefined;
     }
 
     /** The turn output goes to: the running one, or a new one without a prompt. */
@@ -1479,7 +1747,7 @@ export class Runtime {
                 this.toolEnded(e.call, e.result, e.durationMs, e.title);
                 break;
             case "notice":
-                this.notice(e.message, e.level);
+                this.notice(e.message, e.level, e.data);
                 break;
             case "retry": {
                 // The partial response is thrown away and asked for again.
@@ -1492,6 +1760,7 @@ export class Runtime {
                 break;
             }
             case "usage": {
+                if (e.usage.resolvedModel) this.servedModel = parseModelRef(e.usage.resolvedModel)?.id ?? this.servedModel;
                 // A backend says its context window with its usage (Claude Code's models list none): the ring can show now.
                 const window = this.model?.contextWindow !== this.view.state.model?.contextWindow && this.model ? { model: modelSummary(this.model) } : {};
                 this.setState({ contextTokens: e.contextTokens, cost: this.session.cost, costUnknown: this.session.costUnknown, ...this.tokenTotals(), ...window });
@@ -1512,6 +1781,8 @@ export class Runtime {
                 else this.subagentEvent(e.parentId, e.label, e.event);
                 break;
             case "goal":
+                // Not from a CLI the session has switched away from (its goal paused there as the switch went through).
+                if (e.goal && e.goal.provider !== this.model?.provider) break;
                 this.nativeGoalReported(e.goal);
                 break;
             case "cli_commands":
@@ -1612,9 +1883,11 @@ export class Runtime {
         const b = this.blockIn(this.toolTurn.get(call.id), call.id) as ToolBlock | undefined;
         this.ui.write({ t: "tool", id: call.id, summary: patch.summary, diff: patch.diff, diagnostics: patch.diagnostics, durationMs, approval: b?.approval, sandboxed: b?.sandboxed, images: patch.images, job: b?.job, at: Date.now() });
         if (call.name === "TodoWrite") this.setState({ todos: this.toolState.todos.map((t) => ({ ...t })) });
-        // A Task's result is its sub-agent's report (a delegated task's comes when it settles). One
-        // still working (Claude Code's in the background) only says it started: its report comes when it ends.
-        const sub = call.name === "Task" ? this.view.agents.find((a) => a.id === call.id) : undefined;
+        // A Task's result is its sub-agent's report (a delegated task's comes when it settles), and so is a Skill's
+        // that ran as its own agent (Claude Code may say it ended first, with no report) unless it failed or was declined:
+        // that result is Claude Code's refusal, not the skill's. One still working (Claude Code's in the background) only
+        // says it started: its report comes when it ends.
+        const sub = reportsAgent(call.name, result.isError) ? this.view.agents.find((a) => a.id === call.id) : undefined;
         if (sub && sub.status !== "running" && sub.status !== "waiting") this.agentPatch(call.id, { report: redact(withoutActionsNote(result.content)) });
         if (patch.diff || b?.category === "edit") this.setState({ filesChanged: this.filesChanged() });
         this.syncShells();
@@ -1691,13 +1964,19 @@ export class Runtime {
     }
 
     /** A sub-agent's run, from its call: in a turn, or (a sub-agent's own) in its parent's activity, on its parent's model unless the call names one. */
-    private startAgent(id: string, parent?: string): AgentRun | undefined {
+    private startAgent(id: string, parent?: string, label?: string): AgentRun | undefined {
         const own = this.model && modelRef(this.model);
         if (parent === undefined) {
             const turnId = this.toolTurn.get(id);
             const call = turnId ? this.blockIn(turnId, id) : undefined;
             if (!turnId || call?.t !== "tool") return undefined;
-            this.op({ op: "agent", agent: { ...agentFromCall(call, turnId, own), startedAt: Date.now() } });
+            const run = agentFromCall(call, turnId, own);
+            // A call that isn't one of the agent tools can still run a sub-agent (Claude Code's Skill, for a skill
+            // that runs as its own agent, as /code-review does): its row is then that agent's, its steps a click away.
+            if (!call.agent && call.name === "Skill") this.op({ op: "block.patch", turnId, blockId: id, patch: { agent: true } });
+            // Claude Code's SendMessage resuming a sub-agent an earlier process started (#458): its run is that call's, named as the CLI names the agent, with what it was sent.
+            const resumed = call.name === "SendMessage" ? { description: label ? redact(label) : run.description, prompt: typeof call.input?.message === "string" ? call.input.message : run.prompt } : {};
+            this.op({ op: "agent", agent: { ...run, ...resumed, startedAt: Date.now() } });
         } else {
             const p = this.view.agents.find((x) => x.id === parent);
             const call = p?.blocks.find((b) => b.id === id);
@@ -1711,7 +1990,7 @@ export class Runtime {
     private trackAgent(id: string, label: string, e: AgentEvent, parent?: string) {
         let a = this.view.agents.find((x) => x.id === id);
         if (!a || a.replayed) {
-            a = this.startAgent(id, parent);
+            a = this.startAgent(id, parent, label);
             if (!a) return;
         }
         this.agentLabels.set(id, label);
@@ -1773,14 +2052,14 @@ export class Runtime {
                 if (d?.diagnostics) patch.diagnostics = redactedReport(d.diagnostics);
                 this.op({ op: "agent.block.patch", id, blockId: e.call.id, patch });
                 this.noteShell(e.call, d?.summary);
-                // Its own sub-agent's call: the result is that one's report, as a Task's in a turn is (one still working only says it started).
-                const sub = e.call.name === "Task" ? this.view.agents.find((x) => x.id === e.call.id && x.parentId === id) : undefined;
+                // Its own sub-agent's call: the result is that one's report, as a Task's (or a Skill's) in a turn is (one still working only says it started).
+                const sub = reportsAgent(e.call.name, e.result.isError) ? this.view.agents.find((x) => x.id === e.call.id && x.parentId === id) : undefined;
                 if (sub && sub.status !== "running" && sub.status !== "waiting") this.agentPatch(sub.id, { report: redact(withoutActionsNote(e.result.content)) });
                 break;
             }
             case "notice":
                 this.agentText.delete(id);
-                this.op({ op: "agent.block", id, block: { t: "notice", id: this.newId(), level: e.level, text: redact(e.message) } });
+                this.op({ op: "agent.block", id, block: liveNotice(this.newId(), e.level, e.message, e.data) });
                 break;
             case "retry":
                 this.agentPatch(id, { activity: `Retrying: ${redact(e.reason)}` });
@@ -1977,7 +2256,7 @@ export class Runtime {
             plainLabel: req.summary ? "AI summary" : undefined,
             agentLabel: req.agentLabel,
         };
-        if (decision.grant) it.options.push({ id: "session", label: `Allow ${redact(decision.grant.label)} for the session` });
+        if (decision.grant) it.options.push({ id: "session", label: `Allow \`${redact(decision.grant.label)}\` for the session` });
         if (req.preview?.summary) it.summary = redact(req.preview.summary);
         if (isShellTool(tool.name)) {
             it.heading = tool.name === "Monitor" ? "Watch a command's output" : req.secrets?.length ? "Run a shell command with secrets" : "Run a shell command";
@@ -2008,6 +2287,12 @@ export class Runtime {
             it.url = String(input.url ?? "");
             if (input.prompt) it.description = redact(String(input.prompt).slice(0, 300));
             if (suggestions.length) it.options.push({ id: "always", label: `Always allow ${suggestions[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1")}` });
+        } else if (BROWSER_TOOL_HEADINGS[tool.name]) {
+            it.heading = BROWSER_TOOL_HEADINGS[tool.name]!;
+            if (tool.name === "BrowserNavigate") it.url = String(input.url ?? "");
+            else if (req.preview?.summary) it.description = redact(req.preview.summary);
+            if (req.preview?.body) it.command = redact(req.preview.body);
+            if (suggestions.length) it.options.push({ id: "always", label: tool.name === "BrowserNavigate" ? `Always allow ${suggestions[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1")}` : `Always allow ${tool.name} in ${projectName}` });
         } else if (GIT_TOOL_HEADINGS[tool.name]) {
             it.heading = GIT_TOOL_HEADINGS[tool.name]!;
             if (req.preview?.body) it.command = redact(req.preview.body);
@@ -2398,6 +2683,12 @@ export class Runtime {
             if (this.idleCompacting) this.abort?.abort();
             return { queued: true };
         }
+        const message = { text, attachments, literal: literal || undefined };
+        const gone = this.runsHere(message) ? undefined : this.needsAccount();
+        if (gone) {
+            this.holdForAccount(gone, message);
+            return { queued: true };
+        }
         void this.dispatch(text, attachments, literal).catch((e) => this.notice(redact((e as Error).message), "error"));
         return { queued: false };
     }
@@ -2520,9 +2811,20 @@ export class Runtime {
                 return;
             }
         }
+        // The session's CLI account was removed (#410): nothing is stored or sent. A message of the user's that gets
+        // here (a command's prompt) waits for an account as one sent does; a watch's events go back in their queue.
+        const gone = opts.adopt ? undefined : this.needsAccount();
+        if (gone) {
+            if (opts.wakes) return void this.toolState.wakes?.requeue(opts.wakes);
+            if (!opts.goal && !this.scheduledLabel && opts.kind !== "wake") return this.holdForAccount(gone, { text: opts.display ?? text, attachments: opts.attachments });
+            return this.notice(removedAccountNote(getProvider(gone.provider)?.name ?? gone.provider, gone.id, false), "warn");
+        }
         this.checkCommitting();
         const agent = this.agent;
         this.busy = true;
+        // A CLI's goal shows as waiting for the user while no turn runs: a turn starting (the goal's next, Codex's
+        // own, adopted here) makes it active again (#431). The goal's own events may not come until the turn ends.
+        if (this.nativeGoal) this.goalChanged();
         this.idleCompact.disarm();
         const scheduled = this.scheduledLabel;
         this.scheduledLabel = undefined;
@@ -2697,6 +2999,12 @@ export class Runtime {
             if (this.adopts.length) return this.wake();
             return this.toolState.wakes?.poke();
         }
+        // The session's CLI account was removed meanwhile (#410): it waits for one, with what's behind it.
+        const gone = this.runsHere(next) ? undefined : this.needsAccount();
+        if (gone) {
+            this.holdForAccount(gone);
+            return this.settleGoal(false);
+        }
         this.queued = this.queued.filter((q) => q !== next);
         this.queueUpdated();
         await this.dispatch(next.text, next.attachments, next.literal, next.admitted).catch((e) => this.notice(redact((e as Error).message), "error"));
@@ -2724,14 +3032,17 @@ export class Runtime {
             queueIds: this.queued.map((q) => q.id),
             queuedAttached: this.queued.map((q) => attachedLabel(q.attachments)),
             queuedModes: this.queued.map((q): QueuedMode => (q.held ? "held" : this.waits(q) ? "turn" : q.mode)),
-            queuedWhy: this.queued.map((q) => this.waits(q) ?? ""),
+            queuedWhy: this.queued.map((q) => (q.account ? this.heldWhy(q) : (this.waits(q) ?? ""))),
+            // Messages wait for an account for the session's CLI (#410): the GUI asks for one.
+            // Until one is picked: the account may be back (added again under its id), and picking it sends them.
+            accountNeeded: this.queued.find((q) => q.account && q.account === this.model?.provider)?.account,
         };
     }
 
     /** Shown, and saved beside the transcript so a restart doesn't lose it. */
     private queueUpdated() {
         this.setState(this.queueState());
-        if (this.session.persisted) saveQueue(this.session.path, this.id, this.queued.map(({ text, mode, attachments, literal }) => ({ text, mode, attachments, literal })));
+        if (this.session.persisted) saveQueue(this.session.path, this.id, this.queued.map(({ text, mode, attachments, literal, account }) => ({ text, mode, attachments, literal, ...(account ? { account } : {}) })));
     }
 
     /**
@@ -2749,6 +3060,14 @@ export class Runtime {
             this.checkCommitting();
             if (this.closed) throw new Error("This session was closed.");
             this.checkPdfs(q.attachments);
+            // The session's CLI account was removed (#410): it stays, held for one, and the user is told why.
+            const gone = this.runsHere(q) ? undefined : this.needsAccount();
+            if (gone) {
+                // One held since a restart too: the user sent it, so it goes once they pick an account.
+                Object.assign(q, { held: true, account: gone.provider });
+                this.holdForAccount(gone, undefined, false);
+                throw new RpcError(removedAccountNote(getProvider(gone.provider)?.name ?? gone.provider, gone.id), "account_removed");
+            }
             this.queued = this.queued.filter((x) => x !== q);
             this.queueUpdated();
             void this.dispatch(q.text, q.attachments, q.literal, q.admitted).catch((e) => this.notice(redact((e as Error).message), "error"));
@@ -2799,6 +3118,8 @@ export class Runtime {
         // Busy or with messages queued, the turn's end looks again (runQueued). Messages held back (after a stop or
         // a restart) don't hold up a CLI's own turn: it's running already, whatever the user sends next.
         if (this.closed || this.busy || (this.adopts.length ? this.nextQueued() : this.queued.length)) return;
+        // The session's CLI account was removed (#410): nothing runs until the user picks another (releaseForAccount looks again).
+        if (this.needsAccount()) return;
         // A model switch, a commit, the agent still starting, a goal between its turns (it goes first, as with
         // scheduled prompts): look again in a moment.
         if (this.switching || this.commitDone || !this.agent || this.goal.pending()) {
@@ -2822,11 +3143,32 @@ export class Runtime {
     /** Turns agent CLIs started by themselves, waiting for the session to be free to adopt them (wake). */
     private adopts: BackendWake[] = [];
 
+    /** Agent CLIs whose process for this session an account change is letting go of (setAccount), with how many such releases are under way. */
+    private releasing = new Map<string, number>();
+
     /** An agent CLI started a turn by itself: it becomes a wake turn of this session's, when it's free. */
     adoptWake(w: BackendWake) {
         if (this.closed) return;
+        // From the process an account change is letting go of: not taken over under the new account.
+        if (this.releasing.has(w.provider)) return this.dropAdopt(w);
         this.adopts.push(w);
         this.wake();
+    }
+
+    /**
+     * A turn a CLI started by itself, in the process an account change lets go of (#408): it isn't taken over. What
+     * it reported is shown and told to the model (Agent.dropAdopt), as when the session can't take one over (#305).
+     * One answering the user's message, sent at once on Esc, was taken out of the queue then: the message goes back
+     * to the message box, as one an interrupt kept from going does (returnQueued).
+     */
+    private dropAdopt(w: BackendWake) {
+        this.adopts = this.adopts.filter((x) => x !== w);
+        if (!w.prompt) return void this.agent?.dropAdopt(w);
+        if (!w.label?.trim()) return;
+        this.engine.draft(this, w.label, []);
+        const message = `${getProvider(w.provider)?.name ?? w.provider} was restarted for the account change before it answered your message. It's back in the message box, to send again.`;
+        this.session.recordNotice("warn", message);
+        this.notice(message, "warn");
     }
 
     interrupt() {
@@ -3425,6 +3767,22 @@ export class Runtime {
         if (this.settings().agentCli?.liveSessions !== false) for (const t of news) this.engine.notifyBackground(this, { ...t, label: redact(t.label).slice(0, 300) });
         const tasks = bg.shown(src).map((t) => ({ ...t, label: redact(t.label).slice(0, 300) }));
         if (JSON.stringify(tasks) !== JSON.stringify(this.view.state.backgroundTasks ?? [])) this.setState({ backgroundTasks: tasks });
+        this.endAgentsGone(tasks);
+    }
+
+    /**
+     * A sub-agent whose background task went with its CLI's process (it exited, or was stopped or restarted) before
+     * the CLI said the agent ended: nothing of it runs any more, so its run is over too, stopped (#461 review).
+     * Its calls still open never got a result.
+     */
+    private endAgentsGone(tasks: readonly BackgroundTaskInfo[]) {
+        for (const t of tasks) {
+            if (t.kind !== "agent" || t.status !== "stopped" || !(t.withProcess || t.lost) || !t.toolUseId) continue;
+            const a = this.view.agents.find((x) => x.id === t.toolUseId && !x.replayed && (x.status === "running" || x.status === "waiting") && (t.endedAt === undefined || x.startedAt <= t.endedAt));
+            if (!a) continue;
+            for (const b of a.blocks) if (b.t === "tool" && (b.status === "running" || b.status === "streaming" || b.status === "queued" || b.status === "awaiting")) this.op({ op: "agent.block.patch", id: a.id, blockId: b.id, patch: { status: "error", summary: "Stopped with its process", progress: undefined } });
+            this.agentEnded(a.id, "aborted");
+        }
     }
 
     /** Restart the session's agent CLI process (/tasks restart): it didn't answer a stop, or new settings wait for its background work. */
@@ -3543,6 +3901,7 @@ export class Runtime {
             this.agent?.dispose(),
             killAllShells({ state: this.toolState }),
             this.toolState.lsp?.dispose(),
+            this.toolState.browser?.dispose(),
             commit,
         ]);
         try {

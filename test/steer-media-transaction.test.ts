@@ -94,6 +94,28 @@ describe("a steer with an image to Codex is the queue's until Codex accepts it",
         }
     }, 30_000);
 
+    // #438: Codex holds a steer until the turn's next step, and drops it if the turn is interrupted first.
+    test("accepted, then the turn interrupted before Codex took it: it goes back to the composer with its image, and isn't in the history", async () => {
+        const { engine, c, id, rt, events } = await codexSession("hang", { FAKE_STEER_PENDING: "1", FAKE_HANG_MS: "20000" });
+        try {
+            expect(await until(() => rt.busy && turnStarts().length === 1)).toBe(true);
+            await engine.handle(c as never, "session.send", { id, text: "look at this", images: [{ mediaType: "image/png", data: PNG }], mode: "steer" });
+            const log = () => readFileSync(process.env.FAKE_LOG!, "utf-8");
+            expect(await until(() => log().includes('"steerPending"'))).toBe(true);
+            // Accepted, not taken: still the queue's.
+            expect(rt.snapshot().state.queued).toEqual(["look at this"]);
+            await engine.handle(c as never, "session.interrupt", { id });
+            expect(await until(() => !rt.busy && events.some((e) => e.type === "draft"))).toBe(true);
+            expect(log()).toContain('"steerDropped"');
+            expect(events.find((e) => e.type === "draft")).toMatchObject({ text: "look at this", images: [{ mediaType: "image/png", data: PNG }] });
+            expect(rt.snapshot().state.queued).toEqual([]);
+            expect(imagesInHistory(rt)).toBe(0);
+            expect(JSON.stringify(rt.session.messages)).not.toContain("look at this");
+        } finally {
+            await cleanup(engine);
+        }
+    }, 30_000);
+
     test("refused, then the turn interrupted: it goes back to the composer with its image, and isn't in the history", async () => {
         const { engine, c, id, rt, events } = await codexSession("slow", { FAKE_STEER_FAIL: "1" });
         try {

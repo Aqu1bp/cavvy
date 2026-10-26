@@ -47,7 +47,8 @@ export const RUNNING: Record<string, string> = {
     WebFetch: "Fetching",
     WebSearch: "Searching the web",
     Task: "Agent working",
-    Skill: "Loading skill",
+    // Not "Loading": a skill can run as its own agent for minutes (/code-review does).
+    Skill: "Using skill",
     TodoWrite: "Updating todos",
     AskUserQuestion: "Waiting for your answer",
     ExitPlanMode: "Waiting for plan review",
@@ -68,7 +69,7 @@ export function toolLabel(t: ToolBlock): { verb: string; arg?: string } {
         const i = t.input ?? {};
         const model = shortModelRef(typeof i.model === "string" ? i.model : undefined);
         const what = String(i.description ?? splitTitle(t.title).arg ?? "");
-        return { verb: t.name === "Task" ? "Agent" : "Delegate", arg: [what, model].filter(Boolean).join(" · ") || undefined };
+        return { verb: t.name === "Task" ? "Agent" : t.name === "Skill" ? "Skill" : "Delegate", arg: [what, model].filter(Boolean).join(" · ") || undefined };
     }
     if (t.name.startsWith("mcp__")) {
         const { verb, arg } = splitTitle(t.title);

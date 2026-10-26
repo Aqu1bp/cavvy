@@ -1,8 +1,10 @@
 import type { Tool } from "./types";
 import type { ToolSchema } from "../providers/types";
+import type { Settings } from "../config/settings";
 import { ReadTool, WriteTool, EditTool, MultiEditTool, NotebookEditTool } from "./file-tools";
 import { BashTool, BashOutputTool, KillShellTool } from "./bash";
 import { MonitorTool } from "./monitor";
+import { BROWSER_TOOLS } from "./browser-tools";
 import { GlobTool, GrepTool, LSTool } from "./search-tools";
 import { WebFetchTool, WebSearchTool } from "./web-tools";
 import { GitCommitTool, GitPushTool, CreatePullRequestTool, WatchPullRequestTool, UnwatchPullRequestTool } from "./git-tools";
@@ -26,6 +28,7 @@ export const BUILTIN_TOOLS: Tool<any>[] = [
     NotebookEditTool,
     WebFetchTool,
     WebSearchTool,
+    ...BROWSER_TOOLS,
     GitCommitTool,
     GitPushTool,
     CreatePullRequestTool,
@@ -36,6 +39,11 @@ export const BUILTIN_TOOLS: Tool<any>[] = [
     RequestSecretTool,
     ExitPlanModeTool,
 ];
+
+/** Whether a tool is offered under these settings (WebSearch needs a backend, the Browser tools a browser). */
+export function offered(t: Tool<any>, settings: Settings): boolean {
+    return t.enabled?.({ settings }) !== false;
+}
 
 /** Tools a read-only "explore" sub-agent may use. */
 export const EXPLORE_TOOLS = new Set(["Glob", "Grep", "LS", "Read", "WebFetch", "WebSearch", "Bash", "BashOutput"]);

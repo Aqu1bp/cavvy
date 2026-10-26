@@ -22,8 +22,8 @@
 // one process per turn, as before.
 
 import { createHash, randomUUID } from "crypto";
-import { existsSync, mkdirSync, writeFileSync } from "fs";
-import { join } from "path";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readlinkSync, readSync, realpathSync, writeFileSync, type Stats } from "fs";
+import { basename, dirname, join } from "path";
 import type { HookConfig } from "../config/settings";
 import { harnessHome } from "../config/paths";
 import { backendMatcher, claudeCodeHookOutput, type HookEvent } from "../agent/hooks";
@@ -35,23 +35,25 @@ import type { ProviderDef } from "../providers/registry";
 import type { ModelInfo, Usage } from "../providers/types";
 import type { PlanLimits } from "../server/protocol";
 import type { ToolDisplay } from "../tools/types";
-import { redact } from "../util/redact";
+import { knownSecrets, redact, redactPrefix } from "../util/redact";
 import { cliCommandNames } from "../commands/custom";
-import { watchAccountFolders } from "./account-permissions";
 import { ClaudeGoalWatch, claudeTranscriptFile } from "./claude-goal";
 import { CLAUDE_CLI, cliMessage, requireCli, type JsonLinesProcess } from "./cli";
 import { agentCli, type AgentCliDef, type CliCapabilities } from "./defs";
 import type { AgentCliStatus } from "./index";
-import { limitAccountLabel, limitNews, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
+import { cliNotice } from "./notice-data";
+import { creditsNote, limitAccountLabel, limitNews, limitNotice, limitStopOf, limitStopReport, mergeLimits, parseClaudeRateLimit, resetPhrase, resetSentence } from "./limits";
 import { liveDebug } from "./live/debug";
 import { LiveCliPool } from "./live/pool";
-import { EXIT_DRAIN_MS, spawnFingerprint, type LiveCliSession, type LiveOptions, type LiveTurnResult } from "./live/session";
+import { EXIT_DRAIN_MS, PromptRefused, spawnFingerprint, type LiveCliSession, type LiveOptions, type LiveTurnResult } from "./live/session";
 import type { AgentCliAdapter, CliConnection, CliEvent, CliEventSink, LiveSettings, SpawnConfig, SpawnSpec, TurnInput } from "./live/types";
 import type { BackgroundTaskInfo } from "./live/info";
 import { CLAUDE_PREFIX, claudeNames, claudePrompt, forClaudeCode, skillFolder } from "./native-skills";
 import type { BackendResult, BackendTurn, BackgroundStop, SessionHost, SteerMessage, TurnSink } from "./types";
 import type { ImagePart, PdfPart } from "../providers/types";
+import { servedBrowserTool } from "../tools/browser-tools";
 import {
+    DECLINED,
     LAUNCH_END,
     MODES,
     attachTiming,
@@ -98,6 +100,89 @@ export const liveTiming = {
     stopConfirmMs: 5000,
 };
 
+/**
+ * The end of a background command's output its report has (#430): with the report's first line, within what the session
+ * shows and tells the model of a report it can't take over (WAKE_REPORT_CHARS, 4000), which cuts a longer one at its end.
+ */
+const REPORT_OUTPUT_CHARS = 3000;
+/** How much of the end of a command's output file is read for that (bytes): well past it, so redaction sees what it cuts. */
+const OUTPUT_READ_BYTES = 64 * 1024;
+
+/**
+ * A folder's name under Claude Code's temporary folder, as 2.1.304 makes it: its path, each other character a "-"; past
+ * 200 characters, cut there, with "-" and the path's hash (Java's String.hashCode, in base 36). The path in NFC
+ * first, as it takes its cwd: a folder named with a decomposed "é" is the composed one's.
+ */
+export function claudePathSlug(raw: string): string {
+    const path = raw.normalize("NFC");
+    const slug = path.replace(/[^a-zA-Z0-9]/g, "-");
+    if (slug.length <= 200) return slug;
+    let h = 0;
+    for (let i = 0; i < path.length; i++) h = ((h << 5) - h + path.charCodeAt(i)) | 0;
+    return `${slug.slice(0, 200)}-${Math.abs(h).toString(36)}`;
+}
+
+/**
+ * The folder Claude Code writes a session's background commands' output to, worked out as 2.1.304 does (not taken from
+ * a path it names): <CLAUDE_CODE_TMPDIR, else /tmp>/claude-<uid>/<the folder's real path, as claudePathSlug>/<session>/
+ * tasks. Undefined when it can't be, or its root isn't a folder of the user's own.
+ */
+function taskOutputDir(cwd: string, sessionId: string | undefined): string | undefined {
+    const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+    if (!sessionId || !/^[A-Za-z0-9-]+$/.test(sessionId) || uid === undefined) return undefined;
+    try {
+        const root = join(realpathSync(process.env.CLAUDE_CODE_TMPDIR || "/tmp"), `claude-${uid}`);
+        const st = lstatSync(root);
+        if (!st.isDirectory() || st.uid !== uid) return undefined;
+        return join(root, claudePathSlug(realpathSync(cwd)), sessionId, "tasks");
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * Where an open file is now, as the system says (not as the path it was opened by says): macOS answers the real path of
+ * /dev/fd/N (Bun's realpath asks F_GETPATH), Linux has /proc/self/fd/N. Undefined elsewhere, or when it can't be told.
+ */
+function openedPath(fd: number): string | undefined {
+    try {
+        if (process.platform === "darwin") return realpathSync(`/dev/fd/${fd}`);
+        if (process.platform === "linux") return readlinkSync(`/proc/self/fd/${fd}`);
+    } catch {}
+    return undefined;
+}
+
+/**
+ * The end of a background command's output file, from Claude Code's task-output folder only (#430 review): undefined
+ * (the summary stands) unless the file opened is a regular file of the user's with no other name, at that very path
+ * (not a symlink, a hard link to another file, or one reached through a folder that's a link: the command can repoint
+ * its own output file or folder before it ends, and Claude Code's own reads guard against that). Opened without waiting
+ * (O_NONBLOCK), so a FIFO put there can't hold up the event loop. `partial`: its last OUTPUT_READ_BYTES only.
+ */
+export function outputTail(dir: string, taskId: string): { text: string; partial: boolean } | undefined {
+    if (!/^[A-Za-z0-9_-]+$/.test(taskId)) return undefined;
+    const path = join(dir, `${taskId}.output`);
+    const uid = process.getuid?.();
+    const plain = (st: Stats) => st.isFile() && st.nlink === 1 && st.uid === uid;
+    let fd: number | undefined;
+    try {
+        fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        const st = fstatSync(fd);
+        if (!plain(st)) return undefined;
+        // The file opened is the one at the path (no folder on the way swapped for a link while it was opened).
+        const named = lstatSync(path);
+        if (!plain(named) || named.dev !== st.dev || named.ino !== st.ino || openedPath(fd) !== path) return undefined;
+        const n = Math.min(st.size, OUTPUT_READ_BYTES);
+        const buf = Buffer.alloc(n);
+        readSync(fd, buf, 0, n, st.size - n);
+        return { text: buf.toString("utf8"), partial: n < st.size };
+    } catch {
+        return undefined;
+    } finally {
+        if (fd !== undefined) closeSync(fd);
+    }
+}
+
 /** Wake refs, unique in the harness process: a session keeps an unadopted wake across a restart of its CLI process. */
 let wakeRefs = 0;
 
@@ -138,6 +223,11 @@ interface PromptInfo {
     ref: string;
     kind: "prompt" | "steer" | "carrier";
     state: "sent" | "queued" | "started" | "done" | "cancelled";
+    /**
+     * command_lifecycle said it started: it's in Claude Code's transcript. A "cancelled" after that doesn't mean it
+     * was dropped (2.1.304 says it of a prompt whose turn was stopped: claude-2.1.304-sendnow-effort.jsonl).
+     */
+    taken?: boolean;
     /** A carrier whose turn isn't shown (CARRIER_COMMAND). */
     hidden?: boolean;
     /** The user's message, for a carrier that is one. */
@@ -173,6 +263,17 @@ export class ClaudeConnection implements CliConnection {
     sendNowCap = false;
     /** Steering messages are acknowledged by uuid (2.1.301 on): they can go mid-turn. */
     private midTurnInput = false;
+    /**
+     * A turn's system/init names the prompts it answers (user_message_uuids): 2.1.304's always does (each probe in
+     * test/fixtures/protocol), so one that names none is a turn Claude Code started by itself, never a waiting prompt's.
+     */
+    private namesPrompts = false;
+    /**
+     * Claude Code said, as it resumed, what an earlier process left behind (#311). It takes a turn of its own for each
+     * report at once, before any prompt's, with no model call (2.1.304: test/fixtures/protocol/claude-311-c2-resume.jsonl,
+     * #429). Those turns are hidden (the notice said it), until a turn of ours starts.
+     */
+    private leftBehind = false;
     private initialized?: Promise<void>;
     private ended = false;
     private controls = new Map<string, (r: Record<string, any> | undefined) => void>();
@@ -185,6 +286,11 @@ export class ClaudeConnection implements CliConnection {
     private stopping = new Set<string>();
     /** Prompts Esc withdrew before Claude Code started them: stopped if it starts one anyway. */
     private withdrawn = new Set<string>();
+    /**
+     * Harness turns Esc stopped after Claude Code took their prompt, before its system/init (#424): stopped as that
+     * comes (startTurn), with the message to send in its place (sendNow), if any.
+     */
+    private stopOnStart = new Map<string, string | undefined>();
     private cur?: CliTurn;
     /** The prompt command_lifecycle said started, before its system/init. */
     private startedUuid?: string;
@@ -219,6 +325,8 @@ export class ClaudeConnection implements CliConnection {
     private tools = new Map<string, PendingTool>();
     private streamingTools = new Map<number, string>();
     private agentLabels = new Map<string, string>();
+    /** Bash calls' commands, by call: a background one's task says its description, and its command goes with it. */
+    private bashCommands = new Map<string, string>();
     private liveAgents = new Set<string>();
     private endedAgents = new Map<string, TurnEndReason>();
     private subTools = new Map<string, PendingTool & { parent: string }>();
@@ -233,8 +341,21 @@ export class ClaudeConnection implements CliConnection {
     private tasks = new Map<string, BackgroundTaskInfo>();
     /** Task ids by the call that launched them. */
     private taskOf = new Map<string, string>();
+    /** Each sub-agent's task id, and the Agent call it runs as: the task Claude Code starts when SendMessage resumes it is that one's (#458). */
+    private agentOfTask = new Map<string, string>();
+    /** A call that resumed a sub-agent (SendMessage), or a call an earlier process started it with, and the call it runs as here. */
+    private resumedBy = new Map<string, string>();
+    /** Sub-agents this process didn't start, resumed by a SendMessage call they run as here: by task id. */
+    private strangers = new Map<string, string>();
+    /** Each background command (by task id) and the file Claude Code writes its output to, for its report (#430). */
+    private commands = new Map<string, { command?: string; file?: string }>();
     /** Tasks that left Claude Code's list without a word on how they ended. */
     private unlisted = new Map<string, ReturnType<typeof setTimeout>>();
+    /**
+     * Started to resume a session, and no turn begun yet: a task Claude Code says ended now is one an earlier process
+     * left behind (it says so of each as it resumes, before any turn). Never one of this process's own (#311).
+     */
+    private resuming: boolean;
 
     constructor(
         private proc: JsonLinesProcess,
@@ -247,8 +368,11 @@ export class ClaudeConnection implements CliConnection {
         private spending: Map<string, number>,
         /** The plan-limit statuses each account was last told of (the backend's: a new process doesn't tell them again). */
         private limitSeen: Map<string, string>,
+        /** Started with --resume (a fork too): what an earlier process left behind is said first. */
+        resumed = false,
     ) {
         this.caps = { ...def.caps, live: { model: true, effort: true, mode: "control" } };
+        this.resuming = resumed;
         this.done = this.read();
     }
 
@@ -264,6 +388,7 @@ export class ClaudeConnection implements CliConnection {
             if (r.subtype !== "success") throw new Error(`${this.def.name}: ${String(r.error ?? "initialize failed")}`);
             const res = r.response ?? {};
             this.midTurnInput = claudeVersionAtLeast(res.claude_code_version, 301);
+            this.namesPrompts = claudeVersionAtLeast(res.claude_code_version, 304);
             this.noteCapabilities(res.capabilities);
             liveDebug("claude", "initialized", { version: res.claude_code_version, sendNow: this.sendNowCap, pid: this.proc.pid });
             if (!this.midTurnInput) this.emit({ type: "notice", level: "info", message: "This Claude Code version has no verified mid-turn input acknowledgements. Queued messages will be delivered when its current turn ends." });
@@ -278,8 +403,13 @@ export class ClaudeConnection implements CliConnection {
     }
 
     async prompt(input: TurnInput): Promise<{ ref: string }> {
-        await this.attach();
-        if (this.ended) throw new Error(`${this.def.name} has exited`);
+        // Nothing is written until sendUser: a failure up to there never reached Claude Code.
+        try {
+            await this.attach();
+        } catch (e) {
+            throw new PromptRefused(e instanceof Error ? e.message : String(e));
+        }
+        if (this.ended) throw new PromptRefused(`${this.def.name} has exited`);
         const uuid = randomUUID();
         const context = this.turn().context;
         // The text goes last: Claude Code reads a /command only from the last block (what's before it goes along with it).
@@ -292,15 +422,15 @@ export class ClaudeConnection implements CliConnection {
         return { ref: uuid };
     }
 
-    /**
-     * Esc on a turn (a prompt's, or an adopted wake's). Never sent when the turn isn't the one Claude Code runs:
-     * a prompt it hasn't started is withdrawn instead; one already answered is left alone.
-     */
     /** The turn Claude Code runs is being stopped (an interrupt is under way). */
     stoppingNow(): boolean {
         return this.cur !== undefined && this.stopping.has(this.cur.ref);
     }
 
+    /**
+     * Esc on a turn (a prompt's, or an adopted wake's). Never sent when the turn isn't the one Claude Code runs:
+     * a prompt it hasn't started is withdrawn instead (unstartedPrompt); one already answered is left alone.
+     */
     async interrupt(ref: string): Promise<void> {
         this.stopping.add(ref);
         const followUp = this.followUp;
@@ -309,7 +439,10 @@ export class ClaudeConnection implements CliConnection {
             const waiting = [...this.prompts.entries()].filter(([, p]) => p.ref === ref && (p.state === "sent" || p.state === "queued"));
             liveDebug("claude", "interrupt: not running", { ref, waiting: waiting.length });
             if (!waiting.length) return;
-            // Not started yet (Claude Code is on another turn, or about to start it): withdrawn, and the turn ends here.
+            const own = waiting.find(([uuid, p]) => uuid === ref && p.kind === "prompt");
+            if (own) return this.unstartedPrompt(ref, own[1], followUp);
+            // Steering messages still to come as a turn of their own (the turn they were for has ended): withdrawn, and
+            // the turn ends here. Its prompt reached Claude Code before them.
             for (const [uuid, p] of waiting) {
                 p.state = "cancelled";
                 this.withdrawn.add(uuid);
@@ -336,6 +469,51 @@ export class ClaudeConnection implements CliConnection {
         }
         liveDebug("claude", "interrupt", { ref, agents: left.length });
         void this.control({ subtype: "interrupt" });
+    }
+
+    /**
+     * Esc on a turn whose prompt Claude Code hasn't begun a turn for (no system/init yet). Whether its session has the
+     * prompt decides how the turn ends (#424):
+     * - taken (command_lifecycle said it started, or it's too late to withdraw it: cancel_async_message answered
+     *   `cancelled: false`): it's in Claude Code's transcript, and the system/init naming its session is on its way.
+     *   The turn is stopped as that comes (startTurn) and ends with its result, as one stopped after its start does,
+     *   so its session is known and the prompt counts as delivered. Ended here instead, it would leave the prompt
+     *   in a session Harness doesn't know of, and the next prompt would bring it again as context;
+     * - dropped (`cancelled: true`, or its lifecycle said cancelled, not started: onLifecycle, at once, whenever the
+     *   answer comes): never in its transcript, so the turn ends refused (LiveTurnResult.refused), and the prompt goes
+     *   again with the next;
+     * - not known (no answer, an older Claude Code): withdrawn as before, stopped unseen if it starts after all,
+     *   and counted as delivered.
+     */
+    private async unstartedPrompt(ref: string, p: PromptInfo, followUp: string | undefined): Promise<void> {
+        this.stopOnStart.set(ref, followUp);
+        if (p.taken) {
+            liveDebug("claude", "interrupt: taken, stopping it as it starts", { ref });
+            return;
+        }
+        const r = await this.control({ subtype: "cancel_async_message", message_uuid: ref });
+        const cancelled: unknown = r?.subtype === "success" ? r.response?.cancelled : undefined;
+        liveDebug("claude", "interrupt: withdraw", { ref, cancelled, state: p.state });
+        // Its turn started meanwhile (and is being stopped), or ended (Claude Code exited, or its lifecycle said it
+        // dropped the prompt: onLifecycle).
+        if (!this.stopOnStart.has(ref) || this.cur?.ref === ref || p.state === "started" || p.state === "done") return;
+        // Taken meanwhile (started): stopped as its turn starts, whatever the answer.
+        if (p.taken) return;
+        if (cancelled === true) return this.endWithdrawn(ref, p, true);
+        if (cancelled !== false) this.endWithdrawn(ref, p, false);
+    }
+
+    /**
+     * A turn Esc withdrew the prompt of (unstartedPrompt) ends: refused when Claude Code said it dropped the prompt;
+     * otherwise (not known) delivered, and the prompt is stopped unseen if it starts after all.
+     */
+    private endWithdrawn(ref: string, p: PromptInfo, dropped: boolean) {
+        const followUp = this.stopOnStart.get(ref);
+        this.stopOnStart.delete(ref);
+        p.state = "cancelled";
+        if (!dropped) this.withdrawn.add(ref);
+        this.endTurn(ref, "aborted", undefined, undefined, dropped);
+        if (followUp) this.sendCarrier(followUp);
     }
 
     /** Send a message in place of the running turn, and ask for it at once: how Claude Code answered. */
@@ -529,10 +707,14 @@ export class ClaudeConnection implements CliConnection {
                 break;
             case "started":
                 this.startedUuid = uuid;
+                p.taken = true;
                 break;
             case "cancelled":
                 // Claude Code dropped it (the turn it waited for was stopped, or it was withdrawn).
                 if (p.state === "sent" || p.state === "queued") {
+                    // Esc withdrew the turn's own prompt (unstartedPrompt), and it never started: never in its
+                    // transcript, so refused now, whenever the withdrawal's answer comes (#435 review).
+                    if (uuid === p.ref && p.kind === "prompt" && this.stopOnStart.has(uuid) && !p.taken) return this.endWithdrawn(uuid, p, true);
                     p.state = "cancelled";
                     this.settleWaiting(p.ref);
                 }
@@ -568,7 +750,7 @@ export class ClaudeConnection implements CliConnection {
         }
         let uuids = this.ours(m);
         // An older Claude Code names none: the one command_lifecycle said started, else the oldest still waiting, unless a report is due.
-        if (!uuids.length && !Array.isArray(m.user_message_uuids)) {
+        if (!uuids.length && !Array.isArray(m.user_message_uuids) && !this.namesPrompts) {
             const started = this.startedUuid && this.prompts.has(this.startedUuid) ? this.startedUuid : undefined;
             const waiting = [...this.prompts.entries()].find(([, p]) => p.state === "sent" || p.state === "queued")?.[0];
             const pick = started ?? (this.dues.length ? undefined : waiting);
@@ -577,6 +759,13 @@ export class ClaudeConnection implements CliConnection {
         this.startedUuid = undefined;
         for (const u of uuids) this.prompts.get(u)!.state = "started";
         this.resetTurnState(m);
+        // One of Claude Code's own for what an earlier process left behind: no model call, nothing to show (#429).
+        if (uuids.length) this.leftBehind = false;
+        else if (this.leftBehind) {
+            this.cur = { ref: `left-behind-${++wakeRefs}`, kind: "hidden" };
+            liveDebug("claude", "turn: report of what was left behind (hidden)", { ref: this.cur.ref });
+            return;
+        }
         const first = uuids.length ? this.prompts.get(uuids[0]!)! : undefined;
         if (first?.kind === "carrier") {
             if (first.hidden) {
@@ -596,6 +785,13 @@ export class ClaudeConnection implements CliConnection {
             if (first.kind === "prompt") {
                 this.events({ t: "turn_started", ref, origin: "user", answers: uuids });
                 this.stillDue();
+            }
+            // Esc came after Claude Code took the prompt, before this (unstartedPrompt): stopped now, as on a running turn.
+            if (this.stopOnStart.has(ref)) {
+                this.followUp = this.stopOnStart.get(ref);
+                this.stopOnStart.delete(ref);
+                liveDebug("claude", "turn: started after Esc; stopping it", { ref });
+                void this.interrupt(ref);
             }
             return;
         }
@@ -689,8 +885,13 @@ export class ClaudeConnection implements CliConnection {
             return this.endTurn(waiting[1].ref, "error", failure ?? `${this.def.name} ended the turn with ${m.subtype}`);
         }
         const ref = turn.ref;
-        // Its own calls that never got a result are over (not a background sub-agent's launch: that ends with it).
-        for (const [id, p] of this.tools) if (!this.launched.has(id)) this.endTool(id, p, this.stopping.has(ref) ? "Interrupted by user" : `${this.def.name} stopped before this finished.`, true);
+        // Its own calls that never got a result are over (not a background sub-agent's launch: that ends with it), and a
+        // sub-agent working under one in the foreground with it: a skill's says nothing more once its turn is stopped.
+        for (const [id, p] of this.tools) {
+            if (this.launched.has(id)) continue;
+            if (this.liveAgents.has(id) && !this.backgroundAgents.has(id)) this.endAgent(id, this.stopping.has(ref) ? "aborted" : "error");
+            this.endTool(id, p, this.stopping.has(ref) ? "Interrupted by user" : `${this.def.name} stopped before this finished.`, true);
+        }
         const reason: TurnEndReason = this.stopping.has(ref) ? "aborted" : m.subtype === "error_max_turns" ? "max_turns" : m.subtype !== "success" || m.is_error ? "error" : "done";
         const answered = this.answeredBy.get(ref) ?? [];
         const pending = this.outstanding.get(ref);
@@ -715,11 +916,12 @@ export class ClaudeConnection implements CliConnection {
             liveDebug("claude", "turn: result, steering still to come", { ref, left });
             return;
         }
-        this.endTurn(ref, reason, reason === "error" ? failure : undefined, reason === "error" && this.limitHit ? { resetsAt: this.limits?.reached ? this.limits.resetsAt : undefined } : undefined);
+        this.endTurn(ref, reason, reason === "error" ? failure : undefined, reason === "error" && this.limitHit ? limitStopOf(this.limits, this.limits?.reached ? this.limits.resetsAt : undefined) : undefined);
     }
 
-    /** The harness turn is over: once only. */
-    private endTurn(ref: string, reason: TurnEndReason, error?: string, limit?: { resetsAt?: number }) {
+    /** The harness turn is over: once only. `refused`: its prompt never reached Claude Code's session (unstartedPrompt). */
+    private endTurn(ref: string, reason: TurnEndReason, error?: string, limit?: { resetsAt?: number; window?: string }, refused = false) {
+        this.stopOnStart.delete(ref);
         const answers = this.answeredBy.get(ref) ?? [ref];
         for (const id of this.outstanding.get(ref) ?? []) {
             const p = this.prompts.get(id);
@@ -731,7 +933,7 @@ export class ClaudeConnection implements CliConnection {
         this.stopping.delete(ref);
         for (const [id, p] of this.prompts) if (p.ref === ref && (p.state === "done" || p.state === "cancelled" || p.state === "started")) this.prompts.delete(id);
         liveDebug("claude", "turn: ended", { ref, reason, ...(error === undefined ? {} : { error: redact(error) }) });
-        this.events({ t: "turn_ended", ref, answers: answers.length ? answers : [ref], reason, ...(error ? { error } : {}), ...(limit ? { limit } : {}) });
+        this.events({ t: "turn_ended", ref, answers: answers.length ? answers : [ref], reason, ...(error ? { error } : {}), ...(limit ? { limit } : {}), ...(refused ? { refused } : {}) });
         this.stillDue();
     }
 
@@ -820,14 +1022,17 @@ export class ClaudeConnection implements CliConnection {
     private taskRunning(id: string, o: { type?: string; label?: string; toolUseId?: string; agent?: boolean }) {
         const was = this.tasks.get(id);
         const running = was?.status === "running" ? was : undefined;
-        const toolUseId = o.toolUseId ?? running?.toolUseId;
+        // A sub-agent's task listed again before its task_started says so (resumed, #458): its Agent call's.
+        const toolUseId = o.toolUseId ?? running?.toolUseId ?? this.agentOfTask.get(id);
         const agent = Boolean(o.agent || (toolUseId && this.agentLabels.has(toolUseId)));
+        const command = toolUseId ? this.bashCommands.get(toolUseId) : undefined;
         const task: BackgroundTaskInfo = {
             id,
             provider: this.def.id,
             kind: running && !o.type && !agent ? running.kind : taskKind(o.type ?? "", agent),
             // Redacted whole, then cut: a secret across the cut would leave a piece of itself unredacted.
             label: redact(o.label || running?.label || (toolUseId ? this.agentLabels.get(toolUseId) : undefined) || "background task").slice(0, 300),
+            ...(command ? { command: redact(command).slice(0, 2000) } : {}),
             ...(toolUseId ? { toolUseId } : {}),
             startedAt: running?.startedAt ?? Date.now(),
             status: "running",
@@ -890,6 +1095,8 @@ export class ClaudeConnection implements CliConnection {
         this.reportFastMode(m);
         switch (m.subtype) {
             case "init":
+                // A turn begins (each starts with one): from here on, what ends is this process's own.
+                this.resuming = false;
                 return this.onInit(m);
             case "background_tasks_changed": {
                 if (!Array.isArray(m.tasks)) return;
@@ -914,6 +1121,8 @@ export class ClaudeConnection implements CliConnection {
                 const toolUseId = String(m.tool_use_id ?? "");
                 const taskId = typeof m.task_id === "string" ? m.task_id : undefined;
                 if (taskId && typeof m.subagent_type === "string") this.agentTypes.set(taskId, m.subagent_type);
+                if (taskId && toolUseId && !this.agentLabels.has(toolUseId) && this.resumedAgent(taskId, toolUseId, m)) return;
+                if (taskId && this.agentLabels.has(toolUseId) && !this.agentOfTask.has(taskId)) this.agentOfTask.set(taskId, toolUseId);
                 if (m.is_backgrounded === true && this.agentLabels.has(toolUseId)) this.backgroundAgents.add(toolUseId);
                 if (taskId && toolUseId) this.taskOf.set(toolUseId, taskId);
                 if (taskId && m.is_backgrounded === true) this.taskRunning(taskId, { type: typeof m.task_type === "string" ? m.task_type : undefined, label: typeof m.description === "string" ? m.description : undefined, toolUseId: toolUseId || undefined });
@@ -931,7 +1140,7 @@ export class ClaudeConnection implements CliConnection {
                 return;
             }
             case "task_progress":
-                this.agentUsage(String(m.tool_use_id ?? ""), m.usage);
+                this.agentUsage(this.agentCall(String(m.tool_use_id ?? "")), m.usage);
                 return;
             case "task_notification":
                 return this.onTaskNotification(m);
@@ -945,7 +1154,10 @@ export class ClaudeConnection implements CliConnection {
                 this.emit({ type: "notice", level: "info", message: "Claude Code compacted its context." });
                 return;
             case "informational":
-                if (typeof m.content === "string" && m.content.trim()) this.emit({ type: "notice", level: m.level === "warning" ? "warn" : m.level === "error" ? "error" : "info", message: m.content });
+                if (typeof m.content === "string" && m.content.trim()) {
+                    const level = m.level === "warning" ? "warn" : m.level === "error" ? "error" : "info";
+                    this.emit({ type: "notice", level, message: m.content, data: cliNotice(this.def.id, level, m.content) });
+                }
                 return;
         }
     }
@@ -955,22 +1167,29 @@ export class ClaudeConnection implements CliConnection {
         const status = typeof m.status === "string" ? m.status : "";
         const summary = typeof m.summary === "string" ? m.summary.trim() : "";
         const known = taskId ? this.tasks.get(taskId) : undefined;
-        // Not every notification names the call (one for a stop may not): the task's own does.
-        const toolUseId = String(m.tool_use_id ?? known?.toolUseId ?? "");
+        // Not every notification names the call (one for a stop may not): the task's own does. A resumed sub-agent's
+        // names the SendMessage call that resumed it: it's its Agent call's (#458).
+        const toolUseId = this.agentCall(String(m.tool_use_id ?? known?.toolUseId ?? ""));
         const ended: Exclude<BackgroundTaskInfo["status"], "running"> = status === "completed" ? "done" : status === "failed" ? "failed" : "stopped";
         // Reported in a turn Claude Code starts by itself, when none runs (not for a stop: none follows that).
         const reports = Boolean(known && !this.cur && (status === "completed" || status === "failed") && m.owned_by_subagent !== true);
         if (taskId) this.taskEnded(taskId, ended);
         if (reports && known) {
-            // What it reported, for the wake (shown and told if the session can't take it over, #305).
-            const said = (typeof m.handback_report?.text === "string" ? m.handback_report.text : undefined) ?? (toolUseId ? this.lastWords.get(toolUseId) : undefined) ?? (summary || undefined);
+            // What it reported, for the wake (shown and told if the session can't take it over, #305): a command's output (#430).
+            const said = (typeof m.handback_report?.text === "string" ? m.handback_report.text : undefined) ?? (toolUseId ? this.lastWords.get(toolUseId) : undefined) ?? (known.kind === "shell" ? this.commandReport(taskId, m, summary) : undefined) ?? (summary || undefined);
             this.reportDue(known, dueLabel(known, ended), said?.trim() ? redact(said.trim()) : undefined);
             liveDebug("claude", "report due", { task: taskId, due: this.dues.length });
             this.events({ t: "task", task: this.tasks.get(taskId)!, wakeDue: true });
         } else if (taskId) this.dropDue(taskId);
+        if (taskId) this.commands.delete(taskId);
         if (!this.agentLabels.has(toolUseId)) {
-            // One an earlier process left behind (stopped with it, said when the session is resumed).
-            if (!known && summary && (status === "stopped" || status === "failed")) this.emit({ type: "notice", level: "info", message: `Claude Code: ${summary}.` });
+            // One an earlier process left behind (stopped with it), said as the session is resumed. Not a command of this
+            // process's that ended (a foreground one stopped by Esc, a sub-agent's that failed): its own row says so (#311).
+            // Claude Code then takes a turn of its own for it: this notice is all the user sees of it (#429).
+            if (this.resuming && !known && m.owned_by_subagent !== true && (status === "stopped" || status === "failed")) {
+                this.leftBehind = true;
+                if (summary) this.emit({ type: "notice", level: "info", message: `Claude Code: ${summary}.` });
+            }
             return;
         }
         const background = this.backgroundAgents.has(toolUseId);
@@ -1028,7 +1247,7 @@ export class ClaudeConnection implements CliConnection {
     private onAssistant(m: Record<string, any>) {
         const msg = m.message ?? {};
         const blocks: any[] = Array.isArray(msg.content) ? msg.content : [];
-        const parent: string | undefined = m.parent_tool_use_id ?? undefined;
+        const parent = this.parentOf(m);
         if (parent) {
             const label = this.agentLabels.get(parent) ?? "sub-agent";
             this.agentStarted(parent);
@@ -1070,6 +1289,12 @@ export class ClaudeConnection implements CliConnection {
                 const title = titleFor(name, input);
                 this.tools.set(b.id, { name, input, title, started: Date.now() });
                 if (b.name === "Agent" || b.name === "Task") this.agentLabels.set(b.id, String(input.description ?? input.subagent_type ?? "sub-agent"));
+                // A skill can run as its own agent (/code-review does): one only if its steps come (task_started, its messages).
+                if (b.name === "Skill") this.agentLabels.set(b.id, String(input.skill ?? "skill"));
+                if (b.name === "Bash" && typeof b.input?.command === "string") {
+                    this.bashCommands.set(b.id, b.input.command);
+                    if (this.bashCommands.size > 100) this.bashCommands.delete(this.bashCommands.keys().next().value!);
+                }
                 this.emit({ type: "tool_start", call: { type: "tool_call", id: b.id, name, input }, title });
             }
         }
@@ -1081,7 +1306,7 @@ export class ClaudeConnection implements CliConnection {
             this.failure = `Claude Code isn't signed in, or its sign-in expired. ${signInAdvice(this.def.id, this.cfg.accountId)}`;
         } else if (error === "rate_limit") {
             this.limitHit = true;
-            if (!this.limits?.reached) this.noteLimits({ provider: this.def.id, accountId: this.cfg.accountId ?? "default", windows: [], reached: true, at: Date.now() }, true);
+            this.noteLimits(limitStopReport(this.def.id, this.cfg.accountId ?? "default"), true);
             this.failure = this.limitFailure();
         } else if (error === "billing_error") this.failure = "Claude Code reported a billing problem with the account it's signed in to.";
         else this.failure = `Claude Code reported an error: ${error}`;
@@ -1094,6 +1319,9 @@ export class ClaudeConnection implements CliConnection {
             if (!p) continue;
             let content = resultText(b.content);
             if (p.name === "Task") {
+                // Its result names the sub-agent (agentId: its task's id), for one whose task_started didn't come.
+                const agentId = m.tool_use_result?.agentId;
+                if (typeof agentId === "string" && agentId && !this.agentOfTask.has(agentId)) this.agentOfTask.set(agentId, b.tool_use_id);
                 const background = m.tool_use_result?.status === "async_launched";
                 if (background) {
                     this.backgroundAgents.add(b.tool_use_id);
@@ -1117,13 +1345,60 @@ export class ClaudeConnection implements CliConnection {
                 else if (report) this.report(b.tool_use_id, report, true);
                 content = this.reports.get(b.tool_use_id) || content;
             }
+            // A skill that ran as its own agent: Claude Code says nothing more of it than its call's result, which ends it,
+            // with what it returned; declined while it worked, it was stopped, not failed.
+            // Ended already (Claude Code said so first): what it returned is still its report.
+            if (p.name === "Skill" && this.liveAgents.has(b.tool_use_id)) this.endAgent(b.tool_use_id, b.is_error ? (DECLINED.test(content) ? "aborted" : "error") : "done", b.is_error ? undefined : content);
+            else if (p.name === "Skill" && this.endedAgents.has(b.tool_use_id) && !b.is_error) this.report(b.tool_use_id, content, true);
+            // A command now in the background: what it runs, and the file its output goes to (its result says, as 2.1.304's does).
+            const bg = blocks.length === 1 ? m.tool_use_result?.backgroundTaskId : undefined;
+            if (typeof bg === "string" && bg) {
+                this.commands.set(bg, { command: typeof p.input.command === "string" ? p.input.command : undefined, file: /Output is being written to: (\S+?\.output)\b/.exec(content)?.[1] });
+                if (this.commands.size > 64) this.commands.delete(this.commands.keys().next().value!);
+            }
             const structured = blocks.length === 1 && !b.is_error ? resultDisplay(p, m.tool_use_result, this.cfg.cwd) : undefined;
             this.endTool(b.tool_use_id, p, content, Boolean(b.is_error), structured);
         }
     }
 
+    /**
+     * A background command's report, as Codex's says it (#430): the command, how it ended, and the end of its output,
+     * from the file Claude Code writes it to, in its task-output folder (outputTail). The file the notification (or the
+     * call that started it) names must be that one. Undefined when there's no such file to read: the summary stands.
+     */
+    private commandReport(id: string, m: Record<string, any>, summary: string): string | undefined {
+        const known = this.commands.get(id);
+        const dir = taskOutputDir(this.cfg.cwd, this.sessionId);
+        const named = (typeof m.output_file === "string" && m.output_file) || known?.file;
+        if (!dir || !named || basename(named) !== `${id}.output`) return undefined;
+        try {
+            if (realpathSync(dirname(named)) !== dir) return undefined;
+        } catch {
+            return undefined;
+        }
+        const out = outputTail(dir, id);
+        if (out === undefined) return undefined;
+        // Each redacted whole, then cut: a secret across the cut would leave a piece of itself unredacted.
+        let clean = redact(out.text);
+        if (out.partial) {
+            // Read from part way, a secret the read starts in isn't recognised: what's left of a known one (all its lines)
+            // is within the first of them as long as the longest, and of a known-format key (one line) within the first
+            // line. Kept: what the whole read redacts to after the line break past both (a secret across it left out whole).
+            const at = out.text.indexOf("\n", Math.max(0, ...knownSecrets().map((s) => s.length)));
+            if (at < 0) return undefined;
+            clean = clean.slice(redactPrefix(out.text, at + 1).length);
+        }
+        clean = clean.trimEnd();
+        const tail = clean.length > REPORT_OUTPUT_CHARS ? `…${clean.slice(-REPORT_OUTPUT_CHARS)}` : clean;
+        const command = known?.command ? redact(known.command).trim() : undefined;
+        const what = command ? `\`${command.length > 300 ? `${command.slice(0, 300)}…` : command}\`` : `"${this.tasks.get(id)?.label ?? "background command"}"`;
+        const code = /exit code (-?\d+)/.exec(summary)?.[1];
+        const ended = m.status === "failed" ? "failed" : "finished";
+        return `The background command ${what} ${ended}${code === undefined ? "" : ` with exit code ${code}`}.${tail.trim() ? ` The end of its output:\n${tail}` : " It printed nothing."}`;
+    }
+
     private onSubToolResults(m: Record<string, any>) {
-        this.agentStarted(String(m.parent_tool_use_id));
+        this.agentStarted(this.parentOf(m) ?? "");
         const blocks: any[] = (Array.isArray(m.message?.content) ? m.message.content : []).filter((b: any) => b?.type === "tool_result");
         for (const b of blocks) {
             const p = this.subTools.get(b.tool_use_id);
@@ -1181,6 +1456,54 @@ export class ClaudeConnection implements CliConnection {
         if (this.agentLabels.has(id) && !this.endedAgents.has(id)) this.liveAgents.add(id);
     }
 
+    /** The call a sub-agent runs as here, for a call that resumed it (SendMessage) or one an earlier process started it with. */
+    private agentCall(id: string): string {
+        return this.resumedBy.get(id) ?? id;
+    }
+
+    /**
+     * The sub-agent a message of a sub-agent's is from: the call it runs as here. Claude Code 2.1.304 tags a resumed
+     * one's messages with the Agent call that first started it (parent_tool_use_id) and its task id (agent_id).
+     */
+    private parentOf(m: Record<string, any>): string | undefined {
+        const raw = typeof m.parent_tool_use_id === "string" && m.parent_tool_use_id ? m.parent_tool_use_id : undefined;
+        if (!raw) return undefined;
+        const agentId = typeof m.agent_id === "string" ? m.agent_id : undefined;
+        // Started by a call an earlier process made (resumed from the session's transcript): it runs as the SendMessage call here.
+        const stranger = agentId ? this.strangers.get(agentId) : undefined;
+        if (stranger && raw !== stranger && !this.agentLabels.has(raw) && !this.subTools.has(raw) && !this.resumedBy.has(raw)) this.resumedBy.set(raw, stranger);
+        return this.agentCall(raw);
+    }
+
+    /**
+     * A sub-agent Claude Code starts again: SendMessage to one that had finished (#458). As 2.1.304 says it, its
+     * task_started has the task id it ran with before (the agent's id) and the SendMessage call's id, not its Agent
+     * call's. It's that sub-agent going on: running again, its steps and report its run's, its task its row's. One this
+     * process didn't start (it was resumed from an earlier process's transcript) runs as that SendMessage call. False:
+     * not a sub-agent resumed.
+     */
+    private resumedAgent(taskId: string, callId: string, m: Record<string, any>): boolean {
+        let agent = this.agentOfTask.get(taskId);
+        if (agent === undefined || !this.agentLabels.has(agent)) {
+            if (m.task_type !== "local_agent" || m.owned_by_subagent === true || !this.tools.has(callId)) return false;
+            agent = callId;
+            this.agentLabels.set(agent, typeof m.description === "string" && m.description.trim() ? m.description : "sub-agent");
+            this.agentOfTask.set(taskId, agent);
+            this.strangers.set(taskId, agent);
+        } else this.resumedBy.set(callId, agent);
+        const background = m.is_backgrounded === true;
+        if (!this.liveAgents.has(agent)) {
+            // What it said, reported and used before is its earlier run's; its launch's row keeps that run's result.
+            for (const kept of [this.reports, this.lastWords, this.agentTokens, this.closedLaunches, this.endedAgents]) kept.delete(agent);
+            if (background) this.backgroundAgents.add(agent);
+            else this.backgroundAgents.delete(agent);
+            this.liveAgents.add(agent);
+            this.emit({ type: "subagent", parentId: agent, label: this.agentLabels.get(agent)!, event: { type: "request_start" } });
+        }
+        if (background) this.taskRunning(taskId, { type: typeof m.task_type === "string" ? m.task_type : undefined, label: typeof m.description === "string" ? m.description : undefined, toolUseId: agent });
+        return true;
+    }
+
     private endAgent(id: string, reason: TurnEndReason, report?: string) {
         const live = this.liveAgents.delete(id);
         const was = this.endedAgents.get(id);
@@ -1222,8 +1545,10 @@ export class ClaudeConnection implements CliConnection {
             if (this.limitHit) this.failure = this.limitFailure();
             if (this.reachedNoted) return;
             this.reachedNoted = true;
-            this.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.cfg.accountId)}: ${which}usage limit reached. ${resetSentence(this.limits?.resetsAt, "Claude Code")}` });
-        } else if (news) this.emit({ type: "notice", level: "info", message: `${limitAccountLabel(this.def.id, this.cfg.accountId)}: close to the ${which}usage limit.${w?.resetsAt ? ` It resets ${resetPhrase(w.resetsAt)}.` : ""}` });
+            // On extra usage it isn't a stop: the turn goes on, and it costs.
+            const credits = creditsNote(this.limits, "extra usage");
+            this.emit({ type: "notice", level: "warn", message: `${limitAccountLabel(this.def.id, this.cfg.accountId)}: ${which}usage limit reached${credits}. ${resetSentence(this.limits?.resetsAt, "Claude Code")}`, data: { source: this.def.id, limit: limitNotice(this.def.id, this.cfg.accountId, this.limits, { window: w?.label, credits: Boolean(credits) }) } });
+        } else if (news) this.emit({ type: "notice", level: "info", message: `${limitAccountLabel(this.def.id, this.cfg.accountId)}: close to the ${which}usage limit.${w?.resetsAt ? ` It resets ${resetPhrase(w.resetsAt)}.` : ""}`, data: { source: this.def.id } });
     }
 
     // ---- control
@@ -1309,6 +1634,8 @@ export class ClaudeConnection implements CliConnection {
             const handler = this.host.hookHandler;
             if (!cb || !handler) return reply({});
             const input: Record<string, unknown> = req.input && typeof req.input === "object" ? req.input : {};
+            // Harness's browser tools run the hooks themselves, as BrowserAct and the rest: this CLI's run would be a second one.
+            if (servedBrowserTool(this.cfg.orchestrator?.name, input.tool_name)) return reply({});
             // The session's signal, not a turn's: a background sub-agent's hooks run between turns too.
             const r = await handler(cb.event, cb.hook, input, this.hookAbort.signal).catch(() => undefined);
             reply(r ? claudeCodeHookOutput(cb.event, r) : {});
@@ -1370,6 +1697,8 @@ class ClaudeCliAdapter implements AgentCliAdapter {
     /** The turn under way, or the last one (set before each). */
     current?: LiveTurnConfig;
     conn?: ClaudeConnection;
+    /** The account (claudeAccountKey) the last process was started with, kept after it ends. */
+    accountKey?: string;
 
     constructor(
         private provider: ProviderDef,
@@ -1391,13 +1720,16 @@ class ClaudeCliAdapter implements AgentCliAdapter {
         const o = { pluginDir, agentsPath, append: [cfg.appendSystemPrompt] };
         const { args } = claudeArgs(this.def.id, cfg, o);
         // Without what changes on a running process (the model, effort, mode and fast mode) and the session it resumes.
-        const fixed = claudeArgs(this.def.id, { ...cfg, model: { ...cfg.model, id: "default", effortLevels: undefined, supportsFastMode: false }, effort: undefined, mode: "default", fastMode: false, resumeId: undefined, forkSession: false }, o).args;
+        // Nor the account folders' deny rules: adding or removing an account restarts nothing (#375); a new process has them.
+        const fixed = claudeArgs(this.def.id, { ...cfg, model: { ...cfg.model, id: "default", effortLevels: undefined, supportsFastMode: false }, effort: undefined, mode: "default", fastMode: false, resumeId: undefined, forkSession: false }, { ...o, accountDenies: false }).args;
         const fingerprint = spawnFingerprint({ bin, args: fixed, cwd: cfg.cwd, env, hooks: cfg.hooks ?? null });
         return { bin, args, cwd: cfg.cwd, env, fingerprint };
     }
 
-    async connect(proc: JsonLinesProcess, events: CliEventSink, host: SessionHost): Promise<CliConnection> {
-        const conn = new ClaudeConnection(proc, events, host, this.def, () => this.current!, this.spending, this.limitSeen);
+    async connect(proc: JsonLinesProcess, events: CliEventSink, host: SessionHost, resume?: { resumeId?: string }): Promise<CliConnection> {
+        const t = this.current?.t;
+        if (t) this.accountKey = claudeAccountKey(this.def.id, t);
+        const conn = new ClaudeConnection(proc, events, host, this.def, () => this.current!, this.spending, this.limitSeen, Boolean(resume?.resumeId));
         this.conn = conn;
         liveDebug("claude", "spawned", { pid: proc.pid });
         await conn.initialize();
@@ -1410,6 +1742,15 @@ class ClaudeCliAdapter implements AgentCliAdapter {
 
     listModels(signal?: AbortSignal) {
         return this.models(signal);
+    }
+}
+
+/** The account a turn runs on, as its home's environment: another needs another process. */
+function claudeAccountKey(provider: string, t: Pick<BackendTurn, "accountId" | "cwd">): string {
+    try {
+        return spawnFingerprint({ env: accountEnv(provider, t.accountId, t.cwd) });
+    } catch {
+        return `${t.accountId ?? "default"}?`;
     }
 }
 
@@ -1460,8 +1801,6 @@ export class ClaudeLive {
     /** The host each session's last turn bound: wakes and session events go to it. */
     private hosts = new Map<string, SessionHost>();
     private bound = new Set<LiveCliSession>();
-    private accountWatches = new Map<string, () => void>();
-    private accountChanged = new Set<string>();
 
     constructor(
         private provider: ProviderDef,
@@ -1492,6 +1831,25 @@ export class ClaudeLive {
             liveDebug("claude", "session changed: releasing", { key, was: live.sessionId, now: t.resumeId, tasks });
             await this.release(key);
             if (tasks) t.sink.emit({ type: "notice", level: "warn", message: `Claude Code's earlier session was let go: ${plural(tasks, "background task")} stopped with it.` });
+            live = this.pool.session(key, this.provider.id);
+        }
+        // The same CLI session on another account (one sharing its history, #377): never on the process signed in as
+        // the one it was switched from, even with background work running (which a restart would otherwise wait for).
+        // Let go, not restarted: a fresh one resumes it, and says so if the new account's CLI can't (resumeFailed).
+        const was = this.adapter(key)?.accountKey;
+        const otherAccount = was !== undefined && was !== claudeAccountKey(this.provider.id, t);
+        // A turn the earlier account's process started by itself is never taken over under another account's session
+        // (the switch lets that process go: Runtime.setAccount). Refused before anything is bound or drained, so a
+        // message waiting to be steered into it goes with the next turn instead, on the new account.
+        if (t.adopt && otherAccount) {
+            liveDebug("claude", "wake from another account's process: not taken", { key, ref: t.adopt });
+            return { reason: "error", text: "", actions: [], error: "Claude Code's turn ran on the account this session switched from, so it isn't taken over." };
+        }
+        if (!t.adopt && otherAccount) {
+            const tasks = live.tasks.running().length;
+            liveDebug("claude", "account changed: releasing", { key, id: live.sessionId, tasks });
+            await this.release(key);
+            if (tasks) t.sink.emit({ type: "notice", level: "warn", message: `Claude Code was restarted for the account change: ${plural(tasks, "background task")} stopped.` });
             live = this.pool.session(key, this.provider.id);
         }
         // A copy of this session was forked off (/fork): its CLI session is to be forked, not continued in place (the
@@ -1535,7 +1893,6 @@ export class ClaudeLive {
                 ];
             },
         };
-        this.watchAccount(key, live);
         let r: LiveTurnResult;
         if (t.adopt) {
             live.bind(t.session);
@@ -1545,15 +1902,14 @@ export class ClaudeLive {
         }
         if (adapter.current?.t === t) adapter.current = { t };
         liveDebug("claude", "turn result", { key, ref: r.ref, reason: r.reason, unanswered: r.unanswered, deferred: r.deferred });
-        if (this.accountChanged.delete(key) && r.reason !== "done") r = { ...r, reason: "error", error: "Account folders changed while Claude Code was running. Send again to apply their updated protections." };
         if (r.unanswered) t.sink.emit({ type: "notice", level: "warn", message: "Claude Code didn't answer the stop in time. The turn ended here; its process is kept, with what it runs in the background. If it stays busy, restart it with /tasks restart (that stops its background work)." });
         if (r.deferred) t.sink.emit({ type: "notice", level: "info", message: `New Claude Code settings apply once its background work ends (${plural(r.deferred.tasks, "task")} running). /tasks restart applies them now, stopping it.` });
         const out = rec.take();
         const error = r.error;
         const resumeFailed = Boolean(t.resumeId && !t.adopt && r.reason === "error" && !live.sessionId && /no conversation found|session.{0,40}(not found|doesn't exist|does not exist)/i.test(error ?? ""));
-        if (r.reason === "error") return { ...out, reason: "error", error: resumeFailed ? `Couldn't resume the Claude Code session: ${error}` : (error ?? "Claude Code stopped with an error."), resumeFailed, ...(r.limit ? { limit: r.limit } : {}) };
+        if (r.reason === "error") return { ...out, reason: "error", error: resumeFailed ? `Couldn't resume the Claude Code session: ${error}` : (error ?? "Claude Code stopped with an error."), resumeFailed, ...(r.limit ? { limit: r.limit } : {}), ...(r.refused && !t.adopt ? { refused: true } : {}) };
         if (r.reason === "done" && !rec.any && !t.adopt && !t.prompt.trimStart().startsWith("/")) t.sink.emit({ type: "notice", level: "warn", message: "Claude Code ended the turn without a reply." });
-        return { ...out, reason: r.reason };
+        return { ...out, reason: r.reason, ...(r.refused && !t.adopt ? { refused: true } : {}) };
     }
 
     /** Each live session's wakes and session-level events, to the host its last turn bound. */
@@ -1568,28 +1924,11 @@ export class ClaudeLive {
         live.onEvent((e: CliEvent) => {
             const host = this.hosts.get(key);
             if (!host) return;
-            // The process's own account: a turn on another can run on it while its background work holds a restart back.
+            // The process's own account: after a switch, what it still reports is that account's (the next turn replaces it).
             if (e.t === "task") host.emitSession?.({ type: "background_task", task: e.task, accountId: live.account });
             else if (e.t === "turn_event") host.emitSession?.({ type: "event", event: e.event });
             else if (e.t === "limits") host.limits?.(e.limits, e.partial);
         });
-    }
-
-    /** Account folders changed: the process goes (its protections are spawn arguments), mid-turn too. */
-    private watchAccount(key: string, live: LiveCliSession) {
-        if (this.accountWatches.has(key)) return;
-        this.accountWatches.set(
-            key,
-            watchAccountFolders(() => {
-                this.accountWatches.delete(key);
-                if (live.state === "dead") return;
-                if (live.state === "busy") this.accountChanged.add(key);
-                const tasks = live.tasks.running().length;
-                liveDebug("claude", "account folders changed: restarting", { key, tasks });
-                if (tasks) this.hosts.get(key)?.emitSession?.({ type: "notice", level: "warn", message: `Account folders changed: Claude Code was restarted to apply their protections, and ${plural(tasks, "background task")} stopped with it.` });
-                void live.restart();
-            }),
-        );
     }
 
     async stopBackground(key: string, ids?: string[]): Promise<Record<string, BackgroundStop>> {
@@ -1631,8 +1970,6 @@ export class ClaudeLive {
 
     async release(key: string): Promise<void> {
         liveDebug("claude", "release", { key, tasks: this.get(key)?.tasks.running().length ?? 0 });
-        this.accountWatches.get(key)?.();
-        this.accountWatches.delete(key);
         const live = this.get(key);
         // Its host still hears what stops with it (its background tasks, stopped with the process).
         await this.pool.release(key, this.provider.id);
@@ -1641,8 +1978,6 @@ export class ClaudeLive {
     }
 
     async shutdown(): Promise<void> {
-        for (const stop of this.accountWatches.values()) stop();
-        this.accountWatches.clear();
         await this.pool.shutdownAll();
     }
 }

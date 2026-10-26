@@ -1,5 +1,6 @@
-// The branch the review pane's Branch view compares with: a short,
-// searchable list of local and remote branches, most recently changed first.
+// The branch the review pane's Branch view compares with: "vs <base>" in the
+// reader's toolbar, opening a short, searchable list of local and remote
+// branches, most recently changed first.
 
 import { createEffect, createMemo, createSignal, For, on, Show } from "solid-js";
 import { Check, ChevronDown, Search } from "lucide-solid";
@@ -54,11 +55,13 @@ export function BasePicker(p: { value?: string; current?: string; bases: string[
     };
     return (
         <>
-            <button ref={anchor} class="strip-ctl base-ctl mono" title="Compare with another branch" aria-haspopup="dialog" aria-expanded={open()} onClick={() => setOpen(!open())}>
-                <span class="truncate">{p.value ?? "Pick a base"}</span>
-                <ChevronDown size={12} class="chv" />
+            <button ref={anchor} class="tb base" title={p.value ? `Compared with ${p.value}. Compare with another branch` : "Compare with another branch"} aria-haspopup="dialog" aria-expanded={open()} onClick={() => setOpen(!open())}>
+                <Show when={p.value} fallback={<span class="lbl">Pick a base</span>}>
+                    vs <span class="mono lbl">{p.value}</span>
+                </Show>
+                <ChevronDown size={12} class="chev" />
             </button>
-            <Popover open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="bottom" align="end" width={300} maxHeight={360}>
+            <Popover open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="bottom" align="start" width={300} maxHeight={360}>
                 <div role="dialog" aria-label="Choose a base branch" onKeyDown={onKey}>
                     <div class="mp-search">
                         <Search size={14} />

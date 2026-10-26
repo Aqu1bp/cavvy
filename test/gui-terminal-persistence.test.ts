@@ -119,6 +119,7 @@ import * as solid from "../gui/node_modules/solid-js/dist/solid.js";
 import { EarlyInput, terminalInputChunks } from "../gui/src/lib/terminal";
 import { RpcError } from "../gui/src/lib/rpc";
 import { frameDrag } from "../gui/src/lib/drag";
+import { terminalFontSize } from "../gui/src/lib/text-size";
 import { fakeFrames } from "./helpers/frames";
 
 function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string; saved?: SavedTabs; script?: SavedTabs["tabs"][number]["script"]; fresh?: boolean; login?: { provider: string; accountId: string; name: string }; cwd?: string; terminalKey?: (e: KeyboardEvent) => string; setPrefs?: (key: string, value: unknown) => void; setTerminalDrag?: (h: number | undefined) => void; frames?: ReturnType<typeof fakeFrames>; visible?: boolean; panelHold?: () => unknown } = {}) {
@@ -173,7 +174,7 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
     const deps = {
         renderer, ...solid, rpc, app: { get conn() { return conn(); } }, RpcError, EarlyInput, TerminalClosures, terminalInputChunks, isTerminalReply,
         loadTabs: () => opts.saved ?? { tabs: [], next: 1, open: false }, restoreTabs, saveTabs: (value: SavedTabs) => saved.push(value),
-        terminalOpen: panelOpen, setTerminalOpen: setPanelOpen, terminalActions: {}, prefs: { terminalHeight: 200 }, setPrefs: opts.setPrefs ?? (() => {}),
+        terminalOpen: panelOpen, setTerminalOpen: setPanelOpen, terminalActions: {}, prefs: { terminalHeight: 200, fontSize: 14 }, terminalFontSize, setPrefs: opts.setPrefs ?? (() => {}),
         setTerminalDrag: opts.setTerminalDrag ?? (() => {}), frameDrag: (o: Parameters<typeof frameDrag>[0]) => frameDrag({ ...o, frames: opts.frames ?? fakeFrames() }),
         basename: (v: string) => v, tildify: (v: string) => v, withShortcut: (label: string) => label, terminalKey: opts.terminalKey ?? (() => "shell"), toast() {}, reportError() {}, refreshProviders() {}, setSettingsTab() {}, setupObscured: () => false, trustRequest: () => undefined,
         Play: noop, Plus: noop, RotateCw: noop, TerminalIcon: noop, X: noop, ChevronDown: noop, Maximize2: noop, Minimize2: noop,

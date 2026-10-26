@@ -42,10 +42,10 @@ test("shortPrompt: one line of under 60 characters", () => {
 test("the bubble's styles: at the right, as wide as its text, its actions over the gap and shown by opacity alone", () => {
     const t = css("transcript.css");
     expect(decl(t, ".user-row", "align-self")).toBe("flex-end");
-    expect(decl(t, ".user-row", "max-width")).toBe("min(82%, 600px)");
+    expect(decl(t, ".user-row", "max-width")).toBe("min(82%, 600 * var(--sp))");
     expect(decl(t, ".user-row", "position")).toBe("relative");
-    expect(decl(t, ".user-row > .user-bubble", "border-radius")).toBe("20px 20px 6px 20px");
-    expect(decl(t, ".user-row > .user-bubble.short", "border-radius")).toBe("18px 18px 6px 18px");
+    expect(decl(t, ".user-row > .user-bubble", "border-radius")).toBe("calc(20 * var(--sp)) calc(20 * var(--sp)) calc(6 * var(--sp)) calc(20 * var(--sp))");
+    expect(decl(t, ".user-row > .user-bubble.short", "border-radius")).toBe("calc(18 * var(--sp)) calc(18 * var(--sp)) calc(6 * var(--sp)) calc(18 * var(--sp))");
     expect(decl(t, ".user-bubble", "background")).toBe("var(--bubble)");
     // Absolutely placed under the bubble: showing them moves nothing.
     expect(decl(t, ".user-actions", "position")).toBe("absolute");
@@ -55,7 +55,7 @@ test("the bubble's styles: at the right, as wide as its text, its actions over t
     expect(decl(t, ".user-row:hover .user-actions", "opacity")).toBe("1");
     expect(decl(t, ".user-actions:focus-within", "opacity")).toBe("1");
     // Its margin is the gap they're laid over.
-    expect(decl(t, ".user-row", "margin-bottom")).toBe("22px");
+    expect(decl(t, ".user-row", "margin-bottom")).toBe("calc(22 * var(--sp))");
 });
 
 test("--bubble is a token in both themes", () => {

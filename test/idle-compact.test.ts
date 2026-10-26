@@ -21,6 +21,7 @@ const { PermissionChecker } = await import("../src/permissions/checker");
 const { Engine } = await import("../src/server/engine");
 const { createDemoProject } = await import("../scripts/demo-project");
 const { App } = await import("../src/ui/app");
+const { addAccount } = await import("../src/providers/accounts");
 const { stripAnsi } = await import("../src/ui/ansi");
 
 // Every request reads as 400 tokens per character: a few hundred characters make a 100K+ context.
@@ -377,6 +378,15 @@ describe("the agent's cache", () => {
         await run("review everything");
         expect(agent.idleCompactPlan()).not.toBeNull();
         agent.setModel({ provider: "anthropic", id: "claude-sonnet-5-5", contextWindow: 1_000_000 }, agent.client);
+        expect(agent.idleCompactPlan()).toBeNull();
+    });
+
+    test("switching accounts forgets the cache only for the provider it's on (#421)", async () => {
+        const { agent, run } = setup({ provider: "claude-code", usage: { ...big, cacheWrite1hTokens: 240_000 } });
+        await run("review everything");
+        expect(agent.accountChanged("codex")).toBe(false);
+        expect(agent.idleCompactPlan()).not.toBeNull();
+        expect(agent.accountChanged("claude-code")).toBe(true);
         expect(agent.idleCompactPlan()).toBeNull();
     });
 
@@ -764,7 +774,7 @@ describe("the TUI", () => {
     const big = { inputTokens: 3, outputTokens: 50, cacheWriteTokens: 240_000 };
     const isCompaction = (req: any) => JSON.stringify(req.messages.at(-1)).includes("write a detailed summary of the conversation");
 
-    function testApp(o: { hold?: boolean } = {}) {
+    function testApp(o: { hold?: boolean; model?: Record<string, unknown>; usage?: Usage } = {}) {
         const app = new App({ cwd: tempDir("idle-tui-"), trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
         const printed: string[] = [];
         const print = (l: string | string[] | ((cols: number) => string[])) => (printed.push(...(typeof l === "function" ? l(100) : Array.isArray(l) ? l : [l])), {});
@@ -772,12 +782,12 @@ describe("the TUI", () => {
         (app as any).renderLive = () => {};
         app.session = Session.create(app.cwd, { persist: false });
         const requests: any[] = [];
-        app.model = { provider: "anthropic", id: "claude-opus-5-5", name: "Claude Opus 5.5", contextWindow: 1_000_000 } as any;
+        app.model = (o.model ?? { provider: "anthropic", id: "claude-opus-5-5", name: "Claude Opus 5.5", contextWindow: 1_000_000 }) as any;
         app.client = {
             stream: async (req: any) => {
                 requests.push(req);
                 if (o.hold && isCompaction(req)) await new Promise((_, reject) => req.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
-                return { role: "assistant", provider: "anthropic", model: "claude-opus-5-5", stopReason: "end_turn", content: [{ type: "text", text: isCompaction(req) ? "Summary of the review" : "ok" }], usage: big } as AssistantMessage;
+                return { role: "assistant", provider: "anthropic", model: "claude-opus-5-5", stopReason: "end_turn", content: [{ type: "text", text: isCompaction(req) ? "Summary of the review" : "ok" }], usage: o.usage ?? big } as AssistantMessage;
             },
             listModels: async () => [],
         } as any;
@@ -906,5 +916,38 @@ describe("the TUI", () => {
         await Bun.sleep(20);
         expect(requests.length).toBe(n);
         expect(app.busy).toBe(false);
+    });
+
+    // Claude Code on a subscription, with its one-hour cache (#421).
+    const onClaudeCode = () => testApp({ model: { provider: "claude-code", id: "default", name: "Claude Code", contextWindow: 1_000_000 }, usage: { ...big, cacheWrite1hTokens: 240_000 } });
+
+    test("an account switch for the CLI it's on: the compaction planned on the earlier account's cache doesn't run, and the next turn plans its own", async () => {
+        const { app, requests } = onClaudeCode();
+        const work = addAccount("claude-code", { id: "idle-421", name: "Work" });
+        await app.startTurn("review everything");
+        const due = (app as any).idleCompact.due as number;
+        expect(due).toBeDefined();
+        await app.setAccount("claude-code", work.id);
+        expect((app as any).idleCompact.due).toBeUndefined();
+        expect(app.agent!.idleCompactPlan(due)).toBeNull();
+        const n = requests.length;
+        (app as any).idleCompact.clock = { ...(app as any).idleCompact.clock, now: () => due };
+        (app as any).idleCompact.fire();
+        await Bun.sleep(20);
+        expect(requests.length).toBe(n);
+        (app as any).idleCompact.clock = { ...(app as any).idleCompact.clock, now: () => Date.now() };
+        await app.startTurn("go on");
+        expect((app as any).idleCompact.due).toBeDefined();
+    });
+
+    test("an account switch for another CLI (Codex's, on Claude Code) leaves the planned compaction as it was", async () => {
+        const { app } = onClaudeCode();
+        const codex = addAccount("codex", { id: "idle-421-cx", name: "Work" });
+        await app.startTurn("review everything");
+        const due = (app as any).idleCompact.due as number;
+        expect(due).toBeDefined();
+        await app.setAccount("codex", codex.id);
+        expect((app as any).idleCompact.due).toBe(due);
+        expect(app.agent!.idleCompactPlan(due)).not.toBeNull();
     });
 });
