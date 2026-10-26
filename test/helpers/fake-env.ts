@@ -18,7 +18,7 @@ export function fakeEnvFile(dir: string): { path: string; write(): void } {
     };
 }
 
-/** Stop every live Codex app-server (as Harness quitting does): the next turn starts one that resumes its thread. */
+/** Stop every live Codex app-server (as Cavvy quitting does): the next turn starts one that resumes its thread. */
 export async function stopLiveCodex(): Promise<void> {
     await (await import("../../src/backends/codex-live")).shutdownCodexLive();
 }

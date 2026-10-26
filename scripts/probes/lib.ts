@@ -1,4 +1,4 @@
-// Shared helpers for the protocol probes (#219 PR 0). Standalone: no Harness imports, so a probe
+// Shared helpers for the protocol probes (#219 PR 0). Standalone: no Cavvy imports, so a probe
 // exercises the CLIs exactly as a bare client would. Every frame in and out is logged to a JSONL file:
 //   {"t": ms since start, "dir": "in"|"out"|"err"|"note", "frame": <parsed json | string>}
 // "in" is what the CLI wrote to us, "out" is what we wrote to it.

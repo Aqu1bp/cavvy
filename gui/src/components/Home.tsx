@@ -197,7 +197,7 @@ export function Home() {
                             <p>
                                 <b>{basename(app.homeCwd ?? "")}</b> has settings (
                                 <For each={needsTrust()}>{(f, i) => <>{i() ? ", " : ""}<code>{f}</code></>}</For>
-                                ) that can add hooks, MCP servers and permission rules: they can run commands on this computer. Until you trust it, Harness ignores them.
+                                ) that can add hooks, MCP servers and permission rules: they can run commands on this computer. Until you trust it, Cavvy ignores them.
                             </p>
                             <div class="ask-row">
                                 <button class="pbtn" onClick={async () => { await trustAndContinue(app.homeCwd!, false); void refetch(); }}>

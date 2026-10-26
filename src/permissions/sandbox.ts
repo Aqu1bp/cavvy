@@ -1,6 +1,6 @@
 // Shell sandbox for auto mode. A sandboxed command can write only inside the
 // workspace and the temp directories (never git hooks or git config, the
-// harness's own config, or the agent CLIs' .claude/ and .codex/, except for
+// Cavvy's own config, or the agent CLIs' .claude/ and .codex/, except for
 // Claude Code's worktrees in .claude/worktrees/), can't read credential files,
 // has no network beyond localhost, can't signal processes outside the
 // sandbox, and can't reach the usual ways out of one: opening apps, Apple
@@ -38,7 +38,7 @@ export interface SandboxPolicy {
     /** Git directories: their hooks and config stay read-only, submodules' and worktrees' included. */
     gitDirs: string[];
     /**
-     * Paths whose files can't be read but can be listed (names, sizes, dates): the harness
+     * Paths whose files can't be read but can be listed (names, sizes, dates): Cavvy
      * home, where settings and session logs may hold secrets. bubblewrap hides them whole.
      */
     contentsUnreadable?: string[];
@@ -63,7 +63,7 @@ export function sandboxKind(): SandboxKind | undefined {
     return detected ?? undefined;
 }
 
-/** Seatbelt can't be applied inside another sandbox (the harness itself running sandboxed). */
+/** Seatbelt can't be applied inside another sandbox (Cavvy itself running sandboxed). */
 function seatbeltWorks(): boolean {
     try {
         return Bun.spawnSync([SEATBELT, "-p", "(version 1)(allow default)", "/usr/bin/true"], { stdout: "ignore", stderr: "ignore", timeout: 5000 }).exitCode === 0;
@@ -134,11 +134,11 @@ const UNREADABLE_IN_HOME = [
     ".gem/credentials", ".terraform.d/credentials.tfrc.json", ".password-store", ".local/share/keyrings", "Library/Keychains",
 ];
 
-/** A project's own config: the harness's, and the agent CLIs' (hooks, skills, MCP servers, permissions). */
-const PROJECT_CONFIG = [".harness", ".mcp.json"];
+/** A project's own config: Cavvy's, and the agent CLIs' (hooks, skills, MCP servers, permissions). */
+const PROJECT_CONFIG = [".cavvy", ".mcp.json"];
 const CLI_CONFIG = [".claude", ".codex"];
 /** Names checker.ts doesn't take for a worktree (see withoutWorktrees there). */
-const CONFIG_NAMES = new Set([".harness", ".claude", ".codex", ".git", ".mcp.json"]);
+const CONFIG_NAMES = new Set([".cavvy", ".claude", ".codex", ".git", ".mcp.json"]);
 
 /** A path as written and, if a symlink leads elsewhere, where it leads: a rule on one alone can be sidestepped through the other. */
 function bothForms(p: string): string[] {
@@ -176,30 +176,30 @@ function linkedFile(p: string): string[] {
 }
 
 /** What a sandboxed command may touch, for these workspace roots. */
-export function sandboxPolicy(roots: string[], opts: { home?: string; harnessHome: string }): SandboxPolicy {
+export function sandboxPolicy(roots: string[], opts: { home?: string; cavvyHome: string }): SandboxPolicy {
     const home = real(opts.home ?? homedir());
     const ws = [...new Set(roots.map(real))];
     // Listed even before a repo exists, so a new one can't get hooks planted either.
     const git = [...new Set([...ws.map((w) => join(w, ".git")), ...ws.flatMap(gitDirs)])];
     const temp = [...new Set([process.platform === "darwin" ? "/private/tmp" : "/tmp", real(tmpdir())])];
-    const harness = real(opts.harnessHome);
+    const cavvy = real(opts.cavvyHome);
     // Resolve afresh so newly added accounts are protected in running sessions.
     const allAccounts = [...new Set(accountProtectedPaths().map(canonical))];
-    const accounts = allAccounts.filter((a) => !isWithin(a, harness));
+    const accounts = allAccounts.filter((a) => !isWithin(a, cavvy));
     const worktrees = [...new Set(ws.flatMap(claudeWorktrees))];
     // The secrets and accounts/ (registered or not) can't even be listed; the rest of the
     // home can, but not read: settings and session logs may hold secrets too.
-    const secrets = [basename(paths.credentialsFile()), basename(paths.mcpOAuth()), basename(paths.providers()), "accounts"].flatMap((f) => bothForms(join(harness, f)));
+    const secrets = [basename(paths.credentialsFile()), basename(paths.mcpOAuth()), basename(paths.providers()), "accounts"].flatMap((f) => bothForms(join(cavvy, f)));
     // Seatbelt matches where a path leads: a settings.json symlinked out of the home is covered where it points.
-    const settings = linkedFile(join(harness, basename(paths.userSettings())));
+    const settings = linkedFile(join(cavvy, basename(paths.userSettings())));
     return {
         writable: [...new Set([...ws, ...git.filter((g) => !ws.some((w) => isWithin(g, w))), ...temp])],
         // A worktree's own config and its .git pointer stay read-only, as in the project around it.
-        readOnly: [...new Set([...ws.flatMap((w) => PROJECT_CONFIG.flatMap((c) => bothForms(join(w, c)))), ...worktrees.flatMap((t) => [...PROJECT_CONFIG, ...CLI_CONFIG, ".git"].flatMap((c) => bothForms(join(t, c)))), harness, ...accounts])],
+        readOnly: [...new Set([...ws.flatMap((w) => PROJECT_CONFIG.flatMap((c) => bothForms(join(w, c)))), ...worktrees.flatMap((t) => [...PROJECT_CONFIG, ...CLI_CONFIG, ".git"].flatMap((c) => bothForms(join(t, c)))), cavvy, ...accounts])],
         cliConfig: [...new Set(ws.flatMap((w) => CLI_CONFIG.flatMap((c) => bothForms(join(w, c)))))],
         worktrees,
         unreadable: [...new Set([...UNREADABLE_IN_HOME.map((p) => join(home, p)), ...secrets, ...allAccounts])],
-        contentsUnreadable: [...new Set([harness, ...settings].filter((x, i) => i === 0 || !isWithin(x, harness)))],
+        contentsUnreadable: [...new Set([cavvy, ...settings].filter((x, i) => i === 0 || !isWithin(x, cavvy)))],
         gitDirs: git,
     };
 }
@@ -347,7 +347,7 @@ function hostSocketDirs(): string[] {
  * bound read-write, read-only and unreadable paths layered on top, network,
  * process and IPC namespaces of its own (only loopback inside), and host
  * sockets hidden. bwrap can only cover paths that exist when the command
- * starts, so a `.harness` or `.mcp.json` that doesn't exist yet can be
+ * starts, so a `.cavvy` or `.mcp.json` that doesn't exist yet can be
  * created; that's one reason it's off unless turned on (sandboxEnabled).
  */
 export function bwrapArgs(p: SandboxPolicy): string[] {
@@ -514,7 +514,7 @@ function hasLocalBin(dir: string, name: string): boolean {
  * versions already downloaded are.
  */
 export function sandboxCacheEnv(network = false): Record<string, string> {
-    const dir = join(real(tmpdir()), "harness-sandbox-cache");
+    const dir = join(real(tmpdir()), "cavvy-sandbox-cache");
     const env: Record<string, string> = { npm_config_cache: join(dir, "npm"), BUN_INSTALL_CACHE_DIR: join(dir, "bun"), UV_CACHE_DIR: join(dir, "uv"), PIP_CACHE_DIR: join(dir, "pip") };
     if (network) env.COREPACK_HOME = join(dir, "corepack");
     return env;

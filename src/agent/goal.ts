@@ -584,7 +584,7 @@ function clip(s: string, n: number): string {
     return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 }
 
-/** A turn did something: a tool call (the harness's own), or a CLI backend's actions note. */
+/** A turn did something: a tool call (Cavvy's own), or a CLI backend's actions note. */
 export function usedTools(messages: Message[]): boolean {
     return messages.some((m) => m.role === "assistant" && m.content.some((p) => p.type === "tool_call" || (p.type === "text" && /^\[[^\]\n]{1,80} used: /.test(p.text))));
 }
@@ -668,7 +668,7 @@ function describe(m: Message): string {
     for (const p of m.content) {
         if (p.type === "tool_result") out.push(`TOOL RESULT ${p.toolName}${p.isError ? " (error)" : ""}:\n${headTail(p.content, RESULT_CHARS)}`);
         else if (p.type === "text" && p.text.trim()) {
-            // Reminders the harness adds are context for the working model, not something the user said.
+            // Reminders Cavvy adds are context for the working model, not something the user said.
             const text = p.text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
             if (text) out.push(`${m.meta?.kind === "summary" ? "SUMMARY OF EARLIER CONVERSATION" : "USER"}: ${headTail(text, 4000)}`);
         } else if (p.type === "image") out.push("[image]");

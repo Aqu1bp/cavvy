@@ -260,7 +260,7 @@ test("adding an account, or removing one a running CLI turn doesn't use, goes ah
 test("a terminal-app login holds its account against removal by a desktop server, which can't see its terminal", async () => {
     const { started, ended, signIn } = await tuiApp();
     const signing = addAccount("codex", { id: "tui-signing", name: "TUI signing" });
-    // Another Harness process's server: it has no terminals of its own.
+    // Another Cavvy process's server: it has no terminals of its own.
     const engine = new Engine({ listModels: async () => [] });
     const rpc = { subs: new Set<string>(), send() {} };
     const remove = () => engine.handle(rpc, "accounts.remove", { provider: "codex", id: signing.id, confirmedFolder: signing.folder });
@@ -278,7 +278,7 @@ test("a terminal-app login holds its account against removal by a desktop server
     }
 });
 
-/** Another Harness process on the same home (HARNESS_HOME is inherited): it takes a sign-in's or a removal's lease and holds it until its stdin closes. */
+/** Another Cavvy process on the same home (CAVVY_HOME is inherited): it takes a sign-in's or a removal's lease and holds it until its stdin closes. */
 const others = new Set<import("bun").Subprocess>();
 const endInput = (p: import("bun").Subprocess) => { try { (p.stdin as import("bun").FileSink).end(); } catch {} };
 // Whatever a test's assertions did: each other process ends (its stdin's end releases what it holds; one that
@@ -306,7 +306,7 @@ async function otherProcess(code: string) {
 const holding = (hold: "holdLogin" | "holdRemoval", provider: string, id: string) =>
     otherProcess(`const release = a.${hold}(${JSON.stringify(provider)}, ${JSON.stringify(id)}); console.log("held"); await Bun.stdin.text(); release();`);
 
-test("a sign-in under way in another Harness process holds removal, with others holding too, until each ends; a dead one doesn't", async () => {
+test("a sign-in under way in another Cavvy process holds removal, with others holding too, until each ends; a dead one doesn't", async () => {
     const { holdLogin } = await import("../src/providers/accounts");
     const released = addAccount("codex", { id: "other-process", name: "Other process" });
     const crashed = addAccount("codex", { id: "crashed-process", name: "Crashed process" });
@@ -337,7 +337,7 @@ test("a sign-in under way in another Harness process holds removal, with others 
     }
 });
 
-test("a removal under way in another Harness process stops a sign-in from starting, in the terminal app and the desktop's terminal; a finished one leaves nothing to sign in to", async () => {
+test("a removal under way in another Cavvy process stops a sign-in from starting, in the terminal app and the desktop's terminal; a finished one leaves nothing to sign in to", async () => {
     const { started, signIn } = await tuiApp();
     const target = addAccount("codex", { id: "being-removed", name: "Being removed" });
     const engine = new Engine({ listModels: async () => [] });

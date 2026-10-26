@@ -1,4 +1,4 @@
-// "Open in editor": a fixed list of editors Harness knows, how to find each one
+// "Open in editor": a fixed list of editors Cavvy knows, how to find each one
 // on this machine, and the argv that opens a file at a line in it.
 //
 // Trust: the GUI names an editor only by its id from this list, and the paths
@@ -214,7 +214,7 @@ export function editorArgv(f: FoundEditor, t: OpenTarget): string[] {
     if (!f.app) throw new RpcError(`${def.name} isn't installed`, "not_installed");
     // JetBrains' documented macOS launcher: the path is an argument to the IDE.
     if (def.style === "jetbrains") return ["open", "-na", f.app, "--args", ...jb, t.path];
-    if (launchable(t.path)) throw new RpcError(`Harness doesn't hand ${basename(t.path)} to macOS to open: it could run`, "refused");
+    if (launchable(t.path)) throw new RpcError(`Cavvy doesn't hand ${basename(t.path)} to macOS to open: it could run`, "refused");
     return ["open", "-a", f.app, t.path];
 }
 

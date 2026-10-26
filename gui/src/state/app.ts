@@ -223,8 +223,8 @@ export interface AppState {
     update?: AppUpdateInfo;
 }
 
-const SEEN_KEY = "harness.seen";
-const NAVIGATION_KEY = "harness.navigation";
+const SEEN_KEY = "cavvy.seen";
+const NAVIGATION_KEY = "cavvy.navigation";
 
 /** Per webview/tab, separate from device-wide preferences and auth links. */
 function loadNavigation(): Pick<AppState, "activeId" | "homeCwd"> {
@@ -411,7 +411,7 @@ export async function openSession(id: string): Promise<SessionHandle> {
     return adopt(snap);
 }
 
-/** A Claude Code or Codex session of this folder, as a Harness session (a new one, or the one that already holds it). */
+/** A Claude Code or Codex session of this folder, as a Cavvy session (a new one, or the one that already holds it). */
 export async function importCliSession(cwd: string, source: string, id: string): Promise<SessionHandle> {
     const snap = await rpc.call("cliSessions.import", { cwd, source, id });
     return adopt(snap);

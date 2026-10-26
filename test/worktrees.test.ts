@@ -12,7 +12,7 @@ const { trustFolder } = await import("../src/config/trust");
 afterAll(() => iso.cleanup());
 
 function git(cwd: string, ...args: string[]): string {
-    const result = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Harness Test", "-c", "user.email=test@example.invalid", ...args]), { cwd, env: gitEnv(), stdout: "pipe", stderr: "pipe" });
+    const result = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Cavvy Test", "-c", "user.email=test@example.invalid", ...args]), { cwd, env: gitEnv(), stdout: "pipe", stderr: "pipe" });
     if (result.exitCode !== 0) throw new Error(result.stderr.toString());
     return result.stdout.toString().trim();
 }
@@ -72,8 +72,8 @@ describe("worktree selection", () => {
         const monitor = join(main, "fsmonitor");
         writeFileSync(monitor, `#!/bin/sh\ntouch '${sentinel}'\n`, { mode: 0o755 });
         git(main, "config", "core.fsmonitor", monitor);
-        mkdirSync(join(main, ".harness"));
-        writeFileSync(join(main, ".harness", "settings.json"), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: `touch '${sentinel}'` }] }] } }));
+        mkdirSync(join(main, ".cavvy"));
+        writeFileSync(join(main, ".cavvy", "settings.json"), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: `touch '${sentinel}'` }] }] } }));
         const engine = new Engine({ listModels: async () => [] });
         const client = { subs: new Set<string>(), send: () => {} };
         try {

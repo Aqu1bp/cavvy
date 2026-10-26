@@ -70,7 +70,7 @@ export interface HookConfig {
     input?: Record<string, unknown>;
     /** Set on hooks a plugin adds: its id (name@marketplace). */
     plugin?: string;
-    /** Set for a plugin's hooks: HARNESS_PLUGIN_ROOT and CLAUDE_PLUGIN_ROOT. */
+    /** Set for a plugin's hooks: CAVVY_PLUGIN_ROOT and CLAUDE_PLUGIN_ROOT. */
     pluginRoot?: string;
 }
 
@@ -117,7 +117,7 @@ export interface Settings {
     /** Bash tool default timeout in ms. */
     bashTimeout?: number;
     /**
-     * Read what Bash and Monitor commands print at Harness's own pace, so a command that floods its
+     * Read what Bash and Monitor commands print at Cavvy's own pace, so a command that floods its
      * output waits for it instead of stalling the server (#298; default true). False: ordinary pipes, as before.
      */
     pacedOutput?: boolean;
@@ -177,7 +177,7 @@ export interface Settings {
     enabledPlugins?: Record<string, boolean>;
     /** The GUI's "Open files with" editor, an id from src/server/editors.ts. User settings only: a project mustn't choose what gets launched. */
     editor?: string;
-    /** `harness --worktree`: the new branch's name prefix (default "harness/"), where it starts, and what happens to it on exit. */
+    /** `cavvy --worktree`: the new branch's name prefix (default "cavvy/"), where it starts, and what happens to it on exit. */
     worktree?: {
         branchPrefix?: string;
         /** head (default): the current HEAD. fresh: origin/HEAD as last fetched. */
@@ -197,7 +197,7 @@ export function browserSettings(s: Settings): { enabled: boolean; executable?: s
 export function worktreeSettings(s: Settings): { branchPrefix: string; baseRef: "head" | "fresh"; cleanup: "auto" | "ask" | "keep" } {
     const w = typeof s.worktree === "object" && s.worktree !== null ? s.worktree : {};
     return {
-        branchPrefix: typeof w.branchPrefix === "string" ? w.branchPrefix.trim() : "harness/",
+        branchPrefix: typeof w.branchPrefix === "string" ? w.branchPrefix.trim() : "cavvy/",
         baseRef: w.baseRef === "fresh" ? "fresh" : "head",
         cleanup: w.cleanup === "ask" || w.cleanup === "keep" ? w.cleanup : "auto",
     };

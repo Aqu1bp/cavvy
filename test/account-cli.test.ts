@@ -29,7 +29,7 @@ for (const [provider, fixture] of [["claude-code", "fake-claude.ts"], ["codex", 
 }
 const starts = () => readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((line) => line.argv);
 beforeEach(() => {
-    process.env.HARNESS_HOME = home;
+    process.env.CAVVY_HOME = home;
     process.env.CLAUDE_CONFIG_DIR = originalClaude;
     process.env.CODEX_HOME = originalCodex;
     for (const key of touched) delete process.env[key];
@@ -170,13 +170,13 @@ test("native CLI turns select their account and deny account folders in their ow
     const claudeArgs = starts()[0].argv;
     const settings = JSON.parse(claudeArgs[claudeArgs.indexOf("--settings") + 1]);
     for (const denied of [folder, join(realpathSync(root), "personal")]) expect(settings.permissions.deny).toContain(`Read(/${denied}/**)`);
-    // Codex takes its standard sandbox for the mode: no permission profiles of Harness's (#375).
+    // Codex takes its standard sandbox for the mode: no permission profiles of Cavvy's (#375).
     const received = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line).received).filter(Boolean);
     const thread = received.find((message) => message.method === "thread/start").params;
     const turn = received.find((message) => message.method === "turn/start").params;
     expect(thread.sandbox).toBe("workspace-write");
     expect(thread.permissions).toBeUndefined();
-    expect(JSON.stringify(thread.config ?? {})).not.toContain("harness_accounts");
+    expect(JSON.stringify(thread.config ?? {})).not.toContain("cavvy_accounts");
     expect(turn.sandboxPolicy).toBeDefined();
     expect(turn.permissions).toBeUndefined();
 });
@@ -264,7 +264,7 @@ test("a Codex that refuses the delegation config falls back without it, named ac
     const backend = createBackend(BUILTIN_PROVIDERS.find((p) => p.id === "codex")!);
     const turn = fakeTurn("codex");
     turn.liveSessions = false;
-    turn.orchestrator = { name: "harness", url: "http://127.0.0.1:1", authorization: "fake", tools: [], instructions: "fake", toolTimeoutSec: 1 };
+    turn.orchestrator = { name: "cavvy", url: "http://127.0.0.1:1", authorization: "fake", tools: [], instructions: "fake", toolTimeoutSec: 1 };
     expect((await backend.runTurn(turn)).reason).toBe("done");
     const received = readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line).received).filter(Boolean);
     expect(received.filter((message) => message.method === "thread/start")).toHaveLength(2);

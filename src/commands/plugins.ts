@@ -1,4 +1,4 @@
-// /plugin in the terminal: with arguments it runs like `harness plugin …`;
+// /plugin in the terminal: with arguments it runs like `cavvy plugin …`;
 // bare, it opens a browser over every marketplace's plugins, the installed
 // ones first, with install, enable/disable, update and uninstall per scope.
 
@@ -22,8 +22,8 @@ export const SUGGESTED_MARKETPLACE = "anthropics/claude-plugins-official";
 
 const SCOPE_TEXT: Record<SettingsScope, string> = {
     user: "for you, in every folder",
-    project: "for everyone in this project (.harness/settings.json)",
-    local: "just for you, in this project (.harness/settings.local.json)",
+    project: "for everyone in this project (.cavvy/settings.json)",
+    local: "just for you, in this project (.cavvy/settings.local.json)",
 };
 
 /** Settings, commands, skills and MCP servers read again after a change. */

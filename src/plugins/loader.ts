@@ -238,9 +238,9 @@ function parsePlugin(root: string, who: { id: string; name: string; marketplace:
 }
 
 /**
- * Hooks in either format: the harness's flat one ({ Event: [{ matcher, command }] })
+ * Hooks in either format: Cavvy's flat one ({ Event: [{ matcher, command }] })
  * or Claude Code's ({ hooks: { Event: [{ matcher, hooks: [{ type, command }] }] } }).
- * Hook commands run in a shell with HARNESS_PLUGIN_ROOT and CLAUDE_PLUGIN_ROOT set.
+ * Hook commands run in a shell with CAVVY_PLUGIN_ROOT and CLAUDE_PLUGIN_ROOT set.
  */
 function addHooks(p: LoadedPlugin, j: unknown) {
     const events = record(j) && record(j.hooks) ? j.hooks : j;
@@ -248,12 +248,12 @@ function addHooks(p: LoadedPlugin, j: unknown) {
         p.errors.push("hooks must be an object of events");
         return;
     }
-    // Every type the harness runs (src/config/hook-config.ts), each knowing its plugin and folder.
+    // Every type Cavvy runs (src/config/hook-config.ts), each knowing its plugin and folder.
     const hooks = normalizeHooks(events, (msg) => p.errors.push(msg), { plugin: p.id, pluginRoot: p.root });
     for (const [event, list] of Object.entries(hooks ?? {})) if (list?.length) p.hooks[event] = [...(p.hooks[event] ?? []), ...list];
 }
 
-const ROOT_VARS = /\$\{(?:HARNESS|CLAUDE)_PLUGIN_ROOT\}/g;
+const ROOT_VARS = /\$\{(?:CAVVY|CLAUDE)_PLUGIN_ROOT\}/g;
 
 function substitute(v: unknown, root: string): unknown {
     if (typeof v === "string") return v.replace(ROOT_VARS, () => root);

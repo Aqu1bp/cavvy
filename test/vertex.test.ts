@@ -155,13 +155,13 @@ describe("Vertex AI requests", () => {
         expect(helperCalls().length).toBe(3);
     });
 
-    test("gcloud's own log file is off for the harness's calls (it would record the token)", async () => {
+    test("gcloud's own log file is off for Cavvy's calls (it would record the token)", async () => {
         stubFetch(() => TOOL_CALL());
         await (await clientFor("vertex")).stream(request(), () => {});
         expect(calls()[0]).toContain("filelog=true");
     });
 
-    test("gcloud runs without the harness's API keys in its environment", async () => {
+    test("gcloud runs without Cavvy's API keys in its environment", async () => {
         process.env.ANTHROPIC_API_KEY = FAKE.anthropic;
         try {
             stubFetch(() => TOOL_CALL());
@@ -317,6 +317,6 @@ test("shell commands that print a gcloud token ask first", () => {
     expect(sensitiveTarget("gcloud projects list")).toBeUndefined();
 });
 
-test("Google access tokens are masked even when the harness didn't fetch them", () => {
+test("Google access tokens are masked even when Cavvy didn't fetch them", () => {
     expect(redact('{"access_token": "ya29.a0AfB_byC-some.other_token-1234567890"}')).toBe('{"access_token": "[REDACTED google-token]"}');
 });

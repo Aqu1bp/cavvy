@@ -6,7 +6,7 @@ import { isolate, tempDir } from "./helpers/isolate";
 const iso = isolate();
 const { writeJson, readJson } = await import("../src/config/settings");
 
-const ROOT = tempDir("harness-writejson-");
+const ROOT = tempDir("cavvy-writejson-");
 afterAll(() => {
     rmSync(ROOT, { recursive: true, force: true });
     iso.cleanup();

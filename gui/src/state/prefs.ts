@@ -10,7 +10,7 @@ import { appearanceOf, migratePrefs, PREF_DEFAULTS, showAppearance, type Appeara
 
 export { ACCENTS, CHAT_WIDTHS, PREF_DEFAULTS, type AccentId, type ContrastId, type GlassId, type Prefs, type Scheme, type TintId } from "./prefs-core";
 
-const KEY = "harness.prefs";
+const KEY = "cavvy.prefs";
 
 function load(): Prefs {
     let saved: unknown;

@@ -87,7 +87,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
     void loadSetup();
     const offEvent = rpc.onEvent((e) => { if (e.type === "scripts.changed") void loadSetup(); });
     onCleanup(offEvent);
-    /** Only on the user's click: trusting also turns on the repository's own Harness configuration. */
+    /** Only on the user's click: trusting also turns on the repository's own Cavvy configuration. */
     const trustRepository = async (main: string) => {
         setTrusting(true);
         try {
@@ -234,7 +234,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                                 The setup script <strong>{n().script.name}</strong> won't run: you haven't trusted this repository.
                             </span>
                             <pre class="wt-setup-command mono">{n().script.command}</pre>
-                            <span class="wt-hint">Trusting it also turns on the repository's own Harness configuration (its .harness settings, hooks and MCP servers).</span>
+                            <span class="wt-hint">Trusting it also turns on the repository's own Cavvy configuration (its .cavvy settings, hooks and MCP servers).</span>
                             <div>
                                 <button type="button" class="btn secondary sm" disabled={busy() || trusting()} onClick={() => void trustRepository(n().main)}>
                                     {trusting() ? <Spinner size={12} /> : "Trust this repository"}

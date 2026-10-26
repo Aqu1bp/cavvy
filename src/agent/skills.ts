@@ -2,9 +2,9 @@
 // tool) and the user can run as /name or mention as $name. Read from, lowest
 // to highest precedence:
 //   ~/.claude/skills/<name>/SKILL.md          (Claude Code's, so they work with every model)
-//   ~/.harness/skills/<name>/SKILL.md
+//   ~/.cavvy/skills/<name>/SKILL.md
 //   <project>/.claude/skills/<name>/SKILL.md  (trusted folders only)
-//   <project>/.harness/skills/<name>/SKILL.md (trusted folders only)
+//   <project>/.cavvy/skills/<name>/SKILL.md (trusted folders only)
 //   plugin skill folders, as <plugin>:<name>
 //
 //   ---
@@ -15,12 +15,12 @@
 //   disable-model-invocation: true     (optional; only the user runs it)
 //   user-invocable: false              (optional; only the model loads it)
 //   ---
-//   Instructions... $ARGUMENTS, $1..$9 and ${HARNESS_SKILL_DIR} are substituted.
+//   Instructions... $ARGUMENTS, $1..$9 and ${CAVVY_SKILL_DIR} are substituted.
 
 import { closeSync, openSync, readdirSync, readSync, statSync } from "fs";
 import { homedir } from "os";
 import { basename, dirname, join } from "path";
-import { harnessHome } from "../config/paths";
+import { cavvyHome } from "../config/paths";
 import { expandCommand } from "../commands/custom";
 import { loadPlugins } from "../plugins/loader";
 import { withoutReviewQuotes } from "../util/review-quotes";
@@ -63,10 +63,10 @@ export function skillRoots(cwd: string, trusted: boolean): SkillRoot[] {
     const claudeHome = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
     const roots: SkillRoot[] = [
         { dir: join(claudeHome, "skills"), source: "user", claudeCode: true },
-        { dir: join(harnessHome(), "skills"), source: "user" },
+        { dir: join(cavvyHome(), "skills"), source: "user" },
     ];
     // A repository's skills are instructions from whoever wrote it.
-    if (trusted) roots.push({ dir: join(cwd, ".claude", "skills"), source: "project", claudeCode: true }, { dir: join(cwd, ".harness", "skills"), source: "project" });
+    if (trusted) roots.push({ dir: join(cwd, ".claude", "skills"), source: "project", claudeCode: true }, { dir: join(cwd, ".cavvy", "skills"), source: "project" });
     return roots;
 }
 
@@ -219,7 +219,7 @@ export function skillBody(skill: Skill): string | undefined {
 export function formatSkill(skill: Skill, args = ""): string | undefined {
     const body = skillBody(skill);
     if (body === undefined) return undefined;
-    const withDir = body.replace(/\$\{(?:HARNESS|CLAUDE)_SKILL_DIR\}/g, () => skill.dir);
+    const withDir = body.replace(/\$\{(?:CAVVY|CLAUDE)_SKILL_DIR\}/g, () => skill.dir);
     // Without arguments the body is left as written: `awk '{print $1}'` in a skill is a shell snippet.
     const text = args ? expandCommand(withDir, args) : withDir;
     return `<skill name="${skill.name}">\nBase directory for this skill: ${skill.dir}\n\n${text.trim()}\n</skill>`;

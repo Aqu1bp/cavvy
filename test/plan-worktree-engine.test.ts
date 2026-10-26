@@ -228,8 +228,8 @@ for (const sub of ["src", "..app", "nested/..app"]) test(`implementing from ${su
 test("a trust retry retains the selected base in both session links and the implementation prompt", async () => {
     const main = repo("retry-base");
     const source = join(main, "src");
-    mkdirSync(join(source, ".harness"), { recursive: true });
-    writeFileSync(join(source, ".harness", "settings.json"), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: "true" }] }] } }));
+    mkdirSync(join(source, ".cavvy"), { recursive: true });
+    writeFileSync(join(source, ".cavvy", "settings.json"), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: "true" }] }] } }));
     git(main, "add", ".");
     git(main, "commit", "-qm", "project config");
     git(main, "branch", "release-v2");
@@ -270,7 +270,7 @@ test("projects.removeWorktree keeps a worktree an idle terminal session is in (n
     const engine = new Engine({ listModels: async () => [] });
     const client = { subs: new Set<string>(), send: () => {} };
     const made = await engine.handle(client, "projects.createWorktree", { path: main, branch: "wt-present" }) as { path: string };
-    // A `harness -w` in a terminal that hasn't sent anything: only its presence mark.
+    // A `cavvy -w` in a terminal that hasn't sent anything: only its presence mark.
     const script = `const { markPresent } = await import(${JSON.stringify(join(import.meta.dir, "../src/server/worktrees.ts"))}); if (!markPresent(process.argv[1])) process.exit(2); console.log("ready"); await Bun.sleep(30000);`;
     const other = Bun.spawn([process.execPath, "-e", script, made.path], { stdout: "pipe" });
     try {
@@ -292,7 +292,7 @@ test("GUI removal asks again just before Git removes it: a terminal session that
     const script = `const { markPresent } = await import(${JSON.stringify(join(import.meta.dir, "../src/server/worktrees.ts"))}); if (!markPresent(process.argv[1])) process.exit(2); console.log("ready"); await Bun.sleep(30000);`;
     let other: ReturnType<typeof Bun.spawn> | undefined;
     try {
-        // The caller's own last checks run after the plan: a `harness -w` starts there meanwhile.
+        // The caller's own last checks run after the plan: a `cavvy -w` starts there meanwhile.
         const removing = (engine as any).removeWorktree(main, made.path, undefined, async () => {
             other = Bun.spawn([process.execPath, "-e", script, made.path], { stdout: "pipe" });
             expect(new TextDecoder().decode((await (other.stdout as ReadableStream<Uint8Array>).getReader().read()).value)).toContain("ready");

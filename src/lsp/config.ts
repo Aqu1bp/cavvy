@@ -34,7 +34,7 @@ const TS = { ".ts": "typescript", ".tsx": "typescriptreact", ".mts": "typescript
 
 /** Tried in order: the first whose command is found handles its extensions. */
 export const BUILTIN_SERVERS: Record<string, LspServerConfig> = {
-    // One tsserver, not two: the separate syntax server only speeds up editor features the harness doesn't use.
+    // One tsserver, not two: the separate syntax server only speeds up editor features Cavvy doesn't use.
     typescript: { command: "typescript-language-server", args: ["--stdio"], extensionToLanguage: TS, initializationOptions: { tsserver: { useSyntaxServer: "never" } } },
     pyright: { command: "pyright-langserver", args: ["--stdio"], extensionToLanguage: { ".py": "python", ".pyi": "python" } },
     basedpyright: { command: "basedpyright-langserver", args: ["--stdio"], extensionToLanguage: { ".py": "python", ".pyi": "python" } },

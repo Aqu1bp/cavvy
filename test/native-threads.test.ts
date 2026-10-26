@@ -1,6 +1,6 @@
 // One native CLI thread per history location (#413): a switch to an account whose CLI can't find the session's native
 // thread sets it aside (parked), kept for its place with its own catch-up cursor; a switch back takes it up again. What
-// the session file keeps of them, and every change that clears or copies them: rewind, Harness's /compact, forks,
+// the session file keeps of them, and every change that clears or copies them: rewind, Cavvy's /compact, forks,
 // an account removed or re-added. The turns themselves, against the fake CLIs: account-session.test.ts.
 
 import { afterAll, describe, expect, test } from "bun:test";
@@ -158,7 +158,7 @@ for (const provider of ["claude-code", "codex"] as const) describe(`${provider}:
         });
     });
 
-    test("Harness's /compact clears every thread, parked ones too", () => {
+    test("Cavvy's /compact clears every thread, parked ones too", () => {
         const { s, custom } = roundTrip();
         s.compact("summary", [user("kept")]);
         expect(s.backends.size).toBe(0);
@@ -347,8 +347,8 @@ for (const provider of ["claude-code", "codex"] as const) describe(`${provider}:
     });
 });
 
-// Randomized switches (#409, #413): CLI turns, other models' turns, account switches among Default, a Harness-made
-// account (Default's history) and two existing-folder accounts (their own), rewinds, Harness's /compact, reopening, and
+// Randomized switches (#409, #413): CLI turns, other models' turns, account switches among Default, a Cavvy-made
+// account (Default's history) and two existing-folder accounts (their own), rewinds, Cavvy's /compact, reopening, and
 // threads lost from their history. A scripted CLI checks each prompt against a model of what each history's thread
 // has seen: every message reaches the thread that answers exactly once, a thread is resumed only in its own history,
 // and a new one is started only where no thread can go on.
@@ -366,7 +366,7 @@ describe("randomized account switches against a model of each history's thread",
     ];
     const historyOf = (id: string) => accountPlace(provider, id).history!;
 
-    test("a Harness-made account shares Default's history; the existing-folder ones don't", () => {
+    test("a Cavvy-made account shares Default's history; the existing-folder ones don't", () => {
         expect(historyOf(accounts[1]!)).toBe(historyOf("default"));
         expect(new Set(accounts.map(historyOf)).size).toBe(3);
     });
@@ -462,7 +462,7 @@ describe("randomized account switches against a model of each history's thread",
                         const all = saved();
                         const added = all.length - before;
                         if (added > 1 && rnd() < 0.3) {
-                            // Torn (Harness died part way through the switch's lines): what made it to the file is
+                            // Torn (Cavvy died part way through the switch's lines): what made it to the file is
                             // reopened. The account line is the last, so the switch didn't happen; the model is as it was.
                             const kept = 1 + Math.floor(rnd() * (added - 1));
                             steps.push(`switch to ${to}, torn after ${kept} of its ${added} lines`);

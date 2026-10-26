@@ -1,4 +1,4 @@
-// The browser tools against a real Chrome (HARNESS_TEST_CHROME, or one in its usual place; skipped where there is none):
+// The browser tools against a real Chrome (CAVVY_TEST_CHROME, or one in its usual place; skipped where there is none):
 // a fixture site on 127.0.0.1, and the tools and session the agent and the GUI pane use. One Chrome serves the file: its
 // start is the slow part, and each test takes tabs of its own.
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
@@ -8,7 +8,7 @@ import { isolate, tempDir } from "./helpers/isolate";
 import { chromePath, fixtureServer } from "./helpers/browser-fixture";
 
 const iso = isolate();
-if (chromePath) process.env.HARNESS_BROWSER = chromePath;
+if (chromePath) process.env.CAVVY_BROWSER = chromePath;
 // GitHub's runners can't make Chrome's sandbox (AppArmor blocks user namespaces) and the first start reads Chrome's install
 // from a cold disk (see test/helpers/chrome.ts): the limits are several times the slowest start measured there.
 const STARTUP_MS = 90_000;
@@ -19,7 +19,7 @@ const { BrowserSession } = await import("../src/browser/session");
 const { imageSize } = await import("../src/ui/images");
 
 const site = fixtureServer();
-const root = tempDir("harness-browser-project-");
+const root = tempDir("cavvy-browser-project-");
 const state: any = { cwd: root, projectRoot: root, fileState: new Map(), todos: [], shells: new Map() };
 const ctx = (signal = new AbortController().signal) => ({ state, settings: {}, signal }) as any;
 let session: InstanceType<typeof BrowserSession>;
@@ -301,7 +301,7 @@ describe.skipIf(!chromePath)("the browser tools, with Chrome", () => {
     });
 
     test("an image or script a page reads from a file outside the project doesn't load, one inside does", async () => {
-        const outside = tempDir("harness-browser-outside-");
+        const outside = tempDir("cavvy-browser-outside-");
         // 1x1 PNG
         const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
         await Bun.write(`${outside}/secret.png`, png);
@@ -497,7 +497,7 @@ describe.skipIf(!chromePath)("the browser tools, with Chrome", () => {
 
 describe.skipIf(!chromePath)("the browser's life", () => {
     test("it starts with the first page and ends with the last session: no process is left", async () => {
-        const mine = new BrowserSession({ root: tempDir("harness-browser-life-"), settings: () => ({}), pool: { startupMs: STARTUP_MS } });
+        const mine = new BrowserSession({ root: tempDir("cavvy-browser-life-"), settings: () => ({}), pool: { startupMs: STARTUP_MS } });
         expect(mine.state().status).toBe("idle");
         await mine.page();
         expect(mine.state().status).toBe("ready");
@@ -510,7 +510,7 @@ describe.skipIf(!chromePath)("the browser's life", () => {
     }, STARTUP_MS + 10_000);
 
     test("it ends after sitting idle, says so, and starts again with the next page", async () => {
-        const mine = new BrowserSession({ root: tempDir("harness-browser-idle-"), settings: () => ({}), pool: { startupMs: STARTUP_MS, idleMs: 2000 } });
+        const mine = new BrowserSession({ root: tempDir("cavvy-browser-idle-"), settings: () => ({}), pool: { startupMs: STARTUP_MS, idleMs: 2000 } });
         try {
             await mine.page();
             const pid = (mine as any).pool.pid as number;
@@ -527,7 +527,7 @@ describe.skipIf(!chromePath)("the browser's life", () => {
     }, STARTUP_MS + 20_000);
 
     test("a browser that dies is reported as a tool error and starts again with the next call", async () => {
-        const dir = tempDir("harness-browser-crash-");
+        const dir = tempDir("cavvy-browser-crash-");
         const mine = new BrowserSession({ root: dir, settings: () => ({}), pool: { startupMs: STARTUP_MS } });
         const crashState: any = { cwd: dir, projectRoot: dir, fileState: new Map(), todos: [], shells: new Map(), browser: mine };
         const call = (tool: any, input: Record<string, unknown>) => tool.run(input, { state: crashState, settings: {}, signal: new AbortController().signal });

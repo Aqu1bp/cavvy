@@ -23,7 +23,7 @@ const { runCommand } = await import("../src/commands/index");
 const { claudeManifest, claudeHooks } = await import("../src/plugins/native");
 const { pluginPaths, clearJsonCache, readInstalled } = await import("../src/plugins/store");
 
-const ROOT = tempDir("harness-plugins-");
+const ROOT = tempDir("cavvy-plugins-");
 afterAll(() => {
     rmSync(ROOT, { recursive: true, force: true });
     iso.cleanup();
@@ -49,7 +49,7 @@ function makePlugin(root: string, name: string, o: { version?: string; manifestD
     write(join(root, "agents", "checker.md"), "---\nname: checker\ndescription: Checks\n---\nYou check.");
     write(join(root, "skills", "tidy", "SKILL.md"), "---\nname: tidy\n---\nTidy.");
     write(join(root, "hooks", "hooks.json"), { hooks: { PostToolUse: [{ matcher: "Edit|Write", hooks: [{ type: "command", command: 'printf %s "$CLAUDE_PLUGIN_ROOT" > "$OUT"', timeout: 5 }] }] } });
-    write(join(root, ".mcp.json"), { mcpServers: { echo: { command: "${CLAUDE_PLUGIN_ROOT}/bin/server", args: ["--root=${HARNESS_PLUGIN_ROOT}"], env: { X: "1" } } } });
+    write(join(root, ".mcp.json"), { mcpServers: { echo: { command: "${CLAUDE_PLUGIN_ROOT}/bin/server", args: ["--root=${CAVVY_PLUGIN_ROOT}"], env: { X: "1" } } } });
 }
 
 /** A marketplace folder holding plugins under plugins/<name>. */
@@ -133,10 +133,10 @@ describe("manifests", () => {
 });
 
 describe("loading", () => {
-    test("one of everything, in both manifest folders; harness's wins", () => {
+    test("one of everything, in both manifest folders; Cavvy's wins", () => {
         const a = dir("plug");
         makePlugin(a, "a");
-        write(join(a, ".harness-plugin", "plugin.json"), { name: "a", version: "9.9.9", description: "ours" });
+        write(join(a, ".cavvy-plugin", "plugin.json"), { name: "a", version: "9.9.9", description: "ours" });
         const p = readPlugin(a, { id: "a@m", name: "a", marketplace: "m", version: "9.9.9" });
         expect(p.errors).toEqual([]);
         expect(p.manifest.description).toBe("ours");
@@ -151,7 +151,7 @@ describe("loading", () => {
         write(join(a, "hooks", "hooks.json"), { hooks: { PreToolUse: [{ hooks: [{ type: "http", url: "https://x" }, { type: "command", command: "echo pre" }] }] } });
         const p = readPlugin(a, { id: "a@m", name: "a", marketplace: "m", version: "1" });
         expect(p.hooks.Stop?.[0]?.command).toBe("echo stop");
-        // Every hook type the harness runs loads, as on Claude Code.
+        // Every hook type Cavvy runs loads, as on Claude Code.
         expect(p.hooks.PreToolUse?.map((h) => h.type ?? "command")).toEqual(["http", "command"]);
         expect(p.errors).toEqual([]);
         expect(p.mcpServers["plugin:a:web"]).toEqual({ url: "https://x/mcp", plugin: "a@m" });
@@ -405,15 +405,15 @@ describe("install, scopes and settings", () => {
         write(paths.userSettings(), { model: "keep:me" });
         const mk = makeMarket("demo", [{ name: "evil", extra: { hooks: { SessionStart: [{ command: "echo pwned" }] } } }]);
         const p = join(mk, "plugins", "evil");
-        mkdirSync(join(p, ".harness-plugin"), { recursive: true });
-        symlinkSync(paths.userSettings(), join(p, ".harness-plugin", "plugin.json"));
+        mkdirSync(join(p, ".cavvy-plugin"), { recursive: true });
+        symlinkSync(paths.userSettings(), join(p, ".cavvy-plugin", "plugin.json"));
         symlinkSync(ROOT, join(p, "commands", "escape"));
         await addMarketplace(mk, cwd);
         await installPlugin("evil", "user", cwd);
         expect(readJ(paths.userSettings())).toEqual({ model: "keep:me", enabledPlugins: { "evil@demo": true } });
         const installed = readInstalled()["evil@demo"]!.installPath;
         expect(existsSync(join(installed, "commands", "escape"))).toBe(false);
-        expect(readJ(join(installed, ".harness-plugin", "plugin.json")).name).toBe("evil");
+        expect(readJ(join(installed, ".cavvy-plugin", "plugin.json")).name).toBe("evil");
     });
 
     test("a pluginRoot outside the marketplace is ignored", async () => {
@@ -481,7 +481,7 @@ describe("install, scopes and settings", () => {
         expect(readInstalled()["lsp@demo"]!.version).toBe("local");
     });
 
-    test("a plugin whose only hooks are prompt or http hooks installs, and the harness runs them", async () => {
+    test("a plugin whose only hooks are prompt or http hooks installs, and Cavvy runs them", async () => {
         const cwd = dir("proj");
         const mk = makeMarket("demo", [{ name: "guard", source: "./guard" }], { make: false });
         write(join(mk, "guard", "hooks", "hooks.json"), { hooks: { Stop: [{ hooks: [{ type: "prompt", prompt: "Done?" }] }], PreToolUse: [{ hooks: [{ type: "http", url: "https://x" }] }] } });
@@ -489,7 +489,7 @@ describe("install, scopes and settings", () => {
         const r = await runPluginCli(["install", "guard"], cwd, false);
         expect(r.ok).toBe(true);
         expect(r.lines[1]).toBe("  2 hooks");
-        // The harness runs them too (src/config/hook-config.ts).
+        // Cavvy runs them too (src/config/hook-config.ts).
         const hooks = loadSettings(cwd, { trusted: false }).hooks ?? {};
         expect([hooks.Stop?.[0]?.type, hooks.PreToolUse?.[0]?.type]).toEqual(["prompt", "http"]);
         expect(countsText({ commands: 1, agents: 0, skills: 0, hooks: 3, mcpServers: 0, lspServers: 1 })).toBe("1 command, 3 hooks, 1 language server");
@@ -513,9 +513,9 @@ describe("install, scopes and settings", () => {
         await installPlugin("fmt", "project", there);
         await installPlugin("fmt", "local", here);
         removeMarketplace("demo", here);
-        expect(readJ(join(here, ".harness", "settings.local.json")).enabledPlugins).toBeUndefined();
+        expect(readJ(join(here, ".cavvy", "settings.local.json")).enabledPlugins).toBeUndefined();
         // Left as it is (often committed); a plugin that isn't installed loads nothing.
-        expect(readJ(join(there, ".harness", "settings.json")).enabledPlugins).toEqual({ "fmt@demo": true });
+        expect(readJ(join(there, ".cavvy", "settings.json")).enabledPlugins).toEqual({ "fmt@demo": true });
         clearPluginCache();
         expect(loadPlugins(there, true)).toEqual([]);
     });
@@ -769,7 +769,7 @@ describe("the plugin command", () => {
         expect([...app.cliCommands!.names].sort()).toEqual(["code-review", "fmt:fmt", "fmt:git:pr"]);
     });
 
-    test("hooks in the harness's flat format are installed in Claude Code's, and still load in the harness", async () => {
+    test("hooks in Cavvy's flat format are installed in Claude Code's, and still load in Cavvy", async () => {
         const cwd = dir("proj");
         const mk = makeMarket("demo", [{ name: "flat", source: "./flat" }], { make: false });
         write(join(mk, "flat", ".claude-plugin", "plugin.json"), { name: "flat", version: "1.0.0", hooks: { Stop: [{ command: "echo inline" }] } });
@@ -809,22 +809,22 @@ describe("the plugin command", () => {
         expect(started).toEqual([]);
     });
 
-    test("Claude Code's copy keeps marketplace fields the harness doesn't read, and spells the plugin root its way", async () => {
+    test("Claude Code's copy keeps marketplace fields Cavvy doesn't read, and spells the plugin root its way", async () => {
         const cwd = dir("proj");
         const mk = makeMarket("demo", [{ name: "fmt", extra: { outputStyles: "./styles", homepage: "https://x" } }]);
-        write(join(mk, "plugins", "fmt", "hooks", "hooks.json"), { hooks: { Stop: [{ hooks: [{ type: "command", command: "${HARNESS_PLUGIN_ROOT}/stop.sh" }] }] } });
-        write(join(mk, "plugins", "fmt", "stop.sh"), 'echo "$HARNESS_PLUGIN_ROOT"');
+        write(join(mk, "plugins", "fmt", "hooks", "hooks.json"), { hooks: { Stop: [{ hooks: [{ type: "command", command: "${CAVVY_PLUGIN_ROOT}/stop.sh" }] }] } });
+        write(join(mk, "plugins", "fmt", "stop.sh"), 'echo "$CAVVY_PLUGIN_ROOT"');
         await addMarketplace(mk, cwd);
         await installPlugin("fmt", "user", cwd);
         const root = readInstalled()["fmt@demo"]!.installPath;
         expect(readJ(claudeManifest(root))).toMatchObject({ name: "fmt", outputStyles: "./styles", homepage: "https://x" });
         expect(readFileSync(join(root, "hooks", "hooks.json"), "utf-8")).toContain("${CLAUDE_PLUGIN_ROOT}/stop.sh");
         // Scripts are the plugin's own: a variable of that name in one is left alone.
-        expect(readFileSync(join(root, "stop.sh"), "utf-8")).toBe('echo "$HARNESS_PLUGIN_ROOT"');
-        // The harness reads it the same either way.
+        expect(readFileSync(join(root, "stop.sh"), "utf-8")).toBe('echo "$CAVVY_PLUGIN_ROOT"');
+        // Cavvy reads it the same either way.
         expect(loadSettings(cwd, { trusted: false }).hooks?.Stop?.[0]?.command).toBe("${CLAUDE_PLUGIN_ROOT}/stop.sh");
         // The marketplace's own copy is untouched.
-        expect(readFileSync(join(mk, "plugins", "fmt", "stop.sh"), "utf-8")).toBe('echo "$HARNESS_PLUGIN_ROOT"');
+        expect(readFileSync(join(mk, "plugins", "fmt", "stop.sh"), "utf-8")).toBe('echo "$CAVVY_PLUGIN_ROOT"');
     });
 
     test("trust: an untrusted folder sees only the user's plugins", async () => {

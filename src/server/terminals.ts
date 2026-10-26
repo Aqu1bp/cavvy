@@ -179,7 +179,7 @@ export function terminalSize(cols: unknown, rows: unknown): { cols: number; rows
     return { cols: Number(cols), rows: Number(rows) };
 }
 
-/** The environment of a shell the user runs: theirs, not the one the harness gives agent tools. */
+/** The environment of a shell the user runs: theirs, not the one Cavvy gives agent tools. */
 export function terminalEnv(inheritSelectors = true): Record<string, string> {
     const env = childEnv({ TERM: "xterm-256color", COLORTERM: "truecolor" });
     for (const k of Object.keys(env)) if (OUTER_TERMINAL.test(k)) delete env[k];
@@ -194,8 +194,8 @@ export function terminalEnv(inheritSelectors = true): Record<string, string> {
             if (process.env[key] !== undefined) env[key] = process.env[key]!;
         }
     }
-    delete env.HARNESS;
-    env.TERM_PROGRAM = "Harness";
+    delete env.CAVVY;
+    env.TERM_PROGRAM = "Cavvy";
     return env;
 }
 

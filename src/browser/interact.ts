@@ -204,7 +204,7 @@ export async function press(page: Page, key: string, modifiers: readonly string[
 }
 
 /** The handles to page objects an action holds are made in this group, and let go of together when it's done. */
-const OBJECTS = "harness-act";
+const OBJECTS = "cavvy-act";
 const releaseObjects = (page: Page) => page.send("Runtime.releaseObjectGroup", { objectGroup: OBJECTS }).catch(() => undefined);
 
 /** Makes the element at hand the active one: by ref (focused, or clicked when it can't be), else whatever has focus now. */

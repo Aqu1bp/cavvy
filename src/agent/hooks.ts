@@ -205,11 +205,11 @@ function shell(): string {
 
 function hookEnv(event: HookEvent, cwd: string, h: HookConfig): Record<string, string> {
     return childEnv({
-        HARNESS_HOOK_EVENT: event,
-        HARNESS_PROJECT_DIR: cwd,
+        CAVVY_HOOK_EVENT: event,
+        CAVVY_PROJECT_DIR: cwd,
         // Scripts written for Claude Code read these.
         CLAUDE_PROJECT_DIR: cwd,
-        ...(h.pluginRoot ? { HARNESS_PLUGIN_ROOT: h.pluginRoot, CLAUDE_PLUGIN_ROOT: h.pluginRoot } : {}),
+        ...(h.pluginRoot ? { CAVVY_PLUGIN_ROOT: h.pluginRoot, CLAUDE_PLUGIN_ROOT: h.pluginRoot } : {}),
     });
 }
 
@@ -518,7 +518,7 @@ export function claudeCodeHookOutput(event: HookEvent, r: HookResult): Record<st
         return { decision: "block", reason: r.reason };
     }
     const j = r.json;
-    // Plain text is context where the harness takes it as context (Claude Code wants it as JSON).
+    // Plain text is context where Cavvy takes it as context (Claude Code wants it as JSON).
     if (!j) return r.text?.trim() && TEXT_CONTEXT.has(event) ? { hookSpecificOutput: { hookEventName: event, additionalContext: r.text.trim().slice(0, MAX_CONTEXT) } } : {};
     const out: Record<string, unknown> = {};
     for (const k of ["continue", "stopReason", "systemMessage", "reason"]) if (j[k] !== undefined) out[k] = j[k];

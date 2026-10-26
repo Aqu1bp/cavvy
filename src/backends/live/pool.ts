@@ -1,4 +1,4 @@
-// The live CLI sessions of a harness process, one per harness session (or child
+// The live CLI sessions of a Cavvy process, one per Cavvy session (or child
 // agent) and provider. A session is made on first use and starts its process at
 // its first turn, so reopening many sessions starts nothing. Idle processes
 // with nothing in the background are stopped after LiveOptions.idleMs, and at
@@ -15,7 +15,7 @@ export interface PoolOptions extends Partial<LiveOptions> {
 }
 
 export class LiveCliPool {
-    /** By harness session key, then provider. */
+    /** By Cavvy session key, then provider. */
     private sessions = new Map<string, Map<string, LiveCliSession>>();
     private o: LiveOptions;
     private maxIdle: number;
@@ -50,7 +50,7 @@ export class LiveCliPool {
     }
 
     /**
-     * Stop and forget a harness session's live sessions: this provider's, or all of them (the session was
+     * Stop and forget a Cavvy session's live sessions: this provider's, or all of them (the session was
      * closed, rewound, or switched accounts). Background work stops with them; callers confirm that first.
      */
     async release(key: string, provider?: string): Promise<void> {
@@ -63,7 +63,7 @@ export class LiveCliPool {
         await Promise.all(gone.map((s) => s.close()));
     }
 
-    /** Stop every process (the harness is quitting). */
+    /** Stop every process (Cavvy is quitting). */
     async shutdownAll(): Promise<void> {
         const all = this.list();
         this.sessions.clear();

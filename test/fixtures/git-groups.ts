@@ -1,4 +1,4 @@
-// An async git call that never ends by itself (the test's fake git), and the harness then ending: by exit, or a signal.
+// An async git call that never ends by itself (the test's fake git), and Cavvy then ending: by exit, or a signal.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 const { gitAsync } = await import("../../src/util/git");

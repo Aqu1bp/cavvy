@@ -4,17 +4,17 @@ import { tmpdir } from "os";
 import { join } from "path";
 import type { ClassifierInput, CompleteFn } from "../src/permissions/classifier";
 
-// Isolate from the real ~/.harness before loading anything that reads paths.
-const prevHarnessHome = process.env.HARNESS_HOME;
-const HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-test-"));
-process.env.HARNESS_HOME = HARNESS_HOME;
+// Isolate from the real ~/.cavvy before loading anything that reads paths.
+const prevCavvyHome = process.env.CAVVY_HOME;
+const CAVVY_HOME = mkdtempSync(join(tmpdir(), "cavvy-test-"));
+process.env.CAVVY_HOME = CAVVY_HOME;
 
 const { cleanSummary, parseVerdict, parseFast, AutoClassifier, MAX_ACTION_CHARS, REVIEW_REQUEST, ReviewRefused, reviewText, reviewTimeout } = await import("../src/permissions/classifier");
 
 afterAll(() => {
-    if (prevHarnessHome === undefined) delete process.env.HARNESS_HOME;
-    else process.env.HARNESS_HOME = prevHarnessHome;
-    rmSync(HARNESS_HOME, { recursive: true, force: true });
+    if (prevCavvyHome === undefined) delete process.env.CAVVY_HOME;
+    else process.env.CAVVY_HOME = prevCavvyHome;
+    rmSync(CAVVY_HOME, { recursive: true, force: true });
 });
 
 describe("parseVerdict", () => {

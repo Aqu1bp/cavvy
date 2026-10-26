@@ -24,7 +24,7 @@ const logs: string[] = [];
 let srv: Awaited<ReturnType<typeof startServer>>;
 const projects: string[] = [];
 const project = () => {
-    const dir = createDemoProject(realpathSync(tempDir("harness-gui-secret-")), { git: false });
+    const dir = createDemoProject(realpathSync(tempDir("cavvy-gui-secret-")), { git: false });
     projects.push(dir);
     return dir;
 };
@@ -49,7 +49,7 @@ class Client {
     private listeners = new Set<() => void>();
 
     constructor() {
-        this.ws = new WebSocket(`ws://127.0.0.1:${srv.port}/ws`, { protocols: ["harness.v1", `auth.${TOKEN}`] } as any);
+        this.ws = new WebSocket(`ws://127.0.0.1:${srv.port}/ws`, { protocols: ["cavvy.v1", `auth.${TOKEN}`] } as any);
         this.ws.onmessage = (m) => {
             this.frames.push(String(m.data));
             const msg = JSON.parse(String(m.data));
@@ -185,7 +185,7 @@ describe("asking for a secret in a GUI session", () => {
         expect(bodies.some((x) => x.includes("The user provided DEMO_TOKEN."))).toBe(true);
         expect(bodies.some((x) => x.includes("echo: [REDACTED DEMO_TOKEN]"))).toBe(true);
 
-        // And nowhere is the value: model requests, frames to either window, the server log, any file Harness wrote.
+        // And nowhere is the value: model requests, frames to either window, the server log, any file Cavvy wrote.
         await Bun.sleep(100);
         for (const x of bodies) expect(x).not.toContain(VALUE);
         for (const c of [a, b]) for (const f of c.frames) expect(f).not.toContain(VALUE);

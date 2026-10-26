@@ -25,7 +25,7 @@ const mock = startMockLlm({ delayMs: 0 });
 mkdirSync(join(iso.home, "commands"), { recursive: true });
 writeFileSync(join(iso.home, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock", baseUrl: mock.url, requiresKey: false }] }));
 writeFileSync(join(iso.home, "settings.json"), JSON.stringify({ model: "mock:mock-opus", smallModel: "mock:mock-haiku" }));
-// A user's own command, as ~/.harness/commands/hello.md.
+// A user's own command, as ~/.cavvy/commands/hello.md.
 writeFileSync(join(iso.home, "commands", "hello.md"), "---\ndescription: Say hello\n---\nSay hello to $ARGUMENTS.");
 
 let srv: Awaited<ReturnType<typeof startServer>>;
@@ -44,7 +44,7 @@ afterAll(async () => {
     for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_")) delete process.env[k];
 });
 
-const project = () => createDemoProject(tempDir("harness-usage-proj-"), { git: false });
+const project = () => createDemoProject(tempDir("cavvy-usage-proj-"), { git: false });
 
 class Client {
     ws: WebSocket;
@@ -55,7 +55,7 @@ class Client {
     private listeners = new Set<() => void>();
 
     constructor() {
-        this.ws = new WebSocket(`ws://127.0.0.1:${srv.port}/ws`, { protocols: ["harness.v1", `auth.${TOKEN}`] } as any);
+        this.ws = new WebSocket(`ws://127.0.0.1:${srv.port}/ws`, { protocols: ["cavvy.v1", `auth.${TOKEN}`] } as any);
         this.ws.onmessage = (m) => {
             const msg = JSON.parse(String(m.data));
             if ("event" in msg) {
@@ -172,7 +172,7 @@ describe("usage.summary", () => {
 
 describe("plan limits", () => {
     test("after a Codex turn, every client has its windows, and limits.get returns them", async () => {
-        const bin = tempDir("harness-usage-cli-");
+        const bin = tempDir("cavvy-usage-cli-");
         writeFileSync(join(bin, "codex"), `#!/bin/sh\nexec "${process.execPath}" "${join(import.meta.dir, "fixtures", "fake-codex.ts")}" "$@"\n`);
         chmodSync(join(bin, "codex"), 0o755);
         for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_")) delete process.env[k];
@@ -268,7 +268,7 @@ describe("slash commands the server doesn't know", () => {
 
 describe("Claude Code's own commands", () => {
     test("in a Claude Code session, those it listed go to it as the prompt, from a new session's first message on", async () => {
-        const bin = tempDir("harness-usage-cli-");
+        const bin = tempDir("cavvy-usage-cli-");
         writeFileSync(join(bin, "claude"), `#!/bin/sh\nexec "${process.execPath}" "${join(import.meta.dir, "fixtures", "fake-claude.ts")}" "$@"\n`);
         chmodSync(join(bin, "claude"), 0o755);
         for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_")) delete process.env[k];
@@ -288,8 +288,8 @@ describe("Claude Code's own commands", () => {
             const c = await client();
             const cwd = project();
             const override = project();
-            mkdirSync(join(override, ".harness"));
-            writeFileSync(join(override, ".harness", "settings.json"), JSON.stringify({ model: "claude-code:default" }));
+            mkdirSync(join(override, ".cavvy"));
+            writeFileSync(join(override, ".cavvy", "settings.json"), JSON.stringify({ model: "claude-code:default" }));
             // The global default is Mock. Home must use the trusted project's Claude Code override.
             await c.call("projects.trust", { path: override, trust: true });
             const before = await c.sessionIds();
@@ -311,8 +311,8 @@ describe("Claude Code's own commands", () => {
                     else await removeKey("anthropic");
                     expect((await getKey("anthropic"))?.value).toBe(hasKey ? FAKE.anthropic : undefined);
                     const fallback = project();
-                    mkdirSync(join(fallback, ".harness"));
-                    writeFileSync(join(fallback, ".harness", "settings.json"), JSON.stringify({ model }));
+                    mkdirSync(join(fallback, ".cavvy"));
+                    writeFileSync(join(fallback, ".cavvy", "settings.json"), JSON.stringify({ model }));
                     await c.call("projects.trust", { path: fallback, trust: true });
                     const before = await c.sessionIds();
                     // A usable API provider stays selected even when the listing offers only Claude Code.
@@ -342,7 +342,7 @@ describe("Claude Code's own commands", () => {
             const id = await claude();
             expect(await c.call("session.send", { id, text: "/code-review src" })).toEqual({ queued: false });
             await c.until(() => done(c.view(id)), 30_000);
-            // As the prompt, first (the harness's reminders, as for any prompt, come after it).
+            // As the prompt, first (Cavvy's reminders, as for any prompt, come after it).
             expect(prompts().some((t) => t.startsWith("/code-review src"))).toBe(true);
             expect((await c.call<{ name: string }[]>("commands.list", { cwd, provider: "claude-code" })).map((x) => x.name)).toEqual(expect.arrayContaining(["code-review", "design:ux-copy"]));
             expect((await c.call<{ name: string }[]>("commands.list", { cwd })).map((x) => x.name)).not.toContain("code-review");

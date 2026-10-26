@@ -7,11 +7,11 @@ import type { Settings } from "../src/config/settings";
 import type { PermissionMode } from "../src/permissions/modes";
 import type { PermissionChecker as Checker } from "../src/permissions/checker";
 
-// Isolate from the real ~/.harness before loading anything that reads paths.
+// Isolate from the real ~/.cavvy before loading anything that reads paths.
 // realpath: on macOS tmpdir() is behind the /var -> /private/var symlink.
-const prevHarnessHome = process.env.HARNESS_HOME;
-const H = realpathSync(mkdtempSync(join(tmpdir(), "harness-test-")));
-process.env.HARNESS_HOME = H;
+const prevCavvyHome = process.env.CAVVY_HOME;
+const H = realpathSync(mkdtempSync(join(tmpdir(), "cavvy-test-")));
+process.env.CAVVY_HOME = H;
 
 const { PermissionChecker, likelyHosts } = await import("../src/permissions/checker");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
@@ -19,8 +19,8 @@ const { paths } = await import("../src/config/paths");
 const { caselessFold, spellings, CASE_INSENSITIVE_FS } = await import("../src/util/files");
 
 /** Workspace root and a directory outside it. Never touches the real home. */
-const W = realpathSync(mkdtempSync(join(tmpdir(), "harness-test-ws-")));
-const O = realpathSync(mkdtempSync(join(tmpdir(), "harness-test-out-")));
+const W = realpathSync(mkdtempSync(join(tmpdir(), "cavvy-test-ws-")));
+const O = realpathSync(mkdtempSync(join(tmpdir(), "cavvy-test-out-")));
 
 const tools = Object.fromEntries(BUILTIN_TOOLS.map((t) => [t.name, t])) as Record<string, Tool<any>>;
 const T = (name: string): Tool<any> => {
@@ -43,7 +43,7 @@ const check = (tool: Tool<any>, input: unknown, mode: PermissionMode = "default"
 const write = (p: string) => ({ file_path: p, content: "x" });
 const bash = (command: string) => ({ command });
 
-// On a case-insensitive volume (macOS default) `.HARNESS` IS `.harness`.
+// On a case-insensitive volume (macOS default) `.CAVVY` IS `.cavvy`.
 writeFileSync(join(W, "case-probe"), "");
 const caseInsensitiveFs = existsSync(join(W, "CASE-PROBE"));
 
@@ -56,13 +56,13 @@ symlinkSync(O, join(W, "out-link"));
 symlinkSync(join(O, ".env"), join(W, "innocent.txt"));
 
 beforeAll(() => {
-    // Files run sequentially in one process; re-assert our HARNESS_HOME.
-    process.env.HARNESS_HOME = H;
+    // Files run sequentially in one process; re-assert our CAVVY_HOME.
+    process.env.CAVVY_HOME = H;
 });
 
 afterAll(() => {
-    if (prevHarnessHome === undefined) delete process.env.HARNESS_HOME;
-    else process.env.HARNESS_HOME = prevHarnessHome;
+    if (prevCavvyHome === undefined) delete process.env.CAVVY_HOME;
+    else process.env.CAVVY_HOME = prevCavvyHome;
     for (const d of [H, W, O]) rmSync(d, { recursive: true, force: true });
 });
 
@@ -116,7 +116,7 @@ describe("deny rules win in every mode", () => {
     });
 });
 
-describe("harness credential store is denied", () => {
+describe("cavvy credential store is denied", () => {
     test.each(MODES)("Read credentials.json and providers.json (%s)", (mode) => {
         expect(check(T("Read"), { file_path: paths.credentialsFile() }, mode).behavior).toBe("deny");
         expect(check(T("Read"), { file_path: paths.providers() }, mode).behavior).toBe("deny");
@@ -134,7 +134,7 @@ describe("harness credential store is denied", () => {
         expect(check(T("Read"), { file_path: join(W, "creds-link") }, "bypassPermissions").behavior).toBe("deny");
     });
 
-    test("other files under HARNESS_HOME are not on the deny list, but settings.json is for the read tools", () => {
+    test("other files under CAVVY_HOME are not on the deny list, but settings.json is for the read tools", () => {
         expect(check(T("Read"), { file_path: join(H, "history.jsonl") }).behavior).not.toBe("deny");
         // It can hold env values and MCP auth headers.
         expect(check(T("Read"), { file_path: paths.userSettings() }).behavior).toBe("deny");
@@ -142,11 +142,11 @@ describe("harness credential store is denied", () => {
     });
 
     test("cat of the store via Bash is a dangerous ask even in bypass", () => {
-        expect(check(T("Bash"), bash("cat ~/.harness/credentials.json"), "bypassPermissions")).toMatchObject({ behavior: "ask", dangerous: true });
+        expect(check(T("Bash"), bash("cat ~/.cavvy/credentials.json"), "bypassPermissions")).toMatchObject({ behavior: "ask", dangerous: true });
     });
 
     // Searching the home isn't refused: the secret files in it are hidden file by file.
-    test("Grep and Glob over the HARNESS_HOME directory run, with the secret files hidden", () => {
+    test("Grep and Glob over the CAVVY_HOME directory run, with the secret files hidden", () => {
         expect(check(T("Grep"), { pattern: "sk-", path: H }, "auto").behavior).toBe("allow");
         expect(check(T("Glob"), { pattern: "*.json", path: H }, "auto").behavior).toBe("allow");
         expect(checker.hiddenFromSearch("Grep", paths.credentialsFile())).toBe("protected");
@@ -163,12 +163,12 @@ describe("harness credential store is denied", () => {
         expect(bare.check(T("Bash"), bash(`rg sk- ${H}`), "auto", W)).toMatchObject({ behavior: "ask", needsClassifier: true });
     });
 
-    test("listing the harness home or reading its other files isn't a credential-store ask; reading them is sensitive", () => {
+    test("listing Cavvy home or reading its other files isn't a credential-store ask; reading them is sensitive", () => {
         for (const cmd of [`ls ${H}/projects`, `du -sh ${H}/projects`, `cat ${H}/history.jsonl`, `bun -e 'console.log("${H}/projects")'`]) {
             expect(check(T("Bash"), bash(cmd), "auto").reason ?? "").not.toMatch(/credential store/);
         }
         expect(check(T("Bash"), bash(`ls ${H}/projects`), "default").behavior).toBe("allow");
-        expect(check(T("Bash"), bash(`cat ${H}/history.jsonl`), "default")).toMatchObject({ behavior: "ask", sensitive: "the harness's settings and session logs" });
+        expect(check(T("Bash"), bash(`cat ${H}/history.jsonl`), "default")).toMatchObject({ behavior: "ask", sensitive: "Cavvy's settings and session logs" });
         expect(check(T("Bash"), bash(`cat ${H}/providers.json`), "default").reason).toMatch(/credential/);
     });
 });
@@ -262,7 +262,7 @@ describe("file edits", () => {
 
     test("auto mode: outside the workspace and the temp dirs asks", () => {
         // Never created; the check only resolves the path.
-        const elsewhere = join("/", `harness-test-nowhere-${process.pid}`, "notes.txt");
+        const elsewhere = join("/", `cavvy-test-nowhere-${process.pid}`, "notes.txt");
         expect(check(T("Write"), write(elsewhere), "auto")).toMatchObject({ behavior: "ask", reason: "Outside the workspace" });
         expect(check(T("Write"), write(join(homedir(), ".zshrc")), "auto").behavior).toBe("ask");
     });
@@ -274,7 +274,7 @@ describe("file edits", () => {
         expect(check(T("Write"), write("/tmp/parse_test.py"), "acceptEdits").behavior).toBe("ask");
         // The temp dir itself, a link out of it, and config inside it are not scratch files.
         expect(check(T("Write"), write(tmpdir()), "auto").behavior).toBe("ask");
-        symlinkSync(join(homedir(), `.harness-test-target-${process.pid}`), join(O, "to-home"));
+        symlinkSync(join(homedir(), `.cavvy-test-target-${process.pid}`), join(O, "to-home"));
         expect(check(T("Write"), write(join(O, "to-home")), "auto").behavior).toBe("ask");
         expect(check(T("Write"), write(join(O, "repo", ".git", "hooks", "pre-commit")), "auto").behavior).toBe("ask");
     });
@@ -328,11 +328,11 @@ describe("file edits", () => {
     });
 });
 
-describe("harness and git config edits", () => {
+describe("cavvy and git config edits", () => {
     const configPaths = () => [
-        join(W, ".harness", "settings.json"),
-        join(W, ".harness", "settings.local.json"),
-        join(W, "pkg", ".harness", "agents", "x.md"),
+        join(W, ".cavvy", "settings.json"),
+        join(W, ".cavvy", "settings.local.json"),
+        join(W, "pkg", ".cavvy", "agents", "x.md"),
         join(W, ".mcp.json"),
         join(W, ".git", "hooks", "pre-commit"),
         join(W, ".git", "config"),
@@ -348,7 +348,7 @@ describe("harness and git config edits", () => {
         for (const p of configPaths()) {
             const d = check(T("Write"), write(p), mode);
             expect(d.behavior).toBe("ask");
-            expect(d.reason).toMatch(/configures the harness or git/);
+            expect(d.reason).toMatch(/configures Cavvy or git/);
         }
     });
 
@@ -366,10 +366,10 @@ describe("harness and git config edits", () => {
         for (const p of [join(tree, "src", "a.ts"), join(tree, "test", "fixtures", "fake-codex.ts"), join(inner, "README.md")]) {
             expect(check(T("Write"), write(p), "acceptEdits").behavior).toBe("allow");
         }
-        for (const p of [join(tree, ".claude", "settings.json"), join(tree, ".git"), join(tree, ".mcp.json"), join(tree, ".harness", "settings.json"), join(tree, ".codex", "config.toml"), join(inner, ".claude", "settings.json")]) {
+        for (const p of [join(tree, ".claude", "settings.json"), join(tree, ".git"), join(tree, ".mcp.json"), join(tree, ".cavvy", "settings.json"), join(tree, ".codex", "config.toml"), join(inner, ".claude", "settings.json")]) {
             const d = check(T("Write"), write(p), "auto");
             expect(d.behavior).toBe("ask");
-            expect(d.reason).toMatch(/configures the harness or git/);
+            expect(d.reason).toMatch(/configures Cavvy or git/);
         }
         // Not a checkout (no .git): still the project's .claude folder.
         const odd = join(W, ".claude", "worktrees", "not-a-checkout");
@@ -379,9 +379,9 @@ describe("harness and git config edits", () => {
     });
 
     test("a worktree kept inside protected config is still protected, and its name keeps its case", () => {
-        // Inside .git (as core.hooksPath could point git at), and inside a project's .harness.
+        // Inside .git (as core.hooksPath could point git at), and inside a project's .cavvy.
         const pkg = join(W, "pkg");
-        for (const parent of [join(pkg, ".git", "hooks"), join(pkg, ".harness")]) {
+        for (const parent of [join(pkg, ".git", "hooks"), join(pkg, ".cavvy")]) {
             const tree = join(parent, ".claude", "worktrees", "x");
             mkdirSync(tree, { recursive: true });
             writeFileSync(join(tree, ".git"), "gitdir: x\n");
@@ -396,17 +396,17 @@ describe("harness and git config edits", () => {
         if (caseInsensitiveFs) expect(check(T("Write"), write(join(mixed, ".Claude", "settings.json")), "acceptEdits").behavior).toBe("ask");
     });
 
-    test("a worktree named like the config isn't set aside: run from .claude/worktrees, its .harness/ is that project's config", () => {
+    test("a worktree named like the config isn't set aside: run from .claude/worktrees, its .cavvy/ is that project's config", () => {
         const root = join(W, "nest", ".claude", "worktrees");
         const inRoot = new PermissionChecker(() => settings, root);
         const ask = (p: string) => expect(inRoot.check(T("Write"), write(p), "acceptEdits", root).behavior).toBe("ask");
-        const targets: Record<string, string> = { ".harness": "settings.json", ".claude": "settings.json", ".codex": "config.toml", ".git": join("hooks", "pre-commit"), ".mcp.json": "x" };
+        const targets: Record<string, string> = { ".cavvy": "settings.json", ".claude": "settings.json", ".codex": "config.toml", ".git": join("hooks", "pre-commit"), ".mcp.json": "x" };
         for (const [name, file] of Object.entries(targets)) {
             mkdirSync(join(root, name), { recursive: true });
             writeFileSync(join(root, name, ".git"), "gitdir: x\n");
             ask(join(root, name, file));
         }
-        if (caseInsensitiveFs) ask(join(root, ".HARNESS", "settings.json"));
+        if (caseInsensitiveFs) ask(join(root, ".CAVVY", "settings.json"));
         // Any other name is a project of its own; the folder itself is still in .claude/.
         mkdirSync(join(root, "feature"), { recursive: true });
         writeFileSync(join(root, "feature", ".git"), "gitdir: x\n");
@@ -415,23 +415,23 @@ describe("harness and git config edits", () => {
         rmSync(join(W, "nest"), { recursive: true, force: true });
     });
 
-    test.each([".gitignore", ".gitattributes", ".github/workflows/ci.yml", "harness/settings.json", ".mcp.json.bak", "src/.git-keep"])("look-alike %p is a normal edit", (rel) => {
+    test.each([".gitignore", ".gitattributes", ".github/workflows/ci.yml", "cavvy/settings.json", ".mcp.json.bak", "src/.git-keep"])("look-alike %p is a normal edit", (rel) => {
         expect(check(T("Write"), write(join(W, rel)), "acceptEdits").behavior).toBe("allow");
     });
 
     test("reading config files is unaffected", () => {
-        expect(check(T("Read"), { file_path: join(W, ".harness", "settings.json") }).behavior).toBe("allow");
+        expect(check(T("Read"), { file_path: join(W, ".cavvy", "settings.json") }).behavior).toBe("allow");
     });
 
     // canonical() only shows the real name of a folder that exists. In a project
-    // with no .harness/ yet, a write to a name the volume opens as .harness would
-    // plant settings the harness then loads as its own, and the model could grant
+    // with no .cavvy/ yet, a write to a name the volume opens as .cavvy would
+    // plant settings Cavvy then loads as its own, and the model could grant
     // itself permissions. APFS matches names by Unicode case folding, not
-    // toLowerCase: .harneſſ (long s), .harneẞ and .harneß are .harness there.
+    // toLowerCase: .harneſſ (long s), .harneẞ and .harneß are .cavvy there.
     (caseInsensitiveFs ? test : test.skip)("case and Unicode variants of config paths ask on case-insensitive filesystems", () => {
-        expect(existsSync(join(W, ".harness"))).toBe(false);
+        expect(existsSync(join(W, ".cavvy"))).toBe(false);
         const variants = [
-            join(".HARNESS", "settings.local.json"),
+            join(".CAVVY", "settings.local.json"),
             join(".harne\u017F\u017F", "settings.local.json"), // ſ LATIN SMALL LETTER LONG S
             join(".harne\u1E9E", "settings.local.json"), // ẞ LATIN CAPITAL LETTER SHARP S
             join(".harne\u00DF", "settings.json"), // ß
@@ -450,7 +450,7 @@ describe("harness and git config edits", () => {
         for (const rel of variants) {
             const d = check(T("Write"), write(join(W, rel)), "acceptEdits");
             expect([rel, d.behavior]).toEqual([rel, "ask"]);
-            expect(d.reason).toMatch(/configures the harness or git/);
+            expect(d.reason).toMatch(/configures Cavvy or git/);
         }
     });
 
@@ -459,14 +459,14 @@ describe("harness and git config edits", () => {
     });
 
     (CASE_INSENSITIVE_FS ? test.skip : test)("on a case-sensitive volume other spellings are other files", () => {
-        for (const rel of [join(".HARNESS", "settings.json"), join(".harne\u017F\u017F", "settings.json"), ".mcp.j\u017Fon"]) {
+        for (const rel of [join(".CAVVY", "settings.json"), join(".harne\u017F\u017F", "settings.json"), ".mcp.j\u017Fon"]) {
             expect(check(T("Write"), write(join(W, rel)), "acceptEdits").behavior).toBe("allow");
         }
     });
 
-    (caseInsensitiveFs ? test : test.skip)("a harness home that doesn't exist yet is protected in other spellings too", () => {
+    (caseInsensitiveFs ? test : test.skip)("a Cavvy home that doesn't exist yet is protected in other spellings too", () => {
         const home = join(W, "fresh-home");
-        process.env.HARNESS_HOME = home;
+        process.env.CAVVY_HOME = home;
         try {
             expect(existsSync(home)).toBe(false);
             const odd = join(W, "fre\u017Fh-HOME");
@@ -474,7 +474,7 @@ describe("harness and git config edits", () => {
             expect(check(T("Read"), { file_path: join(odd, "credentials.json") }).behavior).toBe("deny");
             expect(check(T("Read"), { file_path: join(W, "fre\u017Fh-home", "provider\u017F.json") }).behavior).toBe("deny");
         } finally {
-            process.env.HARNESS_HOME = H;
+            process.env.CAVVY_HOME = H;
         }
     });
 });
@@ -532,7 +532,7 @@ describe("Bash", () => {
             }
             for (const suffix of ["ls $(echo ..)", "bun test; echo $!"]) {
                 const cmd = `cd ${W}/.claude/worktrees/feature && ${suffix}`;
-                expect(auto(withSandbox(true), bash(cmd))).toMatchObject({ behavior: "ask", reason: expect.stringContaining("harness or git configuration") });
+                expect(auto(withSandbox(true), bash(cmd))).toMatchObject({ behavior: "ask", reason: expect.stringContaining("cavvy or git configuration") });
             }
         });
 
@@ -652,7 +652,7 @@ describe("Bash", () => {
         });
 
         test("a push while main is checked out asks, even without naming main", () => {
-            const repo = realpathSync(mkdtempSync(join(tmpdir(), "harness-test-repo-")));
+            const repo = realpathSync(mkdtempSync(join(tmpdir(), "cavvy-test-repo-")));
             mkdirSync(join(repo, ".git"));
             const on = (branch: string) => writeFileSync(join(repo, ".git", "HEAD"), `ref: refs/heads/${branch}\n`);
             const push = (cmd: string) => withSandbox(true).check(T("Bash"), bash(cmd), "auto", repo);
@@ -763,16 +763,16 @@ describe("Bash", () => {
     });
 
     (caseInsensitiveFs ? test : test.skip)("credential files and config named in other spellings ask on case-insensitive filesystems", () => {
-        for (const cmd of ["cat ~/.HARNESS/credentials.json", "cat ~/.harne\u017F\u017F/credentials.json", `cat ${H.replace(/s/g, "\u017F")}/credentials.json`, "cat ~/.AWS/credentials", "cat ~/.\u017F\u017Fh/config", "cat ~/.\u212Aube/config", "cat .ENV", "cat .Env.Local"]) {
+        for (const cmd of ["cat ~/.CAVVY/credentials.json", "cat ~/.harne\u017F\u017F/credentials.json", `cat ${H.replace(/s/g, "\u017F")}/credentials.json`, "cat ~/.AWS/credentials", "cat ~/.\u017F\u017Fh/config", "cat ~/.\u212Aube/config", "cat .ENV", "cat .Env.Local"]) {
             expect([cmd, check(T("Bash"), bash(cmd)).behavior]).toEqual([cmd, "ask"]);
         }
         expect(check(T("Bash"), bash("cat ~/.harne\u017F\u017F/providers.json"), "bypassPermissions")).toMatchObject({ behavior: "ask", dangerous: true });
         // An allow rule for the program doesn't cover writing config under another spelling.
         settings.permissions!.allow = ["Bash(cp:*)"];
-        for (const cmd of ["cp x .harne\u017F\u017F/settings.local.json", "cp x .HARNESS/settings.json", "cp x .mcp.j\u017Fon", "cp x .har\u200Bness/settings.json"]) {
+        for (const cmd of ["cp x .harne\u017F\u017F/settings.local.json", "cp x .CAVVY/settings.json", "cp x .mcp.j\u017Fon", "cp x .har\u200Bness/settings.json"]) {
             const d = check(T("Bash"), bash(cmd));
             expect([cmd, d.behavior]).toEqual([cmd, "ask"]);
-            expect(d.reason).toMatch(/harness or git configuration/);
+            expect(d.reason).toMatch(/cavvy or git configuration/);
         }
         expect(check(T("Bash"), bash("cp x stra\u00DFe.txt")).behavior).toBe("allow");
         for (const cmd of ["cat .env.example", "cat .ENV.Sample", "cat README.md", "cat ~/.a\u0175s/x"]) expect(check(T("Bash"), bash(cmd)).behavior).toBe("allow");
@@ -793,13 +793,13 @@ describe("Bash", () => {
         }
         for (const suffix of ["$!", "$?$#$$$!", "$VAR", "${?}", "${#}", "${VAR}", "$(echo ..)", "`echo ..`", "$@", "$*", ...Array.from({ length: 10 }, (_, i) => `$${i}`), "$-", "$_", "$$$VAR", "$$${?}", ".$$?", "../$?", ".*$?"]) {
             const cmd = `cd .claude/worktrees/feature && bun test; echo ${suffix}`;
-            expect([suffix, configTarget(cmd)]).toEqual([suffix, "harness or git configuration"]);
+            expect([suffix, configTarget(cmd)]).toEqual([suffix, "cavvy or git configuration"]);
         }
-        expect(configTarget("cp /dev/null .claude/worktrees/x/.$!claude/settings.json")).toBe("harness or git configuration");
+        expect(configTarget("cp /dev/null .claude/worktrees/x/.$!claude/settings.json")).toBe("cavvy or git configuration");
         expect(configTarget("cd .claude/worktrees/feature && ls $(echo ..)")).toBeDefined();
         for (const path of [".$!./.$!./settings.json", "$!..$!/settings.json", String.raw`\$$VAR/settings.json`]) {
             const cmd = `rm .claude/worktrees/feature/${path}`;
-            expect([path, configTarget(cmd)]).toEqual([path, "harness or git configuration"]);
+            expect([path, configTarget(cmd)]).toEqual([path, "cavvy or git configuration"]);
         }
     });
 
@@ -813,7 +813,7 @@ describe("Bash", () => {
             "cp x .claude/worktrees/feature/.claude/settings.json",
             "cp x .claude/worktrees/feature/../../settings.json",
             "cp x .claude/worktrees/../settings.json",
-            "cp x .claude/worktrees/.harness/settings.json",
+            "cp x .claude/worktrees/.cavvy/settings.json",
             "cp x .claude/worktrees/*/settings.json",
             `cp x ".claude/worktrees/feature/"'..'"/settings.json"`,
             `cp x ".claude/worktrees/feature name/../../settings.json"`, // a quoted name with a space in it
@@ -824,7 +824,7 @@ describe("Bash", () => {
         ]) {
             const d = check(T("Bash"), bash(cmd));
             expect([cmd, d.behavior]).toEqual([cmd, "ask"]);
-            expect(d.reason).toMatch(/harness or git configuration/);
+            expect(d.reason).toMatch(/cavvy or git configuration/);
         }
         for (const cmd of ["bun test .claude/worktrees/feature/test", `bun test ${join(W, ".claude", "worktrees", "fix-x")}`, "cp x .claude/worktrees/feature/src/a.ts", "cp x .claude/worktrees/outer/.claude/worktrees/inner/src/a.ts"]) {
             expect([cmd, check(T("Bash"), bash(cmd)).behavior]).toEqual([cmd, "allow"]);
@@ -846,9 +846,9 @@ describe("Bash", () => {
             for (const suffix of [":h", "[1]:h", "{name}", "(name)"]) {
                 const segment = `.${parameter}${suffix}`;
                 const cmd = `cp /dev/null .claude/worktrees/x/${segment}/${segment}/settings.json`;
-                expect([cmd, configTarget(cmd)]).toEqual([cmd, "harness or git configuration"]);
+                expect([cmd, configTarget(cmd)]).toEqual([cmd, "cavvy or git configuration"]);
                 expect([cmd, check(T("Bash"), bash(cmd))]).toEqual([cmd, expect.objectContaining({
-                    behavior: "ask", reason: expect.stringContaining("harness or git configuration"),
+                    behavior: "ask", reason: expect.stringContaining("cavvy or git configuration"),
                 })]);
             }
         }
@@ -1007,19 +1007,19 @@ describe("rules in other spellings", () => {
 
 describe("caselessFold", () => {
     test("folds the letters APFS folds that toLowerCase doesn't", () => {
-        expect(caselessFold(".harne\u017F\u017F")).toBe(".harness"); // ſ
-        expect(caselessFold(".harne\u1E9E")).toBe(".harness"); // ẞ
-        expect(caselessFold(".harne\u00DF")).toBe(".harness"); // ß
+        expect(caselessFold(".harne\u017F\u017F")).toBe(".cavvy"); // ſ
+        expect(caselessFold(".harne\u1E9E")).toBe(".cavvy"); // ẞ
+        expect(caselessFold(".harne\u00DF")).toBe(".cavvy"); // ß
         expect(caselessFold(".mcp.j\u017Fon")).toBe(".mcp.json");
         expect(caselessFold("\u212Aube")).toBe("kube"); // Kelvin sign
         expect(caselessFold("\uFB05 \uFB06 \uFB01 \uFB00")).toBe("st st fi ff"); // ligatures
-        expect(caselessFold(".HARNESS/Settings.JSON")).toBe(".harness/settings.json");
+        expect(caselessFold(".CAVVY/Settings.JSON")).toBe(".cavvy/settings.json");
     });
 
     test("and more than APFS does: compatibility forms, invisible characters, dotless i", () => {
-        expect(caselessFold(".\uFF48\uFF41\uFF52\uFF4E\uFF45\uFF53\uFF53")).toBe(".harness"); // fullwidth
-        expect(caselessFold(".\uFF28ARNESS")).toBe(".harness");
-        expect(caselessFold(".har\u200Bness\uFEFF\u00AD")).toBe(".harness");
+        expect(caselessFold(".\uFF48\uFF41\uFF52\uFF4E\uFF45\uFF53\uFF53")).toBe(".cavvy"); // fullwidth
+        expect(caselessFold(".\uFF28ARNESS")).toBe(".cavvy");
+        expect(caselessFold(".har\u200Bness\uFEFF\u00AD")).toBe(".cavvy");
         expect(caselessFold(".g\u0131t")).toBe(".git");
         expect(caselessFold("caf\u00E9")).toBe(caselessFold("cafe\u0301")); // NFC and NFD
         expect(caselessFold("\u039F\u0394\u039F\u03A3")).toBe(caselessFold("\u03BF\u03B4\u03BF\u03C3x").slice(0, -1)); // final sigma: σ wherever it is
@@ -1044,7 +1044,7 @@ describe("caselessFold", () => {
     });
 
     test("spellings: lower-cased and folded where the volume ignores case, as given elsewhere", () => {
-        expect(spellings(".Harne\u017F\u017F")).toEqual(CASE_INSENSITIVE_FS ? [".harne\u017F\u017F", ".harness"] : [".Harne\u017F\u017F"]);
+        expect(spellings(".Harne\u017F\u017F")).toEqual(CASE_INSENSITIVE_FS ? [".harne\u017F\u017F", ".cavvy"] : [".Harne\u017F\u017F"]);
         expect(spellings("src/a.ts")).toEqual(["src/a.ts"]);
     });
 });
@@ -1136,8 +1136,8 @@ describe("here-documents (#448)", () => {
             expect(d.dangerous).toBeUndefined();
         });
 
-        test("a .env or harness config named in the data isn't read or changed", () => {
-            expect(noSandbox().check(T("Bash"), bash("cat <<'EOF'\nsource .env first\nedit .git/config and ~/.harness/settings.json\nEOF"), "default", W)).toEqual({ behavior: "allow", reason: "read-only command" });
+        test("a .env or Cavvy config named in the data isn't read or changed", () => {
+            expect(noSandbox().check(T("Bash"), bash("cat <<'EOF'\nsource .env first\nedit .git/config and ~/.cavvy/settings.json\nEOF"), "default", W)).toEqual({ behavior: "allow", reason: "read-only command" });
         });
 
         test("in auto mode with a sandbox: no network refusal or deletion review for the data", () => {

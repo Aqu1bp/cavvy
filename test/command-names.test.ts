@@ -12,9 +12,9 @@ import type { PermissionMode } from "../src/permissions/modes";
 import type { PermissionChecker as Checker } from "../src/permissions/checker";
 import type { Sandbox } from "../src/permissions/sandbox";
 
-const prevHarnessHome = process.env.HARNESS_HOME;
-const H = realpathSync(mkdtempSync(join(tmpdir(), "harness-test-")));
-process.env.HARNESS_HOME = H;
+const prevCavvyHome = process.env.CAVVY_HOME;
+const H = realpathSync(mkdtempSync(join(tmpdir(), "cavvy-test-")));
+process.env.CAVVY_HOME = H;
 
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
@@ -24,10 +24,10 @@ const { bashRuleMatches } = await import("../src/permissions/rules");
 const { looksDestructive, accessNeeded, sandboxPolicy, seatbeltProfile, bwrapArgs, sandboxKind, blockedBySandbox } = await import("../src/permissions/sandbox");
 const { CASE_INSENSITIVE_FS } = await import("../src/util/files");
 
-const W = realpathSync(mkdtempSync(join(tmpdir(), "harness-test-ws-")));
+const W = realpathSync(mkdtempSync(join(tmpdir(), "cavvy-test-ws-")));
 afterAll(() => {
-    if (prevHarnessHome === undefined) delete process.env.HARNESS_HOME;
-    else process.env.HARNESS_HOME = prevHarnessHome;
+    if (prevCavvyHome === undefined) delete process.env.CAVVY_HOME;
+    else process.env.CAVVY_HOME = prevCavvyHome;
     for (const d of [H, W]) rmSync(d, { recursive: true, force: true });
 });
 
@@ -227,7 +227,7 @@ describe("read-only queries (T2-1)", () => {
 
     test("notReadOnly names the part that isn't read-only", () => {
         expect(notReadOnly("nl -ba a.ts | sed -n '1,9p' && git --exec-path=/x status && cat b")).toBe("`git --exec-path=/x status` isn't one of the read-only commands");
-        expect(notReadOnly("cat a; HARNESS_NO_KEYCHAIN=1 bun test test/x.test.ts")).toBe("`HARNESS_NO_KEYCHAIN=1 bun test test/x.test.ts` isn't one of the read-only commands");
+        expect(notReadOnly("cat a; CAVVY_NO_KEYCHAIN=1 bun test test/x.test.ts")).toBe("`CAVVY_NO_KEYCHAIN=1 bun test test/x.test.ts` isn't one of the read-only commands");
         expect(notReadOnly("echo $(id)")).toContain("$(…)");
         expect(notReadOnly("cat a > b.txt")).toBe("it writes to b.txt with a > redirect");
         expect(notReadOnly("cat 'a")).toBe("its quotes aren't closed");
@@ -300,19 +300,19 @@ function worktree(root: string, name: string): string {
 
 describe("sandboxPolicy: the agent CLIs' config", () => {
     test(".claude and .codex are read-only, except the worktrees in .claude/worktrees, whose own config stays read-only", () => {
-        const ws = realpathSync(mkdtempSync(join(tmpdir(), "harness-sbx-")));
+        const ws = realpathSync(mkdtempSync(join(tmpdir(), "cavvy-sbx-")));
         try {
             const wt = worktree(ws, "feature");
             mkdirSync(join(ws, ".claude", "worktrees", "no-git"));
-            mkdirSync(join(ws, ".claude", "worktrees", ".harness"));
-            writeFileSync(join(ws, ".claude", "worktrees", ".harness", ".git"), "");
+            mkdirSync(join(ws, ".claude", "worktrees", ".cavvy"));
+            writeFileSync(join(ws, ".claude", "worktrees", ".cavvy", ".git"), "");
             symlinkSync(ws, join(ws, ".claude", "worktrees", "link"));
-            const p = sandboxPolicy([ws], { harnessHome: H });
+            const p = sandboxPolicy([ws], { cavvyHome: H });
             expect(p.cliConfig).toEqual([join(ws, ".claude"), join(ws, ".codex")]);
             // Only a real folder with a .git, not named like the config (as withoutWorktrees in checker.ts).
             expect(p.worktrees).toEqual([wt]);
-            for (const c of [".harness", ".mcp.json", ".claude", ".codex", ".git"]) expect(p.readOnly).toContain(join(wt, c));
-            expect(p.readOnly).toContain(join(ws, ".harness"));
+            for (const c of [".cavvy", ".mcp.json", ".claude", ".codex", ".git"]) expect(p.readOnly).toContain(join(wt, c));
+            expect(p.readOnly).toContain(join(ws, ".cavvy"));
             expect(p.readOnly).not.toContain(join(ws, ".claude"));
 
             const lines = seatbeltProfile(p).split("\n");
@@ -334,13 +334,13 @@ describe("sandboxPolicy: the agent CLIs' config", () => {
     });
 
     test("a symlinked .claude is protected where it leads too, and has no worktrees", () => {
-        const ws = realpathSync(mkdtempSync(join(tmpdir(), "harness-sbx-")));
-        const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), "harness-sbx-cfg-")));
+        const ws = realpathSync(mkdtempSync(join(tmpdir(), "cavvy-sbx-")));
+        const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), "cavvy-sbx-cfg-")));
         try {
             symlinkSync(elsewhere, join(ws, ".claude"));
             mkdirSync(join(elsewhere, "worktrees", "x"), { recursive: true });
             writeFileSync(join(elsewhere, "worktrees", "x", ".git"), "");
-            const p = sandboxPolicy([ws], { harnessHome: H });
+            const p = sandboxPolicy([ws], { cavvyHome: H });
             expect(p.cliConfig).toEqual([join(ws, ".claude"), elsewhere, join(ws, ".codex")]);
             expect(p.worktrees).toEqual([]);
         } finally {
@@ -350,12 +350,12 @@ describe("sandboxPolicy: the agent CLIs' config", () => {
     });
 
     test("bubblewrap: the CLIs' config bound read-only, the worktrees read-write on top, their config read-only again", () => {
-        const ws = realpathSync(mkdtempSync(join(tmpdir(), "harness-sbx-")));
+        const ws = realpathSync(mkdtempSync(join(tmpdir(), "cavvy-sbx-")));
         try {
             const wt = worktree(ws, "feature");
             mkdirSync(join(wt, ".claude"));
             mkdirSync(join(ws, ".codex"));
-            const args = bwrapArgs(sandboxPolicy([ws], { harnessHome: H }));
+            const args = bwrapArgs(sandboxPolicy([ws], { cavvyHome: H }));
             const at = (flag: string, path: string) => args.findIndex((a, i) => a === flag && args[i + 1] === path);
             expect(at("--ro-bind", join(ws, ".claude"))).toBeGreaterThan(at("--bind", ws));
             expect(at("--ro-bind", join(ws, ".codex"))).toBeGreaterThan(-1);
@@ -428,17 +428,17 @@ describe("review round 1", () => {
 
     test("a pseudo-terminal the sandbox refused reads as a sandbox block", () => {
         for (const out of ["error: Failed to open PTY", "script: openpty: Operation not permitted", "PermissionError: [Errno 1] Operation not permitted"]) expect([out, blockedBySandbox(out)]).toEqual([out, true]);
-        expect(seatbeltProfile(sandboxPolicy([W], { harnessHome: H }))).toContain('(literal "/dev/ptmx")');
-        expect(bwrapArgs(sandboxPolicy([W], { harnessHome: H })).join(" ")).toContain("--dev /dev");
+        expect(seatbeltProfile(sandboxPolicy([W], { cavvyHome: H }))).toContain('(literal "/dev/ptmx")');
+        expect(bwrapArgs(sandboxPolicy([W], { cavvyHome: H })).join(" ")).toContain("--dev /dev");
     });
 
     test("CLI config that a symlink puts inside a worktree stays read-only", () => {
-        const ws = realpathSync(mkdtempSync(join(tmpdir(), "harness-sbx-in-")));
+        const ws = realpathSync(mkdtempSync(join(tmpdir(), "cavvy-sbx-in-")));
         try {
             const wt = worktree(ws, "feature");
             mkdirSync(join(wt, "shared-config"));
             symlinkSync(join(wt, "shared-config"), join(ws, ".codex"));
-            const p = sandboxPolicy([ws], { harnessHome: H });
+            const p = sandboxPolicy([ws], { cavvyHome: H });
             expect(p.cliConfig).toContain(join(wt, "shared-config"));
             const lines = seatbeltProfile(p).split("\n");
             const reopen = lines.findIndex((l) => l === `(allow file-write* (subpath "${wt}"))`);
@@ -457,7 +457,7 @@ describe("review round 1", () => {
 
 describe("review round 2", () => {
     test("an exclusion counts only when every word is where it's written", () => {
-        for (const cmd of ["grep --exclude <.env x .", "grep -e $HARNESS_REVIEW_UNSET --exclude .env", "rg -e $X -g '!**/.env*' x", "rg -g <'!/.env' x"]) {
+        for (const cmd of ["grep --exclude <.env x .", "grep -e $CAVVY_REVIEW_UNSET --exclude .env", "rg -e $X -g '!**/.env*' x", "rg -g <'!/.env' x"]) {
             expect([cmd, sensitiveTarget(cmd, { cwd: W })]).toEqual([cmd, "a .env file"]);
         }
         expect(sensitiveTarget("rg -n x -g '!**/.env*' src 2>/dev/null", { cwd: W })).toBeUndefined();
@@ -522,10 +522,10 @@ describe("review round 2", () => {
     });
 
     test("a dangling .codex symlink is protected where it leads", () => {
-        const ws = realpathSync(mkdtempSync(join(tmpdir(), "harness-sbx-dangle-")));
+        const ws = realpathSync(mkdtempSync(join(tmpdir(), "cavvy-sbx-dangle-")));
         try {
             symlinkSync("generated/codex", join(ws, ".codex"));
-            expect(sandboxPolicy([ws], { harnessHome: H }).cliConfig).toContain(join(ws, "generated", "codex"));
+            expect(sandboxPolicy([ws], { cavvyHome: H }).cliConfig).toContain(join(ws, "generated", "codex"));
         } finally {
             rmSync(ws, { recursive: true, force: true });
         }
@@ -535,7 +535,7 @@ describe("review round 2", () => {
 const seatbelt = process.platform === "darwin" && sandboxKind() === "seatbelt";
 
 describe.skipIf(!seatbelt)("a sandboxed command and the agent CLIs' config (Seatbelt)", () => {
-    const ws = realpathSync(mkdtempSync(join(tmpdir(), "harness-sbx-run-")));
+    const ws = realpathSync(mkdtempSync(join(tmpdir(), "cavvy-sbx-run-")));
     mkdirSync(join(ws, ".git", "worktrees", "feature"), { recursive: true });
     const wt = worktree(ws, "feature");
     mkdirSync(join(wt, "src"));
@@ -543,7 +543,7 @@ describe.skipIf(!seatbelt)("a sandboxed command and the agent CLIs' config (Seat
     const run = (command: string) => {
         // Each from the workspace root (the tool keeps a `cd` for the next command).
         state.cwd = ws;
-        const sandbox: Sandbox = { kind: "seatbelt", policy: sandboxPolicy([ws], { harnessHome: H }) };
+        const sandbox: Sandbox = { kind: "seatbelt", policy: sandboxPolicy([ws], { cavvyHome: H }) };
         return BashTool.run({ command }, { state, settings: {}, signal: new AbortController().signal, mode: () => "auto", setMode() {}, ui: {}, sandbox } as any);
     };
     afterAll(() => {
@@ -572,7 +572,7 @@ describe.skipIf(!seatbelt)("a sandboxed command and the agent CLIs' config (Seat
         for (const [cmd, path] of [
             ["mkdir .claude/worktrees/feature/.claude", join(wt, ".claude")],
             ["echo x > .claude/worktrees/feature/.mcp.json", join(wt, ".mcp.json")],
-            ["mkdir .claude/worktrees/feature/.harness", join(wt, ".harness")],
+            ["mkdir .claude/worktrees/feature/.cavvy", join(wt, ".cavvy")],
         ]) {
             const r = await run(cmd);
             expect([cmd, r.isError]).toEqual([cmd, true]);
@@ -580,7 +580,7 @@ describe.skipIf(!seatbelt)("a sandboxed command and the agent CLIs' config (Seat
         }
         await run(`printf 'gitdir: /tmp/evil\\n' > .claude/worktrees/feature/.git`);
         expect(readFileSync(join(wt, ".git"), "utf-8")).toBe(`gitdir: ${join(ws, ".git", "worktrees", "feature")}\n`);
-        const moved = await run("mv .claude/worktrees/feature /tmp/harness-sbx-moved-" + process.pid);
+        const moved = await run("mv .claude/worktrees/feature /tmp/cavvy-sbx-moved-" + process.pid);
         expect(moved.isError).toBe(true);
         expect(existsSync(wt)).toBe(true);
         // A link out of the worktree doesn't lead back into .claude either.
@@ -594,12 +594,12 @@ describe.skipIf(!seatbelt)("a sandboxed command and the agent CLIs' config (Seat
     });
 
     test("a .codex symlinked into a worktree stays read-only there", async () => {
-        const ws2 = realpathSync(mkdtempSync(join(tmpdir(), "harness-sbx-in-run-")));
+        const ws2 = realpathSync(mkdtempSync(join(tmpdir(), "cavvy-sbx-in-run-")));
         const wt2 = worktree(ws2, "feature");
         mkdirSync(join(wt2, "shared-config"));
         symlinkSync(join(wt2, "shared-config"), join(ws2, ".codex"));
         const st = { cwd: ws2, projectRoot: ws2, fileState: new Map(), todos: [], shells: new Map() } as any;
-        const sandbox: Sandbox = { kind: "seatbelt", policy: sandboxPolicy([ws2], { harnessHome: H }) };
+        const sandbox: Sandbox = { kind: "seatbelt", policy: sandboxPolicy([ws2], { cavvyHome: H }) };
         const run2 = (command: string) => BashTool.run({ command }, { state: st, settings: {}, signal: new AbortController().signal, mode: () => "auto", setMode() {}, ui: {}, sandbox } as any);
         try {
             expect((await run2("echo x > .claude/worktrees/feature/shared-config/config.toml")).isError).toBe(true);

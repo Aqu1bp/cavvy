@@ -280,7 +280,7 @@ for (const legacy of [false, true]) test(`log never lazy-fetches a configured ma
         if (legacy) {
             const protocols = readFileSync(calls, "utf8").trimEnd().split("\n");
             expect(protocols.length).toBeGreaterThan(5);
-            expect(protocols.every((protocol) => protocol === "harness-none")).toBe(true);
+            expect(protocols.every((protocol) => protocol === "cavvy-none")).toBe(true);
         }
     } finally {
         if (before === undefined) delete process.env.PATH;
@@ -532,7 +532,7 @@ test("aborting an async git call kills it and what it started, at once", async (
     expect(await gone(pids)).toBe(true);
 }, 20_000);
 
-for (const end of ["exit", "SIGINT", "SIGTERM"] as const) test(`async git calls still running are killed when the harness ends (${end})`, async () => {
+for (const end of ["exit", "SIGINT", "SIGTERM"] as const) test(`async git calls still running are killed when Cavvy ends (${end})`, async () => {
     const git = hungGit(false);
     const child = Bun.spawn([process.execPath, "--no-env-file", join(import.meta.dir, "fixtures", "git-groups.ts"), git.dir, end], {
         env: { ...process.env, PATH: `${git.bin}:${process.env.PATH}` }, stdout: "pipe", stderr: "pipe",

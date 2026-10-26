@@ -1,4 +1,4 @@
-// Sessions are append-only JSONL files under ~/.harness/projects/<slug>/.
+// Sessions are append-only JSONL files under ~/.cavvy/projects/<slug>/.
 // Each line is one record; a "compact" record starts a fresh history and a
 // "rewind" record cuts it back (/rewind).
 // Everything is passed through the redactor before it touches disk.
@@ -91,7 +91,7 @@ export interface TurnNotice extends NoticeData {
     level: "info" | "warn" | "error";
     text: string;
     at: number;
-    /** What it's about, one short line each (the background tasks Harness stopped): shown folded under the text. */
+    /** What it's about, one short line each (the background tasks Cavvy stopped): shown folded under the text. */
     details?: string[];
 }
 
@@ -280,7 +280,7 @@ export class Session {
     goal?: GoalRecord;
     /**
      * The session a sub-agent runs for. Its own isn't saved, so the backend
-     * sessions it starts are recorded in that one: they're Harness's, not
+     * sessions it starts are recorded in that one: they're Cavvy's, not
      * conversations to pick up from the CLI.
      */
     runsFor?: Session;
@@ -1475,7 +1475,7 @@ export function heldSessionFolders(): string[] {
 /**
  * Sessions from every project, newest first (the GUI's sidebar). Each
  * session records its own folder, so the lossy folder names under
- * ~/.harness/projects/ don't matter. Only the newest `limit` files are read.
+ * ~/.cavvy/projects/ don't matter. Only the newest `limit` files are read.
  */
 export function listAllSessions(limit = 200): SessionSummary[] {
     const root = paths.projectsDir();

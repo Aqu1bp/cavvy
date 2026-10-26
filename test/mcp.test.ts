@@ -14,7 +14,7 @@ import type { McpClient as McpClientT } from "../src/mcp/client";
 import type { HttpFixture } from "./fixtures/mcp-http-server";
 
 const FIXTURE = join(import.meta.dir, "fixtures", "mcp-stdio-server.ts");
-const WORK = tempDir("harness-mcp-");
+const WORK = tempDir("cavvy-mcp-");
 
 function stdio(era: string, env: Record<string, string> = {}): McpServerConfig {
     return { command: process.execPath, args: ["--no-env-file", FIXTURE], env: { MCP_FIXTURE_ERA: era, ...env }, cwd: WORK };
@@ -112,7 +112,7 @@ describe("stdio, legacy server (2025-06-18)", () => {
         expect(init.params.protocolVersion).toBe("2025-11-25");
         // Not interactive: only roots, which needs nobody to answer.
         expect(init.params.capabilities).toEqual({ roots: {} });
-        expect(init.params.clientInfo.name).toBe("harness");
+        expect(init.params.clientInfo.name).toBe("cavvy");
         // notifications/initialized is a notification: no id
         expect(log[2]!.id).toBeNull();
         expect(log[3]!.params).toEqual({});
@@ -203,7 +203,7 @@ describe("stdio, modern server (2026-07-28)", () => {
         for (const l of log) {
             expect(l.params._meta["io.modelcontextprotocol/protocolVersion"]).toBe("2026-07-28");
             expect(l.params._meta["io.modelcontextprotocol/clientCapabilities"]).toEqual({ roots: {} });
-            expect(l.params._meta["io.modelcontextprotocol/clientInfo"].name).toBe("harness");
+            expect(l.params._meta["io.modelcontextprotocol/clientInfo"].name).toBe("cavvy");
         }
         expect(log[2]!.params.cursor).toBe("4");
         expect(log.at(-1)!.params.name).toBe("get_log");
@@ -516,7 +516,7 @@ describe("formatMcpResult", () => {
 // ---------------------------------------------------------------------------
 
 describe("McpManager.load and project .mcp.json approval", () => {
-    const proj = tempDir("harness-mcp-proj-");
+    const proj = tempDir("cavvy-mcp-proj-");
     afterAll(() => rmSync(proj, { recursive: true, force: true }));
     const cfg = (n: string): McpServerConfig => ({ command: "echo", args: [n] });
     writeFileSync(
@@ -621,7 +621,7 @@ describe("McpManager.load and project .mcp.json approval", () => {
     });
 
     test("no .mcp.json: only settings servers", () => {
-        const empty = tempDir("harness-mcp-empty-");
+        const empty = tempDir("cavvy-mcp-empty-");
         try {
             const m = new McpManager(empty, () => base, true);
             m.load();
@@ -633,7 +633,7 @@ describe("McpManager.load and project .mcp.json approval", () => {
 });
 
 describe("McpManager start, tools and shutdown", () => {
-    const proj = tempDir("harness-mcp-run-");
+    const proj = tempDir("cavvy-mcp-run-");
     afterAll(() => rmSync(proj, { recursive: true, force: true }));
     mkdirSync(proj, { recursive: true });
     writeFileSync(join(proj, ".mcp.json"), JSON.stringify({ mcpServers: { mod: stdio("modern") } }));

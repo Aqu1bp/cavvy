@@ -40,16 +40,16 @@ const expectStrict = (result: ReturnType<typeof claudeMcpPolicy>) => {
 
 describe("Claude native project MCP policy", () => {
     test("an empty workspace preserves native user servers and reserves delegation", () => {
-        expect(claudeMcpPolicy(cwd, snapshot({}))).toEqual({ strict: false, settings: { enabledMcpjsonServers: [], disabledMcpjsonServers: ["harness"] } });
+        expect(claudeMcpPolicy(cwd, snapshot({}))).toEqual({ strict: false, settings: { enabledMcpjsonServers: [], disabledMcpjsonServers: ["cavvy"] } });
     });
 
     test("only exact project definitions are enabled; settings-source names cannot approve project copies", () => {
         const cfg = config();
-        write({ approved: cfg, pending: cfg, harness: cfg, settings: cfg });
-        const approved = snapshot({ approved: cfg, harness: cfg });
+        write({ approved: cfg, pending: cfg, cavvy: cfg, settings: cfg });
+        const approved = snapshot({ approved: cfg, cavvy: cfg });
         approved.servers.settings = { source: "settings", config: cfg };
         expect(claudeMcpPolicy(cwd, approved)).toEqual({ strict: false, settings: {
-            enabledMcpjsonServers: ["approved"], disabledMcpjsonServers: ["harness", "pending", "settings"],
+            enabledMcpjsonServers: ["approved"], disabledMcpjsonServers: ["cavvy", "pending", "settings"],
         } });
     });
 
@@ -73,7 +73,7 @@ describe("Claude native project MCP policy", () => {
         expect(approved.servers.approved!.config).not.toHaveProperty("cwd");
         expect(claudeMcpPolicy(cwd, approved).settings).toEqual({
             enabledMcpjsonServers: ["approved"],
-            disabledMcpjsonServers: ["clash", "disabled", "harness", "legacy", "pending", "rejected", "same__name"],
+            disabledMcpjsonServers: ["clash", "disabled", "cavvy", "legacy", "pending", "rejected", "same__name"],
         });
         approved.servers.approved!.config.env!.A = "changed outside the manager";
         expect(manager.approvedServers().servers.approved!.config).toEqual(cfg);
@@ -91,12 +91,12 @@ describe("Claude native project MCP policy", () => {
         manager.load();
         expect(manager.approvedServers().servers.helper).toBeDefined();
         const policy = claudeMcpPolicy(cwd, manager.approvedServers());
-        expect(policy.settings).toEqual({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["harness", "helper"] });
+        expect(policy.settings).toEqual({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["cavvy", "helper"] });
         expect(policy.warning).toContain("fields an approval doesn't cover");
     });
 
     test("an approved server with an oauth block is passed on (Claude Code signs in itself); a changed oauth block needs approving again", () => {
-        const secure = { type: "http", url: "https://example.invalid/mcp", oauth: { clientId: "harness-client", callbackPort: 8765, scopes: "read write" } };
+        const secure = { type: "http", url: "https://example.invalid/mcp", oauth: { clientId: "cavvy-client", callbackPort: 8765, scopes: "read write" } };
         write({ secure });
         saveApproval(cwd, "secure", mcpFingerprint(secure, cwd));
         const manager = new McpManager(cwd, () => loadSettings(cwd, { trusted: true }), true);
@@ -145,7 +145,7 @@ describe("Claude native project MCP policy", () => {
     ] as const) test(`a definition Claude Code would expand (\${VAR} in ${label}) isn't passed on`, () => {
         write({ expanding: cfg });
         const policy = claudeMcpPolicy(cwd, snapshot({ expanding: cfg as McpServerConfig }));
-        expect(policy.settings).toEqual({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["expanding", "harness"] });
+        expect(policy.settings).toEqual({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["expanding", "cavvy"] });
         expect(policy.warning).toContain("${VAR} expansion");
     });
 
@@ -190,7 +190,7 @@ describe("Claude native project MCP policy", () => {
     test("a URL-only definition without a type isn't passed on: Claude Code reads it as stdio", () => {
         const urlOnly = { url: "https://example.invalid/mcp" };
         write({ urlOnly });
-        expect(claudeMcpPolicy(cwd, snapshot({ urlOnly })).settings).toEqual({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["harness", "urlOnly"] });
+        expect(claudeMcpPolicy(cwd, snapshot({ urlOnly })).settings).toEqual({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["cavvy", "urlOnly"] });
     });
 
     test("a relative server cwd is the project's, not the process's", () => {
@@ -199,7 +199,7 @@ describe("Claude native project MCP policy", () => {
         write({ inSub, here });
         const policy = claudeMcpPolicy(cwd, snapshot({ inSub, here }));
         // Claude Code ignores cwd, so only the one that runs in the project folder itself is passed on.
-        expect(policy.settings).toEqual({ enabledMcpjsonServers: ["here"], disabledMcpjsonServers: ["harness", "inSub"] });
+        expect(policy.settings).toEqual({ enabledMcpjsonServers: ["here"], disabledMcpjsonServers: ["cavvy", "inSub"] });
     });
 
     test("deep equality ignores object key order but preserves all definition fields", () => {
@@ -221,7 +221,7 @@ describe("Claude native project MCP policy", () => {
         };
         write(servers);
         const policy = claudeMcpPolicy(cwd, snapshot(servers));
-        expect(policy.settings?.disabledMcpjsonServers).toEqual(["elsewhere", "harness"]);
+        expect(policy.settings?.disabledMcpjsonServers).toEqual(["elsewhere", "cavvy"]);
         expect(policy.settings?.enabledMcpjsonServers).toEqual(["alias", "default", "same"]);
         expect(policy.strict).toBe(false);
         expect(policy.warning).toMatch(/skipped.*working directory.*ignores server cwd/);
@@ -237,12 +237,12 @@ describe("Claude native project MCP policy", () => {
         const cfg = config();
         write({ approved: { ...cfg, ...update } });
         expect(claudeMcpPolicy(cwd, snapshot({ approved: cfg }))).toMatchObject({ strict: false, settings: {
-            enabledMcpjsonServers: [], disabledMcpjsonServers: ["approved", "harness"],
+            enabledMcpjsonServers: [], disabledMcpjsonServers: ["approved", "cavvy"],
         } });
     });
 
     test("a removed project file leaves no stale enabled names", () => {
-        expect(claudeMcpPolicy(cwd, snapshot({ removed: config() })).settings).toEqual({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["harness"] });
+        expect(claudeMcpPolicy(cwd, snapshot({ removed: config() })).settings).toEqual({ enabledMcpjsonServers: [], disabledMcpjsonServers: ["cavvy"] });
     });
 
     for (const name of ["with space", "with.dot", "", "__proto__", "constructor", "prototype", "bad\nprivate-sentinel"]) {

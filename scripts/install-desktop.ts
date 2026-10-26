@@ -2,8 +2,8 @@
 // it's on) and installs it in place of the copy you have, to try a change
 // in the app itself. macOS only.
 //
-//   bun run desktop:install                 build, quit Harness, install, open it
-//   bun run desktop:install --no-restart    install only; a running Harness carries on
+//   bun run desktop:install                 build, quit Cavvy, install, open it
+//   bun run desktop:install --no-restart    install only; a running Cavvy carries on
 //
 // It goes to /Applications, or ~/Applications if that isn't writable. Builds
 // reuse desktop/src-tauri/target, so after the first only what changed is
@@ -11,10 +11,10 @@
 //
 // It's signed with your Apple Development (or Developer ID) certificate when
 // you have one, so each build is the same app to macOS and keeps the keychain
-// access you allowed: Harness reads your API keys from there. Unsigned (ad hoc)
+// access you allowed: Cavvy reads your API keys from there. Unsigned (ad hoc)
 // builds are a new app every time, and macOS asks again. With more than one
 // certificate it keeps to the one the installed copy has; to pick another,
-// set HARNESS_SIGNING_IDENTITY to its name or SHA-1 (security find-identity -v -p codesigning).
+// set CAVVY_SIGNING_IDENTITY to its name or SHA-1 (security find-identity -v -p codesigning).
 
 import { accessSync, constants, existsSync, readdirSync } from "fs";
 import { homedir, userInfo } from "os";
@@ -102,7 +102,7 @@ interface Identity {
 
 /** Who signed the installed copy's server (the part that reads the keychain). */
 function signedBy(app: string): string | undefined {
-    const server = join(app, "Contents", "MacOS", "harness");
+    const server = join(app, "Contents", "MacOS", "cavvy");
     if (!existsSync(server)) return undefined;
     const r = Bun.spawnSync(["codesign", "-dvv", server], { stdout: "pipe", stderr: "pipe" });
     return r.stderr.toString().match(/^Authority=(.+)$/m)?.[1];
@@ -117,11 +117,11 @@ function signingIdentity(): Identity | undefined {
             const m = l.match(/^\s*\d+\)\s+([0-9A-F]{40})\s+"([^"]+)"(.*)$/);
             return m && !m[3]!.includes("CSSMERR") ? [{ hash: m[1]!, name: m[2]! }] : [];
         });
-    const want = process.env.HARNESS_SIGNING_IDENTITY?.trim();
+    const want = process.env.CAVVY_SIGNING_IDENTITY?.trim();
     if (want) {
         const id = valid.find((i) => i.hash === want.toUpperCase() || i.name === want);
         if (!id) {
-            console.error(`HARNESS_SIGNING_IDENTITY is "${want}", but there's no valid signing certificate by that name or SHA-1. security find-identity -v -p codesigning lists them.`);
+            console.error(`CAVVY_SIGNING_IDENTITY is "${want}", but there's no valid signing certificate by that name or SHA-1. security find-identity -v -p codesigning lists them.`);
             process.exit(1);
         }
         return id;
@@ -134,7 +134,7 @@ function signingIdentity(): Identity | undefined {
 // The server first: it's inside the app, whose own signature covers it. By SHA-1, as names can repeat (a revoked copy).
 const id = signingIdentity();
 if (id) {
-    output(["codesign", "--force", "--sign", id.hash, "--identifier", `${identifier}.server`, "--timestamp=none", join(built, "Contents", "MacOS", "harness")]);
+    output(["codesign", "--force", "--sign", id.hash, "--identifier", `${identifier}.server`, "--timestamp=none", join(built, "Contents", "MacOS", "cavvy")]);
     output(["codesign", "--force", "--sign", id.hash, "--timestamp=none", built]);
     console.log(`Signed with ${id.name}`);
 } else {
@@ -149,7 +149,7 @@ function running(): { app: number[]; server: number[] } {
             .split("\n")
             .filter(Boolean)
             .map(Number);
-    return { app: find(`/${productName}.app/Contents/MacOS/harness-desktop`), server: find(`/${productName}.app/Contents/MacOS/harness serve`) };
+    return { app: find(`/${productName}.app/Contents/MacOS/cavvy-desktop`), server: find(`/${productName}.app/Contents/MacOS/cavvy serve`) };
 }
 
 /** Sends sig to pid; false if it's gone (or isn't yours). */

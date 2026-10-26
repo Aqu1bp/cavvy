@@ -37,7 +37,7 @@
 //
 //   bun scripts/mock-llm.ts [--port 4010] [--delay 12]
 //
-// Register it as a provider (no key needed) in ~/.harness/providers.json:
+// Register it as a provider (no key needed) in ~/.cavvy/providers.json:
 //   { "custom": [{ "id": "mock", "name": "Mock", "baseUrl": "http://127.0.0.1:4010/v1", "requiresKey": false }] }
 
 type Json = Record<string, any>;
@@ -157,7 +157,7 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         const failed = lines.find((l) => /error|fail/i.test(l));
         return { text: failed ? `The build reported a failure: \`${failed}\`. I'll look into \`test/auth.test.ts\` next.` : `Progress: ${lines.join("; ")}.` };
     }
-    // News from a watched pull request (the harness woke the agent).
+    // News from a watched pull request (Cavvy woke the agent).
     if (/events? you asked to be told about arrived/.test(p)) {
         if (/checks failed/.test(p)) return { text: "CI's **test** job failed on the latest commit. The log shows the SAML assertion test expects an issuer check; I'll fix it and push again." };
         if (/new comments?:/.test(p)) return { text: "A reviewer asked for a test of the rejected-assertion path. I'll add it and reply once it's pushed." };
@@ -490,7 +490,7 @@ function onDelta(turn: Turn, delta: string) {
 | GUI | scroll position, open panels | no |
 | Provider | the model's context | per request |
 
-The short version: the GUI can come and go, and nothing in \`~/.harness/sessions\` is lost when it does. If a reply is cut off, *resume* picks it up from the last saved turn.`;
+The short version: the GUI can come and go, and nothing in \`~/.cavvy/sessions\` is lost when it does. If a reply is cut off, *resume* picks it up from the last saved turn.`;
 
 /** A model's pace: 1 to 5 tokens a chunk (about 4 characters each), 15 to 90ms apart. Seeded, so every run is the same. */
 function pacedChunks(text: string): [string, number][] {
@@ -562,7 +562,7 @@ export function startMockLlm(o: MockOptions = {}) {
                 }
             }
             const promptMsg = messages[promptIdx] ?? {};
-            // The harness's own notes ride along with prompts; only the user's words pick the script.
+            // Cavvy's own notes ride along with prompts; only the user's words pick the script.
             // A prompt after an interrupt arrives joined to the interrupted one (one user message): only what follows counts.
             const prompt = (typeof promptMsg.content === "string" ? promptMsg.content : (promptMsg.content ?? []).map((c: Json) => c.text ?? "").join("\n")).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").split("[Request interrupted by user]").pop()!.trim();
             const images = Array.isArray(promptMsg.content) ? promptMsg.content.filter((c: Json) => c.type === "image_url").length : 0;

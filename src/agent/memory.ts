@@ -2,9 +2,9 @@
 //
 //   ~/.claude/CLAUDE.md, ~/.claude/rules/**/*.md    Claude Code's (CLAUDE_CONFIG_DIR), so they work with every model
 //   ~/.codex/AGENTS.override.md or AGENTS.md         Codex's (CODEX_HOME), the first that isn't empty
-//   ~/.harness/HARNESS.md                            personal, all projects
-//   <dir>/HARNESS.md, AGENTS.md, CLAUDE.md from the repo root down to cwd
-//   <dir>/HARNESS.local.md                           personal, per project (git-ignored)
+//   ~/.cavvy/CAVVY.md                            personal, all projects
+//   <dir>/CAVVY.md, AGENTS.md, CLAUDE.md from the repo root down to cwd
+//   <dir>/CAVVY.local.md                           personal, per project (git-ignored)
 //
 // `@path` in any of them imports a file, as in Claude Code's CLAUDE.md: relative
 // to the importing file, `~/` for home, four hops deep at most, and not inside
@@ -17,7 +17,7 @@
 import { appendFileSync, closeSync, constants, existsSync, fstatSync, lstatSync, opendirSync, openSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from "fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { homedir } from "os";
-import { paths, ensureDir, harnessHome } from "../config/paths";
+import { paths, ensureDir, cavvyHome } from "../config/paths";
 import { gitRoot } from "../util/git";
 import { canonical, isInside, spellings } from "../util/files";
 import { redact } from "../util/redact";
@@ -34,8 +34,8 @@ export interface MemoryFile {
 /** What loadMemory found. `budget`: what the shared limits left out or cut short, when they did. */
 export type Memory = MemoryFile[] & { budget?: { omitted: string[]; more: boolean; cut?: string; crowded?: string } };
 
-const PROJECT_NAMES = ["HARNESS.md", "AGENTS.md", "CLAUDE.md", ".harness/HARNESS.md"];
-const LOCAL_NAMES = ["HARNESS.local.md", "CLAUDE.local.md"];
+const PROJECT_NAMES = ["CAVVY.md", "AGENTS.md", "CLAUDE.md", ".cavvy/CAVVY.md"];
+const LOCAL_NAMES = ["CAVVY.local.md", "CLAUDE.local.md"];
 /** One file's cap, in UTF-8 bytes. */
 const MAX_BYTES = 40_000;
 /** Claude Code's limit: an imported file can import others, four hops from the file that started it. */
@@ -49,7 +49,7 @@ const MAX_OMITTED_NAMED = 10;
 const RULES_WALK = { dirs: 100, entries: 2_000, depth: 8 };
 /**
  * Credential folders under home. Only markdown is read, which keeps keys,
- * .env files and Harness's own credential stores out; nothing under these
+ * .env files and Cavvy's own credential stores out; nothing under these
  * is read even so, whatever a memory file imports or links to.
  */
 const CREDENTIAL_DIRS = [".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker", ".password-store", join(".config", "gcloud")];
@@ -100,7 +100,7 @@ export function openedPath(fd: number): string | undefined {
 /**
  * Read at most `limit` bytes of a memory file, following symlinks only to
  * markdown files (inside `within`, when given) and never into a credential
- * folder. A repo's `HARNESS.md -> ~/.harness/credentials.json` (or -> .env,
+ * folder. A repo's `CAVVY.md -> ~/.cavvy/credentials.json` (or -> .env,
  * or an `@~/.ssh/id_ed25519`) would otherwise be pasted into the system
  * prompt and sent to the provider. `cut`: there was more.
  *
@@ -113,7 +113,7 @@ export function openedPath(fd: number): string | undefined {
  * checked again, a process that keeps swapping a folder on the way in step
  * with these checks; and a hard link inside the project to a file elsewhere,
  * which is the same file under an allowed name. Either needs a process that
- * writes into the project as the user while Harness reads it, and so could
+ * writes into the project as the user while Cavvy reads it, and so could
  * read those files itself.
  */
 
@@ -421,7 +421,7 @@ function collect(cwd: string, o: { user: boolean; project: boolean; external: bo
         if (rules.crowded) budget().crowded = rules.crowded;
         for (const f of rules.files) add(f, "user", { skip: pathScoped });
         add(join(codexHome(), "AGENTS.override.md"), "user") || add(join(codexHome(), "AGENTS.md"), "user");
-        add(paths.userMemory(), "user", { within: harnessHome() });
+        add(paths.userMemory(), "user", { within: cavvyHome() });
     }
     if (!o.project) return finish();
 
@@ -436,7 +436,7 @@ function collect(cwd: string, o: { user: boolean; project: boolean; external: bo
         if (parent === d) break;
         d = parent;
     }
-    // A repository can't make Harness read the user's other files: its imports stay
+    // A repository can't make Cavvy read the user's other files: its imports stay
     // inside it until the user trusts the folder (Claude Code asks first, too).
     const importsWithin = o.external ? undefined : top;
     for (const dir of dirs) {
@@ -592,7 +592,7 @@ export function budgetNotice(files: Memory, show: (path: string) => string): str
 
 /** Append a note from "#" memory mode. Returns the file written. */
 export function addMemoryNote(scope: "user" | "project" | "local", cwd: string, note: string): string {
-    const file = scope === "user" ? paths.userMemory() : scope === "local" ? join(gitRoot(cwd) ?? cwd, "HARNESS.local.md") : join(gitRoot(cwd) ?? cwd, "HARNESS.md");
+    const file = scope === "user" ? paths.userMemory() : scope === "local" ? join(gitRoot(cwd) ?? cwd, "CAVVY.local.md") : join(gitRoot(cwd) ?? cwd, "CAVVY.md");
     ensureDir(dirname(file));
     const line = `- ${note.trim()}\n`;
     if (!existsSync(file)) writeFileSync(file, scope === "user" ? `# Personal instructions\n\n${line}` : `# Project instructions\n\n${line}`);
@@ -600,7 +600,7 @@ export function addMemoryNote(scope: "user" | "project" | "local", cwd: string, 
         const cur = readFileSync(file, "utf-8");
         appendFileSync(file, (cur.endsWith("\n") ? "" : "\n") + line);
     }
-    if (scope === "local") ensureGitignored(cwd, "HARNESS.local.md");
+    if (scope === "local") ensureGitignored(cwd, "CAVVY.local.md");
     return file;
 }
 

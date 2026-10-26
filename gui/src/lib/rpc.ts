@@ -1,4 +1,4 @@
-// The WebSocket to the harness server: typed requests, server events, and
+// The WebSocket to Cavvy server: typed requests, server events, and
 // reconnecting with backoff (asking for fresh credentials each time, so a
 // restarted desktop sidecar with a new port and token is picked up).
 
@@ -103,7 +103,7 @@ export class Rpc {
     }
 
     private rejectPending() {
-        for (const p of this.pending.values()) p.reject(new RpcError("Disconnected from the harness server", "disconnected"));
+        for (const p of this.pending.values()) p.reject(new RpcError("Disconnected from Cavvy server", "disconnected"));
         this.pending.clear();
         this.ages.clear();
         this.updateNotice();
@@ -131,7 +131,7 @@ export class Rpc {
             return;
         }
         const key = this.windowKey?.();
-        const ws = new WebSocket(creds.url, ["harness.v1", `auth.${creds.token}`, ...(key ? [`window.${key}`] : [])]);
+        const ws = new WebSocket(creds.url, ["cavvy.v1", `auth.${creds.token}`, ...(key ? [`window.${key}`] : [])]);
         this.ws = ws;
         ws.binaryType = "arraybuffer";
         let opened = false;

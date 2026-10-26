@@ -1,4 +1,4 @@
-// A small MCP server (Streamable HTTP, on 127.0.0.1) for the harness's own
+// A small MCP server (Streamable HTTP, on 127.0.0.1) for Cavvy's own
 // tools, offered to Claude Code and Codex when they run a turn: delegating
 // work to other providers' models. Each registration gets its own random
 // bearer token, kept in memory (hashed) and redacted from anything shown or

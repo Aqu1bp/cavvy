@@ -1,14 +1,14 @@
 // Deleting a session from the GUI. Its files (the transcript, the UI side log,
 // its saved queue and the file copies kept for /rewind) move out of projects/ into
-// trash/<id>/ in the Harness home, so Undo can put them back; entries older
-// than a week are purged. Nothing outside the Harness home is touched: paths
+// trash/<id>/ in the Cavvy home, so Undo can put them back; entries older
+// than a week are purged. Nothing outside the Cavvy home is touched: paths
 // are built from checked ids, each folder they're in must resolve inside the
 // home, renames move a link rather than what it points to, and purging never
 // goes through a link. The project, ~/.claude and ~/.codex aren't involved.
 
 import { lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "fs";
 import { basename, dirname, join } from "path";
-import { harnessHome, paths } from "../config/paths";
+import { cavvyHome, paths } from "../config/paths";
 import { findSessionAnywhere, holdSession, releaseSession, sessionFolder, SessionInUseError } from "../agent/session";
 import { forgetFileHistory } from "../agent/checkpoints";
 import { isInside } from "../util/files";
@@ -35,7 +35,7 @@ interface TrashEntry extends SessionFlags {
     deletedAt: number;
 }
 
-export const trashDir = () => join(harnessHome(), "trash");
+export const trashDir = () => join(cavvyHome(), "trash");
 
 export function checkId(id: unknown): string {
     if (typeof id !== "string" || !ID.test(id)) throw new RpcError("That isn't a session id.", "invalid");
@@ -69,16 +69,16 @@ function present(p: string): boolean {
     }
 }
 
-/** The folder `p` is in must resolve inside the Harness home. `p` itself may be a link: it's moved, never followed. */
+/** The folder `p` is in must resolve inside the Cavvy home. `p` itself may be a link: it's moved, never followed. */
 function mustBeInHome(p: string) {
     let home: string, parent: string;
     try {
-        home = realpathSync(harnessHome());
+        home = realpathSync(cavvyHome());
         parent = realpathSync(dirname(p));
     } catch {
         throw new RpcError(`Can't check where ${p} is, so it's left alone.`);
     }
-    if (!isInside(parent, home)) throw new RpcError(`${dirname(p)} is outside the Harness home (a link?), so nothing was deleted.`);
+    if (!isInside(parent, home)) throw new RpcError(`${dirname(p)} is outside the Cavvy home (a link?), so nothing was deleted.`);
 }
 
 /** Rename each, or none: those already moved go back if one fails. */
@@ -112,7 +112,7 @@ function removeTree(p: string, depth = 0) {
 }
 
 /**
- * A session's files and its trash entry, checked to be inside the Harness
+ * A session's files and its trash entry, checked to be inside the Cavvy
  * home. Called before its runtime is closed too, so a setup it would refuse
  * doesn't close anything.
  */
@@ -197,7 +197,7 @@ function entryOf(id: string): TrashEntry {
  */
 export function restoreSession(id: string, beforeRestore?: (cwd: string | undefined) => void): SessionFlags {
     const entry = join(trashDir(), checkId(id));
-    // Only from a trash folder that's in the Harness home (not a link out of it).
+    // Only from a trash folder that's in the Cavvy home (not a link out of it).
     try {
         if (!lstatSync(trashDir()).isDirectory()) throw new Error("not a folder");
     } catch {

@@ -1,6 +1,6 @@
 # Third-party notices
 
-Harness is MIT-licensed (see `LICENSE`). It includes, or its builds bundle, the
+Cavvy is MIT-licensed (see `LICENSE`). It includes, or its builds bundle, the
 third-party material below, each under its own license. Dependencies installed
 by `bun install` (and the desktop app's Rust crates) carry their own licenses
 in their packages.
@@ -9,8 +9,8 @@ in their packages.
 
 The risk rules in `src/permissions/classifier.ts` adapt OpenAI Codex's
 auto-review policy (`codex-rs/prompts/templates/guardian/policy.md` in
-https://github.com/openai/codex). They were changed to fit Harness's reviewer
-verdicts and merged with Harness's own rules.
+https://github.com/openai/codex). They were changed to fit Cavvy's reviewer
+verdicts and merged with Cavvy's own rules.
 
 ```
 OpenAI Codex

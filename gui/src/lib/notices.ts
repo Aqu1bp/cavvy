@@ -44,7 +44,7 @@ export function warnParts(b: NoticeBlock, now: number): { title: string; body?: 
     return { title: b.text };
 }
 
-/** Where a CLI's or Harness's error names who stopped: "Claude Code stopped: API Error: 500 …". */
+/** Where a CLI's or Cavvy's error names who stopped: "Claude Code stopped: API Error: 500 …". */
 const STOPPED = /^([^\n:]{3,60}?(?:stopped|failed|error)):\s+([\s\S]+)$/i;
 
 /** An error's card: one short sentence, and what was said with it (in monospace: a CLI's raw words). */

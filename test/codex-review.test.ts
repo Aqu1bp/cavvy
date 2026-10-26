@@ -47,7 +47,7 @@ async function run(mode: import("../src/permissions/modes").PermissionMode = "au
     const settings = { delegation: false };
     const model = { provider: "codex", id: "test" };
     const agent = new Agent({ session, model, client: await clientFor("codex"), settings: () => settings, checker: new PermissionChecker(() => settings, cwd), tools: [], mode: { get: () => mode, set() {} }, toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() }, host: { emit: (e) => { events.push(e); (runtime as any).onEvent(e); runtime.flush(); }, ui: {} } });
-    if (process.env.FAKE_REJECT_CONFIG === "1") (agent as any).orchestrator = () => ({ name: "harness", url: "unused", authorization: "test", tools: [], instructions: "Delegation instructions", toolTimeoutSec: 1 });
+    if (process.env.FAKE_REJECT_CONFIG === "1") (agent as any).orchestrator = () => ({ name: "cavvy", url: "unused", authorization: "test", tools: [], instructions: "Delegation instructions", toolTimeoutSec: 1 });
     Object.assign(runtime, { model, agent });
     await runtime.startTurn("Run the local tests");
     const snapshot = runtime.snapshot();

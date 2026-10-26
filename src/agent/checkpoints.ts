@@ -3,7 +3,7 @@
 // it didn't exist) are saved, so files can be put back as they were before any
 // earlier prompt. Sub-agents share their parent's checkpoint.
 //
-// Saved next to the session: ~/.harness/projects/<slug>/file-history/<session-id>/
+// Saved next to the session: ~/.cavvy/projects/<slug>/file-history/<session-id>/
 //   index.jsonl   append-only records (below), read back on resume
 //   blobs/<sha256> file contents, stored once per hash
 // Copies are exact and not redacted: restoring must be byte for byte, and they
@@ -34,7 +34,7 @@ type Rec =
     | { t: "snap"; cp: number; path: string; hash: string | null; mode?: number }
     /** Changed in checkpoint `cp` but not saved (too large, unreadable). */
     | { t: "skip"; cp: number; path: string; reason: string }
-    /** What the harness last wrote to the file (an edit tool, or a restore). */
+    /** What Cavvy last wrote to the file (an edit tool, or a restore). */
     | { t: "wrote"; path: string; hash: string | null };
 
 type FileRec = Extract<Rec, { cp: number }>;
@@ -51,7 +51,7 @@ export interface RestoreItem {
     mode?: number;
     /** Its content when the plan was made. */
     current?: Content;
-    /** Changed outside the harness since the harness last wrote it. */
+    /** Changed outside Cavvy since Cavvy last wrote it. */
     outside?: boolean;
     reason?: string;
 }
@@ -234,7 +234,7 @@ export class FileHistory {
             if (!st.isFile()) return;
             if (st.size > MAX_SNAPSHOT_BYTES) return this.append({ t: "skip", cp, path, reason: `over ${MAX_SNAPSHOT_BYTES / 1024 / 1024} MB` });
             const buf = await readFile(path);
-            // The copy would be written to disk under ~/.harness, where nothing redacts it and closing the session doesn't remove it.
+            // The copy would be written to disk under ~/.cavvy, where nothing redacts it and closing the session doesn't remove it.
             if (holdsGivenSecret(buf)) return this.append({ t: "skip", cp, path, reason: "holds a secret you gave the agent" });
             const hash = sha256(buf);
             this.store(hash, buf);
@@ -318,7 +318,7 @@ export class FileHistory {
             }
             const current = contentSync(path);
             if (current === r.hash) continue;
-            // Never written by the harness (its edit failed): it should still be as saved.
+            // Never written by Cavvy (its edit failed): it should still be as saved.
             const expected = this.lastWrite.has(path) ? this.lastWrite.get(path) : r.hash;
             items.push({ path, action: r.hash === null ? "delete" : "write", hash: r.hash, mode: r.mode, current, outside: current !== expected });
         }

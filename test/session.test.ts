@@ -9,7 +9,7 @@ const { registerSecret, unregisterSecret } = await import("../src/util/redact");
 const { projectStateDir } = await import("../src/config/paths");
 import type { AssistantMessage, Message, UserMessage } from "../src/providers/types";
 
-const PROJECTS = tempDir("harness-proj-");
+const PROJECTS = tempDir("cavvy-proj-");
 afterAll(() => {
     rmSync(PROJECTS, { recursive: true, force: true });
     iso.cleanup();
@@ -41,14 +41,14 @@ describe("Session persistence", () => {
         s.push(user("hi"));
         const task = { id: "task-1", provider: "claude-code", kind: "agent" as const, label: "Map auth", toolUseId: "toolu_1", startedAt: 5, status: "running" as const, stoppable: true };
         s.recordBackgroundTask(task);
-        s.recordBackgroundTask({ id: "bash_1", provider: "harness", kind: "shell", label: "npm run dev", startedAt: 6, status: "running", stoppable: true });
+        s.recordBackgroundTask({ id: "bash_1", provider: "cavvy", kind: "shell", label: "npm run dev", startedAt: 6, status: "running", stoppable: true });
         s.recordBackgroundTask({ ...task, status: "done", endedAt: 9 });
         appendFileSync(s.path, JSON.stringify({ t: "bgtask", task: { id: "bad", kind: "nonsense" } }) + "\n");
         expect(lines(s.path).filter((l) => l.t === "bgtask")).toHaveLength(4);
         const back = Session.load(s.path);
         expect([...back.backgroundTasks.values()]).toEqual([
             { ...task, status: "done", endedAt: 9 },
-            { id: "bash_1", provider: "harness", kind: "shell", label: "npm run dev", startedAt: 6, status: "running", stoppable: true },
+            { id: "bash_1", provider: "cavvy", kind: "shell", label: "npm run dev", startedAt: 6, status: "running", stoppable: true },
         ]);
         const fork = back.fork({ persist: false });
         expect(fork.backgroundTasks.size).toBe(0);
@@ -234,17 +234,17 @@ describe("Session persistence", () => {
         back.release();
     });
 
-    test("a SessionBackground made from the log has its running tasks as stopped when Harness quit, until they're told", async () => {
+    test("a SessionBackground made from the log has its running tasks as stopped when Cavvy quit, until they're told", async () => {
         const { SessionBackground, lostNote } = await import("../src/agent/background");
         const s = Session.create(project());
         s.push(user("hi"));
-        s.recordBackgroundTask({ id: "bash_1", provider: "harness", kind: "shell", label: "npm run dev", startedAt: 6, status: "running", stoppable: true });
+        s.recordBackgroundTask({ id: "bash_1", provider: "cavvy", kind: "shell", label: "npm run dev", startedAt: 6, status: "running", stoppable: true });
         s.recordBackgroundTask({ id: "task-1", provider: "gemini", kind: "agent", label: "Review", startedAt: 7, status: "done", endedAt: 8, stoppable: true });
         const back = Session.load(s.path);
         const bg = new SessionBackground(back, () => 100);
-        expect(bg.shown()).toEqual([{ id: "bash_1", provider: "harness", kind: "shell", label: "npm run dev", startedAt: 6, status: "stopped", endedAt: 100, lost: true, stoppable: true }]);
+        expect(bg.shown()).toEqual([{ id: "bash_1", provider: "cavvy", kind: "shell", label: "npm run dev", startedAt: 6, status: "stopped", endedAt: 100, lost: true, stoppable: true }]);
         const lost = bg.takeLost();
-        expect(lostNote(lost)).toBe("These background tasks stopped when Harness quit: background command: npm run dev (bash_1). They are no longer running and will not produce further results. Restart them only if still needed; do not wait for their old task IDs.");
+        expect(lostNote(lost)).toBe("These background tasks stopped when Cavvy quit: background command: npm run dev (bash_1). They are no longer running and will not produce further results. Restart them only if still needed; do not wait for their old task IDs.");
         expect(bg.shown()).toEqual([]);
         expect(bg.takeLost()).toEqual([]);
         // Written stopped: opened again, there's nothing to tell.
@@ -316,7 +316,7 @@ describe("Session persistence", () => {
     });
 
     // A native thread goes on in another home whose CLI finds the same transcripts (#377): Claude Code's
-    // projects/, Codex's sessions/, by real path, as Harness-made accounts link Default's.
+    // projects/, Codex's sessions/, by real path, as Cavvy-made accounts link Default's.
     describe("native threads across homes sharing a history", () => {
         const { realpathSync, symlinkSync } = require("fs") as typeof import("fs");
         const homes = () => {
@@ -666,7 +666,7 @@ describe("one writer per session", () => {
         const first = await child.stdout.getReader().read();
         expect(new TextDecoder().decode(first.value)).toContain("held");
         const before = readFileSync(s.path, "utf-8");
-        expect(() => Session.load(s.path)).toThrow(/open in another Harness process \(pid \d+\)/);
+        expect(() => Session.load(s.path)).toThrow(/open in another Cavvy process \(pid \d+\)/);
         // Nothing was written under the process that has it (such as answering its running tool call as interrupted).
         expect(readFileSync(s.path, "utf-8")).toBe(before);
         child.stdin.end();
@@ -736,7 +736,7 @@ describe("one writer per session", () => {
             writeFileSync(`${s.path}.lock`, theirs);
             expect(takeOver(`${s.path}.lock`)).toBe(true);
             expect(readFileSync(`${s.path}.lock`, "utf-8")).toBe(theirs);
-            expect(() => Session.load(s.path)).toThrow(/open in another Harness process/);
+            expect(() => Session.load(s.path)).toThrow(/open in another Cavvy process/);
         } finally {
             other.kill();
             await other.exited;
@@ -754,7 +754,7 @@ describe("one writer per session", () => {
         writeFileSync(`${s.path}.lock.takeover`, "");
         expect(takeOver(`${s.path}.lock`)).toBe(true);
         expect(readFileSync(`${s.path}.lock`, "utf-8")).toBe(stale);
-        expect(() => Session.load(s.path)).toThrow(/open in another Harness process/);
+        expect(() => Session.load(s.path)).toThrow(/open in another Cavvy process/);
         // One that crashed while taking it over doesn't block it for good.
         const old = new Date(Date.now() - 60_000);
         utimesSync(`${s.path}.lock.takeover`, old, old);

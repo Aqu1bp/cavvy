@@ -95,7 +95,7 @@ async function makeAgent(provider: "claude-code" | "codex", session = Session.cr
         mode = m;
         agent.noteModeChange(from, m);
     };
-    /** Take the next wake turn Codex (or the harness, for it) started: adopted as the runtime does. */
+    /** Take the next wake turn Codex (or Cavvy, for it) started: adopted as the runtime does. */
     const adoptNext = async (ms = 5000) => {
         for (const end = Date.now() + ms; !wakes.length; ) {
             if (Date.now() > end) throw new Error("no wake came");
@@ -151,7 +151,7 @@ describe("Claude Code", () => {
         expect(g).toHaveLength(3);
     });
 
-    test("/goal stays the whole prompt: Harness's notes wait, and an earlier conversation goes beside it", async () => {
+    test("/goal stays the whole prompt: Cavvy's notes wait, and an earlier conversation goes beside it", async () => {
         const session = Session.create(cwd, { persist: false });
         session.push({ role: "user", content: [{ type: "text", text: "the API is in src/api" }] });
         session.push({ role: "assistant", content: [{ type: "text", text: "Noted." }] });

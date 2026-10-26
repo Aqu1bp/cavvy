@@ -1,5 +1,5 @@
 // Custom sub-agents: markdown files with YAML frontmatter in
-//   ~/.harness/agents/*.md  and  <project>/.harness/agents/*.md
+//   ~/.cavvy/agents/*.md  and  <project>/.cavvy/agents/*.md
 //
 //   ---
 //   name: reviewer
@@ -30,7 +30,7 @@
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { basename, join } from "path";
-import { paths, harnessHome } from "../config/paths";
+import { paths, cavvyHome } from "../config/paths";
 import { isTrusted } from "../config/trust";
 import { loadPlugins } from "../plugins/loader";
 import { EFFORT_LEVELS, type Effort, type HookConfig, type McpServerConfig, type Settings } from "../config/settings";
@@ -323,14 +323,14 @@ export function loadAgents(cwd: string, trusted?: boolean): AgentDef[] {
 
 /**
  * A skill's SKILL.md, by its folder's name: <root>/<name>/SKILL.md in the
- * project's .harness/skills and .claude/skills (trusted folders only), then
- * the user's ~/.harness/skills and ~/.claude/skills. The body, without
+ * project's .cavvy/skills and .claude/skills (trusted folders only), then
+ * the user's ~/.cavvy/skills and ~/.claude/skills. The body, without
  * its frontmatter.
  */
 export function findSkill(name: string, cwd: string, trusted?: boolean): { path: string; body: string } | undefined {
     if (!/^[A-Za-z0-9][\w.:-]*$/.test(name) || name.includes("..")) return undefined;
     const root = gitRoot(cwd) ?? cwd;
-    const roots = [...((trusted ?? isTrusted(cwd)) ? [join(root, ".harness", "skills"), join(root, ".claude", "skills")] : []), join(harnessHome(), "skills"), join(homedir(), ".claude", "skills")];
+    const roots = [...((trusted ?? isTrusted(cwd)) ? [join(root, ".cavvy", "skills"), join(root, ".claude", "skills")] : []), join(cavvyHome(), "skills"), join(homedir(), ".claude", "skills")];
     for (const r of roots) {
         const path = join(r, name, "SKILL.md");
         try {
@@ -349,11 +349,11 @@ export function findSkill(name: string, cwd: string, trusted?: boolean): { path:
 export const MEMORY_LINES = 200;
 export const MEMORY_BYTES = 25_000;
 
-/** Where an agent's memory lives. Project and local memory is in the project's .harness/. */
+/** Where an agent's memory lives. Project and local memory is in the project's .cavvy/. */
 export function agentMemoryDir(scope: AgentMemoryScope, name: string, projectRoot: string): string {
     const safe = name.replace(/[^\w.-]+/g, "-").replace(/^\.+/, "") || "agent";
-    if (scope === "user") return join(harnessHome(), "agent-memory", safe);
-    return join(projectRoot, ".harness", scope === "local" ? "agent-memory-local" : "agent-memory", safe);
+    if (scope === "user") return join(cavvyHome(), "agent-memory", safe);
+    return join(projectRoot, ".cavvy", scope === "local" ? "agent-memory-local" : "agent-memory", safe);
 }
 
 /** The first lines of MEMORY.md, and whether there was more. */

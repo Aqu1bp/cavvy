@@ -1479,14 +1479,14 @@ function anyCase(re: RegExp): RegExp {
 }
 
 /** Matched in every spelling of the command, like SENSITIVE. */
-const CREDENTIAL_STORE = anyCase(/\.harness\/(credentials|providers)\.json/);
+const CREDENTIAL_STORE = anyCase(/\.cavvy\/(credentials|providers)\.json/);
 const STARTUP_FILE = anyCase(/>\s*~\/\.(bash|zsh)(rc|_profile|env)|>\s*~\/\.profile/);
 
 /** Programs that only read or copy their input, whatever their options: a here-document's data stays data with them (not sort: --compress-program runs one). */
 const DATA_READERS = new Set(["cat", "tee", "wc", "head", "tail", "uniq", "cut", "tr", "nl", "grep", "egrep", "fgrep"]);
 
-/** Files whose contents run later: shell startup files, anything in a .git, the harness's and agent CLIs' configuration. */
-const RUNS_LATER = anyCase(/(^|\/)\.(bash(rc|_profile|_login|_logout|env|_aliases)|zsh(rc|env|_profile)|zprofile|zlogin|zlogout|profile|kshrc|mkshrc|envrc)$|(^|\/)\.git(\/|$)|(^|\/)\.(harness|claude|codex)(\/|$)|(^|\/)\.mcp\.json$|(^|\/)(crontab|\.config\/(fish|git|nvim|systemd|autostart)|Library\/LaunchAgents)(\/|$)/);
+/** Files whose contents run later: shell startup files, anything in a .git, Cavvy's and agent CLIs' configuration. */
+const RUNS_LATER = anyCase(/(^|\/)\.(bash(rc|_profile|_login|_logout|env|_aliases)|zsh(rc|env|_profile)|zprofile|zlogin|zlogout|profile|kshrc|mkshrc|envrc)$|(^|\/)\.git(\/|$)|(^|\/)\.(cavvy|claude|codex)(\/|$)|(^|\/)\.mcp\.json$|(^|\/)(crontab|\.config\/(fish|git|nvim|systemd|autostart)|Library\/LaunchAgents)(\/|$)/);
 
 /**
  * The line with its here-documents' data blanked (lines kept), when that data
@@ -1522,7 +1522,7 @@ export function dangerousReason(cmd: string, depth = 0, dataBlanked = false): st
     const said = withoutMessages(cmd);
     for (const text of [said, ...programsSpelled(said)]) for (const [re, reason] of DANGEROUS) if (re.test(text)) return reason;
     const spelled = [said, ...spellings(said)];
-    if (spelled.some((t) => CREDENTIAL_STORE.test(t))) return "touches the harness credential store";
+    if (spelled.some((t) => CREDENTIAL_STORE.test(t))) return "touches Cavvy credential store";
     if (spelled.some((t) => STARTUP_FILE.test(t))) return "overwrites a shell startup file";
     if (depth > 4) return undefined;
     const a = analyzeCommand(cmd);
@@ -1771,50 +1771,50 @@ const SENSITIVE = ([
     [/\.(netrc|npmrc|pypirc|pgpass|git-credentials)\b/, "a credentials file"],
     [/\bid_(rsa|ed25519|ecdsa|dsa)\b(?!\.pub)/, "an SSH private key"],
     [/Library\/Keychains|\bsecurity\s+(find|dump|export)-/, "the system keychain"],
-    [/\.harness\/(credentials|providers)\.json/, "the harness credential store"],
+    [/\.cavvy\/(credentials|providers)\.json/, "Cavvy credential store"],
     [/\.codex\/auth\.json|\.claude\/\.credentials\.json|\.config\/gh\/hosts\.yml/, "a CLI's sign-in file"],
-    [/(^|[\s'"=:])(~|\$HOME|\$\{HOME\})\/\.harness\/accounts(?=$|[/\s'";|&)])/, "the harness credential store"],
+    [/(^|[\s'"=:])(~|\$HOME|\$\{HOME\})\/\.cavvy\/accounts(?=$|[/\s'";|&)])/, "Cavvy credential store"],
     [/\b(grep|egrep|fgrep|rg|ag|ack)\b[^|;&\n]*\s(~|\$HOME|\$\{HOME\}|\/Users\/[^\s/]+|\/home\/[^\s/]+|\/)\/?(?=$|[\s;|&)])/, "your whole home directory"],
     [/\bkubectl\s+get\s+secrets?\b|\bkubectl\s+config\s+view\b[^|;&\n]*--raw/, "cluster secrets"],
     [/\bgcloud\b[^|;&\n]*\b(print-(access|identity|refresh)-token|config-helper)\b/, "a Google Cloud access token"],
 ] satisfies [RegExp, string][]).map(([re, what]): [RegExp, string] => [anyCase(re), what]);
 
 /**
- * The harness's secret files and folders: what "the harness credential store"
+ * Cavvy's secret files and folders: what "Cavvy credential store"
  * means. Its other files (session logs, history, caches, settings) aren't secret,
  * so mentioning the home or those doesn't count.
  */
-function credentialStore(harnessHome: string): { files: string[]; folders: string[] } {
+function credentialStore(cavvyHome: string): { files: string[]; folders: string[] } {
     return {
-        files: [join(harnessHome, "credentials.json"), join(harnessHome, "providers.json"), ...accountCredentialFiles()],
-        folders: [join(harnessHome, "accounts"), ...accountFolders()],
+        files: [join(cavvyHome, "credentials.json"), join(cavvyHome, "providers.json"), ...accountCredentialFiles()],
+        folders: [join(cavvyHome, "accounts"), ...accountFolders()],
     };
 }
 
-function matchSensitive(text: string, harnessHome?: string): string | undefined {
+function matchSensitive(text: string, cavvyHome?: string): string | undefined {
     // Every spelling counts. The lower-cased one is no wider than the volume, so
     // `.env.ｅxample`, which only the wider fold makes a template, still asks.
     const texts = spellings(text);
     for (const t of texts) for (const [re, what] of SENSITIVE) if (re.test(t)) return what;
-    if (harnessHome) {
-        const store = credentialStore(harnessHome);
+    if (cavvyHome) {
+        const store = credentialStore(cavvyHome);
         const names = [...store.files, ...store.folders].flatMap((p) => [p, canonical(p)]).flatMap(spellings);
         for (const n of new Set(names)) {
             const esc = n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
             const re = anyCase(new RegExp(`(^|[\\s'"=:])${esc}(?=$|[/\\s'";|&)])`));
-            if (texts.some((t) => re.test(t))) return "the harness credential store";
+            if (texts.some((t) => re.test(t))) return "Cavvy credential store";
         }
     }
     return undefined;
 }
 
 /** What sensitiveTarget would call a single word, for telling which target a command names. */
-export function sensitiveWord(word: string, harnessHome?: string): string | undefined {
-    return matchSensitive(" " + word, harnessHome);
+export function sensitiveWord(word: string, cavvyHome?: string): string | undefined {
+    return matchSensitive(" " + word, cavvyHome);
 }
 
-/** The harness home's other files, as a sensitive target: settings and session logs may hold secrets. */
-export const HARNESS_FILES = "the harness's settings and session logs";
+/** Cavvy home's other files, as a sensitive target: settings and session logs may hold secrets. */
+export const CAVVY_FILES = "Cavvy's settings and session logs";
 
 /** The environment a command's shell starts with: what its variables hold. */
 export type ShellEnv = Record<string, string | undefined>;
@@ -1889,26 +1889,26 @@ const LISTER_READS: Record<string, (w: string) => boolean> = {
 
 const NO_FILE_WORDS = new Set(["echo", "printf", "export", "unset", "true", "false", ":", "exit", "return", "shift"]);
 
-/** What a command reads in the harness home: the paths it names there, and whether it may read more than it shows. */
+/** What a command reads in Cavvy home: the paths it names there, and whether it may read more than it shows. */
 export interface HomeReads {
     paths: string[];
-    /** It may read there through what the harness can't follow: an expansion, a pattern, a cd, a substitution. */
+    /** It may read there through what Cavvy can't follow: an expansion, a pattern, a cd, a substitution. */
     unsure: boolean;
 }
 
 /**
- * Could the command read files in the harness home (not just list them)? Any
+ * Could the command read files in Cavvy home (not just list them)? Any
  * program but a lister that names a path there, runs there, or reads a listing
  * of it through xargs and the like does. Unsure (an expansion it can't work out,
  * a cd it can't follow) and naming the home counts as yes. Variables are
  * resolved against `env`, the environment the command's shell gets.
  */
-export function readsHarnessHome(cmd: string, cwd: string, harnessHome: string, env?: ShellEnv): boolean {
-    return harnessHomeReads(cmd, cwd, harnessHome, env) !== undefined;
+export function readsCavvyHome(cmd: string, cwd: string, cavvyHome: string, env?: ShellEnv): boolean {
+    return cavvyHomeReads(cmd, cwd, cavvyHome, env) !== undefined;
 }
 
-export function harnessHomeReads(cmd: string, cwd: string, harnessHome: string, env?: ShellEnv): HomeReads | undefined {
-    const homes = [...new Set([harnessHome, canonical(harnessHome)].flatMap(spellings))];
+export function cavvyHomeReads(cmd: string, cwd: string, cavvyHome: string, env?: ShellEnv): HomeReads | undefined {
+    const homes = [...new Set([cavvyHome, canonical(cavvyHome)].flatMap(spellings))];
     const inHome = (p: string) => [p, canonical(p)].flatMap(spellings).some((f) => homes.some((h) => isInside(f, h)));
     const res = homes.map((h) => anyCase(new RegExp(`(^|[\\s'"=:<>])${h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|[/\\s'";|&)<>])`)));
     const look = shellVars(cmd, env);
@@ -2144,7 +2144,7 @@ export function withoutMessages(cmd: string): string {
  * exclusions (`rg -g '!.env*'`) don't count when the command line has
  * nothing the analysis can't follow (expansions, substitutions).
  */
-export function sensitiveTarget(cmd: string, opts: { cwd?: string; harnessHome?: string; env?: ShellEnv } = {}): string | undefined {
+export function sensitiveTarget(cmd: string, opts: { cwd?: string; cavvyHome?: string; env?: ShellEnv } = {}): string | undefined {
     const a = analyzeCommand(cmd);
     const plain = !a.unparsable && !a.hasSubstitution && !a.unsafeExpansion;
     // Words count by position, so not when one can turn into more or fewer (an
@@ -2161,10 +2161,10 @@ export function sensitiveTarget(cmd: string, opts: { cwd?: string; harnessHome?:
     const commands = a.commands.map((c, k) => ({ ...c, argv: c.argv.filter((_, i) => !excluded[k]!.has(i)) }));
     // The words as the shell reads them too, so quoting (`cat .e''nv`) doesn't hide a name.
     const unquoted = commands.map((c) => c.argv.join(" ")).join(" ; ");
-    // And with the variables it can work out filled in: `cat $HARNESS_HOME/credentials.json`.
+    // And with the variables it can work out filled in: `cat $CAVVY_HOME/credentials.json`.
     const look = /[$~]/.test(cmd) ? shellVars(cmd, opts.env) : undefined;
-    const vars = (t: string) => (look ? matchSensitive(withVarsExpanded(t, look, opts.cwd ?? process.cwd()), opts.harnessHome) : undefined);
-    const direct = matchSensitive(text, opts.harnessHome) ?? matchSensitive(unquoted, opts.harnessHome) ?? vars(text) ?? vars(unquoted);
+    const vars = (t: string) => (look ? matchSensitive(withVarsExpanded(t, look, opts.cwd ?? process.cwd()), opts.cavvyHome) : undefined);
+    const direct = matchSensitive(text, opts.cavvyHome) ?? matchSensitive(unquoted, opts.cavvyHome) ?? vars(text) ?? vars(unquoted);
     if (direct || !opts.cwd) return direct;
     // Each pattern in every folder its command might run in (`cd private && cat .e*`). A cd
     // can fail (`cd x || cat .e*`) or run in a pipeline's subshell (`cd x | cat .e*`), so the
@@ -2182,10 +2182,10 @@ export function sensitiveTarget(cmd: string, opts: { cwd?: string; harnessHome?:
         for (const w of argv) {
             if (!/[*?[]/.test(w)) continue;
             const relative = !/^(\/|~|\$\{?HOME\}?(\/|$))/.test(w);
-            if (relative && !dirs) return "files a pattern matches in a folder the harness can't work out";
+            if (relative && !dirs) return "files a pattern matches in a folder Cavvy can't work out";
             for (const d of relative ? dirs! : [opts.cwd]) {
                 for (const hit of expandGlob(w, d)) {
-                    const r = matchSensitive(" " + hit, opts.harnessHome);
+                    const r = matchSensitive(" " + hit, opts.cavvyHome);
                     if (r) return r;
                 }
             }
@@ -2194,10 +2194,10 @@ export function sensitiveTarget(cmd: string, opts: { cwd?: string; harnessHome?:
     return undefined;
 }
 
-// Paths whose contents configure the harness, the agent CLIs it runs, or git:
+// Paths whose contents configure Cavvy, the agent CLIs it runs, or git:
 // permissions, hooks, MCP servers, skills, git hooks/fsmonitor. A shell command
 // that isn't read-only and names one asks, like an Edit of the same file would.
-const CONFIG_PATH = /(^|[\s'"=:/])(\.harness|\.codex|\.mcp\.json|\.git)(?=$|[/\s'";|&)>])/i;
+const CONFIG_PATH = /(^|[\s'"=:/])(\.cavvy|\.codex|\.mcp\.json|\.git)(?=$|[/\s'";|&)>])/i;
 // .claude/ too, but see claudeConfigIn.
 const CLAUDE_DIR = /(^|[\s'"=:/])\.claude(?=$|[/\s'";|&)>])/gi;
 const WORKTREE = /\/worktrees\/([^/\s'"`;|&()<>*?[\]{}$\\]+)(?=$|[/\s'";|&)>])/iy;
@@ -2251,7 +2251,7 @@ function claudeConfigIn(text: string): boolean {
         const w = WORKTREE.exec(text);
         if (!w || (climbing ??= climbs(text))) return true;
         const name = w[1]!;
-        if (name === "." || name === ".." || spellings(name).some((n) => /^\.(harness|claude|codex|git|mcp\.json)$/.test(n))) return true;
+        if (name === "." || name === ".." || spellings(name).some((n) => /^\.(cavvy|claude|codex|git|mcp\.json)$/.test(n))) return true;
     }
     return false;
 }
@@ -2586,20 +2586,20 @@ export function commandsWithDirs(cmd: string, cwd: string | undefined, legacyDes
     return out;
 }
 
-export function configTarget(cmd: string, harnessHome?: string): string | undefined {
+export function configTarget(cmd: string, cavvyHome?: string): string | undefined {
     const commands = commandsWithDirs(withoutMessages(cmd), undefined);
     if (commands.exhausted) return ANALYSIS_LIMIT;
     if (isReadOnlyCommand(cmd)) return undefined;
     const a = analyzeCommand(cmd);
     const messages = messageWords(a);
     const unquoted = a.commands.map((c, k) => c.argv.filter((_, i) => !messages[k]!.includes(i)).join(" ")).join(" ; ");
-    // In every spelling: on a case-insensitive volume `.harneſſ/` is `.harness/`.
-    const homes = harnessHome ? spellings(harnessHome) : [];
+    // In every spelling: on a case-insensitive volume `.harneſſ/` is `.cavvy/`.
+    const homes = cavvyHome ? spellings(cavvyHome) : [];
     const bodies = commands.flatMap((c) => c.programs.map((argv) => argv.join(" ")));
     for (const text of [withoutMessages(cmd), unquoted, ...bodies].flatMap(spellings)) {
-        if (CONFIG_PATH.test(text) || claudeConfigIn(text)) return "harness or git configuration";
+        if (CONFIG_PATH.test(text) || claudeConfigIn(text)) return "cavvy or git configuration";
         if (GIT_EXEC_CONFIG.test(text)) return "git settings that run programs";
-        if (homes.some((h) => text.includes(h))) return "harness configuration";
+        if (homes.some((h) => text.includes(h))) return "cavvy configuration";
     }
     return undefined;
 }

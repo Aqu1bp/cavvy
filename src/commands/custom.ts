@@ -1,6 +1,6 @@
 // Custom slash commands: markdown files in
-//   ~/.harness/commands/<name>.md       -> /<name>        (user)
-//   <project>/.harness/commands/<name>.md -> /<name>      (project, trusted folders only)
+//   ~/.cavvy/commands/<name>.md       -> /<name>        (user)
+//   <project>/.cavvy/commands/<name>.md -> /<name>      (project, trusted folders only)
 // Subdirectories namespace the command: commands/git/pr.md -> /git:pr
 //
 //   ---

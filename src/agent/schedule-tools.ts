@@ -1,6 +1,6 @@
 // The model's side of scheduling: CronCreate, CronList and CronDelete, as
-// Claude Code names them. API models get them as harness tools; Claude Code
-// and Codex get the same through the harness MCP server (their own per-turn
+// Claude Code names them. API models get them as Cavvy tools; Claude Code
+// and Codex get the same through Cavvy MCP server (their own per-turn
 // processes couldn't keep a schedule). Jobs go to the session's Scheduler and
 // fire in that session, while it's idle.
 
@@ -82,7 +82,7 @@ export function deleteSchedule(s: Scheduler | undefined, input: Record<string, u
 
 const asResult = (r: { text: string; isError?: boolean }): ToolResult => ({ content: r.text, isError: r.isError });
 
-/** The harness tools, for API models. */
+/** Cavvy tools, for API models. */
 export const CronCreateTool: Tool<{ cron: string; prompt: string; recurring?: boolean; durable?: boolean }> = {
     name: "CronCreate",
     description: CREATE_DESCRIPTION,
@@ -124,14 +124,14 @@ export const CronDeleteTool: Tool<{ id: string }> = {
 
 export const CRON_TOOLS: Tool<any>[] = [CronCreateTool, CronListTool, CronDeleteTool];
 
-/** The same, for Claude Code and Codex through the harness MCP server. */
+/** The same, for Claude Code and Codex through Cavvy MCP server. */
 export function scheduleServerTools(scheduler: () => Scheduler | undefined): ServerTool[] {
     const wrap = (r: { text: string; isError?: boolean }): ServerToolResult => ({ text: r.text, isError: r.isError });
     return [
         {
             name: "schedule_create",
             title: "Schedule a prompt",
-            description: CREATE_DESCRIPTION.replaceAll("CronDelete", "schedule_delete").replace("/loop <interval> <prompt>", "/loop <interval> <prompt> in Harness"),
+            description: CREATE_DESCRIPTION.replaceAll("CronDelete", "schedule_delete").replace("/loop <interval> <prompt>", "/loop <interval> <prompt> in Cavvy"),
             inputSchema: CREATE_SCHEMA,
             annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
             call: async (args) => wrap(createSchedule(scheduler(), args)),
@@ -155,6 +155,6 @@ export function scheduleServerTools(scheduler: () => Scheduler | undefined): Ser
     ];
 }
 
-export const SCHEDULE_INSTRUCTIONS = `# Scheduling (harness)
+export const SCHEDULE_INSTRUCTIONS = `# Scheduling (cavvy)
 
-To run something later or repeatedly in this session ("every morning at 9", "remind me at 3pm", "check the deploy every 20 minutes"), use schedule_create, not your own CronCreate or ScheduleWakeup: this CLI process ends after each turn, so only Harness can keep a schedule. schedule_list and schedule_delete show and cancel them.`;
+To run something later or repeatedly in this session ("every morning at 9", "remind me at 3pm", "check the deploy every 20 minutes"), use schedule_create, not your own CronCreate or ScheduleWakeup: this CLI process ends after each turn, so only Cavvy can keep a schedule. schedule_list and schedule_delete show and cancel them.`;

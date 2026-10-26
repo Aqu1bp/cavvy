@@ -28,7 +28,7 @@ const claudeBin = fake("claude", "fake-claude.ts");
 const READ = join(import.meta.dir, "fixtures", "limits", "codex-read.json");
 
 beforeEach(() => {
-    process.env.HARNESS_HOME = iso.home;
+    process.env.CAVVY_HOME = iso.home;
     for (const k of FAKE_KEYS) delete process.env[k];
     for (const p of ["codex", "claude-code"]) removeAgentConfig(p);
     rmSync(paths.planLimits(), { force: true });

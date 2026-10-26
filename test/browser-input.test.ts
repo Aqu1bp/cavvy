@@ -299,8 +299,8 @@ describe("frames on their way to windows", () => {
 });
 
 describe("where a page may go", () => {
-    const root = tempDir("harness-browser-policy-");
-    const outside = tempDir("harness-browser-outside-");
+    const root = tempDir("cavvy-browser-policy-");
+    const outside = tempDir("cavvy-browser-outside-");
     mkdirSync(join(root, "app"));
     writeFileSync(join(root, "app", "index.html"), "<p>hi</p>");
     writeFileSync(join(outside, "secret.txt"), "secret");

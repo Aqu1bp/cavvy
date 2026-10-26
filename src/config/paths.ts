@@ -3,41 +3,41 @@ import { join, resolve } from "path";
 import { mkdirSync } from "fs";
 
 export { APP_NAME } from "./name";
-export const APP_TITLE = "Harness";
+export const APP_TITLE = "Cavvy";
 export const APP_VERSION = "1.0.0";
 
-/** Root of all user-level state. Override with HARNESS_HOME. */
-export function harnessHome(): string {
-    return process.env.HARNESS_HOME ? resolve(process.env.HARNESS_HOME) : join(homedir(), ".harness");
+/** Root of all user-level state. Override with CAVVY_HOME. */
+export function cavvyHome(): string {
+    return process.env.CAVVY_HOME ? resolve(process.env.CAVVY_HOME) : join(homedir(), ".cavvy");
 }
 
 export const paths = {
-    home: () => harnessHome(),
-    userSettings: () => join(harnessHome(), "settings.json"),
-    providers: () => join(harnessHome(), "providers.json"),
-    credentialsFile: () => join(harnessHome(), "credentials.json"),
+    home: () => cavvyHome(),
+    userSettings: () => join(cavvyHome(), "settings.json"),
+    providers: () => join(cavvyHome(), "providers.json"),
+    credentialsFile: () => join(cavvyHome(), "credentials.json"),
     /** OAuth tokens for remote MCP servers (src/mcp/oauth.ts): part of the credential store. */
-    mcpOAuth: () => join(harnessHome(), "mcp-oauth.json"),
-    history: () => join(harnessHome(), "history.jsonl"),
-    modelCache: () => join(harnessHome(), "cache", "models.json"),
+    mcpOAuth: () => join(cavvyHome(), "mcp-oauth.json"),
+    history: () => join(cavvyHome(), "history.jsonl"),
+    modelCache: () => join(cavvyHome(), "cache", "models.json"),
     /** The last plan limits the agent CLIs reported (src/server/limits-store.ts). */
-    planLimits: () => join(harnessHome(), "limits.json"),
-    userCommands: () => join(harnessHome(), "commands"),
-    userAgents: () => join(harnessHome(), "agents"),
-    userMemory: () => join(harnessHome(), "HARNESS.md"),
-    projectsDir: () => join(harnessHome(), "projects"),
-    logs: () => join(harnessHome(), "logs"),
-    plugins: () => join(harnessHome(), "plugins"),
+    planLimits: () => join(cavvyHome(), "limits.json"),
+    userCommands: () => join(cavvyHome(), "commands"),
+    userAgents: () => join(cavvyHome(), "agents"),
+    userMemory: () => join(cavvyHome(), "CAVVY.md"),
+    projectsDir: () => join(cavvyHome(), "projects"),
+    logs: () => join(cavvyHome(), "logs"),
+    plugins: () => join(cavvyHome(), "plugins"),
 
-    projectDir: (cwd: string) => join(cwd, ".harness"),
-    projectSettings: (cwd: string) => join(cwd, ".harness", "settings.json"),
-    localSettings: (cwd: string) => join(cwd, ".harness", "settings.local.json"),
-    projectCommands: (cwd: string) => join(cwd, ".harness", "commands"),
-    projectAgents: (cwd: string) => join(cwd, ".harness", "agents"),
+    projectDir: (cwd: string) => join(cwd, ".cavvy"),
+    projectSettings: (cwd: string) => join(cwd, ".cavvy", "settings.json"),
+    localSettings: (cwd: string) => join(cwd, ".cavvy", "settings.local.json"),
+    projectCommands: (cwd: string) => join(cwd, ".cavvy", "commands"),
+    projectAgents: (cwd: string) => join(cwd, ".cavvy", "agents"),
     projectMcp: (cwd: string) => join(cwd, ".mcp.json"),
 };
 
-/** Directory for a project's sessions: ~/.harness/projects/<slug>/ */
+/** Directory for a project's sessions: ~/.cavvy/projects/<slug>/ */
 export function projectStateDir(cwd: string): string {
     const slug = resolve(cwd).replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(-120) || "root";
     return join(paths.projectsDir(), slug);

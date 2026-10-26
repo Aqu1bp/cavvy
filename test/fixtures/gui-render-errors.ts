@@ -178,7 +178,7 @@ test("root failure offers Reload and safe Copy details", async () => {
     const root = node("root");
     const dispose = renderer.render(Root, root);
     try {
-        expect(text(root)).toContain("Couldn't render Harness");
+        expect(text(root)).toContain("Couldn't render Cavvy");
         expect(all(root).some((n) => n.tag === "button" && text(n) === "Reload")).toBe(true);
         all(root).find((n) => n.tag === "button" && text(n) === "Copy details")!.props.onClick();
         await Promise.resolve();

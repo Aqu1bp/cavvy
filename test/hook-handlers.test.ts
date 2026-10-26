@@ -45,14 +45,14 @@ describe("configuration", () => {
             "hooks: an mcp_tool hook needs a server and a tool",
         ]);
         expect(normalizeHooks({ Setup: [{ command: "x" }], Stop: "nope" }, (m) => warnings.push(m))).toEqual({});
-        expect(warnings.slice(-2)).toEqual(["hooks: Setup isn't a hook event the harness runs", "hooks: Stop: an event's hooks must be a list"]);
+        expect(warnings.slice(-2)).toEqual(["hooks: Setup isn't a hook event Cavvy runs", "hooks: Stop: an event's hooks must be a list"]);
     });
     test("extra fields (a plugin's root) go on every handler", () => {
         expect(normalizeHooks({ Stop: [{ hooks: [{ command: "a" }, { command: "b" }] }] }, undefined, { pluginRoot: "/p" })).toEqual({ Stop: [{ pluginRoot: "/p", command: "a" }, { pluginRoot: "/p", command: "b" }] });
     });
     test("settings files in either format merge, and what they can't run is listed for /hooks", () => {
         const cwd = tempDir();
-        mkdirSync(join(cwd, ".harness"), { recursive: true });
+        mkdirSync(join(cwd, ".cavvy"), { recursive: true });
         mkdirSync(paths.userSettings().replace(/\/[^/]+$/, ""), { recursive: true });
         writeFileSync(paths.userSettings(), JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Bash", command: "user" }] } }));
         writeFileSync(paths.projectSettings(cwd), JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "project" }] }], TeammateIdle: [{ command: "x" }] } }));
@@ -61,7 +61,7 @@ describe("configuration", () => {
             { matcher: "Bash", command: "user" },
             { matcher: "Bash", type: "command", command: "project" },
         ]);
-        expect(hookConfigWarnings(s)).toEqual(["hooks: TeammateIdle isn't a hook event the harness runs"]);
+        expect(hookConfigWarnings(s)).toEqual(["hooks: TeammateIdle isn't a hook event Cavvy runs"]);
         // Fixed, a reload has none: they belong to the load that found them.
         writeFileSync(paths.projectSettings(cwd), JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Bash", command: "project" }] } }));
         expect(hookConfigWarnings(loadSettings(cwd))).toEqual([]);
@@ -170,7 +170,7 @@ describe("command hooks", () => {
     });
     test("exec form: no shell, with ${CLAUDE_PROJECT_DIR} and a plugin's root expanded", async () => {
         const dir = tempDir();
-        const o = await runHooks({ hooks: { UserPromptSubmit: [{ command: "/bin/echo", args: ["${CLAUDE_PROJECT_DIR}", "$HARNESS_PLUGIN_ROOT", "; rm -rf x"], pluginRoot: "/plug" }] } } as any, "UserPromptSubmit", { prompt: "p" }, dir);
+        const o = await runHooks({ hooks: { UserPromptSubmit: [{ command: "/bin/echo", args: ["${CLAUDE_PROJECT_DIR}", "$CAVVY_PLUGIN_ROOT", "; rm -rf x"], pluginRoot: "/plug" }] } } as any, "UserPromptSubmit", { prompt: "p" }, dir);
         expect(o.additionalContext).toBe(`${dir} /plug ; rm -rf x`);
     });
     test("continue: false ends the turn with its reason; systemMessage is for the user", async () => {
@@ -329,7 +329,7 @@ describe("Claude Code's hook_callback answers", () => {
         expect(claudeCodeHookOutput("PostToolUse", { kind: "output", json: { continue: false, stopReason: "s", hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: "x" } } })).toEqual({ continue: false, stopReason: "s", hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: "x" } });
         expect(claudeCodeHookOutput("Stop", { kind: "error", message: "e" })).toEqual({});
         expect(claudeCodeHookOutput("Stop", { kind: "output", text: "plain" })).toEqual({});
-        // Plain text is context where the harness takes it so (a sub-agent's start, on Claude Code).
+        // Plain text is context where Cavvy takes it so (a sub-agent's start, on Claude Code).
         expect(claudeCodeHookOutput("SubagentStart", { kind: "output", text: "Use pnpm\n" })).toEqual({ hookSpecificOutput: { hookEventName: "SubagentStart", additionalContext: "Use pnpm" } });
     });
 });

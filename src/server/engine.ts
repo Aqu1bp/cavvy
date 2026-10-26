@@ -19,7 +19,7 @@ export { RpcError };
 import { readdirSync, realpathSync, statSync } from "fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { homedir, hostname, userInfo } from "os";
-import { APP_VERSION, harnessHome, paths } from "../config/paths";
+import { APP_VERSION, cavvyHome, paths } from "../config/paths";
 import { JsonFileError, loadScope, loadSettings, readJson, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
 import { fireHooks } from "../agent/hooks";
@@ -57,7 +57,7 @@ import { searchResources } from "../mcp/mentions";
 import { cleanTitle, modelSummary, promptTitle, Runtime } from "./runtime";
 import { forkUiLog } from "./history";
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
-import { harnessLinks, importModel, linkKey, writeImportedSession, type HarnessLinks } from "./cli-import";
+import { cavvyLinks, importModel, linkKey, writeImportedSession, type CavvyLinks } from "./cli-import";
 import { CODEX_CLIENT_NAME } from "../backends/codex";
 import { checkId, claimForDelete, locateSession, purgeTrash, restoreSession, trashSession, type SessionFlags } from "./session-delete";
 import { searchSessions } from "./search";
@@ -116,7 +116,7 @@ export interface EngineOptions {
     allowBypass?: boolean;
     /** The folder the server was started in. */
     startCwd?: string;
-    /** Default model when settings don't name one (legacy MODEL in the harness .env). */
+    /** Default model when settings don't name one (legacy MODEL in Cavvy .env). */
     fallbackModel?: string;
     /** Lists every provider's models (tests replace it). */
     listModels?: typeof listAllModels;
@@ -133,11 +133,11 @@ export interface EngineOptions {
 }
 
 /**
- * A CLI session in the list: one Harness holds is listed apart; one Harness's
- * sub-agents ran on is left out, as is a Codex thread started by Harness's
+ * A CLI session in the list: one Cavvy holds is listed apart; one Cavvy's
+ * sub-agents ran on is left out, as is a Codex thread started by Cavvy's
  * client that no session holds (sub-agent runs from before they were recorded).
  */
-function sortCliSession(links: HarnessLinks, source: CliSource, id: string, originator: string | undefined): "new" | "held" | "hidden" {
+function sortCliSession(links: CavvyLinks, source: CliSource, id: string, originator: string | undefined): "new" | "held" | "hidden" {
     const k = linkKey(source, id);
     if (links.held.has(k)) return "held";
     if (links.subagent.has(k)) return "hidden";
@@ -191,7 +191,7 @@ function runOutcome(rt: Runtime): RunOutcome {
     return rt.lastTurnStatus === "done" ? "done" : "stopped";
 }
 
-const storeFile = () => join(harnessHome(), "gui.json");
+const storeFile = () => join(cavvyHome(), "gui.json");
 /** The store's lists of session ids. */
 const STORE_FLAGS = ["pinned", "archived", "settled"] as const;
 
@@ -481,7 +481,7 @@ export class Engine {
         const title = this.notifyTitle(rt);
         this.broadcast({ type: "notify", sessionId: rt.id, kind, title, body });
         this.sessionChanged(rt);
-        const message = `Harness: ${body}`;
+        const message = `Cavvy: ${body}`;
         void fireHooks(rt.settings(), "Notification", { session_id: rt.id, message, kind, notification_type: kind }, rt.ws.cwd, () => {});
     }
 
@@ -715,14 +715,14 @@ export class Engine {
     /**
      * Refused while a session is open inside it: one here (or still closing),
      * or one in another process (a terminal) once it holds its lock, or a
-     * `harness -w` there that marked itself present before that. From the
+     * `cavvy -w` there that marked itself present before that. From the
      * check until Git is done no session can open there from this server,
      * nor can another removal of it start; its idle workspaces (picked while
      * their paths still resolve) close after.
      */
     private async removeWorktree(path: string, worktree: string, deleteIgnored?: string, check?: (plan: Removal) => Promise<void>): Promise<RemoveWorktreeResult> {
         const open = () => [...[...this.runtimes.values()].map((rt) => rt.ws.cwd), ...this.closingIn.values(), ...heldSessionFolders()];
-        // A terminal's `harness -w` is marked present there from its start, before it has a lock.
+        // A terminal's `cavvy -w` is marked present there from its start, before it has a lock.
         const inUse = (dir: string) => othersPresent(dir) || open().some(within(dir));
         const plan = planRemoval({ path, worktree, inUse });
         const reserved = realPath(plan.path);
@@ -885,7 +885,7 @@ export class Engine {
                     const sessions = run.sessions.map((m) => previous?.sessions.find((p) => p.id === m.id) ?? m);
                     s.runs = [{ ...run, sessions }, ...(s.runs ?? []).filter((r) => r.id !== run.id)].slice(0, MAX_RUNS);
                 });
-                if (!saved) throw new RpcError("Harness couldn't save this run.");
+                if (!saved) throw new RpcError("Cavvy couldn't save this run.");
             },
             log: this.o.log,
         };
@@ -924,12 +924,12 @@ export class Engine {
         return rt;
     }
 
-    /** Claude Code and Codex sessions that ran in this folder, newest first, marked when already in Harness. */
+    /** Claude Code and Codex sessions that ran in this folder, newest first, marked when already in Cavvy. */
     cliSessionsList(cwd: string): CliSessionsList {
         const p = resolve(expandHome(cwd));
         if (!isDir(p)) throw new RpcError(`${p} isn't a folder`);
         const now = Date.now();
-        const links = harnessLinks(this.aliasesOf(p, []));
+        const links = cavvyLinks(this.aliasesOf(p, []));
         const listings = CLI_SOURCES.map((source) => ({ source, ...listCliSessions(source, p, { sort: (id, originator) => sortCliSession(links, source, id, originator) }) }));
         const sessions: CliSessionInfo[] = listings
             .flatMap((l) => [...l.sessions, ...l.held])
@@ -942,18 +942,18 @@ export class Engine {
                 messages: s.messages,
                 partial: s.partial,
                 ...(s.model ? { model: redact(s.model) } : {}),
-                ...(links.held.has(linkKey(s.source, s.id)) ? { harnessId: links.held.get(linkKey(s.source, s.id)) } : {}),
+                ...(links.held.has(linkKey(s.source, s.id)) ? { cavvyId: links.held.get(linkKey(s.source, s.id)) } : {}),
                 recent: now - s.updatedAt < RECENT_CLI_MS,
             }))
             .sort((a, b) => b.updatedAt - a.updatedAt);
         return {
-            sources: listings.map((l) => ({ source: l.source, name: getProvider(l.source)?.name ?? l.source, enabled: Boolean(readAgentConfig(l.source)), more: l.more, moreInHarness: l.moreHeld })),
+            sources: listings.map((l) => ({ source: l.source, name: getProvider(l.source)?.name ?? l.source, enabled: Boolean(readAgentConfig(l.source)), more: l.more, moreInCavvy: l.moreHeld })),
             sessions,
         };
     }
 
     /**
-     * Paths that are this folder, under which Harness may have kept its sessions:
+     * Paths that are this folder, under which Cavvy may have kept its sessions:
      * as given, as the CLI sessions recorded it, and recent projects that are the
      * same folder by another path (/tmp and /private/tmp).
      */
@@ -973,7 +973,7 @@ export class Engine {
     private importing = new Map<string, Promise<Runtime>>();
 
     /**
-     * A Harness session for a Claude Code or Codex session of this folder: the
+     * A Cavvy session for a Claude Code or Codex session of this folder: the
      * one that already holds it, else a new one on the matching backend with
      * the conversation so far, opened. Two requests for the same one share the work.
      */
@@ -999,8 +999,8 @@ export class Engine {
         // Only a session a listing of this folder shows: no path is made from the id.
         const entry = findCliSession(source, p, id);
         if (!entry) throw new RpcError(`No ${name} session ${id} in ${p}`, "not_found");
-        const links = harnessLinks(this.aliasesOf(p, [entry.cwd]));
-        // A run of Harness's own sub-agents isn't offered, so it isn't imported either.
+        const links = cavvyLinks(this.aliasesOf(p, [entry.cwd]));
+        // A run of Cavvy's own sub-agents isn't offered, so it isn't imported either.
         if (sortCliSession(links, source, entry.id, entry.originator) === "hidden") throw new RpcError(`No ${name} session ${id} in ${p}`, "not_found");
         const existing = links.held.get(linkKey(source, entry.id));
         if (existing) {
@@ -1127,7 +1127,7 @@ export class Engine {
      */
     private async afterClosing(id: string) {
         await this.closing.get(id);
-        if (this.stopping) throw new RpcError("The harness server is stopping.", "stopping");
+        if (this.stopping) throw new RpcError("Cavvy server is stopping.", "stopping");
     }
 
     /**
@@ -1253,7 +1253,7 @@ export class Engine {
             else git = { main: main.path, base, branch: suggestBranch(cwd, slugify(title) || "plan") };
         }
         const { mode, why } = this.implementMode(rt);
-        return { id: plan.id, plan: plan.text, title, pending: Boolean(plan.interactionId), cwd, git, notGit, mode, modeWhy: why, savePath: defaultPlanPath({ home: harnessHome(), cwd, title }), home: harnessHome() };
+        return { id: plan.id, plan: plan.text, title, pending: Boolean(plan.interactionId), cwd, git, notGit, mode, modeWhy: why, savePath: defaultPlanPath({ home: cavvyHome(), cwd, title }), home: cavvyHome() };
     }
 
     /** A managed worktree an earlier attempt made for the plan, checked again from Git's own records. */
@@ -1265,7 +1265,7 @@ export class Engine {
             throw new RpcError("This folder isn't in a Git repository.", "not_git");
         }
         const w = all.find((x) => x.managed && x.exists && (resolve(x.path) === resolve(path) || realPath(x.path) === realPath(path)));
-        if (!w || w.branch !== branch) throw new RpcError(`${path} isn't a worktree Harness made for ${branch} in this repository.`, "not_managed");
+        if (!w || w.branch !== branch) throw new RpcError(`${path} isn't a worktree Cavvy made for ${branch} in this repository.`, "not_managed");
         return { path: w.path, branch, commit: w.head };
     }
 
@@ -1364,7 +1364,7 @@ export class Engine {
         const rt = this.runtimes.get(id);
         if (rt && !rt.idle) return { reason: "This session is still working, or waiting for you. Stop it, or let it finish, to remove its worktree.", code: "running" };
         if ([...this.clients].some((c) => c !== client && c.subs.has(id))) return { reason: "This session is open in another window. Close it there to remove its worktree.", code: "open_elsewhere" };
-        if (file && sessionHolder(file) !== undefined) return { reason: "This session is open in another Harness process (a terminal, say). Close it there to remove its worktree.", code: "open_elsewhere" };
+        if (file && sessionHolder(file) !== undefined) return { reason: "This session is open in another Cavvy process (a terminal, say). Close it there to remove its worktree.", code: "open_elsewhere" };
         const inside = within(wt.path);
         const other = this.listSessions(Infinity).find((s) => s.id !== id && inside(s.cwd));
         if (other) return { reason: `“${other.title}” also works in this worktree, so it stays.`, code: "shared" };
@@ -1405,7 +1405,7 @@ export class Engine {
         try {
             const { cwd, file } = this.sessionWhere(id);
             const found = isDir(cwd) ? managedWorktreeOf(cwd) : undefined;
-            if (!found) throw new RpcError("This session isn't in a worktree Harness manages, so there's no worktree to remove.", "not_managed");
+            if (!found) throw new RpcError("This session isn't in a worktree Cavvy manages, so there's no worktree to remove.", "not_managed");
             const wt = found.worktree.path;
             let closed = false;
             const done = (removed: boolean, kept?: string, code?: string): ArchiveResult => {
@@ -1739,7 +1739,7 @@ export class Engine {
     /**
      * The folder a path from the GUI is resolved against, and the roots it
      * must stay inside: a session's cwd plus its additionalDirectories, or a
-     * project that's open in Harness. Any other folder is refused, so the GUI
+     * project that's open in Cavvy. Any other folder is refused, so the GUI
      * can't widen the roots by naming one.
      */
     private openScope(p: Record<string, any>): { cwd: string; roots: string[] } {
@@ -1748,7 +1748,7 @@ export class Engine {
             return { cwd: rt.ws.cwd, roots: rt.checker.workspaceRoots() };
         }
         const ws = this.workspaces.get(resolve(str(p.cwd, "cwd")));
-        if (!ws) throw new RpcError("That folder isn't open in Harness", "not_open");
+        if (!ws) throw new RpcError("That folder isn't open in Cavvy", "not_open");
         const extra = ws.settings.permissions?.additionalDirectories ?? [];
         return { cwd: ws.cwd, roots: [ws.cwd, ...extra.map((d) => expandPath(d, ws.cwd))] };
     }
@@ -1878,7 +1878,7 @@ export class Engine {
     private commandsFor(cwd: string, provider?: string): CommandInfo[] {
         const builtin: CommandInfo[] = [
             { name: "compact", description: "Summarize the conversation to free up context", args: "[instructions]", noAttachments: true },
-            { name: "init", description: "Create a HARNESS.md with notes about this codebase" },
+            { name: "init", description: "Create a CAVVY.md with notes about this codebase" },
             { name: "review", description: "Review the current changes (or a PR number) for bugs", args: "[pr|focus]" },
             { name: "goal", description: "Keep working until a condition holds (/goal clear stops)", args: "[condition]" },
             { name: "trust", description: "Trust this folder yourself (MCP approvals, diagnostics after edits)", noAttachments: true },
@@ -1920,7 +1920,7 @@ export class Engine {
     // Requests
 
     async handle<M extends Method>(client: EngineClient, method: M, raw: unknown): Promise<Methods[M]["result"]> {
-        if (this.stopping) throw new RpcError("The harness server is stopping.", "stopping");
+        if (this.stopping) throw new RpcError("Cavvy server is stopping.", "stopping");
         const p = (raw ?? {}) as Record<string, any>;
         const r = await this.dispatch(client, method, p);
         return r as Methods[M]["result"];
@@ -1934,7 +1934,7 @@ export class Engine {
                     if (!p.login || typeof p.login !== "object") throw new RpcError("Invalid login selector", "invalid");
                     const provider = str(p.login.provider, "provider");
                     const accountId = str(p.login.accountId, "accountId");
-                    // Seen by removals in other Harness processes too, until the login process exits.
+                    // Seen by removals in other Cavvy processes too, until the login process exits.
                     const release = holdLogin(provider, accountId);
                     try {
                         const command = loginCommand(provider, accountId);
@@ -2065,7 +2065,7 @@ export class Engine {
                 } catch {
                     user = process.env.USER ?? "";
                 }
-                return { version: APP_VERSION, protocol: PROTOCOL_VERSION, home: harnessHome(), platform: process.platform, homeDir: homedir(), user, host: hostname().replace(/\.local$/, ""), startCwd } satisfies HelloResult;
+                return { version: APP_VERSION, protocol: PROTOCOL_VERSION, home: cavvyHome(), platform: process.platform, homeDir: homedir(), user, host: hostname().replace(/\.local$/, ""), startCwd } satisfies HelloResult;
             }
             case "keybindings.get":
                 return { path: keybindingsPath(), ...readKeybindings() } satisfies KeybindingsFile;
@@ -2307,8 +2307,8 @@ export class Engine {
             case "session.savePlan": {
                 const rt = this.runtime(text(p.id, "id", 200));
                 const plan = this.planOf(rt, optText(p.toolId, "toolId", 200));
-                const input = optText(p.path, "path", 4096) ?? defaultPlanPath({ home: harnessHome(), cwd: rt.ws.cwd, title: planTitle(plan.text) });
-                return { path: writePlanFile({ cwd: rt.ws.cwd, home: harnessHome(), input, text: plan.text, replace: p.replace === true }) };
+                const input = optText(p.path, "path", 4096) ?? defaultPlanPath({ home: cavvyHome(), cwd: rt.ws.cwd, title: planTitle(plan.text) });
+                return { path: writePlanFile({ cwd: rt.ws.cwd, home: cavvyHome(), input, text: plan.text, replace: p.replace === true }) };
             }
             case "session.delete":
                 await this.deleteSession(checkId(p.id));

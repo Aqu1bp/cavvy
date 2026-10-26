@@ -6,7 +6,7 @@ import type { ToolBlock } from "../src/server/protocol";
 import { componentCode, elements } from "./gui-component-harness";
 
 const tool = (o: Partial<ToolBlock>): ToolBlock => ({ t: "tool", id: "c1", name: "Bash", title: "Bash", status: "running", ...o });
-const LONG = "set -e W=/Users/me/Desktop/my-own-harness/.claude/worktrees/agent-1 K=/tmp/k\nbun test ./test/foo.test.ts";
+const LONG = "set -e W=/Users/me/Desktop/cavvy/.claude/worktrees/agent-1 K=/tmp/k\nbun test ./test/foo.test.ts";
 const title = `Bash(${LONG.replace(/\s+/g, " ").slice(0, 117)}…)`;
 
 test("who runs a sub-agent: its model's provider when it isn't the session's own, else the session's", () => {

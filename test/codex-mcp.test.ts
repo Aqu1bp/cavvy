@@ -28,12 +28,12 @@ test("malformed provenance disables every effective server; malformed effective 
 });
 
 test("read-only turns disable all servers and an existing delegation name is never merged", () => {
-    const config = { mcp_servers: { personal: {}, harness: { command: "unapproved" } } };
+    const config = { mcp_servers: { personal: {}, cavvy: { command: "unapproved" } } };
     const response = { config, layers: [{ name: { type: "user" }, config }] };
-    expect(codexMcpOverrides(response, true).config).toEqual({ mcp_servers: { personal: { enabled: false }, harness: { enabled: false } } });
-    const result = codexMcpOverrides(response, false, "harness");
+    expect(codexMcpOverrides(response, true).config).toEqual({ mcp_servers: { personal: { enabled: false }, cavvy: { enabled: false } } });
+    const result = codexMcpOverrides(response, false, "cavvy");
     expect(result.reservedCollision).toBe(true);
-    expect(result.config).toEqual({ mcp_servers: { harness: { enabled: false } } });
+    expect(result.config).toEqual({ mcp_servers: { cavvy: { enabled: false } } });
 });
 
 for (const type of ["packagedDefaults", "mdm", "system", "enterpriseManaged", "user", "sessionFlags", "legacyManagedConfigTomlFromFile", "legacyManagedConfigTomlFromMdm"]) {

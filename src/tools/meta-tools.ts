@@ -172,9 +172,9 @@ export const TaskTool: Tool<{ description: string; prompt: string; subagent_type
 Agent types:
 - "general-purpose": full tool access (subject to the same permissions) for multi-step research or implementation.
 - "explore": read-only (Read, Glob, Grep, LS, WebFetch, WebSearch, and read-only shell commands; no edits, tests, builds or scripts) for searching a codebase broadly and reporting findings.
-- Custom agents defined in .harness/agents/*.md are also available by name.
+- Custom agents defined in .cavvy/agents/*.md are also available by name.
 
-Models: a sub-agent runs on your model unless its agent type sets one or you pass model. That can be any model set up in this harness, from any provider (API models, and Claude Code or Codex when they're turned on): for a second opinion, a review, or a task another model is better at. Call ListModels to see the agent types and models.
+Models: a sub-agent runs on your model unless its agent type sets one or you pass model. That can be any model set up in this cavvy, from any provider (API models, and Claude Code or Codex when they're turned on): for a second opinion, a review, or a task another model is better at. Call ListModels to see the agent types and models.
 
 Background: with run_in_background (or an agent type that always runs in the background) it returns a task id at once and the sub-agent keeps working while you do. Its result comes to you automatically when it finishes; TaskStatus shows how it's going, or waits for it.
 
@@ -224,7 +224,7 @@ export const ListModelsTool: Tool<{ provider?: string; query?: string }> = {
     category: "meta",
     readOnly: true,
     description:
-        "Lists the agent types and the models the Task tool can run a sub-agent on: every model provider set up in this harness (API providers, and Claude Code or Codex when they're turned on), with how each is billed. Without arguments it shows a few models per provider.",
+        "Lists the agent types and the models the Task tool can run a sub-agent on: every model provider set up in this cavvy (API providers, and Claude Code or Codex when they're turned on), with how each is billed. Without arguments it shows a few models per provider.",
     parameters: {
         type: "object",
         properties: {

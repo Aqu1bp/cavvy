@@ -1,4 +1,4 @@
-// The last plan limits the server saw, kept across restarts (~/.harness/limits.json),
+// The last plan limits the server saw, kept across restarts (~/.cavvy/limits.json),
 // so the sidebar has the plan's usage, with its age, before the first turn.
 // Only what the meter needs: windows, whether a limit is reached (and turns go on
 // past it using credits: a flag, never a balance), when it was said.

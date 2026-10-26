@@ -1,5 +1,5 @@
 // The messages a run reports: what the SDK yields, and what
-// `harness -p --output-format stream-json` prints, one JSON object a line.
+// `cavvy -p --output-format stream-json` prints, one JSON object a line.
 // Both come from here, so they keep the same shapes.
 
 import type { AgentEvent, TurnEndReason } from "../agent/agent";

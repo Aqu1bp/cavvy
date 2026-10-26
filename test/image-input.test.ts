@@ -914,7 +914,7 @@ describe("commands that won't stop", () => {
         const pid = Number(readFileSync(f, "utf8"));
         expect(await goneSoon(pid)).toBe(true);
     });
-    test("a helper still running when the harness exits goes with it", async () => {
+    test("a helper still running when Cavvy exits goes with it", async () => {
         const dir = tempDir();
         const f = join(dir, "pid");
         const script = join(dir, "exit.ts");

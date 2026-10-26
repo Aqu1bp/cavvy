@@ -42,11 +42,11 @@ export function chooseProject(): Promise<string | undefined> {
     return chooseFolder();
 }
 
-/** Carry on with a Claude Code or Codex session in Harness: import it, or open the session that already holds it. */
+/** Carry on with a Claude Code or Codex session in Cavvy: import it, or open the session that already holds it. */
 export async function continueCliSession(cwd: string, s: CliSessionInfo): Promise<boolean> {
     try {
-        if (s.harnessId) {
-            await activate(s.harnessId);
+        if (s.cavvyId) {
+            await activate(s.cavvyId);
             return true;
         }
         const h = await importCliSession(cwd, s.source, s.id);
@@ -678,7 +678,7 @@ export async function connectCli(pr: ProviderInfo, failed: (e: unknown) => void 
 const [editors, setEditors] = createSignal<EditorInfo[]>([]);
 export { editors };
 
-/** The editors Harness knows, and which of them this machine has; also brings the chosen one up to date. */
+/** The editors Cavvy knows, and which of them this machine has; also brings the chosen one up to date. */
 export async function refreshEditors() {
     try {
         const r = await rpc.call("editors.list", {});

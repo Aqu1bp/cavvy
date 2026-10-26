@@ -1,11 +1,11 @@
-// Spawns `claude` the way Harness does (src/backends/claude-code.ts STREAM_ARGS + initialize), for the probes.
+// Spawns `claude` the way Cavvy does (src/backends/claude-code.ts STREAM_ARGS + initialize), for the probes.
 import { JsonProc, Log, SCRATCH } from "./lib";
 
 export const STREAM_ARGS = ["-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose"];
 
 export function startClaude(log: Log, extra: string[] = []) {
     const model = process.env.PROBE_CLAUDE_MODEL ?? "haiku";
-    // Harness adds --include-partial-messages and --permission-prompt-tool=stdio; the probes skip the
+    // Cavvy adds --include-partial-messages and --permission-prompt-tool=stdio; the probes skip the
     // prompts by pre-allowing the tools they use, and skip partial deltas to keep the logs small.
     const args = [...STREAM_ARGS, "--model", model, "--effort", "low", "--permission-mode", "bypassPermissions", "--no-session-persistence", ...extra];
     log.note(`spawn claude ${args.join(" ")}`);

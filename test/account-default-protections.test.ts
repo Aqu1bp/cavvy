@@ -6,28 +6,28 @@ import { join, sep } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 // Bun caches homedir at startup, so test the literal ~ paths in an isolated child.
-if (!process.env.HARNESS_TEST_DEFAULT_ACCOUNTS) {
+if (!process.env.CAVVY_TEST_DEFAULT_ACCOUNTS) {
     test("Default account protections in an isolated home", () => {
         const home = realpathSync(tempDir());
         try {
             const result = Bun.spawnSync([process.execPath, "--no-env-file", "test", import.meta.path], {
-                env: { ...process.env, HOME: home, HARNESS_HOME: join(home, ".harness"), HARNESS_TEST_DEFAULT_ACCOUNTS: home },
+                env: { ...process.env, HOME: home, CAVVY_HOME: join(home, ".cavvy"), CAVVY_TEST_DEFAULT_ACCOUNTS: home },
                 timeout: 15000,
             });
             expect({ code: result.exitCode, output: result.stderr.toString() }).toMatchObject({ code: 0 });
         } finally { rmSync(home, { recursive: true, force: true }); }
     });
 } else {
-    const home = process.env.HARNESS_TEST_DEFAULT_ACCOUNTS;
+    const home = process.env.CAVVY_TEST_DEFAULT_ACCOUNTS;
     if (!home.startsWith(realpathSync(tmpdir()) + sep) || home !== realpathSync(homedir())) throw new Error("Expected an isolated temporary home");
     const iso = isolate();
-    const previous = { HOME: process.env.HOME, HARNESS_HOME: process.env.HARNESS_HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, CLAUDE_SECURESTORAGE_CONFIG_DIR: process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR, CODEX_HOME: process.env.CODEX_HOME };
+    const previous = { HOME: process.env.HOME, CAVVY_HOME: process.env.CAVVY_HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, CLAUDE_SECURESTORAGE_CONFIG_DIR: process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR, CODEX_HOME: process.env.CODEX_HOME };
     process.env.HOME = home;
-    process.env.HARNESS_HOME = join(home, ".harness");
+    process.env.CAVVY_HOME = join(home, ".cavvy");
     delete process.env.CLAUDE_CONFIG_DIR;
     delete process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
     delete process.env.CODEX_HOME;
-    for (const dir of [".claude", ".codex", ".harness"]) mkdirSync(join(home, dir));
+    for (const dir of [".claude", ".codex", ".cavvy"]) mkdirSync(join(home, dir));
     const alias = join(home, "codex-link");
     symlinkSync(join(home, ".codex"), alias);
     const { saveAgentConfig } = await import("../src/providers/registry");
@@ -63,7 +63,7 @@ if (!process.env.HARNESS_TEST_DEFAULT_ACCOUNTS) {
             expect(checker.isProtectedArea(root)).toBe(false);
             expect(checker.hiddenFromSearch("Glob", root)).toBeUndefined();
         }
-        const policy = sandboxPolicy([home], { harnessHome: process.env.HARNESS_HOME! });
+        const policy = sandboxPolicy([home], { cavvyHome: process.env.CAVVY_HOME! });
         for (const file of [join(home, ".claude", ".credentials.json"), join(home, ".codex", "auth.json")]) {
             expect(check("Read", { file_path: file }).behavior).toBe("allow");
             expect(policy.unreadable).not.toContain(file);
@@ -73,11 +73,11 @@ if (!process.env.HARNESS_TEST_DEFAULT_ACCOUNTS) {
 
     test("without named accounts, the entire Seatbelt profile matches main's construction", async () => {
         clear();
-        const policy = sandboxPolicy([home], { home, harnessHome: join(home, ".harness") });
+        const policy = sandboxPolicy([home], { home, cavvyHome: join(home, ".cavvy") });
         // Keep only the fixture workspace writable so the baseline is independent of OS temp paths.
         policy.writable = [home];
         const expected = await Bun.file(join(import.meta.dir, "fixtures", "seatbelt-no-accounts.txt")).text();
-        // Frozen from origin/main's construction without account paths, including its literal deny set; since then the harness
+        // Frozen from origin/main's construction without account paths, including its literal deny set; since then Cavvy
         // home's contents and extended attributes (not its listing) are what's denied, with its secrets and accounts/ wholly, and ps works.
         expect(seatbeltProfile(policy).replaceAll(home, "/workspace")).toBe(expected);
     });
@@ -179,7 +179,7 @@ if (!process.env.HARNESS_TEST_DEFAULT_ACCOUNTS) {
             for (const file of [join(home, ".claude", ".credentials.json"), join(home, ".codex", "auth.json")]) {
                 expect(check("Read", { file_path: file }).behavior).toBe("deny");
                 expect(check("Write", { file_path: file, content: "x" }).behavior).toBe("deny");
-                expect(sandboxPolicy([home], { harnessHome: process.env.HARNESS_HOME! }).unreadable).toContain(file);
+                expect(sandboxPolicy([home], { cavvyHome: process.env.CAVVY_HOME! }).unreadable).toContain(file);
                 expect(checker.hiddenFromSearch("Grep", file)).toBe("protected");
                 expect(claudePermissions({ deny: [], ask: [], root: home }).deny).toContain(`Read(/${file})`);
             }
@@ -224,7 +224,7 @@ if (!process.env.HARNESS_TEST_DEFAULT_ACCOUNTS) {
                 clear();
                 // Without named accounts, Default is unchanged.
                 expect({ ...c, read: checkOutside("Read", { file_path: c.file }), protectedPaths: accountProtectedPaths() }).toEqual({ ...c, read: "allow", protectedPaths: [] });
-                // A named account of either CLI protects it, for Harness's tools and sandbox, and Claude Code's deny rules.
+                // A named account of either CLI protects it, for Cavvy's tools and sandbox, and Claude Code's deny rules.
                 saveAgentConfig("codex", { accounts: [{ id: "named", name: "Named", folder: join(home, "named"), managed: false }] });
                 const decisions = Object.fromEntries([...new Set([c.file, c.real])].flatMap((file) => [
                     [`Read ${file}`, checkOutside("Read", { file_path: file })],
@@ -232,7 +232,7 @@ if (!process.env.HARNESS_TEST_DEFAULT_ACCOUNTS) {
                     [`cat ${file}`, checkOutside("Bash", { command: `cat '${file}'` })],
                 ]));
                 expect({ ...c, decisions }).toEqual({ ...c, decisions: Object.fromEntries(Object.keys(decisions).map((k) => [k, "deny"])) });
-                expect(sandboxPolicy([project], { harnessHome: process.env.HARNESS_HOME! }).unreadable).toContain(c.real);
+                expect(sandboxPolicy([project], { cavvyHome: process.env.CAVVY_HOME! }).unreadable).toContain(c.real);
                 expect(claudePermissions({ deny: [], ask: [], root: project }).deny).toContain(`Read(/${c.real})`);
             }
             // Only the sign-in file: the rest of a separate secure-storage folder stays usable.

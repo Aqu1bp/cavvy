@@ -1,5 +1,5 @@
-// Deleting a session from the GUI: its files go to the Harness home's trash
-// and come back on Undo; nothing outside the Harness home is touched.
+// Deleting a session from the GUI: its files go to the Cavvy home's trash
+// and come back on Undo; nothing outside the Cavvy home is touched.
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
@@ -40,7 +40,7 @@ const git = (cwd: string, ...args: string[]) => new TextDecoder().decode(Bun.spa
 const fails = (p: Promise<unknown>) => p.then(() => ({ code: "resolved" }) as { code?: string }, (e) => e as { code?: string });
 
 /** An engine with one saved session (a turn, a UI log, file history), open but idle. */
-async function setup(cwd = createDemoProject(tempDir("harness-del-proj-"), { git: false })) {
+async function setup(cwd = createDemoProject(tempDir("cavvy-del-proj-"), { git: false })) {
     const engine = new Engine({ unloadAfterMs: 100 });
     const events: ServerEvent[] = [];
     const c = { subs: new Set<string>(), send: (e: ServerEvent) => void events.push(e) };
@@ -104,7 +104,7 @@ describe("session.delete", () => {
     }, 30_000);
 
     test("moves the session's files out of projects/ and Undo brings back the same bytes, pin and archived state", async () => {
-        const cwd = createDemoProject(tempDir("harness-del-git-"));
+        const cwd = createDemoProject(tempDir("cavvy-del-git-"));
         const { engine, c, events, id, f } = await setup(cwd);
         try {
             addHistory(f.history);
@@ -241,11 +241,11 @@ describe("session.delete", () => {
         }
     });
 
-    test("restore takes nothing from a trash folder that links out of the Harness home", async () => {
+    test("restore takes nothing from a trash folder that links out of the Cavvy home", async () => {
         const { engine, c, id, f } = await setup();
         try {
             await engine.handle(c, "session.delete", { id });
-            const outside = tempDir("harness-del-outside-");
+            const outside = tempDir("cavvy-del-outside-");
             renameSync(trashDir(), join(outside, "trash"));
             symlinkSync(join(outside, "trash"), trashDir());
             expect((await fails(engine.handle(c, "session.restore", { id }))).code).toBe("not_found");
@@ -400,7 +400,7 @@ describe("session.delete", () => {
 
     test("file history that's a link: the link moves, what it points to stays", async () => {
         const { engine, c, id, f } = await setup();
-        const outside = tempDir("harness-del-outside-");
+        const outside = tempDir("cavvy-del-outside-");
         writeFileSync(join(outside, "keep.txt"), "mine");
         mkdirSync(dirname(f.history), { recursive: true });
         symlinkSync(outside, f.history);
@@ -422,7 +422,7 @@ describe("session.delete", () => {
 });
 
 test("purging removes only entries older than a week, and doesn't follow links", () => {
-    const outside = tempDir("harness-del-outside-");
+    const outside = tempDir("cavvy-del-outside-");
     writeFileSync(join(outside, "keep.txt"), "mine");
     const entry = (name: string, deletedAt: number) => {
         mkdirSync(join(trashDir(), name), { recursive: true });

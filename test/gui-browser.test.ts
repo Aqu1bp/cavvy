@@ -9,7 +9,7 @@ import { chromePath, fixtureServer } from "./helpers/browser-fixture";
 import { fakeChromeProgram } from "./helpers/fake-chrome";
 
 const iso = isolate();
-const offBrowser = process.env.HARNESS_BROWSER;
+const offBrowser = process.env.CAVVY_BROWSER;
 const { Engine } = await import("../src/server/engine");
 const { startServer } = await import("../src/server/server");
 const { startMockLlm } = await import("../scripts/mock-llm");
@@ -58,7 +58,7 @@ let cwd: string;
 let id: string;
 
 beforeAll(async () => {
-    cwd = realpathSync(createDemoProject(tempDir("harness-browser-gui-"), { git: false }));
+    cwd = realpathSync(createDemoProject(tempDir("cavvy-browser-gui-"), { git: false }));
     const snap = (await call("session.create", { cwd })) as SessionSnapshot;
     id = snap.state.id;
     me.subs.add(id);
@@ -82,7 +82,7 @@ describe("without a browser", () => {
     });
 
     test("turning the browser off in Settings says so, and turning it on again undoes it", async () => {
-        process.env.HARNESS_BROWSER = chromePath ?? process.env.HARNESS_BROWSER;
+        process.env.CAVVY_BROWSER = chromePath ?? process.env.CAVVY_BROWSER;
         try {
             expect((await call("settings.update", { patch: { browser: false } })).browser).toBe(false);
             const off: BrowserState = await call("browser.state", { id });
@@ -93,7 +93,7 @@ describe("without a browser", () => {
             expect(JSON.parse(readFileSync(join(iso.home, "settings.json"), "utf8")).browser).toBeUndefined();
             if (chromePath) expect((await call("browser.state", { id })).status).toBe("idle");
         } finally {
-            process.env.HARNESS_BROWSER = offBrowser;
+            process.env.CAVVY_BROWSER = offBrowser;
             await call("settings.update", { patch: { browser: true } });
         }
     });
@@ -123,11 +123,11 @@ describe("the demo (bun run gui:demo)", () => {
     });
 
     test("a prompt about the browser has the agent open the page and click its first button, and the pane hears of it", async () => {
-        const saved = process.env.HARNESS_BROWSER;
+        const saved = process.env.CAVVY_BROWSER;
         // the stand-in for Chrome answers with its own page; what's shown here is the agent's path through the tools, permissions and the pane
-        process.env.HARNESS_BROWSER = fakeChromeProgram();
+        process.env.CAVVY_BROWSER = fakeChromeProgram();
         forgetChromeLookup();
-        const fresh = realpathSync(createDemoProject(tempDir("harness-browser-demo-"), { git: false }));
+        const fresh = realpathSync(createDemoProject(tempDir("cavvy-browser-demo-"), { git: false }));
         const demoId = ((await call("session.create", { cwd: fresh })) as SessionSnapshot).state.id;
         me.subs.add(demoId);
         const rt = (engine as any).runtimes.get(demoId);
@@ -145,7 +145,7 @@ describe("the demo (bun run gui:demo)", () => {
             expect(said).toContain("Clicked button");
             expect(states(me).some((e) => e.sessionId === demoId && e.state.tabs.some((t) => t.owner === "agent"))).toBe(true);
         } finally {
-            process.env.HARNESS_BROWSER = saved;
+            process.env.CAVVY_BROWSER = saved;
             forgetChromeLookup();
         }
     });
@@ -160,11 +160,11 @@ const browsers = [
 for (const browser of browsers) {
     describe.skipIf(!browser.run)(`with ${browser.name}`, () => {
         beforeAll(() => {
-            process.env.HARNESS_BROWSER = browser.program();
+            process.env.CAVVY_BROWSER = browser.program();
             forgetChromeLookup();
         });
         afterAll(() => {
-            process.env.HARNESS_BROWSER = offBrowser;
+            process.env.CAVVY_BROWSER = offBrowser;
             forgetChromeLookup();
         });
 
@@ -173,7 +173,7 @@ for (const browser of browsers) {
             const me = window();
             engine.clients.add(me);
             const call = (method: string, params: Record<string, unknown> = {}) => engine.handle(me, method as never, params as never) as Promise<any>;
-            const id = ((await call("session.create", { cwd: realpathSync(createDemoProject(tempDir("harness-browser-gui-"), { git: false })) })) as SessionSnapshot).state.id;
+            const id = ((await call("session.create", { cwd: realpathSync(createDemoProject(tempDir("cavvy-browser-gui-"), { git: false })) })) as SessionSnapshot).state.id;
             me.subs.add(id);
             const idle: BrowserState = await call("browser.state", { id });
             expect(idle.status).toBe("idle");
@@ -245,13 +245,13 @@ for (const browser of browsers) {
 
 describe("over the server's socket", () => {
     test("frames go only to the authenticated connection that watches", async () => {
-        process.env.HARNESS_BROWSER = fakeChromeProgram();
+        process.env.CAVVY_BROWSER = fakeChromeProgram();
         forgetChromeLookup();
         const server = await startServer({ token: "browser-token-0123456789" });
         const events: any[] = [];
         const replies = new Map<number, (m: any) => void>();
         let next = 1;
-        const ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws`, { protocols: ["harness.v1", "auth.browser-token-0123456789"] } as any);
+        const ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws`, { protocols: ["cavvy.v1", "auth.browser-token-0123456789"] } as any);
         ws.onmessage = (m) => {
             const msg = JSON.parse(String(m.data));
             if ("event" in msg) events.push(msg.event);
@@ -268,14 +268,14 @@ describe("over the server's socket", () => {
                 ws.send(JSON.stringify({ id: n, method, params }));
             });
         // without the token, no connection at all
-        const stranger = new WebSocket(`ws://127.0.0.1:${server.port}/browser-stream`, { protocols: ["harness.v1", "auth.wrong"] } as any);
+        const stranger = new WebSocket(`ws://127.0.0.1:${server.port}/browser-stream`, { protocols: ["cavvy.v1", "auth.wrong"] } as any);
         const refused = await new Promise<boolean>((resolve) => {
             stranger.onopen = () => resolve(false);
             stranger.onerror = () => resolve(true);
         });
         expect(refused).toBe(true);
         try {
-            const dir = realpathSync(createDemoProject(tempDir("harness-browser-ws-"), { git: false }));
+            const dir = realpathSync(createDemoProject(tempDir("cavvy-browser-ws-"), { git: false }));
             const made = (await rpc("session.create", { cwd: dir })).result as SessionSnapshot;
             const rt = (server.engine as any).runtimes.get(made.state.id);
             await BrowserNavigateTool.run({ url: `${site.url}/` }, { state: rt.toolState, settings: {}, signal: new AbortController().signal } as any);
@@ -285,7 +285,7 @@ describe("over the server's socket", () => {
             const frame = events.find((e) => e.type === "browser.frame");
             expect(frame).toMatchObject({ sessionId: made.state.id, width: 400, height: 300 });
             const images: BrowserImageFrame[] = [];
-            const stream = new WebSocket(`ws://127.0.0.1:${server.port}/browser-stream`, { protocols: ["harness.v1", "auth.browser-token-0123456789"] } as any);
+            const stream = new WebSocket(`ws://127.0.0.1:${server.port}/browser-stream`, { protocols: ["cavvy.v1", "auth.browser-token-0123456789"] } as any);
             stream.binaryType = "arraybuffer";
             stream.onmessage = m => { if (m.data instanceof ArrayBuffer) images.push(decodeBrowserFrame(m.data)!); };
             await new Promise<void>((resolve, reject) => { stream.onopen = () => resolve(); stream.onerror = () => reject(new Error("stream connection failed")); });
@@ -310,7 +310,7 @@ describe("over the server's socket", () => {
         } finally {
             ws.close();
             await server.stop();
-            process.env.HARNESS_BROWSER = offBrowser;
+            process.env.CAVVY_BROWSER = offBrowser;
             forgetChromeLookup();
         }
     });

@@ -1,5 +1,5 @@
 // Reading the conversations Claude Code and Codex keep on disk, so one started
-// in a terminal can be picked up in Harness. Strictly read-only: files are
+// in a terminal can be picked up in Cavvy. Strictly read-only: files are
 // opened for reading and never written, renamed, locked or touched, and only
 // conversation files are read (never credentials, settings, config or prompt
 // history). What's in them is data: shown, and later handed to a model as
@@ -96,15 +96,15 @@ export interface CliListing {
     sessions: CliSessionEntry[];
     /** Sessions of this folder not listed (over the limit). */
     more: number;
-    /** Ones already in Harness: listed apart, with a limit of their own, so they don't crowd out the rest. */
+    /** Ones already in Cavvy: listed apart, with a limit of their own, so they don't crowd out the rest. */
     held: CliSessionEntry[];
     moreHeld: number;
 }
 
 /**
  * How a listing treats a session, from its id and the client that started it
- * (Codex): one to offer, one already in Harness, or one to leave out (a run
- * of Harness's own sub-agents).
+ * (Codex): one to offer, one already in Cavvy, or one to leave out (a run
+ * of Cavvy's own sub-agents).
  */
 export type CliSort = (id: string, originator: string | undefined) => "new" | "held" | "hidden";
 
@@ -652,7 +652,7 @@ export interface CliTranscript {
 }
 
 const CUT = "\n\n[…cut short on import]";
-/** Tool titles kept per turn (Harness lists as many after a backend's turn). */
+/** Tool titles kept per turn (Cavvy lists as many after a backend's turn). */
 const MAX_ACTIONS = 50;
 const MAX_ACTION_CHARS = 200;
 
@@ -874,7 +874,7 @@ function codexTurns(entry: CliSessionEntry, size: number, limits: CliLimits): Cl
     return { turns, omitted: 0, model };
 }
 
-/** A title for one of Codex's tool calls, like Harness's Codex backend gives them. */
+/** A title for one of Codex's tool calls, like Cavvy's Codex backend gives them. */
 function codexAction(p: Record<string, any>): string {
     const name = typeof p.name === "string" ? p.name : p.type === "local_shell_call" ? "shell" : "tool";
     let args: Record<string, any> = {};

@@ -1,10 +1,10 @@
-// A Harness-made (managed) account's CLI home shares Default's configuration and
+// A Cavvy-made (managed) account's CLI home shares Default's configuration and
 // history through symlinks, so accounts differ only in sign-in. Only links are made in
-// the account folder, plus Harness's own marker file naming the Default they point to;
-// an entry already there that isn't Harness's link stays as it is and is reported. In
+// the account folder, plus Cavvy's own marker file naming the Default they point to;
+// an entry already there that isn't Cavvy's link stays as it is and is reported. In
 // Default, at most an empty history folder is made.
 //
-// Files are opened only twice: Harness's marker, and Default's Claude Code settings.json,
+// Files are opened only twice: Cavvy's marker, and Default's Claude Code settings.json,
 // which is read for the names of its sign-in settings (never their values, which are
 // neither kept nor reported) so that a shared one can't sign every account in as Default.
 import { spawnSync } from "child_process";
@@ -85,8 +85,8 @@ const CODEX_HISTORY = ["sessions", "archived_sessions", "thread-writer-locks"];
 /** Codex makes these locks itself when it starts before Default has them; they guard shared state. */
 const CODEX_REPLACEABLE = new Set(["mcp-oauth-locks", ".sqlite-maintenance.lock"]);
 
-/** Harness's own file in an account folder: the Default folder its links point to. */
-export const LAYOUT_MARKER = ".harness-shared-from";
+/** Cavvy's own file in an account folder: the Default folder its links point to. */
+export const LAYOUT_MARKER = ".cavvy-shared-from";
 
 export interface SharedLayout {
     /** Entries the account already has of its own, so Default's isn't linked. */
@@ -112,8 +112,8 @@ function isDir(path: string): boolean {
     try { return statSync(path).isDirectory(); } catch { return false; }
 }
 
-/** Whether `rel` in the account is Harness's link to the same entry of the current or previous Default. */
-function harnessLink(l: Layout, rel: string): "current" | "previous" | false {
+/** Whether `rel` in the account is Cavvy's link to the same entry of the current or previous Default. */
+function cavvyLink(l: Layout, rel: string): "current" | "previous" | false {
     const st = lstat(join(l.folder, rel));
     if (!st?.isSymbolicLink()) return false;
     const target = readlinkSync(join(l.folder, rel));
@@ -121,9 +121,9 @@ function harnessLink(l: Layout, rel: string): "current" | "previous" | false {
     return l.previous && target === join(l.previous, rel) ? "previous" : false;
 }
 
-/** Removes Harness's link at `rel`; anything else stays. */
+/** Removes Cavvy's link at `rel`; anything else stays. */
 function dropLink(l: Layout, rel: string): void {
-    try { if (harnessLink(l, rel)) unlinkSync(join(l.folder, rel)); } catch {}
+    try { if (cavvyLink(l, rel)) unlinkSync(join(l.folder, rel)); } catch {}
 }
 
 /** Links `rel` to Default's; reports a conflict when something else is there. */
@@ -133,10 +133,10 @@ function link(l: Layout, rel: string, replaceable: (local: string) => boolean = 
     try {
         const st = lstat(at);
         if (st?.isSymbolicLink()) {
-            const own = harnessLink(l, rel);
+            const own = cavvyLink(l, rel);
             if (own === "current") return;
             if (own !== "previous") { l.conflicts.push(rel); return; }
-            // Default moved (its selector changed): only Harness's own link is pointed again.
+            // Default moved (its selector changed): only Cavvy's own link is pointed again.
             unlinkSync(at);
         } else if (st) {
             if (!replaceable(at)) { l.conflicts.push(rel); return; }
@@ -144,22 +144,22 @@ function link(l: Layout, rel: string, replaceable: (local: string) => boolean = 
             rmSync(at, { recursive: true, force: true });
         }
         try { symlinkSync(target, at); } catch (e: any) {
-            // Another Harness process laid it out first.
-            if (e.code !== "EEXIST" || harnessLink(l, rel) !== "current") throw e;
+            // Another Cavvy process laid it out first.
+            if (e.code !== "EEXIST" || cavvyLink(l, rel) !== "current") throw e;
         }
     } catch {
         if (!l.conflicts.includes(rel)) l.conflicts.push(rel);
     }
 }
 
-/** Harness's links to the previous Default that the current one has nothing for, among names it links. */
+/** Cavvy's links to the previous Default that the current one has nothing for, among names it links. */
 function dropPrevious(l: Layout, links: (name: string) => boolean, dir = ""): void {
     if (!l.previous) return;
     let names: string[];
     try { names = readdirSync(join(l.folder, dir)); } catch { return; }
     for (const name of names.filter(links)) {
         const rel = dir ? join(dir, name) : name;
-        if (harnessLink(l, rel) === "previous" && !lstat(join(l.from, rel))) dropLink(l, rel);
+        if (cavvyLink(l, rel) === "previous" && !lstat(join(l.from, rel))) dropLink(l, rel);
     }
 }
 
@@ -216,9 +216,9 @@ function claudeLayout(l: Layout): void {
             else if (st.isSymbolicLink() || !st.isDirectory()) { l.conflicts.push(dir); continue; }
             dropPrevious(l, (name) => !own.includes(name), dir);
             for (const name of readdirSync(from)) if (!own.includes(name)) link(l, join(dir, name));
-            // Harness's own links to what Default no longer has.
+            // Cavvy's own links to what Default no longer has.
             for (const name of readdirSync(local)) {
-                if (harnessLink(l, join(dir, name)) === "current" && !lstat(join(from, name))) unlinkSync(join(local, name));
+                if (cavvyLink(l, join(dir, name)) === "current" && !lstat(join(from, name))) unlinkSync(join(local, name));
             }
         } catch {
             if (!l.conflicts.includes(dir)) l.conflicts.push(dir);
@@ -258,7 +258,7 @@ const SQLITE_SIDECAR = /^(.+)-(wal|shm|journal)$/;
 function codexLayout(l: Layout): void {
     makeHistory(l.from, CODEX_HISTORY);
     dropPrevious(l, (name) => !CODEX_PRIVATE.has(name) && name !== LAYOUT_MARKER);
-    // What Harness linked before it became private. Other links (auth.json) are never Harness's:
+    // What Cavvy linked before it became private. Other links (auth.json) are never Cavvy's:
     // they stay, and the account's identity check refuses them.
     for (const name of CODEX_ONCE_SHARED) dropLink(l, name);
     const names = readdirSync(l.from).filter((name) => !CODEX_PRIVATE.has(name) && name !== LAYOUT_MARKER);
@@ -270,7 +270,7 @@ function codexLayout(l: Layout): void {
     for (const name of names.filter((n) => !sidecars.includes(n))) link(l, name, replaceable(name));
     // Default's write-ahead log beside the account's own database would be applied to it. SQLite
     // finds these beside the database's real path, so they're linked only with a linked database.
-    for (const name of sidecars) if (harnessLink(l, database(name)!) === "current") link(l, name);
+    for (const name of sidecars) if (cavvyLink(l, database(name)!) === "current") link(l, name);
 }
 
 function readMarker(folder: string): string | undefined {
@@ -311,7 +311,7 @@ export function ensureSharedLayout(provider: string, folder: string, from: strin
     return { conflicts: l.conflicts, withheld: l.withheld };
 }
 
-/** Whether `file` is the link Harness makes to Default's entry of the same name. */
+/** Whether `file` is the link Cavvy makes to Default's entry of the same name. */
 export function isSharedLink(file: string, defaultFolder: string, name: string): boolean {
     try { return lstatSync(file).isSymbolicLink() && readlinkSync(file) === join(defaultFolder, name); } catch { return false; }
 }

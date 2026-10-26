@@ -1,4 +1,4 @@
-// What's on disk under ~/.harness/plugins/:
+// What's on disk under ~/.cavvy/plugins/:
 //
 //   known_marketplaces.json   marketplaces added, and where each one lives
 //   installed_plugins.json    installed plugins: version, folder, and which scopes enabled them

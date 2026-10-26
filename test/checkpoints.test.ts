@@ -28,7 +28,7 @@ afterAll(() => {
 
 /** A real path (history keys files by real path; the temp folder may be under a link). */
 function project(): string {
-    const d = realpathSync(tempDir("harness-rewind-"));
+    const d = realpathSync(tempDir("cavvy-rewind-"));
     dirs.push(d);
     return d;
 }
@@ -138,7 +138,7 @@ describe("file snapshots", () => {
         expect(plan).toMatchObject([{ path: f, action: "delete", outside: false }]);
         expect(history.restore(plan)).toEqual({ done: [f], failed: [] });
         expect(existsSync(f)).toBe(false);
-        // Restored state is what the harness last wrote now: nothing left to do.
+        // Restored state is what Cavvy last wrote now: nothing left to do.
         expect(history.plan(cp)).toEqual([]);
     });
 
@@ -373,7 +373,7 @@ describe("file snapshots", () => {
 });
 
 describe("outside changes", () => {
-    test("a file changed since the harness last wrote it is flagged; others aren't", async () => {
+    test("a file changed since Cavvy last wrote it is flagged; others aren't", async () => {
         const proj = project();
         const [a, b, c] = ["a.txt", "b.txt", "c.txt"].map((n) => join(proj, n));
         const { session, run, history } = setup(proj, { one: [write(a!, "a1\n"), write(b!, "b1\n"), write(c!, "c1\n")] });
@@ -810,7 +810,7 @@ describe("/rewind command", () => {
         writeFileSync(a, "mine\n");
         const f = fakeApp(s, proj, [pickLabel("one"), pickValue("both"), () => false]);
         await rewindCommand(f.app);
-        expect(stripAnsi(f.shown[1].header.join("\n"))).toContain("a.txt (changed outside Harness)");
+        expect(stripAnsi(f.shown[1].header.join("\n"))).toContain("a.txt (changed outside Cavvy)");
         expect(stripAnsi(f.shown[2].title)).toContain("Overwrite changes made outside");
         // Declined: nothing happened.
         expect(readFileSync(a, "utf-8")).toBe("mine\n");

@@ -8,7 +8,7 @@ import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
-const { home: HARNESS_HOME, cleanup } = isolate();
+const { home: CAVVY_HOME, cleanup } = isolate();
 const { App } = await import("../src/ui/app");
 const { Session, listSessions } = await import("../src/agent/session");
 const { runCommand } = await import("../src/commands/index");
@@ -17,7 +17,7 @@ const { stripAnsi } = await import("../src/ui/ansi");
 import type { AssistantMessage, ChatRequest } from "../src/providers/types";
 
 beforeAll(() => {
-    process.env.HARNESS_HOME = HARNESS_HOME;
+    process.env.CAVVY_HOME = CAVVY_HOME;
 });
 afterAll(cleanup);
 
@@ -50,16 +50,16 @@ function useClient(app: InstanceType<typeof App>, answer: (n: number) => Assista
 describe("/doctor", () => {
     test("settings files with comments and trailing commas parse, as they do when loaded; real errors are still reported", async () => {
         const proj = tempDir();
-        mkdirSync(join(proj, ".harness"));
-        writeFileSync(join(proj, ".harness", "settings.json"), `{\n  // the project's model\n  "model": "anthropic:claude-opus-5-5", /* trailing comma next */\n  "permissions": { "allow": ["Bash(npm test:*)",], },\n}\n`);
-        writeFileSync(join(proj, ".harness", "settings.local.json"), `{ "effort": }`);
+        mkdirSync(join(proj, ".cavvy"));
+        writeFileSync(join(proj, ".cavvy", "settings.json"), `{\n  // the project's model\n  "model": "anthropic:claude-opus-5-5", /* trailing comma next */\n  "permissions": { "allow": ["Bash(npm test:*)",], },\n}\n`);
+        writeFileSync(join(proj, ".cavvy", "settings.local.json"), `{ "effort": }`);
         const { app, text } = testApp({ cwd: proj });
-        expect(app.settings.model).toBe("anthropic:claude-opus-5-5"); // what the harness loads
+        expect(app.settings.model).toBe("anthropic:claude-opus-5-5"); // what Cavvy loads
         app.refreshListings = async () => [];
         await runCommand(app, "/doctor");
         const out = text();
-        expect(out).toContain("✔ .harness/settings.json parses");
-        expect(out).toMatch(/✘ \.harness\/settings\.local\.json: .+/);
+        expect(out).toContain("✔ .cavvy/settings.json parses");
+        expect(out).toMatch(/✘ \.cavvy\/settings\.local\.json: .+/);
         expect(out).not.toContain("settings.local.json parses");
     });
 });
@@ -365,12 +365,12 @@ describe("--append-system-prompt with -p", () => {
                 return new Response(chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
             },
         });
-        writeFileSync(join(HARNESS_HOME, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock", baseUrl: `http://127.0.0.1:${server.port}/v1`, kind: "openai", requiresKey: false, models: ["m1"] }] }));
+        writeFileSync(join(CAVVY_HOME, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock", baseUrl: `http://127.0.0.1:${server.port}/v1`, kind: "openai", requiresKey: false, models: ["m1"] }] }));
     });
     afterAll(() => server.stop(true));
 
-    async function harness(args: string[], cwd: string): Promise<{ code: number; stderr: string }> {
-        const env: Record<string, string> = { PATH: process.env.PATH ?? "", HOME: HARNESS_HOME, HARNESS_HOME, HARNESS_NO_KEYCHAIN: "1" };
+    async function cavvy(args: string[], cwd: string): Promise<{ code: number; stderr: string }> {
+        const env: Record<string, string> = { PATH: process.env.PATH ?? "", HOME: CAVVY_HOME, CAVVY_HOME, CAVVY_NO_KEYCHAIN: "1" };
         const child = spawn(process.execPath, ["--no-env-file", `--config=${join(ROOT, "bunfig.toml")}`, join(ROOT, "src/index.ts"), "-p", ...args, "--model", "mock:m1"], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
         let stderr = "";
         child.stderr.on("data", (b) => (stderr += b));
@@ -382,17 +382,17 @@ describe("--append-system-prompt with -p", () => {
 
     test("a resumed session gets this run's append, and the next run without the flag doesn't", async () => {
         const proj = realpathSync(tempDir());
-        expect(await harness(["first", "--append-system-prompt", "Rule one."], proj)).toMatchObject({ code: 0 });
+        expect(await cavvy(["first", "--append-system-prompt", "Rule one."], proj)).toMatchObject({ code: 0 });
         const base = systems[0]!.replace(/\n\nRule one\.$/, "");
         expect(systems[0]).toBe(`${base}\n\nRule one.`);
         // What the session file keeps is the prompt without the append.
         const file = listSessions(proj, 1)[0]!.file;
         expect(JSON.parse(readFileSync(file, "utf-8").split("\n")[0]!).system).toBe(base);
 
-        expect(await harness(["second", "-c", "--append-system-prompt", "Rule two."], proj)).toMatchObject({ code: 0 });
+        expect(await cavvy(["second", "-c", "--append-system-prompt", "Rule two."], proj)).toMatchObject({ code: 0 });
         expect(systems[1]).toBe(`${base}\n\nRule two.`);
 
-        expect(await harness(["third", "-c"], proj)).toMatchObject({ code: 0 });
+        expect(await cavvy(["third", "-c"], proj)).toMatchObject({ code: 0 });
         expect(systems[2]).toBe(base);
         expect(listSessions(proj, 5).length).toBe(1);
     }, 60_000);

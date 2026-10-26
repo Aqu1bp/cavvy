@@ -1,4 +1,4 @@
-// The stand-in for Chrome in test/helpers/fake-chrome-main.ts, as a program to name in HARNESS_BROWSER, and a way to see and
+// The stand-in for Chrome in test/helpers/fake-chrome-main.ts, as a program to name in CAVVY_BROWSER, and a way to see and
 // steer it from the test.
 import { chmodSync, writeFileSync } from "fs";
 import { join } from "path";
@@ -12,7 +12,7 @@ export interface FakeCommand {
 
 /** A program that runs the fake Chrome (`bun fake-chrome-main.ts`), as an installed browser would be named. */
 export function fakeChromeProgram(): string {
-    const program = join(tempDir("harness-fake-chrome-"), "fake-chrome");
+    const program = join(tempDir("cavvy-fake-chrome-"), "fake-chrome");
     writeFileSync(program, `#!/bin/sh\nexec "${process.execPath}" "${join(import.meta.dir, "fake-chrome-main.ts")}" "$@"\n`);
     chmodSync(program, 0o755);
     return program;

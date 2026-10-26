@@ -1,8 +1,8 @@
-// `harness gui` and `harness serve`.
+// `cavvy gui` and `cavvy serve`.
 //
-//   harness gui                      start the server and open the GUI in your browser
-//   harness serve [--port n]         just the server (prints a link to open)
-//   harness serve --handshake        for the desktop app: prints one JSON line with the
+//   cavvy gui                      start the server and open the GUI in your browser
+//   cavvy serve [--port n]         just the server (prints a link to open)
+//   cavvy serve --handshake        for the desktop app: prints one JSON line with the
 //                                    port and token on stdout, and exits when a line
 //                                    arrives on stdin or it closes
 
@@ -40,7 +40,7 @@ Options:
   --dev-origin <url>              also accept connections from this origin (a Vite dev server)`;
 
 function defaultStatic(): string | undefined {
-    const candidates = [process.env.HARNESS_GUI_DIST, join(resolve(import.meta.dir, "..", ".."), "gui", "dist"), join(dirname(process.execPath), "gui")].filter((d): d is string => Boolean(d));
+    const candidates = [process.env.CAVVY_GUI_DIST, join(resolve(import.meta.dir, "..", ".."), "gui", "dist"), join(dirname(process.execPath), "gui")].filter((d): d is string => Boolean(d));
     return candidates.find((d) => existsSync(join(d, "index.html")));
 }
 
@@ -60,10 +60,10 @@ export async function serveCommand(sub: "gui" | "serve", args: string[], env: Se
     let handshake = false;
     let loginEnv = false;
     let allowBypass = false;
-    const token = process.env.HARNESS_GUI_TOKEN || undefined;
+    const token = process.env.CAVVY_GUI_TOKEN || undefined;
     // Not for the commands the GUI runs: one could connect with it and answer its own permission prompts.
-    delete process.env.HARNESS_GUI_TOKEN;
-    if (token && token.length < 16) die("HARNESS_GUI_TOKEN must be at least 16 characters: anyone who can reach the port and guess it can run commands as you");
+    delete process.env.CAVVY_GUI_TOKEN;
+    if (token && token.length < 16) die("CAVVY_GUI_TOKEN must be at least 16 characters: anyone who can reach the port and guess it can run commands as you");
     const origins: string[] = [];
     for (let i = 0; i < args.length; i++) {
         const a = args[i]!;

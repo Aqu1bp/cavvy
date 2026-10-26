@@ -1,7 +1,7 @@
 import { matchesSecretPattern } from "../../../src/util/secret-patterns";
 
 /** Browser-local composer text only. Never pass attachment payloads or transcript data here. */
-export const COMPOSER_STORAGE_KEY = "harness.composer.v1";
+export const COMPOSER_STORAGE_KEY = "cavvy.composer.v1";
 export const HISTORY_LIMIT = 100;
 export const COMPOSER_MAX_CHARS = 1_000_000; // ~2 MB of UTF-16, leaving room for other preferences.
 export const COMPOSER_MAX_AGE = 30 * 24 * 60 * 60 * 1000;

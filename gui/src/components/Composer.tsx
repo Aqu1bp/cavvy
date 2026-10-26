@@ -682,7 +682,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     <Show when={menuStatus()}>
                         <div class="cm-status" role="status">
                             {menuStatus() === "loading" ? "Searching…" : menuStatus() === "empty" ? (searchedResources() ? "No matching files or resources" : "No matching files") : menuStatus() === "no-skills" ? (
-                                <>No skills yet. Add one as <span class="mono">&lt;name&gt;/SKILL.md</span> in <span class="mono">~/.harness/skills</span> or the project's <span class="mono">.harness/skills</span>.</>
+                                <>No skills yet. Add one as <span class="mono">&lt;name&gt;/SKILL.md</span> in <span class="mono">~/.cavvy/skills</span> or the project's <span class="mono">.cavvy/skills</span>.</>
                             ) : "Could not search files"}
                         </div>
                     </Show>

@@ -1,4 +1,4 @@
-# Working on Harness
+# Working on Cavvy
 
 Several agents work on this repository at the same time. These rules keep you out of each other's way.
 

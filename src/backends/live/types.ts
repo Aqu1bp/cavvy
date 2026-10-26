@@ -1,5 +1,5 @@
 // The live CLI layer's interfaces (#219 §6). One long-lived CLI process serves
-// a harness session's turns (LiveCliSession, session.ts); a pool holds them
+// a Cavvy session's turns (LiveCliSession, session.ts); a pool holds them
 // (pool.ts). What differs between CLIs is only an AgentCliAdapter: how to start
 // the process, and a CliConnection that speaks its protocol and reports what
 // happens as CliEvents. Nothing in the runtime uses this layer yet.
@@ -29,7 +29,7 @@ export interface SpawnSpec {
     bin: string;
     args: string[];
     cwd: string;
-    /** Over the harness's child environment: the account's folder (accountEnv). */
+    /** Over Cavvy's child environment: the account's folder (accountEnv). */
     env?: Record<string, string>;
     /**
      * A hash of everything only settable at spawn (spawnFingerprint): the binary, its arguments
@@ -56,7 +56,7 @@ export interface TurnInput {
     requestAfter?: string;
 }
 
-// What a live process asks of the harness, between turns too (bound once a session), and where one turn's
+// What a live process asks of Cavvy, between turns too (bound once a session), and where one turn's
 // events go: src/backends/types.ts.
 export type { SessionHost, TurnSink } from "../types";
 

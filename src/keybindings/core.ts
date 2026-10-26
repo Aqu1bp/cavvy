@@ -1,4 +1,4 @@
-// Keybindings: parse ~/.harness/keybindings.json (Claude Code's format) into a
+// Keybindings: parse ~/.cavvy/keybindings.json (Claude Code's format) into a
 // keymap for one app (the terminal or the GUI) on one platform, and match key
 // presses against it, chords included. No I/O here: the GUI imports it too.
 
@@ -156,12 +156,12 @@ function strokeProblem(s: Stroke, raw: string, app: KeyApp, platform: KeyPlatfor
         if (s.ctrl && s.key === "d") return { level: "error", message: `"${raw}" can't be rebound: it exits.` };
         const same: Record<string, string> = { m: "Enter", "[": "Escape", i: "Tab", h: "Backspace" };
         if (plainCtrl && same[s.key]) return { level: "error", message: `"${raw}" can't be rebound: terminals send it as ${same[s.key]}.` };
-        if (plainCtrl && s.key === "z") return { level: "warning", message: `"${raw}" may not reach Harness: terminals use it to suspend the program.` };
-        if (plainCtrl && s.key === "\\") return { level: "warning", message: `"${raw}" may not reach Harness: terminals use it to quit the program.` };
+        if (plainCtrl && s.key === "z") return { level: "warning", message: `"${raw}" may not reach Cavvy: terminals use it to suspend the program.` };
+        if (plainCtrl && s.key === "\\") return { level: "warning", message: `"${raw}" may not reach Cavvy: terminals use it to quit the program.` };
         if (/(^|\+)(cmd|command|super|win)\+/i.test(raw)) return { level: "warning", message: `"${raw}": most terminals never send Cmd, and those that do report it like Alt. Prefer ctrl.` };
         return undefined;
     }
-    if (platform === "macos" && s.cmd && !s.ctrl && !s.alt && !s.shift && ["q", "w", "tab", "space", "h", "m"].includes(s.key)) return { level: "error", message: `"${raw}" belongs to macOS and never reaches Harness.` };
+    if (platform === "macos" && s.cmd && !s.ctrl && !s.alt && !s.shift && ["q", "w", "tab", "space", "h", "m"].includes(s.key)) return { level: "error", message: `"${raw}" belongs to macOS and never reaches Cavvy.` };
     const mod = platform === "macos" ? s.cmd && !s.ctrl : s.ctrl && !s.cmd;
     if (mod && !s.alt && !s.shift && ["c", "v", "x", "a", "z"].includes(s.key)) return { level: "warning", message: `"${raw}" replaces ${({ c: "copy", v: "paste", x: "cut", a: "select all", z: "undo" } as Record<string, string>)[s.key]} wherever the binding applies.` };
     return undefined;
@@ -453,7 +453,7 @@ export function keyLabel(keymap: Keymap, action: string, all = false, separator 
 }
 
 export const KEYBINDINGS_TEMPLATE = `{
-  // Custom keyboard shortcuts for Harness (the terminal app and the GUI).
+  // Custom keyboard shortcuts for Cavvy (the terminal app and the GUI).
   // Same format as Claude Code's keybindings.json: ${KEYBINDINGS_DOCS}
   // Changes apply as soon as you save. Set a key to null to unbind it.
   // Modifiers: ctrl, alt (opt), shift, cmd, and mod (Cmd on macOS, Ctrl elsewhere).

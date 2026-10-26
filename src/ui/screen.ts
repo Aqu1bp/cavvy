@@ -1,4 +1,4 @@
-// Terminal renderer. The harness takes over the whole window: output fills it
+// Terminal renderer. Cavvy takes over the whole window: output fills it
 // from the top and the "live region" (streaming text and running tools right
 // after the output; spinner, prompt, dialogs and footer on the bottom rows)
 // is redrawn in place. At the end of a turn the output is brought back down to

@@ -18,7 +18,7 @@ function setSize(rows: number, cols: number) {
 }
 
 /** A Screen that writes into a VT of the given size instead of the real terminal. */
-function harness(rows: number, cols: number) {
+function cavvy(rows: number, cols: number) {
     setSize(rows, cols);
     const vt = new VT(rows, cols);
     process.stdout.write = ((s: string | Uint8Array) => (vt.feed(typeof s === "string" ? s : new TextDecoder().decode(s)), true)) as typeof process.stdout.write;
@@ -43,7 +43,7 @@ const LIVE = ["", "─".repeat(20), "> type here", "─".repeat(20), "  footer"]
 
 describe("full-window renderer", () => {
     test("the live region sits on the bottom rows, under the output", () => {
-        const { vt, screen } = harness(12, 40);
+        const { vt, screen } = cavvy(12, 40);
         screen.print(["first", "second"]);
         screen.setLive(LIVE);
         screen.flushNow();
@@ -53,7 +53,7 @@ describe("full-window renderer", () => {
         expect(s.slice(7)).toEqual(LIVE);
     });
     test("the flowing part of the live region goes right under the output, the blank space after it", () => {
-        const { vt, screen } = harness(12, 40);
+        const { vt, screen } = cavvy(12, 40);
         screen.print(["first", "second"]);
         screen.setLive(["", "streaming", "", "spinner", ...LIVE], 2);
         screen.flushNow();
@@ -64,14 +64,14 @@ describe("full-window renderer", () => {
     });
 
     test("a live region taller than the screen loses its top, and the blank space stays after what flows", () => {
-        const { vt, screen } = harness(10, 40);
+        const { vt, screen } = cavvy(10, 40);
         screen.setLive(["", "a", "b", "c", "d", "e", "", "s1", "s2", "s3", "s4", "p"], 6);
         screen.flushNow();
         expect(vt.screen()).toEqual(["c", "d", "e", "", "", "s1", "s2", "s3", "s4", "p"]);
     });
 
     test("output fills the screen, then scrolls into the scrollback; the live region stays at the bottom", () => {
-        const { vt, screen } = harness(12, 40);
+        const { vt, screen } = cavvy(12, 40);
         screen.setLive(LIVE);
         for (let i = 0; i < 30; i++) {
             screen.print(`line ${i}`);
@@ -84,7 +84,7 @@ describe("full-window renderer", () => {
     });
 
     test("when the live region shrinks after the screen scrolled, it still ends on the last row", () => {
-        const { vt, screen } = harness(12, 40);
+        const { vt, screen } = cavvy(12, 40);
         for (let i = 0; i < 20; i++) screen.print(`line ${i}`);
         screen.setLive([...Array.from({ length: 6 }, (_, i) => `busy ${i}`), ...LIVE]);
         screen.flushNow();
@@ -98,7 +98,7 @@ describe("full-window renderer", () => {
     });
 
     test("at the end of a turn, the output comes back down to the prompt, which sits on the bottom rows", () => {
-        const { vt, screen } = harness(12, 40);
+        const { vt, screen } = cavvy(12, 40);
         for (let i = 0; i < 20; i++) screen.print(`line ${i}`);
         screen.setLive([...Array.from({ length: 6 }, (_, i) => `busy ${i}`), ...LIVE]);
         screen.flushNow();
@@ -120,7 +120,7 @@ describe("full-window renderer", () => {
     });
 
     test("rows brought back by settling don't go to the scrollback twice: not when a dialog opens and closes, not over turns", () => {
-        const { vt, screen } = harness(12, 40);
+        const { vt, screen } = cavvy(12, 40);
         for (let i = 0; i < 20; i++) screen.print(`line ${i}`);
         screen.setLive(LIVE);
         screen.flushNow();
@@ -153,7 +153,7 @@ describe("full-window renderer", () => {
     });
 
     test("after settling, rows on screen are dropped as painted, even when the entry behind them was replaced since", () => {
-        const { vt, screen } = harness(12, 40);
+        const { vt, screen } = cavvy(12, 40);
         const busy = Array.from({ length: 11 }, (_, i) => `busy ${i}`);
         const live = Array.from({ length: 5 }, (_, i) => `live ${i}`);
         const e = screen.print(Array.from({ length: 20 }, (_, i) => `streamed ${i}`));
@@ -172,7 +172,7 @@ describe("full-window renderer", () => {
     });
 
     test("settling brings back rows as they were painted, not as an entry replaced since would lay out", () => {
-        const { vt, screen } = harness(12, 40);
+        const { vt, screen } = cavvy(12, 40);
         const e = screen.print(Array.from({ length: 20 }, (_, i) => `painted ${i}`));
         screen.setLive(Array.from({ length: 11 }, (_, i) => `busy ${i}`));
         screen.flushNow();
@@ -187,7 +187,7 @@ describe("full-window renderer", () => {
     });
 
     test("output printed with no live region scrolls the copies away, and they aren't dropped again", () => {
-        const { vt, screen } = harness(12, 40);
+        const { vt, screen } = cavvy(12, 40);
         screen.print(Array.from({ length: 20 }, (_, i) => `line ${i}`));
         screen.setLive(Array.from({ length: 8 }, (_, i) => `live ${i}`));
         screen.flushNow();
@@ -205,7 +205,7 @@ describe("full-window renderer", () => {
     });
 
     test("printing nothing draws nothing: no newline scrolls a row into the scrollback", () => {
-        const { vt, screen } = harness(12, 40);
+        const { vt, screen } = cavvy(12, 40);
         screen.print(Array.from({ length: 20 }, (_, i) => `old ${i}`));
         screen.setLive(Array.from({ length: 11 }, (_, i) => `busy ${i}`));
         screen.flushNow();
@@ -223,7 +223,7 @@ describe("full-window renderer", () => {
     });
 
     test("settling with no live region (stopping) leaves the output where it is", () => {
-        const { vt, screen } = harness(12, 40);
+        const { vt, screen } = cavvy(12, 40);
         for (let i = 0; i < 20; i++) screen.print(`line ${i}`);
         screen.setLive([...Array.from({ length: 6 }, (_, i) => `busy ${i}`), ...LIVE]);
         screen.flushNow();
@@ -236,7 +236,7 @@ describe("full-window renderer", () => {
     });
 
     test("with nothing out of sight above, settling leaves the gap above the prompt, which stays on the bottom rows", () => {
-        const { vt, screen } = harness(12, 40);
+        const { vt, screen } = cavvy(12, 40);
         screen.print(["first", "second"]);
         screen.setLive(["", "spinner", ...LIVE]);
         screen.flushNow();
@@ -251,7 +251,7 @@ describe("full-window renderer", () => {
     });
 
     test("a resize clears everything and lays it out again at the new width, once", async () => {
-        const { vt, screen, resize } = harness(14, 60);
+        const { vt, screen, resize } = cavvy(14, 60);
         screen.print((cols) => ["╭" + "─".repeat(cols - 3) + "╮"]);
         screen.print("word ".repeat(20).trim());
         screen.setLive(LIVE);
@@ -271,7 +271,7 @@ describe("full-window renderer", () => {
     });
 
     test("nothing is drawn while the size is changing", async () => {
-        const { vt, screen } = harness(12, 40);
+        const { vt, screen } = cavvy(12, 40);
         screen.setLive(LIVE);
         screen.flushNow();
         setSize(12, 30);
@@ -285,7 +285,7 @@ describe("full-window renderer", () => {
     });
 
     test("replaced entries are what a resize lays out", async () => {
-        const { vt, screen, resize } = harness(12, 40);
+        const { vt, screen, resize } = cavvy(12, 40);
         const a = screen.print("streamed one");
         const b = screen.print("streamed two");
         screen.flushNow();
@@ -296,7 +296,7 @@ describe("full-window renderer", () => {
     });
 
     test("long lines are wrapped here, so the rows add up and nothing scrolls off early", () => {
-        const { vt, screen } = harness(12, 40);
+        const { vt, screen } = cavvy(12, 40);
         screen.print("x".repeat(100));
         screen.setLive(LIVE);
         screen.flushNow();
@@ -308,7 +308,7 @@ describe("full-window renderer", () => {
     });
 
     test("stopping mid-turn (a crash) leaves the live lines right under the output", () => {
-        const { vt, screen } = harness(12, 40);
+        const { vt, screen } = cavvy(12, 40);
         (screen as any).started = true;
         screen.print("only line");
         screen.setLive(["spinner"]);
@@ -348,7 +348,7 @@ describe("full-window renderer", () => {
     });
 
     test("on stop the output isn't followed by the gap", () => {
-        const { vt, screen } = harness(12, 40);
+        const { vt, screen } = cavvy(12, 40);
         (screen as any).started = true;
         screen.print("only line");
         screen.setLive(LIVE);

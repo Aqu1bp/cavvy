@@ -1,4 +1,4 @@
-// One agent CLI process kept for a harness session (#219 §1). It starts at the
+// One agent CLI process kept for a Cavvy session (#219 §1). It starts at the
 // session's first turn and serves every turn after it, and it stays between
 // turns, so the background work it started runs on after the turn that
 // started it. It's replaced only when it must be: it exited, it was reaped
@@ -150,7 +150,7 @@ export class LiveCliSession {
     });
 
     constructor(
-        /** The harness session (or child agent) it serves. */
+        /** Cavvy session (or child agent) it serves. */
         readonly key: string,
         readonly adapter: AgentCliAdapter,
         private o: LiveOptions & { onChange?(s: LiveCliSession): void } = liveOptions(),
@@ -323,7 +323,7 @@ export class LiveCliSession {
         turn.timer = this.o.clock.setTimeout(() => {
             if (turn.result) return;
             // Its prompt went to a process that hasn't said its session yet (a new session's: Claude Code says it with
-            // the turn's system/init). The CLI may have the prompt in a session Harness can't name, so the next prompt
+            // the turn's system/init). The CLI may have the prompt in a session Cavvy can't name, so the next prompt
             // would go there as a new thread's, bringing it again (#435 review): the process goes, and the next prompt
             // starts a new one. Nothing ran in it before, so nothing is lost but that session.
             if (turn.origin === "user" && turn.ref !== undefined && !this.cliSessionId && this.proc) {

@@ -25,7 +25,7 @@ afterAll(async () => {
 type Wake = { source: string; key?: string; label: string; text: string; at: number };
 
 function setup(o: { wakes?: boolean; secret?: string; undelivered?: boolean } = {}) {
-    const dir = realpathSync(tempDir("harness-monitor-"));
+    const dir = realpathSync(tempDir("cavvy-monitor-"));
     dirs.push(dir);
     const secrets = new SecretStore();
     if (o.secret) secrets.set("MONITOR_TOKEN", o.secret);
@@ -402,7 +402,7 @@ describe("limits", () => {
 
 describe("permissions: a Monitor command is checked like the same Bash command", () => {
     test("PreToolUse hooks for Bash run for Monitor too", async () => {
-        const dir = realpathSync(tempDir("harness-monitor-hook-"));
+        const dir = realpathSync(tempDir("cavvy-monitor-hook-"));
         dirs.push(dir);
         const settings = { hooks: { PreToolUse: [{ matcher: "Bash", command: "echo no shell for you >&2; exit 2" }] } };
         const h = await runHooks(settings as never, "PreToolUse", { tool_name: "Monitor", tool_input: { command: "tail -f x" } }, dir);
@@ -415,7 +415,7 @@ describe("permissions: a Monitor command is checked like the same Bash command",
 
     const tool = BUILTIN_TOOLS.find((t) => t.name === "Monitor") as Tool<any>;
     const mk = (perms: { allow?: string[]; deny?: string[]; ask?: string[] }) => {
-        const dir = realpathSync(tempDir("harness-monitor-perm-"));
+        const dir = realpathSync(tempDir("cavvy-monitor-perm-"));
         dirs.push(dir);
         return { checker: new PermissionChecker(() => ({ permissions: { allow: [], deny: [], ask: [], ...perms } }), dir), dir };
     };
@@ -449,7 +449,7 @@ describe("permissions: a Monitor command is checked like the same Bash command",
     });
 });
 
-describe("served to Codex (through the harness MCP server)", () => {
+describe("served to Codex (through Cavvy MCP server)", () => {
     // What the agent's checks would let through, run as is.
     const served = (ctx: ToolContext) => {
         const tools = monitorServerTools(async (tool, input) => {
@@ -487,7 +487,7 @@ describe("served to Codex (through the harness MCP server)", () => {
         expect((await call("monitor_stop", { id })).text).toContain(`No monitor with id ${id}`);
     });
 
-    test("a served call shows as the Harness tool it is", () => {
+    test("a served call shows as the Cavvy tool it is", () => {
         expect(nativeMonitorCall("monitor", { command: "x", description: "d" })).toEqual({ name: "Monitor", input: { command: "x", description: "d" } });
         expect(nativeMonitorCall("monitor_output", { id: "monitor_3" })).toEqual({ name: "BashOutput", input: { bash_id: "monitor_3" } });
         expect(nativeMonitorCall("monitor_stop", { id: "monitor_3" })).toEqual({ name: "KillShell", input: { shell_id: "monitor_3" } });

@@ -1,4 +1,4 @@
-//! The Harness desktop app: a native window around the GUI, plus the harness
+//! The Cavvy desktop app: a native window around the GUI, plus Cavvy
 //! server as a sidecar process (the same Bun program as the CLI, built with
 //! `bun build --compile`).
 //!
@@ -59,12 +59,12 @@ struct Sidecar {
 async fn sidecar_info(state: State<'_, Sidecar>) -> Result<SidecarInfo, String> {
     let mut rx = state.info.subscribe();
     let ready = async {
-        let v = rx.wait_for(|v| v.is_some()).await.map_err(|_| "the harness server stopped".to_string())?;
+        let v = rx.wait_for(|v| v.is_some()).await.map_err(|_| "Cavvy server stopped".to_string())?;
         Ok::<_, String>(v.clone().expect("checked by wait_for"))
     };
     match tokio::time::timeout(Duration::from_secs(25), ready).await {
         Ok(r) => r,
-        Err(_) => Err("the harness server didn't start in time".into()),
+        Err(_) => Err("Cavvy server didn't start in time".into()),
     }
 }
 
@@ -102,13 +102,13 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), String> {
         let now = Instant::now();
         starts.retain(|t| now.duration_since(*t) < Duration::from_secs(60));
         if starts.len() >= 5 {
-            return Err("the harness server keeps stopping; not restarting it again".into());
+            return Err("Cavvy server keeps stopping; not restarting it again".into());
         }
         starts.push(now);
     }
 
     let shell = app.shell();
-    let dev = cfg!(debug_assertions) && std::env::var_os("HARNESS_USE_SIDECAR").is_none();
+    let dev = cfg!(debug_assertions) && std::env::var_os("CAVVY_USE_SIDECAR").is_none();
     let cmd = if dev {
         // Development: the TypeScript source, so server changes need no rebuild.
         let repo = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
@@ -124,7 +124,7 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), String> {
         ])
     } else {
         shell
-            .sidecar("harness")
+            .sidecar("cavvy")
             .map_err(|e| e.to_string())?
             .args(["serve", "--handshake", "--login-env"])
     };
@@ -133,7 +133,7 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), String> {
         Ok(home) => cmd.current_dir(home),
         Err(_) => cmd,
     };
-    let (mut rx, child) = cmd.spawn().map_err(|e| format!("couldn't start the harness server: {e}"))?;
+    let (mut rx, child) = cmd.spawn().map_err(|e| format!("couldn't start Cavvy server: {e}"))?;
     state.exited.store(false, Ordering::SeqCst);
     *state.child.lock().unwrap() = Some(child);
 
@@ -149,7 +149,7 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), String> {
                         let line: String = pending.drain(..=i).collect();
                         if let Ok(h) = serde_json::from_str::<Handshake>(line.trim()) {
                             if h.kind == "ready" {
-                                eprintln!("[harness] server ready on port {}", h.port);
+                                eprintln!("[cavvy] server ready on port {}", h.port);
                                 // send_replace: stores it even while no window is waiting (send would drop it).
                                 app.state::<Sidecar>().info.send_replace(Some(SidecarInfo { port: h.port, token: h.token }));
                             }
@@ -157,7 +157,7 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), String> {
                     }
                 }
                 CommandEvent::Stderr(bytes) => eprint!("{}", String::from_utf8_lossy(&bytes)),
-                CommandEvent::Error(e) => eprintln!("[harness] {e}"),
+                CommandEvent::Error(e) => eprintln!("[cavvy] {e}"),
                 CommandEvent::Terminated(p) => {
                     let state = app.state::<Sidecar>();
                     state.exited.store(true, Ordering::SeqCst);
@@ -166,13 +166,13 @@ fn spawn_sidecar(app: &AppHandle) -> Result<(), String> {
                     if state.exiting.load(Ordering::SeqCst) {
                         break;
                     }
-                    eprintln!("[harness] server exited ({:?}); restarting", p.code);
+                    eprintln!("[cavvy] server exited ({:?}); restarting", p.code);
                     tokio::time::sleep(Duration::from_millis(600)).await;
                     if app.state::<Sidecar>().exiting.load(Ordering::SeqCst) {
                         break;
                     }
                     if let Err(e) = spawn_sidecar(&app) {
-                        eprintln!("[harness] {e}");
+                        eprintln!("[cavvy] {e}");
                     }
                     break;
                 }
@@ -234,7 +234,7 @@ pub fn run() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("error while starting Harness")
+        .expect("error while starting Cavvy")
         .run(|app, event| {
             if let RunEvent::Exit = event {
                 stop_sidecar(app);

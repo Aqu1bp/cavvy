@@ -28,7 +28,7 @@ function noFragments(text: string, value = VALUE) {
     for (let i = 0; i <= value.length - 6; i++) expect(text).not.toContain(value.slice(i, i + 6));
 }
 function setup(settings: Record<string, unknown> = {}) {
-    const dir = realpathSync(tempDir("harness-flood-"));
+    const dir = realpathSync(tempDir("cavvy-flood-"));
     dirs.push(dir);
     const secrets = new SecretStore();
     secrets.set("FLOOD_TOKEN", VALUE);
@@ -276,7 +276,7 @@ describe("paced pipes", () => {
     }, 60_000);
 
     test("a command waits while its output isn't taken: only the pipe's buffer is held", async () => {
-        const dir = realpathSync(tempDir("harness-flood-"));
+        const dir = realpathSync(tempDir("cavvy-flood-"));
         dirs.push(dir);
         const marker = join(dir, "done");
         const p = spawnPaced("/bin/sh", ["-c", `head -c 4000000 /dev/zero; echo > ${quote(marker)}`], { detached: true });
@@ -333,7 +333,7 @@ console.log(out.join(","));`);
     const mkfifo = Bun.which("mkfifo")!;
 
     test("a failing mkfifo means ordinary pipes for a while, then FIFOs again", async () => {
-        const dir = realpathSync(tempDir("harness-mkfifo-"));
+        const dir = realpathSync(tempDir("cavvy-mkfifo-"));
         dirs.push(dir);
         const log = join(dir, "calls");
         const failing = join(dir, "failing");
@@ -349,7 +349,7 @@ console.log(out.join(","));`);
     }, 30_000);
 
     test("a missing mkfifo means ordinary pipes for good, and output still comes through", async () => {
-        const dir = realpathSync(tempDir("harness-no-mkfifo-"));
+        const dir = realpathSync(tempDir("cavvy-no-mkfifo-"));
         dirs.push(dir);
         // mkfifo turns up later: still not tried again.
         expect(pacing(dir, [{}, { before: `/bin/ln -s ${quote(mkfifo)} ${quote(join(dir, "mkfifo"))}`, later: 60_000 }, {}])).toEqual(["pipes", "pipes", "pipes"]);

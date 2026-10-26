@@ -1,9 +1,9 @@
 // Delegation: the main agent hands a self-contained task to a model from
-// another provider, which the harness runs as a sub-agent (Agent.runChild).
+// another provider, which Cavvy runs as a sub-agent (Agent.runChild).
 //
-// Harness models do it with the Task tool (its `model` option) and look up
+// Cavvy models do it with the Task tool (its `model` option) and look up
 // what's available with ListModels. Claude Code and Codex keep their own
-// sub-agents for their own models; for other providers' models the harness
+// sub-agents for their own models; for other providers' models Cavvy
 // offers them MCP tools (src/mcp/server.ts): models, delegate, task_status
 // and task_cancel. The contract follows t3code's orchestration (MIT,
 // github.com/pingdotgg/t3code): a task waits for its result or runs in the
@@ -26,7 +26,7 @@ import { redact } from "../util/redact";
 import { loadAgents, type AgentDef } from "./agents";
 import type { ServerTool } from "../mcp/server";
 
-/** The harness's MCP server, as Claude Code and Codex name it (their tools are mcp__harness__…). */
+/** Cavvy's MCP server, as Claude Code and Codex name it (their tools are mcp__cavvy__…). */
 export const MCP_SERVER_NAME = APP_NAME;
 export const DELEGATE_TOOL = `mcp__${MCP_SERVER_NAME}__delegate`;
 
@@ -514,7 +514,7 @@ export function orchestratorTools(h: OrchestratorHost): ServerTool[] {
     ];
 }
 
-/** Titles for the harness's own MCP tools when a backend calls them. */
+/** Titles for Cavvy's own MCP tools when a backend calls them. */
 export function orchestratorTitle(name: string, input: Record<string, unknown>): string | undefined {
     const prefix = `mcp__${MCP_SERVER_NAME}__`;
     if (!name.startsWith(prefix)) return undefined;

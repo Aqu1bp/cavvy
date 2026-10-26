@@ -1,12 +1,12 @@
-// The harness's skills, handed to Claude Code and Codex so each runs them its
-// own way (its Skill tool, its /name, its skill items) instead of the harness
+// Cavvy's skills, handed to Claude Code and Codex so each runs them its
+// own way (its Skill tool, its /name, its skill items) instead of Cavvy
 // pasting SKILL.md into the prompt.
 //
-// Both CLIs get a generated folder, <harness home>/cache/cli-skills/<hash>/:
+// Both CLIs get a generated folder, <Cavvy home>/cache/cli-skills/<hash>/:
 //   .claude-plugin/plugin.json   Claude Code's only: it loads the folder with --plugin-dir, and its skills
-//                                are harness:<name> there (Codex would name them so too, so its folder has none)
+//                                are cavvy:<name> there (Codex would name them so too, so its folder has none)
 //   skills/<name>                a link to the skill's folder, or, when its SKILL.md uses
-//                                ${HARNESS_SKILL_DIR} (which neither CLI fills in), a folder with that
+//                                ${CAVVY_SKILL_DIR} (which neither CLI fills in), a folder with that
 //                                filled in and links to everything else
 // Codex gets skills/ as an extra skills root (skills/extraRoots/set).
 
@@ -14,19 +14,19 @@ import { createHash } from "crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { basename, dirname, join, resolve } from "path";
-import { harnessHome } from "../config/paths";
+import { cavvyHome } from "../config/paths";
 import { formatSkill, mentionNames, skillMentions, withSkills, type Skill } from "../agent/skills";
 
 /** Claude Code names a plugin's skills <plugin>:<name>. */
-export const CLAUDE_PLUGIN = "harness";
+export const CLAUDE_PLUGIN = "cavvy";
 export const CLAUDE_PREFIX = `${CLAUDE_PLUGIN}:`;
 
-/** Claude Code and Codex run skills themselves; the harness's API models get them pasted in. */
+/** Claude Code and Codex run skills themselves; Cavvy's API models get them pasted in. */
 export function cliRunsSkills(provider: string | undefined): boolean {
     return provider === "claude-code" || provider === "codex";
 }
 
-const DIR_VAR = /\$\{(HARNESS|CLAUDE)_SKILL_DIR\}/g;
+const DIR_VAR = /\$\{(CAVVY|CLAUDE)_SKILL_DIR\}/g;
 /** Folders are removed after this long unused (another process may be using one: a day is far longer than a turn). */
 const STALE_MS = 24 * 60 * 60 * 1000;
 const built = new Map<string, string>();
@@ -40,7 +40,7 @@ export function skillFolder(skills: readonly Skill[], opts: { plugin?: boolean }
     // The folder's time too: a file added beside a SKILL.md that's copied (below) needs linking.
     for (const s of sorted) hash.update(`${s.name}\0${s.dir}\0${mtime(s.file)}\0${mtime(s.dir)}\0${copiedTimes(s)}\0`);
     const key = hash.digest("hex").slice(0, 16);
-    const base = join(harnessHome(), "cache", "cli-skills");
+    const base = join(cavvyHome(), "cache", "cli-skills");
     const dir = join(base, key);
     const cached = built.get(key);
     if (cached && existsSync(cached)) return touch(cached);
@@ -50,7 +50,7 @@ export function skillFolder(skills: readonly Skill[], opts: { plugin?: boolean }
             mkdirSync(join(tmp, "skills"), { recursive: true });
             if (opts.plugin) {
                 mkdirSync(join(tmp, ".claude-plugin"));
-                writeFileSync(join(tmp, ".claude-plugin", "plugin.json"), JSON.stringify({ name: CLAUDE_PLUGIN, description: "Skills from Harness (~/.harness/skills and the project's .harness/skills)" }, null, 2));
+                writeFileSync(join(tmp, ".claude-plugin", "plugin.json"), JSON.stringify({ name: CLAUDE_PLUGIN, description: "Skills from Cavvy (~/.cavvy/skills and the project's .cavvy/skills)" }, null, 2));
             }
             for (const s of sorted) addSkill(skillFile(tmp, s, ""), s);
             renameSync(tmp, dir);
@@ -163,7 +163,7 @@ function isDir(p: string): boolean {
 /**
  * How Claude Code runs each of `skills`: the name it knows the skill by. Those
  * in its config folder's skills or, trusted, the project's .claude/skills it
- * reads itself; `plugged` (in the harness's plugin) are harness:<name>. The
+ * reads itself; `plugged` (in Cavvy's plugin) are cavvy:<name>. The
  * rest (a plugin's, until its folder is passed to Claude Code) aren't there.
  */
 export function claudeNames(skills: readonly Skill[], plugged: readonly Skill[], cwd: string, trusted: boolean, configDir?: string): Map<string, string> {
@@ -175,7 +175,7 @@ export function claudeNames(skills: readonly Skill[], plugged: readonly Skill[],
 
 /**
  * The skills to put in Claude Code's plugin: not those it reads itself, not a
- * plugin's (they'd be harness:<plugin>__<name>), and a project's only when the
+ * plugin's (they'd be cavvy:<plugin>__<name>), and a project's only when the
  * user trusts it.
  */
 export function forClaudeCode(skills: readonly Skill[], cwd: string, trusted: boolean, configDir?: string): Skill[] {
@@ -185,7 +185,7 @@ export function forClaudeCode(skills: readonly Skill[], cwd: string, trusted: bo
 
 /**
  * In one of Claude Code's own skills folders, or linked into one under its name: a
- * Harness-made account's skills folder links Default's skills (account-layout.ts).
+ * Cavvy-made account's skills folder links Default's skills (account-layout.ts).
  */
 function readsItself(s: Skill, own: ReadonlySet<string>): boolean {
     if (own.has(resolve(dirname(s.dir)))) return true;
@@ -209,7 +209,7 @@ function claudeRoots(cwd: string, trusted: boolean, configDir?: string): Set<str
  * runs the skill by the name Claude Code knows it by (`names`); a $name mention
  * asks it to load the skill with its Skill tool. Where it can't run one (it
  * doesn't have it, the message isn't at the start of the prompt, or the model
- * may not load it), the skill's text goes in the prompt, as for the harness's models.
+ * may not load it), the skill's text goes in the prompt, as for Cavvy's models.
  */
 export function claudePrompt(prompt: string, request: string | undefined, skills: readonly Skill[], names: ReadonlyMap<string, string>, format: (s: Skill, args: string) => string | undefined, after = ""): string {
     const head = headOf(prompt, request, after);
@@ -247,15 +247,15 @@ function slashSkill(request: string, skills: readonly Skill[]): { named?: Skill;
 }
 
 /**
- * The name Claude Code runs `s` by, if it runs it as the harness would: one
- * in its own folders that uses ${HARNESS_SKILL_DIR}, which Claude Code doesn't
+ * The name Claude Code runs `s` by, if it runs it as Cavvy would: one
+ * in its own folders that uses ${CAVVY_SKILL_DIR}, which Claude Code doesn't
  * fill in (it does ${CLAUDE_SKILL_DIR}), is pasted in instead.
  */
 function runnable(s: Skill, names: ReadonlyMap<string, string>): string | undefined {
     const name = names.get(s.name);
     if (name !== s.name) return name;
     try {
-        return /\$\{HARNESS_SKILL_DIR\}/.test(readFileSync(s.file, "utf8")) ? undefined : name;
+        return /\$\{CAVVY_SKILL_DIR\}/.test(readFileSync(s.file, "utf8")) ? undefined : name;
     } catch {
         return name;
     }
@@ -267,28 +267,28 @@ export interface CodexSkill {
     path: string;
     description?: string;
     enabled?: boolean;
-    /** Codex's name for it, when this is the harness's name for one of its skills. */
+    /** Codex's name for it, when this is Cavvy's name for one of its skills. */
     codexName?: string;
-    /** The harness's skill it is (the harness's name for it). */
-    harness?: string;
+    /** Cavvy's skill it is (Cavvy's name for it). */
+    cavvy?: string;
 }
 
 /**
  * Codex's input for the user's message: `/name args` at its start becomes
  * `$name args`, Codex's own way of naming a skill, and each skill named so (or
  * by a $name mention) is sent as a skill item, which has Codex load it. One
- * of the harness's (`harness`) that Codex didn't list goes in as text.
+ * of Cavvy's (`cavvy`) that Codex didn't list goes in as text.
  */
-export function codexInput(prompt: string, request: string | undefined, skills: readonly CodexSkill[], harness: readonly Skill[] = [], after = ""): { text: string; items: { type: "skill"; name: string; path: string }[] } {
+export function codexInput(prompt: string, request: string | undefined, skills: readonly CodexSkill[], cavvy: readonly Skill[] = [], after = ""): { text: string; items: { type: "skill"; name: string; path: string }[] } {
     const head = headOf(prompt, request, after);
     if (head === undefined) return { text: prompt, items: [] };
-    // A name the harness has is the harness's skill, as in its menus, even where Codex has one of its own by that name;
+    // A name Cavvy has is Cavvy's skill, as in its menus, even where Codex has one of its own by that name;
     // and one the user can't run (user-invocable: false) isn't a skill to run.
-    const ours = new Map(harness.map((s) => [s.name, s]));
+    const ours = new Map(cavvy.map((s) => [s.name, s]));
     const byName = new Map<string, CodexSkill>();
-    for (const s of skills) if (s.enabled !== false && !s.harness && !ours.has(s.name.toLowerCase())) byName.set(s.name.toLowerCase(), s);
-    for (const s of skills) if (s.enabled !== false && s.harness && ours.get(s.harness)?.userInvocable) byName.set(s.harness, s);
-    const missing = harness.filter((s) => s.userInvocable && !byName.has(s.name));
+    for (const s of skills) if (s.enabled !== false && !s.cavvy && !ours.has(s.name.toLowerCase())) byName.set(s.name.toLowerCase(), s);
+    for (const s of skills) if (s.enabled !== false && s.cavvy && ours.get(s.cavvy)?.userInvocable) byName.set(s.cavvy, s);
+    const missing = cavvy.filter((s) => s.userInvocable && !byName.has(s.name));
     let text = request!;
     // Where $names are looked for: the message, or a pasted /name's arguments.
     let scan = text;
@@ -311,21 +311,21 @@ export function codexInput(prompt: string, request: string | undefined, skills: 
 }
 
 /**
- * Codex's skills (skills/list) as the harness names them: one of the
- * harness's goes by its harness name (a plugin's is <plugin>:<name>) as well
- * as Codex's; `own` are those that aren't the harness's, for its menus (not
- * one whose name the harness has, which is the harness's there).
+ * Codex's skills (skills/list) as Cavvy names them: one of the
+ * Cavvy's goes by its Cavvy name (a plugin's is <plugin>:<name>) as well
+ * as Codex's; `own` are those that aren't Cavvy's, for its menus (not
+ * one whose name Cavvy has, which is Cavvy's there).
  */
-export function codexSkills(listed: readonly CodexSkill[], harness: readonly Skill[], folder: string | undefined): { skills: CodexSkill[]; own: string[] } {
+export function codexSkills(listed: readonly CodexSkill[], cavvy: readonly Skill[], folder: string | undefined): { skills: CodexSkill[]; own: string[] } {
     // Codex reports each by its real path: the skill's own SKILL.md through a link, or the folder's copy.
-    const byFile = new Map(folder ? harness.map((s) => [real(skillFile(folder, s)), s]) : []);
+    const byFile = new Map(folder ? cavvy.map((s) => [real(skillFile(folder, s)), s]) : []);
     const skills: CodexSkill[] = [];
     const own: string[] = [];
-    const names = new Set(harness.map((s) => s.name));
+    const names = new Set(cavvy.map((s) => s.name));
     for (const c of listed) {
         if (c.enabled === false) continue;
         const ours = byFile.get(real(c.path));
-        skills.push(ours ? { ...c, name: ours.name, codexName: c.name, harness: ours.name } : c);
+        skills.push(ours ? { ...c, name: ours.name, codexName: c.name, cavvy: ours.name } : c);
         if (!ours && !names.has(c.name.toLowerCase())) own.push(c.name);
     }
     return { skills, own };
@@ -339,7 +339,7 @@ function real(p: string): string {
     }
 }
 
-/** Where the CLI can't take them itself (an older Codex): the skills /name and $name ask for, pasted in as for the harness's models. */
+/** Where the CLI can't take them itself (an older Codex): the skills /name and $name ask for, pasted in as for Cavvy's models. */
 export function pastedPrompt(prompt: string, request: string | undefined, skills: readonly Skill[], after = ""): string {
     const head = headOf(prompt, request, after);
     if (head === undefined || !skills.length) return prompt;

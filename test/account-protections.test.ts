@@ -66,8 +66,8 @@ describe("CLI account folder protections", () => {
         expect(accountTarget("cat source.ts", workspace)).toBe(false);
     });
 
-    test("new sandbox policies protect external accounts and managed accounts beneath Harness home", () => {
-        const policy = sandboxPolicy([workspace, outside], { harnessHome: isolated.home });
+    test("new sandbox policies protect external accounts and managed accounts beneath Cavvy home", () => {
+        const policy = sandboxPolicy([workspace, outside], { cavvyHome: isolated.home });
         expect(policy.readOnly).toContain(folder);
         expect(policy.unreadable).toContain(folder);
         expect(policy.readOnly).toContain(realpathSync(isolated.home));
@@ -77,12 +77,12 @@ describe("CLI account folder protections", () => {
         const later = join(outside, "later");
         mkdirSync(later);
         saveAgentConfig("claude-code", { accounts: [{ id: "later", name: "Later", folder: later, managed: false }] });
-        expect(sandboxPolicy([workspace], { harnessHome: isolated.home }).unreadable).toContain(later);
+        expect(sandboxPolicy([workspace], { cavvyHome: isolated.home }).unreadable).toContain(later);
     });
 
     test.skipIf(!sandboxKind())("sandboxed commands cannot read or write either account location", () => {
         const kind = sandboxKind()!;
-        const policy = sandboxPolicy([workspace, outside], { harnessHome: isolated.home });
+        const policy = sandboxPolicy([workspace, outside], { cavvyHome: isolated.home });
         for (const root of [folder, managed]) {
             for (const script of [`cat '${root}/auth.json'`, `printf changed > '${root}/auth.json'`, `touch '${root}/new'`]) {
                 const result = Bun.spawnSync(sandboxArgv({ kind, policy }, "/bin/sh", script), { cwd: workspace, env: { PATH: "/usr/bin:/bin" } });
@@ -119,7 +119,7 @@ test("only effective Default credentials are protected, including symlinked miss
                     }
                 }
             }
-            const policy = sandboxPolicy([workspace], { harnessHome: isolated.home });
+            const policy = sandboxPolicy([workspace], { cavvyHome: isolated.home });
             expect(policy.unreadable).toContain(secret);
             expect(policy.readOnly).toContain(secret);
             expect(policy.unreadable).not.toContain(canonical);
@@ -133,7 +133,7 @@ test("only effective Default credentials are protected, including symlinked miss
             symlinkSync(target, secret);
             expect(check("Read", { file_path: target }).behavior).toBe("deny");
             expect(accountTarget(`cat '${target}'`, workspace)).toBe(true);
-            expect(sandboxPolicy([workspace], { harnessHome: isolated.home }).unreadable).toContain(target);
+            expect(sandboxPolicy([workspace], { cavvyHome: isolated.home }).unreadable).toContain(target);
             expect(claudePermissions({ deny: [], ask: [], root: workspace }).deny).toContain(`Read(/${target})`);
         }
     } finally {
@@ -148,7 +148,7 @@ test("account ancestors inside writable roots cannot be renamed, while siblings 
     mkdirSync(nested, { recursive: true });
     writeFileSync(join(nested, "auth.json"), "fake-nested-marker");
     saveAgentConfig("claude-code", { accounts: [{ id: "nested", name: "Nested", folder: nested, managed: false }] });
-    const policy = sandboxPolicy([workspace, outside], { harnessHome: isolated.home });
+    const policy = sandboxPolicy([workspace, outside], { cavvyHome: isolated.home });
     const profile = seatbeltProfile(policy);
     for (const path of [outside, join(outside, "container"), ancestor, nested, realpathSync(isolated.home)]) {
         expect(profile).toContain(`(literal "${path}")`);

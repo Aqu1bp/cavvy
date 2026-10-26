@@ -46,7 +46,7 @@ test("both CLI tool descriptions and documentation warn against writing secret f
     for (const text of [...tools.map((t) => t.description), SECRET_INSTRUCTIONS, readme]) {
         expect(text).toContain("Don't write secrets into files");
         expect(text).toContain("Read or Grep");
-        expect(text).toContain("Harness can't redact");
+        expect(text).toContain("Cavvy can't redact");
         expect(text).toContain("Use secrets only in the command");
     }
 });
@@ -92,7 +92,7 @@ test("provider and fixed labels are reserved before they are registered", async 
     const before = new Set(knownSecrets());
     const key = "q7Vt9Lm2Zx6Pn4Rc";
     try {
-        for (const label of [...allProviders(), ...SEARCH_PROVIDERS].map((p) => p.id).concat(["gui-token", "harness MCP token"])) {
+        for (const label of [...allProviders(), ...SEARCH_PROVIDERS].map((p) => p.id).concat(["gui-token", "cavvy MCP token"])) {
             if (label.length < 8) continue;
             expect(secretValueError(label, "LATER_TOKEN")).toMatch(/redaction marker/);
             expect(() => new SecretStore().set("LATER_TOKEN", label)).toThrow(/redaction marker/);

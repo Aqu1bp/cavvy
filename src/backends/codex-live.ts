@@ -1,10 +1,10 @@
-// Codex on the live CLI layer (#219 PR 3): one `codex app-server` per harness
+// Codex on the live CLI layer (#219 PR 3): one `codex app-server` per cavvy
 // session, started at its first turn and kept across turns (src/backends/live).
 // The per-turn path in codex.ts (CodexTurn.run) is what agentCli.liveSessions
 // false still runs; this reuses its protocol mapping (items, approvals, hooks,
 // sub-agents, goals, the mode's policy) and changes who owns the process:
 //
-// - A turn of the harness's is one or more Codex turns, each a LiveCliSession
+// - A turn of Cavvy's is one or more Codex turns, each a LiveCliSession
 //   turn named by its Codex turn id: the prompt's, then a restart under a new
 //   mode, a follow-up, or messages the user queued meanwhile.
 // - Esc interrupts the turn (turn/interrupt, and its sub-agents' turns). The
@@ -81,7 +81,7 @@ const clip = (s: string, n = 120) => {
     return one.length > n ? `${one.slice(0, n - 1)}…` : one;
 };
 
-/** What one Codex turn of a harness turn sends. */
+/** What one Codex turn of a Cavvy turn sends. */
 interface Segment {
     kind: "prompt" | "compact";
     text: string;
@@ -93,14 +93,14 @@ interface Segment {
     activate?: boolean;
     /** The user's queued messages `text` carries (none with attachments: those stay the host's): saved for the next turn if this one can't start. */
     queued?: SteerMessage[];
-    /** The harness turn's first: its skills and a /goal command are read here. */
+    /** Cavvy turn's first: its skills and a /goal command are read here. */
     first?: boolean;
     /**
      * turn/start is under way: from here its failure keeps `queued` (startSegment); before, the run does if the
      * segment never goes out (stopped first: LiveCliSession sends nothing once the signal is aborted).
      */
     started?: boolean;
-    /** Why it's sent (HARNESS_DEBUG). */
+    /** Why it's sent (CAVVY_DEBUG). */
     why: "prompt" | "compact" | "mode-restart" | "follow-up" | "unsent" | "queued" | "goal-under-mode";
 }
 
@@ -114,7 +114,7 @@ const shown = (text: string, max: number): string => clip(redact(text), max);
 
 const newOutput = (): LiveOutput => ({ texts: [], actions: [], answer: { parts: [], last: "" } });
 
-/** One turn of the harness's on a live app-server: the user's prompt (with what follows it), an adopted wake, or a compaction. */
+/** One turn of Cavvy's on a live app-server: the user's prompt (with what follows it), an adopted wake, or a compaction. */
 export class LiveRun {
     /** Its Codex turns. */
     readonly turns = new Set<string>();
@@ -174,7 +174,7 @@ export class CodexLiveConnection extends CodexTurn {
     readonly done: Promise<void>;
     /** What the live session drives it with. */
     readonly cli: CliConnection;
-    /** The harness turn on it now. */
+    /** Cavvy turn on it now. */
     liveRun?: LiveRun;
     /** The run the app-server was opened for: it read the account already. */
     private accountReadFor?: LiveRun;
@@ -270,7 +270,7 @@ export class CodexLiveConnection extends CodexTurn {
     // ---------------------------------------------------------------------
     // What the mapping (CodexTurn) reaches, redirected.
 
-    /** Events go to the turn they're in; outside any turn, to the harness turn running (or, a notice, the session). */
+    /** Events go to the turn they're in; outside any turn, to Cavvy turn running (or, a notice, the session). */
     protected override get sink(): TurnSink {
         return this.router;
     }
@@ -314,7 +314,7 @@ export class CodexLiveConnection extends CodexTurn {
     private route(e: Parameters<TurnSink["emit"]>[0]) {
         const ref = this.mainTurn;
         if (ref !== undefined) return this.events({ t: "turn_event", ref, event: e });
-        // The harness turn running here (while the thread opens, the one it opens for).
+        // Cavvy turn running here (while the thread opens, the one it opens for).
         const run = this.liveRun ?? this.adapter.run;
         if (run) return run.t.sink.emit(e);
         if (e.type === "notice") return this.host.emitSession?.({ type: "notice", level: e.level, message: e.message });
@@ -372,7 +372,7 @@ export class CodexLiveConnection extends CodexTurn {
             this.hookServer = registerTools(this.nativeEvents.map((e) => this.hookTool(e)));
             this.nativeHooks = await this.hooksTaken(t.cwd);
         }
-        // The harness's skills are registered before the thread opens, so its first turn has them (as on the per-turn path).
+        // Cavvy's skills are registered before the thread opens, so its first turn has them (as on the per-turn path).
         const run = this.adapter.run;
         if (run && !run.compact && !run.t.adopt && !run.skillsRead) {
             run.skills = await this.nativeSkills(t);
@@ -390,7 +390,7 @@ export class CodexLiveConnection extends CodexTurn {
         }
         const policy = codexPolicy(startMode, t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse") && !this.nativeHooks);
         if (orch && overrides.collisions.includes(orch.name)) {
-            this.sink.emit({ type: "notice", level: "warn", message: "Codex already has a server named harness; it is disabled and this session runs without Harness delegation to avoid merging server configurations." });
+            this.sink.emit({ type: "notice", level: "warn", message: "Codex already has a server named cavvy; it is disabled and this session runs without Cavvy delegation to avoid merging server configurations." });
             orch = undefined;
         }
         const baseInstructions = [t.appendSystemPrompt, LISTENER_NOTE].filter(Boolean).join("\n\n") || undefined;
@@ -772,7 +772,7 @@ export class CodexLiveConnection extends CodexTurn {
             // Every prompt, as each per-turn app-server did: the sign-in may have changed since (plan or API key), and the
             // plan's limits are read between turns (Codex pushes updates only inside them). Not again just after open.
             if (this.accountReadFor !== run) await this.readAccount();
-            // The harness's skills go to Codex as a skills root of its own, so it lists them to its model and runs them itself.
+            // Cavvy's skills go to Codex as a skills root of its own, so it lists them to its model and runs them itself.
             if (!run.skillsRead) {
                 run.skills = await this.nativeSkills(t);
                 run.skillsRead = true;
@@ -1361,7 +1361,7 @@ export class CodexLiveConnection extends CodexTurn {
     }
 }
 
-/** One harness session's Codex: how to start its app-server, and the connection to it. */
+/** One Cavvy session's Codex: how to start its app-server, and the connection to it. */
 export class CodexLiveAdapter implements AgentCliAdapter {
     readonly def = agentCli("codex")!;
     /** The latest turn's: the session's settings, host and sink as they are now. */
@@ -1478,7 +1478,7 @@ export class CodexLive {
         return this.backend.limitOrdering(accountId);
     }
 
-    /** This harness session's live session: made (and wired to its host) on first use. */
+    /** This Cavvy session's live session: made (and wired to its host) on first use. */
     session(key: string): LiveCliSession {
         const s = this.pool.session(key, this.providerDef.id);
         if (!this.wired.has(s)) this.wire(s);
@@ -1488,7 +1488,7 @@ export class CodexLive {
     private wire(s: LiveCliSession) {
         const a = s.adapter as CodexLiveAdapter;
         const seen = new Map<string, string>();
-        // The session's tasks (as the CLI reports them, and lost when its process goes) reach the harness's list.
+        // The session's tasks (as the CLI reports them, and lost when its process goes) reach Cavvy's list.
         const offTasks = s.tasks.onChange(() => {
             for (const task of s.tasks.snapshot()) {
                 const k = JSON.stringify(task);

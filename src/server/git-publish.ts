@@ -28,18 +28,18 @@ async function run(cwd: string, args: string[], network = false, signal?: AbortS
     for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE"]) delete env[key];
     if (env.PATH) env.PATH = env.PATH.split(delimiter).filter(isAbsolute).join(delimiter);
     Object.assign(env, { GH_PROMPT_DISABLED: "1", GIT_NO_LAZY_FETCH: "1" }, extraEnv);
-    // Only inherited credentials; never consult Harness's credential store for gh.
+    // Only inherited credentials; never consult Cavvy's credential store for gh.
     if (args[0] === "gh") {
         for (const key of ["GH_TOKEN", "GITHUB_TOKEN"]) if (process.env[key]) env[key] = process.env[key]!;
         delete env.GH_REPO;
         delete env.GH_HOST;
     }
-    if (!network) env.GIT_ALLOW_PROTOCOL = "harness-none";
+    if (!network) env.GIT_ALLOW_PROTOCOL = "cavvy-none";
     // A network call runs from an empty folder of its own, git told the repository by --git-dir and that folder as
     // its work tree (whatever core.worktree says): git runs a helper (an ssh command, a credential helper, a proxy)
     // at its work tree's top, so one the user's own settings name by a relative path can't reach the repository's
     // files (#107). In the repository, that's the repository.
-    const away = network ? mkdtempSync(join(tmpdir(), "harness-net-")) : undefined;
+    const away = network ? mkdtempSync(join(tmpdir(), "cavvy-net-")) : undefined;
     let gitDir: string | undefined;
     try {
         if (away && args[0] === "git") gitDir = await git(cwd, ["rev-parse", "--absolute-git-dir"], signal);
@@ -291,23 +291,23 @@ export function trackingRefs(refspecs: string[], ref: string): string[] {
 /**
  * The push, to the URL checked and confirmed: not by the remote's name, which git would look up again (a URL or
  * push URL changed since). A URL rewrite (insteadOf, pushInsteadOf) added since would still apply to it, so a
- * pre-push hook of Harness's own compares the URL git resolved with that one, and refuses any other before
+ * pre-push hook of Cavvy's own compares the URL git resolved with that one, and refuses any other before
  * anything is sent (#107).
  */
 async function pushTo(cwd: string, info: { remote: string; target: string; url: string; sha: string }, signal?: AbortSignal) {
-    const hooks = mkdtempSync(join(tmpdir(), "harness-push-"));
+    const hooks = mkdtempSync(join(tmpdir(), "cavvy-push-"));
     try {
         const hook = join(hooks, "pre-push");
-        writeFileSync(hook, '#!/bin/sh\n# Harness: push only to the destination that was checked and confirmed.\n[ "$2" = "$HARNESS_PUSH_URL" ] && exit 0\necho "The push destination changed after it was checked (a Git URL rewrite?); nothing was pushed. Reopen the dialog." >&2\nexit 1\n');
+        writeFileSync(hook, '#!/bin/sh\n# Cavvy: push only to the destination that was checked and confirmed.\n[ "$2" = "$CAVVY_PUSH_URL" ] && exit 0\necho "The push destination changed after it was checked (a Git URL rewrite?); nothing was pushed. Reopen the dialog." >&2\nexit 1\n');
         chmodSync(hook, 0o700);
         // Git skips a hook it can't run (a temp folder mounted noexec) and pushes anyway: it must run here first.
         // Git for Windows runs hooks with its own sh, whatever their mode.
         const runs = () => {
-            try { return Bun.spawnSync([hook, info.remote, info.url], { env: { PATH: process.env.PATH ?? "", HARNESS_PUSH_URL: info.url }, stdin: "ignore", stdout: "ignore", stderr: "ignore" }).exitCode === 0; }
+            try { return Bun.spawnSync([hook, info.remote, info.url], { env: { PATH: process.env.PATH ?? "", CAVVY_PUSH_URL: info.url }, stdin: "ignore", stdout: "ignore", stderr: "ignore" }).exitCode === 0; }
             catch { return false; }
         };
-        if (process.platform !== "win32" && !runs()) throw fail("Harness couldn't run its check of the push destination (is the temporary folder mounted noexec?); nothing was pushed.");
-        const result = await run(cwd, ["git", "-c", `core.hooksPath=${hooks}`, "-c", "push.followTags=false", "-c", "push.pushOption=", "push", "--porcelain", "--no-force", "--no-follow-tags", "--recurse-submodules=no", "--", info.url, `${info.sha}:refs/heads/${info.target}`], true, signal, { HARNESS_PUSH_URL: info.url });
+        if (process.platform !== "win32" && !runs()) throw fail("Cavvy couldn't run its check of the push destination (is the temporary folder mounted noexec?); nothing was pushed.");
+        const result = await run(cwd, ["git", "-c", `core.hooksPath=${hooks}`, "-c", "push.followTags=false", "-c", "push.pushOption=", "push", "--porcelain", "--no-force", "--no-follow-tags", "--recurse-submodules=no", "--", info.url, `${info.sha}:refs/heads/${info.target}`], true, signal, { CAVVY_PUSH_URL: info.url });
         // Pushed to the URL, git leaves the remote's tracking branches as they were: updated as a push to the remote
         // would have (by its fetch refspecs), so ahead/behind stay right.
         if (!result.code) {

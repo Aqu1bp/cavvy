@@ -20,7 +20,7 @@ function repo(files: Record<string, string> = {}, initial = true): string {
     const dir = join(realpathSync(iso.home), `commit-repo-${n++}`);
     mkdirSync(dir);
     git(dir, "init", "-q", "-b", "main");
-    git(dir, "config", "user.name", "Harness Test");
+    git(dir, "config", "user.name", "Cavvy Test");
     git(dir, "config", "user.email", "test@example.invalid");
     git(dir, "config", "commit.gpgsign", "false");
     git(dir, "config", "core.hooksPath", join(dir, ".git", "hooks"));
@@ -428,7 +428,7 @@ process.exit(r.exitCode);`);
         await gitCommit(dir, ["selected.txt"], "selected change");
 
         const author = JSON.parse(readFileSync(join(dir, ".git", "hook-author"), "utf-8"));
-        expect(author[0]).toBe("Harness Test");
+        expect(author[0]).toBe("Cavvy Test");
         expect(author[1]).toBe("test@example.invalid");
         expect(typeof author[2]).toBe("string");
         expect(author[2].length).toBeGreaterThan(0);

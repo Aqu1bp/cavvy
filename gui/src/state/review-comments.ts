@@ -7,7 +7,7 @@ import { createRoot, createSignal } from "solid-js";
 import { matchesSecretPattern } from "../../../src/util/secret-patterns";
 import { AROUND, type ReviewComment } from "../lib/review-comments";
 
-export const REVIEW_COMMENTS_KEY = "harness.reviewComments.v1";
+export const REVIEW_COMMENTS_KEY = "cavvy.reviewComments.v1";
 export const MAX_AGE = 30 * 24 * 60 * 60 * 1000;
 /** Per session; the oldest go first past it. */
 export const MAX_PER_SESSION = 200;

@@ -143,7 +143,7 @@ describe("final review, blocker 3: a task's label is redacted whole, then cut", 
     });
 });
 
-describe("a prompt with Harness's catch-up (after a model switch) goes as the user's", () => {
+describe("a prompt with Cavvy's catch-up (after a model switch) goes as the user's", () => {
     test("not synthetic; the catch-up is a block of its own before the user's words, the last block", async () => {
         const session = Session.create(cwd, { persist: false });
         session.push({ role: "user", content: [{ type: "text", text: "earlier, with another model" }], meta: { kind: "prompt" } });
@@ -896,7 +896,7 @@ describe("background work across turns", () => {
         expect(texts(events)).toContain("The explorer reported back: sign-in strategies are registered in one list.");
         expect(agent.backgroundTasks().every((t) => t.status !== "running")).toBe(true);
         // The per-run path: the wait's terms are in the prompt, and the next run is a process of its own.
-        expect(JSON.stringify(starts()[0].argv)).toContain("Harness waits for a reported background Bash command");
+        expect(JSON.stringify(starts()[0].argv)).toContain("Cavvy waits for a reported background Bash command");
         process.env.FAKE_SCENARIO = "silent";
         expect(await run("again")).toBe("done");
         expect(starts().length).toBe(2);
@@ -969,7 +969,7 @@ describe("the process: crashes, restarts, settings", () => {
         expect(await adopt(wakes[1]!)).toBe("done");
     });
 
-    test("Harness quitting with background work: it stops with the process; the next run resumes the session", async () => {
+    test("Cavvy quitting with background work: it stops with the process; the next run resumes the session", async () => {
         process.env.FAKE_SCENARIO = "two-shells";
         process.env.FAKE_SHELL_MS = "60000";
         const first = await makeAgent();
@@ -1048,7 +1048,7 @@ describe("the process: crashes, restarts, settings", () => {
         expect(agent.backgroundTasks().every((t) => t.status !== "running")).toBe(true);
     });
 
-    test("a switch to an account sharing the history (Harness-made) while background work runs: the same session, resumed by a new process signed in as it; the old one's work stops, and the user is told (#377)", async () => {
+    test("a switch to an account sharing the history (Cavvy-made) while background work runs: the same session, resumed by a new process signed in as it; the old one's work stops, and the user is told (#377)", async () => {
         const { addAccount } = await import("../src/providers/accounts");
         const work = addAccount("claude-code", { id: "shared-work", name: "Work" });
         process.env.FAKE_SCENARIO = "two-shells";

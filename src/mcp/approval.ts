@@ -4,7 +4,7 @@
 // approval is saved in the folder's local settings as a keyed hash of what
 // the server runs (command, args, the folder it runs in, env names and
 // values, url, headers) and of the folder itself: change any of that and it
-// asks again. The key is the user's own, in the harness home, so a repo
+// asks again. The key is the user's own, in Cavvy home, so a repo
 // that commits a settings.local.json can't approve its own servers with it.
 //
 // The terminal's /mcp and the GUI both go through here (and McpManager), so
@@ -13,7 +13,7 @@
 import { createHmac, randomBytes } from "crypto";
 import { readFileSync, realpathSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
-import { ensureDir, harnessHome, paths } from "../config/paths";
+import { ensureDir, cavvyHome, paths } from "../config/paths";
 import { unreadableMcpApprovals, unreadableSettings, updateSettings, type McpServerConfig, type Settings } from "../config/settings";
 import { expandPath } from "../util/files";
 import { redact } from "../util/redact";
@@ -35,11 +35,11 @@ export class McpApprovalError extends Error {
 const keys = new Map<string, Buffer>();
 
 /**
- * The user's approval key (one per harness home). If it can't be saved, a
+ * The user's approval key (one per Cavvy home). If it can't be saved, a
  * key for this run still works: approvals made now ask again next time.
  */
 function approvalKey(): Buffer {
-    const home = harnessHome();
+    const home = cavvyHome();
     const cached = keys.get(home);
     if (cached) return cached;
     const file = join(home, "mcp-approval.key");
@@ -171,7 +171,7 @@ function updateLocal(cwd: string, fn: (s: Settings) => void) {
 }
 
 function unreadableText(file: string): string {
-    return `Harness can't read ${file}, which can hold your MCP approvals and rejections, so it doesn't start this folder's .mcp.json servers until it can. Fix or remove that file.`;
+    return `Cavvy can't read ${file}, which can hold your MCP approvals and rejections, so it doesn't start this folder's .mcp.json servers until it can. Fix or remove that file.`;
 }
 
 export function saveApproval(cwd: string, name: string, fingerprint: string) {
@@ -443,10 +443,10 @@ export function describeServer(st: DescribeInput, projectCwd: string): McpServer
 
 /** The facts behind the approve button, for both front ends. */
 export function approvalMeaning(provider: string | undefined, userTrusted: boolean): string {
-    const here = "Approving starts the server in Harness for this folder, and its tools go to sessions here that run on Harness's own models.";
+    const here = "Approving starts the server in Cavvy for this folder, and its tools go to sessions here that run on Cavvy's own models.";
     if (provider === "claude-code") {
         return userTrusted
-            ? `${here} This session runs on Claude Code, which starts its own copies from .mcp.json. Harness enables only project servers its manager permits starting whose definitions still match the approved configuration and whose working directory matches this folder. All other project servers are disabled; if Harness cannot safely check the configuration, it isolates Claude Code from project MCP servers. (Read-only sub-agents get no MCP servers.)`
+            ? `${here} This session runs on Claude Code, which starts its own copies from .mcp.json. Cavvy enables only project servers its manager permits starting whose definitions still match the approved configuration and whose working directory matches this folder. All other project servers are disabled; if Cavvy cannot safely check the configuration, it isolates Claude Code from project MCP servers. (Read-only sub-agents get no MCP servers.)`
             : `${here} This session runs on Claude Code, which doesn't get them. It gets no servers from .mcp.json in this folder either, because you haven't trusted the folder yourself.`;
     }
     if (provider === "codex") return `${here} This session runs on Codex, which doesn't get them and takes its MCP servers from its own config, not from .mcp.json.`;

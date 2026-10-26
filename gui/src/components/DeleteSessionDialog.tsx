@@ -46,13 +46,13 @@ export function DeleteSessionDialog() {
                     when={many()}
                     fallback={
                         <>
-                            <p>Deletes the conversation, the file copies Harness saved for /rewind, and its pin and unread state. You can undo it for about {UNDO_DELETE_MS / 1000} seconds afterwards.</p>
-                            <p class="muted">The project's files and git aren't touched. Claude Code and Codex keep their own copies of their conversations in their own stores, which Harness leaves alone.</p>
+                            <p>Deletes the conversation, the file copies Cavvy saved for /rewind, and its pin and unread state. You can undo it for about {UNDO_DELETE_MS / 1000} seconds afterwards.</p>
+                            <p class="muted">The project's files and git aren't touched. Claude Code and Codex keep their own copies of their conversations in their own stores, which Cavvy leaves alone.</p>
                         </>
                     }
                 >
-                    <p>Deletes their conversations, the file copies Harness saved for /rewind, and their pins and unread state. One Undo brings them all back for about {UNDO_DELETE_MS / 1000} seconds afterwards.</p>
-                    <p class="muted">The projects' files and git aren't touched. Claude Code and Codex keep their own copies of their conversations in their own stores, which Harness leaves alone.</p>
+                    <p>Deletes their conversations, the file copies Cavvy saved for /rewind, and their pins and unread state. One Undo brings them all back for about {UNDO_DELETE_MS / 1000} seconds afterwards.</p>
+                    <p class="muted">The projects' files and git aren't touched. Claude Code and Codex keep their own copies of their conversations in their own stores, which Cavvy leaves alone.</p>
                 </Show>
             </div>
             <div class="dialog-actions">

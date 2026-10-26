@@ -208,7 +208,7 @@ for (const provider of ["claude-code", "codex"] as const) {
         await first.handle(client, "session.send", { id, text: "FIRST-410 before the restart" });
         await until(() => !made.busy && stored(made.session, "FIRST-410") === 1, "the first turn");
         await first.stop();
-        // Removed while Harness was closed.
+        // Removed while Cavvy was closed.
         removeAccount(provider, work.id, work.folder, [cwd]);
 
         const engine = new Engine({ startCwd: cwd, listModels: async () => [] });
@@ -251,7 +251,7 @@ for (const provider of ["claude-code", "codex"] as const) {
             await engine.handle(client, "session.send", { id: rt.id, text: "RUNNING-410" });
             await until(() => rt.busy && sent("RUNNING-410") === 1, "the running turn");
             expect(await engine.handle(client, "session.send", { id: rt.id, text: "QUEUED-410", mode: "queue" })).toEqual({ queued: true });
-            // The engine refuses it while the turn runs; another Harness (the terminal) sharing the accounts doesn't ask.
+            // The engine refuses it while the turn runs; another Cavvy (the terminal) sharing the accounts doesn't ask.
             await expect(engine.handle(client, "accounts.remove", { provider, id: work.id, confirmedFolder: work.folder })).rejects.toMatchObject({ code: "busy" });
             removeAccount(provider, work.id, work.folder, [cwd]);
             await until(() => !rt.busy && rt.snapshot().state.queuedModes?.[0] === "held", "the turn's end");

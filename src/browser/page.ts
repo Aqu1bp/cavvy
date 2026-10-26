@@ -657,7 +657,7 @@ export class Page {
     /** Evaluates JavaScript in the page; its value as JSON (a description of what JSON can't carry), redacted and capped. */
     async evaluate(expression: string, signal?: AbortSignal): Promise<string> {
         this.ready();
-        const group = `harness-eval-${++this.evaluation}`;
+        const group = `cavvy-eval-${++this.evaluation}`;
         let finished = false;
         const release = () => this.send("Runtime.releaseObjectGroup", { objectGroup: group }).catch(() => undefined);
         try {

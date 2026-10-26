@@ -4,8 +4,8 @@ import { coalesce, type Slot } from "@shared/coalesce";
 import type { SessionHandle } from "./app";
 import { app, reportError, rpc } from "./app";
 
-/** The review pane's views: what git says changed, or only what Harness's edit tools did. */
-export type ReviewScope = GitScope | "harness";
+/** The review pane's views: what git says changed, or only what Cavvy's edit tools did. */
+export type ReviewScope = GitScope | "cavvy";
 
 /** A socket opens before its sessions reopen; keep resources paused until adoption. */
 export function sessionReadReady(handle: SessionHandle): boolean {

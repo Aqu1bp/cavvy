@@ -12,7 +12,7 @@ import { test } from "bun:test";
 import { resolve } from "path";
 import { colorEnabled } from "../../src/ui/ansi";
 
-const CHILD = "HARNESS_TEST_COLOR_CHILD";
+const CHILD = "CAVVY_TEST_COLOR_CHILD";
 const ROOT = resolve(import.meta.dir, "../..");
 
 export const isColorChild = Boolean(process.env[CHILD]);

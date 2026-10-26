@@ -56,7 +56,7 @@ export function ProjectScripts(p: { cwd: string }) {
     const scripts = () => list()?.scripts ?? [];
     const main = () => scripts().find((s) => s.id === list()?.lastUsed) ?? scripts()[0];
     const close = () => (setOpen(false), setConfirming(undefined));
-    // Fresh each time: another Harness server's windows don't hear of changes here, and a focus refetch can race a save.
+    // Fresh each time: another Cavvy server's windows don't hear of changes here, and a focus refetch can race a save.
     const openMenu = () => (setOpen(true), void load());
     const run = (script: ProjectScript) => {
         close();
@@ -136,7 +136,7 @@ export function ProjectScripts(p: { cwd: string }) {
                                     <span class="script-name">
                                         <span class="menu-label truncate">{s.name}</span>
                                         <Show when={s.runOnWorktreeCreate}>
-                                            <span class="dbadge script-badge" title="Runs in each worktree you create from Harness">Setup</span>
+                                            <span class="dbadge script-badge" title="Runs in each worktree you create from Cavvy">Setup</span>
                                         </Show>
                                     </span>
                                     <span class="menu-desc mono truncate">{s.command}</span>
@@ -225,7 +225,7 @@ function ScriptDialog(p: { cwd: string; scripts: ProjectScript[]; editing?: { sc
             onClose={p.onClose}
             width={480}
             title={p.editing?.script ? "Edit script" : "Add script"}
-            subtitle="Runs in a terminal tab in the session's folder when you click it. Shared by this repository's worktrees; stored in your Harness home, not the repository."
+            subtitle="Runs in a terminal tab in the session's folder when you click it. Shared by this repository's worktrees; stored in your Cavvy home, not the repository."
         >
             <label class="script-field">
                 <span class="script-field-label">Name</span>
@@ -256,7 +256,7 @@ function ScriptDialog(p: { cwd: string; scripts: ProjectScript[]; editing?: { sc
                     <span>Run when a worktree is created</span>
                 </label>
                 <span class="script-field-hint">
-                    It runs in a new terminal tab of each worktree you create from Harness, right after it's created; the New worktree dialog shows it first and lets you skip it. It runs only in projects you've trusted.
+                    It runs in a new terminal tab of each worktree you create from Cavvy, right after it's created; the New worktree dialog shows it first and lets you skip it. It runs only in projects you've trusted.
                 </span>
                 <Show when={setup() && replaced()}>
                     {(r) => <span class="script-field-hint">A project has one setup script: this replaces “{r().name}”.</span>}

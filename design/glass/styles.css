@@ -1,4 +1,4 @@
-/* Harness glass redesign: interactive mockup styles.
+/* Cavvy glass redesign: interactive mockup styles.
 
    Three layers:
    1. The window is glass (in the app: Tauri's native LiquidGlassRegular).
@@ -203,7 +203,7 @@ body::before { content: ""; position: fixed; inset: 0; z-index: -1; background: 
     radial-gradient(60% 60% at 10% 30%, #17336e 0%, transparent 60%),
     radial-gradient(60% 50% at 70% 95%, #0d2b6b 0%, transparent 60%),
     linear-gradient(180deg, #0b1d26, #070d1d); }
-[data-wall="photo"] { --wall: url("https://picsum.photos/seed/harness-glass-coast/2400/1500") center / cover, #556; }
+[data-wall="photo"] { --wall: url("https://picsum.photos/seed/cavvy-glass-coast/2400/1500") center / cover, #556; }
 
 .window {
     position: relative; flex: none;

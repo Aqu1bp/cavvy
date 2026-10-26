@@ -271,7 +271,7 @@ describe("a queue that outlives the TUI", () => {
         // The image is attached again under a fresh number.
         expect(app.editor.text.replace(/[\u{100000}-\u{10fffd}]/gu, "")).toBe("typed\nsteer this\nlook at [Image #1]");
         expect([...draft.attachments.values()].map((a) => a.image?.part.data)).toEqual(["AA=="]);
-        expect(printed.join("\n")).toContain("2 messages that were waiting when Harness closed are back in the prompt.");
+        expect(printed.join("\n")).toContain("2 messages that were waiting when Cavvy closed are back in the prompt.");
         expect(loadQueue(path, app.session.meta.id)).toEqual([]);
         expect(existsSync(queueFile(path, app.session.meta.id))).toBe(false);
     });

@@ -1,4 +1,4 @@
-// The new hook events in the harness's own loop: tool failures, batches,
+// The new hook events in Cavvy's own loop: tool failures, batches,
 // permission prompts, sub-agent starts, compaction, a turn that fails, the
 // working directory moving, watched files changing, memory files loading,
 // and a hook that ends the turn (continue: false).

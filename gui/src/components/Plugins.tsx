@@ -25,8 +25,8 @@ type Confirm = { title: string; body: string; label: string; run: () => Promise<
 
 const SCOPES: { value: PluginScope; label: string; title: (project?: string) => string }[] = [
     { value: "user", label: "For me", title: () => "On in every project, just for you" },
-    { value: "project", label: "This project", title: (p) => `Shared with everyone in ${p ?? "the project"} (.harness/settings.json)` },
-    { value: "local", label: "Just me, here", title: (p) => `Only you, only in ${p ?? "this project"} (.harness/settings.local.json)` },
+    { value: "project", label: "This project", title: (p) => `Shared with everyone in ${p ?? "the project"} (.cavvy/settings.json)` },
+    { value: "local", label: "Just me, here", title: (p) => `Only you, only in ${p ?? "this project"} (.cavvy/settings.local.json)` },
 ];
 const SCOPE_DONE: Record<PluginScope, string> = { user: "for you", project: "for this project", local: "for you, here" };
 

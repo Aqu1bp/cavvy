@@ -20,8 +20,8 @@ if (args.includes("push") && process.env.FAKE_PUBLISH_PUSH_CONFIG) {
     if (changed.exitCode) process.exit(changed.exitCode);
 }
 // The fixture's own rewrite below stands in for github.com: the push's pre-push check sees the fixture's URL.
-const env = { ...process.env, GIT_ALLOW_PROTOCOL: network ? "file" : "harness-none" };
-if (env.HARNESS_PUSH_URL === "https://github.com/example/project.git") env.HARNESS_PUSH_URL = process.env.FAKE_PUBLISH_REMOTE!;
+const env = { ...process.env, GIT_ALLOW_PROTOCOL: network ? "file" : "cavvy-none" };
+if (env.CAVVY_PUSH_URL === "https://github.com/example/project.git") env.CAVVY_PUSH_URL = process.env.FAKE_PUBLISH_REMOTE!;
 const result = Bun.spawnSync([process.env.FAKE_PUBLISH_GIT!, ...(network ? ["-c", `url.${process.env.FAKE_PUBLISH_REMOTE}.insteadOf=https://github.com/example/project.git`] : []), ...args.map((arg) => args.includes("ls-remote") && /^[a-z]+:\/\//.test(arg) ? process.env.FAKE_PUBLISH_REMOTE! : arg)], {
     env,
     stdin: "inherit", stdout: "inherit", stderr: "inherit",

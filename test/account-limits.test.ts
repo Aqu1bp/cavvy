@@ -29,7 +29,7 @@ for (const provider of ["claude-code", "codex"]) {
     saveAgentConfig(provider, { path: binary, accounts });
 }
 beforeEach(() => {
-    process.env.HARNESS_HOME = iso.home;
+    process.env.CAVVY_HOME = iso.home;
     for (const key of keys) delete process.env[key];
     process.env.FAKE_SCENARIO = "silent";
 });

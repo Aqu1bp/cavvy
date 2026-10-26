@@ -29,7 +29,7 @@ afterAll(async () => {
 
 /** A project folder, trusted by the user (approving needs that) unless `userTrusted` is false. */
 function folder(userTrusted = true): string {
-    const d = tempDir("harness-mcp-approval-");
+    const d = tempDir("cavvy-mcp-approval-");
     dirs.push(d);
     if (userTrusted) trustFolder(d);
     return d;
@@ -141,7 +141,7 @@ describe("approve, reject and revoke write the folder's local settings, which bo
     test("a name-only approval from before asks once more, and says why", async () => {
         const dir = folder();
         writeMcp(dir, { old: { command: "echo" } });
-        mkdirSync(join(dir, ".harness"));
+        mkdirSync(join(dir, ".cavvy"));
         writeFileSync(paths.localSettings(dir), JSON.stringify({ enabledMcpjsonServers: ["old"] }));
         const m = manager(dir);
         await m.load();
@@ -304,7 +304,7 @@ describe("a server that isn't approved never starts", () => {
         const dir = folder();
         const marker = join(dir, "started");
         writeMcp(dir, { srv: fixture(marker) });
-        mkdirSync(join(dir, ".harness"));
+        mkdirSync(join(dir, ".cavvy"));
         writeFileSync(paths.projectSettings(dir), JSON.stringify({ approvedMcpjsonServers: { srv: mcpFingerprint(fixture(marker), dir) }, enableAllProjectMcpServers: true }));
         const m = manager(dir);
         await tryEverything(m, "srv");
@@ -353,8 +353,8 @@ describe("review fixes", () => {
             const dir = folder();
             const marker = join(dir, "started");
             writeMcp(dir, { srv: fixture(marker) });
-            mkdirSync(join(dir, ".harness"));
-            writeFileSync(join(dir, ".harness", file), file === "settings.json" ? '{"__proto__": {"enableAllProjectMcpServers": true}}' : '{"enableAllProjectMcpServers": true}');
+            mkdirSync(join(dir, ".cavvy"));
+            writeFileSync(join(dir, ".cavvy", file), file === "settings.json" ? '{"__proto__": {"enableAllProjectMcpServers": true}}' : '{"enableAllProjectMcpServers": true}');
             const m = manager(dir);
             await m.load();
             await m.startAll();
@@ -552,13 +552,13 @@ describe("settings that can hold approvals and rejections but can't be read", ()
     // What a broken file holds must never be shown: a parser's message can quote it.
     const BROKEN = '{"disabledMcpjsonServers": ["rejected"], FAKE_SECRET_99_qz7}';
 
-    test("a local rejection that becomes unreadable keeps its server off under a blanket approval, in Harness and for Claude Code; a missing file doesn't", async () => {
+    test("a local rejection that becomes unreadable keeps its server off under a blanket approval, in Cavvy and for Claude Code; a missing file doesn't", async () => {
         await withBlanketApproval(async () => {
             const dir = folder();
             const marker = join(dir, "started.txt");
             writeMcp(dir, { rejected: fixture(marker) });
             const local = paths.localSettings(dir);
-            mkdirSync(join(dir, ".harness"), { recursive: true });
+            mkdirSync(join(dir, ".cavvy"), { recursive: true });
             writeFileSync(local, JSON.stringify({ disabledMcpjsonServers: ["rejected"] }));
             const m = manager(dir);
             await m.load();
@@ -593,7 +593,7 @@ describe("settings that can hold approvals and rejections but can't be read", ()
             const marker = join(dir, "started.txt");
             writeMcp(dir, { server: fixture(marker) });
             const local = paths.localSettings(dir);
-            mkdirSync(join(dir, ".harness"), { recursive: true });
+            mkdirSync(join(dir, ".cavvy"), { recursive: true });
             const m = manager(dir);
             const user = readFileSync(userFile(), "utf-8");
             const cases: [string, () => void, string][] = [
@@ -630,7 +630,7 @@ describe("settings that can hold approvals and rejections but can't be read", ()
             const dir = folder();
             writeMcp(dir, { rejected: fixture(join(dir, "started.txt")) });
             const local = paths.localSettings(dir);
-            mkdirSync(join(dir, ".harness"), { recursive: true });
+            mkdirSync(join(dir, ".cavvy"), { recursive: true });
             writeFileSync(local, BROKEN);
             // As the terminal app keeps its settings until it reloads them: loaded while the rejection couldn't be read.
             let s = loadSettings(dir, { trusted: true });
@@ -661,7 +661,7 @@ describe("settings that can hold approvals and rejections but can't be read", ()
             const marker = join(dir, "started.txt");
             writeMcp(dir, { rejected: fixture(marker) });
             const local = paths.localSettings(dir);
-            mkdirSync(join(dir, ".harness"), { recursive: true });
+            mkdirSync(join(dir, ".cavvy"), { recursive: true });
             writeFileSync(local, BROKEN);
             const settings = mergeSettings(loadSettings(dir, { trusted: true }), { model: "anthropic:claude-sonnet-5-5" });
             // Repaired, with its rejection, while the run resolves its model: the run's settings still lack the rejection.
@@ -716,7 +716,7 @@ describe("settings that can hold approvals and rejections but can't be read", ()
             const dir = folder();
             writeMcp(dir, { server: fixture(join(dir, "started.txt")) });
             const local = paths.localSettings(dir);
-            mkdirSync(join(dir, ".harness"), { recursive: true });
+            mkdirSync(join(dir, ".cavvy"), { recursive: true });
             writeFileSync(local, "FAKE_SECRET_99_REVIEW_CONTENT");
             const m = manager(dir);
             await m.refresh();
@@ -733,7 +733,7 @@ describe("settings that can hold approvals and rejections but can't be read", ()
         const dir = folder();
         writeMcp(dir, { server: fixture(join(dir, "started.txt")) });
         const local = paths.localSettings(dir);
-        mkdirSync(join(dir, ".harness"), { recursive: true });
+        mkdirSync(join(dir, ".cavvy"), { recursive: true });
         const m = manager(dir);
         // Emptied too: saving another server's rejection there would make the file look whole without what it lost.
         for (const content of [BROKEN, "[]", "", "  \n"]) {

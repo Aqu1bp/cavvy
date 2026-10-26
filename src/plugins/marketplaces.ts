@@ -107,14 +107,14 @@ async function fetchMarketplace(src: MarketplaceSource): Promise<{ dir: string; 
         if (src.source === "url") {
             const j = await fetchJson(src.url);
             const m = parseMarketplace(j);
-            writeJson(join(dir, ".harness-plugin", "marketplace.json"), j);
+            writeJson(join(dir, ".cavvy-plugin", "marketplace.json"), j);
             return { dir, marketplace: m };
         }
         if (src.source !== "github" && src.source !== "git") throw new PluginError("not a remote marketplace");
         const repo = join(dir, "repo");
         const sha = await gitClone(src.source === "github" ? githubUrl(src.repo) : src.url, repo, { ref: src.ref });
         const f = marketplaceFile(repo);
-        if (!f) throw new PluginError(`${describeMarketplaceSource(src)} has no .claude-plugin/marketplace.json or .harness-plugin/marketplace.json`);
+        if (!f) throw new PluginError(`${describeMarketplaceSource(src)} has no .claude-plugin/marketplace.json or .cavvy-plugin/marketplace.json`);
         rmSync(join(repo, ".git"), { recursive: true, force: true });
         return { dir: repo, marketplace: parseMarketplace(cachedJson(f)), sha };
     } catch (e) {
@@ -142,7 +142,7 @@ export async function addMarketplace(input: string, cwd: string): Promise<Loaded
     let sha: string | undefined;
     if (src.source === "directory" || src.source === "file") {
         const file = src.source === "file" ? src.path : marketplaceFile(src.path);
-        if (!file) throw new PluginError(`${src.path} has no .claude-plugin/marketplace.json or .harness-plugin/marketplace.json`);
+        if (!file) throw new PluginError(`${src.path} has no .claude-plugin/marketplace.json or .cavvy-plugin/marketplace.json`);
         let err: string | undefined;
         const j = cachedJson<unknown>(file, (m) => (err = m));
         if (j === undefined) throw new PluginError(err ?? `${file} is empty`);

@@ -1,12 +1,12 @@
 // Real browser coverage for find's DOM scopes and clipped text. No browser package
-// needed; use installed Chrome (or HARNESS_TEST_CHROME) and a private profile.
+// needed; use installed Chrome (or CAVVY_TEST_CHROME) and a private profile.
 import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromeFixture, type ChromeTimings } from "./helpers/chrome";
 
-const chrome = [process.env.HARNESS_TEST_CHROME, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/usr/bin/chromium", "/usr/bin/google-chrome"].find((p) => p && existsSync(p));
+const chrome = [process.env.CAVVY_TEST_CHROME, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/usr/bin/chromium", "/usr/bin/google-chrome"].find((p) => p && existsSync(p));
 
 // As root Chrome refuses its sandbox. On GitHub's runners it can't make one either: Ubuntu's AppArmor blocks the
 // user namespaces it needs ("No usable sandbox!"), and the runner is a throwaway machine.
@@ -93,7 +93,7 @@ test("Chrome disables its sandbox only when running as root or in CI", () => {
 });
 
 test("Chrome cleanup escalates through its child handle and releases the fixture", async () => {
-    const scratch = mkdtempSync(join(tmpdir(), "harness-live-find-cleanup-"));
+    const scratch = mkdtempSync(join(tmpdir(), "cavvy-live-find-cleanup-"));
     const signals: unknown[] = [];
     let exit!: (code: number) => void;
     const browser: Browser = {
@@ -113,7 +113,7 @@ test("Chrome cleanup escalates through its child handle and releases the fixture
 
 test("Chrome cleanup releases resources even when termination or server stop fails", async () => {
     for (const failure of ["kill", "exit", "server"]) {
-        const scratch = mkdtempSync(join(tmpdir(), "harness-live-find-cleanup-"));
+        const scratch = mkdtempSync(join(tmpdir(), "cavvy-live-find-cleanup-"));
         let stopped = false;
         const browser: Browser = {
             exitCode: null,
@@ -129,7 +129,7 @@ test("Chrome cleanup releases resources even when termination or server stop fai
 
 // The test's own limit is the sum of the build's, Chrome's startup and the page's, plus 20 s for cleanup.
 test.skipIf(!chrome)("find reveals live arguments and linked paths without counting editor controls", async () => {
-    const scratch = mkdtempSync(join(tmpdir(), "harness-live-find-"));
+    const scratch = mkdtempSync(join(tmpdir(), "cavvy-live-find-"));
     const profile = join(scratch, "chrome");
     let browser: ReturnType<typeof Bun.spawn> | undefined;
     let server: ReturnType<typeof Bun.serve> | undefined;

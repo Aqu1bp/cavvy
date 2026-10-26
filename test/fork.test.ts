@@ -7,7 +7,7 @@ import { appendFileSync, chmodSync, existsSync, readdirSync, readFileSync, realp
 import { dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
-const { home: HARNESS_HOME, cleanup } = isolate();
+const { home: CAVVY_HOME, cleanup } = isolate();
 const { Session, cliLinks, listSessions } = await import("../src/agent/session");
 const { forkSession, forkTitle, forkCut, forkTargets, beforeFork } = await import("../src/agent/fork");
 const { forkUiLog, promptKey, readSegments, UiLog } = await import("../src/server/history");
@@ -20,7 +20,7 @@ const { MODE_INFO } = await import("../src/permissions/modes");
 import type { AssistantMessage, ChatRequest, Message } from "../src/providers/types";
 
 beforeAll(() => {
-    process.env.HARNESS_HOME = HARNESS_HOME;
+    process.env.CAVVY_HOME = CAVVY_HOME;
 });
 afterAll(cleanup);
 
@@ -510,9 +510,9 @@ describe("/fork in the terminal", () => {
         const cwd = realpathSync(tempDir());
         const { app, text } = testApp(cwd);
         app.session = Session.create(cwd);
-        const before = existsSync(join(HARNESS_HOME, "projects")) ? readdirSync(join(HARNESS_HOME, "projects")).length : 0;
+        const before = existsSync(join(CAVVY_HOME, "projects")) ? readdirSync(join(CAVVY_HOME, "projects")).length : 0;
         await runCommand(app, "/fork");
         expect(text()).toContain("Nothing to fork yet.");
-        expect(existsSync(join(HARNESS_HOME, "projects")) ? readdirSync(join(HARNESS_HOME, "projects")).length : 0).toBe(before);
+        expect(existsSync(join(CAVVY_HOME, "projects")) ? readdirSync(join(CAVVY_HOME, "projects")).length : 0).toBe(before);
     });
 });

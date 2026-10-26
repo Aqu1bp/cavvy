@@ -6,7 +6,7 @@ import type { SDKMessage } from "./messages";
 import type { PermissionMode } from "../permissions/modes";
 import type { QueryParams } from "./types";
 import type { RunControl } from "./runner";
-import { HarnessSdkError } from "./errors";
+import { CavvySdkError } from "./errors";
 
 // As in permissions/modes.ts, which this light module doesn't load.
 const MODES: readonly PermissionMode[] = ["default", "acceptEdits", "plan", "auto", "bypassPermissions"];
@@ -139,7 +139,7 @@ class QueryImpl implements Query {
     }
 
     async setPermissionMode(mode: PermissionMode) {
-        if (!MODES.includes(mode)) throw new HarnessSdkError(`Unknown permission mode "${mode}". Use one of: ${MODES.join(", ")}.`);
+        if (!MODES.includes(mode)) throw new CavvySdkError(`Unknown permission mode "${mode}". Use one of: ${MODES.join(", ")}.`);
         if (this.control) this.control.setPermissionMode(mode);
         else this.mode = mode;
     }
@@ -158,7 +158,7 @@ class QueryImpl implements Query {
 }
 
 /**
- * Run a prompt (or a conversation) through the harness and iterate over what
+ * Run a prompt (or a conversation) through Cavvy and iterate over what
  * happens: an init message, the model's messages and tool results, and one
  * result message for each turn. Nothing runs until you start iterating.
  *

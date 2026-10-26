@@ -1,6 +1,6 @@
-// The harness's agent definitions (src/agent/agents.ts) in the form Claude
+// Cavvy's agent definitions (src/agent/agents.ts) in the form Claude
 // Code's --agents flag takes, so a session on the Claude Code backend runs
-// them with its own Agent tool rather than through the harness's delegate
+// them with its own Agent tool rather than through Cavvy's delegate
 // tool. Agents pinned to another provider's model stay with delegate.
 
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
@@ -34,9 +34,9 @@ export interface ClaudeAgentDefinition {
 }
 
 /**
- * Claude Code's mode for each harness mode, as for the session (MODES in
+ * Claude Code's mode for each Cavvy mode, as for the session (MODES in
  * claude-code.ts): its acceptEdits also runs file commands without asking, so
- * an acceptEdits agent runs in default there, and the harness approves its
+ * an acceptEdits agent runs in default there, and Cavvy approves its
  * edits with the agent's own mode (its asks name it: Agent.backendPermission).
  */
 const CLAUDE_MODES: Record<PermissionMode, string> = {
@@ -84,7 +84,7 @@ export function claudeAgents(defs: AgentDef[], o: ClaudeAgentsOptions): Record<s
 }
 
 function claudeAgent(def: AgentDef, model: string, o: ClaudeAgentsOptions): ClaudeAgentDefinition {
-    // The harness's skills folders aren't Claude Code's: what it finds goes in the prompt, the rest Claude Code looks up.
+    // Cavvy's skills folders aren't Claude Code's: what it finds goes in the prompt, the rest Claude Code looks up.
     const found: string[] = [];
     const unknown: string[] = [];
     for (const name of def.skills ?? []) {
@@ -98,7 +98,7 @@ function claudeAgent(def: AgentDef, model: string, o: ClaudeAgentsOptions): Clau
         model,
     };
     if (def.tools?.length) a.tools = def.tools;
-    // The harness's own tools (delegate, secrets, schedules) run under the session's mode as it is when they're
+    // Cavvy's own tools (delegate, secrets, schedules) run under the session's mode as it is when they're
     // called, which Claude Code approves without asking: an agent with a mode of its own (a plan agent, while
     // the session is or becomes acceptEdits) doesn't get them.
     const disallowed = [...(def.disallowedTools ?? []), ...(def.permissionMode ? [`mcp__${MCP_SERVER_NAME}`] : [])];
@@ -117,7 +117,7 @@ function claudeAgent(def: AgentDef, model: string, o: ClaudeAgentsOptions): Clau
     return a;
 }
 
-/** Claude Code's nested form; an agent's Stop hooks are its SubagentStop there, as the harness reads them. */
+/** Claude Code's nested form; an agent's Stop hooks are its SubagentStop there, as Cavvy reads them. */
 function claudeHooks(def: AgentDef): ClaudeAgentDefinition["hooks"] {
     if (!def.hooks) return undefined;
     const out: NonNullable<ClaudeAgentDefinition["hooks"]> = {};
@@ -126,7 +126,7 @@ function claudeHooks(def: AgentDef): ClaudeAgentDefinition["hooks"] {
         const name = event === "SubagentStop" ? "Stop" : event;
         for (const h of list) {
             // Every handler type as written (http, prompt, mcp_tool too); the matcher is the group's, and a
-            // prompt hook's harness model ref ("provider:model") means nothing to Claude Code, so its own is used.
+            // prompt hook's Cavvy model ref ("provider:model") means nothing to Claude Code, so its own is used.
             const { matcher, pluginRoot: _, type, ...rest } = h;
             if (type === "prompt" && typeof rest.model === "string" && rest.model.includes(":")) delete rest.model;
             (out[name] ??= []).push({ ...(matcher ? { matcher } : {}), hooks: [{ type: type ?? "command", ...rest }] });
@@ -137,7 +137,7 @@ function claudeHooks(def: AgentDef): ClaudeAgentDefinition["hooks"] {
 
 /**
  * Names as they are; its own servers only where Claude Code would run what
- * the harness would (startAgentServers): no name a configured or .mcp.json
+ * Cavvy would (startAgentServers): no name a configured or .mcp.json
  * server has, a project agent's approved as .mcp.json servers are, and none
  * Claude Code would read differently. It ignores a server's cwd (stdio servers
  * start where it runs) and expands ${VAR}, which an approval doesn't cover.
@@ -147,8 +147,8 @@ function claudeServers(def: AgentDef, o: ClaudeAgentsOptions): NonNullable<Claud
     const configured = [...Object.keys(o.settings.mcpServers ?? {}), ...(o.trusted ? projectServers(o.projectRoot) : [])];
     for (const s of def.mcpServers ?? []) {
         const skip = (why: string) => o.notes?.push(`The ${def.name} agent's MCP server "${s.name}" isn't passed to Claude Code: ${why}.`);
-        // The harness's own server isn't an agent's to name: its tools are approved by their names.
-        if (serverSegment(s.name) === serverSegment(MCP_SERVER_NAME)) skip("that name is the harness's own server's");
+        // Cavvy's own server isn't an agent's to name: its tools are approved by their names.
+        if (serverSegment(s.name) === serverSegment(MCP_SERVER_NAME)) skip("that name is Cavvy's own server's");
         else if (!s.config) out.push(s.name);
         else if (s.config.disabled) continue;
         else if (configured.some((n) => serverSegment(n) === serverSegment(s.name))) skip("a configured server has that name");
@@ -187,7 +187,7 @@ function claudeServer(c: McpServerConfig): Record<string, unknown> {
 
 /** Writes them where only this user can read them; `remove` deletes the file. */
 export function writeAgentsFile(agents: Record<string, ClaudeAgentDefinition>): { path: string; remove: () => void } {
-    const dir = mkdtempSync(join(tmpdir(), "harness-agents-"));
+    const dir = mkdtempSync(join(tmpdir(), "cavvy-agents-"));
     const path = join(dir, "agents.json");
     writeFileSync(path, JSON.stringify(agents), { mode: 0o600 });
     return { path, remove: () => rmSync(dir, { recursive: true, force: true }) };

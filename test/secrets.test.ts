@@ -46,7 +46,7 @@ afterAll(async () => {
 });
 
 function toolCtx(ui: UiBridge = {}, secrets = new SecretStore()) {
-    const dir = tempDir("harness-secret-");
+    const dir = tempDir("cavvy-secret-");
     const state: ToolState = { cwd: dir, projectRoot: dir, fileState: new Map(), todos: [], shells: new Map(), secrets };
     states.push(state);
     return { state, secrets, ctx: { state, settings: {}, signal: new AbortController().signal, mode: () => "default", setMode() {}, ui } as any };
@@ -59,8 +59,8 @@ describe("names, values and purposes", () => {
         for (const bad of ["", "github_token", "1TOKEN", "_TOKEN", "MY-TOKEN", "MY TOKEN", "TOKEN=1", `${"A".repeat(59)}_TOKEN`, 42, undefined, null]) expect(secretNameError(bad)).toMatch(/environment variable name/);
     });
 
-    test("names that change how processes run, or that Harness owns, are refused", () => {
-        const reserved = ["PATH", "HOME", "SHELL", "IFS", "ENV", "BASH_ENV", "ZDOTDIR", "PS4", "NODE_OPTIONS", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "GIT_SSH_COMMAND", "GIT_ASKPASS", "HARNESS", "HARNESS_HOME", "HTTPS_PROXY", "PYTHONSTARTUP", "PERL5OPT", "NPM_CONFIG_REGISTRY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "API_KEY", "PAGER", "TMPDIR"];
+    test("names that change how processes run, or that Cavvy owns, are refused", () => {
+        const reserved = ["PATH", "HOME", "SHELL", "IFS", "ENV", "BASH_ENV", "ZDOTDIR", "PS4", "NODE_OPTIONS", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "GIT_SSH_COMMAND", "GIT_ASKPASS", "CAVVY", "CAVVY_HOME", "HTTPS_PROXY", "PYTHONSTARTUP", "PERL5OPT", "NPM_CONFIG_REGISTRY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "API_KEY", "PAGER", "TMPDIR"];
         for (const name of reserved) expect(secretNameError(name)).toMatch(/can't hold a secret/);
     });
 
@@ -295,7 +295,7 @@ describe("in the agent loop", () => {
 
     /** A model that runs `steps` in order (one tool call each, keyed by who's asking), and records what it was sent. */
     function setup(steps: { parent: { name: string; input: Record<string, unknown> }[]; child?: { name: string; input: Record<string, unknown> }[] }, ui: UiBridge) {
-        const proj = tempDir("harness-secret-agent-");
+        const proj = tempDir("cavvy-secret-agent-");
         const sent: { child: boolean; tools: string[]; body: string }[] = [];
         let n = 0;
         const queues = { parent: [...steps.parent], child: [...(steps.child ?? [])] };

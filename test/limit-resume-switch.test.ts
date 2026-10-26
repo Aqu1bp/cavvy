@@ -50,7 +50,7 @@ function limitedBackend(turns: BackendTurn[]) {
 /** A session that has just hit the limit, with the automatic resume waiting. */
 async function limited() {
     const engine = new Engine({ listModels: async () => [] });
-    const cwd = createDemoProject(tempDir("harness-limit-proj-"), { git: false });
+    const cwd = createDemoProject(tempDir("cavvy-limit-proj-"), { git: false });
     const rt = await engine.createSession(cwd, { mode: "bypassPermissions" });
     await rt.ready;
     const turns: BackendTurn[] = [];
@@ -107,7 +107,7 @@ test("switching the model cancels the waiting resume and says so", async () => {
 test("past the limit on credits (#434): the turn goes on, no resume waits, and nothing says it stopped", async () => {
     const engine = new Engine({ listModels: async () => [] });
     try {
-        const cwd = createDemoProject(tempDir("harness-limit-proj-"), { git: false });
+        const cwd = createDemoProject(tempDir("cavvy-limit-proj-"), { git: false });
         const rt = await engine.createSession(cwd, { mode: "bypassPermissions" });
         await rt.ready;
         const turns: BackendTurn[] = [];

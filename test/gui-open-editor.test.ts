@@ -19,15 +19,15 @@ mkdirSync(iso.home, { recursive: true });
 writeFileSync(join(iso.home, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock", baseUrl: mock.url, requiresKey: false }] }));
 
 // Fake editors: a `code` launcher on PATH, and a Sublime Text app with no CLI.
-const bin = tempDir("harness-ed-bin-");
+const bin = tempDir("cavvy-ed-bin-");
 writeFileSync(join(bin, "code"), "#!/bin/sh\nexit 0\n");
 chmodSync(join(bin, "code"), 0o755);
-const apps = tempDir("harness-ed-apps-");
+const apps = tempDir("cavvy-ed-apps-");
 mkdirSync(join(apps, "Sublime Text.app"));
 
-const extra = realpathSync(tempDir("harness-ed-extra-"));
+const extra = realpathSync(tempDir("cavvy-ed-extra-"));
 writeFileSync(join(extra, "notes.md"), "x");
-const outside = realpathSync(tempDir("harness-ed-out-"));
+const outside = realpathSync(tempDir("cavvy-ed-out-"));
 writeFileSync(join(outside, "secret.txt"), "x");
 
 writeFileSync(join(iso.home, "settings.json"), JSON.stringify({ model: "mock:mock-opus", smallModel: "mock:mock-haiku", permissions: { additionalDirectories: [extra] } }));
@@ -45,7 +45,7 @@ let cwd: string;
 let id: string;
 
 beforeAll(async () => {
-    cwd = realpathSync(createDemoProject(tempDir("harness-ed-proj-"), { git: false }));
+    cwd = realpathSync(createDemoProject(tempDir("cavvy-ed-proj-"), { git: false }));
     mkdirSync(join(cwd, "dir with space"));
     writeFileSync(join(cwd, "dir with space/a b.ts"), "x");
     writeFileSync(join(cwd, "run.command"), "#!/bin/sh\n");
@@ -140,7 +140,7 @@ describe("fs.open", () => {
         expect(launched).toEqual([["open", "-a", join(apps, "Sublime Text.app"), join(cwd, "package.json")]]);
     });
 
-    test("a folder must be open in Harness to be used instead of a session", async () => {
+    test("a folder must be open in Cavvy to be used instead of a session", async () => {
         launched.length = 0;
         await call("fs.open", { cwd, path: "package.json" });
         expect(launched).toHaveLength(1);
@@ -158,7 +158,7 @@ test("on Windows it says it isn't supported, rather than that nothing is install
 
 describe("project files", () => {
     // Rider found as a launcher on its own PATH.
-    const riderBin = tempDir("harness-ed-rider-");
+    const riderBin = tempDir("cavvy-ed-rider-");
     writeFileSync(join(riderBin, "rider"), "#!/bin/sh\nexit 0\n");
     chmodSync(join(riderBin, "rider"), 0o755);
     const withRider = () => new Engine({ editorEnv: () => ({ platform: "linux", path: `${bin}:${riderBin}`, appDirs: [] }), launchEditor: async (argv) => void launched.push(argv) });

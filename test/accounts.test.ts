@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, realpathSync, statSync, symlinkSync, writeFileSy
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 const iso = isolate();
-const outside = tempDir("harness-account-folders-");
+const outside = tempDir("cavvy-account-folders-");
 const { addAccount, account, defaultAccount, listAccounts, removeAccount, renameAccount, setDefaultAccount } = await import("../src/providers/accounts");
 const { readAgentConfig, saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
 afterAll(() => { iso.cleanup(); rmSync(outside, { recursive: true, force: true }); });
@@ -116,7 +116,7 @@ test("invalid saved folders stay listed and preferred, fail selection, and remov
     try {
         for (const provider of ["claude-code", "codex"]) {
             for (const folder of ["", "relative", `${outside}/../${outside.split("/").at(-1)}`, null, 42]) {
-                saveAgentConfig(provider, { path: "/nonexistent-harness-test-cli", accounts: [{ id: "broken", name: "Broken", folder: folder as any, managed: true }], defaultAccount: "broken" });
+                saveAgentConfig(provider, { path: "/nonexistent-cavvy-test-cli", accounts: [{ id: "broken", name: "Broken", folder: folder as any, managed: true }], defaultAccount: "broken" });
                 expect(readAgentConfig(provider)?.accounts).toMatchObject([{ id: "broken", invalid: true }]);
                 expect(defaultAccount(provider)).toBe("broken");
                 expect(() => account(provider, "broken")).toThrow(/Invalid account folder/);
@@ -142,8 +142,8 @@ test("invalid saved folders stay listed and preferred, fail selection, and remov
 test("Claude keychain collisions are rejected at add and every launch", async () => {
     const { createHash } = await import("crypto");
     const { accountEnv } = await import("../src/providers/accounts");
-    const one = "/private/tmp/harness-account-collision/26293";
-    const two = "/private/tmp/harness-account-collision/88046";
+    const one = "/private/tmp/cavvy-account-collision/26293";
+    const two = "/private/tmp/cavvy-account-collision/88046";
     for (const raw of [one, two]) expect(createHash("sha256").update(raw).digest("hex").slice(0, 8)).toBe("b6f8ac42");
     const secure = process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
     const config = process.env.CLAUDE_CONFIG_DIR;

@@ -11,7 +11,7 @@ export const ONE_OFF_TIMEOUT_MS = 120_000;
 
 /** A request the CLI can answer as a one-off: it offers no tools. */
 export function oneOffRefusal(name: string, req: ChatRequest): ProviderError | undefined {
-    return req.tools?.length ? new ProviderError(`${name} runs whole turns with its own tools, so it can't answer a request that offers tools of the harness's. Set smallModel to another provider's model for those.`) : undefined;
+    return req.tools?.length ? new ProviderError(`${name} runs whole turns with its own tools, so it can't answer a request that offers tools of Cavvy's. Set smallModel to another provider's model for those.`) : undefined;
 }
 
 /** The conversation as one prompt: the CLIs take a single message. Earlier turns are labelled by who said them. */

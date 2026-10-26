@@ -1,7 +1,7 @@
 #!/bin/sh
 # Launcher. Bun reads .env and bunfig.toml from the *current directory* at
 # startup, and a repository's bunfig.toml can name "preload" scripts. Running
-# with --no-env-file and our own --config means opening harness inside an
+# with --no-env-file and our own --config means opening cavvy inside an
 # untrusted repository can't run that repository's code before we start.
 set -e
 self="$0"

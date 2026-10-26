@@ -3,11 +3,11 @@ import { tmpdir } from "os";
 import { join } from "path";
 
 // Run before test modules import application code, without replacing explicit isolation.
-if (!process.env.HARNESS_HOME) {
-    const home = mkdtempSync(join(tmpdir(), "harness-test-preload-"));
-    process.env.HARNESS_HOME = home;
+if (!process.env.CAVVY_HOME) {
+    const home = mkdtempSync(join(tmpdir(), "cavvy-test-preload-"));
+    process.env.CAVVY_HOME = home;
     process.on("exit", () => {
         try { rmSync(home, { recursive: true, force: true }); } catch { /* Best-effort cleanup. */ }
     });
 }
-process.env.HARNESS_NO_KEYCHAIN ??= "1";
+process.env.CAVVY_NO_KEYCHAIN ??= "1";

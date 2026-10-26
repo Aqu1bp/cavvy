@@ -233,7 +233,7 @@ test("a window presents the same private key after reconnect, only in handshake 
     const back = Socket.instances[1]!;
     back.open();
     expect(handshakes).toEqual(Array(2).fill({
-        url: "ws://test/ws", protocols: ["harness.v1", "auth.test-token", `window.${key}`],
+        url: "ws://test/ws", protocols: ["cavvy.v1", "auth.test-token", `window.${key}`],
     }));
     expect(JSON.stringify(first.sent)).not.toContain(key);
     expect(back.sent).toEqual([]);

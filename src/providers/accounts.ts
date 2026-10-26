@@ -37,7 +37,7 @@ function normalFolder(provider: string): string {
 }
 function selector(provider: string): string { return provider === "codex" ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR"; }
 // Capture the launch cwd independently of child cwds: Default uses the directory
-// as a CLI invoked from the shell that launched Harness.
+// as a CLI invoked from the shell that launched Cavvy.
 const launchCwd = process.cwd();
 function defaultFolder(provider: string): string { return resolve(launchCwd, process.env[selector(provider)] || normalFolder(provider)); }
 export function listAccounts(provider: string): CliAccount[] {
@@ -59,7 +59,7 @@ export function account(provider: string, id = "default"): CliAccount {
 /**
  * Where a native CLI session lives: the account's home, and the folder its CLI finds the transcripts it resumes in
  * (Claude Code's `projects/`, Codex's `sessions/`), both by real path. Homes with the same history folder (Default
- * and the Harness-made accounts that link it, account-layout.ts) can resume each other's sessions.
+ * and the Cavvy-made accounts that link it, account-layout.ts) can resume each other's sessions.
  */
 export interface AccountPlace {
     folder: string;
@@ -160,7 +160,7 @@ export function accountEnv(provider: string, id = "default", cwd = homedir()): R
         ? { CLAUDE_CONFIG_DIR: folder, CLAUDE_SECURESTORAGE_CONFIG_DIR: folder }
         : { CODEX_HOME: folder };
 }
-/** Only folders Harness made, where they belong; an existing folder is used as the user set it up. */
+/** Only folders Cavvy made, where they belong; an existing folder is used as the user set it up. */
 function sharesDefault(provider: string, a: CliAccount, real: string): boolean {
     if (!a.managed || a.invalid) return false;
     const expected = join(accountRealPath(paths.home()), "accounts", provider, a.id);
@@ -173,7 +173,7 @@ function shareDefault(provider: string, id: string, folder: string): void {
     if (layout.conflicts.length || layout.withheld.length) sharingConflicts.set(`${provider}:${id}`, layout);
     else sharingConflicts.delete(`${provider}:${id}`);
 }
-/** Said of a Harness-made account that doesn't share all of Default's entries. */
+/** Said of a Cavvy-made account that doesn't share all of Default's entries. */
 export function accountSharingWarning(provider: string, id: string): string | undefined {
     const layout = sharingConflicts.get(`${provider}:${id}`);
     if (!layout) return undefined;
@@ -214,12 +214,12 @@ export function accountProtectedPaths(): string[] {
 }
 function projectFolder(folder: string, roots: string[], managed: boolean): boolean {
     const home = accountRealPath(homedir());
-    const harness = accountRealPath(paths.home());
+    const cavvy = accountRealPath(paths.home());
     if (roots.some((root) => {
         const real = accountRealPath(resolve(root));
         // Desktop starts in home, and sessions may also use a broad parent folder.
-        if (real === home || (managed && inside(harness, real))) return false;
-        // Harness owns this dedicated folder, even when its home is in a project.
+        if (real === home || (managed && inside(cavvy, real))) return false;
+        // Cavvy owns this dedicated folder, even when its home is in a project.
         // Still protect projects opened at or below it before recursive removal.
         if (managed && real !== folder && inside(folder, real)) return false;
         return inside(folder, real) || inside(real, folder);
@@ -276,7 +276,7 @@ function validateFolder(folder: unknown, roots: string[], exclude?: { provider: 
 }
 /**
  * Only metadata is inspected; credential and configuration contents belong to the CLI.
- * A Harness-made account shares Default's Codex config.toml through Harness's own link:
+ * A Cavvy-made account shares Default's Codex config.toml through Cavvy's own link:
  * it holds no sign-in (that's auth.json, or a keyring entry named for each home's path).
  */
 function validateIdentityFiles(provider: string, folder: string, shared = false): void {
@@ -358,7 +358,7 @@ export function setDefaultAccount(provider: string, id: string): void {
     writeProvidersFile(pf);
 }
 /**
- * Sign-ins and removals of accounts, in any Harness process on this home (the terminal app, a desktop server). Each
+ * Sign-ins and removals of accounts, in any Cavvy process on this home (the terminal app, a desktop server). Each
  * leaves a file of its own in the accounts folder (which tools can't touch), named for its process and a nonce, before
  * it looks for the other kind: of a login and a removal of one account that overlap, the later to write sees the
  * earlier's file and refuses. A removal's file stays until its change is saved, so a login that no longer sees it finds
@@ -377,7 +377,7 @@ function lease(kind: LeaseKind, provider: string, id: string): () => void {
         mkdirSync(leasesFolder(), { recursive: true, mode: 0o700 });
         writeFileSync(file, "", { flag: "wx", mode: 0o600 });
     } catch {
-        throw new RpcError("Cannot record this account's sign-in or removal in Harness's accounts folder", "invalid");
+        throw new RpcError("Cannot record this account's sign-in or removal in Cavvy's accounts folder", "invalid");
     }
     return () => rmSync(file, { force: true });
 }
@@ -385,7 +385,7 @@ function leased(kind: LeaseKind, provider: string, id: string): boolean {
     let names: string[];
     try { names = readdirSync(leasesFolder()); } catch (e: any) {
         if (e.code === "ENOENT") return false;
-        throw new RpcError("Cannot check this account's sign-ins and removals in Harness's accounts folder", "busy");
+        throw new RpcError("Cannot check this account's sign-ins and removals in Cavvy's accounts folder", "busy");
     }
     const prefix = `${kind}.${provider}.${id}.`;
     return names.some((name) => {
@@ -412,7 +412,7 @@ export function holdLogin(provider: string, id: string): () => void {
 export function holdRemoval(provider: string, id: string): () => void {
     const release = lease("remove", provider, id);
     try {
-        if (leased("login", provider, id)) throw new RpcError("A sign-in for this account is still running in Harness; finish or close it before removing the account", "busy");
+        if (leased("login", provider, id)) throw new RpcError("A sign-in for this account is still running in Cavvy; finish or close it before removing the account", "busy");
     } catch (e) {
         release();
         throw e;
@@ -423,7 +423,7 @@ export function removeAccount(provider: string, id: string, confirmedFolder: str
     const a = findAccount(provider, id);
     if (id === "default") throw new RpcError("The Default account cannot be removed", "invalid");
     if (confirmedFolder !== a.folder) throw new RpcError("Confirm the exact account folder before removing it", "invalid");
-    // A login in any Harness process would sign in to a folder no longer registered.
+    // A login in any Cavvy process would sign in to a folder no longer registered.
     const release = holdRemoval(provider, id);
     try {
         forgetAccount(provider, id, a, projectRoots);

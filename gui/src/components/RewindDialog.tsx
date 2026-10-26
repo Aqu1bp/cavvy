@@ -11,10 +11,10 @@ import { Spinner } from "./ui/bits";
 /** "Claude Code", "Claude Code and Codex". */
 const names = (backends: string[]) => backends.join(" and ");
 
-/** What answering the prompt changed in files, as far as Harness knows. */
+/** What answering the prompt changed in files, as far as Cavvy knows. */
 function changedLabel(t: RewindTargetInfo): string {
     if (t.forked) return "from before the fork";
-    // Claude Code and Codex change files with their own tools: Harness doesn't see what they did.
+    // Claude Code and Codex change files with their own tools: Cavvy doesn't see what they did.
     const untracked = t.backends?.length ? `${names(t.backends)} changes not tracked` : undefined;
     if (!t.tracked) return untracked ?? "files not tracked";
     if (t.files) return untracked ? `${plural(t.files, "file")} changed · ${untracked}` : `${plural(t.files, "file")} changed`;
@@ -31,7 +31,7 @@ export function RewindDialog() {
     const [chosen, setChosen] = createSignal<number>();
     const [plan, setPlan] = createSignal<RewindPlanInfo>();
     const [busy, setBusy] = createSignal(false);
-    /** Files changed outside Harness: restoring them needs a second, explicit click. */
+    /** Files changed outside Cavvy: restoring them needs a second, explicit click. */
     const [confirming, setConfirming] = createSignal<{ code: boolean; conversation: boolean }>();
     createEffect(() => {
         // Reconnect reopens sessions later; a plan against the old view is no longer safe.
@@ -148,13 +148,13 @@ export function RewindDialog() {
                                     <div class="rw-file warn">
                                         <AlertTriangle size={13} />
                                         <span class="small">
-                                            {names(plan()!.backends!)} answered since then. Harness doesn't track what {plan()!.backends!.length === 1 ? "it changes" : "they change"} in files with {plan()!.backends!.length === 1 ? "its" : "their"} own tools, so rewinding doesn't undo it
+                                            {names(plan()!.backends!)} answered since then. Cavvy doesn't track what {plan()!.backends!.length === 1 ? "it changes" : "they change"} in files with {plan()!.backends!.length === 1 ? "its" : "their"} own tools, so rewinding doesn't undo it
                                             {plan()!.restore.length ? ", except in the files listed below, which go back to how they were then" : ""}. Use git to review or undo the rest (git status, git diff).
                                         </span>
                                     </div>
                                 </Show>
-                                <Show when={plan()!.restore.length} fallback={<div class="muted small">{plan()!.forked ? "Harness has no tracked file changes to undo since the fork; only the conversation can be restored." : plan()!.tracked ? (plan()!.backends?.length ? "Harness itself made no file changes to undo since then." : "No file changes to undo since then.") : "File changes from then weren't tracked; only the conversation can be restored."}</div>}>
-                                    <div class="small">Harness changed {plural(plan()!.restore.length, "file")} {plan()!.forked ? "in this session since the fork" : "since then"}:</div>
+                                <Show when={plan()!.restore.length} fallback={<div class="muted small">{plan()!.forked ? "Cavvy has no tracked file changes to undo since the fork; only the conversation can be restored." : plan()!.tracked ? (plan()!.backends?.length ? "Cavvy itself made no file changes to undo since then." : "No file changes to undo since then.") : "File changes from then weren't tracked; only the conversation can be restored."}</div>}>
+                                    <div class="small">Cavvy changed {plural(plan()!.restore.length, "file")} {plan()!.forked ? "in this session since the fork" : "since then"}:</div>
                                     <For each={plan()!.restore}>
                                         {(r) => (
                                             <div class="rw-file">
@@ -181,7 +181,7 @@ export function RewindDialog() {
                                 <Show when={confirming()}>
                                     <div class="rw-confirm">
                                         <AlertTriangle size={14} />
-                                        <span>Files marked “changed outside” were edited after Harness last wrote them (by you, another program, or a shell command). Restoring them loses those changes.</span>
+                                        <span>Files marked “changed outside” were edited after Cavvy last wrote them (by you, another program, or a shell command). Restoring them loses those changes.</span>
                                         <button class="btn danger sm" onClick={() => void go(confirming()!.code, confirming()!.conversation)}>
                                             Restore anyway
                                         </button>

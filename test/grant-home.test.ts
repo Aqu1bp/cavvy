@@ -6,12 +6,12 @@ import { join, sep } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 import type { Tool } from "../src/tools/types";
 
-if (!process.env.HARNESS_TEST_GRANT_HOME) {
+if (!process.env.CAVVY_TEST_GRANT_HOME) {
     test("a grant for ~/.env, in an isolated home", () => {
         const home = realpathSync(tempDir());
         try {
             const result = Bun.spawnSync([process.execPath, "--no-env-file", "test", import.meta.path], {
-                env: { ...process.env, HOME: home, HARNESS_HOME: join(home, ".harness"), HARNESS_NO_KEYCHAIN: "1", HARNESS_TEST_GRANT_HOME: home },
+                env: { ...process.env, HOME: home, CAVVY_HOME: join(home, ".cavvy"), CAVVY_NO_KEYCHAIN: "1", CAVVY_TEST_GRANT_HOME: home },
                 timeout: 15000,
             });
             expect({ code: result.exitCode, output: result.stderr.toString() }).toMatchObject({ code: 0 });
@@ -20,7 +20,7 @@ if (!process.env.HARNESS_TEST_GRANT_HOME) {
         }
     });
 } else {
-    const home = process.env.HARNESS_TEST_GRANT_HOME;
+    const home = process.env.CAVVY_TEST_GRANT_HOME;
     if (!home.startsWith(realpathSync(tmpdir()) + sep) || home !== realpathSync(homedir())) throw new Error("Expected an isolated temporary home");
     isolate();
     const { PermissionChecker } = await import("../src/permissions/checker");

@@ -1,4 +1,4 @@
-// Picking up a Claude Code or Codex session in Harness: listing a folder's
+// Picking up a Claude Code or Codex session in Cavvy: listing a folder's
 // CLI sessions, importing one, and carrying on with it natively. Every store
 // here is a synthetic fixture in a temp folder (isolate() points
 // CLAUDE_CONFIG_DIR and CODEX_HOME at empty ones too).
@@ -14,7 +14,7 @@ const iso = isolate();
 const { listCliSessions, readCliTranscript, findCliSession } = await import("../src/server/cli-sessions");
 const { Engine, RpcError } = await import("../src/server/engine");
 const { Session, cliLinks, findSessionAnywhere, listSessions } = await import("../src/agent/session");
-const { harnessLinks, importModel, writeImportedSession } = await import("../src/server/cli-import");
+const { cavvyLinks, importModel, writeImportedSession } = await import("../src/server/cli-import");
 const { rewindTargets } = await import("../src/agent/checkpoints");
 const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
 const { forgetClient } = await import("../src/providers/models");
@@ -89,7 +89,7 @@ function logLines(): any[] {
 const received = () => logLines().flatMap((l) => (l.received ? [l.received] : []));
 /** The argv of each `claude` run for a turn (not the ones listing models). */
 const turnStarts = (): string[][] => logLines().flatMap((l) => (l.argv?.includes("--permission-prompt-tool=stdio") ? [l.argv] : []));
-/** Each user message's text: its text blocks (Harness's catch-up in one of its own, then the user's words) joined. */
+/** Each user message's text: its text blocks (Cavvy's catch-up in one of its own, then the user's words) joined. */
 const userTexts = () => received().flatMap((m) => (m.type === "user" && Array.isArray(m.message.content) && m.message.content.some((c: any) => c.type === "text") ? [m.message.content.filter((c: any) => c.type === "text").map((c: any) => c.text as string).join("\n\n")] : []));
 
 /** Send a prompt and wait for the turn to end, allowing whatever it asks. */
@@ -147,7 +147,7 @@ describe("reading the stores", () => {
         expect(out).toContain("[REDACTED");
     });
 
-    test("ones already in Harness have a limit of their own, and ones to leave out take no room", () => {
+    test("ones already in Cavvy have a limit of their own, and ones to leave out take no room", () => {
         const ids = Array.from({ length: 8 }, (_, i) => claudeSession(CLAUDE, { cwd: real, turns: TURNS, mtime: Date.now() - i * 1000 }).id);
         // Newest first: held, new, hidden, held, new, held, new, held.
         const kind = ["held", "new", "hidden", "held", "new", "held", "new", "held"] as const;
@@ -302,7 +302,7 @@ describe("importing", () => {
             fault.mockRestore();
         }
         expect(file).not.toBe("");
-        expect(harnessLinks([cwd]).held.size).toBe(0);
+        expect(cavvyLinks([cwd]).held.size).toBe(0);
         // Half of it would list as an ordinary session with part of the conversation.
         expect(existsSync(file)).toBe(false);
         expect(listSessions(cwd).map((m) => m.title)).not.toContain("Login bug");
@@ -385,7 +385,7 @@ describe("importing", () => {
         }
     });
 
-    test("importing again opens the same session, and the list says it's in Harness", async () => {
+    test("importing again opens the same session, and the list says it's in Cavvy", async () => {
         turnOn();
         const { id } = claudeSession(CLAUDE, { cwd: real, turns: TURNS });
         const { e, c } = await engine();
@@ -394,7 +394,7 @@ describe("importing", () => {
             const again = (await e.handle(c, "cliSessions.import", { cwd, source: "claude-code", id: id.toUpperCase() })) as SessionSnapshot;
             expect(again.state.id).toBe(first.state.id);
             const list = (await e.handle(c, "cliSessions.list", { cwd })) as CliSessionsList;
-            expect(list.sessions.find((s) => s.id === id)?.harnessId).toBe(first.state.id);
+            expect(list.sessions.find((s) => s.id === id)?.cavvyId).toBe(first.state.id);
             // The record lasts even when the backend's id changes (a resume that failed).
             e.runtimes.get(first.state.id)!.session.setBackendSession("claude-code", randomUUID(), 4);
             const third = (await e.handle(c, "cliSessions.import", { cwd, source: "claude-code", id })) as SessionSnapshot;
@@ -421,11 +421,11 @@ describe("importing", () => {
             expect(e.runtimes.has(sid)).toBe(false);
             expect(findSessionAnywhere(sid)).toBeUndefined();
             expect(existsSync(`${file}.lock`)).toBe(false);
-            expect(e.cliSessionsList(cwd).sessions.find((s) => s.id === id)?.harnessId).toBeUndefined();
+            expect(e.cliSessionsList(cwd).sessions.find((s) => s.id === id)?.cavvyId).toBeUndefined();
 
             await e.handle(c, "session.restore", { id: sid });
             expect(readFileSync(file)).toEqual(bytes);
-            expect(e.cliSessionsList(cwd).sessions.find((s) => s.id === id)?.harnessId).toBe(sid);
+            expect(e.cliSessionsList(cwd).sessions.find((s) => s.id === id)?.cavvyId).toBe(sid);
             const restored = (await e.handle(c, "cliSessions.import", { cwd, source: "claude-code", id })) as SessionSnapshot;
             expect(restored.state.id).toBe(sid);
             expect(restored.turns).toEqual(first.turns);
@@ -445,7 +445,7 @@ describe("importing", () => {
         }
     });
 
-    test("a CLI session Harness ran itself counts as in Harness", async () => {
+    test("a CLI session Cavvy ran itself counts as in Cavvy", async () => {
         turnOn();
         const { id } = claudeSession(CLAUDE, { cwd: real, turns: TURNS });
         const s = Session.create(real);
@@ -455,7 +455,7 @@ describe("importing", () => {
         const { e, c } = await engine();
         try {
             const list = (await e.handle(c, "cliSessions.list", { cwd })) as CliSessionsList;
-            expect(list.sessions.find((x) => x.id === id)?.harnessId).toBe(s.meta.id);
+            expect(list.sessions.find((x) => x.id === id)?.cavvyId).toBe(s.meta.id);
             const snap = (await e.handle(c, "cliSessions.import", { cwd, source: "claude-code", id })) as SessionSnapshot;
             expect(snap.state.id).toBe(s.meta.id);
         } finally {
@@ -463,10 +463,10 @@ describe("importing", () => {
         }
     });
 
-    test("a Harness session kept under another path to the same folder counts too", async () => {
+    test("a Cavvy session kept under another path to the same folder counts too", async () => {
         turnOn();
         const { id } = claudeSession(CLAUDE, { cwd: real, turns: TURNS });
-        // Harness ran it through the symlinked path; Home now has the real one.
+        // Cavvy ran it through the symlinked path; Home now has the real one.
         const s = Session.create(cwd);
         s.push({ role: "user", content: [{ type: "text", text: "hello" }], meta: { kind: "prompt" } });
         s.setBackendSession("claude-code", id, 1);
@@ -475,7 +475,7 @@ describe("importing", () => {
         const { e, c } = await engine();
         try {
             const list = (await e.handle(c, "cliSessions.list", { cwd: real })) as CliSessionsList;
-            expect(list.sessions.find((x) => x.id === id)?.harnessId).toBe(s.meta.id);
+            expect(list.sessions.find((x) => x.id === id)?.cavvyId).toBe(s.meta.id);
             const snap = (await e.handle(c, "cliSessions.import", { cwd: real, source: "claude-code", id })) as SessionSnapshot;
             expect(snap.state.id).toBe(s.meta.id);
         } finally {
@@ -484,14 +484,14 @@ describe("importing", () => {
         }
     });
 
-    test("Harness's own sub-agent runs aren't offered, nor Codex threads its client started that no session holds", async () => {
+    test("Cavvy's own sub-agent runs aren't offered, nor Codex threads its client started that no session holds", async () => {
         turnOn();
         const subClaude = claudeSession(CLAUDE, { cwd: real, turns: TURNS });
-        const subCodex = codexSession(CODEX, { cwd: real, turns: CODEX_TURNS, originator: "harness_cli" });
-        // From before sub-agent runs were recorded: Harness's client started it, and no session holds it.
-        const orphan = codexSession(CODEX, { cwd: real, turns: CODEX_TURNS, originator: "harness_cli" });
-        // A Harness session's own Codex thread: Harness's client too, but held, so listed as in Harness.
-        const own = codexSession(CODEX, { cwd: real, turns: CODEX_TURNS, originator: "harness_cli" });
+        const subCodex = codexSession(CODEX, { cwd: real, turns: CODEX_TURNS, originator: "cavvy_cli" });
+        // From before sub-agent runs were recorded: Cavvy's client started it, and no session holds it.
+        const orphan = codexSession(CODEX, { cwd: real, turns: CODEX_TURNS, originator: "cavvy_cli" });
+        // A Cavvy session's own Codex thread: Cavvy's client too, but held, so listed as in Cavvy.
+        const own = codexSession(CODEX, { cwd: real, turns: CODEX_TURNS, originator: "cavvy_cli" });
         const mine = codexSession(CODEX, { cwd: real, turns: CODEX_TURNS });
         const parent = Session.create(real);
         parent.push({ role: "user", content: [{ type: "text", text: "review it" }], meta: { kind: "prompt" } });
@@ -504,7 +504,7 @@ describe("importing", () => {
         const { e, c } = await engine();
         try {
             const list = (await e.handle(c, "cliSessions.list", { cwd })) as CliSessionsList;
-            expect(list.sessions.map((s) => [s.id, s.harnessId]).sort()).toEqual([[mine.id, undefined], [own.id, parent.meta.id]].sort());
+            expect(list.sessions.map((s) => [s.id, s.cavvyId]).sort()).toEqual([[mine.id, undefined], [own.id, parent.meta.id]].sort());
             for (const [source, id] of [["claude-code", subClaude.id], ["codex", subCodex.id], ["codex", orphan.id]]) {
                 await expect(e.handle(c, "cliSessions.import", { cwd, source, id })).rejects.toMatchObject({ code: "not_found" });
             }

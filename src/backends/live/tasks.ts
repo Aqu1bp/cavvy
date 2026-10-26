@@ -48,7 +48,7 @@ export class BackgroundTasks {
         this.changed();
     }
 
-    /** A task ended, by what the harness knows (the CLI said so in other words). */
+    /** A task ended, by what Cavvy knows (the CLI said so in other words). */
     end(id: string, status: Exclude<BackgroundTaskInfo["status"], "running">): void {
         const t = this.tasks.get(id);
         if (t && t.status === "running") this.report({ ...t, status });
@@ -85,7 +85,7 @@ export class BackgroundTasks {
         return promise;
     }
 
-    /** The process went away: whatever was running went with it (withProcess; `lost` is for Harness quitting, restore()). */
+    /** The process went away: whatever was running went with it (withProcess; `lost` is for Cavvy quitting, restore()). */
     lose(): void {
         const now = this.clock.now();
         let any = false;

@@ -27,7 +27,7 @@ const call = (id: string, name: string, input: Record<string, unknown>): Assista
 const answer: AssistantMessage = { role: "assistant", provider: "test", model: "test", content: [{ type: "text", text: "done" }], stopReason: "end_turn" };
 
 function setup(steps: AssistantMessage[], o: { env?: Record<string, string>; settings?: Record<string, unknown>; lsp?: (cwd: string, settings: () => any) => InstanceType<typeof LspManager>; untrusted?: boolean } = {}) {
-    const cwd = realpathSync(tempDir("harness-lsp-agent-"));
+    const cwd = realpathSync(tempDir("cavvy-lsp-agent-"));
     dirs.push(cwd);
     if (!o.untrusted) trustFolder(cwd);
     const settings = { autoCompact: false, delegation: false, lsp: { servers: { ...NO_BUILTINS, fake: { command: process.execPath, args: [FIXTURE], env: o.env ?? {}, extensionToLanguage: { ".ts": "typescript" } } } }, ...o.settings } as any;

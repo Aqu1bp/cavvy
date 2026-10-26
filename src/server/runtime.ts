@@ -44,7 +44,7 @@ import { isAgentBackend, type BackendWake, type BackgroundStop } from "../backen
 import { SessionBackground } from "../agent/background";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { agentCli, type AttachmentKind } from "../backends/defs";
-import { claudeCompactAt, cliCompactSetting, harnessCompactAt, modelKeys } from "../backends/compact-at";
+import { claudeCompactAt, cliCompactSetting, cavvyCompactAt, modelKeys } from "../backends/compact-at";
 import { account, accountSwitch, removedAccount, removedAccountNote, switchHow } from "../providers/accounts";
 import { attachmentsNote, readsPdf } from "../providers/files";
 import { continuationGroups, modelRef, parseModelRef, textOf, toolCallsOf, assistantText, type AttachedPart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart, type UserContent } from "../providers/types";
@@ -172,7 +172,7 @@ export function cleanTitle(title: string): string {
 }
 
 /** A first message that's only a greeting, a thanks, a yes or a test: nothing to name a session after. */
-const SMALL_TALK = /^(h(i+|ello|ey+|iya|owdy)|yo|sup|hola|greetings|good (morning|afternoon|evening|day)|thanks?( you)?( so much| a lot)?|thx|ty|ok(ay)?|k|cool|nice|great|yes|no|yep|nope|sure|test(ing)?|ping|hm+|\?+)(\s+(there|all|everyone|again|claude|harness|buddy|friend|mate))?[\s!.?,:)(]*$/i;
+const SMALL_TALK = /^(h(i+|ello|ey+|iya|owdy)|yo|sup|hola|greetings|good (morning|afternoon|evening|day)|thanks?( you)?( so much| a lot)?|thx|ty|ok(ay)?|k|cool|nice|great|yes|no|yep|nope|sure|test(ing)?|ping|hm+|\?+)(\s+(there|all|everyone|again|claude|cavvy|buddy|friend|mate))?[\s!.?,:)(]*$/i;
 
 /**
  * A prompt with the GUI's review comments (<review_comment> blocks, see gui/src/lib/review-comments.ts)
@@ -840,7 +840,7 @@ export class Runtime {
         }
         const s = this.settings();
         if (s.autoCompact === false || !window) return undefined;
-        return Math.floor(harnessCompactAt(window, m.maxOutput, s.autoCompactThreshold));
+        return Math.floor(cavvyCompactAt(window, m.maxOutput, s.autoCompactThreshold));
     }
 
     /** Where an agent CLI's turn runs and whether it reads that project's settings, as its turns do (Agent.backendTurn). */
@@ -3181,7 +3181,7 @@ export class Runtime {
             // (Claude Code's send-now, which spares its background sub-agents); its turn comes back as the user's.
             // Only with the first Esc: once the stop is under way, nothing would send another.
             // Not one naming an MCP resource (@server:uri): sent now, it would go as typed, without the resource,
-            // which only a prompt of the harness's attaches.
+            // which only a prompt of Cavvy's attaches.
             const servers = [...this.ws.mcp.servers.keys()];
             const q = this.abort.signal.aborted ? undefined : this.queued.find((x) => !x.held && !isCommand(x) && !x.attachments?.length && x.text.trim() && !findMcpMentions(x.text, servers).length);
             if (q && this.agent?.sendNow(q.text)) {
@@ -3755,7 +3755,7 @@ export class Runtime {
 
     /**
      * The session's background work as one list (src/agent/background.ts): kept in the session log, and
-     * what's running (or stopped when Harness quit, until the agent's told) shown in the Background panel.
+     * what's running (or stopped when Cavvy quit, until the agent's told) shown in the Background panel.
      */
     private syncBackground() {
         const bg = this.toolState.background;

@@ -162,7 +162,7 @@ export function parseRunRequest(p: Record<string, unknown>, o: { validImage: (i:
     if (p.images !== undefined && p.images !== null) {
         if (!Array.isArray(p.images) || p.images.length > MAX_IMAGES) throw bad(`Attach at most ${MAX_IMAGES} images.`);
         const whole = (i: any) => typeof i?.mediaType === "string" && typeof i?.data === "string" && /^[A-Za-z0-9+/]*={0,2}$/.test(i.data);
-        if (!p.images.every((i) => o.validImage(i) && whole(i))) throw bad("An attached image isn't one Harness can send (PNG, JPEG, GIF or WebP, under 15 MB).");
+        if (!p.images.every((i) => o.validImage(i) && whole(i))) throw bad("An attached image isn't one Cavvy can send (PNG, JPEG, GIF or WebP, under 15 MB).");
         images = (p.images as { mediaType: string; data: string }[]).map((i) => ({ type: "image", mediaType: i.mediaType as ImagePart["mediaType"], data: i.data }));
     }
     const files = checkFiles(p.files);
@@ -180,7 +180,7 @@ async function checkModel(ref: string, listings: ProviderListing[], withImages: 
     const parsed = parseModelRef(ref);
     const def = parsed && getProvider(parsed.provider);
     const name = parsed?.id ?? ref;
-    if (!parsed || !def) return { ref, name, ok: false, error: `${redact(ref).slice(0, 120)} isn't a model Harness knows. Pick another one.` };
+    if (!parsed || !def) return { ref, name, ok: false, error: `${redact(ref).slice(0, 120)} isn't a model Cavvy knows. Pick another one.` };
     try {
         await clientFor(def.id);
     } catch {
@@ -221,11 +221,11 @@ async function readGit(main: string, args: string[], maxBytes?: number): Promise
  * committed, import from outside it (the working copy's may say otherwise).
  */
 async function committedConfig(main: string, commit: string): Promise<string[]> {
-    const records = (await readGit(main, ["ls-tree", "-r", "-t", "-z", commit, "--", ".harness", ".mcp.json", ".claude", ".codex"])).out.split("\0").filter(Boolean);
+    const records = (await readGit(main, ["ls-tree", "-r", "-t", "-z", commit, "--", ".cavvy", ".mcp.json", ".claude", ".codex"])).out.split("\0").filter(Boolean);
     const entries = new Set(records.map((r) => r.slice(r.indexOf("\t") + 1)));
     // A committed config directory can be a symlink. Its targets aren't
     // beneath that name in the tree, but checkout will expose them there.
-    const linked = records.filter((r) => r.startsWith("120000 ")).map((r) => r.slice(r.indexOf("\t") + 1)).filter((p) => [".harness", ".claude", ".codex"].includes(p));
+    const linked = records.filter((r) => r.startsWith("120000 ")).map((r) => r.slice(r.indexOf("\t") + 1)).filter((p) => [".cavvy", ".claude", ".codex"].includes(p));
     // Where the worktrees go; their names aren't known yet.
     const top = join(main, WORKTREES_DIR, "new-worktree");
     let imports: string[];
@@ -467,7 +467,7 @@ async function run(host: RunHost, req: RunRequest, main: string): Promise<{ runI
             continue;
         }
         if (host.stopping()) {
-            results.push({ model: c.ref, modelName: c.name, ok: false, error: "The harness server stopped before this model's worktree was made. Start the run again." });
+            results.push({ model: c.ref, modelName: c.name, ok: false, error: "Cavvy server stopped before this model's worktree was made. Start the run again." });
             continue;
         }
         let made: { path: string; branch: string } | undefined;
@@ -479,7 +479,7 @@ async function run(host: RunHost, req: RunRequest, main: string): Promise<{ runI
             try {
                 made = await createWorktreeWithHooks({ path: req.path, branch: name, folder: name, base: commit }, host.log);
             } catch (e) {
-                // Made meanwhile (by Git outside Harness, say): the next name.
+                // Made meanwhile (by Git outside Cavvy, say): the next name.
                 if (e instanceof RpcError && (e.code === "branch_exists" || e.code === "path_exists")) continue;
                 // A timeout's own message says the folder may be half made.
                 error = messageOf(e, "Git couldn't create the worktree.") + (e instanceof RpcError && e.code === "timeout" ? "" : " No worktree was made for this model.");
@@ -501,7 +501,7 @@ async function startSession(host: RunHost, req: RunRequest, record: RunRecord, c
     if (trust === "declined") host.decline(made.path);
     let rt: RunSession;
     try {
-        if (host.stopping()) throw new RpcError("the harness server is stopping.");
+        if (host.stopping()) throw new RpcError("Cavvy server is stopping.");
         rt = await host.openSession(made.path, req.mode);
     } catch (e) {
         return { ...kept, ok: false, error: `${where} its session couldn't start: ${messageOf(e, "unknown error")} Open the folder from Home to try again.` };
@@ -518,7 +518,7 @@ async function startSession(host: RunHost, req: RunRequest, record: RunRecord, c
     } catch (e) {
         record.sessions = record.sessions.filter((s) => s.id !== rt.id);
         host.discard(rt.id);
-        return { ...kept, ok: false, error: `${where} its run couldn't be saved, so it wasn't sent the prompt: ${messageOf(e, "unknown error")} Check that Harness's data folder is writable, then retry.` };
+        return { ...kept, ok: false, error: `${where} its run couldn't be saved, so it wasn't sent the prompt: ${messageOf(e, "unknown error")} Check that Cavvy's data folder is writable, then retry.` };
     }
     try {
         const attachments: AttachedPart[] = [...req.images, ...(req.files ?? [])];

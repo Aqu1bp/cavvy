@@ -6,7 +6,7 @@ import { existsSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
-const { home: HARNESS_HOME, cleanup } = isolate();
+const { home: CAVVY_HOME, cleanup } = isolate();
 const { App } = await import("../src/ui/app");
 const { Session } = await import("../src/agent/session");
 const { runCommand } = await import("../src/commands/index");
@@ -16,7 +16,7 @@ const { CHORD_TIMEOUT_MS } = await import("../src/keybindings/core");
 
 afterAll(cleanup);
 
-const FILE = join(HARNESS_HOME, "keybindings.json");
+const FILE = join(CAVVY_HOME, "keybindings.json");
 const write = (blocks: unknown) => writeFileSync(FILE, JSON.stringify({ bindings: blocks }));
 afterEach(() => rmSync(FILE, { force: true }));
 

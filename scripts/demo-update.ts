@@ -1,5 +1,5 @@
 // gui:demo --update: the desktop app's updates from main (src/server/app-update.ts),
-// to click through in the real GUI. A stand-in Harness checkout whose origin's main
+// to click through in the real GUI. A stand-in Cavvy checkout whose origin's main
 // is 7 changes past the "installed" build, the install record saying so, and an
 // update script that prints a build's progress for half a minute, then installs
 // (or, with --update fail, fails the way a build does). Nothing is built or installed.
@@ -17,18 +17,18 @@ const CHANGES = [
     "Settings: text size goes up to 20",
 ];
 
-/** The bundle the demo's server acts as (HARNESS_APP_BUNDLE): the record names it, so the server takes itself for the installed app. */
-export const DEMO_BUNDLE = "/Applications/Harness.app";
+/** The bundle the demo's server acts as (CAVVY_APP_BUNDLE): the record names it, so the server takes itself for the installed app. */
+export const DEMO_BUNDLE = "/Applications/Cavvy.app";
 
 function git(cwd: string, ...args: string[]) {
-    const r = Bun.spawnSync(["git", "-c", "user.name=Harness demo", "-c", "user.email=demo@example.com", "-c", "init.defaultBranch=main", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+    const r = Bun.spawnSync(["git", "-c", "user.name=Cavvy demo", "-c", "user.email=demo@example.com", "-c", "init.defaultBranch=main", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
     if (r.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr.toString()}`);
     return r.stdout.toString().trim();
 }
 
 export function createDemoUpdate(root: string, home: string, fail: boolean) {
-    const origin = join(root, "harness-origin.git");
-    const src = join(root, "harness-src");
+    const origin = join(root, "cavvy-origin.git");
+    const src = join(root, "cavvy-src");
     mkdirSync(src, { recursive: true });
     git(root, "init", "-q", "--bare", origin);
     git(src, "init", "-q");
@@ -54,13 +54,13 @@ export function createDemoUpdate(root: string, home: string, fail: boolean) {
         ["   Compiling tauri-utils v2.1.0", 2200],
         ["   Compiling tauri v2.12.4", 3200],
         ["   Compiling tauri-plugin-opener v2.4.0", 2400],
-        ["   Compiling harness-desktop v1.0.0 (desktop/src-tauri)", 5200],
+        ["   Compiling cavvy-desktop v1.0.0 (desktop/src-tauri)", 5200],
         ...(fail
             ? []
             : ([
                   ["    Finished `release` profile [optimized] target(s) in 41.20s", 900],
-                  ["       Built application at: desktop/src-tauri/target/release/harness-desktop", 1200],
-                  ["Signed with Apple Development: Harness Demo (ABCDE12345)", 800],
+                  ["       Built application at: desktop/src-tauri/target/release/cavvy-desktop", 1200],
+                  ["Signed with Apple Development: Cavvy Demo (ABCDE12345)", 800],
                   [`Installed ${DEMO_BUNDLE}`, 400],
               ] as [string, number][])),
     ];
@@ -68,11 +68,11 @@ export function createDemoUpdate(root: string, home: string, fail: boolean) {
 const steps = ${JSON.stringify(steps)};
 for (const [line, ms] of steps) { console.log(line); await Bun.sleep(ms); }
 ${fail
-        ? `console.error("error: could not compile \`harness-desktop\` (bin \\"harness-desktop\\") due to 2 previous errors");\nprocess.exit(101);`
-        : `await Bun.write(process.env.HARNESS_HOME + "/desktop-install.json", JSON.stringify({ commit: ${JSON.stringify(git(src, "rev-parse", "HEAD"))}, dirty: false, source: ${JSON.stringify(src)}, app: ${JSON.stringify(DEMO_BUNDLE)}, installedAt: new Date().toISOString() }));\nconsole.log("Harness restarts in a moment with the new build.");`}
+        ? `console.error("error: could not compile \`cavvy-desktop\` (bin \\"cavvy-desktop\\") due to 2 previous errors");\nprocess.exit(101);`
+        : `await Bun.write(process.env.CAVVY_HOME + "/desktop-install.json", JSON.stringify({ commit: ${JSON.stringify(git(src, "rev-parse", "HEAD"))}, dirty: false, source: ${JSON.stringify(src)}, app: ${JSON.stringify(DEMO_BUNDLE)}, installedAt: new Date().toISOString() }));\nconsole.log("Cavvy restarts in a moment with the new build.");`}
 `;
     mkdirSync(join(src, "scripts"), { recursive: true });
     writeFileSync(join(src, "scripts", "update-desktop.ts"), script);
     writeFileSync(join(src, "bunfig.toml"), "");
-    return { HARNESS_APP_BUNDLE: DEMO_BUNDLE };
+    return { CAVVY_APP_BUNDLE: DEMO_BUNDLE };
 }

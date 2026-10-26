@@ -1,5 +1,5 @@
 // Local-only history. CLI transcripts are authoritative for CLI providers;
-// Harness records supply API providers. No authentication or network requests.
+// Cavvy records supply API providers. No authentication or network requests.
 import { costOf, usageCostParts } from "../providers/pricing";
 import { resolveModelInfo } from "../providers/models";
 import { anthropicPricing } from "../providers/anthropic-models";

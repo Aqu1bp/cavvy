@@ -6,7 +6,7 @@
 // parameter (RFC 8707), `iss` checked (RFC 9207), and the code handed to a
 // loopback listener (RFC 8252).
 //
-// Tokens are kept in ~/.harness/mcp-oauth.json (0600; the agent's tools
+// Tokens are kept in ~/.cavvy/mcp-oauth.json (0600; the agent's tools
 // can't read it), per server name and URL, with the issuer they came from: a
 // client registered with one authorization server is never used with another.
 

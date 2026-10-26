@@ -1,4 +1,4 @@
-// Where a running sub-agent (Claude Code's, Codex's, Harness's own) is
+// Where a running sub-agent (Claude Code's, Codex's, Cavvy's own) is
 // working, for the diff reader's worktree picker. A sub-agent has no folder of
 // its own on record, so this goes by the paths its recent tool calls name: the
 // commands' `cd <dir>` (Codex's commands run elsewhere come as one),

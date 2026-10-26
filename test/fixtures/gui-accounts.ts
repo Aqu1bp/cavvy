@@ -273,7 +273,7 @@ test("two accounts list as rows: identity, sign in again, make default, rename a
         expect(f.input("New account name").props["aria-invalid"]).toBe(true);
         f.enter("New account name", "Work"); f.submit("Rename Personal"); await settle();
         f.button("Actions for Work").props.onClick(); f.button("Remove…").props.onClick();
-        expect(text(f.root)).toContain("Delete the Harness-created folder");
+        expect(text(f.root)).toContain("Delete the Cavvy-created folder");
         expect(f.calls.some((c) => c.method === "accounts.remove")).toBe(false);
         f.handle(async () => { throw new Error("Stop the account's running turn before removing it"); });
         f.button("Confirm removal").props.onClick(); await settle();
@@ -332,7 +332,7 @@ test("invalid accounts remain visible as unavailable and removal promises to lea
         f.button("Actions for Personal").props.onClick();
         f.button("Remove…").props.onClick();
         expect(text(f.root)).toContain("Forget this account and leave its folder untouched");
-        expect(text(f.root)).not.toContain("Delete the Harness-created folder");
+        expect(text(f.root)).not.toContain("Delete the Cavvy-created folder");
         f.button("Confirm removal").props.onClick();
         await settle();
         expect(f.calls).toContainEqual({ method: "accounts.remove", params: { provider: "claude-code", id: "personal", confirmedFolder: "/fake/personal" } });

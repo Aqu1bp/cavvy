@@ -47,21 +47,21 @@ function Disconnected() {
                     <>
                         <Logo size={44} />
                         <Spinner size={18} />
-                        <div class="muted">{app.conn === "reconnecting" ? "Reconnecting to the harness server…" : "Starting…"}</div>
+                        <div class="muted">{app.conn === "reconnecting" ? "Reconnecting to Cavvy server…" : "Starting…"}</div>
                     </>
                 }
             >
                 <Match when={app.conn === "unauthorized"}>
                     <Logo size={44} />
-                    <h2>Open Harness from your terminal</h2>
+                    <h2>Open Cavvy from your terminal</h2>
                     <p class="muted">
-                        Run <code>harness gui</code> and use the link it opens or prints. Links work once, so this page can't reconnect on its own.
+                        Run <code>cavvy gui</code> and use the link it opens or prints. Links work once, so this page can't reconnect on its own.
                     </p>
                 </Match>
                 <Match when={app.conn === "unavailable"}>
                     <PlugZap size={36} class="tone-warn" />
-                    <h2>Can't reach the harness server</h2>
-                    <p class="muted">{isTauri ? "The background process stopped. Quit and reopen the app." : "Is `harness gui` still running? Still trying to reconnect…"}</p>
+                    <h2>Can't reach Cavvy server</h2>
+                    <p class="muted">{isTauri ? "The background process stopped. Quit and reopen the app." : "Is `cavvy gui` still running? Still trying to reconnect…"}</p>
                 </Match>
             </Switch>
             <button class="btn secondary" onClick={() => rpc.reconnectNow()}>
@@ -164,7 +164,7 @@ function InspectorResizer() {
     );
 }
 
-const INSPECTOR_KEY = "harness.inspectorWidth";
+const INSPECTOR_KEY = "cavvy.inspectorWidth";
 
 /** The window's tracks sliding now (shell.css): none when an edge is dragged, motion is off, or nothing changed. */
 function slides(): Animation[] {
@@ -395,11 +395,11 @@ export function App() {
         setTimeout(warmUp, 1500);
     });
 
-    // "(2) Harness" while sessions wait for you.
+    // "(2) Cavvy" while sessions wait for you.
     createEffect(() => {
         const n = attentionCount();
         const title = active()?.view.state.title;
-        document.title = `${n ? `(${n}) ` : ""}${title ? `${title} · ` : ""}Harness`;
+        document.title = `${n ? `(${n}) ` : ""}${title ? `${title} · ` : ""}Cavvy`;
     });
 
     // The inspector column shows the diff reader while a review is open, else the session's panel.

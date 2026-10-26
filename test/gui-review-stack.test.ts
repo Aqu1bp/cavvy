@@ -40,7 +40,7 @@ describe("the view menu", () => {
         expect(viewLabel("uncommitted")).toBe("Uncommitted");
         expect(viewLabel("branch")).toBe("Branch");
         expect(viewLabel("last-turn")).toBe("Last turn");
-        expect(viewLabel("harness")).toBe("Harness edits");
+        expect(viewLabel("cavvy")).toBe("Cavvy edits");
         expect(viewLabel("turn", 7, turns)).toBe("Turn 2");
         // Not listed (yet): no number to give it.
         expect(viewLabel("turn", 12, turns)).toBe("Turn");
@@ -55,7 +55,7 @@ describe("the view menu", () => {
             ["uncommitted", false, undefined],
             ["branch", false, undefined],
             ["last-turn", false, undefined],
-            ["harness", false, undefined],
+            ["cavvy", false, undefined],
         ]);
         expect(m.views[1]!.desc).toBe("Everything on main since it left origin/main");
         expect(m.turns.map((t) => [t.id, t.label, t.on, Boolean(t.disabled)])).toEqual([
@@ -74,18 +74,18 @@ describe("the view menu", () => {
             ["uncommitted", false, false],
             ["branch", true, false],
             ["last-turn", false, true],
-            ["harness", false, true],
+            ["cavvy", false, true],
         ]);
         expect(m.turns).toEqual([]);
     });
 
-    test("outside a Git repository: Harness edits is all there is, and Git's views say why", () => {
+    test("outside a Git repository: Cavvy edits is all there is, and Git's views say why", () => {
         const m = viewMenu({ place: { scope: "uncommitted" }, repo: false, reason: "Not a Git repository.", turns: undefined, busy: false });
         expect(m.views.map((v) => [v.scope, v.on, v.disabled])).toEqual([
             ["uncommitted", false, "Not a Git repository."],
             ["branch", false, "Not a Git repository."],
             ["last-turn", false, "Not a Git repository."],
-            ["harness", true, undefined],
+            ["cavvy", true, undefined],
         ]);
     });
 });

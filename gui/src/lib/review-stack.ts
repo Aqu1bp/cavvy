@@ -36,10 +36,10 @@ export const VIEWS: Record<Exclude<ReviewScope, "turn">, { label: string; desc: 
         desc: "What the last recorded turn changed",
         note: "The last recorded turn’s start and end snapshots. Ignored files are excluded. Changes from other sessions in this folder are included.",
     },
-    harness: {
-        label: "Harness edits",
-        desc: "Only Harness's own edit tools, this session",
-        note: "Only what Harness's own edit tools changed in this session. Shell commands and Claude Code or Codex edits aren't included.",
+    cavvy: {
+        label: "Cavvy edits",
+        desc: "Only Cavvy's own edit tools, this session",
+        note: "Only what Cavvy's own edit tools changed in this session. Shell commands and Claude Code or Codex edits aren't included.",
     },
 };
 
@@ -73,17 +73,17 @@ export interface TurnItem {
 }
 
 /**
- * The view menu's Changes and Recorded turns. Another worktree has Git's views only (turns and Harness
- * edits are the session's own folder's); outside a Git repository Harness edits is all there is. The
+ * The view menu's Changes and Recorded turns. Another worktree has Git's views only (turns and Cavvy
+ * edits are the session's own folder's); outside a Git repository Cavvy edits is all there is. The
  * turn under way (the last, not ended, while the session works) shows its changes once it ends.
  */
 export function viewMenu(o: { place: ReviewPlace; turnId?: number; repo: boolean; reason?: string; turns?: readonly RecordedTurn[]; busy: boolean; branch?: string; base?: string }): { views: ViewItem[]; turns: TurnItem[] } {
     const away = o.place.worktree !== undefined;
-    const shown: ReviewScope = !o.repo && !away ? "harness" : o.place.scope;
+    const shown: ReviewScope = !o.repo && !away ? "cavvy" : o.place.scope;
     const views = (Object.keys(VIEWS) as ViewItem["scope"][]).map((scope): ViewItem => {
         const v = VIEWS[scope];
         const desc = scope === "branch" && o.branch && o.base ? `Everything on ${o.branch} since it left ${o.base}` : v.desc;
-        const disabled = away && !OTHER_WORKTREE_SCOPES.has(scope) ? "Turns and Harness edits are this session's own folder's. Pick This session under Worktree to see them." : !o.repo && !away && scope !== "harness" ? (o.reason ?? "This folder isn't in a Git repository.") : undefined;
+        const disabled = away && !OTHER_WORKTREE_SCOPES.has(scope) ? "Turns and Cavvy edits are this session's own folder's. Pick This session under Worktree to see them." : !o.repo && !away && scope !== "cavvy" ? (o.reason ?? "This folder isn't in a Git repository.") : undefined;
         return { scope, label: v.label, desc, note: v.note, on: shown === scope, ...(disabled ? { disabled } : {}) };
     });
     const list = !o.repo || away ? [] : (o.turns ?? []);

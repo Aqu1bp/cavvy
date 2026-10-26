@@ -10,7 +10,7 @@ const { expandCommand, loadCustomCommands } = await import("../src/commands/cust
 const { paths } = await import("../src/config/paths");
 import type { Settings } from "../src/config/settings";
 
-const ROOT = tempDir("harness-settings-");
+const ROOT = tempDir("cavvy-settings-");
 afterAll(() => {
     rmSync(ROOT, { recursive: true, force: true });
     iso.cleanup();
@@ -56,8 +56,8 @@ describe("settings scopes", () => {
     test("paths per scope", () => {
         const cwd = "/some/project";
         expect(settings.settingsPath("user", cwd)).toBe(join(iso.home, "settings.json"));
-        expect(settings.settingsPath("project", cwd)).toBe("/some/project/.harness/settings.json");
-        expect(settings.settingsPath("local", cwd)).toBe("/some/project/.harness/settings.local.json");
+        expect(settings.settingsPath("project", cwd)).toBe("/some/project/.cavvy/settings.json");
+        expect(settings.settingsPath("local", cwd)).toBe("/some/project/.cavvy/settings.local.json");
     });
 
     test("trusted: user < project < local; lists concatenate, objects merge", () => {
@@ -179,11 +179,11 @@ describe("permission rules", () => {
         expect(read(paths.projectSettings(cwd))).toEqual({ model: "keep:me", permissions: { defaultMode: "plan", allow: ["Bash(git status)"], deny: ["WebFetch"] } });
     });
 
-    test("local scope also writes .harness/.gitignore (once)", () => {
+    test("local scope also writes .cavvy/.gitignore (once)", () => {
         const cwd = project();
         settings.addPermissionRule("local", cwd, "ask", "Write");
         expect(read(paths.localSettings(cwd))).toEqual({ permissions: { ask: ["Write"] } });
-        const gi = join(cwd, ".harness", ".gitignore");
+        const gi = join(cwd, ".cavvy", ".gitignore");
         expect(readFileSync(gi, "utf-8")).toBe("settings.local.json\n");
         writeFileSync(gi, "custom\n");
         settings.addPermissionRule("local", cwd, "ask", "Edit");
@@ -191,10 +191,10 @@ describe("permission rules", () => {
         // project scope does not create it
         const other = project();
         settings.addPermissionRule("project", other, "ask", "Write");
-        expect(existsSync(join(other, ".harness", ".gitignore"))).toBe(false);
+        expect(existsSync(join(other, ".cavvy", ".gitignore"))).toBe(false);
     });
 
-    test("user scope writes under HARNESS_HOME", () => {
+    test("user scope writes under CAVVY_HOME", () => {
         const cwd = project();
         settings.addPermissionRule("user", cwd, "deny", "Bash(sudo:*)");
         expect(read(paths.userSettings())).toEqual({ permissions: { deny: ["Bash(sudo:*)"] } });
@@ -272,7 +272,7 @@ describe("folder trust", () => {
     test("home and / are trusted for the session only (child process)", () => {
         const proc = Bun.spawnSync([process.execPath, "--no-env-file", join(import.meta.dir, "fixtures", "trust-session-only.ts")], {
             cwd: ROOT,
-            env: { ...process.env, HARNESS_HOME: project(), HARNESS_NO_KEYCHAIN: "1" },
+            env: { ...process.env, CAVVY_HOME: project(), CAVVY_NO_KEYCHAIN: "1" },
         });
         expect(proc.stderr.toString()).toBe("");
         expect(proc.exitCode).toBe(0);
@@ -284,9 +284,9 @@ describe("folder trust", () => {
 
     test("a repository's skills are configuration trust would unlock, with any model", () => {
         // A folder with nothing else is trusted for the session as having nothing to protect, so skills must count.
-        const harness = project();
-        mkdirSync(join(harness, ".harness", "skills", "repo-only"), { recursive: true });
-        expect(trust.projectConfigSummary(harness)).toEqual([".harness/skills/"]);
+        const cavvy = project();
+        mkdirSync(join(cavvy, ".cavvy", "skills", "repo-only"), { recursive: true });
+        expect(trust.projectConfigSummary(cavvy)).toEqual([".cavvy/skills/"]);
         // Read natively too, not only when Claude Code is set up.
         const claude = project();
         mkdirSync(join(claude, ".claude", "skills", "x"), { recursive: true });
@@ -301,7 +301,7 @@ describe("folder trust", () => {
         write(paths.projectMcp(cwd), {});
         mkdirSync(paths.projectCommands(cwd), { recursive: true });
         mkdirSync(paths.projectAgents(cwd), { recursive: true });
-        expect(trust.projectConfigSummary(cwd)).toEqual([".harness/settings.json", ".harness/settings.local.json", ".mcp.json", ".harness/commands/", ".harness/agents/"]);
+        expect(trust.projectConfigSummary(cwd)).toEqual([".cavvy/settings.json", ".cavvy/settings.local.json", ".mcp.json", ".cavvy/commands/", ".cavvy/agents/"]);
     });
 });
 

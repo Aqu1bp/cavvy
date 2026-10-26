@@ -25,14 +25,14 @@ writeFileSync(join(iso.home, "providers.json"), JSON.stringify(PROVIDERS));
 writeFileSync(join(iso.home, "settings.json"), JSON.stringify({ model: "mock:mock-opus", smallModel: "mock:mock-haiku" }));
 
 function git(cwd: string, ...args: string[]): string {
-    const r = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Harness Test", "-c", "user.email=test@example.invalid", ...args]), { cwd, env: gitEnv(), stdout: "pipe", stderr: "pipe" });
+    const r = Bun.spawnSync(gitArgv(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Cavvy Test", "-c", "user.email=test@example.invalid", ...args]), { cwd, env: gitEnv(), stdout: "pipe", stderr: "pipe" });
     if (r.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr.toString()}`);
     return r.stdout.toString().trim();
 }
 
 /** A temp repository with one commit (realpath: macOS's /var is a link, and worktree paths come back resolved). */
 function repo(files: Record<string, string> = {}): string {
-    const dir = realpathSync(tempDir("harness-run-repo-"));
+    const dir = realpathSync(tempDir("cavvy-run-repo-"));
     git(dir, "init", "-q", "-b", "main");
     writeFileSync(join(dir, "README.md"), "# demo\n");
     for (const [rel, content] of Object.entries(files)) {
@@ -53,7 +53,7 @@ class Client {
     private waiting = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
 
     constructor(port: number) {
-        this.ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { protocols: ["harness.v1", `auth.${TOKEN}`] } as any);
+        this.ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { protocols: ["cavvy.v1", `auth.${TOKEN}`] } as any);
         this.ws.onmessage = (m) => {
             const msg = JSON.parse(String(m.data));
             if ("event" in msg) return;
@@ -220,7 +220,7 @@ describe("runs.start", () => {
     });
 
     test("a committed memory file that imports from outside the project asks first, though the working copy dropped the import (review 2 of #246)", async () => {
-        const outside = realpathSync(tempDir("harness-run-outside-"));
+        const outside = realpathSync(tempDir("cavvy-run-outside-"));
         writeFileSync(join(outside, "private.md"), "PRIVATE NOTES\n");
         // Through a link committed in the tree too: docs -> notes, whose file imports outside.
         const main = repo({ "CLAUDE.md": "@docs/more.md\n", "notes/more.md": `@${join(outside, "private.md")}\n` });
@@ -327,7 +327,7 @@ describe("runs.start", () => {
         expect(await refused({ mode: "bypassPermissions" })).toMatchObject({ code: "invalid" });
         expect(await refused({ confirmPaid: "yes" })).toMatchObject({ code: "invalid" });
         expect(await refused({ path: 3 })).toMatchObject({ code: "invalid" });
-        expect(await refused({ path: realpathSync(tempDir("harness-run-plain-")) })).toMatchObject({ code: "not_git" });
+        expect(await refused({ path: realpathSync(tempDir("cavvy-run-plain-")) })).toMatchObject({ code: "not_git" });
         expect(await refused({ path: join(main, "missing") })).toMatchObject({ code: "not_git" });
         expect(existsSync(join(main, ".claude"))).toBe(false);
     });

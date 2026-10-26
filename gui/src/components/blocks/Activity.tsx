@@ -903,7 +903,7 @@ function CommandCardContent(p: { tool: ToolBlock }) {
     const description = () => commandDescription(t());
     const rowLabel = createMemo(() => commandLabel(t()));
     const meta = () => commandMeta(t());
-    // The task it started in the background (Claude Code's run_in_background, Codex's terminals, Harness's shells).
+    // The task it started in the background (Claude Code's run_in_background, Codex's terminals, Cavvy's shells).
     const task = createMemo(() => {
         const id = folds.sessionId;
         if (!id) return undefined;

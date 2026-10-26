@@ -166,7 +166,7 @@ export const CrumbSep = () => (
 );
 
 /**
- * What changed in the session's folder: git's count, or Harness's own record of
+ * What changed in the session's folder: git's count, or Cavvy's own record of
  * its edits outside a repository. Opens (and closes) the diff reader.
  */
 function ChangesChip(p: { handle: SessionHandle }) {
@@ -321,7 +321,7 @@ export function Header(p: { handle?: SessionHandle }) {
                             <button role="menuitem" class="menu-item compact" onClick={() => (close(), void exportSession(s().id))}>
                                 <Share size={14} /> Copy as Markdown
                             </button>
-                            <button role="menuitem" class="menu-item compact" onClick={() => void copy(`harness --resume ${s().id}`, "Copied a command that resumes this session in the terminal")}>
+                            <button role="menuitem" class="menu-item compact" onClick={() => void copy(`cavvy --resume ${s().id}`, "Copied a command that resumes this session in the terminal")}>
                                 <SquareTerminal size={14} /> Copy resume command
                             </button>
                             <Show when={s().branch}>

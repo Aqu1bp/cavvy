@@ -12,7 +12,7 @@ import { dirname, join, resolve } from "path";
 import { isolate, tempDir, FAKE } from "./helpers/isolate";
 import { secretsSnapshot } from "./helpers/secrets";
 
-const { home: HARNESS_HOME, cleanup } = isolate();
+const { home: CAVVY_HOME, cleanup } = isolate();
 const restoreSecrets = await secretsSnapshot();
 const settingsMod = await import("../src/config/settings");
 const { paths, projectStateDir } = await import("../src/config/paths");
@@ -294,7 +294,7 @@ describe("a config file with a JSON error is never overwritten", () => {
         expect(seen[0]).toContain(file);
     });
     test("trusting a folder with a broken trusted.json keeps the file and trusts for this session", () => {
-        const file = join(HARNESS_HOME, "trusted.json");
+        const file = join(CAVVY_HOME, "trusted.json");
         writeFileSync(file, '{ "dirs": ["/a", "/b"] ');
         const dir = tempDir();
         try {
@@ -355,8 +355,8 @@ try { await setKey("openai", "new-key-value-654321"); } catch (e) { error = e.me
 console.log(JSON.stringify({ error, stored: store.get("openai") }));
 `,
         );
-        const env: Record<string, string | undefined> = { ...process.env, HARNESS_HOME: home };
-        delete env.HARNESS_NO_KEYCHAIN;
+        const env: Record<string, string | undefined> = { ...process.env, CAVVY_HOME: home };
+        delete env.CAVVY_NO_KEYCHAIN;
         const p = Bun.spawnSync([process.execPath, "--no-env-file", script], { env, cwd: home });
         expect(p.exitCode).toBe(0);
         const out = JSON.parse(p.stdout.toString().trim().split("\n").pop()!);
@@ -372,16 +372,16 @@ console.log(JSON.stringify({ error, stored: store.get("openai") }));
 function mockProvider(handler: (n: number) => Response) {
     let n = 0;
     const server = Bun.serve({ port: 0, fetch: (req) => (new URL(req.url).pathname.endsWith("/models") ? Response.json({ data: [{ id: "m1" }] }) : handler(++n)) });
-    writeFileSync(join(HARNESS_HOME, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock", baseUrl: `http://127.0.0.1:${server.port}/v1`, kind: "openai", requiresKey: false, models: ["m1"] }] }));
+    writeFileSync(join(CAVVY_HOME, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock", baseUrl: `http://127.0.0.1:${server.port}/v1`, kind: "openai", requiresKey: false, models: ["m1"] }] }));
     return server;
 }
 
 const sse = (chunks: unknown[]) => new Response(chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
 
-/** Runs `harness -p` with stdin left open (never written or closed). */
+/** Runs `cavvy -p` with stdin left open (never written or closed). */
 async function headless(args: string[], proj: string): Promise<{ code: number; stdout: string; stderr: string; ms: number }> {
     const started = Date.now();
-    const env: Record<string, string> = { PATH: process.env.PATH ?? "", HOME: HARNESS_HOME, HARNESS_HOME, HARNESS_NO_KEYCHAIN: "1", HARNESS_STDIN_WAIT_MS: "300" };
+    const env: Record<string, string> = { PATH: process.env.PATH ?? "", HOME: CAVVY_HOME, CAVVY_HOME, CAVVY_NO_KEYCHAIN: "1", CAVVY_STDIN_WAIT_MS: "300" };
     const child = spawn(process.execPath, ["--no-env-file", `--config=${join(ROOT, "bunfig.toml")}`, join(ROOT, "src/index.ts"), "-p", ...args], { cwd: proj, env, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
@@ -422,13 +422,13 @@ describe("headless runs", () => {
             // From an earlier run: this process is done with it, as that one would be.
             s.release();
             // The default names a provider with no key, so only the session's model can work.
-            writeFileSync(join(HARNESS_HOME, "settings.json"), JSON.stringify({ model: "anthropic:claude-opus-5-5" }));
+            writeFileSync(join(CAVVY_HOME, "settings.json"), JSON.stringify({ model: "anthropic:claude-opus-5-5" }));
             const r = await headless(["again", "-c", "--output-format", "json"], proj);
             expect(r.stderr).not.toContain("No API key");
             expect(JSON.parse(r.stdout.trim().split("\n").pop()!).result).toBe("ok");
         } finally {
             server.stop(true);
-            rmSync(join(HARNESS_HOME, "settings.json"), { force: true });
+            rmSync(join(CAVVY_HOME, "settings.json"), { force: true });
         }
     }, 30_000);
 });
@@ -1007,13 +1007,13 @@ describe("TUI input handling", () => {
         const { app, printed } = testApp();
         const prose = "To see the changes:\n- **Resumed history:** actions one per line, with no `[Codex used: …]` blob. Full-width rules mark it.\n- **End of a turn:** no blank rows under the footer.";
         app.session.push({ role: "user", content: [{ type: "text", text: "go" }], meta: { kind: "prompt" } });
-        app.session.push({ role: "assistant", content: [{ type: "text", text: prose }, { type: "text", text: "[Claude Code used: Bash(gh pr merge 162), Bash(harness --version)]" }] });
+        app.session.push({ role: "assistant", content: [{ type: "text", text: prose }, { type: "text", text: "[Claude Code used: Bash(gh pr merge 162), Bash(cavvy --version)]" }] });
         (app as any).replayTranscript();
         const out = printed.map(stripAnsi).join("\n");
         expect(out).toContain("with no [Codex used: …] blob. Full-width rules mark it.");
         expect(out).toContain("End of a turn: no blank rows under the footer.");
         expect(out).not.toContain("**");
-        expect(out).toContain(`  ${BULLET} Bash(gh pr merge 162)\n  ${BULLET} Bash(harness --version)`);
+        expect(out).toContain(`  ${BULLET} Bash(gh pr merge 162)\n  ${BULLET} Bash(cavvy --version)`);
         expect(splitActionsNote(app.session.messages.at(-1)!).text).toBe(prose);
     });
     test("a ! command can be interrupted", async () => {

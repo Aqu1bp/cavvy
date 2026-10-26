@@ -1,7 +1,7 @@
 // #409's switch matrix, account switches: while on an API model, a fork's, an idle compaction's, a message's during
 // the switch, a message held since a restart, after the CLI's own compaction. In the GUI server's Runtime with the
 // fake CLIs and the mock API (test/helpers/switch-app.ts). An account whose CLI shares the native session's history
-// (a Harness-made one) resumes it natively; one on an existing folder starts a new one, handed the conversation.
+// (a Cavvy-made one) resumes it natively; one on an existing folder starts a new one, handed the conversation.
 
 import { describe, expect, test } from "bun:test";
 import { isolate } from "./helpers/isolate";
@@ -365,7 +365,7 @@ for (const live of [true, false])
                 expect(h.turns().at(-1)!.status).toBe("done");
                 const pid = h.lastProc().pid;
                 // Live, the command was running in the process the switch lets go of; per run, the run's process ended
-                // with it (as when Harness quits): either way the next process resumes the session and says so.
+                // with it (as when Cavvy quits): either way the next process resumes the session and says so.
                 process.env.FAKE_SCENARIO = "chat";
                 process.env.FAKE_STALE_TASK = "shell";
                 await h.rt.setAccount("claude-code", shared.id);

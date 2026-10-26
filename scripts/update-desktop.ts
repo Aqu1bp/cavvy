@@ -1,15 +1,15 @@
 // Brings the installed desktop app up to date with origin/main, without touching
 // the checkout you run it from: it fetches, builds main in a worktree of its own
-// (~/.harness/app-source) and installs that (desktop:install). macOS only.
+// (~/.cavvy/app-source) and installs that (desktop:install). macOS only.
 //
-//   bun run desktop:update                 what's new on main, then build, install and restart Harness
+//   bun run desktop:update                 what's new on main, then build, install and restart Cavvy
 //   bun run desktop:update --check         only say what's new since the installed build
 //   bun run desktop:update --force         build and install even if nothing's new
-//   bun run desktop:update --no-restart    install only; a running Harness carries on
+//   bun run desktop:update --no-restart    install only; a running Cavvy carries on
 //   bun run desktop:update --from-app      as the app runs it (src/server/app-update.ts): restarts it from outside
 //
-// Run from Harness's own terminal or the app's Update button, it builds and installs
-// while Harness runs, then restarts it from outside, so quitting Harness doesn't stop the update.
+// Run from Cavvy's own terminal or the app's Update button, it builds and installs
+// while Cavvy runs, then restarts it from outside, so quitting Cavvy doesn't stop the update.
 // The worktree keeps its build products, so after the first update only what
 // changed is rebuilt.
 
@@ -17,7 +17,7 @@ import { spawn } from "child_process";
 import { existsSync, realpathSync, writeFileSync } from "fs";
 import { userInfo } from "os";
 import { join, resolve } from "path";
-import { harnessHome } from "../src/config/paths";
+import { cavvyHome } from "../src/config/paths";
 import { appSourceDir, capUpdate, lockUpdate, noPromptGit, readInstallRecord, UPDATE_CAP_MS } from "../src/config/desktop-install";
 
 if (process.platform !== "darwin") {
@@ -31,8 +31,8 @@ const force = args.includes("--force");
 const restart = !args.includes("--no-restart");
 const fromApp = args.includes("--from-app");
 const root = resolve(import.meta.dir, "..");
-// Absolute, and handed to the installer as such: it runs in the worktree, where a relative HARNESS_HOME would mean somewhere else.
-const home = harnessHome();
+// Absolute, and handed to the installer as such: it runs in the worktree, where a relative CAVVY_HOME would mean somewhere else.
+const home = cavvyHome();
 const source = appSourceDir();
 const REF = "origin/main";
 
@@ -43,7 +43,7 @@ function git(cwd: string, ...a: string[]): { ok: boolean; out: string; err: stri
 
 /** Runs it with its output in this terminal; exits if it fails, or takes longer than `timeoutMs`. */
 function run(cmd: string[], cwd: string, o: { timeoutMs?: number; env?: Record<string, string> } = {}) {
-    const r = Bun.spawnSync(cmd, { cwd, env: { ...process.env, HARNESS_HOME: home, ...o.env }, stdin: "inherit", stdout: "inherit", stderr: "inherit", timeout: o.timeoutMs });
+    const r = Bun.spawnSync(cmd, { cwd, env: { ...process.env, CAVVY_HOME: home, ...o.env }, stdin: "inherit", stdout: "inherit", stderr: "inherit", timeout: o.timeoutMs });
     if (r.exitCode === 0) return;
     if (r.signalCode && o.timeoutMs) console.error(`${cmd.slice(0, 2).join(" ")} took longer than ${Math.round(o.timeoutMs / 1000)}s.`);
     process.exit(r.exitCode || 1);
@@ -65,7 +65,7 @@ const installed = await readInstallRecord();
 // Our own worktree only ever has main checked out, so a change there (bun install touching the lockfile) doesn't count.
 const current = installed?.commit === target && (!installed.dirty || installed.source === source);
 if (current && !force) {
-    console.log(`Harness is up to date with main (${short}).`);
+    console.log(`Cavvy is up to date with main (${short}).`);
     process.exit(0);
 }
 
@@ -92,7 +92,7 @@ if (fromApp) capUpdate(process.pid, UPDATE_CAP_MS / 1000, 5, lock.fd);
 // The worktree: made on the first update, moved to main's latest on each one after. The forced checkout throws away
 // changes, so it's only ever done in the worktree made here, which carries a marker in its own git directory: never
 // in a plain folder (git would find whatever checkout encloses it), a link to your checkout, or another worktree.
-const MARKER = "harness-app-source";
+const MARKER = "cavvy-app-source";
 
 /** The worktree's own git directory (.git/worktrees/<name>), if source is the root of a linked worktree of this repository. */
 function linkedGitDir(): string | undefined {
@@ -127,10 +127,10 @@ if (existsSync(source)) {
 }
 console.log(`Building ${short} in ${source}…`);
 
-// Inside Harness (its terminal, or its Update button), quitting Harness could end this process with it: install first, then restart from outside.
-const inHarness = fromApp || process.env.TERM_PROGRAM === "Harness";
-run([process.execPath, "--no-env-file", `--config=${join(source, "bunfig.toml")}`, join(source, "scripts", "install-desktop.ts"), ...(restart && !inHarness ? [] : ["--no-restart"])], source);
-if (restart && inHarness) {
+// Inside Cavvy (its terminal, or its Update button), quitting Cavvy could end this process with it: install first, then restart from outside.
+const inCavvy = fromApp || process.env.TERM_PROGRAM === "Cavvy";
+run([process.execPath, "--no-env-file", `--config=${join(source, "bunfig.toml")}`, join(source, "scripts", "install-desktop.ts"), ...(restart && !inCavvy ? [] : ["--no-restart"])], source);
+if (restart && inCavvy) {
     const { productName, identifier } = (await Bun.file(join(source, "desktop", "src-tauri", "tauri.conf.json")).json()) as { productName: string; identifier: string };
     // The copy just installed, by path: by bundle id, macOS may open another (an older one left in /Applications
     // when this went to ~/Applications). An installer from before the record had the path has only the id to go on.
@@ -140,10 +140,10 @@ if (restart && inHarness) {
     // Values go in as arguments, not into the script's text.
     const script = `
         sleep 1
-        pkill -TERM -U "$1" -f "/$2.app/Contents/MacOS/harness-desktop"
+        pkill -TERM -U "$1" -f "/$2.app/Contents/MacOS/cavvy-desktop"
         i=0
-        while pgrep -U "$1" -f "/$2.app/Contents/MacOS/harness" >/dev/null && [ $i -lt 150 ]; do sleep 0.1; i=$((i+1)); done
-        pkill -KILL -U "$1" -f "/$2.app/Contents/MacOS/harness"
+        while pgrep -U "$1" -f "/$2.app/Contents/MacOS/cavvy" >/dev/null && [ $i -lt 150 ]; do sleep 0.1; i=$((i+1)); done
+        pkill -KILL -U "$1" -f "/$2.app/Contents/MacOS/cavvy"
         if [ -n "$3" ]; then open "$3"; else open -b "$4"; fi`;
     spawn("/bin/sh", ["-c", script, "sh", String(userInfo().uid), productName, app, identifier], { detached: true, stdio: "ignore" }).unref();
     console.log(`${productName} restarts in a moment with the new build.`);

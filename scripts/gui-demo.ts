@@ -1,4 +1,4 @@
-// Try the GUI without API keys: a throwaway HARNESS_HOME with the mock model
+// Try the GUI without API keys: a throwaway CAVVY_HOME with the mock model
 // (scripts/mock-llm.ts) as its only provider, a small demo project, and the
 // GUI server on a fixed port.
 //
@@ -15,7 +15,7 @@
 //   empty             open the tab in a session where nothing has opened a page yet
 //   agent driving     send "check the app in the browser" (a small site it serves; the click asks for approval)
 //   you in control    click, type or scroll in the page; "Hand back to agent" gives it back
-//   errors            no browser: HARNESS_BROWSER=/nope bun run gui:demo; a failed page: enter localhost:1 in the address bar;
+//   errors            no browser: CAVVY_BROWSER=/nope bun run gui:demo; a failed page: enter localhost:1 in the address bar;
 //                     a crash: kill the "Chrome" process the demo started; a dialog: the page's "Send test" button
 
 import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
@@ -31,7 +31,7 @@ const arg = (n: string) => {
     const i = args.indexOf(n);
     return i >= 0 ? args[i + 1] : undefined;
 };
-const root = arg("--dir") ?? mkdtempSync(join(tmpdir(), "harness-gui-demo-"));
+const root = arg("--dir") ?? mkdtempSync(join(tmpdir(), "cavvy-gui-demo-"));
 const home = join(root, "home");
 const project = join(root, "acme-platform");
 mkdirSync(home, { recursive: true });
@@ -55,9 +55,9 @@ for (const [name, text] of Object.entries(demoSkills)) {
 
 const repo = resolve(import.meta.dir, "..");
 const port = arg("--port") ?? "4600";
-const env: Record<string, string> = { ...(process.env as Record<string, string>), HARNESS_HOME: home, HARNESS_NO_KEYCHAIN: "1" };
+const env: Record<string, string> = { ...(process.env as Record<string, string>), CAVVY_HOME: home, CAVVY_NO_KEYCHAIN: "1" };
 if (args.includes("--update")) Object.assign(env, createDemoUpdate(root, home, arg("--update") === "fail"));
-if (arg("--token")) env.HARNESS_GUI_TOKEN = arg("--token")!;
+if (arg("--token")) env.CAVVY_GUI_TOKEN = arg("--token")!;
 const extra = arg("--dev-origin") ? ["--dev-origin", arg("--dev-origin")!] : [];
 const proc = Bun.spawn(["bun", "--no-env-file", `--config=${join(repo, "bunfig.toml")}`, join(repo, "src/index.ts"), "serve", "--port", port, ...extra], {
     cwd: project,
@@ -65,7 +65,7 @@ const proc = Bun.spawn(["bun", "--no-env-file", `--config=${join(repo, "bunfig.t
     stdout: "inherit",
     stderr: "inherit",
 });
-process.stderr.write(`\n  demo project: ${project}\n  demo site:    ${site.url}  (for the Browser pane)\n  HARNESS_HOME: ${home}\n${arg("--token") ? `  fixed link:   http://127.0.0.1:${port}/#token=${arg("--token")}\n` : ""}\n`);
+process.stderr.write(`\n  demo project: ${project}\n  demo site:    ${site.url}  (for the Browser pane)\n  CAVVY_HOME: ${home}\n${arg("--token") ? `  fixed link:   http://127.0.0.1:${port}/#token=${arg("--token")}\n` : ""}\n`);
 const stop = () => {
     proc.kill();
     mock.stop();

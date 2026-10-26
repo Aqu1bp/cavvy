@@ -26,7 +26,7 @@ export interface AnthropicTraits {
     longContextThreshold?: number;
 }
 
-// Harness effort -> manual thinking tokens. Keep even max below the older
+// Cavvy effort -> manual thinking tokens. Keep even max below the older
 // Opus 4 output ceiling (32k), leaving room for the answer at default limits.
 // https://platform.claude.com/docs/en/build-with-claude/extended-thinking
 export const ANTHROPIC_THINKING_BUDGETS: Record<Effort, number> = {

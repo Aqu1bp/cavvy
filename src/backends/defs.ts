@@ -13,7 +13,7 @@ import type { CliInfo } from "./cli";
 /** What's attached to a message, by how a backend takes it: images, text files (sent as text) and PDFs. */
 export type AttachmentKind = "image" | "text" | "pdf";
 
-/** What an agent CLI can do, for the harness to read instead of its id. Static defaults; a connection may refine them after its handshake. */
+/** What an agent CLI can do, for Cavvy to read instead of its id. Static defaults; a connection may refine them after its handshake. */
 export interface CliCapabilities {
     /** How a message sent mid-turn reaches it: folded in between tool rounds (Claude Code's stdin), at once (Codex's turn/steer), or not at all. */
     steering: "between-tool-rounds" | "immediate" | "none";
@@ -28,7 +28,7 @@ export interface CliCapabilities {
     stopTask: boolean;
     /** A running foreground sub-agent can be moved to the background. */
     moveToBackground: boolean;
-    /** Who starts the turn that reports finished background work: the CLI itself, the harness, or nobody. */
+    /** Who starts the turn that reports finished background work: the CLI itself, Cavvy, or nobody. */
     wakes: "native" | "host" | "none";
     /** What changes on a running process without a restart: the model, the effort, and the permission mode (by a control request, with each turn, or not at all). */
     live: { model: boolean; effort: boolean; mode: "control" | "per-turn" | "restart" };
@@ -40,19 +40,19 @@ export interface CliCapabilities {
     goal?: { canPause: boolean; ownTurns: boolean };
     /** How its plan limits are known: pushed as they change, by asking, only inside a turn, or not at all. */
     planLimits: "push" | "status-call" | "in-turn" | "none";
-    /** How the harness's hooks run: the CLI calls back for each (hook_callback), calls a harness MCP tool, or the harness runs them itself. */
+    /** How Cavvy's hooks run: the CLI calls back for each (hook_callback), calls a cavvy MCP tool, or Cavvy runs them itself. */
     hooks: "callback" | "mcp-hook-server" | "none";
-    /** How the harness's MCP server is attached: a control request on the running process, the thread's config, or not at all. */
+    /** How Cavvy's MCP server is attached: a control request on the running process, the thread's config, or not at all. */
     mcpAttach: "control" | "thread-config" | "none";
-    /** MCP server instructions reach the model through its system prompt (otherwise the harness passes them as developer instructions). */
+    /** MCP server instructions reach the model through its system prompt (otherwise Cavvy passes them as developer instructions). */
     mcpInstructionsInSystemPrompt: boolean;
-    /** It has a Monitor tool of its own (otherwise it gets the harness's). */
+    /** It has a Monitor tool of its own (otherwise it gets Cavvy's). */
     ownMonitor: boolean;
-    /** The harness's agents run on its own Agent tool. */
+    /** Cavvy's agents run on its own Agent tool. */
     nativeAgents: boolean;
-    /** It loads the harness's plugins itself (--plugin-dir). */
+    /** It loads Cavvy's plugins itself (--plugin-dir). */
     loadsPlugins: boolean;
-    /** How it gets the harness's skills: as a plugin, as an extra skills root, or pasted into the prompt. */
+    /** How it gets Cavvy's skills: as a plugin, as an extra skills root, or pasted into the prompt. */
     skills: "plugin" | "skills-root" | "paste";
     /** The commands it lists are its skills (for the $ menu too). */
     cliCommandsAreSkills: boolean;
@@ -60,7 +60,7 @@ export interface CliCapabilities {
     images: boolean;
     /** It has a reviewer of its own for auto mode, so a read-only agent keeps auto. */
     autoReviewer: boolean;
-    /** It resolves a /command the harness doesn't know (its own skills and built-ins). */
+    /** It resolves a /command Cavvy doesn't know (its own skills and built-ins). */
     resolvesUnknownCommands: boolean;
     /** Its saved sessions can be imported (src/server/cli-sessions.ts). */
     importSessions: boolean;
@@ -87,7 +87,7 @@ export interface AgentCliDef {
         configDirEnv: string;
         /** The folder when that isn't set, ~ for home. */
         defaultFolder: string;
-        /** Sign-in files in a folder: denied to tools, never read by the harness. */
+        /** Sign-in files in a folder: denied to tools, never read by Cavvy. */
         credentialFiles: string[];
         /** Its sign-in is in the keychain, under a service named after the folder: each account needs its own. */
         keychain?: "claude";
@@ -194,7 +194,7 @@ const CODEX: AgentCliDef = {
         // thread/backgroundTerminals/terminate (with experimentalApi), and turn/interrupt on a sub-agent's thread (codex-live.ts).
         stopTask: true,
         moveToBackground: false,
-        // Codex starts goal turns itself; for a background command that finished after its turn, the harness starts
+        // Codex starts goal turns itself; for a background command that finished after its turn, Cavvy starts
         // one (codex.wakeOnBackgroundCommand): Codex reports only the item's end (#219 §2).
         wakes: "host",
         // turn/start carries the model, effort, approval policy and sandbox.

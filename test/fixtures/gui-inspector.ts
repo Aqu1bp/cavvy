@@ -173,10 +173,10 @@ test("the Changes pane: counts, a row per file opening the reader on it, and the
         expect(opened.at(-1)).toEqual(["src/auth/index.ts", "uncommitted"]);
         all(root).find((n) => n.props.class === "btn ghost sm")!.props.onClick();
         expect(opened.at(-1)).toEqual([undefined, "uncommitted"]);
-        // Outside a repository: Harness's own record, and the reader opens on it.
+        // Outside a repository: Cavvy's own record, and the reader opens on it.
         setChanges({ repo: false, count: 1, more: 0, atLeast: false, added: 1, removed: 0, files: [{ path: "notes.md", change: "added", added: 1, removed: 0 }] });
         rows()[0]!.props.onClick();
-        expect(opened.at(-1)).toEqual(["notes.md", "harness"]);
+        expect(opened.at(-1)).toEqual(["notes.md", "cavvy"]);
         // Nothing changed: a blank pane that still opens the reader (the branch, a turn).
         setChanges({ repo: true, count: 0, more: 0, atLeast: false, added: 0, removed: 0, files: [] });
         expect(text(root)).toContain("No changes yet");
@@ -215,7 +215,7 @@ function folderChanges(reply: () => Promise<unknown>) {
 }
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
-test("outside a repository, Harness's record is asked for once per change, not again for each git reply", async () => {
+test("outside a repository, Cavvy's record is asked for once per change, not again for each git reply", async () => {
     const f = folderChanges(async () => ({ files: [{ path: "notes.md", status: "added", added: 2, removed: 0, hunks: [] }], added: 2, removed: 0, tracked: true }));
     try {
         f.setGit({ repo: false, files: [], added: 0, removed: 0, bases: [], more: 0 });

@@ -1,5 +1,5 @@
 // Where the GUI runs: the desktop app (Tauri) or a browser tab opened by
-// `harness gui`. Everything that differs between the two lives here.
+// `cavvy gui`. Everything that differs between the two lives here.
 
 import type { Credentials } from "./rpc";
 
@@ -17,8 +17,8 @@ export const os: Os = (() => {
 export const mod = os === "macos" ? "⌘" : "Ctrl";
 export const isMod = (e: KeyboardEvent | MouseEvent) => (os === "macos" ? e.metaKey : e.ctrlKey);
 
-const TOKEN_KEY = "harness.token";
-const WINDOW_KEY = "harness.window";
+const TOKEN_KEY = "cavvy.token";
+const WINDOW_KEY = "cavvy.window";
 
 let memoryWindow: string | undefined;
 /**
@@ -77,8 +77,8 @@ export async function credentials(): Promise<Credentials | undefined> {
         const info = await tauriInvoke<{ port: number; token: string }>("sidecar_info");
         return { url: `ws://127.0.0.1:${info.port}/ws`, token: info.token };
     }
-    const devUrl = import.meta.env.VITE_HARNESS_URL as string | undefined;
-    const devToken = import.meta.env.VITE_HARNESS_TOKEN as string | undefined;
+    const devUrl = import.meta.env.VITE_CAVVY_URL as string | undefined;
+    const devToken = import.meta.env.VITE_CAVVY_TOKEN as string | undefined;
     if (devUrl && devToken) return { url: devUrl, token: devToken };
 
     const hash = new URLSearchParams(location.hash.slice(1));

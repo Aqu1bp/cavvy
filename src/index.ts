@@ -1,19 +1,19 @@
-// Harness CLI entry point. Start it through bin/harness (or the compiled
-// binary), not `bun src/index.ts`: see bin/harness for why.
+// Cavvy CLI entry point. Start it through bin/cavvy (or the compiled
+// binary), not `bun src/index.ts`: see bin/cavvy for why.
 //
-//   harness                      interactive session
-//   harness "fix the tests"      interactive, starting with a prompt
-//   harness -p "explain x"       one-shot, prints the result (headless)
-//   harness auth add|list|remove manage API keys
-//   harness models               combined model list from every provider
-//   harness mcp list|add|remove  manage MCP servers
-//   harness plugin …             install and manage plugins and marketplaces
-//   harness gui | serve          the desktop/browser GUI (see src/server/)
+//   cavvy                      interactive session
+//   cavvy "fix the tests"      interactive, starting with a prompt
+//   cavvy -p "explain x"       one-shot, prints the result (headless)
+//   cavvy auth add|list|remove manage API keys
+//   cavvy models               combined model list from every provider
+//   cavvy mcp list|add|remove  manage MCP servers
+//   cavvy plugin …             install and manage plugins and marketplaces
+//   cavvy gui | serve          the desktop/browser GUI (see src/server/)
 
 import { basename, dirname, join, resolve } from "path";
 import { existsSync, readFileSync } from "fs";
-import { APP_NAME, APP_TITLE, APP_VERSION, harnessHome, paths } from "./config/paths";
-import { loadHarnessEnv, preloadKeys, getKey, setKey, removeKey, storageDescription } from "./auth/credentials";
+import { APP_NAME, APP_TITLE, APP_VERSION, cavvyHome, paths } from "./config/paths";
+import { loadCavvyEnv, preloadKeys, getKey, setKey, removeKey, storageDescription } from "./auth/credentials";
 import { detectKeyProvider, validateKey } from "./auth/detect";
 import { EFFORT_LEVELS, loadScope, loadSettings, worktreeSettings, readJson, readJsonForUpdate, settingsPath, updateSettings, writeJson, type Effort, type McpServerConfig, type SettingsScope } from "./config/settings";
 import { isTrusted, projectConfigSummary, trustFolder, trustForSession } from "./config/trust";
@@ -67,7 +67,7 @@ ${bold("Options")}
   -c, --continue                 continue the most recent session in this directory
   -r, --resume [id]              resume a session (picker when no id)
   -w, --worktree [name]          work in a new Git worktree, .claude/worktrees/<name> on branch
-                                 harness/<name> (a name is made up when none is given); the same
+                                 cavvy/<name> (a name is made up when none is given); the same
                                  name again reopens it. On exit it's removed if nothing was done in it
       --add-dir <path>           allow access to another directory (repeatable)
       --append-system-prompt <t> extra instructions appended to the system prompt
@@ -78,7 +78,7 @@ ${bold("Options")}
   -h, --help                     show this help
 
 ${bold("Keys")}  Run ${APP_NAME} and use /login, or \`${APP_NAME} auth add\`. Keys are stored in the OS keychain
-       (or ~/.harness/credentials.json with mode 600 when there is no keychain), and are only
+       (or ~/.cavvy/credentials.json with mode 600 when there is no keychain), and are only
        ever sent to their own provider. Environment variables like ANTHROPIC_API_KEY also work.`;
 
 interface Flags {
@@ -245,7 +245,7 @@ function parseFlags(argv: string[]): Flags {
 // ---------------------------------------------------------------------------
 // Piped input for -p.
 
-const STDIN_WAIT_MS = Number(process.env.HARNESS_STDIN_WAIT_MS) || 3000;
+const STDIN_WAIT_MS = Number(process.env.CAVVY_STDIN_WAIT_MS) || 3000;
 
 /**
  * With a prompt on the command line stdin is optional, and a parent process
@@ -644,7 +644,7 @@ async function askTrust(cwd: string, found: string[]): Promise<boolean> {
             theme.muted("and permission rules that let the model act without asking."),
             "",
             theme.muted("If you don't trust it, those files are ignored (except deny/ask rules, which only add restrictions),"),
-            theme.muted("and so are its memory files (HARNESS.md, AGENTS.md, CLAUDE.md)."),
+            theme.muted("and so are its memory files (CAVVY.md, AGENTS.md, CLAUDE.md)."),
         ],
         items: [
             { label: "Yes, trust this folder", value: "yes" },
@@ -675,9 +675,9 @@ async function main() {
     const argv = process.argv.slice(2);
     let cwd = process.cwd();
 
-    // Only the harness's own env files (never the project's .env; Bun's auto-load is off).
+    // Only Cavvy's own env files (never the project's .env; Bun's auto-load is off).
     const installDir = dirname(import.meta.dir);
-    const env = loadHarnessEnv([join(harnessHome(), ".env"), join(installDir, ".env")]);
+    const env = loadCavvyEnv([join(cavvyHome(), ".env"), join(installDir, ".env")]);
     await preloadKeys();
 
     const sub = argv[0];

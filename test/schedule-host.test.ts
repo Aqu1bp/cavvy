@@ -12,15 +12,15 @@ let home: string;
 let prevHome: string | undefined;
 let prevTz: string | undefined;
 beforeAll(() => {
-    home = mkdtempSync(join(tmpdir(), "harness-sched-"));
-    prevHome = process.env.HARNESS_HOME;
-    process.env.HARNESS_HOME = home;
+    home = mkdtempSync(join(tmpdir(), "cavvy-sched-"));
+    prevHome = process.env.CAVVY_HOME;
+    process.env.CAVVY_HOME = home;
     prevTz = process.env.TZ;
     process.env.TZ = "America/New_York";
 });
 afterAll(() => {
-    if (prevHome === undefined) delete process.env.HARNESS_HOME;
-    else process.env.HARNESS_HOME = prevHome;
+    if (prevHome === undefined) delete process.env.CAVVY_HOME;
+    else process.env.CAVVY_HOME = prevHome;
     if (prevTz === undefined) delete process.env.TZ;
     else process.env.TZ = prevTz;
     rmSync(home, { recursive: true, force: true });
@@ -449,7 +449,7 @@ describe("the model's tools", () => {
         expect(deleteSchedule(h.scheduler, {}).isError).toBe(true);
     });
 
-    test("harness tools read the session's scheduler from the tool state", async () => {
+    test("cavvy tools read the session's scheduler from the tool state", async () => {
         const { h } = host();
         const ctx = { state: { scheduler: h.scheduler } } as never;
         const r = await CronCreateTool.run({ cron: "*/5 * * * *", prompt: "x" }, ctx);

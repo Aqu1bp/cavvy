@@ -1,5 +1,5 @@
-// Builds the harness server as a single executable for the desktop app:
-// desktop/src-tauri/binaries/harness-<target triple>, the name Tauri's
+// Builds Cavvy server as a single executable for the desktop app:
+// desktop/src-tauri/binaries/cavvy-<target triple>, the name Tauri's
 // externalBin expects.
 //
 //   bun scripts/build-sidecar.ts                 for this machine
@@ -34,7 +34,7 @@ if (!bunTarget) {
 const root = resolve(import.meta.dir, "..");
 const outDir = join(root, "desktop", "src-tauri", "binaries");
 mkdirSync(outDir, { recursive: true });
-const out = join(outDir, `harness-${triple}${triple.includes("windows") ? ".exe" : ""}`);
+const out = join(outDir, `cavvy-${triple}${triple.includes("windows") ? ".exe" : ""}`);
 const build = Bun.spawnSync(
     ["bun", "build", "--compile", "--minify", "--sourcemap=none", `--target=${bunTarget}`, "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--outfile", out, join(root, "src", "index.ts")],
     { cwd: root, stdout: "inherit", stderr: "inherit" },

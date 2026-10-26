@@ -5,7 +5,7 @@ import { dlopen, FFIType } from "bun:ffi";
 import { spawn } from "child_process";
 import { closeSync, existsSync, ftruncateSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
 import { basename, dirname, join } from "path";
-import { harnessHome } from "./paths";
+import { cavvyHome } from "./paths";
 
 export interface InstallRecord {
     /** The commit it was built from. */
@@ -19,9 +19,9 @@ export interface InstallRecord {
     installedAt: string;
 }
 
-export const installRecordPath = () => join(harnessHome(), "desktop-install.json");
+export const installRecordPath = () => join(cavvyHome(), "desktop-install.json");
 /** The worktree desktop:update builds main in: it only ever has main checked out. */
-export const appSourceDir = () => join(harnessHome(), "app-source");
+export const appSourceDir = () => join(cavvyHome(), "app-source");
 
 export async function readInstallRecord(): Promise<InstallRecord | undefined> {
     try {
@@ -45,7 +45,7 @@ export function writeInstallRecord(root: string, app: string) {
         installedAt: new Date().toISOString(),
     };
     try {
-        mkdirSync(harnessHome(), { recursive: true });
+        mkdirSync(cavvyHome(), { recursive: true });
         writeFileSync(installRecordPath(), JSON.stringify(record, null, 2) + "\n");
     } catch {}
 }
@@ -97,7 +97,7 @@ export function noPromptGit(env: NodeJS.ProcessEnv, sshCommand?: string): Record
 /** The longest an update started from the app may run: capUpdate stops it then. */
 export const UPDATE_CAP_MS = 2 * 3600_000;
 /** The update lock's file. The lock is the kernel's (flock), held by the update running; the file names its pid. */
-export const updateLockPath = () => join(harnessHome(), "app-update.lock");
+export const updateLockPath = () => join(cavvyHome(), "app-update.lock");
 
 const LOCK_EX = 2;
 const LOCK_NB = 4;

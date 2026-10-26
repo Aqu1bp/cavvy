@@ -31,7 +31,7 @@ export function canonical(p: string, hops = 0): string {
     }
 }
 
-/** macOS and Windows volumes ignore case by default: `.HARNESS` is `.harness` there. */
+/** macOS and Windows volumes ignore case by default: `.CAVVY` is `.cavvy` there. */
 export const CASE_INSENSITIVE_FS = process.platform === "darwin" || process.platform === "win32";
 
 const INVISIBLE = /\p{Default_Ignorable_Code_Point}/gu;
@@ -39,7 +39,7 @@ const INVISIBLE = /\p{Default_Ignorable_Code_Point}/gu;
 /**
  * Text folded so that names a case-insensitive volume opens as the same file
  * come out alike. APFS compares names by Unicode case folding, not by
- * lower-casing: `.harneſſ` (long s) and `.harneẞ` are `.harness` there, and
+ * lower-casing: `.harneſſ` (long s) and `.harneẞ` are `.cavvy` there, and
  * toLowerCase changes neither. This is Unicode's compatibility caseless
  * match: full case folding (taken here as lower(upper(lower)), which turns
  * ß and ẞ into "ss", ſ into "s", ﬅ into "st", the Kelvin sign into "k"),

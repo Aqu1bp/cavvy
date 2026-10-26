@@ -1,4 +1,4 @@
-// One Harness session's use of its project's browser (pool.ts): the tabs it opened, which one is current, and who is
+// One Cavvy session's use of its project's browser (pool.ts): the tabs it opened, which one is current, and who is
 // driving each. The agent's tools work through it, and so does the GUI's Browser pane, which watches the current tab
 // as a stream of frames and sends a person's clicks and keys back. It needs no GUI: the TUI and headless runs use
 // it as the tools do, and the server only subscribes to what it announces.

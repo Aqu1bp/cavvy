@@ -22,7 +22,7 @@ afterAll(async () => {
 });
 
 function folder(): string {
-    const dir = tempDir("harness-mcp-review-");
+    const dir = tempDir("cavvy-mcp-review-");
     dirs.push(dir);
     trustFolder(dir);
     return dir;

@@ -2,7 +2,7 @@
 // and Runtime, the mock model): one list of what runs in the background, whoever
 // runs it (an agent CLI's tasks, the session's own shells); session.stopBackground
 // stops them; the list is kept in the session log, and a task that was running
-// when Harness quit shows as stopped then, and the agent is told once.
+// when Cavvy quit shows as stopped then, and the agent is told once.
 
 import { afterAll, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "fs";
@@ -39,7 +39,7 @@ function client(engine: InstanceType<typeof Engine>) {
 
 const notices = (c: object) => (sent.get(c) ?? []).flatMap((e) => (e.type === "notify" && e.kind === "background" ? [e] : []));
 
-async function session(cwd = createDemoProject(tempDir("harness-bg-proj-"), { git: false })) {
+async function session(cwd = createDemoProject(tempDir("cavvy-bg-proj-"), { git: false })) {
     const engine = new Engine();
     const c = client(engine);
     const snap = (await engine.handle(c, "session.create", { cwd })) as SessionSnapshot;
@@ -63,7 +63,7 @@ async function until(pred: () => boolean, ms = 10_000) {
  */
 const turnOver = (rt: { busy: boolean; session: { messages: readonly { role: string }[] } }) => !rt.busy && rt.session.messages.some((m) => m.role === "assistant");
 
-/** A background shell of the harness's own, as Bash leaves one (without a process). */
+/** A background shell of Cavvy's own, as Bash leaves one (without a process). */
 function shell(id: string, command: string): BackgroundShell & { killed: number } {
     const s = {
         id,
@@ -126,7 +126,7 @@ test("the session's background list has an agent CLI's tasks and its own shells,
         await engine.handle(c, "session.stopBackground", { id, ids: [] });
         expect(rt.snapshot().state.backgroundTasks).toMatchObject([
             { id: "task-cli-1", provider: "fake-cli", kind: "agent", label: "Map the auth module", status: "running", stoppable: true },
-            { id: "bash_1", provider: "harness", kind: "shell", label: "npm run dev", status: "running", stoppable: true },
+            { id: "bash_1", provider: "cavvy", kind: "shell", label: "npm run dev", status: "running", stoppable: true },
         ]);
         // One by id: the CLI's goes to its backend, for this session.
         expect(await engine.handle(c, "session.stopBackground", { id, ids: ["task-cli-1"] })).toEqual({ results: { "task-cli-1": "stopped" } });
@@ -158,7 +158,7 @@ test("the session's background list has an agent CLI's tasks and its own shells,
     }
 });
 
-test("a task running when Harness quit shows as stopped then when the session is opened again, and the agent is told once", async () => {
+test("a task running when Cavvy quit shows as stopped then when the session is opened again, and the agent is told once", async () => {
     const first = await session();
     const { id } = first;
     let path: string;
@@ -170,7 +170,7 @@ test("a task running when Harness quit shows as stopped then when the session is
         await first.engine.handle(first.c, "session.stopBackground", { id, ids: [] });
         path = first.rt.session.path;
         expect(logLines(path).filter((l) => l.t === "bgtask").map((l) => l.task.status)).toEqual(["running"]);
-        // Harness quits with it running (its stop isn't written: the process is gone, not the task's own end).
+        // Cavvy quits with it running (its stop isn't written: the process is gone, not the task's own end).
         first.rt.toolState.shells.delete(sh.id);
     } finally {
         await first.engine.stop();
@@ -188,7 +188,7 @@ test("a task running when Harness quit shows as stopped then when the session is
         await engine.handle(c, "session.send", { id, text: "what happened?" });
         await until(() => rt.idle && rt.session.messages.filter((m) => m.role === "assistant").length >= 2);
         const sent = JSON.stringify([...mock.bodies].reverse().find((b) => b.tools?.length)?.messages ?? []);
-        expect(sent).toContain("These background tasks stopped when Harness quit: background command: npm run watch (bash_1)");
+        expect(sent).toContain("These background tasks stopped when Cavvy quit: background command: npm run watch (bash_1)");
         expect(rt.snapshot().state.backgroundTasks).toEqual([]);
         expect(logLines(path!).filter((l) => l.t === "bgtask").map((l) => [l.task.status, l.task.lost ?? false])).toEqual([
             ["running", false],
@@ -242,7 +242,7 @@ test("a task that ends on its own is news (a notify event, tagged per task), sta
     }
 });
 
-test("a shell the agent stops with KillShell is kept as stopped in the log, so reopening doesn't say Harness's quitting stopped it (#282 review 4)", async () => {
+test("a shell the agent stops with KillShell is kept as stopped in the log, so reopening doesn't say Cavvy's quitting stopped it (#282 review 4)", async () => {
     const { KillShellTool } = await import("../src/tools/bash");
     const first = await session();
     const { id } = first;
@@ -499,7 +499,7 @@ test("review round 3, B-R3-4: Stop on a delegated task that already finished: it
     }
 });
 
-test("the kill switch (agentCli.liveSessions false): no background notices, and the agent isn't told of tasks that stopped when Harness quit, as before", async () => {
+test("the kill switch (agentCli.liveSessions false): no background notices, and the agent isn't told of tasks that stopped when Cavvy quit, as before", async () => {
     const off = (rt: any) => (rt.ws.settings = { ...rt.ws.settings, agentCli: { liveSessions: false } });
     const first = await session();
     const { id } = first;
@@ -534,7 +534,7 @@ test("the kill switch (agentCli.liveSessions false): no background notices, and 
         await engine.handle(c, "session.send", { id, text: "what happened?" });
         await until(() => rt.idle && rt.session.messages.filter((m) => m.role === "assistant").length >= 2);
         const sent = JSON.stringify([...mock.bodies].reverse().find((b) => b.tools?.length)?.messages ?? []);
-        expect(sent).not.toContain("stopped when Harness quit");
+        expect(sent).not.toContain("stopped when Cavvy quit");
         // Written stopped all the same: not said again.
         expect(logLines(path!).filter((l) => l.t === "bgtask" && l.task.id === "bash_2").map((l) => l.task.status)).toEqual(["running", "stopped"]);
     } finally {

@@ -12,7 +12,7 @@ if (!port || !token || !cwd) throw new Error("usage: perf-seed.ts <port> <token>
 const TURNS = Number(turnsArg ?? 64);
 const OLDER = Number(process.argv[6] ?? 60);
 
-const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { protocols: ["harness.v1", `auth.${token}`] } as any);
+const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { protocols: ["cavvy.v1", `auth.${token}`] } as any);
 let next = 1;
 const waiting = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
 ws.onmessage = (m) => {

@@ -8,7 +8,7 @@ import { tildify } from "../lib/format";
 import { Popover } from "./ui/Popover";
 import { NewWorktreeDialog, RemoveWorktreeDialog, type NewWorktreeRequest, type RemoveWorktreeRequest } from "./WorktreeDialogs";
 
-/** Home's branch control, in the strip under the composer: the project's worktrees, to run the new chat in one, remove one Harness made, or make one. */
+/** Home's branch control, in the strip under the composer: the project's worktrees, to run the new chat in one, remove one Cavvy made, or make one. */
 export function WorktreePicker(p: { cwd: string; branch?: string }) {
     const [open, setOpen] = createSignal(false);
     const [creating, setCreating] = createSignal<NewWorktreeRequest>();

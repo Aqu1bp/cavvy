@@ -5,7 +5,7 @@ import { childEnv } from "./env";
 import { trustedByUser } from "../config/trust";
 
 /**
- * argv for the harness's own git calls. These run in whatever repository the
+ * argv for Cavvy's own git calls. These run in whatever repository the
  * user opened, before it is trusted: a repo's `core.fsmonitor` would
  * otherwise run its command on every `git status`.
  */
@@ -35,10 +35,10 @@ function untrustedGitEnv(): Record<string, string> {
     // Audit and discovery must inspect cwd's repository, not an inherited one.
     const env = cwdGitEnv();
     if (env.PATH !== undefined) env.PATH = env.PATH.split(delimiter).filter((d) => isAbsolute(d)).join(delimiter);
-    return { ...env, GIT_NO_LAZY_FETCH: "1", GIT_ALLOW_PROTOCOL: "harness-none" };
+    return { ...env, GIT_NO_LAZY_FETCH: "1", GIT_ALLOW_PROTOCOL: "cavvy-none" };
 }
 
-/** The command and environment a harness git call runs with. */
+/** The command and environment a Cavvy git call runs with. */
 function gitCall(args: string[]): { argv: string[]; env: Record<string, string> } {
     // Config reads cannot run fsmonitor. Audit the original settings without
     // adding our own core.fsmonitor override to the list of configured keys.
@@ -67,8 +67,8 @@ function git(cwd: string, args: string[], timeoutMs = 3000): string | undefined 
 }
 
 /**
- * The process groups of async git calls still running. Out of the harness's own group, they'd miss the
- * terminal's Ctrl-C and outlive their deadline should the harness end first: they're killed with it.
+ * The process groups of async git calls still running. Out of Cavvy's own group, they'd miss the
+ * terminal's Ctrl-C and outlive their deadline should Cavvy end first: they're killed with it.
  */
 const liveGroups = new Set<number>();
 const killGroup = (pgid: number) => {
@@ -288,7 +288,7 @@ export async function gitSnapshot(cwd: string, signal?: AbortSignal): Promise<Gi
     const [branch, main, statusSkipped, recentCommits] = await Promise.all([
         gitAsync(cwd, ["branch", "--show-current"], { signal }).then((b) => b || undefined),
         mainBranch(cwd, signal),
-        // Implicit session trust (no Harness configuration) says nothing about .git/config.
+        // Implicit session trust (no Cavvy configuration) says nothing about .git/config.
         (async () => {
             try {
                 if (!trustedByUser(cwd)) return await statusSkipReason(cwd, signal);
