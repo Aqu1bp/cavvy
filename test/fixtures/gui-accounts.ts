@@ -45,7 +45,7 @@ function fixture(initial = [defaultAccount], provider = "claude-code", extra: { 
         terminalActions: { loginAccount: (...args: any[]) => logins.push(args) },
         Menu: (p: any) => { menus.push(p); return solid.createMemo(() => p.open ? p.children : null); },
         Dialog: (p: any) => solid.createMemo(() => p.open ? p.children : null),
-        MoreHorizontal: () => null, Check: () => null, ExternalLink: () => null, ProviderIcon: () => null, Spinner: () => node("spinner"),
+        MoreHorizontal: () => null, Check: () => null, ExternalLink: () => null, Info: () => null, ProviderIcon: () => null, Spinner: () => node("spinner"),
         openExternal: (url: string) => opened.push(url),
         addAccountFor, setAddAccountFor, requestAnimationFrame: () => 0,
     });
@@ -339,16 +339,14 @@ test("invalid accounts remain visible as unavailable and removal promises to lea
     } finally { f.dispose(); }
 });
 
-test("an account that doesn't share all of Default's setup says which, with why in its tooltip", () => {
+test("an account that doesn't share all of Default's setup has an info mark saying so, and why, not a label", () => {
     const sharing = "Not shared with Default: settings.json, because Default's sets apiKeyHelper, which would sign this account in as Default.";
-    const f = fixture([defaultAccount, { ...personal, sharing, unshared: ["settings.json"] }]);
+    const f = fixture([defaultAccount, { ...personal, sharing }]);
     try {
-        expect(text(f.root)).toContain("settings.json not shared with Default");
         expect(text(f.root)).not.toContain("Not all shared");
-        expect(f.nodes().find((n) => n.props.class === "account-identity" && String(n.props.title ?? "").includes(sharing))).toBeDefined();
+        const marks = f.nodes().filter((n) => n.props.class === "account-sharing");
+        expect(marks).toHaveLength(1);
+        expect(marks[0]!.props.title).toBe(`Some of your Claude Code setup isn't shared with this account.\n\n${sharing}`);
+        expect(marks[0]!.props["aria-label"]).toBe(marks[0]!.props.title);
     } finally { f.dispose(); }
-    const many = fixture([defaultAccount, { ...personal, sharing, unshared: ["settings.json", "CLAUDE.md", "rules", "agents"] }]);
-    try {
-        expect(text(many.root)).toContain("settings.json, CLAUDE.md and 2 more not shared with Default");
-    } finally { many.dispose(); }
 });

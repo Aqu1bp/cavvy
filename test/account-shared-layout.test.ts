@@ -7,7 +7,7 @@ const iso = isolate();
 const outside = tempDir("cavvy-shared-layout-");
 const claudeDefault = process.env.CLAUDE_CONFIG_DIR!;
 const codexDefault = process.env.CODEX_HOME!;
-const { addAccount, accountEnv, accountSharingWarning, accountUnshared, removeAccount } = await import("../src/providers/accounts");
+const { addAccount, accountEnv, accountSharingWarning, removeAccount } = await import("../src/providers/accounts");
 const { saveAgentConfig } = await import("../src/providers/registry");
 const { CLAUDE_SHARED, CLAUDE_PER_ENTRY, CODEX_PRIVATE } = await import("../src/providers/account-layout");
 afterAll(() => { iso.cleanup(); rmSync(outside, { recursive: true, force: true }); });
@@ -147,8 +147,6 @@ test("an account's own files and foreign links are left alone and reported, neve
     expect(readFileSync(join(claudeDefault, "settings.json"), "utf8")).toContain("default settings.json");
     const warning = accountSharingWarning("claude-code", "own")!;
     for (const name of ["settings.json", "projects", "CLAUDE.md", "skills/mine"]) expect(warning).toContain(name);
-    // By name, for the row in Settings: each once.
-    expect(accountUnshared("claude-code", "own").sort()).toEqual(["CLAUDE.md", "projects", "settings.json", "skills/mine"]);
     // Other entries are still linked.
     expect(isLink(join(folder, "rules"))).toBe(true);
 
@@ -285,7 +283,6 @@ test("Default's settings.json isn't shared while it carries a sign-in, and its v
         const warning = accountSharingWarning("claude-code", a.id)!;
         expect(warning).toContain(key);
         expect(warning).not.toMatch(/value-\d|helper-value/);
-        expect(accountUnshared("claude-code", a.id)).toEqual(["settings.json"]);
         // Default's own file is untouched.
         expect(JSON.parse(readFileSync(settings, "utf8"))).toEqual(value);
     }

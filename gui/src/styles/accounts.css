@@ -13,6 +13,8 @@
 .account-name { flex: 0 1 auto; min-width: 0; font-size: 0.929rem; color: var(--fg); }
 .account-meta { flex: 0 1 auto; min-width: 0; font-size: 0.857rem; color: var(--fg-3); }
 .account-default { display: inline-grid; place-items: center; flex: none; color: var(--accent); }
+.account-sharing { display: inline-grid; place-items: center; flex: none; color: var(--fg-3); cursor: help; }
+.account-sharing:hover, .account-sharing:focus-visible { color: var(--fg-2); }
 /* An account's ••• shows on hover or focus, and stays while its menu is open. */
 .account-more { color: var(--fg-3); transition: opacity 140ms; }
 @media (hover: hover) {
