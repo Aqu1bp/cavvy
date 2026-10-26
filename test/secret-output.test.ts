@@ -525,8 +525,8 @@ test("round 2: exhausted session quota does not affect small outputs or keep the
     const boundary = await BashTool.run({ command: script(dir, `await write('x'.repeat(30000) + '\\n');`) }, ctx);
     expect(boundary.content).toBe("x".repeat(30000));
     expect(readdirSync(dirname(path))).toEqual(files);
-    // About 70 MB through the output pipeline, which reads a flood at most half the time: a couple of seconds alone,
-    // more than 30 in a CI shard that has run a hundred files before it.
+    // About 70 MB through the output pipeline, which reads a flood at most half the time: a couple of seconds alone
+    // on a Mac, 8 on CI's Linux, and 55 in a CI shard.
 }, 120_000);
 
 test("round 2: default Bash permission allows tail of saved output without a credentials prompt", async () => {

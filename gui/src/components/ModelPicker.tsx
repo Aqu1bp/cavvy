@@ -200,13 +200,18 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
         if (!f) return;
         setEdges(`${f.scrollLeft > 2 ? "more-l" : ""} ${f.scrollLeft + f.clientWidth < f.scrollWidth - 2 ? "more-r" : ""}`);
     };
+    /**
+     * The heading's row of accounts, its session's account scrolled into view: with more than fit, it may be past
+     * the end. The row is new each time it shows (the picker opens, its provider is picked, a search is cleared).
+     */
+    const accountsRow = (el: HTMLElement) => {
+        acctEl = el;
+        requestAnimationFrame(() => el.querySelector(".mp-ac.on")?.scrollIntoView({ block: "nearest", inline: "nearest" }));
+    };
     /** The chosen filter, scrolled into the row's view. */
-    /** The session's account in the heading's row of accounts: with more than fit, it may be past the end. */
-    const revealAccount = () => acctEl?.querySelector(".mp-ac.on")?.scrollIntoView({ block: "nearest", inline: "nearest" });
     const revealFilter = () =>
         requestAnimationFrame(() => {
             filtersEl?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
-            revealAccount();
             measureFilters();
         });
 
@@ -225,7 +230,6 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                     if (!p.open) return;
                     list?.querySelector(".mr.sel")?.scrollIntoView({ block: "nearest" });
                     filtersEl?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
-                    revealAccount();
                     measureFilters();
                 });
             },
@@ -357,7 +361,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
 
     /** A subscription's accounts, in its heading: the session's one filled; one alone goes by its name. */
     const accounts = (provider: string) => (
-        <span class="mp-accts" ref={acctEl}>
+        <span class="mp-accts" ref={accountsRow}>
             <Show
                 when={accountChoices(provider).length > 1 || missingAccount(provider)}
                 fallback={

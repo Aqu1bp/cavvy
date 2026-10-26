@@ -123,8 +123,9 @@ export async function checkModelPicker(root: HTMLElement) {
 
         // Search still matches ids, though names don't show them: "haiku-4-5" isn't in Haiku 4.5's name. Results sit
         // under their provider's name.
-        const search = document.querySelector<HTMLInputElement>(".mp-search input")!;
+        // The field as it is now: reopening the picker builds a new one.
         const type = (value: string) => {
+            const search = document.querySelector<HTMLInputElement>(".mp-search input")!;
             search.value = value;
             search.dispatchEvent(new InputEvent("input", { bubbles: true }));
         };
@@ -233,6 +234,12 @@ export async function checkModelPicker(root: HTMLElement) {
         // Opening on many: the session's account, the last of 20, is the one in view.
         await reopen("with 20 accounts again");
         check(pressed() === "Account 20" && inside(pill("Account 20"), shown()) && hit(pill("Account 20")), `the picker opens with the session's account, the last of 20, in view (row ${JSON.stringify(shown())}, account ${JSON.stringify(pill("Account 20").getBoundingClientRect())}, scrolled ${strip()!.scrollLeft} of ${strip()!.scrollWidth - strip()!.clientWidth})`);
+        // A search takes the heading away, and clearing it builds the row of accounts again: the session's is still in view.
+        type("haiku");
+        await settle();
+        type("");
+        await settle();
+        check(inside(pill("Account 20"), shown()) && hit(pill("Account 20")), `a cleared search leaves the session's account, the last of 20, in view (scrolled ${strip()!.scrollLeft} of ${strip()!.scrollWidth - strip()!.clientWidth})`);
     } finally {
         if (motion === undefined) delete document.documentElement.dataset.motion;
         else document.documentElement.dataset.motion = motion;

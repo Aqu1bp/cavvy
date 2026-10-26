@@ -27,12 +27,14 @@ let dispose = () => {};
 const mount = async (handle: any) => { dispose(); dispose = render(() => <Transcript handle={handle} dock={100} />, root); await settle(); await grown(); };
 /** Past the first screens, turns go in a few at a time, a frame apart (Transcript's staged mount): until the count holds. */
 const grown = async () => {
-    for (let last = -1, same = 0, i = 0; same < 2 && i < 100; i++) {
+    let same = 0;
+    for (let last = -1, i = 0; same < 2 && i < 100; i++) {
         const n = root.querySelectorAll("[data-turn]").length;
         same = n === last ? same + 1 : 0;
         last = n;
         await settle();
     }
+    if (same < 2) throw new Error("transcript scroll: the transcript was still adding turns after 100 frames");
 };
 const scroll = async (value: number) => { scroller().scrollTop = value; await settle(); };
 

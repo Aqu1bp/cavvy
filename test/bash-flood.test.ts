@@ -78,10 +78,11 @@ function wholeLines(content: string): string[] {
 describe("a background flood", () => {
     test("leaves the server its turns, and BashOutput (filtered or not) answers while it runs", async () => {
         const { ctx, dir } = setup();
-        // A flood for a set time, not a set size: a fast machine prints 20 MB in under 50 ms, over before the reads below.
-        const flood = "const chunk = 'GET /a 200\\nPOST /b 500\\n'.repeat(1000); const end = Date.now() + 400; while (Date.now() < end) await write(chunk); await write('FINAL_MARKER\\n');";
+        // A flood for a set time as well as a set size: a fast machine prints 20 MB in under 50 ms, over before the
+        // reads below, and a slow one still sends 5 MB, five times what the ring keeps.
+        const flood = "const chunk = 'GET /a 200\\nPOST /b 500\\n'.repeat(1000); const end = Date.now() + 400; let sent = 0; while (Date.now() < end || sent < 5e6) { await write(chunk); sent += chunk.length; } await write('FINAL_MARKER\\n');";
         const { id, shell } = await background(ctx, script(dir, flood));
-        // Once it has started (its runtime takes a moment to): the reads below are then all in the flood.
+        // Once it has started (its runtime takes a moment to), so the reads below begin while it runs.
         for (let i = 0; i < 1000 && !shell.output.includes("POST /b 500"); i++) await Bun.sleep(5);
         const reads: string[] = [];
         const { turns } = await turnsDuring(async () => {
@@ -94,6 +95,7 @@ describe("a background flood", () => {
         // Old: Bun's pipe read kept the event loop for the whole flood, so no timer ran until it ended.
         expect(turns).toBeGreaterThanOrEqual(5);
         expect(reads.length).toBeGreaterThan(0);
+        expect(reads[0]).toContain("<status>running</status>");
         for (const r of reads) expect(r).toContain("POST /b 500");
         // Filtered reads keep only matching lines.
         for (const r of reads.filter((_, i) => i % 2)) for (const line of wholeLines(r)) expect(line).toBe("POST /b 500");
