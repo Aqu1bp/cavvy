@@ -6,7 +6,7 @@ import { activate, app, toast, type SessionHandle } from "../state/app";
 import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setJumpTarget, setRewindOpen, takeDockGlide } from "../state/ui";
 import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
-import { anchoredTop, atBottom, FAR, firstBelow, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
+import { anchoredTop, atBottom, FAR, firstBelow, firstWindow, MORE_TURNS, restoredShown, turnHeight, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
 import { turnAt } from "../lib/find";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
 import { revealing } from "../lib/reveal";
@@ -50,7 +50,18 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     const [stick, setStick] = createSignal(saved?.bottom ?? true);
     /** Scrolled all the way down: "Latest" has nothing to jump to, following the end or not. */
     const [scrolledDown, setScrolledDown] = createSignal(true);
-    const [shown, setShown] = createSignal(restoredShown(p.handle.view.turns.map((t) => t.id), saved));
+    // At first only about two screens of turns: the last ones, or (reopened where it was being read) those around the
+    // place read. The rest of the page goes in a moment after (grow, below).
+    const ids = p.handle.view.turns.map((t) => t.id);
+    const target = restoredShown(ids, saved);
+    const opensAtEnd = saved?.bottom ?? true;
+    const anchorIndex = !opensAtEnd && saved?.anchor ? ids.indexOf(saved.anchor.turnId) : -1;
+    const first = !opensAtEnd && anchorIndex < 0
+        ? { shown: target, trimmed: 0 }
+        : firstWindow(p.handle.view.turns.map(turnHeight), target, opensAtEnd ? undefined : anchorIndex, window.innerHeight);
+    const [shown, setShown] = createSignal(first.shown);
+    /** Turns at the very end not mounted yet (reopened mid-way: those below the place read go in first). */
+    const [trimmed, setTrimmed] = createSignal(first.trimmed);
     let reading = saved?.anchor;
     let ready = false;
     let smoothScroll = false;
@@ -92,9 +103,10 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     const turns = () => p.handle.view.turns;
     const visible = createMemo(() => {
         const t = turns();
-        return t.length > shown() ? t.slice(t.length - shown()) : t;
+        return t.slice(Math.max(0, t.length - shown()), t.length - trimmed());
     });
-    const hidden = () => Math.max(0, turns().length - shown());
+    /** Turns above the page, for "Show earlier" (not those still going in at first: grow, in onMount). */
+    const hidden = () => Math.max(0, turns().length - Math.max(shown(), target));
 
     const toBottom = (smooth = false) => {
         if (!scroller) return;
@@ -344,6 +356,30 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             if (stick()) toBottom();
             else { scroller!.scrollTop = saved?.top ?? 0; restore(); }
         });
+        // The rest of the turns this view shows, a few at a time once the first screen is painted: each batch goes in
+        // above, between frames. Followed at the end, the end stays in view; read further up, the place read stays put.
+        let growing = 0;
+        let gone = false;
+        const pending = () => trimmed() > 0 || shown() < target;
+        const grow = () => {
+            growing = 0;
+            if (gone || !pending()) return;
+            if (!stick()) reading = capture();
+            // Below the place read first, then above it.
+            if (trimmed() > 0) setTrimmed((n) => Math.max(0, n - MORE_TURNS));
+            else setShown((n) => (n >= target ? n : Math.min(target, n + MORE_TURNS)));
+            // Solid has inserted them; before paint, the end (or the place read) where it was.
+            if (stick()) toBottom();
+            else restore();
+            if (pending()) later();
+        };
+        // After the frame paints: a frame, then a task.
+        const later = () => (growing = requestAnimationFrame(() => setTimeout(grow, 0)));
+        if (pending()) later();
+        onCleanup(() => {
+            gone = true;
+            cancelAnimationFrame(growing);
+        });
     });
     onCleanup(() => {
         cancelAnimationFrame(frame);
@@ -360,7 +396,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         reading = capture();
         smoothScroll = false;
         setStick(false);
-        setShown((n) => n + PAGE);
+        setShown((n) => Math.max(n, target) + PAGE);
         // Solid has inserted the page synchronously; compensate before paint.
         restore();
     };
@@ -551,6 +587,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         if (i < 0) return;
         reading = undefined; // Explicit navigation owns the next position.
         const need = turns().length - i;
+        setTrimmed(0);
         if (shown() < need) setShown(Math.ceil(need / PAGE) * PAGE);
         smoothScroll = false;
         setStick(false);

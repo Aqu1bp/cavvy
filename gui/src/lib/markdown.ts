@@ -491,3 +491,55 @@ export function renderMarkdown(text: string): string {
         return `<p>${escapeHtml(text)}</p>`;
     }
 }
+
+/** What replies hold, for warmMarkdown: each kind of block and inline mark, paths and links. */
+const WARM_SAMPLE = `Here's how a turn moves through it — the server owns the session; the window is a view of it.
+
+## How a turn runs
+
+The engine takes the prompt, calls the model and streams **every event** back, as _it happens_. See \`src/server/session.ts:42\`, \`sendPrompt()\` and [the docs](https://example.com/docs).
+
+1. **Prompt** — the composer sends it
+2. **Model call** — a stream to the provider
+   - text deltas append to the last block
+   - tool calls become cards, each with *its own* status
+3. **Tools**: run in the folder (\`~/.cavvy/sessions\`, ./src/index.ts)
+
+### The append path
+
+- [x] streamed
+- [ ] saved
+
+> A turn interrupted keeps what it did.
+> Resume picks it up.
+
+\`\`\`ts
+function onDelta(turn: Turn, delta: string) {
+    const last = turn.blocks.at(-1);
+    if (last?.t === "text") last.text += delta;
+}
+\`\`\`
+
+\`\`\`
+plain output
+\`\`\`
+
+| Part | Owns | Lines |
+| --- | :--- | ---: |
+| Server | sessions, turns | 120 |
+| GUI | scroll, panels | 48 |
+
+---
+
+Done: ~~nothing~~ everything passes (12/12), see https://example.com and src/lib/markdown.ts#L10.`;
+
+/**
+ * Renders a sample reply once, to be called when the app is idle after it starts. The first reply a window shows is
+ * otherwise also the first time the lexer's patterns are compiled and its code runs, about ten times slower than after:
+ * measured, most of the first long session's opening.
+ */
+export function warmMarkdown() {
+    try {
+        new MarkdownRenderer().segments(WARM_SAMPLE, false);
+    } catch { /* a sample that doesn't render costs only the warming */ }
+}
