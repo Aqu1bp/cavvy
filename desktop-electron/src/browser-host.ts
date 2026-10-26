@@ -40,8 +40,8 @@ interface Tab {
     personAt: number;
     /** The popup windows it opened for the person, and the ones those opened. */
     popups: Set<BrowserWindow>;
-    /** The sessions of its frames from other sites. */
-    children: Set<string>;
+    /** The sessions of its frames from other sites, each with the frame's session it's in (undefined: the page). */
+    children: Map<string, string | undefined>;
     frozen: boolean;
     /** Chromium refused to freeze it once: it isn't tried again. */
     unfreezable?: boolean;
@@ -52,6 +52,8 @@ interface Channel {
     partition: string;
     session: Session;
     tabs: Map<string, Tab>;
+    /** When the server was last told it's in use (Cavvy.inUse). */
+    inUseAt: number;
 }
 
 /** Webviews the GUI is making: will-attach-webview names them (by src), did-attach-webview hands over their page. */
@@ -59,7 +61,8 @@ const WEBVIEW_SRC = /^about:blank#(tab-\d+)$/;
 const PERSON_INPUT = new Set(["mouseDown", "keyDown", "mouseWheel"]);
 /** A tab unseen and unused this long sleeps (checks may shorten it with CAVVY_ELECTRON_FREEZE_MS). */
 const FREEZE_AFTER_MS = Number(process.env.CAVVY_ELECTRON_FREEZE_MS ?? 30_000);
-/** How often the server hears that a project's browser is in use here (Cavvy.inUse), so it isn't closed as idle. */
+/** How often, at most, the server hears that a project's browser is in use here (Cavvy.inUse), so it isn't closed as
+ *  idle: well within the ten minutes it waits. */
 const IN_USE_EVERY_MS = 60_000;
 /** An asleep tab's page process using more CPU than this (%, over the last 5s) is put back to sleep. */
 const BUSY_ASLEEP_PERCENT = 1;
@@ -84,7 +87,6 @@ export class BrowserHost {
     private tabsById = new Map<string, Tab>();
     private tabsByKey = new Map<string, Tab>();
     private seq = 0;
-    private inUseAt = 0;
     private attaching: string[] = [];
     private attachWaiters = new Map<string, (wc: WebContents) => void>();
     private closing = false;
@@ -158,7 +160,9 @@ export class BrowserHost {
         this.stats.lastShown = keys;
         for (const key of keys) {
             const tab = this.tabsByKey.get(key);
-            if (tab) void this.wake(tab);
+            if (!tab) continue;
+            void this.wake(tab);
+            this.inUse(tab.channel);
         }
     }
 
@@ -177,15 +181,20 @@ export class BrowserHost {
 
     /**
      * The server closes a browser nobody has used for a while; it sees the agent's calls, not a person looking at or using
-     * a tab here. A project's browser with a tab on screen, or one the person used lately, is said to be in use.
+     * a tab here. A project's browser with a tab on screen, or one the person used lately, is said to be in use: at once
+     * when a tab is shown or used, and again while it stays so.
      */
     private reportInUse(now: number) {
-        if (now - this.inUseAt < IN_USE_EVERY_MS) return;
-        this.inUseAt = now;
         for (const channel of this.channels.values()) {
             const used = [...channel.tabs.values()].some((t) => !t.closed && (this.onScreen.has(t.key) || now - t.personAt < IN_USE_EVERY_MS));
-            if (used) this.event(channel, "Cavvy.inUse", {});
+            if (used) this.inUse(channel, now);
         }
+    }
+
+    private inUse(channel: Channel, now = Date.now()) {
+        if (now - channel.inUseAt < IN_USE_EVERY_MS) return;
+        channel.inUseAt = now;
+        this.event(channel, "Cavvy.inUse", {});
     }
 
     private async resleep(tab: Tab) {
@@ -306,7 +315,7 @@ export class BrowserHost {
         });
         // No camera, microphone, location or notifications for pages; full screen stays in the view.
         ses.setPermissionRequestHandler((_wc, permission, done) => done(permission === "fullscreen" || permission === "clipboard-sanitized-write"));
-        this.channels.set(id, { id, partition, session: ses, tabs: new Map() });
+        this.channels.set(id, { id, partition, session: ses, tabs: new Map(), inUseAt: 0 });
     }
 
     private closeChannel(channel: Channel, tell: boolean) {
@@ -399,7 +408,7 @@ export class BrowserHost {
         if (wc.isLoading()) await new Promise<void>((r) => wc.once("did-stop-loading", () => r()));
         wc.debugger.attach("1.3");
         const { targetInfo } = (await wc.debugger.sendCommand("Target.getTargetInfo")) as { targetInfo: { targetId: string } };
-        const tab: Tab = { targetId: targetInfo.targetId, sid: `desktop-${n}`, key, wc, channel, openerId, agentInputs: 0, closed: false, usedAt: Date.now(), personAt: 0, popups: new Set(), children: new Set(), frozen: false };
+        const tab: Tab = { targetId: targetInfo.targetId, sid: `desktop-${n}`, key, wc, channel, openerId, agentInputs: 0, closed: false, usedAt: Date.now(), personAt: 0, popups: new Set(), children: new Map(), frozen: false };
         channel.tabs.set(tab.targetId, tab);
         this.tabsById.set(tab.targetId, tab);
         this.tabsBySid.set(tab.sid, tab);
@@ -412,12 +421,9 @@ export class BrowserHost {
             if (from && !tab.children.has(from)) return;
             const p = params as { sessionId?: string; targetInfo?: { type?: string } };
             if (method === "Target.attachedToTarget" && p.sessionId && p.targetInfo?.type === "iframe") {
-                tab.children.add(p.sessionId);
+                tab.children.set(p.sessionId, from);
                 this.childOf.set(p.sessionId, tab);
-            } else if (method === "Target.detachedFromTarget" && p.sessionId) {
-                tab.children.delete(p.sessionId);
-                this.childOf.delete(p.sessionId);
-            }
+            } else if (method === "Target.detachedFromTarget" && p.sessionId) this.forgetFrame(tab, p.sessionId);
             this.event(channel, method, params, from ?? tab.sid);
         });
         wc.debugger.on("detach", () => this.closeTab(tab, true));
@@ -444,6 +450,7 @@ export class BrowserHost {
             if (tab.agentInputs > 0 || !PERSON_INPUT.has(type)) return;
             tab.usedAt = tab.personAt = Date.now();
             this.event(channel, "Cavvy.humanInput", { type }, tab.sid);
+            this.inUse(channel);
         };
         wc.on("before-input-event", (_e, input) => person(input.type));
         wc.on("before-mouse-event", (_e, mouse) => person(mouse.type));
@@ -477,6 +484,13 @@ export class BrowserHost {
         });
     }
 
+    /** A frame's session that ended, with those of the frames inside it, which may not be told of on their own. */
+    private forgetFrame(tab: Tab, session: string) {
+        for (const [child, parent] of tab.children) if (parent === session) this.forgetFrame(tab, child);
+        tab.children.delete(session);
+        this.childOf.delete(session);
+    }
+
     private closeTab(tab: Tab, tell: boolean) {
         if (tab.closed) return;
         tab.closed = true;
@@ -484,7 +498,7 @@ export class BrowserHost {
         this.tabsById.delete(tab.targetId);
         this.tabsBySid.delete(tab.sid);
         this.tabsByKey.delete(tab.key);
-        for (const child of tab.children) this.childOf.delete(child);
+        for (const child of tab.children.keys()) this.childOf.delete(child);
         tab.children.clear();
         try {
             if (!tab.wc.isDestroyed() && tab.wc.debugger.isAttached()) tab.wc.debugger.detach();
