@@ -203,7 +203,9 @@ const harnessPids = () =>
         .split("\n")
         .filter(Boolean)
         .map(Number);
-const harness = !restart && process.env.HARNESS_HOME !== undefined && process.env.CAVVY_HOME === undefined ? harnessPids() : [];
+// Only when that updater means to restart: given --no-restart itself (it passes it on either way), Harness carries on.
+const updaterArgs = () => Bun.spawnSync(["ps", "-o", "args=", "-p", String(process.ppid)]).stdout.toString();
+const harness = !restart && process.env.HARNESS_HOME !== undefined && process.env.CAVVY_HOME === undefined && !/\s--no-restart(\s|$)/.test(updaterArgs()) ? harnessPids() : [];
 if (harness.length) {
     const script = `
         pkill -a -TERM -U "$1" -f "/$2.app/Contents/MacOS/harness-desktop"

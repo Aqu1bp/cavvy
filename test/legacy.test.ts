@@ -119,6 +119,19 @@ describe("moving the home folder", () => {
         expect(existsSync(join(home, "accounts", "claude-code", "work", ".cavvy-shared-from"))).toBe(true);
     });
 
+    test("an account folder that can't be looked into leaves the move to be finished next time", () => {
+        const old = harnessHome();
+        const home = join(T, ".cavvy");
+        chmodSync(join(old, "accounts", "claude-code", "work"), 0o000);
+        try {
+            expect(moveLegacyHome(home, old).notes.join("\n")).toContain("isn't finished");
+        } finally {
+            chmodSync(join(home, "accounts", "claude-code", "work"), 0o700);
+        }
+        expect(moveLegacyHome(home, old).notes[0]).toContain("Harness is now Cavvy");
+        expect(existsSync(join(home, "accounts", "claude-code", "work", ".cavvy-shared-from"))).toBe(true);
+    });
+
     test("a ~/.harness that was a link elsewhere: stored paths become the real ones accounts are checked by", () => {
         const real = join(T, "volume", "harness-state");
         mkdirSync(join(real, "accounts", "codex", "w"), { recursive: true });

@@ -183,11 +183,12 @@ function renameAccountMarkers(accounts: string): { claude: boolean; renamed: boo
         for (const id of ids ?? []) {
             if (id.startsWith(".")) continue; // .leases
             if (provider === "claude-code") claude = true;
-            const old = join(accounts, provider, id, LEGACY.accountMarker);
-            const now = join(accounts, provider, id, ".cavvy-shared-from");
-            if (exists(old) && !exists(now)) {
+            const old = present(join(accounts, provider, id, LEGACY.accountMarker));
+            const now = present(join(accounts, provider, id, ".cavvy-shared-from"));
+            if (old === undefined || now === undefined) renamed = false;
+            else if (old && !now) {
                 try {
-                    renameSync(old, now);
+                    renameSync(join(accounts, provider, id, LEGACY.accountMarker), join(accounts, provider, id, ".cavvy-shared-from"));
                 } catch {
                     renamed = false; // tried again next start; meanwhile the account doesn't share the default folder's files
                 }
@@ -197,18 +198,32 @@ function renameAccountMarkers(accounts: string): { claude: boolean; renamed: boo
     return { claude, renamed };
 }
 
-/** The folders in `dir`: none when there's no `dir`, undefined when it can't be read. */
+/** The folders in `dir`: none when there's no `dir`, undefined when it or one in it can't be read. */
 function list(dir: string): string[] | undefined {
+    let names: string[];
     try {
-        return readdirSync(dir).filter((n) => {
-            try {
-                return lstatSync(join(dir, n)).isDirectory();
-            } catch {
-                return false;
-            }
-        });
+        names = readdirSync(dir);
     } catch (e: any) {
         return e?.code === "ENOENT" ? [] : undefined;
+    }
+    const out: string[] = [];
+    for (const n of names) {
+        try {
+            if (lstatSync(join(dir, n)).isDirectory()) out.push(n);
+        } catch (e: any) {
+            if (e?.code !== "ENOENT") return undefined;
+        }
+    }
+    return out;
+}
+
+/** Whether `p` is there; undefined when that can't be told (no permission to look). */
+function present(p: string): boolean | undefined {
+    try {
+        lstatSync(p);
+        return true;
+    } catch (e: any) {
+        return e?.code === "ENOENT" ? false : undefined;
     }
 }
 
