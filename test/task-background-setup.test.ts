@@ -11,6 +11,8 @@ const { TaskTool } = await import("../src/tools/meta-tools");
 const { Agent } = await import("../src/agent/agent");
 const { Session } = await import("../src/agent/session");
 const { PermissionChecker } = await import("../src/permissions/checker");
+const { App } = await import("../src/ui/app");
+const { runCommand } = await import("../src/commands/index");
 afterAll(() => iso.cleanup());
 
 const reply = (content: unknown[], stopReason: string) => ({ role: "assistant", content, provider: "anthropic", model: "claude-x", stopReason, usage: { inputTokens: 1, outputTokens: 1 } });
@@ -90,11 +92,31 @@ test("Stop (Esc) while a background agent's model is resolving: it doesn't start
     expect(resultText(s.session)).not.toContain("Started background task");
 });
 
-test("/tasks stop while a background agent's model is resolving: it doesn't start, and the model is told why", async () => {
+test("stopping every delegated task while a background agent's model is resolving: it doesn't start, and the model is told why", async () => {
     const s = setup();
     const turn = s.agent.run([{ type: "text", text: "start bg" }], { signal: new AbortController().signal, display: "p" });
     await untilResolving(s);
     expect(s.agent.stopDelegated()).toBe(0);
+    s.release();
+    await turn;
+    await Bun.sleep(100);
+    expect(s.agent.delegatedTasks).toEqual([]);
+    expect(s.childRequests).toEqual([]);
+    expect(resultText(s.session)).toContain("wasn't started");
+});
+
+test("/tasks stop all while a background agent's model is resolving: it doesn't start, though none is listed yet", async () => {
+    const s = setup();
+    const turn = s.agent.run([{ type: "text", text: "start bg" }], { signal: new AbortController().signal, display: "p" });
+    await untilResolving(s);
+    const app = new App({ cwd: s.session.meta.cwd, trusted: true, mode: "default", allowBypass: false, startupNotes: [] });
+    const notes: string[] = [];
+    (app as any).screen = { print: () => ({}), replace() {}, redraw() {}, setLive() {}, settle() {}, flushNow() {}, stop() {}, clearScreen() {}, focus: true };
+    app.session = s.session;
+    app.agent = s.agent;
+    app.notice = (m: string, level = "info") => void notes.push(`${level}: ${m}`);
+    await runCommand(app, "/tasks stop all");
+    expect(notes).toEqual(["info: No background tasks are running."]);
     s.release();
     await turn;
     await Bun.sleep(100);
