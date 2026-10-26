@@ -2,7 +2,7 @@
 import { createHash } from "crypto";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { isAbsolute, delimiter, join } from "path";
+import { isAbsolute, delimiter, join, resolve } from "path";
 import { gitArgv, gitEnv, gitNetworkSkipReason } from "../util/git";
 import { redact } from "../util/redact";
 import type { GitPublishInfo, GitPublishRequest, GitPrInfo } from "./protocol";
@@ -35,17 +35,26 @@ async function run(cwd: string, args: string[], network = false, signal?: AbortS
         delete env.GH_HOST;
     }
     if (!network) env.GIT_ALLOW_PROTOCOL = "harness-none";
-    // A network call runs from an empty folder of its own, git told the repository by --git-dir: git runs a helper
-    // (an ssh command, a credential helper, a proxy) from where it is, so one the user's own settings name by a
-    // relative path can't reach the repository's files (#107). In the repository, git would run it at its top.
-    let away: string | undefined;
-    const gitDir = network && args[0] === "git" ? await git(cwd, ["rev-parse", "--absolute-git-dir"], signal) : undefined;
-    const argv = args[0] === "git" ? gitArgv([...(gitDir ? [`--git-dir=${gitDir}`] : []), "-c", "core.hooksPath=/dev/null", ...args.slice(1)]) : args;
+    // A network call runs from an empty folder of its own, git told the repository by --git-dir and that folder as
+    // its work tree (whatever core.worktree says): git runs a helper (an ssh command, a credential helper, a proxy)
+    // at its work tree's top, so one the user's own settings name by a relative path can't reach the repository's
+    // files (#107). In the repository, that's the repository.
+    const away = network ? mkdtempSync(join(tmpdir(), "harness-net-")) : undefined;
+    let gitDir: string | undefined;
+    try {
+        if (away && args[0] === "git") gitDir = await git(cwd, ["rev-parse", "--absolute-git-dir"], signal);
+    } catch (e) {
+        rmSync(away!, { recursive: true, force: true });
+        throw e;
+    }
+    const argv = args[0] === "git" ? gitArgv([...(gitDir ? [`--git-dir=${gitDir}`, `--work-tree=${away}`] : []), "-c", "core.hooksPath=/dev/null", ...args.slice(1)]) : args;
     // Resolve with the same sanitized PATH passed to the child; do not fall back
     // to the server's startup PATH when a CLI disappears or PATH changes.
     const executable = Bun.which(argv[0]!, { PATH: env.PATH ?? "", cwd });
-    if (!executable) throw fail(`${args[0]} is not installed or could not be started.`, "unavailable");
-    if (network) away = mkdtempSync(join(tmpdir(), "harness-net-"));
+    if (!executable) {
+        if (away) rmSync(away, { recursive: true, force: true });
+        throw fail(`${args[0]} is not installed or could not be started.`, "unavailable");
+    }
     let proc;
     try {
         proc = Bun.spawn([executable, ...argv.slice(1)], { cwd: away ?? cwd, env, detached: true, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
@@ -146,7 +155,8 @@ async function local(cwd: string, signal?: AbortSignal) {
     }
     const urls = pushUrls.length ? pushUrls : fetchUrls;
     if (urls.length !== 1 || !urls[0] || /[\x00-\x20\x7f]/.test(urls[0]) || urls[0].startsWith("-") || urls[0].includes("::")) throw fail("Use one ordinary push URL for this remote.", "invalid");
-    const url = urls[0];
+    // A folder's path, read from the work tree's top as git reads it there: the network calls run elsewhere (run()).
+    const url = localPath(urls[0]) && !isAbsolute(urls[0]) ? resolve(await git(cwd, ["rev-parse", "--show-toplevel"], signal), urls[0]) : urls[0];
     let ahead: number | undefined, behind: number | undefined;
     if (tracking) {
         const counts = await git(cwd, ["rev-list", "--left-right", "--count", `${sha}...${tracking}`, "--"], signal, false, true);
@@ -154,6 +164,13 @@ async function local(cwd: string, signal?: AbortSignal) {
     }
     const fingerprint = createHash("sha256").update(JSON.stringify({ branch, sha, remote, target, url, hasUpstream })).digest("hex");
     return { branch, sha, remote, target, url, hasUpstream, ahead, behind, fingerprint };
+}
+/** Whether a remote URL is a folder's path, as git tells: no scheme://, and no host: before a slash (scp-like ssh). */
+function localPath(url: string): boolean {
+    if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(url)) return false;
+    if (process.platform === "win32" && /^[A-Za-z]:[\\/]/.test(url)) return true;
+    const colon = url.indexOf(":");
+    return colon === -1 || (url.indexOf("/") !== -1 && url.indexOf("/") < colon);
 }
 /** Where a push would go now (git only, no network), with the fingerprint gitPublish checks. */
 export async function gitPushTarget(cwd: string, signal?: AbortSignal) {

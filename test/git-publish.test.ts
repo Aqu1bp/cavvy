@@ -1,6 +1,6 @@
 import { afterAll, expect, test, setDefaultTimeout } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
-import { join, relative } from "path";
+import { basename, join, relative } from "path";
 import { isolate } from "./helpers/isolate";
 import { publishFixtures } from "./helpers/git-publish";
 setDefaultTimeout(120_000);
@@ -413,6 +413,25 @@ test("network calls run from an empty folder of their own: a helper the user's s
         expect(at.empty).toBe(true);
         expect(existsSync(at.cwd)).toBe(false);
     }
+    // Git's with the repository given, and that folder as its work tree: a core.worktree of the repository's can't
+    // send git back to the checkout to run a helper.
+    const gitCalls = calls(state, ".git-calls");
+    expect(gitCalls.length).toBeGreaterThanOrEqual(2);
+    for (const args of gitCalls) {
+        expect(args.some((arg) => arg.startsWith("--git-dir="))).toBe(true);
+        const workTree = args.find((arg) => arg.startsWith("--work-tree="))?.slice("--work-tree=".length);
+        // By name: one is the other with the system's links followed (/tmp, /private/tmp).
+        expect(cwds.map((at) => basename(at.cwd))).toContain(basename(workTree ?? ""));
+    }
+});
+
+test("a remote that's a relative folder path is read from the work tree, as git reads it there (#107)", async () => {
+    const { cwd, remote } = repo();
+    git(cwd, "remote", "set-url", "origin", relative(cwd, remote));
+    const preview = await gitPublishInfo(cwd);
+    expect(preview.destination).toBe(remote);
+    await gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" });
+    expect(git(remote, "rev-parse", "feature")).toBe(git(cwd, "rev-parse", "HEAD"));
 });
 
 test("a push to the confirmed URL moves the tracking refs the remote's fetch refspecs name, as git would (#107)", async () => {
