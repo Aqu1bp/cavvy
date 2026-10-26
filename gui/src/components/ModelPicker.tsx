@@ -201,9 +201,12 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
         setEdges(`${f.scrollLeft > 2 ? "more-l" : ""} ${f.scrollLeft + f.clientWidth < f.scrollWidth - 2 ? "more-r" : ""}`);
     };
     /** The chosen filter, scrolled into the row's view. */
+    /** The session's account in the heading's row of accounts: with more than fit, it may be past the end. */
+    const revealAccount = () => acctEl?.querySelector(".mp-ac.on")?.scrollIntoView({ block: "nearest", inline: "nearest" });
     const revealFilter = () =>
         requestAnimationFrame(() => {
             filtersEl?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
+            revealAccount();
             measureFilters();
         });
 
@@ -222,6 +225,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                     if (!p.open) return;
                     list?.querySelector(".mr.sel")?.scrollIntoView({ block: "nearest" });
                     filtersEl?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
+                    revealAccount();
                     measureFilters();
                 });
             },

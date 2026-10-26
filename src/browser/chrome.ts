@@ -123,7 +123,9 @@ export function chromeArgs(o: ChromeArgsOptions): string[] {
     return [
         // Headless Chrome otherwise captures a 1x compositor surface even when emulated DPR is 2.
         // A Retina surface preserves text detail; each viewer caps output to its backing-store size.
-        ...(o.headless ? ["--headless=new", "--force-device-scale-factor=2"] : []),
+        // No scrollbars: on Linux they'd take 15px of the viewport, so a page (and its screenshots and frames) would be
+        // narrower there than on macOS, whose scrollbars sit over the page.
+        ...(o.headless ? ["--headless=new", "--force-device-scale-factor=2", "--hide-scrollbars"] : []),
         // navigator.webdriver stays false: sites (Google's search, YouTube) answer an automated browser with a robot check.
         "--disable-blink-features=AutomationControlled",
         usesPipe(o) ? "--remote-debugging-pipe" : "--remote-debugging-port=0",

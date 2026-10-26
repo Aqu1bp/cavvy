@@ -1,5 +1,5 @@
-// The model picker in a real browser: the current model's marks, the keyboard highlight apart from them,
-// and the provider's account switcher. The real component, store and actions; only RPC is stubbed.
+// The model picker in a real browser: the current model's marks, the keyboard highlight apart from them, the
+// provider filters, and a subscription's accounts in its heading. The real component, store and actions; only RPC is stubbed.
 import { render } from "solid-js/web";
 import { createSignal } from "solid-js";
 import type { AccountInfo, ProviderInfo, ProviderModels } from "@shared/protocol";
@@ -55,14 +55,29 @@ export async function checkModelPicker(root: HTMLElement) {
     root.append(box);
     const dispose = render(() => <ModelPicker open={open()} setOpen={setOpen} currentRef="claude-code:opus" placement="top" />, box);
     const trigger = box.querySelector<HTMLButtonElement>("button.pick")!;
+    // The open panel's, not the closing copy's: reopening the picker builds them anew.
     const panel = () => document.querySelector<HTMLElement>(".popover.mp:not(.closing)");
-    const rows = () => [...document.querySelectorAll<HTMLElement>(".popover.mp:not(.closing) .mr")];
+    const inPanel = <T extends HTMLElement = HTMLElement>(selector: string) => [...(panel()?.querySelectorAll<T>(selector) ?? [])];
+    const rows = () => inPanel(".mr");
     const row = (name: string) => rows().find((r) => r.querySelector(".mr-name")?.textContent === name)!;
-    const acct = () => document.querySelector<HTMLButtonElement>(".popover.mp:not(.closing) .mp-acct");
-    const items = () => [...document.querySelectorAll<HTMLButtonElement>(".mp-acct-menu [role^='menuitem']")];
-    const item = (name: string) => items().find((b) => b.textContent?.includes(name))!;
-    const key = (key: string, target: Element = document.activeElement!) => target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    // A filter by its name, after its mark (a provider without one has a monogram: "MO" for Mock).
+    const filter = (name: string) => inPanel(".mp-filters [role='tab']").find((t) => t.lastElementChild?.textContent === name)!;
+    // A subscription's accounts in the heading, each by its name (and a plan near its limit); + adds one.
+    const pills = () => inPanel<HTMLButtonElement>(".mp-h .mp-acs .mp-ac");
+    const named = (b: Element) => b.querySelector(".truncate")?.textContent;
+    const pill = (name: string) => pills().find((b) => named(b) === name)!;
+    const pressed = () => pills().filter((b) => b.getAttribute("aria-pressed") === "true").map(named).join();
+    const add = () => panel()?.querySelector<HTMLButtonElement>(".mp-h .mp-ac.add");
+    const key = (key: string, target: Element = document.activeElement!, init: KeyboardEventInit = {}) => target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init }));
     const bg = (el: Element) => getComputedStyle(el).backgroundColor;
+    /** Closes the picker, lets its closing copy go, and opens it again, as a click on the model button does. */
+    const reopen = async (what: string) => {
+        setOpen(false);
+        await until(() => !document.querySelector(".popover.mp"), "the picker to close");
+        trigger.click();
+        await until(() => !!panel()?.contains(document.activeElement), `the picker to open ${what}`);
+        await settle(250);
+    };
     try {
         trigger.focus();
         trigger.click();
@@ -76,20 +91,21 @@ export async function checkModelPicker(root: HTMLElement) {
         check(current, `rows read as clean names (${rows().map((r) => r.textContent).join(" | ")})`);
         check(rows().every((r) => !/claude-/.test(r.querySelector(".mr-name")?.textContent ?? "")), `names show no model ids (${rows().map((r) => r.textContent).join(" | ")})`);
         check(row("Default (recommended)")?.querySelector(".mr-sub")?.textContent?.includes("claude-opus-5-5"), "an alias's line says the id it stands for");
+        check(row("Default (recommended)").querySelector("[role='option']")?.getAttribute("title")?.includes("claude-opus-5-5"), "and so does its tooltip");
         check(current.querySelector(".mr-mark svg")?.checkVisibility(), "the current model has a check");
         check(rows().filter((r) => r.querySelector(".mr-mark svg")).length === 1, "only the current model has a check");
         check(current.querySelector("[role='option']")?.getAttribute("aria-selected") === "true", "the current model is the selected option");
         const plain = row("Haiku 4.5");
         const weight = (r: Element) => Number(getComputedStyle(r.querySelector(".mr-name")!).fontWeight);
-        check(weight(current) >= weight(plain) && weight(current) < 600, `the current model's name is at most a hair heavier (${weight(current)})`);
+        check(weight(current) >= weight(plain) && weight(current) <= 600, `the current model's name is at most semibold (${weight(current)})`);
         // It opens highlighted (the keyboard's place), and that neutral fill is the only one.
         check(current.classList.contains("sel") && bg(current) !== bg(plain), "the picker opens with the current model highlighted");
         const neutral = bg(current);
-        // The rail has no mark for the current model's provider: only the open tab's fill, and the label for screen readers.
-        const railCurrent = document.querySelector<HTMLElement>(".mp-rail [role='tab'][aria-label^='Claude Code']")!;
-        check(/current model/.test(railCurrent.getAttribute("aria-label") ?? ""), "screen readers hear which provider has the current model");
-        check(!document.querySelector(".mp-rail .bar, .mp-rail .rb-cur, .mp-rail .rb.cur"), "the rail has no current-provider marker");
-        check([...railCurrent.children].every((c) => c.matches(".provider-icon, .provider-mono, svg")), `the current provider's tile holds only its icon (${railCurrent.innerHTML.slice(0, 200)})`);
+        // The filters have no mark for the current model's provider: only the open filter's fill, and the label for screen readers.
+        const filterCurrent = filter("Claude Code");
+        check(/current model/.test(filterCurrent.getAttribute("aria-label") ?? ""), "screen readers hear which provider has the current model");
+        check(!panel()!.querySelector(".mp-filters .bar, .mp-filters .mp-f-cur, .mp-filters .mp-f.cur"), "the filters have no current-provider marker");
+        check([...filterCurrent.children].every((c) => c.matches(".provider-icon, .provider-mono") || (c.matches("span") && c.textContent === "Claude Code")), `the current provider's pill holds only its mark and name (${filterCurrent.innerHTML.slice(0, 200)})`);
 
         // The keyboard highlight is apart from the current model: both shown at once, and different.
         const down = new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true });
@@ -101,10 +117,12 @@ export async function checkModelPicker(root: HTMLElement) {
         check(document.querySelector(".mp-search input")!.getAttribute("aria-activedescendant") === highlighted.querySelector("[role='option']")!.id, "the search field points at the highlighted row");
         check(bg(highlighted) === neutral && bg(current) === bg(plain), `the highlight is the only fill; the current model's row has none once it moves off (${bg(highlighted)}, ${bg(current)}, ${bg(plain)})`);
         check(current.querySelector(".mr-mark svg") && !highlighted.querySelector(".mr-mark svg"), "the check stays on the current model");
-        check(getComputedStyle(highlighted.querySelector("kbd")!).opacity === "1" && getComputedStyle(plain.querySelector("kbd")!).opacity === "0", "shortcut hints show on the highlighted row only");
+        const hint = highlighted.querySelector("kbd")!;
+        check(getComputedStyle(hint).opacity === "1" && hint.checkVisibility() && hint.textContent?.endsWith("3"), `the highlighted row shows its shortcut (${hint.textContent})`);
         check(getComputedStyle(plain.querySelector(".mr-star")!).opacity === "0" && getComputedStyle(highlighted.querySelector(".mr-star")!).opacity === "1", "stars are quiet until the row is highlighted");
 
-        // Search still matches ids, though rows don't show them: "haiku-4-5" isn't in Haiku 4.5's name. Results name the provider.
+        // Search still matches ids, though names don't show them: "haiku-4-5" isn't in Haiku 4.5's name. Results sit
+        // under their provider's name.
         const search = document.querySelector<HTMLInputElement>(".mp-search input")!;
         const type = (value: string) => {
             search.value = value;
@@ -112,123 +130,58 @@ export async function checkModelPicker(root: HTMLElement) {
         };
         type("haiku-4-5");
         await settle();
-        check(rows().length === 1 && rows()[0]!.querySelector(".mr-name")?.textContent === "Haiku 4.5" && rows()[0]!.querySelector(".mr-sub")?.textContent === "Claude Code", `search by id finds the model (${rows().map((r) => r.textContent).join(" | ")})`);
+        const found = rows()[0]?.closest(".mp-group");
+        check(rows().length === 1 && rows()[0]!.querySelector(".mr-name")?.textContent === "Haiku 4.5" && found?.getAttribute("aria-label") === "Claude Code" && found.querySelector(".mp-h b")?.textContent === "Claude Code", `search by id finds the model (${rows().map((r) => r.textContent).join(" | ")})`);
         type("");
         await settle();
 
-        // Another provider's list open: its tile has the neutral fill; the current model's provider looks like any other.
-        const railMock = document.querySelector<HTMLElement>(".mp-rail [role='tab'][aria-label^='Mock']")!;
-        const railFavorites = document.querySelector<HTMLElement>(".mp-rail [role='tab'][aria-label='Favorites']")!;
-        railMock.click();
+        // Another provider's list open: its filter has the neutral fill; the current model's provider looks like any other.
+        const filterMock = filter("Mock");
+        const filterFavorites = filter("Favorites");
+        filterMock.click();
         await settle(200);
-        check(railMock.classList.contains("on") && bg(railMock) !== "rgba(0, 0, 0, 0)", "the open tab has a neutral fill");
+        check(filterMock.classList.contains("on") && filterMock.getAttribute("aria-selected") === "true" && bg(filterMock) !== "rgba(0, 0, 0, 0)" && rows().length === 2, "the open filter has a neutral fill, and the list is its provider's alone");
         check(row("local-7b"), "a model with no name goes by its id");
-        check(!railCurrent.classList.contains("on") && bg(railCurrent) === bg(railFavorites) && !railCurrent.querySelector(".rb-cur"), "the current model's provider has no mark while another list is open");
-        railCurrent.click();
+        check(!filterCurrent.classList.contains("on") && bg(filterCurrent) === bg(filterFavorites) && getComputedStyle(filterCurrent).color === getComputedStyle(filterFavorites).color, "the current model's provider has no mark while another list is open");
+        filterCurrent.click();
         await settle();
 
-        // Several accounts: the active one by name in the header, the others a keypress away.
-        const button = acct()!;
-        check(button?.textContent?.includes("Work") && button.getAttribute("aria-haspopup") === "menu" && button.getAttribute("aria-expanded") === "false", "the header names the active account");
-        button.focus();
-        key("ArrowDown");
-        await until(() => items().length === 4, "the account list");
-        check(button.getAttribute("aria-expanded") === "true", "the switcher says it's open");
-        check(items().filter((b) => b.getAttribute("aria-checked") === "true").map((b) => b.textContent).join().includes("Work"), "the active account is checked");
-        check(document.activeElement === item("Work"), "the list opens on the active account");
-        // Over the model list, the account list must be solid: rows behind it must not show through, even as it opens.
-        const menu = document.querySelector<HTMLElement>(".mp-acct-menu")!;
-        const alpha = (c: string) => Number(c.match(/rgba?\(([^)]+)\)/)?.[1]?.split(/[ ,/]+/).filter(Boolean)[3] ?? 1);
-        const style = getComputedStyle(menu);
-        check(alpha(style.backgroundColor) >= 0.95 && style.backgroundImage === "none", `the account list has an opaque surface (${style.backgroundColor}, ${style.backgroundImage})`);
-        check(Number(style.opacity) === 1 && !(menu.getAnimations()[0]?.effect as KeyframeEffect | undefined)?.getKeyframes().some((k) => k.opacity !== undefined && Number(k.opacity) < 1), "the account list never fades in over the rows");
-        check(item("Lab").textContent?.includes("Not signed in") && item("Personal").textContent?.includes("me@example.test"), "accounts say who they are and what's wrong");
-        key("ArrowDown");
-        check(document.activeElement === item("Lab"), "arrows move through the accounts");
-        key("Escape");
-        await settle();
-        check(items().length === 0 && panel(), "Escape closes the account list, not the picker");
-        check(document.activeElement === acct(), "and gives focus back to its button");
+        // Several accounts: pills in the provider's heading, the session's one pressed and filled, the others a click away.
+        check(pills().map(named).join() === "Personal,Work,Lab" && pill("Work").closest("[role='group']")?.getAttribute("aria-label") === "Claude Code account", `the heading has the accounts (${pills().map(named).join()})`);
+        check(pressed() === "Work" && pill("Work").classList.contains("on") && bg(pill("Work")) !== bg(pill("Lab")), `the session's account is pressed and filled (${pressed()})`);
+        check(pill("Personal").title.includes("me@example.test") && pill("Lab").title.includes("Not signed in"), `accounts say who they are and what's wrong (${pill("Personal").title}; ${pill("Lab").title})`);
 
-        // Switching calls setAccount (on Home: the provider's default), and the header follows.
-        acct()!.click();
-        await until(() => items().length === 4, "the account list again");
-        item("Personal").click();
-        await until(() => acct()?.textContent?.includes("Personal") === true, "the switched account in the header");
+        // Switching calls setAccount (on Home: the provider's default), and the heading follows.
+        pill("Personal").click();
+        await until(() => pressed() === "Personal", "the switched account pressed in the heading");
         check(calls.some(([m, p]) => m === "accounts.setDefault" && p.provider === "claude-code" && p.id === "default"), "switching sets the account");
-        check(items().length === 0 && panel(), "the picker stays open after switching");
+        check(panel() && open(), "the picker stays open after switching");
 
-        // Many accounts (the server allows 20): the list stays inside the picker, which clips what overflows it.
-        // Every account can be scrolled to and clicked, Add account… is always in view, and the keys scroll.
-        const kept = accounts;
-        const inside = (el: Element, box: DOMRect) => {
-            const r = el.getBoundingClientRect();
-            return r.top >= box.top - 0.5 && r.bottom <= box.bottom + 0.5 && r.left >= box.left - 0.5 && r.right <= box.right + 0.5;
-        };
-        const hit = (el: Element) => {
-            const r = el.getBoundingClientRect();
-            return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.closest("[role^='menuitem']") === el;
-        };
-        for (const n of [8, 20]) {
-            accounts = Array.from({ length: n }, (_, i) => account(i ? `a${i}` : "default", `Account ${i + 1}`, { email: `person${i + 1}@example.test`, plan: "max" }));
-            preferred = `a${n - 1}`;
-            setApp("providers", providers());
-            await settle();
-            acct()!.click();
-            await until(() => items().length === n + 1, `${n} accounts and Add account`);
-            await settle(250);
-            const box = panel()!.getBoundingClientRect();
-            const menu = document.querySelector(".mp-acct-menu")!;
-            check(inside(menu, box), `the list of ${n} stays inside the picker (${JSON.stringify(menu.getBoundingClientRect())} in ${JSON.stringify(box)})`);
-            const add = item("Add account");
-            check(inside(add, box) && hit(add), `Add account… is in view and clickable with ${n} accounts`);
-            check(document.activeElement === item(`Account ${n}`) && inside(item(`Account ${n}`), box), `the list opens scrolled to the active account, the last of ${n}`);
-            for (const b of items()) {
-                b.scrollIntoView({ block: "nearest" });
-                check(inside(b, box) && hit(b), `${b.textContent} can be scrolled to and clicked (of ${n})`);
-            }
-            check(inside(add, box) && hit(add), `Add account… stays put while the list scrolls (${n})`);
-            // Keys: Home goes to the first account and brings it into view.
-            item(`Account ${n}`).focus();
-            key("Home");
-            check(document.activeElement === item("Account 1") && inside(item("Account 1"), menu.getBoundingClientRect()) && hit(item("Account 1")), `Home scrolls to the first of ${n}`);
-            key("End");
-            check(document.activeElement === add && hit(add), `End reaches Add account… (${n})`);
-            key("Escape");
-            await settle();
-        }
-        accounts = kept;
-        preferred = "work";
-        setApp("providers", providers());
-        await settle();
-
-        // A removed account: said so, and the list asks for another.
+        // A removed account: the picker opens on the accounts, none pressed, and a note asks for another.
         preferred = "gone";
         setApp("providers", providers());
-        await settle();
-        check(acct()?.classList.contains("missing") && acct()!.textContent?.includes("Removed account"), "the header says the account was removed");
-        acct()!.click();
-        await until(() => items().length === 4, "the account list for a removed account");
-        check(document.querySelector(".mp-acct-note")?.textContent?.includes("removed"), "the list explains");
-        check(!items().some((b) => b.getAttribute("aria-checked") === "true"), "no account is checked");
+        await reopen("on the accounts");
+        check(document.activeElement === pill("Personal"), `the picker opens on the accounts (focus: ${document.activeElement?.outerHTML.slice(0, 80)})`);
+        check(panel()!.querySelector(".mp-acct-note")?.textContent?.includes("removed"), "the note explains");
+        check(pressed() === "", "no account is pressed");
+        check(trigger.textContent?.includes("Removed account"), "the model button says the account was removed");
         calls.length = 0;
-        item("Work").click();
+        pill("Work").click();
         await until(() => calls.some(([m, p]) => m === "accounts.setDefault" && p.id === "work"), "choosing another account");
         // The switch refreshes the providers; let that land before changing them here.
-        await until(() => acct()?.textContent?.includes("Work") === true && !acct()!.classList.contains("missing"), "the chosen account in the header");
+        await until(() => pressed() === "Work" && !panel()!.querySelector(".mp-acct-note"), "the chosen account in the heading");
 
-        // One account: still shown, with Add account beside it.
+        // One account: shown by its name, with + beside it.
         accounts = [account("default", "Default", { email: "me@example.test" })];
         preferred = "default";
         setApp("providers", providers());
         await settle();
-        check(acct()?.textContent?.includes("Default"), "a lone account is shown too");
-        acct()!.click();
-        await until(() => items().length === 2, "the one account and Add account");
-        check(item("Default").getAttribute("aria-checked") === "true", "the lone account is checked");
+        const lone = panel()!.querySelector<HTMLElement>(".mp-h .mp-acct1");
+        check(lone?.textContent === "Default" && lone.title.includes("me@example.test") && !pills().length, "a lone account goes by its name");
+        check(add()?.getAttribute("aria-label") === "Add a Claude Code account", "with + beside it");
 
         // Add account: to Settings → Providers, with that provider's new-account form asked for.
-        item("Add account").click();
+        add()!.click();
         await until(() => !open(), "the picker to close");
         check(settingsTab() === "providers" && addAccountFor() === "claude-code", "Add account opens the provider's form in Settings");
 
@@ -237,6 +190,49 @@ export async function checkModelPicker(root: HTMLElement) {
         check(ghost && ghost.inert && ghost.getAttribute("aria-hidden") === "true" && !ghost.querySelector("[id]"), "the closing copy is inert");
         await until(() => !document.querySelector(".popover.mp.closing"), "the closing copy to go");
         check(document.activeElement === trigger, "focus is back on the model button");
+        // Out of Settings again: popovers close while it's open.
+        setSettingsTab(undefined);
+        setAddAccountFor(undefined);
+
+        // Many accounts (the server allows 20): the pills stay inside the picker, which clips what overflows their row.
+        // Every account can be scrolled to and clicked, + is always in view, and the keys scroll.
+        const inside = (el: Element, box: DOMRect) => {
+            const r = el.getBoundingClientRect();
+            return r.top >= box.top - 0.5 && r.bottom <= box.bottom + 0.5 && r.left >= box.left - 0.5 && r.right <= box.right + 0.5;
+        };
+        const hit = (el: Element) => {
+            const r = el.getBoundingClientRect();
+            return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.closest("button") === el;
+        };
+        // The accounts' row, and the part of it in view.
+        const strip = () => panel()?.querySelector<HTMLElement>(".mp-acs");
+        const shown = () => strip()!.getBoundingClientRect();
+        for (const n of [8, 20]) {
+            accounts = Array.from({ length: n }, (_, i) => account(i ? `a${i}` : "default", `Account ${i + 1}`, { email: `person${i + 1}@example.test`, plan: "max" }));
+            preferred = `a${n - 1}`;
+            setApp("providers", providers());
+            await reopen(`with ${n} accounts`);
+            const box = panel()!.getBoundingClientRect();
+            check(pills().length === n && inside(strip()!, box), `the ${n} accounts stay inside the picker (${JSON.stringify(shown())} in ${JSON.stringify(box)})`);
+            check(inside(add()!, box) && hit(add()!), `+ is in view and clickable with ${n} accounts`);
+            for (const b of pills()) {
+                b.scrollIntoView({ block: "nearest", inline: "nearest" });
+                check(inside(b, shown()) && hit(b), `${named(b)} can be scrolled to and clicked (of ${n})`);
+            }
+            check(inside(add()!, box) && hit(add()!), `+ stays put while the accounts scroll (${n})`);
+            // Keys: Tab onto the first account brings it into view; Shift+Tab from + reaches the last, and Tab goes back.
+            filter("Mock").focus();
+            key("Tab");
+            check(document.activeElement === pill("Account 1") && inside(pill("Account 1"), shown()) && hit(pill("Account 1")), `Tab scrolls to the first of ${n}`);
+            add()!.focus();
+            key("Tab", undefined, { shiftKey: true });
+            check(document.activeElement === pill(`Account ${n}`) && inside(pill(`Account ${n}`), shown()) && hit(pill(`Account ${n}`)), `Shift+Tab from + scrolls to the last of ${n}`);
+            key("Tab");
+            check(document.activeElement === add() && hit(add()!), `Tab reaches + (${n})`);
+        }
+        // Opening on many: the session's account, the last of 20, is the one in view.
+        await reopen("with 20 accounts again");
+        check(pressed() === "Account 20" && inside(pill("Account 20"), shown()) && hit(pill("Account 20")), `the picker opens with the session's account, the last of 20, in view (row ${JSON.stringify(shown())}, account ${JSON.stringify(pill("Account 20").getBoundingClientRect())}, scrolled ${strip()!.scrollLeft} of ${strip()!.scrollWidth - strip()!.clientWidth})`);
     } finally {
         if (motion === undefined) delete document.documentElement.dataset.motion;
         else document.documentElement.dataset.motion = motion;

@@ -240,6 +240,8 @@ describe("starting the browser", () => {
         expect(mac).not.toContain("--no-sandbox");
         expect(mac.at(-1)).toBe("about:blank");
         expect(chromeArgs({ ...base, platform: "linux", uid: 1000 })).toContain("--password-store=basic");
+        // the same viewport on every OS: Linux's scrollbars would take 15px of it
+        expect(chromeArgs({ ...base, platform: "linux", uid: 1000 })).toContain("--hide-scrollbars");
         // root can't have it, nor can a CI runner; and a window is for watching it work
         expect(chromeArgs({ ...base, platform: "linux", uid: 0 })).toEqual(expect.arrayContaining(["--no-sandbox", "--disable-dev-shm-usage"]));
         expect(chromeArgs({ ...base, platform: "darwin", uid: 501, ci: true })).toContain("--no-sandbox");
