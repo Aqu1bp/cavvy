@@ -15,6 +15,7 @@ import type {
     ImagePart,
     Message,
     ModelInfo,
+    PdfPart,
     ProviderClient,
     StreamEvent,
     TextPart,
@@ -2080,9 +2081,13 @@ export class Agent {
         return all.filter((m) => !(m.role === "user" && m.meta?.resends?.length && m.meta.resends.every(has)));
     }
 
-    /** The images of the notes a catch-up sends again (missedMessages): they go with the prompt, as the messages they were in would have. */
-    private resentImages(promptIndex: number, resume?: { synced: number }): ImagePart[] {
-        return this.missedMessages(promptIndex, resume).flatMap((m) => (m.role === "user" && m.meta?.resends ? m.content.filter((p): p is ImagePart => p.type === "image") : []));
+    /**
+     * A prompt's images and PDFs, after those of the notes a catch-up sends again (missedMessages): they go with it, as
+     * the messages they were in would have.
+     */
+    private withResentMedia(images: ImagePart[], documents: PdfPart[], promptIndex: number, resume?: { synced: number }): { images: ImagePart[]; documents: PdfPart[] } {
+        const resent = forBackend(this.missedMessages(promptIndex, resume).flatMap((m) => (m.role === "user" && m.meta?.resends ? m.content.filter((p) => p.type === "image" || (p.type === "file" && p.kind === "pdf")) : [])), readsPdf(this.model));
+        return { images: [...resent.images, ...images], documents: [...resent.documents, ...documents] };
     }
 
     private missedPrompt(text: string, promptIndex: number, resume?: { synced: number }): string {
@@ -2130,14 +2135,14 @@ export class Agent {
             // Messages its turn ended before taking: a note of their own, which says what it sends again.
             if (this.undeliveredNotes.length) {
                 const notes = this.undeliveredNotes.splice(0);
-                this.session.push({ role: "user", content: [reminder(notes.map((n) => n.text).join("\n")), ...notes.flatMap((n) => n.images)], meta: { kind: "reminder", resends: notes.flatMap((n) => n.resends) } });
+                this.session.push({ role: "user", content: [reminder(notes.map((n) => n.text).join("\n")), ...notes.flatMap((n) => [...n.images, ...n.documents])], meta: { kind: "reminder", resends: notes.flatMap((n) => n.resends) } });
             }
         }
     }
 
     private backendStopReminders: string[] = [];
     /** Messages the backend's turn ended before taking (TurnSink.undelivered): for its next prompt. */
-    private undeliveredNotes: { text: string; resends: string[]; images: ImagePart[] }[] = [];
+    private undeliveredNotes: { text: string; resends: string[]; images: ImagePart[]; documents: PdfPart[] }[] = [];
     /**
      * A model turn took this round's prompt: the backend reported a model's usage (input read) or its output (text,
      * thinking, a tool call). Not a command the CLI answers itself (Codex's /goal status: no model turn, "done"), nor
@@ -2252,10 +2257,11 @@ export class Agent {
                 const news = messages.filter((m) => wakeTexts.has(m.text)).map((m) => m.text);
                 const said = messages.filter((m) => !wakeTexts.has(m.text) && m.text).map((m) => m.text);
                 // With the words they were stored with: a catch-up that has those leaves the note out (missedPrompt).
-                // Their images too (a prompt's, kept by the backend): the note has them, and the prompt that carries it sends them.
+                // Their images and PDFs too (a prompt's, kept by the backend): the note has them, and the prompt that carries it sends them.
                 const images = messages.filter((m) => !wakeTexts.has(m.text)).flatMap((m) => m.images);
-                if (said.length || images.length) this.undeliveredNotes.push({ text: `The user sent this while you were working, but your turn ended before it reached you:\n${said.join("\n\n") || "(the images with this note)"}`, resends: said.map((t) => typed.get(t) ?? t), images });
-                if (news.length) this.undeliveredNotes.push({ text: `This arrived while you were working, but your turn ended before it reached you:\n${news.join("\n\n")}`, resends: news, images: [] });
+                const documents = messages.filter((m) => !wakeTexts.has(m.text)).flatMap((m) => m.documents);
+                if (said.length || images.length || documents.length) this.undeliveredNotes.push({ text: `The user sent this while you were working, but your turn ended before it reached you:\n${said.join("\n\n") || `(the ${images.length ? "images" : "files"} with this note)`}`, resends: said.map((t) => typed.get(t) ?? t), images, documents });
+                if (news.length) this.undeliveredNotes.push({ text: `This arrived while you were working, but your turn ended before it reached you:\n${news.join("\n\n")}`, resends: news, images: [], documents: [] });
             },
             fromWake: (text) => wakeTexts.has(text),
             requestOf: (text) => typed.get(text),
@@ -2408,7 +2414,7 @@ export class Agent {
                 if (adopting) this.adoptedUnsent = { provider, text: unsent };
                 this.modelTookPrompt = false;
                 try {
-                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...sent, ...this.preamble(sent.prompt, prompt), synthetic: woken, ...(prompt === text ? asked : {}), images: adopting ? promptImages : [...this.resentImages(promptIndex, resume), ...promptImages], documents: promptDocuments, resumeId: resume?.id, forkSession: resume?.fork, ...(adopting ? { adopt } : {}) });
+                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...sent, ...this.preamble(sent.prompt, prompt), synthetic: woken, ...(prompt === text ? asked : {}), ...(adopting ? { images: promptImages, documents: promptDocuments } : this.withResentMedia(promptImages, promptDocuments, promptIndex, resume)), resumeId: resume?.id, forkSession: resume?.fork, ...(adopting ? { adopt } : {}) });
                     returned = result;
                 } finally {
                     this.adoptedUnsent = undefined;
@@ -2434,7 +2440,7 @@ export class Agent {
                     this.emit({ type: "notice", level: "warn", message: `${why}. Starting a new one with this conversation as context.`, data: { source: provider, title, text: said === why ? `${why}.` : `\`${said}\`` } });
                     const fresh = toSend();
                     syncedBefore = undefined;
-                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...fresh, ...this.preamble(fresh.prompt, prompt), synthetic: woken, ...(prompt === text ? asked : {}), images: [...this.resentImages(promptIndex), ...promptImages], documents: promptDocuments, resumeId: undefined });
+                    result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...fresh, ...this.preamble(fresh.prompt, prompt), synthetic: woken, ...(prompt === text ? asked : {}), ...this.withResentMedia(promptImages, promptDocuments, promptIndex), resumeId: undefined });
                 }
                 if (result.refused && !adopting) this.refusedBackendTurn(provider, syncedBefore);
             } catch (e) {
@@ -2482,10 +2488,12 @@ export class Agent {
                 }
                 if (h?.blocked) {
                     stopRounds++;
-                    prompt = reminder([`A ${stopEvent} hook asked you to keep going:\n${redact(h.blocked)}`, ...this.backendStopReminders.splice(0), ...this.undeliveredNotes.splice(0).map((n) => n.text)].join("\n\n")).text;
-                    promptImages = [];
-                    promptDocuments = [];
-                    this.session.push({ role: "user", content: [{ type: "text", text: prompt }], meta: { kind: "reminder" } });
+                    const notes = this.undeliveredNotes.splice(0);
+                    prompt = reminder([`A ${stopEvent} hook asked you to keep going:\n${redact(h.blocked)}`, ...this.backendStopReminders.splice(0), ...notes.map((n) => n.text)].join("\n\n")).text;
+                    // The images and PDFs of the messages in those notes go with it, as they would have with the next prompt (#304).
+                    const media = notes.flatMap((n) => [...n.images, ...n.documents]);
+                    ({ images: promptImages, documents: promptDocuments } = forBackend(media, readsPdf(this.model)));
+                    this.session.push({ role: "user", content: [{ type: "text", text: prompt }, ...media], meta: { kind: "reminder" } });
                     promptIndex = this.session.messages.length - 1;
                     this.syncBackend(provider, 1);
                     continue;
