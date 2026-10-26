@@ -5,7 +5,7 @@ Working rules for branches, tests and CI are in [AGENTS.md](../AGENTS.md).
 ```bash
 bun run typecheck
 bun run gui:typecheck
-bun run test
+bun run test ./test/foo.test.ts    # the test files for what you changed; CI runs the whole suite
 ```
 
 ## Layout

@@ -18,15 +18,15 @@ Cavvy reads, edits and runs code in your project, asks before doing anything ris
 
 - **Any model.** Anthropic, OpenAI, Gemini and Vertex AI, OpenRouter, Groq, DeepSeek, xAI, Mistral, Together, Fireworks and Cerebras; local models through Ollama and LM Studio; and any OpenAI-compatible endpoint. One searchable list, with context sizes and prices.
 - **Your Claude or ChatGPT plan.** Cavvy runs your own Claude Code or Codex, signed in by you, so a subscription works without an API key. Several accounts per CLI, switched between responses.
-- **Asks before it acts.** Five permission modes, from asking before every edit to an auto mode that runs shell commands in a sandbox and has a reviewer model check everything else.
+- **Asks before it acts.** Five permission modes, from asking before every edit to an auto mode where workspace edits go through, shell commands run in a sandbox, and a reviewer model checks the rest.
 - **A desktop app.** Several sessions at once, approvals with diff previews, a review pane where you commit, push and open pull requests, worktrees, a terminal panel, and a browser the agent can drive.
 - **Other models as sub-agents.** Hand a task to another provider's model: a second opinion, a review, a cheaper research run.
 - **Works with what you already use.** MCP servers, Claude Code plugins and marketplaces, hooks in Claude Code's format, and `CLAUDE.md` and `AGENTS.md` memory files.
-- **Keys stay secret.** They're kept in the OS keychain, sent only to their own provider, and redacted from tool output, transcripts and logs.
+- **Keys stay secret.** They're kept in the OS keychain (or an owner-only file where there's none), sent only to the endpoint they're for, and redacted from tool output, transcripts and logs.
 
 ## Install
 
-Cavvy needs [Bun](https://bun.sh) and Git. The terminal app and the browser GUI run on macOS and Linux; the desktop app is built for macOS.
+Cavvy needs [Bun](https://bun.sh) (it's tested on 1.3) and Git, and a model to talk to: an API key, a local model, or Claude Code or Codex signed in to your plan. The terminal app and the browser GUI run on macOS and Linux; the desktop app needs macOS 13 or later.
 
 ```bash
 git clone https://github.com/Aqu1bp/cavvy.git
@@ -37,20 +37,26 @@ bun link                     # puts `cavvy` on your PATH (or add bin/ to it)
 
 `bun run build` makes a standalone binary instead, in `dist/cavvy`.
 
-The desktop app builds from the same checkout, and keeps itself up to date from then on:
+The GUI has dependencies of its own. Build it once, and again after pulling GUI changes:
 
 ```bash
-bun run desktop:install      # builds it and installs it into /Applications
+bun install --cwd gui && bun run gui:build
 ```
 
-To try the GUI without any keys, `bun run gui:demo` serves it with a mock model and a demo project.
+To try it without any keys, `bun run gui:demo` serves it with a mock model and a demo project.
+
+The desktop app builds from the same checkout. It installs into `/Applications` (or `~/Applications` if that isn't writable), and from then on updates itself from `main`, so keep the checkout:
+
+```bash
+bun run desktop:install
+```
 
 ## Quick start
 
 ```bash
 cavvy                                    # start in the current project
 cavvy -p "explain src/agent/agent.ts"    # one-shot, for scripts
-cavvy gui                                # the GUI in your browser (run `bun run gui:build` once first)
+cavvy gui                                # the GUI in your browser
 ```
 
 In the terminal app, `/login` adds an API key (or `/login claude-code`, `/login codex` for your plan), `/model` picks a model, and `shift+tab` cycles the permission mode. In the desktop app, Settings → Providers adds keys and turns on Claude Code or Codex.
