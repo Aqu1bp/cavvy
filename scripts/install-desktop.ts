@@ -24,7 +24,7 @@ import { replaceBundle, writeInstallRecord } from "../src/config/desktop-install
 import { appInfo, olderThan } from "../desktop-electron/app-info";
 
 if (process.platform !== "darwin") {
-    console.error("desktop:install is for macOS. Elsewhere, bun run desktop:build makes the installers.");
+    console.error("desktop:install is for macOS, as the desktop app is for now. Elsewhere, cavvy gui runs the same app in your browser.");
     process.exit(1);
 }
 

@@ -10,7 +10,7 @@ for await (const m of query({ prompt: "Why does test/auth.test.ts fail?", option
 }
 ```
 
-**Runtime:** Bun 1.4 or newer. Cavvy is a Bun program (it uses `Bun.spawn`, `Bun.serve` and friends), so the SDK runs in Bun only, not Node.
+**Runtime:** Bun 1.3 or newer. Cavvy is a Bun program (it uses `Bun.spawn`, `Bun.serve` and friends), so the SDK runs in Bun only, not Node.
 
 **Installing:** the package isn't published. Depend on this repository (`bun add github:Aqu1bp/cavvy`, or `bun add /path/to/cavvy`) and import `cavvy/sdk`. Keys come from the same place as the CLI's: `cavvy auth add`, the environment, or `~/.cavvy/.env`.
 
