@@ -4,6 +4,7 @@
 
 import { browserSettings, type Settings } from "../config/settings";
 import { cachedChrome } from "../browser/chrome";
+import { desktopHost } from "../browser/host";
 import { CdpError } from "../browser/cdp";
 import { boxOf, click, hover, press, scroll, select, type as typeText, waitFor } from "../browser/interact";
 import { formatLogs } from "../browser/logs";
@@ -424,7 +425,7 @@ export const BROWSER_TOOLS: Tool<any>[] = [BrowserNavigateTool, BrowserSnapshotT
 /** Whether the tools are offered: the setting is on, and there is a browser to run (looked for at most every half minute). */
 function browserAvailable(settings: Settings): boolean {
     const s = browserSettings(settings);
-    return s.enabled && cachedChrome(s.executable).ok;
+    return s.enabled && (desktopHost() !== undefined || cachedChrome(s.executable).ok);
 }
 
 const SERVED_NAMES: Record<string, Tool<any>> = Object.fromEntries(BROWSER_TOOLS.map((t, i) => [BROWSER_SERVER_TOOLS[i]!, t]));

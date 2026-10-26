@@ -262,3 +262,73 @@
     pointer-events: none;
     white-space: nowrap;
 }
+
+/* The Electron app's tab pages (BrowserHostLayer): over the pane when shown, under the window's menus and
+   dialogs; otherwise a clipped pixel behind everything, still rendering. */
+.br-host-tab {
+    position: fixed;
+    overflow: hidden;
+    z-index: -1;
+    pointer-events: none;
+}
+
+.br-host-tab.shown {
+    z-index: 35;
+    pointer-events: auto;
+    background: #fff;
+}
+
+.br-host-view {
+    display: flex;
+    transform-origin: 0 0;
+}
+
+/* Watched in the floating view: the page is for looking at; a click on it opens the pane (FloatingBrowser). */
+.br-host-tab.shown.fit {
+    pointer-events: none;
+    border-radius: 0 0 var(--radius-md) var(--radius-md);
+}
+
+.br-host-tab.fit .br-host-view {
+    pointer-events: none;
+}
+
+/* Dragging a panel's edge across a page: the page mustn't take the pointer from the drag. */
+body.resizing .br-host-tab {
+    pointer-events: none;
+}
+
+/* The agent's browser floating over the chat (FloatingBrowser): its page box is drawn over by the real page. */
+.br-float {
+    position: absolute;
+    top: calc(var(--header-h) + 8px);
+    right: calc(16 * var(--sp));
+    z-index: 20;
+    width: min(400px, calc(100% - 32 * var(--sp)));
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.br-float-bar {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    height: calc(30 * var(--sp));
+    padding: 0 calc(4 * var(--sp)) 0 calc(10 * var(--sp));
+    color: var(--fg-2);
+    font-size: 0.857rem;
+}
+
+.br-float-title {
+    flex: 1;
+    min-width: 0;
+}
+
+/* The agent's page is 1280×800: the box keeps that shape. */
+.br-float-page {
+    aspect-ratio: 1280 / 800;
+    background: var(--sheet-2);
+    cursor: pointer;
+}

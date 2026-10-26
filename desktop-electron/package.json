@@ -1,0 +1,18 @@
+{
+  "name": "harness-desktop-electron",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Spike: the Harness desktop app on Electron, with the Browser pane as a real Chromium view",
+  "main": "dist/main.cjs",
+  "scripts": {
+    "build": "bun build src/main.ts --target=node --format=cjs --external electron --external electron-liquid-glass --outfile dist/main.cjs && bun build src/preload.ts --target=node --format=cjs --external electron --outfile dist/preload.cjs",
+    "start": "bun run build && electron ."
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "electron": "45.0.0"
+  },
+  "dependencies": {
+    "electron-liquid-glass": "^1.1.1"
+  }
+}

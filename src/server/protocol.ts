@@ -1479,6 +1479,8 @@ export interface BrowserTabInfo {
     canGoBack: boolean;
     canGoForward: boolean;
     crashed: boolean;
+    /** The browser's own id for the tab: the desktop app shows that view of it in the pane (browser/host.ts). */
+    targetId?: string;
     /** A confirm or prompt waiting for an answer. */
     dialog?: { type: string; message: string; defaultPrompt?: string };
 }

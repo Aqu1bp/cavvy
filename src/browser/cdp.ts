@@ -2,6 +2,8 @@
 // time limit, and events by name. One connection serves the browser and every page attached to it (a page's commands
 // and events carry its sessionId).
 
+import type { CdpTransport } from "./host";
+
 export class CdpError extends Error {
     constructor(
         message: string,
@@ -45,7 +47,7 @@ export class CdpClient {
         ws.onerror = () => this.shutdown("The connection to the browser failed");
     }
 
-    /** A client on a connection that's already open (the browser's pipe). */
+    /** A client on a connection that's already open: the browser's pipe, or the desktop app's browser (host.ts). */
     static over(transport: CdpTransport): CdpClient {
         return new CdpClient(transport);
     }

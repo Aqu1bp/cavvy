@@ -20,7 +20,7 @@ import { foldOrder, groupCounts, inFront, needsRowLine, needsYou, planFit, railF
 import { railSelection, setRailSelection, setSidebarOrder } from "../state/sidebar";
 import { bulkPlan, clickKind, clickSelect, extendSelect, pruneSelection, railTargets, selectAll, sessionCount, type BulkPlan, type RailList } from "../lib/rail-select";
 import { now } from "../lib/clock";
-import { isTauri, os } from "../lib/platform";
+import { isDesktop, os } from "../lib/platform";
 import { Menu } from "./ui/Menu";
 import { rowMenuKey } from "../lib/menu";
 import { ProviderIcon } from "./ui/ProviderIcon";
@@ -592,7 +592,7 @@ export function SidebarFrame(p: { children: any; class?: string }) {
         window.addEventListener("pointercancel", up);
     };
     return (
-        <aside class={`sidebar ${isTauri && os === "macos" ? "traffic" : ""} ${p.class ?? ""}`} aria-label="Sessions">
+        <aside class={`sidebar ${isDesktop && os === "macos" ? "traffic" : ""} ${p.class ?? ""}`} aria-label="Sessions">
             <SidebarTop />
             {p.children}
             <div class="resize-handle" onPointerDown={onResize} onDblClick={() => setPrefs("sidebarWidth", 260)} />

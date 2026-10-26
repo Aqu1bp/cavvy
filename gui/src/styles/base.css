@@ -1027,3 +1027,23 @@ svg.lucide {
 .session-skeleton { margin-top: calc(24 * var(--sp)); display: grid; gap: calc(12 * var(--sp)); }
 .session-skeleton i { display: block; height: calc(14 * var(--sp)); border-radius: calc(4 * var(--sp)); background: var(--line); }
 .session-skeleton i:last-child { width: 65%; }
+
+/* ---- Moving the Electron window ----
+   Electron can't start a move from a press the way Tauri's start_dragging does (lib/window-drag.ts): a drag region
+   is native, takes every press inside it whatever is drawn on top, and only no-drag regions cut holes in it. So only
+   the top strip drags (where window-drag.ts's stripEnd puts it), with everything that takes a press cut out of it.
+   Not the frame's gaps (data-window-drag): .win-drag lies under the whole window, and as a region it would swallow
+   every click in it. The browser's pages are never part of it. */
+.app.electron::before {
+    content: "";
+    position: fixed;
+    inset: 0 0 auto 0;
+    height: calc(2 * var(--top-line) - var(--win-pad, 8px));
+    -webkit-app-region: drag;
+    pointer-events: none;
+}
+
+.app.electron :is(button, a, input, textarea, select, summary, label, video, audio, iframe, [role], [contenteditable]:not([contenteditable="false"]), [tabindex]:not([tabindex="-1"]), [draggable="true"], [data-window-drag="off"]),
+.app.electron .br-host-tab {
+    -webkit-app-region: no-drag;
+}

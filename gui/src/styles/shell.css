@@ -366,6 +366,11 @@
     outline: none;
 }
 
+/* In the Electron app the Browser pane's page starts right of the handle (BrowserPane): a narrower one leaves less of a gap. */
+.app.electron .insp-resizer {
+    width: 6px;
+}
+
 /* ---- Bits of the window ---------------------------------------------- */
 
 /* Not connected: a small note under the title bar. */

@@ -10,6 +10,7 @@ import { projectStateDir } from "../config/paths";
 import { browserSettings, type Settings } from "../config/settings";
 import { CdpClient, CdpError } from "./cdp";
 import { cachedChrome, chromeIdentity, launchChrome, type ChromeIdentity, type ChromeProcess } from "./chrome";
+import { desktopHost } from "./host";
 import type { Owner } from "./control";
 import { BrowserError, Page, type PageHooks, type Viewport } from "./page";
 import type { BrowserApproval } from "./url-policy";
@@ -55,6 +56,8 @@ export class BrowserPool {
     disposed = false;
     private chrome?: ChromeProcess;
     private cdp?: CdpClient;
+    /** The browser is the desktop app's: its tabs are views in the window, sized by the window, not emulated. */
+    hosted = false;
     /** What the pages say they are to sites (chromeIdentity), for the running browser. */
     private identity?: ChromeIdentity;
     private starting?: Promise<CdpClient>;
@@ -103,7 +106,7 @@ export class BrowserPool {
     }
 
     private async setUp(cdp: CdpClient, a: Attachment, client: PoolClient, owner: Owner): Promise<Page> {
-        const page = await Page.attach(cdp, a.sessionId, a.info.targetId, { root: this.o.root, viewport: client.viewport(), owner, hooks: client.hooks, identity: this.identity, refuse: (url, approved) => client.refuse(url, approved) });
+        const page = await Page.attach(cdp, a.sessionId, a.info.targetId, { root: this.o.root, viewport: client.viewport(), owner, hooks: client.hooks, identity: this.identity, hosted: this.hosted, refuse: (url, approved) => client.refuse(url, approved) });
         this.pages.set(a.info.targetId, { page, client });
         return page;
     }
@@ -154,14 +157,21 @@ export class BrowserPool {
     }
 
     private async launch(): Promise<CdpClient> {
-        const found = cachedChrome(browserSettings(this.o.settings()).executable);
-        if (!found.ok) throw new BrowserError(found.error);
+        const profile = join(projectStateDir(this.o.root), "browser");
+        // In the desktop app, its own Chromium: the tabs are views in its window (host.ts).
+        const host = desktopHost();
         let chrome: ChromeProcess;
-        try {
-            chrome = await launchChrome({ executable: found.path, profile: join(projectStateDir(this.o.root), "browser"), headless: browserSettings(this.o.settings()).headless, startupMs: this.o.startupMs, signal: this.abort.signal });
-        } catch (e) {
-            throw new BrowserError(`The browser didn't start: ${(e as Error).message}`);
+        if (host) chrome = host.open(profile);
+        else {
+            const found = cachedChrome(browserSettings(this.o.settings()).executable);
+            if (!found.ok) throw new BrowserError(found.error);
+            try {
+                chrome = await launchChrome({ executable: found.path, profile, headless: browserSettings(this.o.settings()).headless, startupMs: this.o.startupMs, signal: this.abort.signal });
+            } catch (e) {
+                throw new BrowserError(`The browser didn't start: ${(e as Error).message}`);
+            }
         }
+        this.hosted = host !== undefined;
         const failed = async (e: unknown, cdp?: CdpClient): Promise<never> => {
             cdp?.close();
             await chrome.stop();

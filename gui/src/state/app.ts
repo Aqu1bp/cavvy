@@ -8,7 +8,7 @@ import { planLimitKey, type PlanLimits } from "@shared/protocol";
 import type { AppUpdateInfo, GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
 import { applyOp, fromWireState, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
-import { credentials, focused, notify, isTauri, showWindow, windowKey } from "../lib/platform";
+import { credentials, focused, notify, isDesktop, showWindow, windowKey } from "../lib/platform";
 import { prefs, setPrefs } from "./prefs";
 import { backgroundOf, COALESCE_MS, combineEnded, noticeRoute, tabOf, workTabFor } from "../lib/background";
 import { mayCreateFiles } from "../lib/pathcache";
@@ -26,7 +26,7 @@ import { composerStorage } from "../lib/drafts";
 import { composerDrafts } from "../lib/composer-draft";
 
 export const rpc = new Rpc(credentials, windowKey);
-rpc.retriesCredentials = isTauri;
+rpc.retriesCredentials = isDesktop;
 
 // ---------------------------------------------------------------------------
 // Toasts
@@ -815,7 +815,7 @@ export function start() {
         if (s !== "open") return;
         void (async () => {
             try {
-                setApp("hello", await rpc.call("hello", { client: isTauri ? "desktop" : "browser" }));
+                setApp("hello", await rpc.call("hello", { client: isDesktop ? "desktop" : "browser" }));
                 await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders(), refreshKeybindings().catch(() => undefined)]);
                 void refreshModels().catch(() => undefined);
                 void refreshLimits().catch(() => undefined);

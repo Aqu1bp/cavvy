@@ -7,6 +7,7 @@ import { redact } from "../util/redact";
 import type { BrowserInput, BrowserState, BrowserTabInfo } from "../server/protocol";
 import { browserSettings, type Settings } from "../config/settings";
 import { cachedChrome } from "./chrome";
+import { desktopHost } from "./host";
 import type { Owner } from "./control";
 import { FrameFeed } from "./feed";
 import { forward, parseInput, takesControl } from "./interact";
@@ -71,6 +72,7 @@ export class BrowserSession implements PoolClient {
         if (this.crashed) return { status: "crashed", error: "The browser stopped unexpectedly. Open a page to start it again.", tabs, active: this.active };
         const s = browserSettings(this.o.settings());
         if (!s.enabled) return { status: "unavailable", error: TURNED_OFF, tabs, active: this.active };
+        if (desktopHost()) return { status: "idle", tabs, active: this.active };
         const found = cachedChrome(s.executable);
         return found.ok ? { status: "idle", tabs, active: this.active } : { status: "unavailable", error: found.error, tabs, active: this.active };
     }
@@ -85,6 +87,7 @@ export class BrowserSession implements PoolClient {
             canGoBack: p.canGoBack,
             canGoForward: p.canGoForward,
             crashed: p.crashed,
+            targetId: p.targetId,
             ...(p.dialog ? { dialog: p.dialog } : {}),
         }));
     }
@@ -181,6 +184,7 @@ export class BrowserSession implements PoolClient {
     get hooks(): PageHooks {
         return {
             changed: () => this.announce(),
+            taken: (page) => this.taken(page),
             frame: (page, frame) => {
                 const id = this.ids.get(page);
                 if (id !== undefined && id === this.active) this.feed.push({ ...frame, tab: id });

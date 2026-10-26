@@ -20,6 +20,7 @@ test("the composer dock's measured height is the transcript's dock prop, and the
     const SessionView = component(between("../../gui/src/App.tsx", "function SessionView(", "/** The docked inspector's left edge"), "SessionView", {
         Header: () => node("header"),
         Transcript: (p: { dock?: number }) => { transcript = p; return node("transcript"); },
+        FloatingBrowser: () => node("floating-browser"),
         Composer: () => node("composer"),
         ErrorCards: () => node("error-cards"),
         setDockHeight: (h: number) => windowDock.push(h),

@@ -9,3 +9,7 @@ dist/
 # Environment files with keys (the example stays tracked)
 .env.*
 !.env.example
+desktop-electron/node_modules
+desktop-electron/dist
+desktop-electron/out
+desktop-electron/stage
