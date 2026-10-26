@@ -192,18 +192,29 @@ console.log(`Installed ${dest}`);
 writeInstallRecord(root, dest);
 // Harness.app's updater (from before the rename; it sets HARNESS_HOME, this one's sets CAVVY_HOME) installs with
 // --no-restart, then quits the app by the new name, which Harness.app doesn't have, and opens the new one: Harness.app
-// would keep running beside it. It's quit from outside, as that updater does, since it may be running this, and
-// first, so it has closed its sessions before the new app starts.
-const harnessApp = "/Harness.app/Contents/MacOS/harness";
-if (!restart && process.env.HARNESS_HOME !== undefined && process.env.CAVVY_HOME === undefined && Bun.spawnSync(["pgrep", "-U", String(userInfo().uid), "-f", `${harnessApp}-desktop`]).exitCode === 0) {
+// would keep running beside it. So it's quit here: from a process of its own (this one may be in Harness's terminal,
+// which goes with it), which opens the new app once Harness is gone. This returns to the updater only then, so the
+// new app its updater opens doesn't start beside Harness either. -a: Harness.app may be what started this (its
+// Update button), and pgrep and pkill leave out their ancestors otherwise. The script builds the pattern from "Harness"
+// rather than being given it, so it doesn't match itself.
+const harnessPids = () =>
+    Bun.spawnSync(["pgrep", "-a", "-U", String(userInfo().uid), "-f", "/Harness.app/Contents/MacOS/harness"])
+        .stdout.toString()
+        .split("\n")
+        .filter(Boolean)
+        .map(Number);
+const harness = !restart && process.env.HARNESS_HOME !== undefined && process.env.CAVVY_HOME === undefined ? harnessPids() : [];
+if (harness.length) {
     const script = `
-        sleep 0.5
-        pkill -TERM -U "$1" -f "$2-desktop"
+        pkill -a -TERM -U "$1" -f "/$2.app/Contents/MacOS/harness-desktop"
         i=0
-        while pgrep -U "$1" -f "$2" >/dev/null && [ $i -lt 150 ]; do sleep 0.1; i=$((i+1)); done
-        pkill -KILL -U "$1" -f "$2"`;
-    spawn("/bin/sh", ["-c", script, "sh", String(userInfo().uid), harnessApp], { detached: true, stdio: "ignore" }).unref();
-    console.log(`Harness quits in a moment: ${productName} replaces it.`);
+        while pgrep -a -U "$1" -f "/$2.app/Contents/MacOS/harness" >/dev/null && [ $i -lt 150 ]; do sleep 0.1; i=$((i+1)); done
+        pkill -a -KILL -U "$1" -f "/$2.app/Contents/MacOS/harness"
+        open "$3"`;
+    spawn("/bin/sh", ["-c", script, "sh", String(userInfo().uid), "Harness", dest], { detached: true, stdio: "ignore" }).unref();
+    console.log(`Quitting Harness (sessions are saved): ${productName} replaces it, and opens once it has quit.`);
+    const until = Date.now() + 17_000;
+    while (harness.some(alive) && Date.now() < until) await Bun.sleep(100);
 } else if (restart) run(["open", dest], root);
 else if (running().app.length) console.log(`${productName} is still running the build before this one: quit it and open it again to use this one.`);
 for (const old of ["/Applications/Harness.app", join(homedir(), "Applications", "Harness.app")]) {

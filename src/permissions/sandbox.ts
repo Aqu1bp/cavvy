@@ -194,7 +194,7 @@ export function sandboxPolicy(roots: string[], opts: { home?: string; cavvyHome:
     // home can, but not read: settings and session logs may hold secrets too.
     const secrets = homes.flatMap((h) => [basename(paths.credentialsFile()), basename(paths.mcpOAuth()), basename(paths.providers()), "accounts"].flatMap((f) => bothForms(join(h, f))));
     // Seatbelt matches where a path leads: a settings.json symlinked out of the home is covered where it points.
-    const settings = linkedFile(join(cavvy, basename(paths.userSettings())));
+    const settings = homes.flatMap((h) => linkedFile(join(h, basename(paths.userSettings()))));
     return {
         writable: [...new Set([...ws, ...git.filter((g) => !ws.some((w) => isWithin(g, w))), ...temp])],
         // A worktree's own config and its .git pointer stay read-only, as in the project around it.
@@ -202,7 +202,7 @@ export function sandboxPolicy(roots: string[], opts: { home?: string; cavvyHome:
         cliConfig: [...new Set(ws.flatMap((w) => CLI_CONFIG.flatMap((c) => bothForms(join(w, c)))))],
         worktrees,
         unreadable: [...new Set([...UNREADABLE_IN_HOME.map((p) => join(home, p)), ...secrets, ...allAccounts])],
-        contentsUnreadable: [...new Set([...homes, ...settings.filter((x) => !isWithin(x, cavvy))])],
+        contentsUnreadable: [...new Set([...homes, ...settings.filter((x) => !homes.some((h) => isWithin(x, h)))])],
         gitDirs: git,
     };
 }

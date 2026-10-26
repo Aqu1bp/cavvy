@@ -30,6 +30,7 @@
 import type { HookConfig } from "../config/settings";
 import { backendMatcher, claudeCodeHookOutput, type HookEvent } from "../agent/hooks";
 import { homedir } from "os";
+import { basename, join } from "path";
 import type { AssistantMessage, ChatRequest, ImagePart, ModelInfo, PdfPart, Usage } from "../providers/types";
 import { ONE_OFF_TIMEOUT_MS, oneOffAnswer, oneOffPrompt, oneOffRefusal } from "./one-off";
 import { ProviderError } from "../providers/types";
@@ -44,8 +45,8 @@ import type { PermissionMode } from "../permissions/modes";
 import type { ToolDisplay } from "../tools/types";
 import { diffLines, diffStats } from "../util/diff";
 import { parseRule, pathPattern } from "../permissions/rules";
-import { APP_NAME, APP_TITLE, paths } from "../config/paths";
-import { currentMcpName } from "../config/legacy";
+import { APP_NAME, APP_TITLE, cavvyHome, paths } from "../config/paths";
+import { currentMcpName, homeAliases } from "../config/legacy";
 import { redact } from "../util/redact";
 import { cliCommandNames } from "../commands/custom";
 import { formatSkill } from "../agent/skills";
@@ -2024,8 +2025,10 @@ export function claudeRule(raw: string, root: string): string[] {
  * `accounts`, CLI account folders and sign-in files too.
  */
 export function claudePermissions(r: { deny: string[]; ask: string[]; root: string }, accounts = true): { deny: string[]; ask: string[] } {
-    const store = [paths.credentialsFile(), paths.mcpOAuth(), paths.providers()].flatMap((f) => [`Read(/${f})`, `Edit(/${f})`]);
-    const folders = (accounts ? accountProtectionFolders() : []).flatMap((folder) => [`Read(/${folder})`, `Read(/${folder}/**)`, `Edit(/${folder})`, `Edit(/${folder}/**)`]);
+    // In ~/.harness too, where it's another name for the home or Harness's own beside it (legacy.ts).
+    const aliases = homeAliases(cavvyHome());
+    const store = [paths.credentialsFile(), paths.mcpOAuth(), paths.providers()].flatMap((f) => [f, ...aliases.map((h) => join(h, basename(f)))]).flatMap((f) => [`Read(/${f})`, `Edit(/${f})`]);
+    const folders = (accounts ? [...accountProtectionFolders(), ...aliases.map((h) => join(h, "accounts"))] : []).flatMap((folder) => [`Read(/${folder})`, `Read(/${folder}/**)`, `Edit(/${folder})`, `Edit(/${folder}/**)`]);
     const map = (rules: string[]) => [...new Set(rules.flatMap((x) => claudeRule(x, r.root)))];
     return { deny: [...map(r.deny), ...store, ...folders], ask: map(r.ask) };
 }

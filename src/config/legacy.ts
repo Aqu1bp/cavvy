@@ -95,13 +95,19 @@ function finishMove(home: string, legacy: string): string[] {
         try {
             symlinkSync(home, legacy);
         } catch (e: any) {
-            if (!exists(legacy)) notes.push(`Couldn't leave a link at ${legacy} (${e?.code ?? e}): files that name it won't be found there.`);
+            // Tried again next start. Something else there now (a Harness that started meanwhile) is left as it is.
+            if (!exists(legacy)) {
+                done = false;
+                notes.push(`Couldn't leave a link at ${legacy} (${e?.code ?? e}): files that name it won't be found there.`);
+            }
         }
     }
     const olds = [...new Set([legacy, ...(typeof from === "string" ? [from] : [])])];
+    // The home as it resolves: account folders are checked against their real paths (accounts.ts sharesDefault).
+    const to = realpathSync(home);
     for (const file of PATH_FILES) {
         try {
-            rewritePaths(join(home, file), olds, home);
+            rewritePaths(join(home, file), olds, to);
         } catch (e: any) {
             done = false;
             notes.push(`Couldn't update the paths in ${join(home, file)} (${e?.message ?? e}).`);
@@ -169,8 +175,12 @@ export function rewritePaths(file: string, olds: string[], to: string): void {
 function renameAccountMarkers(accounts: string): { claude: boolean; renamed: boolean } {
     let claude = false;
     let renamed = true;
-    for (const provider of list(accounts)) {
-        for (const id of list(join(accounts, provider))) {
+    const providers = list(accounts);
+    if (!providers) return { claude, renamed: false };
+    for (const provider of providers) {
+        const ids = list(join(accounts, provider));
+        if (!ids) renamed = false;
+        for (const id of ids ?? []) {
             if (id.startsWith(".")) continue; // .leases
             if (provider === "claude-code") claude = true;
             const old = join(accounts, provider, id, LEGACY.accountMarker);
@@ -187,7 +197,8 @@ function renameAccountMarkers(accounts: string): { claude: boolean; renamed: boo
     return { claude, renamed };
 }
 
-function list(dir: string): string[] {
+/** The folders in `dir`: none when there's no `dir`, undefined when it can't be read. */
+function list(dir: string): string[] | undefined {
     try {
         return readdirSync(dir).filter((n) => {
             try {
@@ -196,8 +207,8 @@ function list(dir: string): string[] {
                 return false;
             }
         });
-    } catch {
-        return [];
+    } catch (e: any) {
+        return e?.code === "ENOENT" ? [] : undefined;
     }
 }
 
@@ -253,9 +264,12 @@ export function legacyMcpName(name: string, server: string): string | undefined 
     return name.startsWith(now) ? `mcp__${LEGACY.mcpServer}__` + name.slice(now.length) : undefined;
 }
 
-/** A hook matcher (a list of names or a regex) with each mcp__harness__ in it naming Cavvy's server instead. */
+/**
+ * A hook matcher (a list of names or a regex) with each mcp__harness in it naming Cavvy's server instead:
+ * before __ (mcp__harness__delegate), or before what can't be part of a server's name (^mcp__harness.*).
+ */
 export function legacyMcpMatcher(matcher: string, server: string): string {
-    return matcher.replace(new RegExp(`\\bmcp__${LEGACY.mcpServer}(?=__)`, "g"), `mcp__${server}`);
+    return matcher.replace(new RegExp(`\\bmcp__${LEGACY.mcpServer}(?=__|[^A-Za-z0-9_-]|$)`, "g"), `mcp__${server}`);
 }
 
 /** Tool names as written, each mcp__harness… one followed by its name now (an agent's tools and disallowedTools). */

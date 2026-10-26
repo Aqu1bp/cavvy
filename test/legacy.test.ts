@@ -1,7 +1,7 @@
 // Moving from Harness, Cavvy's old name (src/config/legacy.ts): the home folder
 // and what stores paths into it, and what's still read by the old names.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { currentMcpName, fileIn, homeAliases, inProjectDir, LEGACY, legacyEnvNotes, moveLegacyHome, rewritePaths } from "../src/config/legacy";
@@ -103,6 +103,33 @@ describe("moving the home folder", () => {
         expect(json(join(home, "providers.json")).agents["claude-code"].accounts[0].folder).toBe(join(home, "accounts", "claude-code", "work"));
         expect(existsSync(join(home, "accounts", "claude-code", "work", ".cavvy-shared-from"))).toBe(true);
         expect(existsSync(join(home, ".moving-from-harness.json"))).toBe(false);
+    });
+
+    test("an accounts folder that can't be read leaves the move to be finished next time", () => {
+        const old = harnessHome();
+        const home = join(T, ".cavvy");
+        chmodSync(join(old, "accounts", "claude-code"), 0o000);
+        try {
+            expect(moveLegacyHome(home, old).notes.join("\n")).toContain("isn't finished");
+            expect(existsSync(join(home, ".moving-from-harness.json"))).toBe(true);
+        } finally {
+            chmodSync(join(home, "accounts", "claude-code"), 0o700);
+        }
+        expect(moveLegacyHome(home, old).notes[0]).toContain("Harness is now Cavvy");
+        expect(existsSync(join(home, "accounts", "claude-code", "work", ".cavvy-shared-from"))).toBe(true);
+    });
+
+    test("a ~/.harness that was a link elsewhere: stored paths become the real ones accounts are checked by", () => {
+        const real = join(T, "volume", "harness-state");
+        mkdirSync(join(real, "accounts", "codex", "w"), { recursive: true });
+        const old = join(T, ".harness");
+        symlinkSync(real, old);
+        writeFileSync(join(real, "providers.json"), JSON.stringify({ agents: { codex: { accounts: [{ id: "w", folder: join(old, "accounts", "codex", "w") }, { id: "v", folder: join(real, "accounts", "codex", "v") }] } } }));
+        const home = join(T, ".cavvy");
+        moveLegacyHome(home, old);
+        const accounts = json(join(real, "providers.json")).agents.codex.accounts;
+        expect(accounts.map((a: { folder: string }) => a.folder)).toEqual([join(real, "accounts", "codex", "w"), join(real, "accounts", "codex", "v")]);
+        expect(realpathSync(home)).toBe(real);
     });
 
     test("a step that fails leaves the move to be finished next time", () => {
@@ -214,6 +241,9 @@ describe("names of Harness's MCP tools elsewhere", () => {
         expect(hookApplies({ ...h, matcher: "mcp__harness__.*" }, "PreToolUse", { tool_name: "mcp__cavvy__x" }, T)).toBe(true);
         expect(backendMatcher("PreToolUse", "mcp__harness__delegate")).toBe("mcp__harness__delegate|mcp__cavvy__delegate");
         expect(backendMatcher("PreToolUse", "mcp__harness__.*")).toBe("(?:mcp__harness__.*)|(?:mcp__cavvy__.*)");
+        expect(backendMatcher("PreToolUse", "^mcp__harness.*")).toBe("(?:^mcp__harness.*)|(?:^mcp__cavvy.*)");
+        // A server of another name that starts the same isn't Harness's.
+        expect(backendMatcher("PreToolUse", "mcp__harness_hooks__x")).toBe("mcp__harness_hooks__x");
         expect(backendMatcher("PreToolUse", "Bash")).toBe("Bash|Monitor");
         expect(backendMatcher("PreToolUse", "Edit")).toBe("Edit");
         expect(backendMatcher("SessionStart", "mcp__harness__x")).toBe("mcp__harness__x");
