@@ -63,13 +63,16 @@ test("long Markdown lexes only the growing block on append, with safe full-parse
     const { Renderer } = require("../gui/node_modules/marked/lib/marked.esm.js");
     const Counted = new Function("Marked", "Renderer", `${js}; return MarkdownRenderer;`)(CountedMarked, Renderer);
     const r = new Counted();
-    let text = Array.from({ length: 2000 }, (_, i) => `Paragraph ${i}.\n\n`).join("");
+    // Enough that lexing the whole text on each update is far past the threshold below.
+    // Under Bun, marked's block lexer takes quadratic time on long text, so no bigger than that.
+    const paragraphs = 500;
+    let text = Array.from({ length: paragraphs }, (_, i) => `Paragraph ${i}.\n\n`).join("");
     r.segments(text, true);
     chars = 0;
     const start = performance.now();
     for (let i = 0; i < 100; i++) { text += "word "; r.segments(text, true); }
-    console.log(JSON.stringify({ paragraphs: 2000, updates: 100, lexedChars: chars, elapsedMs: performance.now() - start }));
-    expect(chars).toBeLessThan(30_000); // 25,250 chars; the old full lexer reads >3 million.
+    console.log(JSON.stringify({ paragraphs, updates: 100, lexedChars: chars, elapsedMs: performance.now() - start }));
+    expect(chars).toBeLessThan(30_000); // About 25,000 chars; the old full lexer reads over 800,000.
     chars = 0;
     r.segments(text + "\n\n[ref]: https://example.com", true);
     expect(chars).toBeGreaterThan(text.length);
