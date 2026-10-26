@@ -233,8 +233,8 @@ export async function gitPublishInfo(cwd: string, signal?: AbortSignal): Promise
 }
 
 /**
- * The refs a remote's fetch refspecs map `ref` to, as git maps them: each positive one whose source matches (a
- * `*` taking any part), none when a negative one (`^src`) matches it.
+ * The ref a remote's fetch refspecs map `ref` to, as git does for a push's tracking ref: the first positive one whose
+ * source matches (a `*` taking any part), none when a negative one (`^src`) matches it.
  */
 export function trackingRefs(refspecs: string[], ref: string): string[] {
     const match = (pattern: string) => {
@@ -245,16 +245,15 @@ export function trackingRefs(refspecs: string[], ref: string): string[] {
     };
     const specs = refspecs.map((spec) => spec.trim()).filter(Boolean);
     if (specs.some((spec) => spec.startsWith("^") && match(spec.slice(1)) !== undefined)) return [];
-    const refs: string[] = [];
     for (const spec of specs) {
         if (spec.startsWith("^")) continue;
         const [src, dst] = spec.replace(/^\+/, "").split(":");
         const part = src ? match(src) : undefined;
         if (part === undefined || !dst) continue;
         const target = dst.includes("*") ? dst.replace("*", part) : dst;
-        if (target.startsWith("refs/") && !refs.includes(target)) refs.push(target);
+        if (target.startsWith("refs/")) return [target];
     }
-    return refs;
+    return [];
 }
 
 /**

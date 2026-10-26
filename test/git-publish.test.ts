@@ -1,5 +1,5 @@
 import { afterAll, expect, test, setDefaultTimeout } from "bun:test";
-import { existsSync, mkdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { join, relative } from "path";
 import { isolate } from "./helpers/isolate";
 import { publishFixtures } from "./helpers/git-publish";
@@ -403,6 +403,7 @@ test("a helper the user's own settings name stays allowed unless it names a file
     const { trustFolder } = await import("../src/config/trust");
     const { cwd, state } = repo();
     writeFileSync(join(cwd, "payload.sh"), ": > ssh-ran\nexit 1\n");
+    mkdirSync(join(cwd, "scripts")); writeFileSync(join(cwd, "scripts", "proxy"), "");
     const global = join(cwd, "user-global");
     const saved = { ...process.env };
     const restore = () => { for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key]; Object.assign(process.env, saved); };
@@ -455,6 +456,14 @@ test("a helper's shell syntax, or a path into the repository by any form, needs 
         ["a home-relative path into it", () => inHome(`sh ~/${rel}/payload.sh`)],
         ["$HOME into it", () => inHome(`sh $HOME/${rel}/payload.sh`)],
         ["an open quote", () => { process.env.GIT_SSH_COMMAND = "sh 'payload.sh"; }],
+        ["a character a shell reads as part of a name", () => { process.env.GIT_SSH_COMMAND = "sh payload\u00a0part.sh"; }],
+        ["a comment", () => { process.env.GIT_SSH_COMMAND = "sh payload.sh #"; }],
+        ["a file named like an assignment", () => { writeFileSync(join(cwd, "payload=evil.sh"), ""); process.env.GIT_SSH_COMMAND = "sh payload=evil.sh"; }],
+        ["a path that looks like a URL", () => { mkdirSync(join(cwd, "x:"), { recursive: true }); writeFileSync(join(cwd, "x:", "payload.sh"), ""); process.env.GIT_SSH_COMMAND = "sh ./x://payload.sh"; }],
+        ["a name starting with ..", () => { writeFileSync(join(cwd, "..payload.sh"), ""); process.env.GIT_SSH_COMMAND = "sh ./..payload.sh"; }],
+        // Outside, read as written; in the repository, read as the system follows the link.
+        ["a link out and back in", () => { symlinkSync(join(cwd, "auth"), `${cwd}-link`, "dir"); process.env.GIT_SSH_COMMAND = `sh ${cwd}-link/../payload.sh`; }],
+        ["a credential helper git runs as git credential-<path>", () => helper("../payload")],
     ];
     try {
         for (const [name, set] of needs) {
@@ -466,6 +475,11 @@ test("a helper's shell syntax, or a path into the repository by any form, needs 
         helper("!gh auth git-credential");
         Object.assign(process.env, { GIT_SSH_COMMAND: `"/opt/Git Tools/ssh" -i ~/.ssh/id_ed25519 -o "UserKnownHostsFile=$HOME/.ssh/known_hosts"` });
         expect(await gitNetworkSkipReason(cwd)).toBeUndefined();
+        // A linked worktree's git folders are the repository's too, though outside it.
+        const linked = `${cwd}-worktree`;
+        git(cwd, "worktree", "add", "-q", linked);
+        process.env.GIT_SSH_COMMAND = `sh ${join(cwd, ".git", "description")}`;
+        expect(await gitNetworkSkipReason(linked)).toEqual(expect.stringContaining("requires explicit user trust"));
     } finally { restore(); }
     expect(existsSync(join(cwd, "ssh-ran"))).toBe(false);
 });
@@ -477,7 +491,9 @@ test("a push to the confirmed URL moves the tracking refs the remote's fetch ref
     // A single-branch clone's, a negative one, several, and one for another branch.
     expect(trackingRefs(["+refs/heads/feature:refs/remotes/origin/feature"], ref)).toEqual(["refs/remotes/origin/feature"]);
     expect(trackingRefs(["+refs/heads/*:refs/remotes/origin/*", "^refs/heads/feature"], ref)).toEqual([]);
-    expect(trackingRefs(["+refs/heads/*:refs/remotes/origin/*", "refs/heads/feat*:refs/remotes/mirror/feat*"], ref)).toEqual(["refs/remotes/origin/feature", "refs/remotes/mirror/feature"]);
+    // Only the first that matches, as git updates it: not a later one into the local branches.
+    expect(trackingRefs(["+refs/heads/*:refs/remotes/origin/*", "+refs/heads/*:refs/heads/archive/*"], ref)).toEqual(["refs/remotes/origin/feature"]);
+    expect(trackingRefs(["+refs/heads/main:refs/remotes/origin/main", "refs/heads/feat*:refs/remotes/mirror/feat*"], ref)).toEqual(["refs/remotes/mirror/feature"]);
     expect(trackingRefs(["+refs/heads/main:refs/remotes/origin/main"], ref)).toEqual([]);
     const { cwd } = repo();
     git(cwd, "config", "--replace-all", "remote.origin.fetch", "+refs/heads/feature:refs/remotes/origin/feature");
