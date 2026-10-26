@@ -12,7 +12,7 @@ Several agents work on this repository at the same time. These rules keep you ou
 
 The whole suite takes about 20 minutes on a Mac. When several agents run it at once, they slow each other down until tests time out. CI runs it in about three minutes, so:
 
-- Locally, run only the test files for what you changed: `bun test ./test/foo.test.ts`. The leading `./` makes bun take it as a path rather than a substring of file names. Also run `bun run typecheck`, and `bun run gui:typecheck` if you changed `gui/`.
+- Locally, run only the test files for what you changed: `bun test ./test/foo.test.ts`. The leading `./` makes bun take it as a path rather than a substring of file names. Also run `bun run typecheck`, `bun run gui:typecheck` if you changed `gui/`, and `bun run desktop:typecheck` if you changed `desktop-electron/`.
 - Don't run the whole suite locally. Push, then wait for CI: `gh pr checks --watch`.
 - When CI fails, find the failing tests with `gh run view <run-id> --log-failed`, run those files locally, fix them, and push.
 - When a test fails in CI and then passes on a rerun (`gh run rerun <run-id> --failed`), it's flaky. Open an issue with the log excerpt. Don't add retries to make it pass.
@@ -21,7 +21,7 @@ The whole suite takes about 20 minutes on a Mac. When several agents run it at o
 
 `.github/workflows/ci.yml` runs on every pull request and every push to `main`, on Linux:
 
-- **Typecheck and GUI build:** `bun run typecheck`, `bun run gui:typecheck`, `bun run gui:build`.
+- **Typecheck and GUI build:** `bun run typecheck`, `bun run gui:typecheck`, `bun run desktop:typecheck`, `bun run gui:build`.
 - **Tests (1/4 to 4/4):** the suite split across four machines by `scripts/test-shard.ts`, using each file's time from `test/timings.json`. A new file counts as the median file until the timings are refreshed. To refresh them, download a recent `main` run's reports and rewrite the file:
 
   ```bash

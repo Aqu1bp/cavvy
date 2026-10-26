@@ -35,8 +35,12 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun install --frozen-lockfile
         working-directory: gui
+      # The desktop app's types only: no Electron download, no native module builds (they're macOS's).
+      - run: bun install --frozen-lockfile --ignore-scripts
+        working-directory: desktop-electron
       - run: bun run typecheck
       - run: bun run gui:typecheck
+      - run: bun run desktop:typecheck
       - run: bun run gui:build
 
   test:

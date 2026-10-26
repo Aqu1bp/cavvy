@@ -10,8 +10,8 @@
 //
 // Run from Cavvy's own terminal or the app's Update button, it builds and installs
 // while Cavvy runs, then restarts it from outside, so quitting Cavvy doesn't stop the update.
-// The worktree keeps its build products, so after the first update only what
-// changed is rebuilt.
+// The worktree keeps its installed packages, so after the first update only the
+// app itself is rebuilt.
 
 import { spawn } from "child_process";
 import { existsSync, realpathSync, writeFileSync } from "fs";
@@ -20,6 +20,7 @@ import { join, resolve } from "path";
 import { cavvyHome } from "../src/config/paths";
 import { LEGACY } from "../src/config/legacy";
 import { appSourceDir, capUpdate, lockUpdate, noPromptGit, readInstallRecord, UPDATE_CAP_MS } from "../src/config/desktop-install";
+import { appInfo } from "../desktop-electron/app-info";
 
 if (process.platform !== "darwin") {
     console.error("desktop:update is for macOS. Elsewhere, bun run desktop:build makes the installers.");
@@ -133,7 +134,7 @@ console.log(`Building ${short} in ${source}…`);
 const inCavvy = fromApp || process.env.TERM_PROGRAM === "Cavvy" || process.env.TERM_PROGRAM === "Harness";
 run([process.execPath, "--no-env-file", `--config=${join(source, "bunfig.toml")}`, join(source, "scripts", "install-desktop.ts"), ...(restart && !inCavvy ? [] : ["--no-restart"])], source);
 if (restart && inCavvy) {
-    const { productName, identifier } = (await Bun.file(join(source, "desktop", "src-tauri", "tauri.conf.json")).json()) as { productName: string; identifier: string };
+    const { productName, identifier } = appInfo(join(source, "desktop-electron"));
     // The copy just installed, by path: by bundle id, macOS may open another (an older one left in /Applications
     // when this went to ~/Applications). An installer from before the record had the path has only the id to go on.
     const record = await readInstallRecord();

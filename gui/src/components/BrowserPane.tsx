@@ -9,9 +9,18 @@ import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc } from "../state/app";
 import { adoptBrowserState, browserState, loadBrowserState, setBrowserShown, type BrowserFrame } from "../state/browser";
 import { settingsTab } from "../state/ui";
+import { electron } from "../lib/platform";
+import { setShownBrowser, unshowBrowser } from "../state/browser-host";
+import { followBox } from "../lib/follow-box";
 import { addressOf, currentTab, isPasteKey, isReleaseKey, keyInput, mouseInput, pagePoint, paneSize, paneStatus, placeFrame, resized, tabLabel, wheelInput, wheelPixels, type Point, type Size } from "../lib/browser";
 import type { BrowserImageFrame } from "@shared/browser-wire";
 import { Spinner } from "./ui/bits";
+
+/**
+ * In the Electron desktop app the page isn't pictures: the tab is a real Chromium view in the window, which the app
+ * lays over the pane's page box (placed below), and the person uses it directly. The bar, tabs and notes stay here.
+ */
+const native = electron !== undefined;
 
 /** The pane's size is sent this long after it stops changing (dragging the panel's edge resizes it every frame). */
 const RESIZE_MS = 120;
@@ -114,6 +123,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     const watching = () => visible() && !settingsTab() && app.conn === "open" && connected();
     let resizeTimer: ReturnType<typeof setTimeout> | undefined;
     const watch = () => {
+        if (native) return;
         const size = paneSize(boxSize());
         if (size.width < 1 || size.height < 1) return;
         sized = size;
@@ -169,6 +179,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     // Watched again after a reconnect (the server lets go of a window that went away), and not while hidden or covered.
     createEffect(
         on(watching, (on) => {
+            if (native) return;
             if (on) {
                 sized = undefined;
                 watch();
@@ -179,6 +190,41 @@ export function BrowserPane(p: { handle: SessionHandle }) {
             }
         }),
     );
+
+    // The tab's own page (BrowserHostLayer) follows the page box every frame: panels slide and resize without the box
+    // resizing. A page's dialog at the foot of the box stays visible above it.
+    if (native) {
+        let placed = "";
+        const place = () => {
+            const t = tab();
+            if (!disposed && box && watching() && t?.targetId) {
+                const r = box.getBoundingClientRect();
+                const dialog = box.querySelector(".br-dialog")?.getBoundingClientRect();
+                const height = dialog ? Math.max(0, dialog.top - r.top - 8) : r.height;
+                // Clear of the panel's edge handle: a page drawn over it would take the press that resizes the panel.
+                const edge = document.querySelector(".insp-resizer")?.getBoundingClientRect();
+                const left = edge && edge.right > r.left && edge.left < r.right ? Math.max(r.left, edge.right) : r.left;
+                const shown = { x: Math.round(left), y: Math.round(r.top), width: Math.round(r.right - left), height: Math.round(height) };
+                const key = `${t.targetId} ${shown.x} ${shown.y} ${shown.width} ${shown.height}`;
+                if (key !== placed && shown.width > 0 && shown.height > 0) {
+                    placed = key;
+                    setShownBrowser({ targetId: t.targetId, box: shown, by: "pane" });
+                }
+            } else if (placed) {
+                placed = "";
+                unshowBrowser("pane");
+            }
+        };
+        onMount(() => {
+            const follow = followBox(box!, place);
+            // What else moves or hides it: another tab, the pane covered or uncovered.
+            createEffect(on([() => tab()?.targetId, watching], () => follow.kick()));
+            onCleanup(() => {
+                follow.stop();
+                if (placed) unshowBrowser("pane");
+            });
+        });
+    }
 
     // The tab changed: what was drawn belongs to the one before.
     createEffect(
@@ -389,43 +435,45 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                 </Show>
             </div>
             <div class="br-view" ref={box}>
-                <canvas
-                    ref={canvas}
-                    class="br-canvas"
-                    tabindex="0"
-                    aria-label="Browser page. Click to use it with your mouse and keyboard; Shift+Escape returns to the address bar."
-                    onMouseDown={onMouseDown}
-                    onMouseMove={onMouseMove}
-                    onWheel={onWheel}
-                    onFocus={() => keyboard?.focus({ preventScroll: true })}
-                    onContextMenu={(e) => e.preventDefault()}
-                />
-                <textarea
-                    ref={keyboard}
-                    class="br-keyboard"
-                    aria-label="Browser keyboard input"
-                    autocomplete="off"
-                    autocapitalize="off"
-                    spellcheck={false}
-                    onKeyDown={onKey("down")}
-                    onKeyUp={onKey("up")}
-                    onPaste={onPaste}
-                    onBlur={cancelInput}
-                    onCompositionStart={() => { composing = true; compositionTab = tab()?.id; }}
-                    onCompositionEnd={(e) => {
-                        const commit = composing && compositionTab === tab()?.id;
-                        composing = false;
-                        if (commit && e.data) sendTo(compositionTab, { kind: "text", text: e.data });
-                        e.currentTarget.value = "";
-                    }}
-                    onInput={(e) => {
-                        // Dead-key and mobile text entry may arrive without composition events.
-                        if (composing || e.isComposing) return;
-                        if (e.currentTarget.value) send({ kind: "text", text: e.currentTarget.value });
-                        e.currentTarget.value = "";
-                    }}
-                />
-                <Show when={tab() && (!connected() || !hasPicture())}>
+                <Show when={!native}>
+                    <canvas
+                        ref={canvas}
+                        class="br-canvas"
+                        tabindex="0"
+                        aria-label="Browser page. Click to use it with your mouse and keyboard; Shift+Escape returns to the address bar."
+                        onMouseDown={onMouseDown}
+                        onMouseMove={onMouseMove}
+                        onWheel={onWheel}
+                        onFocus={() => keyboard?.focus({ preventScroll: true })}
+                        onContextMenu={(e) => e.preventDefault()}
+                    />
+                    <textarea
+                        ref={keyboard}
+                        class="br-keyboard"
+                        aria-label="Browser keyboard input"
+                        autocomplete="off"
+                        autocapitalize="off"
+                        spellcheck={false}
+                        onKeyDown={onKey("down")}
+                        onKeyUp={onKey("up")}
+                        onPaste={onPaste}
+                        onBlur={cancelInput}
+                        onCompositionStart={() => { composing = true; compositionTab = tab()?.id; }}
+                        onCompositionEnd={(e) => {
+                            const commit = composing && compositionTab === tab()?.id;
+                            composing = false;
+                            if (commit && e.data) sendTo(compositionTab, { kind: "text", text: e.data });
+                            e.currentTarget.value = "";
+                        }}
+                        onInput={(e) => {
+                            // Dead-key and mobile text entry may arrive without composition events.
+                            if (composing || e.isComposing) return;
+                            if (e.currentTarget.value) send({ kind: "text", text: e.currentTarget.value });
+                            e.currentTarget.value = "";
+                        }}
+                    />
+                </Show>
+                <Show when={!native && tab() && (!connected() || !hasPicture())}>
                     <div class="br-connection" role="status"><Spinner size={14} />{connected() ? "Loading page…" : "Reconnecting browser…"}</div>
                 </Show>
                 <Show when={!tab()}>

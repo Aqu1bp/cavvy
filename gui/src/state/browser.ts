@@ -16,10 +16,16 @@ const [states, setStates] = createStore<Record<string, BrowserState | undefined>
 /** Sessions whose agent opened a page while the pane wasn't showing, until it's looked at. */
 const [unseen, setUnseen] = createStore<Record<string, boolean | undefined>>({});
 const [shown, setShown] = createSignal<ReadonlySet<string>>(new Set());
+/** When the agent last did something in each session's browser that shows (a page opened, loaded, moved on). */
+const [activity, setActivity] = createStore<Record<string, number | undefined>>({});
 const frameListeners = new Map<string, (frame: BrowserFrame) => void>();
 
 export const browserState = (id: string): BrowserState | undefined => states[id];
 export const browserUnseen = (id: string): boolean => unseen[id] === true;
+/** When the agent last did something in the session's browser that shows (0: not since the window opened). */
+export const browserActivityAt = (id: string): number => activity[id] ?? 0;
+/** The session's Browser pane is on screen. */
+export const browserPaneShown = (id: string): boolean => shown().has(id);
 
 /** The Browser pane of this session is on screen (or no longer is). */
 export function setBrowserShown(id: string, on: boolean) {
@@ -56,8 +62,17 @@ export function showBrowser() {
     setInspectorPane("browser");
 }
 
+/** The agent's tab opened, went somewhere, or (re)loaded. */
+function agentActed(before: BrowserState | undefined, after: BrowserState): boolean {
+    const tab = after.tabs.find((t) => t.id === after.active);
+    if (!tab || tab.owner !== "agent") return false;
+    const was = before?.tabs.find((t) => t.id === tab.id);
+    return !was || was.url !== tab.url || was.title !== tab.title || was.loading !== tab.loading || before?.active !== after.active;
+}
+
 function changed(id: string, state: BrowserState) {
     const before = states[id];
+    if (agentActed(before, state)) setActivity(id, Date.now());
     setStates(id, reconcile(state));
     if (!agentOpened(before, state) || shown().has(id)) return;
     setUnseen(id, true);

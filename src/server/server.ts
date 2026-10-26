@@ -19,6 +19,7 @@ import { parseInput } from "../browser/interact";
 import type { BrowserInput, ClientMessage, Method, ServerEvent, ServerMessage } from "./protocol";
 import { redact, registerSecret } from "../util/redact";
 import { encodeBrowserFrame } from "./browser-wire";
+import { attachDesktopHost, detachDesktopHost, type DesktopHost } from "../browser/host";
 import { wireReplacer } from "./timeline";
 
 export interface ServeOptions extends EngineOptions {
@@ -43,8 +44,8 @@ export interface RunningServer {
     stop(): Promise<void>;
 }
 
-/** The desktop app's webview origins (macOS/Linux, Windows). */
-const APP_ORIGINS = ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"];
+/** The desktop app's webview origins: Tauri's (macOS/Linux, Windows), and the Electron shell's (desktop-electron). */
+const APP_ORIGINS = ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost", "cavvy://app"];
 const SUBPROTOCOL = "cavvy.v1";
 const CODE_TTL_MS = 120_000;
 
@@ -72,6 +73,8 @@ function sameSecret(a: string, b: string): boolean {
 
 interface Conn {
     browser: boolean;
+    /** The desktop app's browser (browser/host.ts), on /browser-host: not a window, and no RPC. */
+    desktop?: { host?: DesktopHost };
     held: Map<string, { id: string; tab?: number; input: BrowserInput }>;
     client: EngineClient;
 }
@@ -158,7 +161,12 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                 debug(`refused host ${req.headers.get("host")}`);
                 return new Response("Forbidden host", { status: 403 });
             }
-            if (url.pathname === "/ws" || url.pathname === "/browser-stream") {
+            if (url.pathname === "/ws" || url.pathname === "/browser-stream" || url.pathname === "/browser-host") {
+                // The desktop app's main process, never a page: a page always sends its origin.
+                if (url.pathname === "/browser-host" && req.headers.get("origin") !== null) {
+                    debug(`refused browser host from origin ${req.headers.get("origin")}`);
+                    return new Response("Forbidden origin", { status: 403 });
+                }
                 if (!originOk(req.headers.get("origin"))) {
                     debug(`refused WebSocket from origin ${req.headers.get("origin")}`);
                     return new Response("Forbidden origin", { status: 403 });
@@ -176,7 +184,7 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                     return new Response("Bad window key", { status: 400 });
                 }
                 debug(`WebSocket from ${req.headers.get("origin") ?? "no origin"}`);
-                const conn: Conn = { browser: url.pathname === "/browser-stream", held: new Map(), client: { subs: new Set(), send: () => {}, window } };
+                const conn: Conn = { browser: url.pathname === "/browser-stream", held: new Map(), client: { subs: new Set(), send: () => {}, window }, ...(url.pathname === "/browser-host" ? { desktop: {} } : {}) };
                 if (srv.upgrade(req, { data: conn, headers: { "Sec-WebSocket-Protocol": SUBPROTOCOL } })) return undefined;
                 return new Response("Upgrade failed", { status: 400 });
             }
@@ -207,6 +215,11 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
             idleTimeout: 120,
             sendPings: true,
             open(ws: ServerWebSocket<Conn>) {
+                if (ws.data.desktop) {
+                    ws.data.desktop.host = attachDesktopHost({ send: (t) => void ws.send(t), close: (code, reason) => ws.close(code, reason) });
+                    log("the desktop app's browser connected");
+                    return;
+                }
                 const c = ws.data.client;
                 c.send = (ev: ServerEvent) => {
                     if (ws.readyState !== 1) return;
@@ -223,6 +236,10 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                 engine.clients.add(c);
             },
             async message(ws: ServerWebSocket<Conn>, raw) {
+                if (ws.data.desktop) {
+                    ws.data.desktop.host?.receive(typeof raw === "string" ? raw : Buffer.from(raw).toString("utf-8"));
+                    return;
+                }
                 let msg: ClientMessage;
                 try {
                     msg = JSON.parse(typeof raw === "string" ? raw : Buffer.from(raw).toString("utf-8"));
@@ -258,6 +275,10 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                 if (!notification && ws.readyState === 1) ws.send(JSON.stringify(reply, wireReplacer));
             },
             close(ws: ServerWebSocket<Conn>) {
+                if (ws.data.desktop) {
+                    if (ws.data.desktop.host) detachDesktopHost(ws.data.desktop.host);
+                    return;
+                }
                 // A connection can disappear while a key/button is down. Release only its held inputs;
                 // BrowserSession ignores these releases if control has already returned to the agent.
                 for (const held of ws.data.held.values()) void engine.handle(ws.data.client, "browser.input", held).catch(() => undefined);

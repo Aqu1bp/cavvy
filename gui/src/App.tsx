@@ -7,8 +7,10 @@ import { activate, app, attentionCount, handleFor, restoreActiveSession, rpc, ty
 import { cycleSession, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
 import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, reviewSplit, setAgentFocus, setDockHeight, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold } from "./state/ui";
-import { isTauri, os, windowCommand } from "./lib/platform";
+import { isDesktop, isElectron, isTauri, os, windowCommand } from "./lib/platform";
 import { installWindowDrag } from "./lib/window-drag";
+import { BrowserHostLayer } from "./components/BrowserHostLayer";
+import { FloatingBrowser } from "./components/FloatingBrowser";
 import { canStop } from "./lib/session-status";
 import { actionOf, setEnterSends } from "./state/keybindings";
 import { clampInspectorWidth, closesOnShrink, columnSteps, heldSizes, requestCloses, tracks, COLUMN_NARROW, COLUMN_SHORT, INSPECTOR_DEFAULT, windowLayout } from "./lib/layout";
@@ -62,7 +64,7 @@ function Disconnected() {
                 <Match when={app.conn === "unavailable"}>
                     <PlugZap size={36} class="tone-warn" />
                     <h2>Can't reach Cavvy server</h2>
-                    <p class="muted">{isTauri ? "The background process stopped. Quit and reopen the app." : "Is `cavvy gui` still running? Still trying to reconnect…"}</p>
+                    <p class="muted">{isDesktop ? "The background process stopped. Quit and reopen the app." : "Is `cavvy gui` still running? Still trying to reconnect…"}</p>
                 </Match>
             </Switch>
             <button class="btn secondary" onClick={() => rpc.reconnectNow()}>
@@ -96,6 +98,7 @@ function SessionView(p: { handle: SessionHandle }) {
             <Header handle={p.handle} />
             <div class="stage">
                 <Transcript handle={p.handle} dock={dockH()} />
+                <FloatingBrowser handle={p.handle} />
                 <div class="composer-dock" ref={dock}>
                     <div class="composer-col">
                         <ErrorCards place="composer" />
@@ -428,7 +431,7 @@ export function App() {
 
     return (
         <div
-            class={`app ${isTauri ? `tauri os-${os}` : "browser"} ${prefs.sidebar ? "" : "rail-off"}`}
+            class={`app ${isDesktop ? `tauri os-${os}${isElectron ? " electron" : ""}` : "browser"} ${prefs.sidebar ? "" : "rail-off"}`}
             data-rail={layout().railMode === "overlay" ? "overlay" : "docked"}
             data-railopen={layout().railMode === "overlay" && layout().railShown ? "on" : "off"}
             data-insp={inspOpen() ? "on" : "off"}
@@ -549,6 +552,9 @@ export function App() {
             <DeleteSessionDialog />
             <CommitDialog />
             <ImageViewer />
+            <Show when={isElectron}>
+                <BrowserHostLayer />
+            </Show>
             <Toasts />
             {/* Errors' last resort: shows only when none of the places above is on screen (ErrorCards.tsx). */}
             <ErrorCards place="window" />

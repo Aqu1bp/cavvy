@@ -103,14 +103,22 @@ test("the composer is covered by a maximized terminal, or a short floating or fi
     expect(coversComposer(windowLayout({ ...base, terminalShown: true }))).toBe(false);
 });
 
-test("the inspector's resizer stays within 280-620px and keeps it docked", () => {
+test("the inspector's resizer goes from 280px as wide as keeps it docked, so a browser can have room", () => {
     expect(clampInspectorWidth(100, 1200)).toBe(280);
-    expect(clampInspectorWidth(900, 1200)).toBe(620);
+    expect(clampInspectorWidth(900, 1200)).toBe(720);
+    expect(clampInspectorWidth(1100, 1900)).toBe(1100);
     expect(clampInspectorWidth(600, 1000)).toBe(520);
     // A sheet too narrow to dock even at the minimum: the minimum.
     expect(clampInspectorWidth(500, 600)).toBe(280);
-    // A width saved on a bigger window is held to the bounds, not the window.
+    // A wide one saved on a bigger window narrows with this one, down to 620px; then it's held there (and floats).
+    expect(windowLayout({ ...base, win: { w: 1900, h: 880 }, inspectorWidth: 1100, panel: true }).inspector).toMatchObject({ width: 1100, mode: "dock" });
+    expect(windowLayout({ ...base, win: { w: 1500, h: 880 }, inspectorWidth: 1100, panel: true }).inspector).toMatchObject({ width: 752, mode: "dock" });
     expect(windowLayout({ ...base, inspectorWidth: 2000, panel: true }).inspector.width).toBe(620);
+    // Dragged as far as it goes on a sheet of fractional width, it still docks (rounded up, it floated and closed).
+    expect(clampInspectorWidth(2000, 1091.5)).toBe(611);
+    expect(inspectorMode(1091.5, clampInspectorWidth(2000, 1091.5))).toBe("dock");
+    // Up to 620px nothing changes: a narrow window floats it.
+    expect(windowLayout({ ...base, win: { w: 1000, h: 880 }, inspectorWidth: 500, panel: true }).inspector).toMatchObject({ width: 500, mode: "float" });
 });
 
 test("the terminal keeps the conversation 300px and is at least 120px; maximized it's the whole sheet", () => {

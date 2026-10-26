@@ -5,9 +5,9 @@
 //   bun run desktop:install                 build, quit Cavvy, install, open it
 //   bun run desktop:install --no-restart    install only; a running Cavvy carries on
 //
-// It goes to /Applications, or ~/Applications if that isn't writable. Builds
-// reuse desktop/src-tauri/target, so after the first only what changed is
-// rebuilt.
+// It goes to /Applications, or ~/Applications if that isn't writable. The app
+// is Electron's (desktop-electron/pack.ts builds it): the GUI, and the server
+// compiled to one executable beside it.
 //
 // It's signed with your Apple Development (or Developer ID) certificate when
 // you have one, so each build is the same app to macOS and keeps the keychain
@@ -17,10 +17,11 @@
 // set CAVVY_SIGNING_IDENTITY to its name or SHA-1 (security find-identity -v -p codesigning).
 
 import { spawn } from "child_process";
-import { accessSync, constants, existsSync, readdirSync } from "fs";
+import { accessSync, constants, existsSync } from "fs";
 import { homedir, userInfo } from "os";
 import { join, resolve } from "path";
 import { replaceBundle, writeInstallRecord } from "../src/config/desktop-install";
+import { appInfo, olderThan } from "../desktop-electron/app-info";
 
 if (process.platform !== "darwin") {
     console.error("desktop:install is for macOS. Elsewhere, bun run desktop:build makes the installers.");
@@ -29,28 +30,13 @@ if (process.platform !== "darwin") {
 
 const restart = !process.argv.includes("--no-restart");
 const root = resolve(import.meta.dir, "..");
-const desktop = join(root, "desktop");
-const tauri = join(desktop, "src-tauri");
-const { productName, identifier } = (await Bun.file(join(tauri, "tauri.conf.json")).json()) as { productName: string; identifier: string };
-
-/** Where Rust is when cargo isn't on PATH: rustup's shims, or a toolchain installed without them. */
-function rustBin(): string | undefined {
-    if (Bun.which("cargo")) return undefined;
-    const shims = join(homedir(), ".cargo", "bin");
-    if (existsSync(join(shims, "cargo"))) return shims;
-    const toolchains = join(homedir(), ".rustup", "toolchains");
-    if (!existsSync(toolchains)) return undefined;
-    return readdirSync(toolchains)
-        .filter((d) => d.startsWith("stable-"))
-        .map((d) => join(toolchains, d, "bin"))
-        .find((d) => existsSync(join(d, "cargo")));
-}
-
+const { productName, identifier, minimumSystemVersion } = appInfo(join(root, "desktop-electron"));
 const env = { ...process.env };
-const bin = rustBin();
-if (bin) env.PATH = `${bin}:${env.PATH ?? ""}`;
-if (!Bun.which("cargo", { PATH: env.PATH })) {
-    console.error("Building the app needs Rust: https://rustup.rs");
+
+// Electron's own minimum: an older macOS keeps the app it has, rather than one that wouldn't open (an update included).
+const macOS = Bun.spawnSync(["sw_vers", "-productVersion"]).stdout.toString().trim();
+if (macOS && olderThan(macOS, minimumSystemVersion)) {
+    console.error(`${productName} needs macOS ${minimumSystemVersion} or later, and this Mac has ${macOS}. The installed app is left as it is.`);
     process.exit(1);
 }
 
@@ -70,19 +56,15 @@ function output(cmd: string[]): string {
 }
 
 run(["bun", "install"], root);
-run(["bun", "install"], desktop);
-// Just the app (desktop:build also makes a .dmg). Building it builds the GUI and the sidecar first.
-run(["bun", "run", "tauri", "build", "--bundles", "app"], desktop);
-
-/** Where cargo builds to, as it works it out: CARGO_TARGET_DIR, build.target-dir in a Cargo config, or the default. */
-function targetDir(): string {
-    const r = Bun.spawnSync(["cargo", "metadata", "--format-version", "1", "--no-deps"], { cwd: tauri, env, stdout: "pipe", stderr: "inherit" });
-    if (r.exitCode !== 0) process.exit(r.exitCode ?? 1);
-    return (JSON.parse(r.stdout.toString()) as { target_directory: string }).target_directory;
-}
-const built = join(targetDir(), "release", "bundle", "macos", `${productName}.app`);
-if (!existsSync(built)) {
-    console.error(`The build finished, but there's no ${built}`);
+run(["bun", "install"], join(root, "gui"));
+run(["bun", "install"], join(root, "desktop-electron"));
+// Imported once its dependencies are installed (above).
+const { pack } = await import("../desktop-electron/pack.ts");
+let built: string;
+try {
+    built = await pack();
+} catch (e) {
+    console.error(`Building the app failed: ${(e as Error).message}`);
     process.exit(1);
 }
 
@@ -132,11 +114,14 @@ function signingIdentity(): Identity | undefined {
     return apple.find((i) => i.name === before) ?? apple[0];
 }
 
-// The server first: it's inside the app, whose own signature covers it. By SHA-1, as names can repeat (a revoked copy).
+// By SHA-1, as names can repeat (a revoked copy). Electron's helpers and frameworks first (--deep), then the server
+// under an identifier of its own (the keychain knows it by that and the certificate), then the app around both again.
 const id = signingIdentity();
 if (id) {
+    output(["codesign", "--force", "--deep", "--sign", id.hash, "--timestamp=none", built]);
     output(["codesign", "--force", "--sign", id.hash, "--identifier", `${identifier}.server`, "--timestamp=none", join(built, "Contents", "MacOS", "cavvy")]);
     output(["codesign", "--force", "--sign", id.hash, "--timestamp=none", built]);
+    output(["codesign", "--verify", "--deep", "--strict", built]);
     console.log(`Signed with ${id.name}`);
 } else {
     console.log("No Apple Development certificate, so this build is signed ad hoc: macOS asks again before it reads your keys from the keychain. Xcode → Settings → Accounts makes one.");

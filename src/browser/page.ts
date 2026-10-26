@@ -41,6 +41,8 @@ export interface PageHooks {
     /** Something a viewer shows changed: address, title, loading, dialog, who has control. */
     changed(page: Page): void;
     frame(page: Page, frame: Frame): void;
+    /** The person used the page directly, in the desktop app's own view of it (host.ts): the tab is theirs. */
+    taken?(page: Page): void;
 }
 
 export interface PendingDialog {
@@ -129,6 +131,8 @@ export interface PageOptions {
     hooks: PageHooks;
     /** Who the page says it is to sites (chromeIdentity), set before it loads anything. */
     identity?: ChromeIdentity;
+    /** A view in the desktop app's window (host.ts): its size is the view's, which the app reports, never emulated. */
+    hosted?: boolean;
 }
 
 /** What a page and its frames hold for checking before it goes out: documents (pages and frames) and files. */
@@ -410,6 +414,13 @@ export class Page {
             this.network.fail(p.requestId, p.errorText, Boolean(p.canceled));
             this.wake();
         });
+        // Only from the desktop app's view of the page (host.ts): its real size, and the person using it directly.
+        this.on("Cavvy.viewSize", (p: { width: number; height: number; scale: number }) => {
+            if (this.o.hosted && p.width > 0 && p.height > 0) this.viewport = { width: p.width, height: p.height, scale: p.scale > 0 ? p.scale : 1 };
+        });
+        this.on("Cavvy.humanInput", () => {
+            if (this.o.hosted && !this.closed) this.o.hooks.taken?.(this);
+        });
         this.on("Page.screencastFrame", (p: { data: string; sessionId: number; metadata: { deviceWidth: number; deviceHeight: number } }) => {
             // Acknowledged at once: Chrome sends the next frame when the page changes; the pane's own pace is the feed's (feed.ts).
             this.send("Page.screencastFrameAck", { sessionId: p.sessionId }).catch(() => undefined);
@@ -599,6 +610,8 @@ export class Page {
     }
 
     async setViewport(v: Viewport) {
+        // A view in the desktop app is the size the window gives it (Cavvy.viewSize says what that is).
+        if (this.o.hosted) return;
         this.viewport = v;
         await this.send("Emulation.setDeviceMetricsOverride", { width: v.width, height: v.height, deviceScaleFactor: v.scale, mobile: false });
     }

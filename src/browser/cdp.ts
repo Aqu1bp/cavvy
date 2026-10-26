@@ -45,7 +45,7 @@ export class CdpClient {
         ws.onerror = () => this.shutdown("The connection to the browser failed");
     }
 
-    /** A client on a connection that's already open (the browser's pipe). */
+    /** A client on a connection that's already open: the browser's pipe, or the desktop app's browser (host.ts). */
     static over(transport: CdpTransport): CdpClient {
         return new CdpClient(transport);
     }

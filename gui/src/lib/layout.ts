@@ -18,10 +18,12 @@ export const FLOAT_MIN = 260;
 /** The terminal's height: at least this, and the conversation keeps `TERMINAL_KEEP` above it. */
 export const TERMINAL_MIN = 120;
 export const TERMINAL_KEEP = 300;
-/** The inspector's width (its resizer). */
+/** The inspector's width (its resizer). As wide as the conversation allows (a browser wants room), up to `INSPECTOR_MAX`. */
 export const INSPECTOR_MIN = 280;
-export const INSPECTOR_MAX = 620;
+export const INSPECTOR_MAX = 1400;
 export const INSPECTOR_DEFAULT = 360;
+/** A wider inspector narrows with the window down to this; from here, a window too narrow for it floats it as before. */
+export const INSPECTOR_KEEP = 620;
 
 export type RailMode = "dock" | "overlay";
 /** Where the inspector goes: docked beside the conversation, floating over it, or (the diff reader) filling the sheet. */
@@ -59,8 +61,9 @@ export function inspectorMode(sheetWidth: number, inspectorWidth: number): "dock
 
 /** Dragging the docked inspector's edge: within its bounds, and never so wide it stops docking. */
 export function clampInspectorWidth(width: number, sheetWidth: number): number {
-    const most = Math.max(INSPECTOR_MIN, Math.min(INSPECTOR_MAX, sheetWidth - CONVERSATION_MIN));
-    return Math.round(Math.max(INSPECTOR_MIN, Math.min(most, width)));
+    // Down, never up: a width rounded past the conversation's least would float (and so close) the inspector.
+    const most = Math.max(INSPECTOR_MIN, Math.floor(Math.min(INSPECTOR_MAX, sheetWidth - CONVERSATION_MIN)));
+    return Math.max(INSPECTOR_MIN, Math.min(most, Math.round(width)));
 }
 
 /** The terminal's row: the preferred height within its bounds; maximized, the whole sheet. */
@@ -159,7 +162,8 @@ export function windowLayout(o: {
     const mode = railMode(o.win.w);
     const docked = mode === "dock" && o.rail;
     const sheet = sheetSize(o.win, docked, o.railWidth);
-    const inspector = Math.max(INSPECTOR_MIN, Math.min(INSPECTOR_MAX, o.inspectorWidth));
+    const saved = Math.max(INSPECTOR_MIN, Math.min(INSPECTOR_MAX, o.inspectorWidth));
+    const inspector = saved > INSPECTOR_KEEP ? Math.max(INSPECTOR_KEEP, Math.min(saved, Math.floor(sheet.w - CONVERSATION_MIN))) : saved;
     const width = o.review ? reviewWidth(o.reviewBase, sheet.w, o.split, inspector) : inspector;
     const term = o.terminalShown ? terminalHeight(o.terminalPreferred, sheet.h, o.terminalMax) : 0;
     const short = floatShort(sheet.h, term, o.dock);

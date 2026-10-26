@@ -1,9 +1,32 @@
-// Where the GUI runs: the desktop app (Tauri) or a browser tab opened by
+// Where the GUI runs: the desktop app (Electron, or the Tauri one it replaces) or a browser tab opened by
 // `cavvy gui`. Everything that differs between the two lives here.
 
 import type { Credentials } from "./rpc";
 
 export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+/** The Electron desktop app's bridge (desktop-electron/src/preload.ts). */
+export interface ElectronBridge {
+    sidecarInfo(): Promise<{ port: number; token: string }>;
+    windowReady(): void;
+    /** Shows and focuses the window (a notification clicked). */
+    focusWindow(): void;
+    pickFolder(o: { defaultPath?: string; title: string }): Promise<string | null>;
+    openExternal(url: string): Promise<void>;
+    revealPath(path: string): Promise<void>;
+    setTheme(scheme: "light" | "dark"): void;
+    /** The app's browser tabs to keep as webviews (components/BrowserHostLayer.tsx). Returns how to stop. */
+    onBrowser(fn: (e: { type: "create"; key: string; partition: string } | { type: "ready"; key: string; targetId: string } | { type: "destroy"; key: string } | { type: "sleep"; key: string; asleep: boolean }) => void): () => void;
+    /** These tabs are on screen now (a pane, the floating view): the app keeps them awake (never frozen). */
+    browserShown(keys: string[]): void;
+    /** A tab's webview has this size now: its page's real viewport. */
+    browserSized(key: string, size: { width: number; height: number; scale: number }): void;
+}
+
+export const electron: ElectronBridge | undefined = typeof window !== "undefined" ? (window as unknown as { cavvyDesktop?: ElectronBridge }).cavvyDesktop : undefined;
+export const isElectron = electron !== undefined;
+/** The desktop app, either shell: a window of its own, the server beside it, native dialogs. */
+export const isDesktop = isTauri || isElectron;
 
 export type Os = "macos" | "windows" | "linux" | "other";
 export const os: Os = (() => {
@@ -57,7 +80,7 @@ export function windowCommand(cmd: string): Promise<unknown> {
     return (window as unknown as { __TAURI_INTERNALS__: { invoke(cmd: string): Promise<unknown> } }).__TAURI_INTERNALS__.invoke(cmd);
 }
 
-let windowShown = !isTauri;
+let windowShown = !isDesktop;
 /**
  * The desktop window is created hidden, so its glass never shows only the desktop behind it:
  * the app shows it once the first screen is drawn (or after a while, whatever there is).
@@ -65,6 +88,7 @@ let windowShown = !isTauri;
 export function showWindow() {
     if (windowShown) return;
     windowShown = true;
+    if (electron) return electron.windowReady();
     void tauriInvoke("window_ready").catch(() => undefined);
 }
 
@@ -73,6 +97,10 @@ export const isWindowShown = () => windowShown;
 
 /** How to reach the server: ask the desktop app, use the dev server's settings, or trade the link's code. */
 export async function credentials(): Promise<Credentials | undefined> {
+    if (electron) {
+        const info = await electron.sidecarInfo();
+        return { url: `ws://127.0.0.1:${info.port}/ws`, token: info.token };
+    }
     if (isTauri) {
         const info = await tauriInvoke<{ port: number; token: string }>("sidecar_info");
         return { url: `ws://127.0.0.1:${info.port}/ws`, token: info.token };
@@ -125,6 +153,7 @@ export function forgetToken() {
 
 /** A native folder picker; undefined when there's none (the browser), so the GUI shows its own. */
 export async function pickFolder(defaultPath?: string, title = "Open a project folder"): Promise<string | null | undefined> {
+    if (electron) return electron.pickFolder({ defaultPath, title });
     if (!isTauri) return undefined;
     const { open } = await import("@tauri-apps/plugin-dialog");
     const r = await open({ directory: true, multiple: false, defaultPath, title });
@@ -133,6 +162,7 @@ export async function pickFolder(defaultPath?: string, title = "Open a project f
 
 export async function openExternal(url: string) {
     if (!/^(https?:|mailto:)/i.test(url)) return;
+    if (electron) return electron.openExternal(url);
     if (isTauri) {
         const { openUrl } = await import("@tauri-apps/plugin-opener");
         await openUrl(url);
@@ -140,12 +170,13 @@ export async function openExternal(url: string) {
 }
 
 export async function revealPath(path: string) {
+    if (electron) return electron.revealPath(path);
     if (!isTauri) return;
     const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
     await revealItemInDir(path);
 }
 
-export const canReveal = isTauri;
+export const canReveal = isDesktop;
 
 export async function copyText(text: string): Promise<boolean> {
     try {
@@ -188,7 +219,9 @@ export async function notify(title: string, body: string, onClick?: () => void, 
     if (Notification.permission !== "granted") return;
     const note = new Notification(title, { body, silent: false, ...(opts.tag ? { tag: opts.tag } : {}) });
     note.onclick = () => {
-        window.focus();
+        // The page alone can't bring the desktop app's window forward.
+        if (electron) electron.focusWindow();
+        else window.focus();
         onClick?.();
         note.close();
     };
@@ -203,6 +236,7 @@ export function tagId(tag: string): number {
 
 /** Match the native window chrome (title bar, traffic lights) to the app's light or dark theme. */
 export async function setNativeTheme(scheme: "light" | "dark") {
+    if (electron) return electron.setTheme(scheme);
     if (!isTauri) return;
     try {
         const { getCurrentWindow } = await import("@tauri-apps/api/window");

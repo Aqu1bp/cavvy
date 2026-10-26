@@ -1,0 +1,27 @@
+{
+  "name": "cavvy-desktop",
+  "productName": "Cavvy",
+  "private": true,
+  "license": "MIT",
+  "version": "1.0.0",
+  "description": "Cavvy's desktop app: the GUI and the server in an Electron window, with the Browser pane a real Chromium page",
+  "main": "dist/main.cjs",
+  "cavvy": {
+    "identifier": "dev.cavvy.desktop",
+    "category": "public.app-category.developer-tools",
+    "minimumSystemVersion": "13.0"
+  },
+  "scripts": {
+    "build": "bun build src/main.ts --target=node --format=cjs --external electron --external electron-liquid-glass --outfile dist/main.cjs && bun build src/preload.ts --target=node --format=cjs --external electron --outfile dist/preload.cjs",
+    "start": "bun run build && electron .",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "electron": "45.0.0",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "electron-liquid-glass": "^1.1.1"
+  }
+}

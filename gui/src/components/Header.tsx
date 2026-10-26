@@ -12,7 +12,7 @@ import { archive, editorName, exportSession, newSession, openInEditor, openRevie
 import { sessionReadReady, useGitChanges } from "../state/changes";
 import { prefs } from "../state/prefs";
 import { agentFocus, terminalOpen, setTerminalOpen, setRewindOpen, setDeleteRequest, openFind, review, setReview, setSettingsTab, setTitleBarBox, settingsTab, shellLayout } from "../state/ui";
-import { copyText, isTauri, os } from "../lib/platform";
+import { copyText, isDesktop, os } from "../lib/platform";
 import { plural, tildify } from "../lib/format";
 import { asking, inFront, needsLine, needsPlace, needsYou } from "../lib/rail";
 import { Menu } from "./ui/Menu";
@@ -125,7 +125,7 @@ export function TitleBar(p: { children: JSX.Element; end?: JSX.Element }) {
         onCleanup(() => (ro.disconnect(), window.removeEventListener("resize", place)));
     });
     return (
-        <header ref={el} class={`header ${isTauri && os === "macos" ? "traffic" : ""} ${prefs.sidebar ? "" : "rail-off"}`}>
+        <header ref={el} class={`header ${isDesktop && os === "macos" ? "traffic" : ""} ${prefs.sidebar ? "" : "rail-off"}`}>
             <div class="bar-rail">
                 <button class={`hb ${waiting().length ? "has-wait" : ""}`} title={withShortcut(waiting().length ? "Show sidebar: a session needs you" : "Show sidebar", "app:toggleSidebar")} aria-label={waiting().length ? "Show sidebar, a session needs you" : "Show sidebar"} onClick={toggleSidebar}>
                     <PanelLeft size={16} />
