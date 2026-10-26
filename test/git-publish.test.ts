@@ -1,6 +1,6 @@
 import { afterAll, expect, test, setDefaultTimeout } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
-import { basename, join, relative } from "path";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { basename, join, relative, sep } from "path";
 import { isolate } from "./helpers/isolate";
 import { publishFixtures } from "./helpers/git-publish";
 setDefaultTimeout(120_000);
@@ -427,11 +427,15 @@ test("network calls run from an empty folder of their own: a helper the user's s
 
 test("a remote that's a relative folder path is read from the work tree, as git reads it there (#107)", async () => {
     const { cwd, remote } = repo();
-    git(cwd, "remote", "set-url", "origin", relative(cwd, remote));
+    // Through a link, then `..`: the system follows the link first, as git's own read did.
+    mkdirSync(`${cwd}-team/sub`, { recursive: true });
+    renameSync(remote, `${cwd}-team/remote`);
+    symlinkSync(`${cwd}-team/sub`, join(cwd, "link"), "dir");
+    git(cwd, "remote", "set-url", "origin", "link/../remote");
     const preview = await gitPublishInfo(cwd);
-    expect(preview.destination).toBe(remote);
+    expect(preview.destination).toBe(`${cwd}${sep}link/../remote`);
     await gitPublish(cwd, { fingerprint: preview.fingerprint, action: "push" });
-    expect(git(remote, "rev-parse", "feature")).toBe(git(cwd, "rev-parse", "HEAD"));
+    expect(git(`${cwd}-team/remote`, "rev-parse", "feature")).toBe(git(cwd, "rev-parse", "HEAD"));
 });
 
 test("a push to the confirmed URL moves the tracking refs the remote's fetch refspecs name, as git would (#107)", async () => {

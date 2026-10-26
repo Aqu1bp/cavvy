@@ -2,7 +2,7 @@
 import { createHash } from "crypto";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { isAbsolute, delimiter, join, resolve } from "path";
+import { isAbsolute, delimiter, join, sep } from "path";
 import { gitArgv, gitEnv, gitNetworkSkipReason } from "../util/git";
 import { redact } from "../util/redact";
 import type { GitPublishInfo, GitPublishRequest, GitPrInfo } from "./protocol";
@@ -155,8 +155,13 @@ async function local(cwd: string, signal?: AbortSignal) {
     }
     const urls = pushUrls.length ? pushUrls : fetchUrls;
     if (urls.length !== 1 || !urls[0] || /[\x00-\x20\x7f]/.test(urls[0]) || urls[0].startsWith("-") || urls[0].includes("::")) throw fail("Use one ordinary push URL for this remote.", "invalid");
-    // A folder's path, read from the work tree's top as git reads it there: the network calls run elsewhere (run()).
-    const url = localPath(urls[0]) && !isAbsolute(urls[0]) ? resolve(await git(cwd, ["rev-parse", "--show-toplevel"], signal), urls[0]) : urls[0];
+    // A relative folder path, from the work tree's top, where git read it: the network calls run elsewhere (run()). Not
+    // normalized, so the system follows links before a `..` as it did there. Git reads ~ as home wherever it runs.
+    let url = urls[0];
+    if (localPath(url) && !isAbsolute(url) && !url.startsWith("~")) {
+        if (process.platform === "win32" && /^[A-Za-z]:/.test(url)) throw fail("Use an absolute path for this remote, not one relative to a drive.", "invalid");
+        url = `${await git(cwd, ["rev-parse", "--show-toplevel"], signal)}${sep}${url}`;
+    }
     let ahead: number | undefined, behind: number | undefined;
     if (tracking) {
         const counts = await git(cwd, ["rev-list", "--left-right", "--count", `${sha}...${tracking}`, "--"], signal, false, true);
@@ -168,7 +173,7 @@ async function local(cwd: string, signal?: AbortSignal) {
 /** Whether a remote URL is a folder's path, as git tells: no scheme://, and no host: before a slash (scp-like ssh). */
 function localPath(url: string): boolean {
     if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(url)) return false;
-    if (process.platform === "win32" && /^[A-Za-z]:[\\/]/.test(url)) return true;
+    if (process.platform === "win32" && /^[A-Za-z]:/.test(url)) return true;
     const colon = url.indexOf(":");
     return colon === -1 || (url.indexOf("/") !== -1 && url.indexOf("/") < colon);
 }
