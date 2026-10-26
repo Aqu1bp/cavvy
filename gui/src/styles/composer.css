@@ -2316,25 +2316,6 @@
     color: var(--fg-3);
 }
 
-/* "From Default": a CLI's models and their options are its starting account's list, and the session is on
-   another (#426). Small and quiet; why is in its tooltip. */
-.from-tag {
-    flex: none;
-    align-self: center;
-    padding: 0 calc(5 * var(--sp));
-    border-radius: var(--pill);
-    font-size: 0.75rem;
-    line-height: calc(16 * var(--sp));
-    font-weight: 500;
-    color: var(--fg-3);
-    box-shadow: inset 0 0 0 0.5px var(--line-strong);
-    white-space: nowrap;
-}
-
-.ep-h .from-tag {
-    margin-right: auto;
-}
-
 .mr-star {
     display: grid;
     place-items: center;
