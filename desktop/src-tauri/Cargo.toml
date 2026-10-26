@@ -5,6 +5,7 @@ description = "Harness: a coding agent for any model provider"
 edition = "2021"
 rust-version = "1.80"
 publish = false
+license = "MIT"
 
 [lib]
 name = "harness_desktop_lib"
