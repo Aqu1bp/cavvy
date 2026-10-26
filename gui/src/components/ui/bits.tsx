@@ -86,9 +86,11 @@ export function Segmented<T extends string>(p: { value: T; options: { value: T; 
 }
 
 /**
- * The app's mark: an H with a status dot. `variant="brand"`: the small one in the
- * window's frame (the rail's top row), in the rail's ink, its strokes a touch
- * heavier so they hold at 20px.
+ * The app's mark (design/logo): a c with the accent dot on its top end.
+ * `variant="brand"`: the small one in the window's frame (the rail's top row), in
+ * the rail's ink. The c is snapped for that 20px tile on a 2x screen (4px stroke,
+ * its outer edges on pixel lines), so it stays sharp there; design/logo/build.ts
+ * draws the same geometry.
  */
 export function Logo(p: { size?: number; variant?: "brand" }) {
     const s = p.size ?? 22;
@@ -96,8 +98,8 @@ export function Logo(p: { size?: number; variant?: "brand" }) {
     return (
         <svg class={brand() ? "logo brand" : "logo"} width={s} height={s} viewBox="0 0 64 64" aria-hidden="true">
             <rect width="64" height="64" rx="16" fill={brand() ? "var(--rail-fg)" : "var(--fg)"} />
-            <path d="M21 19v26M43 19v26M21 32h22" stroke="var(--sheet)" stroke-width={brand() ? 7 : 6.5} stroke-linecap="round" fill="none" />
-            <circle cx="43" cy="19" r={brand() ? 6 : 5.5} fill="var(--accent)" />
+            <path d="M43.2 21.27a14.4 14.4 0 1 0 0 21.46" stroke="var(--sheet)" stroke-width="6.4" stroke-linecap="round" fill="none" />
+            <circle cx="43.2" cy="21.27" r="5.6" fill="var(--accent)" />
         </svg>
     );
 }
