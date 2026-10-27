@@ -34,6 +34,8 @@ export function scrub<T>(v: T): T {
         .replace(/("(?:[A-Za-z]*(?:account|org|organization|user|workspace|chatgpt|tenant|installation|device|machine)_?(?:id|uuid))"\s*:\s*)"[^"]*"/gi, '$1"<id>"')
         .replace(/("(?:email|name|display_?name)"\s*:\s*)"[^"]*@[^"]*"/gi, '$1"<email>"')
         .replace(/\/Users\/[^/"\s]+/g, "/Users/<user>")
+        // Cavvy's folder for a CLI's sign-in (a probe run from a Cavvy session uses it) is named for the account.
+        .replace(/(\/accounts\/[\w-]+\/)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "$1<account>")
         // claude.ai's synced skills and plugins sit in a folder named for the organization and account (<org>_<account>).
         .replace(/\/synced\/[0-9a-f]{8}-[0-9a-f-]{27}_[0-9a-f]{8}-[0-9a-f-]{27}/gi, "/synced/<org>_<account>")
         .replace(/("balance"\s*:\s*)"[^"]*"/g, '$1"<n>"');

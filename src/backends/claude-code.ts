@@ -495,6 +495,12 @@ class ClaudeTurn {
     private midTurnInput = false;
     /** Prompts sent and not answered yet, by the uuid they were sent with (a result names the ones it answers). */
     private unanswered = new Set<string>();
+    /**
+     * Of those, the synthetic ones sent while a turn ran (a watch's events). No result names one Claude Code takes
+     * into that turn (2.1.310, probe claude-synthetic-steer), but its command_lifecycle "completed" does; one that
+     * starts a turn of its own instead is named by that turn's result.
+     */
+    private foldedSynthetic = new Set<string>();
     /** A result has answered the run's prompts. */
     private answered = false;
     /** Claude Code is in a turn (from the prompt, or its own init, to the result). */
@@ -734,6 +740,7 @@ class ClaudeTurn {
         this.settleTimer = undefined;
         const uuid = crypto.randomUUID();
         this.unanswered.add(uuid);
+        if (synthetic && wasBusy) this.foldedSynthetic.add(uuid);
         const sent = await this.proc.send({ type: "user", uuid, message: { role: "user", content }, parent_tool_use_id: null, session_id: this.sessionId ?? "", ...(synthetic ? { isSynthetic: true } : {}) });
         // Not written: no answer to wait for.
         if (!sent) {
@@ -1333,6 +1340,9 @@ class ClaudeTurn {
         switch (m.type) {
             case "control_request":
                 void this.onControlRequest(m);
+                break;
+            case "command_lifecycle":
+                if (m.state === "completed" && this.foldedSynthetic.delete(String(m.command_uuid))) this.unanswered.delete(String(m.command_uuid));
                 break;
             case "control_response": {
                 const r = m.response ?? {};
