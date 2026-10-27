@@ -1192,6 +1192,8 @@ export class Runtime {
         } else if (opts?.main) {
             // the session's own model
         } else ({ model, client } = await this.smallTarget());
+        // Stopped while the model was being picked (the session closed): a CLI would still start for it.
+        signal?.throwIfAborted();
         const res = await client.stream(
             // On Claude Code or Codex, through the session's account, not the CLI's default.
             { model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: opts?.maxTokens ?? 2048, effort: "low", lightweight: true, signal, account: this.session.accountId(model.provider), ...(opts?.review ? REVIEW_REQUEST[opts.review] : {}) },
