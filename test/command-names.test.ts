@@ -94,7 +94,7 @@ describe("program names in other spellings (case-insensitive volumes)", () => {
             "GIT reset --hard HEAD~3",
             "DD if=/dev/zero of=/dev/disk2",
             "SHUTDOWN -h now",
-            "rm -rf /USERS/AQUIB",
+            "rm -rf /USERS/ME",
             "RM -rf $HOME",
             "echo x > ~/.ZSHRC",
             "echo x >> ~/.Bash_Profile",

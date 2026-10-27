@@ -3,14 +3,31 @@
 //   {"t": ms since start, "dir": "in"|"out"|"err"|"note", "frame": <parsed json | string>}
 // "in" is what the CLI wrote to us, "out" is what we wrote to it.
 import { mkdirSync, appendFileSync, writeFileSync } from "node:fs";
+import { hostname, userInfo } from "node:os";
 import { dirname } from "node:path";
 
 export const SCRATCH = process.env.PROBE_SCRATCH ?? "/tmp/live-probes-scratch";
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** This machine's name, with or without `.local`; none when it's a generic one. */
+const HOST = (() => {
+    const h = hostname().replace(/\.local$/i, "");
+    return h && h.toLowerCase() !== "localhost" ? new RegExp(`\\b${escapeRe(h)}(\\.local)?\\b`, "gi") : undefined;
+})();
+/** The login name, wherever else it shows (a display name, a branch). A short one would match ordinary words. */
+const USER = (() => {
+    try {
+        const u = userInfo().username;
+        return u.length >= 4 ? new RegExp(`\\b${escapeRe(u)}\\b`, "gi") : undefined;
+    } catch {
+        return undefined;
+    }
+})();
+
 /** Scrub anything that looks like an account email, an org, account, user or install id, or a token before it is written. */
 export function scrub<T>(v: T): T {
-    const s = JSON.stringify(v)
+    let s = JSON.stringify(v)
         .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, "<email>")
         .replace(/\b(sk|sess|ghp|gho|xox[a-z])-[A-Za-z0-9_-]{16,}/g, "<token>")
         .replace(/(eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,})/g, "<jwt>")
@@ -19,9 +36,9 @@ export function scrub<T>(v: T): T {
         .replace(/\/Users\/[^/"\s]+/g, "/Users/<user>")
         // claude.ai's synced skills and plugins sit in a folder named for the organization and account (<org>_<account>).
         .replace(/\/synced\/[0-9a-f]{8}-[0-9a-f-]{27}_[0-9a-f]{8}-[0-9a-f-]{27}/gi, "/synced/<org>_<account>")
-        .replace(/\baquibs?-macbook-pro(\.local)?\b/gi, "<host>")
-        .replace(/("balance"\s*:\s*)"[^"]*"/g, '$1"<n>"')
-        .replace(/\baquib\b/gi, "<user>");
+        .replace(/("balance"\s*:\s*)"[^"]*"/g, '$1"<n>"');
+    if (HOST) s = s.replace(HOST, "<host>");
+    if (USER) s = s.replace(USER, "<user>");
     return JSON.parse(s);
 }
 
