@@ -306,7 +306,7 @@ export class ClaudeCodeBackend implements AgentBackendClient {
         const bin = requireCli(this.def.id, CLAUDE_CLI);
         const model = req.model.id === "default" ? [] : ["--model", req.model.id];
         const args = [...extraArgs(this.def.id), ...STREAM_ARGS, "--tools", "", "--disable-slash-commands", "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence", "--system-prompt", req.system, ...model];
-        const proc = new JsonLinesProcess(bin, args, { cwd: homedir(), env: accountEnv(this.def.id, defaultAccount(this.def.id)) });
+        const proc = new JsonLinesProcess(bin, args, { cwd: homedir(), env: accountEnv(this.def.id, req.account ?? defaultAccount(this.def.id)) });
         const kill = () => void proc.kill();
         req.signal?.addEventListener("abort", kill, { once: true });
         const timer = setTimeout(kill, ONE_OFF_TIMEOUT_MS);

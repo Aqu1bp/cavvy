@@ -884,7 +884,7 @@ async function handle(m: any) {
             log({ threadMcp: p.config?.mcp_servers ?? null });
             // A one-off: an ephemeral thread answering one question (FAKE_ONEOFF_ANSWER).
             if (p.ephemeral) {
-                log({ oneOffThread: { baseInstructions: p.baseInstructions, config: p.config, approvalPolicy: p.approvalPolicy, sandbox: p.sandbox, cwd: p.cwd } });
+                log({ oneOffThread: { baseInstructions: p.baseInstructions, config: p.config, approvalPolicy: p.approvalPolicy, sandbox: p.sandbox, cwd: p.cwd, codexHome: process.env.CODEX_HOME } });
                 return reply({ thread: { id: "thr-oneoff" }, model: p.model ?? "gpt-test" });
             }
             threadPolicy(p);

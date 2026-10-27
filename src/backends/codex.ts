@@ -375,6 +375,7 @@ export class CodexBackend implements AgentBackendClient {
                 }
             },
             async (method) => (method.endsWith("requestApproval") ? { decision: "decline" } : Promise.reject(new Error("not supported"))),
+            { accountId: req.account },
         );
         const kill = () => {
             finish(new ProviderError("Interrupted"));

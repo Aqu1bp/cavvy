@@ -159,6 +159,7 @@ if (argv.includes("--tools") && argv[argv.indexOf("--tools") + 1] === "" && argv
         if (!buf.includes("\n")) continue;
         const m = JSON.parse(buf.split("\n")[0]!);
         log({ oneOff: { system: argv[argv.indexOf("--system-prompt") + 1], prompt: m.message?.content?.[0]?.text, model: argv.includes("--model") ? argv[argv.indexOf("--model") + 1] : undefined } });
+        log({ oneOffConfigDir: process.env.CLAUDE_CONFIG_DIR });
         const fail = process.env.FAKE_ONEOFF_FAIL;
         process.stdout.write(JSON.stringify({ type: "result", subtype: fail ? "error_during_execution" : "success", is_error: Boolean(fail), result: fail ?? process.env.FAKE_ONEOFF_ANSWER ?? '{"ok": true}' }) + "\n");
         process.exit(0);

@@ -324,6 +324,8 @@ export class Runtime {
     private committing = false;
     private commitDone?: Promise<unknown>;
     private commitAbort?: AbortController;
+    /** The title being asked for: closing the session stops it (on a CLI, its process). */
+    private titleAbort?: AbortController;
     /** Being closed: it starts nothing more and sends nothing more (the session may be open again by then). */
     private closed = false;
     /** /loop, cron jobs and the resume after a usage limit (src/agent/schedule.ts). */
@@ -1191,7 +1193,8 @@ export class Runtime {
             // the session's own model
         } else ({ model, client } = await this.smallTarget());
         const res = await client.stream(
-            { model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: opts?.maxTokens ?? 2048, effort: "low", lightweight: true, signal, ...(opts?.review ? REVIEW_REQUEST[opts.review] : {}) },
+            // On Claude Code or Codex, through the session's account, not the CLI's default.
+            { model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: opts?.maxTokens ?? 2048, effort: "low", lightweight: true, signal, account: this.session.accountId(model.provider), ...(opts?.review ? REVIEW_REQUEST[opts.review] : {}) },
             () => {},
         );
         if (res.usage) {
@@ -3240,7 +3243,7 @@ export class Runtime {
                 // Cut after redacting, so a registered value crossing the cut can't leave a prefix.
                 redactPrefix(prompt, 3000),
                 // A CLI starts a process of its own for it: a few seconds more than an API call.
-                AbortSignal.timeout(45_000),
+                AbortSignal.any([AbortSignal.timeout(45_000), (this.titleAbort = new AbortController()).signal]),
             );
             title = raw
                 .replace(/<[^>]*>/g, "")
@@ -3885,6 +3888,7 @@ export class Runtime {
         this.idleCompact.disarm();
         this.abort?.abort();
         this.commitAbort?.abort();
+        this.titleAbort?.abort();
         this.cancelInteractions();
         this.toolState.secrets?.clear();
         stopWatchers(this.toolState);

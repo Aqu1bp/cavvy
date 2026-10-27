@@ -1043,6 +1043,36 @@ describe("connecting", () => {
         }
     }, 30_000);
 
+    for (const provider of ["claude-code", "codex"] as const)
+    test(`a ${provider} session's title goes through the session's account, not the CLI's default`, async () => {
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        const { addAccount, accountEnv, removeAccount } = await import("../src/providers/accounts");
+        saveAgentConfig(provider, { path: provider === "codex" ? fakeCodex() : fakeClaude() });
+        process.env.FAKE_SCENARIO = provider === "codex" ? "cmd" : "silent";
+        process.env.FAKE_ONEOFF_ANSWER = "Sign-in strategy registry";
+        process.env.FAKE_LOG = join(tempDir("title-account-"), "log.jsonl");
+        const work = addAccount(provider, { id: `title-work-${provider === "codex" ? "cx" : "cc"}`, name: "Work" });
+        const { engine, c, id, rt } = await engineWithSession();
+        try {
+            await engine.handle(c, "models.list", { refresh: true });
+            await engine.handle(c, "session.setModel", { id, ref: `${provider}:default`, persist: false });
+            await engine.handle(c, "session.setAccount", { id, provider, accountId: work.id });
+            rt.ws.settings = { ...rt.ws.settings, smallModel: undefined };
+            await engine.handle(c, "session.send", { id, text: "map the auth module" });
+            for (let k = 0; k < 250 && !rt.session.title; k++) await Bun.sleep(20);
+            expect(rt.session.title).toBe("Sign-in strategy registry");
+            const oneOffs = readFileSync(process.env.FAKE_LOG!, "utf-8").trim().split("\n").map((l) => JSON.parse(l)).flatMap((l) => ("oneOffConfigDir" in l ? [l.oneOffConfigDir] : l.oneOffThread ? [l.oneOffThread.codexHome] : []));
+            const home = accountEnv(provider, work.id)[provider === "codex" ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR"];
+            expect(home).toBeTruthy();
+            expect(oneOffs).toEqual([home]);
+        } finally {
+            await engine.stop();
+            for (const k of ["FAKE_SCENARIO", "FAKE_ONEOFF_ANSWER", "FAKE_LOG"]) delete process.env[k];
+            removeAccount(provider, work.id, work.folder);
+            removeAgentConfig(provider);
+        }
+    }, 30_000);
+
     test("a title made from the prompt has no key in it, cut or capitalized", async () => {
         const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
         const { registerSecret, unregisterSecret } = await import("../src/util/redact");
