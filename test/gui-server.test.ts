@@ -1015,10 +1015,12 @@ describe("connecting", () => {
     });
 
     for (const provider of ["claude-code", "codex"] as const)
-    test(`a ${provider} session with no smallModel is named from its prompt: ${provider} can't be asked for a title`, async () => {
+    test(`a ${provider} session with no smallModel is named by ${provider} itself, as a one-off`, async () => {
         const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
         saveAgentConfig(provider, { path: provider === "codex" ? fakeCodex() : fakeClaude() });
         process.env.FAKE_SCENARIO = provider === "codex" ? "cmd" : "silent";
+        // Said as a light model may say it: a label first.
+        process.env.FAKE_ONEOFF_ANSWER = "Session title: Sign-in strategy registry";
         const logged: string[] = [];
         const { engine, c, id, rt } = await engineWithSession({ log: (m) => logged.push(m) });
         const titles = () => mock.requests.filter((r) => r.kind === "title").length;
@@ -1030,12 +1032,43 @@ describe("connecting", () => {
             const before = titles();
             await engine.handle(c, "session.send", { id, text: "## map the auth module\nand say how sign-in strategies are registered" });
             for (let k = 0; k < 250 && !rt.session.title; k++) await Bun.sleep(20);
-            expect(rt.session.title).toBe("Map the auth module");
+            expect(rt.session.title).toBe("Sign-in strategy registry");
             expect(titles()).toBe(before);
             expect(logged).toEqual([]);
         } finally {
             await engine.stop();
             delete process.env.FAKE_SCENARIO;
+            delete process.env.FAKE_ONEOFF_ANSWER;
+            removeAgentConfig(provider);
+        }
+    }, 30_000);
+
+    for (const provider of ["claude-code", "codex"] as const)
+    test(`a ${provider} session's title goes through the session's account, not the CLI's default`, async () => {
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        const { addAccount, accountEnv, removeAccount } = await import("../src/providers/accounts");
+        saveAgentConfig(provider, { path: provider === "codex" ? fakeCodex() : fakeClaude() });
+        process.env.FAKE_SCENARIO = provider === "codex" ? "cmd" : "silent";
+        process.env.FAKE_ONEOFF_ANSWER = "Sign-in strategy registry";
+        process.env.FAKE_LOG = join(tempDir("title-account-"), "log.jsonl");
+        const work = addAccount(provider, { id: `title-work-${provider === "codex" ? "cx" : "cc"}`, name: "Work" });
+        const { engine, c, id, rt } = await engineWithSession();
+        try {
+            await engine.handle(c, "models.list", { refresh: true });
+            await engine.handle(c, "session.setModel", { id, ref: `${provider}:default`, persist: false });
+            await engine.handle(c, "session.setAccount", { id, provider, accountId: work.id });
+            rt.ws.settings = { ...rt.ws.settings, smallModel: undefined };
+            await engine.handle(c, "session.send", { id, text: "map the auth module" });
+            for (let k = 0; k < 250 && !rt.session.title; k++) await Bun.sleep(20);
+            expect(rt.session.title).toBe("Sign-in strategy registry");
+            const oneOffs = readFileSync(process.env.FAKE_LOG!, "utf-8").trim().split("\n").map((l) => JSON.parse(l)).flatMap((l) => ("oneOffConfigDir" in l ? [l.oneOffConfigDir] : l.oneOffThread ? [l.oneOffThread.codexHome] : []));
+            const home = accountEnv(provider, work.id)[provider === "codex" ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR"];
+            expect(home).toBeTruthy();
+            expect(oneOffs).toEqual([home]);
+        } finally {
+            await engine.stop();
+            for (const k of ["FAKE_SCENARIO", "FAKE_ONEOFF_ANSWER", "FAKE_LOG"]) delete process.env[k];
+            removeAccount(provider, work.id, work.folder);
             removeAgentConfig(provider);
         }
     }, 30_000);
@@ -1046,14 +1079,21 @@ describe("connecting", () => {
         const secret = "abcdefghijklmnopqrstuvwx";
         saveAgentConfig("claude-code", { path: fakeClaude() });
         process.env.FAKE_SCENARIO = "silent";
+        // Claude Code can't give one, every try: the first prompt names it.
+        process.env.FAKE_ONEOFF_FAIL = "no title today";
         registerSecret(secret, "test-key");
-        const { engine, c, id, rt } = await engineWithSession();
+        const logged: string[] = [];
+        const { engine, c, id, rt } = await engineWithSession({ log: (m) => logged.push(m) });
         try {
             await engine.handle(c, "models.list", { refresh: true });
             await engine.handle(c, "session.setModel", { id, ref: "claude-code:default", persist: false });
             rt.ws.settings = { ...rt.ws.settings, smallModel: undefined };
             // First (it would be capitalized), and long enough to be cut in the middle.
-            await engine.handle(c, "session.send", { id, text: `${secret} investigate auth, then ${secret}${secret} and more words after it` });
+            for (const [i, text] of [`${secret} investigate auth, then ${secret}${secret} and more words after it`, "a second try", "and a third"].entries()) {
+                await engine.handle(c, "session.send", { id, text });
+                await whenIdle(rt);
+                for (let k = 0; k < 250 && logged.filter((l) => l.includes("no title")).length <= i; k++) await Bun.sleep(20);
+            }
             for (let k = 0; k < 250 && !rt.session.title; k++) await Bun.sleep(20);
             const title = rt.session.title!;
             expect(title).toStartWith("[REDACTED test-key] investigate auth");
@@ -1062,6 +1102,7 @@ describe("connecting", () => {
             await engine.stop();
             unregisterSecret(secret);
             delete process.env.FAKE_SCENARIO;
+            delete process.env.FAKE_ONEOFF_FAIL;
             removeAgentConfig("claude-code");
         }
     }, 30_000);
@@ -1079,8 +1120,11 @@ describe("connecting", () => {
             for (let k = 0; k < 500 && (rt.busy || rt.snapshot().state.queued.length); k++) await Bun.sleep(20);
             const at = rt.session.messages.findIndex((m) => m.role === "user" && m.content.some((p) => (p as { text?: string }).text === "a correction"));
             expect(at).toBeGreaterThan(0);
-            // What Claude Code said before it is recorded first, so the prompt sits after it.
-            expect(rt.session.messages[at - 1]!.role).toBe("assistant");
+            // Sent at once (here before Claude Code said anything): after the prompt it steers, and what Claude Code
+            // said after taking it comes after it.
+            const said = (t: string) => rt.session.messages.findIndex((m) => m.role === "assistant" && JSON.stringify(m.content).includes(t));
+            expect(rt.session.messages.findIndex((m) => m.role === "user" && JSON.stringify(m.content).includes("start"))).toBeLessThan(at);
+            expect(said("Adjusted: a correction")).toBeGreaterThan(at);
             const turn = rt.snapshot().turns.find((t) => t.prompt?.text === "a correction")!;
             expect(turn.prompt!.index).toBe(at);
             expect(turn.pos).toEqual({ seg: 0, index: at });

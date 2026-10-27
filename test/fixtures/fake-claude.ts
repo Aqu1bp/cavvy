@@ -80,7 +80,16 @@
 // FAKE_START_DELAY_MS  a prompt waits in the queue this long (after its "queued" lifecycle) before it starts: a window in
 //                    which cancel_async_message withdraws it (cancelled: true), and it never reaches the transcript
 // FAKE_CANCEL_ANSWER_MS  cancel_async_message is answered this late ("never": not at all); a prompt it withdraws is
-//                    said "cancelled" (command_lifecycle) at once
+//                    said "cancelled" (command_lifecycle) at once (steer-live: a message written while a call ran too)
+// FAKE_CANCEL_FOLDED  steer-live: withdrawing a message written while a call ran ends the turn first (the call's result
+//                    and the turn's, the message not taken); then, "run": the message runs as a turn of its own, and
+//                    the withdrawal is answered (cancelled: false) once it has started; "drop": the message is said
+//                    cancelled, and the withdrawal answered (cancelled: true)
+// FAKE_INTERRUPT_ANSWER_MS  an interrupt stops the turn at once, but its control answer comes this late
+// FAKE_CANCEL_REFUSE=1  answers cancel_async_message with an error (FAKE_CANCEL_ANSWER_MS late), and withdraws nothing
+// FAKE_INITIALIZE_MS  answers initialize this late, reading nothing after it meanwhile (as Claude Code takes no prompt before)
+// FAKE_LIVE_WAKE_MS  steer-live: this long after the first turn's result, a turn of its own starts (a background
+//                    report's, say), run as the first was; its result names none of what was written to it
 // FAKE_CLAUDE_ENV_FILE  a JSON file of FAKE_* settings, read again with each prompt (as fake-codex's FAKE_ENV_FILE):
 //                    a test changes a live process's scenario between its turns
 // FAKE_RATE_LIMIT    a JSON file: the rate_limit_info of a rate_limit_event sent after system/init
@@ -89,6 +98,7 @@
 //                    Claude Code sends one per request)
 // FAKE_SCENARIO=rate-limit  the turn ends on the plan's limit (an assistant error "rate_limit", an error result; no usage)
 // FAKE_SCENARIO=auth-failed  the turn ends signed out (an assistant error "authentication_failed", an error result; no usage)
+// FAKE_SCENARIO=steer-live  messages written mid-turn, taken as 2.1.310 takes them, plain or "now" (see steerLive)
 // FAKE_SCENARIO=chat  (or any name not listed) the turn says something and answers, with nothing done
 // Reliability cases: steering / steering-many fold stdin input between tool rounds (dropping its document blocks,
 // as Claude Code 2.1.304 does: images reach the model mid-turn, PDFs don't);
@@ -159,6 +169,7 @@ if (argv.includes("--tools") && argv[argv.indexOf("--tools") + 1] === "" && argv
         if (!buf.includes("\n")) continue;
         const m = JSON.parse(buf.split("\n")[0]!);
         log({ oneOff: { system: argv[argv.indexOf("--system-prompt") + 1], prompt: m.message?.content?.[0]?.text, model: argv.includes("--model") ? argv[argv.indexOf("--model") + 1] : undefined } });
+        log({ oneOffConfigDir: process.env.CLAUDE_CONFIG_DIR });
         const fail = process.env.FAKE_ONEOFF_FAIL;
         process.stdout.write(JSON.stringify({ type: "result", subtype: fail ? "error_during_execution" : "success", is_error: Boolean(fail), result: fail ?? process.env.FAKE_ONEOFF_ANSWER ?? '{"ok": true}' }) + "\n");
         process.exit(0);
@@ -325,7 +336,7 @@ let prompts = 0;
 /** The prompt the turn under way answers (its user message's uuid); none for a turn Claude Code starts itself. */
 let answering: string | undefined;
 // A busy CLI folds these into the current turn, rather than starting concurrent turns.
-let steering: { uuid?: string; text: string; images?: number }[] | undefined;
+let steering: { uuid?: string; synthetic?: boolean; text: string; images?: number }[] | undefined;
 /** FAKE_GOAL_HOLD=1: the goal's second turn waits for an interrupt. */
 let goalRelease: (() => void) | undefined;
 let steeringWake: (() => void) | undefined;
@@ -898,6 +909,7 @@ async function turn(content: any[], uuid?: string) {
         if (scenario === "partial-error-exit") process.exit(3);
         return result("success", { is_error: true, result: "You've hit your limit", ...(partial ? {} : { usage: unread }) });
     }
+    if (scenario === "steer-live") return steerLive(content, uuid);
     if (scenario === "result-error") return result("error_during_execution", { errors: ["CLI diagnostic: execution failed"], usage: {} });
     if (scenario === "auth-failed") {
         out({ type: "assistant", message: { role: "assistant", model: "<synthetic>", usage: unread, content: [{ type: "text", text: "Invalid API key" }] }, error: "authentication_failed", parent_tool_use_id: null, session_id: sessionId });
@@ -922,7 +934,10 @@ async function turn(content: any[], uuid?: string) {
         steeringWake = undefined;
         log({ foldedBeforeResult: folded.map((m) => m.text), foldedImages: folded.reduce((n, m) => n + (m.images ?? 0), 0) });
         text(folded.length ? `Adjusted: ${folded.map((m) => m.text).join(" | ")}` : "No steering received before result.");
-        return result("success", { user_message_uuids: [uuid, ...folded.map((m) => m.uuid)].slice(-64) });
+        // As Claude Code 2.1.310 does (test/fixtures/protocol/claude-synthetic-steer.jsonl): each message folded in is said
+        // completed just before the result, which doesn't name a synthetic one.
+        for (const m of folded) lifecycle(m.uuid, "completed");
+        return result("success", { user_message_uuids: [uuid, ...folded.filter((m) => !m.synthetic).map((m) => m.uuid)].slice(-64) });
     }
     if (scenario === "monitor-repeated-reports") {
         bgTasks.set("monitor-1", { task_id: "monitor-1", task_type: "monitor_mcp", description: "Watch checks" });
@@ -1250,6 +1265,135 @@ async function turn(content: any[], uuid?: string) {
 }
 
 let turnTail = Promise.resolve();
+
+/** A prompt, run once the turns before it have (`queued`: say it's queued; a message already said so doesn't again). */
+function enqueue(m: any, queued: boolean) {
+    const uuid = typeof m.uuid === "string" ? m.uuid : undefined;
+    clearTimeout(idleExit);
+    if (uuid) {
+        waiting.add(uuid);
+        if (queued) lifecycle(uuid, "queued");
+    }
+    turnTail = turnTail.then(async () => {
+        // FAKE_START_DELAY_MS: the prompt waits in the queue this long before it starts (it can be withdrawn meanwhile).
+        syncEnv();
+        if (process.env.FAKE_START_DELAY_MS) await Bun.sleep(Number(process.env.FAKE_START_DELAY_MS));
+        if (uuid && withdrawn.has(uuid)) return cancelledSaid.has(uuid) ? undefined : lifecycle(uuid, "cancelled");
+        if (uuid) waiting.delete(uuid);
+        busy = true;
+        lifecycle(uuid, "started");
+        try {
+            await turn(m.message?.content ?? [], uuid);
+        } finally {
+            busy = false;
+            lifecycle(uuid, "completed");
+            armIdleExit();
+        }
+    });
+}
+
+/** steer-live: the turn under way, and the messages written to it while a call ran (taken with its result). */
+let liveTurn: { phase: "tool" | "writing"; folded: { uuid?: string; synthetic: boolean; text: string; content: any[] }[]; cut: boolean; end?: boolean; poke?: () => void } | undefined;
+let liveTurns = 0;
+
+/**
+ * FAKE_SCENARIO=steer-live: messages written while a turn runs, taken as Claude Code 2.1.310 takes them
+ * (test/fixtures/protocol/claude-steer-immediate.jsonl). The turn says a line, runs a call for FAKE_TOOL_MS (default
+ * 600), then writes its reply in pieces for FAKE_WRITE_MS (default 600). A plain message written while the call runs
+ * goes in with its result (named by the turn's result, but not a synthetic one); one written while it writes runs as
+ * a turn of its own after it. One with "priority":"now" cuts the reply being written (its words so far kept, the
+ * result "success", aborted_streaming), or, while the call runs, ends the turn after it (aborted_tools); it runs next.
+ * An interrupt keeps what's waiting (runs it after). The turns after the first say what they were sent ("Took: ...").
+ */
+async function steerLive(content: any[], uuid?: string) {
+    if (liveTurns++) {
+        // Stopped before it said anything (an interrupt while its system/init waited: FAKE_INIT_DELAY_MS).
+        if (interrupted) return result("error_during_execution", { errors: ["Request interrupted by user"] });
+        const said = content.filter((c) => c?.type === "text").map((c) => c.text).join("");
+        text(`Took: ${said}`);
+        return result("success", { result: `Took: ${said}` });
+    }
+    const st: NonNullable<typeof liveTurn> = { phase: "tool", folded: [], cut: false };
+    liveTurn = st;
+    const pause = (ms: number) => new Promise<void>((r) => {
+        const timer = setTimeout(r, ms);
+        st.poke = wake = () => (clearTimeout(timer), r());
+    });
+    // What waited when the turn was stopped runs after it, as 2.1.310 does.
+    const keepWaiting = () => {
+        liveTurn = undefined;
+        for (const m of st.folded.splice(0)) enqueue({ uuid: m.uuid, message: { content: m.content } }, false);
+    };
+    text("Working on it.");
+    toolUse("toolu_live", "Bash", { command: "sleep 1" });
+    const until = Date.now() + Number(process.env.FAKE_TOOL_MS ?? 600);
+    // Not cut short by a "now": a call runs to its end.
+    while (Date.now() < until && !interrupted && !st.end) await pause(until - Date.now());
+    if (interrupted) {
+        toolResult("toolu_live", "The user doesn't want to proceed with this tool use.", true);
+        keepWaiting();
+        return result("error_during_execution", { terminal_reason: "aborted_tools" });
+    }
+    toolResult("toolu_live", "slept", false);
+    // FAKE_CANCEL_FOLDED: the turn ends here, what was written to it not taken (what's left runs after it).
+    if (st.end) {
+        keepWaiting();
+        text("Done early.");
+        return result("success", { user_message_uuids: uuid ? [uuid] : [] });
+    }
+    if (st.cut) {
+        keepWaiting();
+        return result("success", { terminal_reason: "aborted_tools" });
+    }
+    const took = st.folded.splice(0);
+    for (const m of took) lifecycle(m.uuid, "started");
+    log({ foldedAtToolResult: took.map((m) => m.text) });
+    st.phase = "writing";
+    out({ type: "stream_event", event: { type: "message_start", message: { id: "m-live" } }, parent_tool_use_id: null, session_id: sessionId });
+    const pieces = ["Counting:", ...Array.from({ length: 9 }, (_, i) => ` ${i + 1}`), "."];
+    let written = "";
+    for (const piece of pieces) {
+        if (st.cut || interrupted) break;
+        written += piece;
+        out({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: piece } }, parent_tool_use_id: null, session_id: sessionId });
+        await pause(Number(process.env.FAKE_WRITE_MS ?? 600) / pieces.length);
+    }
+    liveTurn = undefined;
+    if (interrupted) {
+        keepWaiting();
+        return result("error_during_execution", { terminal_reason: "aborted_streaming" });
+    }
+    const adjusted = took.length ? ` Adjusted: ${took.map((m) => m.text).join(" | ")}` : "";
+    if (!st.cut && adjusted) {
+        written += adjusted;
+        out({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: adjusted } }, parent_tool_use_id: null, session_id: sessionId });
+    }
+    out({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: written }], usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 1000, cache_creation_input_tokens: 0 } }, parent_tool_use_id: null, session_id: sessionId });
+    log({ liveReply: written, cut: st.cut });
+    for (const m of took) lifecycle(m.uuid, "completed");
+    const named = [uuid, ...took.filter((m) => !m.synthetic).map((m) => m.uuid)].filter(Boolean);
+    result("success", { user_message_uuids: named, ...(st.cut ? { terminal_reason: "aborted_streaming" } : {}) });
+    if (process.env.FAKE_LIVE_WAKE_MS && !liveWoke) {
+        liveWoke = true;
+        setTimeout(() => {
+            turnTail = turnTail.then(async () => {
+                answering = undefined;
+                interrupted = false;
+                liveTurns = 0;
+                busy = true;
+                log({ liveWake: true });
+                out({ type: "system", subtype: "init", capabilities: CAPABILITIES, session_id: sessionId, apiKeySource: "none", permissionMode: mode });
+                try {
+                    await steerLive([]);
+                } finally {
+                    busy = false;
+                }
+            });
+        }, Number(process.env.FAKE_LIVE_WAKE_MS));
+    }
+}
+/** FAKE_LIVE_WAKE_MS: the turn of its own has been started. */
+let liveWoke = false;
 let buf = "";
 for await (const chunk of Bun.stdin.stream()) {
     buf += new TextDecoder().decode(chunk);
@@ -1263,6 +1407,7 @@ for await (const chunk of Bun.stdin.stream()) {
         log({ received: m, proc: process.pid });
         if (m.type === "control_request") {
             const sub = m.request?.subtype;
+            if (sub === "initialize" && process.env.FAKE_INITIALIZE_MS) await Bun.sleep(Number(process.env.FAKE_INITIALIZE_MS));
             // FAKE_HANG_INITIALIZE=1: never answers initialize (a CLI stuck starting).
             if (sub === "initialize" && process.env.FAKE_HANG_INITIALIZE === "1") continue;
             if (sub === "initialize") {
@@ -1422,7 +1567,12 @@ for await (const chunk of Bun.stdin.stream()) {
                     }
                     continue;
                 }
-                out({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response: { still_queued: [] } } });
+                // As 2.1.310 (claude-steer-immediate.jsonl, case d): what waits is kept, and named; it runs after the stop.
+                const kept = [...waiting, ...(liveTurn?.folded ?? []).flatMap((x) => (x.uuid ? [x.uuid] : []))];
+                const answerStop = () => out({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response: { still_queued: kept } } });
+                // FAKE_INTERRUPT_ANSWER_MS: the turn stops at once; the interrupt's answer comes this late.
+                if (process.env.FAKE_INTERRUPT_ANSWER_MS) setTimeout(answerStop, Number(process.env.FAKE_INTERRUPT_ANSWER_MS));
+                else answerStop();
                 if (process.env.FAKE_IGNORE_INTERRUPT === "1") continue;
                 // As 2.1.304: a plain interrupt stops its background sub-agents too, turn or no turn.
                 killAgents();
@@ -1432,6 +1582,34 @@ for await (const chunk of Bun.stdin.stream()) {
                 goalRelease?.();
             } else if (sub === "cancel_async_message") {
                 const target = String(m.request.message_uuid ?? "");
+                if (process.env.FAKE_CANCEL_REFUSE === "1") {
+                    const refuse = () => out({ type: "control_response", response: { subtype: "error", request_id: m.request_id, error: "cancel failed" } });
+                    if (process.env.FAKE_CANCEL_ANSWER_MS) setTimeout(refuse, Number(process.env.FAKE_CANCEL_ANSWER_MS));
+                    else refuse();
+                    continue;
+                }
+                // steer-live: one written while a call ran, not taken yet, is dropped at once.
+                const folded = liveTurn?.folded.findIndex((x) => x.uuid === target) ?? -1;
+                if (folded >= 0) {
+                    const answerFolded = (cancelled: boolean) => out({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response: { cancelled } } });
+                    const ending = process.env.FAKE_CANCEL_FOLDED;
+                    if (ending === "run" || ending === "drop") {
+                        if (ending === "drop") liveTurn!.folded.splice(folded, 1);
+                        liveTurn!.end = true;
+                        liveTurn!.poke?.();
+                        setTimeout(() => {
+                            if (ending === "drop") lifecycle(target, "cancelled");
+                            answerFolded(ending === "drop");
+                        }, 300);
+                        continue;
+                    }
+                    liveTurn!.folded.splice(folded, 1);
+                    lifecycle(target, "cancelled");
+                    const late = process.env.FAKE_CANCEL_ANSWER_MS;
+                    if (!late) answerFolded(true);
+                    else if (late !== "never") setTimeout(() => answerFolded(true), Number(late));
+                    continue;
+                }
                 const had = waiting.delete(target);
                 if (had) withdrawn.add(target);
                 const answer = () => out({ type: "control_response", response: { subtype: "success", request_id: m.request_id, response: { cancelled: had } } });
@@ -1461,33 +1639,24 @@ for await (const chunk of Bun.stdin.stream()) {
                 // mid-turn message's document blocks never reach the model; its images do.
                 const dropped = m.message.content.filter((b: any) => b?.type === "document").length;
                 if (dropped) log({ droppedMidTurnDocuments: dropped });
-                steering.push({ uuid: m.uuid, text: m.message.content.map((b: any) => b.text ?? "").join(""), images: m.message.content.filter((b: any) => b?.type === "image").length });
+                steering.push({ uuid: m.uuid, synthetic: m.isSynthetic === true, text: m.message.content.map((b: any) => b.text ?? "").join(""), images: m.message.content.filter((b: any) => b?.type === "image").length });
                 recordSent(steering.at(-1)!.text);
                 steeringWake?.();
-            } else {
+            } else if (liveTurn) {
+                // steer-live: a message written while its turn runs (see steerLive).
                 const uuid = typeof m.uuid === "string" ? m.uuid : undefined;
-                clearTimeout(idleExit);
-                if (uuid) {
-                    waiting.add(uuid);
-                    lifecycle(uuid, "queued");
-                }
-                turnTail = turnTail.then(async () => {
-                    // FAKE_START_DELAY_MS: the prompt waits in the queue this long before it starts (it can be withdrawn meanwhile).
-                    syncEnv();
-                    if (process.env.FAKE_START_DELAY_MS) await Bun.sleep(Number(process.env.FAKE_START_DELAY_MS));
-                    if (uuid && withdrawn.has(uuid)) return cancelledSaid.has(uuid) ? undefined : lifecycle(uuid, "cancelled");
-                    if (uuid) waiting.delete(uuid);
-                    busy = true;
-                    lifecycle(uuid, "started");
-                    try {
-                        await turn(m.message?.content ?? [], uuid);
-                    } finally {
-                        busy = false;
-                        lifecycle(uuid, "completed");
-                        armIdleExit();
-                    }
-                });
-            }
+                const mid = { uuid, synthetic: m.isSynthetic === true, text: m.message.content.map((b: any) => b.text ?? "").join(""), content: m.message?.content ?? [] };
+                log({ midTurn: { text: mid.text, priority: m.priority ?? null, phase: liveTurn.phase, synthetic: mid.synthetic } });
+                lifecycle(uuid, "queued");
+                if (m.priority === "now") {
+                    // Taken at once: the turn makes way (now if it's writing, after its call if one runs), and this runs next.
+                    enqueue(m, false);
+                    liveTurn.cut = true;
+                    liveTurn.poke?.();
+                } else if (liveTurn.phase === "tool") liveTurn.folded.push(mid);
+                // Written while it writes its last reply: it runs as a turn of its own once this one ends.
+                else enqueue(m, false);
+            } else enqueue(m, true);
         }
     }
 }

@@ -20,6 +20,7 @@ import { isTrusted, projectConfigSummary, trustFolder, trustForSession } from ".
 import { MODE_INFO, parseMode, startMode, type PermissionMode } from "./permissions/modes";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, removeVertexConfig, saveAgentConfig, saveVertexConfig, SEARCH_PROVIDERS, validGoogleAccount, validVertexLocation, validVertexProject } from "./providers/registry";
 import { checkAgentCli, vendorOf } from "./backends/index";
+import { agentCli } from "./backends/defs";
 import { checkVertex, gcloudAccounts } from "./auth/gcloud";
 import { listAllModels, forgetClient } from "./providers/models";
 import { formatPrice, formatTokens } from "./providers/pricing";
@@ -419,7 +420,7 @@ async function authCommand(args: string[]): Promise<number> {
             die(redact((e as Error).message));
         }
         forgetClient(id);
-        process.stdout.write(removed ? `Turned off ${getProvider(id)!.name} (it stays signed in; ${id === "codex" ? "codex logout" : "claude auth logout"} signs it out)\n` : `${getProvider(id)!.name} isn't turned on\n`);
+        process.stdout.write(removed ? `Turned off ${getProvider(id)!.name} (it stays signed in; ${agentCli(id)?.cli.signOut} signs it out)\n` : `${getProvider(id)!.name} isn't turned on\n`);
         return removed ? 0 : 1;
     }
     if ((sub === "remove" || sub === "rm" || sub === "logout") && arg?.toLowerCase() === "vertex") {

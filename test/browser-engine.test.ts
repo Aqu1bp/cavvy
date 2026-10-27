@@ -472,7 +472,7 @@ describe("a session's browser", () => {
         expect(await fake.sent("Input.dispatchMouseEvent")).toEqual([]);
     });
 
-    test("when the user takes a tab the agent is refused, reading still works, and handing it back restores it", async () => {
+    test("the user using a tab doesn't keep the agent out: its refs still work, and its next read says the user was there, once", async () => {
         const { session, nav, act, run } = open();
         await nav({ url: "http://localhost:4000/" });
         const fake = await fakeChromeAt(profile);
@@ -480,31 +480,22 @@ describe("a session's browser", () => {
         expect(session.state().tabs[0]!.owner).toBe("human");
         // the person's click reached the page
         expect((await fake.sent("Input.dispatchMouseEvent")).map((c) => c.params.type)).toEqual(["mousePressed"]);
-        for (const attempt of [() => act({ action: "click", ref: "e5" }), () => act({ action: "hover", ref: "e5" }), () => act({ action: "scroll", deltaY: 100 }), () => act({ action: "type", text: "x" }), () => act({ action: "press", key: "a" }), () => nav({ url: "http://localhost:4000/other" }), () => nav({ action: "reload" }), () => run(BrowserEvalTool, { expression: "1" }), () => run(BrowserScreenshotTool, { ref: "e5" })]) {
-            const r = await attempt();
-            expect(r.isError).toBe(true);
-            expect(r.content).toContain("taken control");
-        }
-        // nothing but the person's click got through
-        expect((await fake.sent("Input.dispatchMouseEvent")).map((c) => c.params.type)).toEqual(["mousePressed"]);
-        expect(await fake.sent("Input.insertText")).toEqual([]);
-        // waiting and reading are not acting
-        expect((await act({ action: "wait" })).isError).toBeFalsy();
-        const read = await run(BrowserSnapshotTool, {});
-        expect(read.isError).toBeFalsy();
-        expect(read.content).toContain("The user has control of this tab");
-        expect((await run(BrowserScreenshotTool, {})).images).toHaveLength(1);
-        expect((await run(BrowserLogsTool, {})).isError).toBeFalsy();
-        // refs from before their click mean nothing now: after handing back, the old ones are stale
-        session.handBack();
+        // the agent's ref from before their click still names the same element
+        const clicked = await act({ action: "click", ref: "e5" });
+        expect(clicked.isError).toBeFalsy();
+        expect(clicked.content).toContain("The user has used this tab since you last read it");
         expect(session.state().tabs[0]!.owner).toBe("agent");
-        const old = await act({ action: "click", ref: "e5" });
-        expect(old.content).toContain("stale");
-        const fresh = await run(BrowserSnapshotTool, {});
-        expect((await act({ action: "click", ref: refOf(fresh.content, "button", "Click me") })).isError).toBeFalsy();
+        // said once: the next read has nothing new to tell
+        expect((await run(BrowserSnapshotTool, {})).content).not.toContain("The user has used this tab");
+        // their release reaches the page even though the agent drove the tab since
+        await session.input({ kind: "mouse", type: "up", x: 5, y: 5, button: "left", buttons: 0, clickCount: 1 });
+        expect((await fake.sent("Input.dispatchMouseEvent")).map((c) => c.params.type).at(-1)).toBe("mouseReleased");
+        // moving the pointer over the pane isn't using it
+        await session.input({ kind: "mouse", type: "move", x: 6, y: 6, buttons: 0 });
+        expect((await run(BrowserSnapshotTool, {})).content).not.toContain("The user has used this tab");
     });
 
-    test("a click queued behind another call doesn't land if the user took the tab, or the call was cancelled, meanwhile", async () => {
+    test("a click queued behind another call lands though the user used the tab meanwhile, but not once the call was cancelled", async () => {
         const { session, nav, act } = open();
         await nav({ url: "http://localhost:4000/" });
         const fake = await fakeChromeAt(profile);
@@ -520,20 +511,21 @@ describe("a session's browser", () => {
         await session.input({ kind: "key", type: "down", key: "a", code: "KeyA" });
         release();
         await busy;
-        const taken = await queued;
-        expect(taken.isError).toBe(true);
-        expect(taken.content).toContain("taken control");
-        expect((await cancelled).content).toMatch(/Interrupted by user|taken control/);
-        expect(await fake.sent("Input.dispatchMouseEvent")).toEqual([]);
+        const landed = await queued;
+        expect(landed.isError).toBeFalsy();
+        expect(landed.content).toContain("The user has used this tab");
+        expect((await cancelled).content).toContain("Interrupted by user");
+        // the one click, and no second
+        expect((await fake.sent("Input.dispatchMouseEvent")).map((c) => c.params.type)).toEqual(["mouseMoved", "mousePressed", "mouseReleased"]);
     });
 
-    test("the user taking the tab part-way through a click stops the rest of it", async () => {
+    test("the user's input part-way through a click doesn't stop the rest of it", async () => {
         const { session, nav } = open();
         await nav({ url: "http://localhost:4000/" });
         const fake = await fakeChromeAt(profile);
         const page = await session.page();
         const { click } = await import("../src/browser/interact");
-        // after the pointer has moved to the element, the person takes the tab
+        // after the pointer has moved to the element, the person presses a key
         const original = page.agentInput.bind(page);
         let sent = 0;
         page.agentInput = (method: string, params: Record<string, unknown>, signal?: AbortSignal) => {
@@ -541,13 +533,31 @@ describe("a session's browser", () => {
             if (++sent === 1) void session.input({ kind: "key", type: "down", key: "a", code: "KeyA" });
             return result;
         };
-        const e = await click(page, { ref: "e5" }).catch((x) => x as Error);
-        expect(e.message).toContain("taken control");
-        expect((await fake.sent("Input.dispatchMouseEvent")).map((c) => c.params.type)).toEqual(["mouseMoved"]);
+        await click(page, { ref: "e5" });
+        expect((await fake.sent("Input.dispatchMouseEvent")).map((c) => c.params.type)).toEqual(["mouseMoved", "mousePressed", "mouseReleased"]);
+        // the rest of the click is the agent's: where it leads is under the agent's rules, not the person's
+        expect(session.state().tabs[0]!.owner).toBe("agent");
     });
 
-    test("takeover or cancellation between element steps prevents focus and repeated scrolling", async () => {
-        for (const cancelled of [false, true]) for (const action of ["type", "click"] as const) {
+    test("an evaluation's value is read as the agent's step, though the user used the tab while it ran", async () => {
+        const { session, nav } = open();
+        await nav({ url: "http://localhost:4000/" });
+        const page = await session.page();
+        const original = page.send.bind(page);
+        let readAs: string | undefined;
+        page.send = async (method: string, params: any = {}, ...rest: any[]) => {
+            if (method === "Runtime.callFunctionOn") readAs = page.control.owner;
+            const result = await (original as any)(method, params, ...rest);
+            if (method === "Runtime.evaluate" && String(params.objectGroup ?? "").startsWith("cavvy-eval")) page.control.humanInput();
+            return result;
+        };
+        // the stand-in answers the read with a boolean, which isn't text: only who read it matters here
+        await page.evaluate("document.activeElement", new AbortController().signal).catch(() => undefined);
+        expect(readAs).toBe("agent");
+    });
+
+    test("cancellation between element steps prevents focus and repeated scrolling", async () => {
+        for (const action of ["type", "click"] as const) {
             const { session, nav } = open();
             await nav({ url: "http://localhost:4000/" });
             const page = await session.page();
@@ -558,13 +568,11 @@ describe("a session's browser", () => {
             page.send = async (method: string, params = {}) => {
                 if (method === "DOM.focus" || method === "DOM.scrollIntoViewIfNeeded") effects.push(method);
                 const result = await original(method, params);
-                if (method === "DOM.scrollIntoViewIfNeeded") {
-                    if (cancelled) abort.abort(); else page.control.humanInput();
-                }
+                if (method === "DOM.scrollIntoViewIfNeeded") abort.abort();
                 return result;
             };
             const work = action === "type" ? type(page, { ref: "e6", text: "x" }, abort.signal) : click(page, { ref: "e5" }, {}, abort.signal);
-            await expect(work).rejects.toThrow(cancelled ? "Interrupted" : "taken control");
+            await expect(work).rejects.toThrow("Interrupted");
             expect(effects).toEqual(["DOM.scrollIntoViewIfNeeded"]);
         }
     });
@@ -581,21 +589,22 @@ describe("a session's browser", () => {
         }
     });
 
-    test("history navigation rechecks ownership after reading history", async () => {
+    test("history navigation rechecks cancellation after reading history", async () => {
         const { session, nav } = open();
         await nav({ url: "http://localhost:4000/" });
         const page = await session.page();
         const effects: string[] = [];
         const original = page.send.bind(page);
+        const abort = new AbortController();
         page.send = async (method: string, params = {}) => {
             if (method === "Page.getNavigationHistory") {
-                page.control.humanInput();
+                abort.abort();
                 return { currentIndex: 1, entries: [{ id: 1 }, { id: 2 }] } as any;
             }
             effects.push(method);
             return original(method, params);
         };
-        await expect(page.go(-1, new AbortController().signal)).rejects.toThrow("taken control");
+        await expect(page.go(-1, abort.signal)).rejects.toThrow("Interrupted");
         expect(effects).not.toContain("Page.navigateToHistoryEntry");
     });
 
@@ -960,6 +969,19 @@ describe("what a page may load", () => {
         // A blank page another page sent the tab to is that page's to script: the yes ends there.
         await fake.emit("Page.frameNavigated", { frame: { id: page.targetId, url: "about:blank", loaderId: "Lb" } }, page.sessionId);
         expect(await request("https://asked.example/framed")).toBe("BlockedByClient");
+    });
+
+    test("where the page goes after the user used it is theirs to go, until the agent acts again", async () => {
+        // a host that asks first, unless the tab's driver is let go there
+        const { page, session, request } = await paused((url, approved) => (approved?.host === new URL(url).hostname ? undefined : "This host asks first"));
+        expect(await request("https://linked.example/a")).toBe("BlockedByClient");
+        // the user clicks a link in the agent's tab
+        await session.input({ kind: "mouse", type: "down", x: 5, y: 5, button: "left", buttons: 1, clickCount: 1 });
+        expect(await request("https://linked.example/a")).toBe("continued");
+        expect(await request("https://sign-in.example/redirect")).toBe("continued");
+        // the agent acts again, a step of its input enough: its own rules hold
+        await page.agentInput("Input.dispatchMouseEvent", { type: "mouseMoved", x: 1, y: 1 });
+        expect(await request("https://linked.example/b")).toBe("BlockedByClient");
     });
 
     test("a page that has navigated somewhere refused is sent back to a blank page", async () => {

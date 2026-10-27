@@ -279,8 +279,7 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                     if (ws.data.desktop.host) detachDesktopHost(ws.data.desktop.host);
                     return;
                 }
-                // A connection can disappear while a key/button is down. Release only its held inputs;
-                // BrowserSession ignores these releases if control has already returned to the agent.
+                // A connection can disappear while a key/button is down. Release only its held inputs.
                 for (const held of ws.data.held.values()) void engine.handle(ws.data.client, "browser.input", held).catch(() => undefined);
                 ws.data.held.clear();
                 engine.dropClient(ws.data.client);

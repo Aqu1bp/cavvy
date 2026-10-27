@@ -36,7 +36,7 @@
 
 .app.tauri.os-macos.rail-off .terminal-panel.max .terminal-toolbar,
 .app.tauri.os-macos[data-rail="overlay"] .terminal-panel.max .terminal-toolbar {
-    padding-left: 84px;
+    padding-left: calc(92px - var(--win-pad, 8px));
 }
 
 .terminal-resize {

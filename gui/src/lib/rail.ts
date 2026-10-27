@@ -205,7 +205,8 @@ export function railFoot(o: {
     };
     const plans = o.providers.flatMap((info) => {
         const cli = info.agentCli;
-        if (!cli || !info.configured || !cli.installed) return [];
+        // One that reports no plan limits (an ACP agent) has no plan to show.
+        if (!cli || !info.configured || !cli.installed || cli.planLimits === false) return [];
         const accountId = (info.id === o.provider ? o.account : undefined) ?? cli.defaultAccount ?? "default";
         const account = cli.accounts?.find((a) => a.id === accountId);
         if (account?.signedIn === false || account?.apiKey) return [];

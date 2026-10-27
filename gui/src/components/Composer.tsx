@@ -31,13 +31,18 @@ import { motionMs } from "./LiveLine";
 import { composerStorage } from "../lib/drafts";
 import { composingKey, revealMenuOption } from "../lib/composer-menu";
 import { matchSkills, skillToken } from "../lib/commands";
-import { firstSendable, followUpFor, otherFollowUp } from "../lib/queue";
+import { firstSendable, FOLLOW_UP_WORDS, followUpFor, followUpLabels, otherFollowUp, restoreWaits, withDraft } from "../lib/queue";
 import { canStop } from "../lib/session-status";
 import { QueueTab } from "./QueueTab";
 import { StepsTray } from "./StepsTray";
 
 /** `mention`: a skill picked from the $ menu, which goes in where the $ is. */
 type MenuItem = { kind: "command"; cmd: CommandInfo; mention?: boolean } | { kind: "file"; path: string } | { kind: "resource"; res: McpResourceInfo };
+
+/** A mention's own name: `email.ts` of `src/auth/email.ts`, `auth/` of `src/auth/`. */
+const fileName = (path: string) => path.replace(/\/$/, "").split("/").pop()! + (path.endsWith("/") ? "/" : "");
+/** The folder it's in, said after its name: `src/auth` of `src/auth/email.ts`; "" at the top. */
+const fileDir = (path: string) => path.replace(/\/$/, "").split("/").slice(0, -1).join("/");
 
 export function Composer(p: { sessionId?: string; placeholder?: string; autofocus?: boolean; variant?: "home" | "session"; /** Tucked under the card, like a drawer (Home's project, worktree and the composer's prefixes). */ strip?: JSX.Element; /** Home: sending to several models at once. */ compare?: CompareOption; /** Home: told what's in the box each time it changes. */ onText?: (text: string) => void }) {
     /** The last @ search asked MCP servers too, so its empty state says so. */
@@ -153,15 +158,17 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     createEffect(on(() => st()?.accountNeeded, (provider, was) => {
         if (provider && provider !== was) setModelPickerOpen(true);
     }, { defer: true }));
-    // What the server hands back (interrupted queue, rewound prompt).
+    // What the server hands back (interrupted queue, rewound prompt, a steer the turn never took).
     createEffect(() => {
         const d = h()?.draft();
         if (d === undefined) return;
+        // A steer waits for a send under way to clear what it sent, and for a command being typed to go.
+        if (d.after && restoreWaits(text(), sending())) return;
         h()!.setDraft(undefined);
         // Comments sent with it come back as comments, not as their markup.
         const back = splitComments(d.text);
         if (back.comments.length) reviewComments.restore(h()!.id, back.comments.map((c) => ({ ...c, ...aroundOf(h()!.id, c), id: newCommentId(), created: Date.now() })));
-        if (back.text) setText((t) => (t.trim() ? `${back.text}\n${t}` : back.text));
+        if (back.text) setText((t) => withDraft(t, back.text, d.after));
         if (d.images?.length || d.files?.length) setAttachments((a) => [...a, ...fromWire(d.images, d.files)]);
         // Restored without focus while Settings covers it: that would take focus from what's typed there.
         requestAnimationFrame(() => {
@@ -237,16 +244,27 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         return m ? { query: m[1]!.replace(/^"/, ""), start: upto.length - m[1]!.length - 1 } : undefined;
     };
     let mentionTimer: ReturnType<typeof setTimeout> | undefined;
+    let slowTimer: ReturnType<typeof setTimeout> | undefined;
     let mentionVersion = 0;
-    const dismissMenu = () => {
+    /** The folder the @ menu's rows are from: only there do they stay while you type on. */
+    let rowsFrom: string | undefined;
+    /** A newer search makes the one going stale: its answer is dropped. */
+    const staleSearch = () => {
         mentionVersion++;
         clearTimeout(mentionTimer);
+        clearTimeout(slowTimer);
+    };
+    const dismissMenu = () => {
+        staleSearch();
         setMenu([]);
         setMenuStatus(undefined);
     };
     /** `refresh`: a menu that just opened asks the server again, which reads new skills. */
     const updateMenu = (refresh = true) => {
-        dismissMenu();
+        // Typing on in an open @ menu: its rows stay until the next ones come, so it doesn't blink empty at each key.
+        const typingOn = Boolean(token()) && rowsFrom === (st()?.cwd ?? app.homeCwd) && menu().some((m) => m.kind !== "command") && menuDismissedFor() !== text();
+        if (typingOn) staleSearch();
+        else dismissMenu();
         const version = mentionVersion;
         const t = text();
         if (menuDismissedFor() === t) return setMenu([]);
@@ -275,7 +293,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         const cwd = st()?.cwd ?? app.homeCwd;
         // Home (no session yet) searches its folder's files.
         if (tok && cwd) {
-            setMenuStatus("loading");
+            // "Searching…" only for a search that's slow: a quick answer opens the menu with its rows.
+            if (!typingOn) slowTimer = setTimeout(() => version === mentionVersion && !menu().length && setMenuStatus("loading"), 180);
             const sid = p.sessionId;
             // Only a session whose servers offer resources is asked for them.
             const hasResources = Boolean(sid) && (st()?.mcp ?? []).some((m) => m.status === "connected" && m.resources);
@@ -286,6 +305,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                         hasResources && tok.query ? rpc.call("session.mcpResources", { id: sid!, query: tok.query }).catch(() => [] as McpResourceInfo[]) : Promise.resolve([] as McpResourceInfo[]),
                     ]);
                     if (version !== mentionVersion) return;
+                    clearTimeout(slowTimer);
+                    rowsFrom = cwd;
                     const files = found.map((path) => ({ kind: "file" as const, path }));
                     const res = resources.map((r) => ({ kind: "resource" as const, res: r }));
                     // "server:" asks for that server's resources first; otherwise files lead.
@@ -294,7 +315,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     setMenuStatus(found.length || resources.length ? undefined : "empty");
                     setSearchedResources(hasResources && Boolean(tok.query));
                 } catch {
-                    if (version === mentionVersion) setMenuStatus("error");
+                    if (version !== mentionVersion) return;
+                    clearTimeout(slowTimer);
+                    setMenu([]);
+                    setMenuStatus("error");
                 }
             }, 60);
             return;
@@ -338,8 +362,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     };
 
     // ---- sending
+    /** The session's model takes a message while its turn runs (an agent CLI may not: then every message is queued). */
+    const steers = () => st()?.model?.steers !== false;
     /** What a message sent now does while a turn runs: the setting, or with `opposite` (the steer-or-queue key, mod-click) the other. */
-    const followUp = (opposite = false): FollowUpMode => followUpFor(app.settings.followUpBehavior, opposite);
+    const followUp = (opposite = false): FollowUpMode => followUpFor(app.settings.followUpBehavior, opposite, steers());
     /** mod+shift held in the box: the send button shows the other. */
     const [flipped, setFlipped] = createSignal(false);
     const shown = () => followUp(flipped());
@@ -548,21 +574,47 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         if (shell()) return "Run a shell command";
         // A message doesn't wait for an idle compaction: it stops it and goes.
         if (busy() && st()?.activity?.idle) return "Send a message to stop compacting and carry on…";
-        if (busy()) return followUp() === "steer" ? "Steer: add to the current turn at its next step…" : "Queue a message for after this turn…";
+        if (busy()) return labels().placeholder;
         return p.placeholder ?? "Ask, plan, or describe a change…  (@ files, / commands, $ skills)";
     };
     const hasContent = () => Boolean(text().trim() || attachments().length || comments().length);
-    const sendTitle = () => {
-        const key = prefs.enterSends ? "Enter" : `${mod}+Enter`;
-        const other = otherFollowUp(followUp());
-        const now = followUp() === "steer" ? `Steer: joins the current turn at its next step (${key})` : `Queue: runs after this turn (${key})`;
-        const otherKey = shortcut("chat:submitOtherWay");
-        return `${now}. ${mod}-click${otherKey ? ` or ${otherKey}` : ""} to ${other} instead.`;
+    /** While a turn runs: what Enter does now and what the steer-or-queue key does, in the box and on the send button. */
+    const labels = () => followUpLabels({ mode: followUp(), steers: steers(), send: prefs.enterSends ? "Enter" : `${mod}+Enter`, other: shortcut("chat:submitOtherWay"), click: `${mod}-click`, who: st()?.model?.providerName });
+    const sendTitle = () => labels().title;
+    /**
+     * What the send button does, as a hint over it while it's pointed at (or focused): with a turn running, the key
+     * that sends this way and the one that sends the other; with nothing written, the key that stops it.
+     */
+    const sendHint = (): [string, string][] | undefined => {
+        if (runPicks() || app.conn !== "open") return undefined;
+        if (canStop(st()) && !hasContent()) {
+            const k = shortcut("app:interrupt");
+            return [[k === "Esc" ? "esc" : k ?? "", busy() ? "Stop" : "Pause the goal"]];
+        }
+        if (!busy()) return undefined;
+        const enter = prefs.enterSends ? "Enter" : `${mod} Enter`;
+        // Nothing to steer with: Enter queues, and no key does otherwise.
+        if (!steers()) return [[enter, FOLLOW_UP_WORDS.queue]];
+        const other = otherFollowUp(shown());
+        const otherKey = shortcutHint("chat:submitOtherWay");
+        return [[enter, FOLLOW_UP_WORDS[shown()]], [otherKey || `${mod}-click`, FOLLOW_UP_WORDS[other]]];
     };
     const canSend = createMemo(() => hasContent() && !blocked());
     // The pickers open from their own button, left-aligned with it (design/glass placePop): above it in a
     // session, at the bottom of the window; below it on Home, which has the page below it. Each flips if there's no room.
     const menuSide = () => (p.variant === "home" ? "bottom" : "top");
+    // Home: the @ and / menu opens downward, from just under the card (over the strip under it), and is as tall as
+    // the window has room for there (CSS caps it as ever). The card grows as you write, so it follows the text.
+    createEffect(on([menuOpen, text], ([open]) => {
+        if (!open || p.variant !== "home") return;
+        requestAnimationFrame(() => {
+            const el = menuList;
+            if (!el?.isConnected || !box || !root) return;
+            const top = box.offsetTop + box.offsetHeight + 6;
+            el.style.setProperty("--menu-top", `${top}px`);
+            el.style.setProperty("--room", `${Math.max(140, window.innerHeight - root.getBoundingClientRect().top - top - 16)}px`);
+        });
+    }));
     const interactions = () => st()?.interactions ?? [];
     /** A turn runs, and no request card is up: what it's doing is the turn's live line (LiveLine.tsx), not a row here. */
     const working = () => Boolean(p.sessionId && busy() && !interactions().length);
@@ -616,7 +668,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 <InteractionTab sessionId={p.sessionId!} items={interactions()} />
             </Show>
             <Show when={menuOpen()}>
-                <div class="composer-menu" ref={menuList} id={menuId} role="listbox" aria-label="Composer suggestions" aria-busy={menuStatus() === "loading"}>
+                <div class={`composer-menu ${menu().some((m) => m.kind !== "command") ? "files" : ""}`} ref={menuList} id={menuId} role="listbox" aria-label="Composer suggestions" aria-busy={menuStatus() === "loading"}>
                     <For each={menu()}>
                         {(item, i) => (
                             <button
@@ -671,7 +723,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                                         {(f) => (
                                             <>
                                                 <span class="cm-icon">{f().path.endsWith("/") ? <Folder size={14} /> : <FileText size={14} />}</span>
-                                                <span class="cm-name mono truncate">{f().path}</span>
+                                                <span class="cm-name truncate">{fileName(f().path)}</span>
+                                                <span class="cm-dir truncate">{fileDir(f().path)}</span>
                                             </>
                                         )}
                                     </Match>
@@ -779,12 +832,19 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     <span class="grow" />
                     <BackgroundChip sessionId={p.sessionId} />
                     <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} home={p.variant === "home"} />
-                    {/* Writing while a turn runs: the key that sends it the other way, by the button that sends it this way. */}
-                    <Show when={busy() && hasContent() && !runPicks() && shortcutHint("chat:submitOtherWay")}>
-                        {(key) => (
-                            <kbd class="c-alt" title={sendTitle()}>
-                                {key()} {otherFollowUp(shown())}
-                            </kbd>
+                    <span class="send-wrap">
+                    <Show when={sendHint()}>
+                        {(rows) => (
+                            <span class="send-hint" aria-hidden="true">
+                                <For each={rows()}>
+                                    {([key, what]) => (
+                                        <span class="sh-row">
+                                            <kbd>{key}</kbd>
+                                            <span>{what}</span>
+                                        </span>
+                                    )}
+                                </For>
+                            </span>
                         )}
                     </Show>
                     <Show
@@ -794,8 +854,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                                 class={`send ${(runPicks()?.length ?? 0) >= 2 ? "wide" : ""} ${busy() ? `mid-${shown()}` : ""}`}
                                 disabled={app.conn !== "open" || !canSend() || sending() || Boolean(runPicks() && runPicks()!.length < 2)}
                                 onClick={(e) => void submit(busy() && isMod(e))}
-                                title={app.conn !== "open" ? "Not connected" : runPicks() ? "Each model gets this prompt in a new worktree" : busy() ? sendTitle() : withShortcut("Send", "chat:submit")}
-                                aria-description={app.conn !== "open" ? "Not connected" : undefined}
+                                title={app.conn !== "open" ? "Not connected" : runPicks() ? "Each model gets this prompt in a new worktree" : busy() ? undefined : withShortcut("Send", "chat:submit")}
+                                aria-description={app.conn !== "open" ? "Not connected" : busy() ? sendTitle() : undefined}
                                 aria-label={runPicks() ? `Send to ${runPicks()!.length} models` : busy() ? (shown() === "steer" ? "Steer the current turn" : "Queue for after this turn") : "Send"}
                             >
                                 <Show when={(runPicks()?.length ?? 0) >= 2}><span>Send to {runPicks()!.length} models</span></Show>
@@ -805,20 +865,13 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                             </button>
                         }
                     >
-                        {/* How to stop it, beside the button that does: the box keeps its height while a turn runs. */}
-                        <Show when={busy() && shortcut("app:interrupt")}>
-                            {(k) => (
-                                <kbd class="c-alt c-esc" title={`Stop (${k()})`} aria-hidden="true">
-                                    {k() === "Esc" ? "esc" : k()}
-                                </kbd>
-                            )}
-                        </Show>
-                        <button class="send stop" onClick={() => interrupt(p.sessionId)} title={busy() ? "Stop (Esc)" : "Pause the goal (Esc)"} aria-label={busy() ? "Stop" : "Pause the goal"}>
+                        <button class="send stop" onClick={() => interrupt(p.sessionId)} aria-label={busy() ? "Stop" : "Pause the goal"} aria-keyshortcuts="Escape">
                             <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
                                 <rect x="1" y="1" width="10" height="10" rx="2.5" fill="currentColor" />
                             </svg>
                         </button>
                     </Show>
+                    </span>
                 </div>
                 {/* Past its modest height the text scrolls: this opens it large (and closes it again). */}
                 <Show when={expanded() || overflows()}>

@@ -87,7 +87,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_IGNORE_INTERRUPT", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_MS", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_FG_TASK", "FAKE_SUB_COMMANDS", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS", "FAKE_SHELL_STATUS", "FAKE_STOP_ANSWER", "FAKE_STOP_MS", "FAKE_FOLLOWUP_MS", "FAKE_RESULT_DELAY_MS", "FAKE_EXIT_AFTER_MS", "FAKE_STOP_STATUS", "FAKE_STOP_TURN_AT", "FAKE_STOP_NOTIFY_AT", "FAKE_STOP_RESULT_AT", "FAKE_SHELL_NOTIFY_MS", "FAKE_WAKE_START_MS", "FAKE_INIT_DELAY_MS", "FAKE_SHELL_NOTIFY_AFTER_PROMPT"]) delete process.env[k];
+    for (const k of ["FAKE_STOP_TASK", "FAKE_CLAUDE_VERSION", "FAKE_CONFIG_LAYERS", "FAKE_PROJECT_MCP", "FAKE_USER_MCP", "FAKE_USER_PLUGINS", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_NO_CONFIG_READ", "FAKE_REJECT_CONFIG", "FAKE_RESUME_AGENT", "FAKE_UNANNOUNCED", "FAKE_ELICIT_OTHER_CALL", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_FAST_MODE_END", "FAKE_THREAD_TIER", "FAKE_CONFIG_TIER", "FAKE_SCENARIO", "FAKE_LOGGED_IN", "FAKE_API_KEY_SOURCE", "FAKE_ACCOUNT", "FAKE_DECLINE", "FAKE_REVIEW_DENY", "FAKE_REVIEW_NO_COMPLETED", "FAKE_REVIEW_MIXED", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_IGNORE_STOP", "FAKE_IGNORE_INTERRUPT", "FAKE_CRASH_ON_SECOND", "FAKE_HANG_INIT", "FAKE_CODEX_TRUSTS", "FAKE_PERMS", "FAKE_SLOW_RESUME", "FAKE_SLOW_TURN_START", "FAKE_STEER_FAIL", "FAKE_STEER_MS", "FAKE_STEER_WAKES", "FAKE_BACKGROUND_MS", "FAKE_STALE_TASK", "FAKE_FG_TASK", "FAKE_SUB_COMMANDS", "FAKE_OLD_RESULTS", "FAKE_SECOND_SCENARIO", "FAKE_LIST_FIRST", "FAKE_HOLD_STDOUT", "FAKE_LATE_TASK", "FAKE_AGENT_TYPE", "FAKE_ONEOFF_ANSWER", "FAKE_ONEOFF_FAIL", "FAKE_CACHE_1H", "FAKE_GROWING_CONTEXT", "FAKE_TIMEOUT", "FAKE_SHELL_MS", "FAKE_SHELL_STATUS", "FAKE_STOP_ANSWER", "FAKE_STOP_MS", "FAKE_FOLLOWUP_MS", "FAKE_RESULT_DELAY_MS", "FAKE_EXIT_AFTER_MS", "FAKE_STOP_STATUS", "FAKE_STOP_TURN_AT", "FAKE_STOP_NOTIFY_AT", "FAKE_STOP_RESULT_AT", "FAKE_SHELL_NOTIFY_MS", "FAKE_WAKE_START_MS", "FAKE_INIT_DELAY_MS", "FAKE_SHELL_NOTIFY_AFTER_PROMPT", "FAKE_TOOL_MS", "FAKE_WRITE_MS", "FAKE_CANCEL_REFUSE", "FAKE_INITIALIZE_MS", "FAKE_CANCEL_FOLDED"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -2806,6 +2806,21 @@ describe("Claude Code turn reliability (#60, #61, #64)", () => {
         wakes.dispose();
     });
 
+    test("a wake sent mid-turn that Claude Code takes as a turn of its own (its turn had ended meanwhile) is waited for", async () => {
+        process.env.FAKE_SCENARIO = "steering";
+        const wakes = new WakeQueue({ coalesceMs: 60_000 });
+        wakes.push({ source: "pull-request", label: "PR #12: checks passed", text: "- ci passed" });
+        // The queue is slow to hand over: Claude Code's turn is over (its result unread) by the time the wake goes.
+        let drains = 0;
+        const a = await makeAgent({ provider: "claude-code", wakes, drainQueued: async () => (++drains === 1 && (await Bun.sleep(1500)), []) });
+        expect(await a.run("start")).toBe("done");
+        // The wake's own turn ran to its end, and what it said was kept.
+        const last = a.session.messages.at(-1)!;
+        expect(last.role).toBe("assistant");
+        expect(JSON.stringify(last.content).match(/No steering received before result/g)).toHaveLength(2);
+        wakes.dispose();
+    }, 20_000);
+
     test("a wake goes to Claude Code marked synthetic, so it expands no @mentions in others' words; the user's queued words don't", async () => {
         process.env.FAKE_SCENARIO = "steering";
         const wakes = new WakeQueue({ coalesceMs: 60_000 });
@@ -2857,6 +2872,122 @@ describe("Claude Code turn reliability (#60, #61, #64)", () => {
         expect(JSON.stringify(a.session.messages)).toContain("All done.");
         expect(notices(a.events).join("\n")).toContain("Queued messages will be delivered when its current turn ends");
     });
+
+    // Per run (no wake handler, as -p and sub-agents run): a message to steer with goes as it's sent, too.
+    test("a message sent while a call runs goes at once, plain, and joins with the call's result; while the reply is written, \"now\"", async () => {
+        process.env.FAKE_SCENARIO = "steer-live";
+        process.env.FAKE_TOOL_MS = "1500";
+        process.env.FAKE_WRITE_MS = "3000";
+        const queued: string[][] = [];
+        const a = await makeAgent({ provider: "claude-code", drainQueued: () => queued.shift() ?? [] });
+        const done = a.run("start");
+        const until = async (cond: () => boolean, what: string) => {
+            for (const end = Date.now() + 5000; !cond(); await Bun.sleep(20)) if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+        };
+        const sent = (t: string) => received().find((m) => m.type === "user" && JSON.stringify(m.message.content).includes(t));
+        await until(() => a.events.some((e) => e.type === "tool_start" && e.call.id === "toolu_live"), "the call");
+        queued.push(["use the other file"]);
+        a.agent.queueChanged();
+        await until(() => Boolean(sent("use the other file")), "the first steer written");
+        expect(sent("use the other file").priority).toBeUndefined();
+        await until(() => a.events.some((e) => e.type === "text" && e.text.startsWith("Counting")), "the reply being written");
+        queued.push(["stop counting"]);
+        a.agent.queueChanged();
+        await until(() => Boolean(sent("stop counting")), "the second steer written");
+        expect(sent("stop counting").priority).toBe("now");
+        expect(await done).toBe("done");
+        expect(logLines().find((l) => l.foldedAtToolResult)?.foldedAtToolResult).toEqual(["use the other file"]);
+        expect(logLines().find((l) => "liveReply" in l)).toMatchObject({ cut: true });
+        const timeline = a.session.messages.map((m) => `${m.role}: ${m.content.map((p: any) => p.text ?? "").join(" ")}`);
+        const first = timeline.indexOf("user: use the other file");
+        const second = timeline.indexOf("user: stop counting");
+        expect(first).toBeGreaterThan(0);
+        expect(second).toBeGreaterThan(first);
+        // What it was writing when the second came stays before it; its answer to it, after.
+        expect(timeline.slice(first + 1, second).join("\n")).toContain("Counting:");
+        expect(timeline.slice(second + 1).join("\n")).toContain("Took: stop counting");
+    }, 20_000);
+
+    test("Esc with a message written while a call runs, not taken yet: the next turn is told of it", async () => {
+        process.env.FAKE_SCENARIO = "steer-live";
+        process.env.FAKE_TOOL_MS = "5000";
+        const queued: string[][] = [];
+        const a = await makeAgent({ provider: "claude-code", drainQueued: () => queued.shift() ?? [] });
+        const ac = new AbortController();
+        const done = a.run("start", ac.signal);
+        for (const end = Date.now() + 5000; !a.events.some((e) => e.type === "tool_start" && e.call.id === "toolu_live"); await Bun.sleep(20)) if (Date.now() > end) throw new Error("no call");
+        queued.push(["and then deploy"]);
+        a.agent.queueChanged();
+        for (const end = Date.now() + 2000; !received().some((m) => m.type === "user" && JSON.stringify(m.message.content).includes("and then deploy")); await Bun.sleep(20)) if (Date.now() > end) throw new Error("not written");
+        ac.abort();
+        expect(await done).toBe("aborted");
+        expect(JSON.stringify(a.session.messages.at(-1))).toContain("your turn ended before it reached you:\\nand then deploy");
+        // Withdrawn before the stop: a plain interrupt keeps it, to run after (claude-steer-immediate.jsonl, case d).
+        const uuid = received().find((m) => m.type === "user" && JSON.stringify(m.message.content).includes("and then deploy")).uuid;
+        const asked = received().filter((m) => m.type === "control_request").map((m) => m.request);
+        expect(asked.filter((r) => r.subtype === "cancel_async_message")).toEqual([{ subtype: "cancel_async_message", message_uuid: uuid }]);
+        expect(asked.findIndex((r) => r.subtype === "cancel_async_message")).toBeLessThan(asked.findIndex((r) => r.subtype === "interrupt"));
+        expect(logLines().filter((l) => l.init)).toHaveLength(1);
+    }, 20_000);
+
+    test("Esc with a message whose withdrawal is answered after the turn's result: the answers are still read, so it's handed back, and Claude Code isn't killed for want of them (S2-4)", async () => {
+        process.env.FAKE_SCENARIO = "steer-live";
+        process.env.FAKE_TOOL_MS = "5000";
+        process.env.FAKE_CANCEL_FOLDED = "drop";
+        const queued: string[][] = [];
+        const a = await makeAgent({ provider: "claude-code", drainQueued: () => queued.shift() ?? [] });
+        const ac = new AbortController();
+        const done = a.run("start", ac.signal);
+        for (const end = Date.now() + 5000; !a.events.some((e) => e.type === "tool_start" && e.call.id === "toolu_live"); await Bun.sleep(20)) if (Date.now() > end) throw new Error("no call");
+        queued.push(["and then deploy"]);
+        a.agent.queueChanged();
+        for (const end = Date.now() + 2000; !received().some((m) => m.type === "user" && JSON.stringify(m.message.content).includes("and then deploy")); await Bun.sleep(20)) if (Date.now() > end) throw new Error("not written");
+        const at = Date.now();
+        ac.abort();
+        expect(await done).toBe("aborted");
+        // Not the withdrawal's 2 s wait, then a kill: its answer (300 ms) was read.
+        expect(Date.now() - at).toBeLessThan(1800);
+        expect(JSON.stringify(a.session.messages.at(-1))).toContain("your turn ended before it reached you:\\nand then deploy");
+        expect(logLines().filter((l) => l.init)).toHaveLength(1);
+    }, 20_000);
+
+    test("Esc with a message written while a call runs that Claude Code won't withdraw: it's stopped, not interrupted, so the message never runs, and it isn't sent again", async () => {
+        process.env.FAKE_SCENARIO = "steer-live";
+        process.env.FAKE_TOOL_MS = "5000";
+        process.env.FAKE_CANCEL_REFUSE = "1";
+        const queued: string[][] = [];
+        const a = await makeAgent({ provider: "claude-code", drainQueued: () => queued.shift() ?? [] });
+        const ac = new AbortController();
+        const done = a.run("start", ac.signal);
+        for (const end = Date.now() + 5000; !a.events.some((e) => e.type === "tool_start" && e.call.id === "toolu_live"); await Bun.sleep(20)) if (Date.now() > end) throw new Error("no call");
+        queued.push(["and then deploy"]);
+        a.agent.queueChanged();
+        for (const end = Date.now() + 2000; !received().some((m) => m.type === "user" && JSON.stringify(m.message.content).includes("and then deploy")); await Bun.sleep(20)) if (Date.now() > end) throw new Error("not written");
+        ac.abort();
+        expect(await done).toBe("aborted");
+        await Bun.sleep(300);
+        // Claude Code may have it (delivered, as far as Cavvy knows): not carried by the next prompt.
+        expect(JSON.stringify(a.session.messages)).not.toContain("your turn ended before it reached you");
+        // Never run: no turn of its own after the stop.
+        expect(logLines().filter((l) => l.init)).toHaveLength(1);
+        expect(received().some((m) => m.type === "control_request" && m.request.subtype === "cancel_async_message")).toBe(true);
+    }, 20_000);
+
+    test("a message sent while Claude Code starts (before it answers initialize) goes once the turn starts, not at its first call's result", async () => {
+        process.env.FAKE_SCENARIO = "steer-live";
+        process.env.FAKE_TOOL_MS = "1500";
+        process.env.FAKE_INITIALIZE_MS = "400";
+        const queued: string[][] = [];
+        const a = await makeAgent({ provider: "claude-code", drainQueued: () => queued.shift() ?? [] });
+        const done = a.run("start");
+        for (const end = Date.now() + 5000; !received().some((m) => m.type === "control_request" && m.request.subtype === "initialize"); await Bun.sleep(10)) if (Date.now() > end) throw new Error("not started");
+        queued.push(["early word"]);
+        a.agent.queueChanged();
+        expect(await done).toBe("done");
+        // Written while the turn's call ran, not held for its result.
+        expect(logLines().flatMap((l) => (l.midTurn ? [l.midTurn] : []))).toMatchObject([{ text: "early word", phase: "tool" }]);
+        expect(JSON.stringify(a.session.messages)).toMatch(/Adjusted: early word|Took: early word/);
+    }, 20_000);
 
     test("mid-turn delivery stays within the CLI's 64-UUID acknowledgement window", async () => {
         process.env.FAKE_SCENARIO = "steering-many";

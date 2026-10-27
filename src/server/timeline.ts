@@ -86,6 +86,11 @@ export function applyOp(view: SessionView, op: SessionOp): void {
             if (t) assign(t, op.patch);
             return;
         }
+        case "turn.remove": {
+            const i = view.turns.findIndex((t) => t.id === op.turnId);
+            if (i >= 0) view.turns.splice(i, 1);
+            return;
+        }
         case "block": {
             const t = findTurn(view, op.turnId);
             if (!t) return;

@@ -1,6 +1,7 @@
 // Shell sandbox for auto mode. A sandboxed command can write only inside the
 // workspace and the temp directories (never git hooks or git config, the
-// Cavvy's own config, or the agent CLIs' .claude/ and .codex/, except for
+// Cavvy's own config, or the agent CLIs' .claude/, .codex/, .opencode/ (and
+// opencode.json, and its global config) and .grok/, except for
 // Claude Code's worktrees in .claude/worktrees/), can't read credential files,
 // has no network beyond localhost, can't signal processes outside the
 // sandbox, and can't reach the usual ways out of one: opening apps, Apple
@@ -17,7 +18,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "path";
 import { ANALYSIS_LIMIT, commandsWithDirs, gitSubcommand, programNames, readSmallFile, runs, withoutMessages } from "./bash-safety";
 import { CASE_INSENSITIVE_FS, canonical, spellings } from "../util/files";
 import { accountProtectedPaths } from "../providers/accounts";
-import { paths } from "../config/paths";
+import { opencodeConfigDir, paths } from "../config/paths";
 import { homeAliases, LEGACY } from "../config/legacy";
 
 export type SandboxKind = "seatbelt" | "bwrap";
@@ -27,7 +28,7 @@ export interface SandboxPolicy {
     writable: string[];
     /** Inside those, paths that stay read-only. */
     readOnly: string[];
-    /** The agent CLIs' config folders (.claude/, .codex/): read-only too, except the worktrees in them. */
+    /** The agent CLIs' config folders (.claude/, .codex/, .opencode/, .grok/): read-only too, except the worktrees in them. */
     cliConfig?: string[];
     /**
      * Git checkouts Claude Code keeps in .claude/worktrees/: projects of their
@@ -43,6 +44,8 @@ export interface SandboxPolicy {
      * home, where settings and session logs may hold secrets. bubblewrap hides them whole.
      */
     contentsUnreadable?: string[];
+    /** OpenCode's global config folder (in readOnly too): the writable folders above it can't be moved either. */
+    globalConfig?: string[];
 }
 
 export interface Sandbox {
@@ -58,7 +61,7 @@ let detected: SandboxKind | null | undefined;
 export function sandboxKind(): SandboxKind | undefined {
     if (detected === undefined) {
         if (process.platform === "darwin" && existsSync(SEATBELT)) detected = seatbeltWorks() ? "seatbelt" : null;
-        else if (process.platform === "linux" && Bun.which("bwrap")) detected = bwrapWorks() ? "bwrap" : null;
+        else if (process.platform === "linux" && Bun.which("bwrap", { PATH: process.env.PATH })) detected = bwrapWorks() ? "bwrap" : null;
         else detected = null;
     }
     return detected ?? undefined;
@@ -136,10 +139,10 @@ const UNREADABLE_IN_HOME = [
 ];
 
 /** A project's own config: Cavvy's, and the agent CLIs' (hooks, skills, MCP servers, permissions). */
-const PROJECT_CONFIG = [".cavvy", LEGACY.dir, ".mcp.json"];
-const CLI_CONFIG = [".claude", ".codex"];
+const PROJECT_CONFIG = [".cavvy", LEGACY.dir, ".mcp.json", "opencode.json", "opencode.jsonc"];
+const CLI_CONFIG = [".claude", ".codex", ".opencode", ".grok"];
 /** Names checker.ts doesn't take for a worktree (see withoutWorktrees there). */
-const CONFIG_NAMES = new Set([".cavvy", LEGACY.dir, ".claude", ".codex", ".git", ".mcp.json"]);
+const CONFIG_NAMES = new Set([".cavvy", LEGACY.dir, ".claude", ".codex", ".opencode", ".grok", ".git", ".mcp.json", "opencode.json", "opencode.jsonc"]);
 
 /** A path as written and, if a symlink leads elsewhere, where it leads: a rule on one alone can be sidestepped through the other. */
 function bothForms(p: string): string[] {
@@ -195,15 +198,18 @@ export function sandboxPolicy(roots: string[], opts: { home?: string; cavvyHome:
     const secrets = homes.flatMap((h) => [basename(paths.credentialsFile()), basename(paths.mcpOAuth()), basename(paths.providers()), "accounts"].flatMap((f) => bothForms(join(h, f))));
     // Seatbelt matches where a path leads: a settings.json symlinked out of the home is covered where it points.
     const settings = homes.flatMap((h) => linkedFile(join(h, basename(paths.userSettings()))));
+    const globalConfig = bothForms(opencodeConfigDir(home));
     return {
         writable: [...new Set([...ws, ...git.filter((g) => !ws.some((w) => isWithin(g, w))), ...temp])],
         // A worktree's own config and its .git pointer stay read-only, as in the project around it.
-        readOnly: [...new Set([...ws.flatMap((w) => PROJECT_CONFIG.flatMap((c) => bothForms(join(w, c)))), ...worktrees.flatMap((t) => [...PROJECT_CONFIG, ...CLI_CONFIG, ".git"].flatMap((c) => bothForms(join(t, c)))), ...homes, ...accounts])],
+        // OpenCode's global config too, as Cavvy's homes are (its plugins run when it starts).
+        readOnly: [...new Set([...ws.flatMap((w) => PROJECT_CONFIG.flatMap((c) => bothForms(join(w, c)))), ...worktrees.flatMap((t) => [...PROJECT_CONFIG, ...CLI_CONFIG, ".git"].flatMap((c) => bothForms(join(t, c)))), ...homes, ...accounts, ...globalConfig])],
         cliConfig: [...new Set(ws.flatMap((w) => CLI_CONFIG.flatMap((c) => bothForms(join(w, c)))))],
         worktrees,
         unreadable: [...new Set([...UNREADABLE_IN_HOME.map((p) => join(home, p)), ...secrets, ...allAccounts])],
         contentsUnreadable: [...new Set([...homes, ...settings.filter((x) => !homes.some((h) => isWithin(x, h)))])],
         gitDirs: git,
+        globalConfig,
     };
 }
 
@@ -258,7 +264,7 @@ export function seatbeltProfile(p: SandboxPolicy): string {
     const subpaths = (list: string[]) => list.map((x) => `(subpath ${sb(x)})`).join(" ");
     const cli = p.cliConfig ?? [];
     const worktrees = (p.worktrees ?? []).filter((t) => cli.some((c) => isWithin(t, c)));
-    const fixed = [...new Set([...p.gitDirs.flatMap((g) => [g, join(g, "info"), ...nestedGitDirs(g)]).flatMap(withAncestors), ...accountProtectedPaths().flatMap((a) => withAncestors(canonical(a))), ...worktrees])].filter((f) => p.writable.some((w) => isWithin(f, w)));
+    const fixed = [...new Set([...p.gitDirs.flatMap((g) => [g, join(g, "info"), ...nestedGitDirs(g)]).flatMap(withAncestors), ...accountProtectedPaths().flatMap((a) => withAncestors(canonical(a))), ...(p.globalConfig ?? []).flatMap((c) => withAncestors(dirname(c))), ...worktrees])].filter((f) => p.writable.some((w) => isWithin(f, w)));
     return [
         "(version 1)",
         "(allow default)",
@@ -281,8 +287,9 @@ export function seatbeltProfile(p: SandboxPolicy): string {
         `(deny file-write* ${subpaths([...p.readOnly, ...cliInWorktrees(p), ...p.gitDirs.flatMap(gitProtectedPaths), ...p.unreadable, ...(p.contentsUnreadable ?? [])])})`,
         // Paths that can't be moved, replaced or repointed, only written inside:
         // the git dirs and `.git` pointer files, the writable directories
-        // above them (the workspace roots, say), the worktrees, and unreadable
-        // account paths and their writable ancestors. Moved away,
+        // above them (the workspace roots, say), the worktrees, unreadable
+        // account paths and their writable ancestors, and the writable folders
+        // above OpenCode's global config (~/.config). Moved away,
         // edited and moved back, they'd get round the rules above.
         ...(fixed.length ? [`(deny file-write* ${fixed.map((f) => `(literal ${sb(f)})`).join(" ")})`] : []),
         // Submodules (.git/modules/<name>/…) and other worktrees (.git/worktrees/<name>/…)

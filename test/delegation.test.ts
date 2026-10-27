@@ -173,6 +173,7 @@ interface Opts {
     scheduler?: import("../src/agent/schedule").Scheduler;
     /** Give the session a wake queue and watch list, as the TUI and the app do. */
     wakes?: boolean;
+    classifier?: import("../src/permissions/classifier").AutoClassifier;
 }
 
 async function makeAgent(o: Opts) {
@@ -191,6 +192,7 @@ async function makeAgent(o: Opts) {
         approvedMcpServers: o.approvedMcpServers,
         checker: new PermissionChecker(() => settings, cwd),
         tools: BUILTIN_TOOLS,
+        ...(o.classifier ? { classifier: o.classifier } : {}),
         mode: { get: () => mode, set: (m) => (mode = m) },
         toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: o.secrets, scheduler: o.scheduler, ...(o.wakes ? { wakes: new WakeQueue({ coalesceMs: 60_000 }), watchers: new WatcherMap() } : {}) },
         helpers: { resolveModel },
@@ -1762,15 +1764,43 @@ describe("Browser tools for Codex and Claude Code", () => {
         expect(scroll.isError).toBe(false);
     });
 
-    test("a call the user already has the tab for is refused as the Cavvy tool is, and the page stays theirs", async () => {
+    test("in auto mode acting runs without Cavvy's reviewer, as the CLI's own call; a rule still asks", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        const { AutoClassifier } = await import("../src/permissions/classifier");
+        let reviewed = 0;
+        const classifier = new AutoClassifier(async () => {
+            reviewed++;
+            return "<block>no</block>";
+        });
+        calls([open, { tool: "browser_act", args: { action: "click", ref: "e5" } }, { tool: "browser_eval", args: { expression: "1" } }]);
+        const auto = await codex({ classifier });
+        auto.switchMode("auto");
+        expect(await auto.run("click it")).toBe("done");
+        const [, click, evaluated] = mcpResults();
+        expect(click.isError).toBe(false);
+        expect(evaluated.isError).toBe(false);
+        expect(reviewed).toBe(0);
+        expect(auto.asked).toEqual([]);
+
+        rmSync(LOG, { force: true });
+        calls([open, { tool: "browser_act", args: { action: "click", ref: "e5" } }]);
+        const ruled = await codex({ classifier, settings: { permissions: { ask: ["BrowserAct"] } }, ask: () => ({ allow: false }) });
+        ruled.switchMode("auto");
+        await ruled.run("click it");
+        expect(mcpResults()[1]).toMatchObject({ tool: "browser_act", isError: true });
+        expect(ruled.asked.map((r) => r.tool.name)).toEqual(["BrowserAct"]);
+        expect(reviewed).toBe(0);
+    });
+
+    test("a call on a tab the user has been using runs, and says the user was there", async () => {
         process.env.FAKE_SCENARIO = "mcp";
         calls([open]);
         const { run, agent } = await codex();
         await run("open it");
         await agent.state.browser!.input({ kind: "key", type: "down", key: "a", code: "KeyA" });
         const r = await (agent as any).runServed((await import("../src/tools/browser-tools")).BrowserActTool, { action: "scroll", deltaY: 100 }, new AbortController().signal);
-        expect(r.isError).toBe(true);
-        expect(r.text).toContain("taken control");
+        expect(r.isError).toBeFalsy();
+        expect(r.text).toContain("The user has used this tab");
     });
 });
 

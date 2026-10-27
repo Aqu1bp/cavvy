@@ -15,7 +15,6 @@ import { effortAt, effortKey, effortLevels, effortOf, takesEffort, type Effort }
 import { sendsAccountPick } from "../lib/account-pick";
 import { meterOf } from "../lib/limits";
 import { now } from "../lib/clock";
-import { tokens } from "../lib/format";
 import { nearLimit } from "./ComposerMeter";
 
 function fuzzy(q: string, s: string): boolean {
@@ -62,21 +61,9 @@ const planLabel = (plan?: string) => (plan ? plan.charAt(0).toUpperCase() + plan
 /** An account's tooltip: who it is, its plan, and what's wrong with it, if anything. */
 const accountDetail = (a: Partial<AccountInfo>) => [a.email, planLabel(a.plan), a.invalid ? "Unavailable" : a.signedIn === false ? "Not signed in" : undefined].filter(Boolean).join(" · ");
 
-/** "$3", "$0.3", "$1.25": a price per million tokens; a paid one under a cent never reads "$0". */
-const perMillion = (n: number) => (n > 0 && n < 0.005 ? "<$0.01" : `$${Number(n.toFixed(2))}`);
-const squash = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
-
-/**
- * The line under a model's name: whose it is (in Favorites), the id it stands for when its name doesn't say
- * ("default" → "claude-opus-5-5"), its context window and, billed by the token, its price per million.
- */
-function modelLine(m: ModelSummary, opts: { provider?: string; priced: boolean }): string {
-    const resolved = m.name?.match(/\(([^()\s]+)\)\s*$/)?.[1];
-    const name = squash(modelName(m));
-    const id = resolved && ID_LIKE.test(resolved) ? resolved : name.includes(squash(m.id)) ? undefined : m.id;
-    // Borrowed from another provider's list (pricingEstimated): marked "~", as the CLI marks it.
-    const price = opts.priced && m.pricing ? `${m.pricingEstimated ? "~" : ""}${perMillion(m.pricing.input)} / ${perMillion(m.pricing.output)} per M` : undefined;
-    return [opts.provider, id, m.contextWindow ? `${tokens(m.contextWindow)} context` : undefined, price].filter(Boolean).join(" · ");
+/** The line under a model's name: whose it is, in Favorites, where models of every provider are listed together. */
+function modelLine(m: ModelSummary, opts: { provider?: string }): string {
+    return opts.provider ?? "";
 }
 
 /** A menu from a button in the composer: just above it in a session, below it on Home, where the composer sits higher. */
@@ -148,7 +135,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     /** One provider's models, or the favorites; searching looks through every provider's, under its name. */
     const sections = createMemo((): Section[] => {
         let i = 0;
-        const row = (m: ModelSummary, mixed = false): Row => ({ m, i: i++, line: modelLine(m, { provider: mixed ? providerName(m.provider) : undefined, priced: !accountInfo(m.provider) }) });
+        const row = (m: ModelSummary, mixed = false): Row => ({ m, i: i++, line: modelLine(m, { provider: mixed ? providerName(m.provider) : undefined }) });
         if (q()) {
             return groups()
                 .map((g) => ({ g, models: g.models.filter((m) => fuzzy(q(), `${g.providerName} ${m.name} ${m.id}`)) }))
@@ -174,7 +161,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     const toggleCompare = () => setComparePicks(multi() ? undefined : currentRef() ? [currentRef()!] : []);
 
     // The provider whose heading has its accounts: a CLI provider, in its own list.
-    const acctProvider = () => (!q() && filter() !== FAVORITES && accountInfo(filter()) ? filter() : undefined);
+    const acctProvider = () => (!q() && filter() !== FAVORITES && accountInfo(filter()) && accountInfo(filter())!.multiAccount !== false ? filter() : undefined);
     /** A plan nearing or at its limit: its fullest window's percentage, from 80%; 100 once reached. */
     const accountLimit = (provider: string, id: string) => {
         const l = app.limits[planLimitKey(provider, id)];
@@ -313,7 +300,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
         const i = r.i;
         const on = () => (multi() ? picked(r.m.ref) : isCurrent(r.m.ref));
         return (
-            <div class={`mr ${i === sel() ? "sel" : ""} ${on() ? "on" : ""} ${r.line ? "two" : ""}`} onMouseMove={() => sel() !== i && setSel(i)}>
+            <div class={`mr ${i === sel() ? "sel" : ""} ${on() ? "on" : ""}`} onMouseMove={() => sel() !== i && setSel(i)}>
                 <button
                     class="mr-pick"
                     id={`${listId}-${i}`}
@@ -340,10 +327,9 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                             </span>
                         </Show>
                     </span>
+                    {/* One line: the name, then what it stands for (or whose it is, its window and price) dimmed, cut first. */}
                     <span class="mr-text">
-                        <span class="mr-top">
-                            <span class="mr-name truncate">{name}</span>
-                        </span>
+                        <span class="mr-name truncate">{name}</span>
                         <Show when={r.line}>
                             <span class="mr-sub truncate">{r.line}</span>
                         </Show>
@@ -448,9 +434,9 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                 anchor={() => anchor}
                 onClose={() => p.setOpen(false)}
                 placement={p.placement ?? "top"}
-                width={400}
-                maxHeight={440}
-                minHeight={300}
+                width={340}
+                maxHeight={380}
+                minHeight={240}
                 class="mp"
                 exit
             >

@@ -346,7 +346,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     };
 
     // -----------------------------------------------------------------------
-    // The address bar, the tabs, and handing back
+    // The address bar and the tabs
 
     const command = (c: BrowserCommand, extra: { url?: string; tab?: number } = {}) => void stream.call("browser.command", { id: id(), command: c, ...extra }).then((s) => adoptBrowserState(id(), s), reportError);
     const go = (e: SubmitEvent) => {
@@ -356,7 +356,6 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         if (url?.trim()) command("goto", { url, tab: tab()?.id });
         keyboard?.focus({ preventScroll: true });
     };
-    const handBack = () => { cancelInput(); void stream.call("browser.handBack", { id: id(), tab: tab()?.id }).catch(reportError); };
     const answer = (accept: boolean) => {
         const text = dialogText();
         setDialogText("");
@@ -419,19 +418,10 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                 </button>
                 <span class="grow" />
                 <Show when={status() === "agent"}>
-                    <span class="br-who" title="Click or type in the page to take over">
+                    <span class="br-who" title="You can use the page too: the agent is told when you have">
                         <span class="br-dot" />
                         <span class="truncate">Agent is using this tab</span>
                     </span>
-                </Show>
-                {/* Here and not under the page: a bar that came and went with control would resize the page under the click that took it. */}
-                <Show when={status() === "human"}>
-                    <span class="br-who" title="You're in control. The agent can look at this tab, but not act on it.">
-                        <span class="truncate">You're in control</span>
-                    </span>
-                    <button class="btn ghost sm br-handback" onClick={handBack}>
-                        Hand back to agent
-                    </button>
                 </Show>
             </div>
             <div class="br-view" ref={box}>

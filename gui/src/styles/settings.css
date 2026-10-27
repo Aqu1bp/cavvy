@@ -881,6 +881,11 @@
     text-overflow: ellipsis;
 }
 
+/* Check now, and Update & restart beside it when there's one. */
+.upd-row .set-ctl {
+    gap: calc(6 * var(--sp));
+}
+
 .upd-row .btn svg {
     margin-right: calc(2 * var(--sp));
 }

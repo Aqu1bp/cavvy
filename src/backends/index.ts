@@ -6,15 +6,18 @@ import type { AgentBackendClient } from "./types";
 import { ClaudeCodeBackend, claudeStatus, describeClaudeAuth } from "./claude-code";
 import { CodexBackend, codexAccount, codexPlan, describeCodexAuth, type CodexAccount } from "./codex";
 import type { PlanLimits } from "../server/protocol";
-import { CLAUDE_CLI, CODEX_CLI, findCli } from "./cli";
+import { findCli } from "./cli";
 import { agentCli } from "./defs";
+import { AcpBackend, acpStatus } from "./acp/backend";
 
 export function createBackend(def: ProviderDef): AgentBackendClient {
-    switch (def.id) {
-        case "claude-code":
+    switch (agentCli(def.id)?.protocol) {
+        case "claude-stream-json":
             return new ClaudeCodeBackend(def);
-        case "codex":
+        case "codex-app-server":
             return new CodexBackend(def);
+        case "acp":
+            return new AcpBackend(def);
         default:
             throw new Error(`No agent backend for ${def.id}`);
     }
@@ -57,9 +60,13 @@ export async function checkAgentPlan(providerId: string, signal?: AbortSignal, a
 }
 
 async function checkCli(providerId: string, signal: AbortSignal | undefined, accountId: string | undefined, limits: boolean): Promise<{ status: AgentCliStatus; limits?: PlanLimits }> {
+    const def = agentCli(providerId);
+    if (!def) throw new Error(`${providerId} isn't an agent CLI`);
+    // An ACP agent has its default sign-in only, and no plan limits to report.
+    if (def.protocol === "acp") return { status: await acpStatus(providerId, signal) };
     accountEnv(providerId, accountId);
-    const cli = providerId === "codex" ? CODEX_CLI : CLAUDE_CLI;
-    const base = { signIn: cli.signIn, signOut: providerId === "codex" ? "codex logout" : "claude auth logout", installHint: cli.install };
+    const cli = def.cli;
+    const base = { signIn: cli.signIn, signOut: cli.signOut, installHint: cli.install };
     const path = findCli(providerId, cli);
     if (!path) return { status: { ...base, installed: false, signedIn: false, description: "not installed" } };
     if (providerId === "codex") {

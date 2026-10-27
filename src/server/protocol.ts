@@ -500,6 +500,11 @@ export interface ModelSummary {
     effortLevels?: EffortLevel[];
     supportsFastMode?: boolean;
     deprecated?: boolean;
+    /**
+     * false: a message sent while it works can't join the running turn (its agent CLI takes none mid-turn), so it
+     * waits for the turn's end, and nothing offers to steer. Missing: it can (Cavvy's own models, Claude Code, Codex).
+     */
+    steers?: false;
 }
 
 export interface TodoEntry {
@@ -699,6 +704,8 @@ export type SessionOp =
     | { op: "state"; patch: Partial<SessionState> }
     | { op: "turn"; turn: Turn }
     | { op: "turn.patch"; turnId: string; patch: Partial<Omit<Turn, "blocks" | "id">> }
+    /** A turn taken back (a steer its CLI never took). */
+    | { op: "turn.remove"; turnId: string }
     | { op: "block"; turnId: string; block: Block; parent?: string }
     | { op: "block.patch"; turnId: string; blockId: string; patch: Partial<Block>; parent?: string }
     | { op: "block.remove"; turnId: string; blockId: string }
@@ -1054,6 +1061,10 @@ export interface ProviderInfo {
         install: string;
         /** What the plan is called in buttons ("Claude subscription", "ChatGPT plan"). */
         plan: string;
+        /** It can have accounts besides Default (false: an ACP agent, with its own sign-in only). */
+        multiAccount?: boolean;
+        /** It reports plan limits (false: there's no plan row to show). */
+        planLimits?: boolean;
     };
 }
 
@@ -1467,7 +1478,7 @@ export type BrowserInput =
     /** Text as it is (a paste, an input method's result), not keys. */
     | { kind: "text"; text: string };
 
-/** Who is driving a tab: the agent, the person watching, or neither yet. */
+/** Who drove a tab last: the agent, the person watching, or neither yet. Neither keeps the other out. */
 export type BrowserOwner = "agent" | "human" | "none";
 
 export interface BrowserTabInfo {
@@ -1538,7 +1549,8 @@ export type ServerEvent =
       }
     | { type: "toast"; level: "info" | "warn" | "error"; message: string }
     /** What goes back into the session's input box (unsent messages after an interrupt, a rewound prompt). */
-    | { type: "draft"; sessionId: string; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] }
+    /** `after`: after what's typed in the composer (a steer handed back), not before it. */
+    | { type: "draft"; sessionId: string; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[]; after?: true }
     | { type: "models.changed" }
     /** A project's scripts changed (in any window); `project` is ProjectScripts.project. */
     | { type: "scripts.changed"; project: string }
@@ -1616,12 +1628,10 @@ export interface Methods {
     "browser.unwatch": { params: { id: string }; result: null };
     /** The window has received this frame; decoding independently retains only the latest waiting picture. */
     "browser.ack": { params: { id: string; frameId: string }; result: null };
-    /** What the person did in the pane; it takes the tab from the agent (a pointer only moving doesn't). */
+    /** What the person did in the pane; the agent is told of it (a pointer only moving isn't). */
     "browser.input": { params: { id: string; tab?: number; input: BrowserInput }; result: null };
-    /** The address bar and the tab strip: the person opening or leaving a page takes the tab. */
+    /** The address bar and the tab strip: the person opening or leaving a page drives the tab. */
     "browser.command": { params: { id: string; command: BrowserCommand; url?: string; tab?: number }; result: BrowserState };
-    /** The person gives the tab back to the agent. */
-    "browser.handBack": { params: { id: string; tab?: number }; result: null };
     /** The person answers a confirm or prompt the page is showing. */
     "browser.dialog": { params: { id: string; accept: boolean; text?: string; tab?: number }; result: null };
     /** After scripts.run, once the window has sent what was typed while it opened: the script's command may be typed now. */
@@ -1804,8 +1814,8 @@ export interface Methods {
     "usage.summary": { params: { days: UsageDays }; result: UsageSummary };
     /** Whether the desktop app is behind origin/main, as of the last check. */
     "app.update.get": { params: Record<string, never>; result: AppUpdateInfo };
-    /** Fetch origin/main now and compare it with the installed build. */
-    "app.update.check": { params: Record<string, never>; result: AppUpdateInfo };
+    /** Fetch origin/main now and compare it with the installed build. `maxAgeMs`: unless the last check is newer than that. */
+    "app.update.check": { params: { maxAgeMs?: number }; result: AppUpdateInfo };
     /** Build and install main (scripts/update-desktop.ts), then restart the app. It runs on its own: progress comes as app.update events. */
     "app.update.start": { params: Record<string, never>; result: AppUpdateInfo };
     /**

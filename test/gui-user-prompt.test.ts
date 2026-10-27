@@ -31,7 +31,8 @@ describe("promptTime", () => {
         expect(promptTime(at, new Date(2027, 0, 2).getTime())).toContain("2026");
     });
     test("the computer's time zone moving: times in the new one, though the formatters are kept", () => {
-        const was = process.env.TZ;
+        // By name, never deleted: in Bun, deleting TZ freezes the zone for the rest of the process.
+        const was = process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
         const noon = Date.UTC(2026, 9, 22, 12, 0);
         try {
             process.env.TZ = "UTC";
@@ -44,8 +45,7 @@ describe("promptTime", () => {
             expect(clock(noon)).not.toBe(utc);
         } finally {
             setSystemTime();
-            if (was === undefined) delete process.env.TZ;
-            else process.env.TZ = was;
+            process.env.TZ = was;
         }
     });
 });

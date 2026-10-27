@@ -16,14 +16,14 @@ Whatever the mode:
 
 - Deny rules always win. A deny or ask rule for a command also catches it given by path (`/bin/rm`), behind `env` (`env -S '…'` included), `exec`, `nohup`, `nice`, `command`, `timeout`, `xargs` or `sudo` with any of their options, inside `sh -c '…'`, `eval` and `$(…)`, and, on macOS and Windows, in another case (`RM`, `/BIN/RM`), since the shell finds `/bin/rm` for that name there. A program named by a variable (`$X`) isn't known to them. Allow rules match only the command as written, so `Bash(npm test:*)` doesn't allow `NPM test`.
 - Catastrophic commands (`rm -rf ~`, `mkfs`, writes to raw disks, fork bombs and similar) always ask, even in bypass mode, by any of those names (`SH -c 'rm -rf ~'` too).
-- Edits to Cavvy's own configuration, `.mcp.json`, `.git/`, or the agent CLIs' `.claude/` and `.codex/` always ask, except in bypass mode. A git worktree Claude Code keeps in `.claude/worktrees/<name>/` counts as a project of its own: its files are ordinary edits, and only its own `.claude/`, `.codex/`, `.cavvy/`, `.mcp.json` and `.git` ask.
+- Edits to Cavvy's own configuration, `.mcp.json`, `.git/`, or the agent CLIs' `.claude/`, `.codex/`, `.opencode/` (with `opencode.json` and `opencode.jsonc`), `.grok/` and OpenCode's global config (`$XDG_CONFIG_HOME/opencode`, `~/.config/opencode` by default) always ask, except in bypass mode. A git worktree Claude Code keeps in `.claude/worktrees/<name>/` counts as a project of its own: its files are ordinary edits, and only its own `.claude/`, `.codex/`, `.opencode/`, `opencode.json`, `opencode.jsonc`, `.grok/`, `.cavvy/`, `.mcp.json` and `.git` ask.
 
 When a prompt appears you can allow once, allow and don't ask again (saved as a rule in `.cavvy/settings.local.json`), or decline and say what to do instead.
 
 ## Auto mode
 
 - **Sandboxed shell.** Shell commands, read-only ones included, run in a sandbox when the OS has one: Seatbelt (`sandbox-exec`) on macOS. On Linux, bubblewrap is used only when you turn it on with `"sandbox": true`, because it's experimental (see below). Inside the sandbox a command:
-  - can write only in the workspace and the temp directories, and never to `.git/hooks`, git config (submodules' and worktrees' included), `.cavvy/`, `.mcp.json`, the agent CLIs' `.claude/` and `.codex/`, or `~/.cavvy`. The git worktrees Claude Code keeps in `.claude/worktrees/<name>/` are projects of their own, so their files can be written, but not their own `.claude/`, `.codex/`, `.cavvy/`, `.mcp.json` or `.git` file, and a new one can't be made there. It also can't move or repoint the repo's git directory (`.git`, a worktree's `.git` file, `commondir`), those worktrees or the workspace itself, so it can't plant config that a later unsandboxed git command would run;
+  - can write only in the workspace and the temp directories, and never to `.git/hooks`, git config (submodules' and worktrees' included), `.cavvy/`, `.mcp.json`, the agent CLIs' `.claude/`, `.codex/`, `.opencode/`, `opencode.json`, `opencode.jsonc` and `.grok/`, OpenCode's global config, or `~/.cavvy`. The git worktrees Claude Code keeps in `.claude/worktrees/<name>/` are projects of their own, so their files can be written, but not their own `.claude/`, `.codex/`, `.opencode/`, `opencode.json`, `opencode.jsonc`, `.grok/`, `.cavvy/`, `.mcp.json` or `.git` file, and a new one can't be made there. It also can't move or repoint the repo's git directory (`.git`, a worktree's `.git` file, `commondir`), those worktrees or the workspace itself, so it can't plant config that a later unsandboxed git command would run;
   - can't read credential files (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gcloud`, `~/.config/gh`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, the keychain, `~/.cavvy` and others);
   - has no network except localhost and the hosts the command lists (below), and no Unix sockets (so no ssh-agent or Docker);
   - can't signal processes it didn't start;
@@ -53,7 +53,7 @@ When a prompt appears you can allow once, allow and don't ask again (saved as a 
 - On Linux, bubblewrap has no proxy: commands that need the network run outside the sandbox, after review, as before.
 - Linux (bubblewrap, experimental):
   - It has its own network, PID and IPC namespaces. It hides the usual Unix-socket locations (`/run`, X11, tmux, ssh-agent, Docker Desktop, Colima, Lima), but sockets elsewhere stay reachable.
-  - It can only protect paths that exist when the command starts. A `.cavvy/`, `.mcp.json`, `.claude/` or `.codex/` that doesn't exist yet can be created, and so can the hooks of a repo created by that same command.
+  - It can only protect paths that exist when the command starts. A `.cavvy/`, `.mcp.json`, `.claude/`, `.codex/`, `.opencode/`, `opencode.json`, `opencode.jsonc` or `.grok/` that doesn't exist yet can be created, and so can the hooks of a repo created by that same command.
   - It has only been tested at the level of the arguments it builds, not on a real Linux machine.
 
 ## Rules

@@ -222,7 +222,7 @@ function General() {
                 <Row title="Compact automatically" desc="Summarize the conversation when the context window is nearly full.">
                     <Toggle label="Compact automatically" checked={s().autoCompact !== false} onChange={(v) => void update({ autoCompact: v })} />
                 </Row>
-                <Row title="Messages sent while working" desc={`Steer joins the running turn at its next step; queue waits for it to end. ${mod}+Shift+Enter does the other for one message.`}>
+                <Row title="Messages sent while working" desc={`Steer joins the running turn at its next step; queue waits for it to end. Neither one interrupts. ${mod}+Shift+Enter does the other for one message. A model that can't take messages mid-turn always queues.`}>
                     <SelectButton>
                         <select class="select" aria-label="Messages sent while working" value={s().followUpBehavior ?? "steer"} onChange={(e) => void update({ followUpBehavior: e.currentTarget.value as FollowUpMode })}>
                             <option value="steer">Steer the current turn</option>
@@ -267,7 +267,7 @@ function General() {
                         </select>
                     </SelectButton>
                 </Row>
-                <Row title="Browser" desc="Let agents open pages in a headless Chrome, which you can watch and take over in the side panel.">
+                <Row title="Browser" desc="Let agents open pages in a headless Chrome, which you can watch and use too in the side panel.">
                     <Toggle label="Browser" checked={s().browser !== false} onChange={(v) => void update({ browser: v })} />
                 </Row>
                 <Row title="Expand tool activity" desc="Show every tool call instead of a one-line summary.">
@@ -902,11 +902,14 @@ function Updates() {
                     <Row title={v().title} desc={v().detail} class={`upd-row ${u().updating ? "running" : ""}`}>
                         <Show when={!v().busy && v().action} fallback={<Show when={v().busy}><Spinner size={16} class="upd-spin" /></Show>}>
                             {(a) => (
-                                <Show when={a() === "update"} fallback={<button class="btn sm" disabled={asking()} onClick={() => void check()}>Check now</button>}>
-                                    <button class="btn primary sm" disabled={update.pending()} onClick={update.request}>
-                                        <Download size={14} /> Update &amp; restart
-                                    </button>
-                                </Show>
+                                <>
+                                    <button class="btn sm" disabled={asking()} onClick={() => void check()}>Check now</button>
+                                    <Show when={a() === "update"}>
+                                        <button class="btn primary sm" disabled={update.pending()} onClick={update.request}>
+                                            <Download size={14} /> Update &amp; restart
+                                        </button>
+                                    </Show>
+                                </>
                             )}
                         </Show>
                     </Row>

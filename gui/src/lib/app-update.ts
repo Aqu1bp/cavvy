@@ -7,7 +7,7 @@ import { ago } from "./format";
 export interface UpdateView {
     title: string;
     detail?: string;
-    /** The row's button: check again, or update. */
+    /** The row's button: check again, or update (with Check now beside it: main may have moved since). */
     action?: "check" | "update";
     /** A check or an update under way: a spinner in place of the button. */
     busy: boolean;
@@ -22,6 +22,11 @@ export interface UpdateView {
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
+function checked(at: number, now: number): string {
+    const when = ago(at, now);
+    return `checked ${when === "now" ? "just now" : `${when} ago`}`;
+}
+
 /** `working`: sessions running a turn now. */
 export function updateView(u: AppUpdateInfo | undefined, working: number, now = Date.now()): UpdateView | undefined {
     if (!u) return undefined;
@@ -29,7 +34,8 @@ export function updateView(u: AppUpdateInfo | undefined, working: number, now = 
     if (u.updating) {
         if (u.updating.restarting) return { title: "Restarting Cavvy…", detail: "The new build is installed.", busy: true, rail: { state: "busy", label: "The update is installed: Cavvy is restarting" } };
         return {
-            title: u.latest ? `Updating to main (${u.latest})…` : "Updating…",
+            // Not the commit the last check saw: the update fetches main again and builds whatever it is then.
+            title: "Updating to the latest main…",
             detail: u.updating.line,
             busy: true,
             warn: working ? `Cavvy restarts when the build is done: ${plural(working, "session")} working then will stop.` : undefined,
@@ -41,7 +47,7 @@ export function updateView(u: AppUpdateInfo | undefined, working: number, now = 
         const title = u.behind ? `${plural(u.behind, "new change")} on main` : "An update from main";
         return {
             title,
-            detail: [`This build ${u.installed} · main ${u.latest}`, u.note].filter(Boolean).join(" · "),
+            detail: [`This build ${u.installed} · main ${u.latest}`, u.note, u.checkedAt && checked(u.checkedAt, now)].filter(Boolean).join(" · "),
             action: "update",
             busy: u.checking,
             warn: working ? `${plural(working, "session")} working: restarting stops ${working === 1 ? "it" : "them"}.` : undefined,
@@ -52,6 +58,5 @@ export function updateView(u: AppUpdateInfo | undefined, working: number, now = 
     if (!u.checkedAt) return { title: "Updates from main", detail: "Not checked yet.", action: "check", busy: false };
     // Checked, but never compared with main (it couldn't fetch, and had no main from before): the error says why.
     if (!u.installed) return { title: "Couldn't check for updates", action: "check", busy: false };
-    const when = ago(u.checkedAt, now);
-    return { title: "Cavvy is up to date", detail: `Built from main ${u.installed} · checked ${when === "now" ? "just now" : `${when} ago`}`, action: "check", busy: false };
+    return { title: "Cavvy is up to date", detail: `Built from main ${u.installed} · ${checked(u.checkedAt, now)}`, action: "check", busy: false };
 }

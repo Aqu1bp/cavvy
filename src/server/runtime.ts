@@ -43,7 +43,7 @@ import { costOf } from "../providers/pricing";
 import { isAgentBackend, type BackendWake, type BackgroundStop } from "../backends/types";
 import { SessionBackground } from "../agent/background";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
-import { agentCli, type AttachmentKind } from "../backends/defs";
+import { agentCli, steersMidTurn, type AttachmentKind } from "../backends/defs";
 import { claudeCompactAt, cliCompactSetting, cavvyCompactAt, modelKeys } from "../backends/compact-at";
 import { account, accountSwitch, removedAccount, removedAccountNote, switchHow } from "../providers/accounts";
 import { attachmentsNote, readsPdf } from "../providers/files";
@@ -199,7 +199,8 @@ export function promptTitle(prompt: string): string | undefined {
     const line = prompt
         .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "")
         .split("\n")
-        .map((l) => l.replace(/^[\s#>*-]+/, "").replace(/\s+/g, " ").trim())
+        // A link reads as where it goes: no scheme or www (and no "Https" once capitalized below).
+        .map((l) => l.replace(/^[\s#>*-]+/, "").replace(/\bhttps?:\/\/(www\.)?/gi, "").replace(/\s+/g, " ").trim())
         .find((l) => /[\p{L}\p{N}]/u.test(l));
     if (!line) return undefined;
     let t = line;
@@ -207,7 +208,7 @@ export function promptTitle(prompt: string): string | undefined {
         const cut = t.slice(0, 60);
         const space = cut.lastIndexOf(" ");
         t = `${(space > 30 ? cut.slice(0, space) : cut).replace(/[\s,;:.-]+$/, "")}…`;
-    } else t = t.replace(/[\s.]+$/, "");
+    } else t = t.replace(/[\s./]+$/, "");
     // A plain first word starts it in capitals, as a model's title would; not a path or a name like `src/x`.
     return /^\p{Ll}[\p{L}']*(?=[\s,:;!?]|$)/u.test(t) ? t[0]!.toUpperCase() + t.slice(1) : t;
 }
@@ -233,6 +234,7 @@ export function modelSummary(m: ModelInfo): ModelSummary {
         effortLevels: m.effortLevels,
         supportsFastMode: m.supportsFastMode,
         deprecated: m.deprecated,
+        ...(steersMidTurn(m.provider) ? {} : { steers: false as const }),
     };
 }
 
@@ -323,6 +325,8 @@ export class Runtime {
     private committing = false;
     private commitDone?: Promise<unknown>;
     private commitAbort?: AbortController;
+    /** The title being asked for: closing the session stops it (on a CLI, its process). */
+    private titleAbort?: AbortController;
     /** Being closed: it starts nothing more and sends nothing more (the session may be open again by then). */
     private closed = false;
     /** /loop, cron jobs and the resume after a usage limit (src/agent/schedule.ts). */
@@ -348,6 +352,13 @@ export class Runtime {
     private openThinking?: string;
     /** Blocks from the model response being streamed (dropped if it's retried). */
     private responseBlocks: string[] = [];
+    /** The turn each of those is in: a message steered in while the response streamed starts a turn of its own (drainedTurn). */
+    private responseTurn = new Map<string, string>();
+    /**
+     * The turn each steer of the run started, by the agent's id for it (drainQueued): one the CLI never took comes back
+     * (unsteered) before the run is over (a backend decides first). Let go with the run.
+     */
+    private steeredTurns = new Map<number, string>();
     /** Tool call id -> the turn its block is in. */
     private toolTurn = new Map<string, string>();
     /** Background shell id -> the description of the call that started it, whole (a block's input is cut). */
@@ -602,7 +613,10 @@ export class Runtime {
     /** Why this queued message can't join the running turn, or undefined when it can (see waitsFor). */
     private waits(q: Queued): string | undefined {
         const provider = this.agent?.model.provider ?? this.model?.provider ?? "";
-        return waitsFor(q, this.steerKinds(), getProvider(provider)?.name ?? this.model?.name ?? "This model");
+        const who = getProvider(provider)?.name ?? this.model?.name ?? "This model";
+        // An agent CLI that takes nothing mid-turn: every message waits for the turn's end.
+        if (!steersMidTurn(provider)) return `${who} can't take messages in a running turn: this runs once it ends.`;
+        return waitsFor(q, this.steerKinds(), who);
     }
 
     /** Claude Code or Codex: an agent backend runs this session's turns. */
@@ -835,6 +849,8 @@ export class Runtime {
         const m = this.model;
         if (!m) return undefined;
         const window = m.contextWindow;
+        // An agent that can't compact (an ACP agent's): never, here.
+        if (agentCli(m.provider)?.caps.compact === "none") return undefined;
         if (m.provider === "claude-code" || m.provider === "codex") {
             const setting = cliCompactSetting(m.provider, this.session.accountId(m.provider), this.cliProject(), modelKeys(m, this.servedModel));
             if (m.provider === "claude-code") return claudeCompactAt(window, setting, m.maxOutput);
@@ -1189,8 +1205,11 @@ export class Runtime {
         } else if (opts?.main) {
             // the session's own model
         } else ({ model, client } = await this.smallTarget());
+        // Stopped while the model was being picked (the session closed): a CLI would still start for it.
+        signal?.throwIfAborted();
         const res = await client.stream(
-            { model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: opts?.maxTokens ?? 2048, effort: "low", lightweight: true, signal, ...(opts?.review ? REVIEW_REQUEST[opts.review] : {}) },
+            // On Claude Code or Codex, through the session's account, not the CLI's default.
+            { model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: opts?.maxTokens ?? 2048, effort: "low", lightweight: true, signal, account: this.session.accountId(model.provider), ...(opts?.review ? REVIEW_REQUEST[opts.review] : {}) },
             () => {},
         );
         if (res.usage) {
@@ -1462,8 +1481,9 @@ export class Runtime {
                     approvePlan: (plan) => this.approvePlan(plan),
                     requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),
                 },
-                drainQueued: (record, admit) => this.drainQueued(record, admit),
+                drainQueued: (record, admit, id) => this.drainQueued(record, admit, id),
                 drainWaiting: (record) => this.drainWaiting(record),
+                unsteered: (steers) => this.unsteered(steers),
                 wake: (w) => this.adoptWake(w),
                 backgroundChanged: () => this.syncBackground(),
                 // A task's end is a notice of the window's (notifyBackground), not a line in the transcript too.
@@ -1651,6 +1671,7 @@ export class Runtime {
                 const prefix = e.continuation ? assistantText(this.session.messages) : "";
                 this.continuationText = previous?.t === "text" && prefix && previous.text === prefix ? { id: previous.id, prefix } : undefined;
                 this.responseBlocks = [];
+                this.responseTurn.clear();
                 this.activity("Thinking");
                 this.notePrompt();
                 break;
@@ -1666,7 +1687,7 @@ export class Runtime {
                 if (!this.openText) {
                     this.closeOpen();
                     const id = this.newId();
-                    this.addBlock({ t: "text", id, text: "" });
+                    this.responseTurn.set(id, this.addBlock({ t: "text", id, text: "" }));
                     this.openText = id;
                     this.responseBlocks.push(id);
                     this.activity("Writing");
@@ -1678,7 +1699,7 @@ export class Runtime {
                 if (!this.openThinking) {
                     this.closeOpen();
                     const id = this.newId();
-                    this.addBlock({ t: "thinking", id, text: "", startedAt: Date.now() });
+                    this.responseTurn.set(id, this.addBlock({ t: "thinking", id, text: "", startedAt: Date.now() }));
                     this.openThinking = id;
                     this.responseBlocks.push(id);
                     // Keep the continued answer after its reasoning, visible outside the work fold.
@@ -1761,8 +1782,9 @@ export class Runtime {
                 // The partial response is thrown away and asked for again.
                 const turnId = this.turnId;
                 if (this.continuationText) this.patchBlock(this.continuationText.id, { text: this.continuationText.prefix }, turnId);
-                if (turnId) for (const id of this.responseBlocks) this.op({ op: "block.remove", turnId, blockId: id });
+                if (turnId) for (const id of this.responseBlocks) this.op({ op: "block.remove", turnId: this.responseTurn.get(id) ?? turnId, blockId: id });
                 this.responseBlocks = [];
+                this.responseTurn.clear();
                 this.openText = this.openThinking = undefined;
                 this.activity(`Retrying in ${Math.ceil(e.delayMs / 1000)}s · Stop to cancel`, `${e.reason.slice(0, 160)} (attempt ${e.attempt})`);
                 break;
@@ -1814,28 +1836,31 @@ export class Runtime {
             texts = [];
             this.continuationText = undefined;
         }
-        let streamed = this.responseBlocks.map((id) => this.blockIn(turnId, id)).filter((b): b is Block => b?.t === "text");
+        // Each where it was streamed: the turn before one a message steered in meanwhile started (its words are that turn's).
+        const at = (id: string) => this.responseTurn.get(id) ?? turnId;
+        let streamed = this.responseBlocks.map((id) => this.blockIn(at(id), id)).filter((b): b is Block => b?.t === "text");
         const cutOffText = msg.stopReason === "max_tokens" && !msg.content.some((p) => p.type === "tool_call");
         if (cutOffText && texts.length) {
             texts = [texts.join("")];
             // Keep an answer that may continue in one Markdown block, after its reasoning.
             const first = streamed[0];
-            for (const b of streamed) this.op({ op: "block.remove", turnId, blockId: b.id });
-            if (first) this.op({ op: "block", turnId, block: first });
+            for (const b of streamed) this.op({ op: "block.remove", turnId: at(b.id), blockId: b.id });
+            if (first) this.op({ op: "block", turnId: at(first.id), block: first });
             streamed = first ? [first] : [];
         }
         streamed.forEach((b, i) => {
             const text = i === streamed.length - 1 ? texts.slice(i).join("") : texts[i];
-            if (text === undefined || !text || (!text.trim() && !cutOffText)) this.op({ op: "block.remove", turnId, blockId: b.id });
-            else if (b.t === "text" && b.text !== text) this.patchBlock(b.id, { text }, turnId);
+            if (text === undefined || !text || (!text.trim() && !cutOffText)) this.op({ op: "block.remove", turnId: at(b.id), blockId: b.id });
+            else if (b.t === "text" && b.text !== text) this.patchBlock(b.id, { text }, at(b.id));
         });
         // Text the provider didn't stream (some send it all at the end).
         if (!streamed.length) for (const t of texts) if (t.trim() || (t && cutOffText)) this.addBlock({ t: "text", id: this.newId(), text: t });
         for (const id of this.responseBlocks) {
-            const b = this.blockIn(turnId, id);
-            if (b?.t === "thinking" && !b.text.trim()) this.op({ op: "block.remove", turnId, blockId: id });
+            const b = this.blockIn(at(id), id);
+            if (b?.t === "thinking" && !b.text.trim()) this.op({ op: "block.remove", turnId: at(id), blockId: id });
         }
         this.responseBlocks = [];
+        this.responseTurn.clear();
         // Its calls have arrived whole. Those not started yet wait their turn (a call runs after the one before it finishes), or, cut off or declined, never run.
         const notRun = msg.stopReason === "max_tokens" || msg.stopReason === "context_window_exceeded" || msg.stopReason === "refusal";
         for (const part of msg.content) {
@@ -2472,7 +2497,8 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Prompts
 
-    private drainQueued(record?: () => void, admit?: (text: string, attachments?: readonly AttachedPart[]) => Promise<Admitted>): (string | Admitted)[] | Promise<Admitted[]> {
+    /** `id`: what the agent knows the steer they make by (AgentHost.unsteered). */
+    private drainQueued(record?: () => void, admit?: (text: string, attachments?: readonly AttachedPart[]) => Promise<Admitted>, id?: number): (string | Admitted)[] | Promise<Admitted[]> {
         // Messages to steer with; queued ones, held ones, commands, and those with images or files where the turn can't take them wait for their own turn.
         const steering = () => this.queued.filter((q) => q.mode === "steer" && !q.held && !q.sending && !this.waits(q));
         // An API model's request takes them all at once, attachments too.
@@ -2480,7 +2506,7 @@ export class Runtime {
         if (getProvider(provider)?.kind !== "agent") {
             const take = steering();
             if (!take.length) return [];
-            return admit ? this.admitQueued(take, admit, steering, record) : this.steerWith(take, record);
+            return admit ? this.admitQueued(take, admit, steering, record, id) : this.steerWith(take, record, id);
         }
         // An agent CLI's, in the queue's order: those with only words as they always have, up to one with attachments,
         // which goes alone once they've gone. Nothing passes one on its way (Queued.sending).
@@ -2496,8 +2522,8 @@ export class Runtime {
         };
         const take = inOrder();
         if (!take.length) return [];
-        if (take[0]!.attachments?.length) return this.steerAttached(take[0]!, record, admit);
-        return admit ? this.admitQueued(take, admit, inOrder, record) : this.steerWith(take, record);
+        if (take[0]!.attachments?.length) return this.steerAttached(take[0]!, record, admit, id);
+        return admit ? this.admitQueued(take, admit, inOrder, record, id) : this.steerWith(take, record, id);
     }
 
     /**
@@ -2507,7 +2533,7 @@ export class Runtime {
      * turn/steer, or the turn ended or stopped first), to go as a prompt of its own after the run (or back to the
      * composer, after an interrupt). Its hooks run first, as the others' do.
      */
-    private async steerAttached(q: Queued, record?: () => void, admit?: (text: string, attachments?: readonly AttachedPart[]) => Promise<Admitted>): Promise<Admitted[]> {
+    private async steerAttached(q: Queued, record?: () => void, admit?: (text: string, attachments?: readonly AttachedPart[]) => Promise<Admitted>, id?: number): Promise<Admitted[]> {
         q.sending = true;
         // Its hooks run once: a second try (refused the first time) goes on what they said then.
         const a: Admitted = q.admitted ? { text: q.text, admission: "go", ...q.admitted } : admit ? await admit(q.text, q.attachments) : { text: q.text, admission: "go" };
@@ -2530,7 +2556,7 @@ export class Runtime {
                 q.sending = undefined;
                 // The session is being let go of: it stays queued (on disk), to go once it's reopened.
                 if (this.closed) return false;
-                this.steerWith([q], record);
+                this.steerWith([q], record, id);
                 // What waited behind it can go now.
                 if (this.queued.some((x) => x.mode === "steer" && !x.held && !this.waits(x))) queueMicrotask(() => this.agent?.queueChanged());
                 return true;
@@ -2548,7 +2574,7 @@ export class Runtime {
      * them back to the composer. One a hook blocks goes back to the composer now, to change or drop (the hook's
      * warning says why); the rest go.
      */
-    private async admitQueued(take: Queued[], admit: (text: string, attachments?: readonly AttachedPart[]) => Promise<Admitted>, steering: () => Queued[], record?: () => void): Promise<Admitted[]> {
+    private async admitQueued(take: Queued[], admit: (text: string, attachments?: readonly AttachedPart[]) => Promise<Admitted>, steering: () => Queued[], record?: () => void, id?: number): Promise<Admitted[]> {
         const blocked: Queued[] = [];
         const admitted = new Map<Queued, Admitted>();
         for (const q of take) {
@@ -2567,20 +2593,21 @@ export class Runtime {
         // One the user took out or held meanwhile doesn't go.
         const still = steering();
         const go = take.filter((q) => admitted.has(q) && still.includes(q));
-        this.steerWith(go, record);
+        this.steerWith(go, record, id);
         // Each with what its own hooks added (two alike are still two), and what's attached to it.
         return go.map((q) => ({ ...admitted.get(q)!, ...(q.attachments?.length ? { attachments: q.attachments } : {}) }));
     }
 
     /** Taken out of the queue to steer with: each one's text, or with what's attached, the text and that (its hooks ran already, or there are none). */
-    private steerWith(take: Queued[], record?: () => void): (string | Admitted)[] {
+    private steerWith(take: Queued[], record?: () => void, id?: number): (string | Admitted)[] {
         if (!take.length) return [];
         this.queued = this.queued.filter((q) => !take.includes(q));
         this.queueUpdated();
         const attachments = take.flatMap((q) => q.attachments ?? []);
         // What the agent CLI said before them goes first, so their prompt's place in the session is where it lands.
         record?.();
-        this.drainedTurn(take.map((q) => q.text).filter((t) => t.trim()).join("\n\n"), attachments);
+        const turn = this.drainedTurn(take.map((q) => q.text).filter((t) => t.trim()).join("\n\n"), attachments);
+        if (id !== undefined) this.steeredTurns.set(id, turn.id);
         // Prepared as a sent prompt's are: the user hears what the model may not take (said in their turn).
         this.attachmentWarnings(attachments, (text, level) => this.notice(text, level));
         // An agent CLI's turn: one with attachments that waited for these (it goes alone, after them) can go next.
@@ -2651,6 +2678,40 @@ export class Runtime {
         this.worked(turn.startedAt!);
         this.engine.sessionChanged(this);
         return turn;
+    }
+
+    /**
+     * Messages steered in that the agent CLI never took (AgentHost.unsteered; Esc withdrew them): their turns go, what
+     * streamed under them back to the turn before (which ends as they did), and they go back to the composer, as
+     * sent, after what's typed there. Those it hands back, by id: only those whose turns it still has.
+     */
+    private unsteered(steers: { id: number; texts: string[]; attachments: AttachedPart[] }[]): number[] {
+        if (this.closed) return [];
+        const back = new Set<number>();
+        for (const { id } of [...steers].reverse()) {
+            const turnId = this.steeredTurns.get(id);
+            this.steeredTurns.delete(id);
+            const at = this.view.turns.findIndex((t) => t.id === turnId);
+            const turn = this.view.turns[at];
+            const prev = at > 0 ? this.view.turns[at - 1] : undefined;
+            if (!turn) continue;
+            back.add(id);
+            if (prev) {
+                for (const b of turn.blocks) this.op({ op: "block", turnId: prev.id, block: b });
+                for (const m of [this.toolTurn, this.responseTurn]) for (const [k, v] of m) if (v === turn.id) m.set(k, prev.id);
+                for (const a of this.view.agents) if (a.turnId === turn.id) this.op({ op: "agent.patch", id: a.id, patch: { turnId: prev.id } });
+                this.op({ op: "turn.patch", turnId: prev.id, patch: { status: turn.status, endedAt: turn.endedAt } });
+            }
+            this.op({ op: "turn.remove", turnId: turn.id });
+            const rec = prev?.pos && prev.startedAt !== undefined ? { seg: prev.pos.seg, index: prev.pos.index, at: prev.startedAt } : undefined;
+            if (this.turnId === turn.id) {
+                this.turnId = prev?.id;
+                this.uiTurn = rec;
+            }
+        }
+        const given = steers.filter((s) => back.has(s.id));
+        if (given.length) this.engine.draft(this, given.flatMap((s) => s.texts).filter((t) => t.trim()).join("\n\n"), given.flatMap((s) => s.attachments), true);
+        return given.map((s) => s.id);
     }
 
     /**
@@ -2862,6 +2923,7 @@ export class Runtime {
         this.pendingPrompt = { seg: this.segment, index };
         if (this.backendModel()) this.backendTurns.set(turn.id, this.segment);
         this.responseBlocks = [];
+        this.responseTurn.clear();
         this.uiTurn = { seg: this.segment, index, at: this.turnStartedAt };
         this.ui.write({ t: "turn", ...this.uiTurn });
         // The mode and effort it's sent with, once the session is going to be on disk.
@@ -2907,6 +2969,8 @@ export class Runtime {
             this.cancelInteractions({ keepDelegated: true, keepBackground: true });
             this.closeOpen();
             this.turnId = undefined;
+            // Nothing the run steered in comes back once it's over (AgentHost.unsteered).
+            this.steeredTurns.clear();
             this.setState({ busy: false, filesChanged: this.filesChanged(), activity: undefined, persisted: existsSync(this.session.path), todos: this.toolState.todos.map((t) => ({ ...t })) });
             this.setStatus(reason === "error" ? "error" : this.pending.size ? "waiting" : "idle");
             // A CLI's goal shows as waiting for the user once its turn is over.
@@ -3232,26 +3296,21 @@ export class Runtime {
         // Redacted before it's cut or capitalized: then a key in it no longer looks like one.
         this.titleFrom ??= redact(prompt);
         let title: string | undefined;
-        // Claude Code and Codex run whole turns only, so they can't be asked for one: without a
-        // smallModel on another provider the prompt names the session.
-        if (isAgentBackend((await this.smallTarget().catch(() => undefined))?.client ?? this.client)) {
-            const t = promptTitle(this.titleFrom);
-            if (t && !this.session.title) this.rename(t);
-            return;
-        }
+        // Claude Code and Codex answer it as a one-off (backends/one-off.ts), on their light model.
         try {
             const raw = await this.complete(
                 "You name coding-assistant sessions for a sidebar. Reply with only the title: 2 to 6 words, sentence case, no quotes, no trailing punctuation. Describe the task, not the user.",
                 // Cut after redacting, so a registered value crossing the cut can't leave a prefix.
                 redactPrefix(prompt, 3000),
-                AbortSignal.timeout(20_000),
+                // A CLI starts a process of its own for it: a few seconds more than an API call.
+                AbortSignal.any([AbortSignal.timeout(45_000), (this.titleAbort = new AbortController()).signal]),
             );
             title = raw
                 .replace(/<[^>]*>/g, "")
                 .split("\n")
                 .map((l) => l.trim())
                 .find(Boolean)
-                ?.replace(/^title:\s*/i, "")
+                ?.replace(/^(session\s+)?(title|name):\s*/i, "")
                 .replace(/^["'`*#\s]+|["'`*.\s]+$/g, "")
                 .slice(0, 60);
             // Not a title: the prompt said back, or a paragraph.
@@ -3889,6 +3948,7 @@ export class Runtime {
         this.idleCompact.disarm();
         this.abort?.abort();
         this.commitAbort?.abort();
+        this.titleAbort?.abort();
         this.cancelInteractions();
         this.toolState.secrets?.clear();
         stopWatchers(this.toolState);

@@ -62,7 +62,8 @@ import { assistantText, modelRef, parseModelRef, textOf, type ImagePart, type Me
 import { formatCost, formatTokens } from "../providers/pricing";
 import { attachmentsNote } from "../providers/files";
 import { configuredProviders, storageDescription } from "../auth/credentials";
-import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
+import { findCli } from "../backends/cli";
+import { AGENT_CLIS, agentCli } from "../backends/defs";
 import { commandList, commandRefusesImages, runCommand } from "../commands/index";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { loadSkills, skillMentions, withSkills, type Skill } from "../agent/skills";
@@ -75,6 +76,7 @@ import { redact } from "../util/redact";
 import { SecretStore, secretValueError } from "../agent/secrets";
 import { planLimitKey } from "../server/protocol";
 import { mergeLimits } from "../backends/limits";
+import { steersMidTurn } from "../backends/defs";
 import type { PlanLimits, StoppedTask } from "../server/protocol";
 
 export interface AppInit {
@@ -516,8 +518,8 @@ export class App {
             this.screen.print(["", `${theme.warning("!")} No model is selected and none could be listed. Pick one with ${bold("/model")} or start with ${bold("--model provider:model")}.`]);
             return;
         }
-        // A Claude Code or Codex already on this machine can be used with the user's own plan.
-        const clis = (["claude-code", "codex"] as const).filter((id) => findCli(id, id === "codex" ? CODEX_CLI : CLAUDE_CLI));
+        // An agent CLI already on this machine can be used with the user's own plan or sign-in.
+        const clis = AGENT_CLIS.filter((d) => findCli(d.id, d.cli)).map((d) => d.id);
         if (clis.length) {
             this.screen.print(["", `${theme.warning("!")} No model is set up yet.`]);
             const choice = (await this.showDialog(
@@ -527,7 +529,9 @@ export class App {
                         ...clis.map((id) =>
                             id === "codex"
                                 ? { label: "Use my ChatGPT plan", value: "/login codex", description: "through your installed Codex CLI" }
-                                : { label: "Use my Claude subscription", value: "/login claude-code", description: "through your installed Claude Code" },
+                                : id === "claude-code"
+                                  ? { label: "Use my Claude subscription", value: "/login claude-code", description: "through your installed Claude Code" }
+                                  : { label: `Use ${agentCli(id)!.name}`, value: `/login ${id}`, description: `through your installed ${agentCli(id)!.name}` },
                         ),
                         { label: "Paste an API key", value: "/login", description: `stored in ${await storageDescription()}` },
                     ],
@@ -896,6 +900,7 @@ export class App {
                     requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),
                 },
                 drainQueued: (_record, admit) => this.drainQueued(admit),
+                unsteered: (steers) => this.unsteered(steers.flatMap((s) => s.texts), steers.map((s) => s.id)),
                 wake: (w) => this.adoptWake(w),
                 backgroundChanged: () => this.persistBackground(),
             },
@@ -2422,12 +2427,23 @@ export class App {
             // Images that never came leave nothing to send when they were all there was.
             if (!plainText(draft!.text).trim() && !imagesIn(draft!.text, draft!.attachments).length) return;
         }
-        await this.submitText(draft ?? text, opposite ? otherFollowUp(this.followUp()) : undefined);
+        // The other way (tab): steer instead of queue, or the reverse; on a model that takes nothing mid-turn, queued either way.
+        await this.submitText(draft ?? text, opposite ? (this.backendSteers() ? otherFollowUp(this.followUp()) : "queue") : undefined);
     }
 
-    /** What a message sent while a turn runs does, unless the key says otherwise. */
+    /** What a message sent while a turn runs does, unless the key says otherwise: queued on a model that can't be steered. */
     followUp(): FollowUp {
-        return followUpDefault(this.settings.followUpBehavior);
+        return this.backendSteers() ? followUpDefault(this.settings.followUpBehavior) : "queue";
+    }
+
+    /** Whether the session's model takes a message while its turn runs (an agent CLI may not: then each waits for the turn's end). */
+    backendSteers(): boolean {
+        return steersMidTurn(this.model?.provider ?? "");
+    }
+
+    /** One the running turn can take now: a message it can steer with, on a model that takes one mid-turn. */
+    private joins(d: Draft): boolean {
+        return steers(d) && this.backendSteers();
     }
 
     /** A prompt, or a draft with images, as typed: a command, queued while busy, or a turn. `followUp`: what it does if a turn is running (default: the setting). */
@@ -2447,7 +2463,7 @@ export class App {
             const q: QueuedDraft = { ...draft, mode: this.busy ? (followUp ?? this.followUp()) : "queue" };
             this.queued.push(q);
             this.queueUpdated();
-            if (q.mode === "steer" && steers(q)) this.agent?.queueChanged?.();
+            if (q.mode === "steer" && this.joins(q)) this.agent?.queueChanged?.();
             // Back before an idle compaction is done: it stops, and this runs on the cache that's still warm.
             if (this.idleCompacting) this.abort?.abort();
             return;
@@ -2673,13 +2689,13 @@ export class App {
 
     /** The queue as it is now (oldest first), and what each will do. */
     queueEntries(): { draft: QueuedDraft; text: string; steering: boolean; canSteer: boolean }[] {
-        return this.queued.map((d) => ({ draft: d, text: plainText(d.text), steering: d.mode === "steer" && steers(d), canSteer: steers(d) }));
+        return this.queued.map((d) => ({ draft: d, text: plainText(d.text), steering: d.mode === "steer" && this.joins(d), canSteer: this.joins(d) }));
     }
 
     /** "Send now": it steers the running turn instead of waiting for its end. False when it's gone, or can't (images, commands). */
     sendQueuedNow(d: QueuedDraft): "sent" | "gone" | "cant" {
         if (!this.queued.includes(d)) return "gone";
-        if (!steers(d)) return "cant";
+        if (!this.joins(d)) return "cant";
         d.mode = "steer";
         this.queueUpdated();
         this.agent?.queueChanged?.();
@@ -2811,7 +2827,7 @@ export class App {
      * those doesn't hold a steer back: steering is joining the turn now.
      */
     private drainQueued(admit?: (text: string) => Promise<Admitted>): string[] | Promise<Admitted[]> {
-        const steering = () => this.queued.filter((d) => d.mode === "steer" && steers(d));
+        const steering = () => this.queued.filter((d) => d.mode === "steer" && this.joins(d));
         const take = steering();
         if (!take.length) return [];
         return admit ? this.admitQueued(take, admit, steering) : this.steerWith(take);
@@ -2854,9 +2870,32 @@ export class App {
         if (!take.length) return [];
         this.queued = this.queued.filter((d) => !take.includes(d));
         this.queueUpdated();
+        // Steered in while the reply streams (Claude Code takes it at once): what's written so far goes above it.
+        if (this.md) this.flushStream();
         const q = take.map((d) => plainText(d.text));
         for (const t of q) this.printUser(t);
         return q;
+    }
+
+    /**
+     * Steered in, but the CLI never took them (AgentHost.unsteered; Esc withdrew them, maybe after the next run
+     * started): back in the prompt, after what's typed, as handed over (words only: a message with images never
+     * steers here). Returns `ids`, all handed back.
+     */
+    private unsteered(texts: string[], ids: number[] = []): number[] {
+        const back = texts.filter((t) => t.trim()).map((text) => ({ text, attachments: new Map() }));
+        if (!back.length) return ids;
+        const e = this.editor;
+        const prefix = this.inputMode === "bash" ? "!" : this.inputMode === "memory" ? "#" : "";
+        if (e.text && prefix) e.set(prefix + e.text);
+        this.inputMode = "prompt";
+        // A command being typed would take them as its arguments: they wait in history (↑) instead.
+        const command = isCommand(e.value());
+        if (command) for (const d of back) e.pushHistory(d.text, d);
+        else e.restore(back, true);
+        this.notice(`Not taken before the stop, so not sent: back ${command ? "in history (↑)" : "in the prompt"}.`, "info");
+        this.renderLive();
+        return ids;
     }
 
     /** Messages typed during a task run next; after a cancel they go back to the prompt. */
@@ -3102,7 +3141,7 @@ export class App {
         const todos = this.toolState.todos;
         if (this.showTodos && todos.length && todos.some((t) => t.status !== "completed")) status.push(...renderTodos(todos, cols).slice(0, 10));
         for (const q of this.queued) {
-            const steering = q.mode === "steer" && steers(q);
+            const steering = q.mode === "steer" && this.joins(q);
             const label = steering ? `${theme.accent("↳")} steering: ` : "⏵ queued: ";
             status.push(theme.muted(`  ${label}${truncate(plainText(q.text).replace(/\s+/g, " "), cols - 18)}`));
         }
@@ -3110,9 +3149,11 @@ export class App {
         return { flow: out, status };
     }
 
+    /** What enter does while a turn runs, and what the other key does (none when it does the same). */
     private followUpPlaceholder(): string {
         const k = this.keys.label("chat:submitOtherWay");
         const send = this.keys.label("chat:submit") ?? "enter";
+        if (!this.backendSteers()) return `Queue a message for after this turn (${send}) · ${getProvider(this.model?.provider ?? "")?.name ?? "this model"} can't take one mid-turn`;
         return this.followUp() === "steer" ? `Steer the current turn (${send})${k ? ` · ${k} to queue it for after` : ""}` : `Queue a message for after this turn (${send})${k ? ` · ${k} to steer now` : ""}`;
     }
 

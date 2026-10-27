@@ -16,7 +16,7 @@ const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
 const { startDemoSite } = await import("../scripts/demo-site");
 const { forgetChromeLookup } = await import("../src/browser/chrome");
-const { BrowserNavigateTool } = await import("../src/tools/browser-tools");
+const { BrowserActTool, BrowserNavigateTool } = await import("../src/tools/browser-tools");
 import { decodeBrowserFrame, type BrowserImageFrame } from "../src/server/browser-wire";
 import type { BrowserState, ServerEvent, SessionSnapshot } from "../src/server/protocol";
 
@@ -104,8 +104,6 @@ describe("without a browser", () => {
         expect(await call("browser.input", { id, input: { kind: "mouse", type: "down", x: "left", y: 1 } })).toBeNull();
         expect(await call("browser.input", { id, input: "click" })).toBeNull();
         await expect(call("browser.dialog", { id, accept: "yes" })).rejects.toThrow("accept must be a boolean");
-        // nothing to hand back or answer
-        await expect(call("browser.handBack", { id })).rejects.toMatchObject({ code: "browser" });
     });
 });
 
@@ -211,15 +209,14 @@ for (const browser of browsers) {
             await call("browser.watch", { id, width: 500, height: 300, scale: 1 });
             await until(() => frames(me).at(-1)!.width === 500, "a frame at the new size");
 
-            // a person clicks in the pane: the tab is theirs, and the window is told
+            // a person clicks in the pane: they drive the tab now, and the window is told; the agent isn't kept out, and hears of it
             await call("browser.input", { id, input: { kind: "mouse", type: "down", x: 10, y: 10, button: "left", buttons: 1, clickCount: 1 } });
-            await until(() => states(me).at(-1)!.state.tabs[0]!.owner === "human", "the takeover");
-            const refused = await BrowserNavigateTool.run({ url: `${site.url}/other` }, { state: rt.toolState, settings: {}, signal: new AbortController().signal } as any);
-            expect(refused.isError).toBe(true);
-            expect(refused.content).toContain("taken control");
+            await until(() => states(me).at(-1)!.state.tabs[0]!.owner === "human", "the person driving");
             await call("browser.input", { id, input: { kind: "mouse", type: "up", x: 10, y: 10, button: "left", buttons: 0, clickCount: 1 } });
-            await call("browser.handBack", { id });
-            await until(() => states(me).at(-1)!.state.tabs[0]!.owner === "agent", "the hand back");
+            const went = await BrowserActTool.run({ action: "scroll", deltaY: 10 }, { state: rt.toolState, settings: {}, signal: new AbortController().signal } as any);
+            expect(went.isError).toBeFalsy();
+            expect(went.content).toContain("The user has used this tab");
+            await until(() => states(me).at(-1)!.state.tabs[0]!.owner === "agent", "the agent driving again");
 
             // address bar and tabs
             const navigated: BrowserState = await call("browser.command", { id, command: "goto", url: `${site.url}/other` });

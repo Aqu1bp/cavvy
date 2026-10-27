@@ -303,6 +303,8 @@ export interface Draft {
     text: string;
     images?: { mediaType: string; data: string }[];
     files?: WireFile[];
+    /** After what's typed in the box (a steer handed back), not before it. */
+    after?: boolean;
 }
 
 export interface SessionHandle {
@@ -354,7 +356,7 @@ function adopt(snap: SessionSnapshot): SessionHandle {
         const [draft, setDraft] = createSignal<Draft | undefined>();
         const [ready, setReady] = createSignal(true);
         // While no input box has taken it (the session isn't shown), another draft adds to it rather than replacing it.
-        const addDraft = (d: Draft) => setDraft((prev) => (prev ? { text: [prev.text, d.text].filter((t) => t).join("\n"), images: [...(prev.images ?? []), ...(d.images ?? [])], files: [...(prev.files ?? []), ...(d.files ?? [])] } : d));
+        const addDraft = (d: Draft) => setDraft((prev) => (prev ? { text: [prev.text, d.text].filter((t) => t).join("\n"), images: [...(prev.images ?? []), ...(d.images ?? [])], files: [...(prev.files ?? []), ...(d.files ?? [])], after: prev.after || d.after } : d));
         return { id, ready, setReady, view, set, seq: snap.seq, queue: [] as SessionOp[], scheduled: false, draft, setDraft, addDraft, lastUsed: Date.now() };
     });
     handles.set(id, h);
@@ -363,10 +365,10 @@ function adopt(snap: SessionSnapshot): SessionHandle {
     return h;
 }
 
-/** Few sessions stay subscribed; the rest are closed (the server keeps running them). */
+/** Few sessions stay subscribed; the rest are closed (the server keeps running them). Not one holding a message handed back that no box has taken yet: it'd be lost. */
 function trim() {
     if (handles.size <= KEEP_OPEN) return;
-    const old = [...handles.values()].filter((h) => h.id !== app.activeId && !h.view.state.busy).sort((a, b) => a.lastUsed - b.lastUsed);
+    const old = [...handles.values()].filter((h) => h.id !== app.activeId && !h.view.state.busy && h.draft() === undefined).sort((a, b) => a.lastUsed - b.lastUsed);
     for (const h of old.slice(0, handles.size - KEEP_OPEN)) {
         handles.delete(h.id);
         void rpc.call("session.close", { id: h.id }).catch(() => undefined);
@@ -598,6 +600,19 @@ export async function refreshUpdate() {
     setApp("update", reconcile(await rpc.call("app.update.get", {})));
 }
 
+/** How old the last check may be when the window comes to the front before main is looked at again. */
+const UPDATE_STALE_MS = 10 * 60_000;
+
+/**
+ * Coming back to the window, or to the server: main may have moved since the last check (the server's own are half an
+ * hour apart). None before the server's first, which comes a few seconds after it starts.
+ */
+function recheckUpdate() {
+    const u = app.update;
+    if (document.visibilityState !== "visible" || app.conn !== "open" || !u?.checkedAt || u.unavailable || u.updating || u.checking) return;
+    rpc.call("app.update.check", { maxAgeMs: UPDATE_STALE_MS }).then((info) => setApp("update", reconcile(info)), () => undefined);
+}
+
 let keybindingsLoaded = false;
 export async function refreshKeybindings() {
     const { fatal } = applyKeybindingsFile(await rpc.call("keybindings.get", {}));
@@ -718,7 +733,7 @@ function onEvent(ev: ServerEvent) {
             if (handles.has(ev.sessionId)) void rpc.call("session.open", { id: ev.sessionId }).then(adopt, (e) => reopenFailed(ev.sessionId, e));
             return;
         case "draft":
-            handles.get(ev.sessionId)?.addDraft({ text: ev.text, images: ev.images, files: ev.files });
+            handles.get(ev.sessionId)?.addDraft({ text: ev.text, images: ev.images, files: ev.files, after: ev.after });
             return;
         case "toast":
             toast(ev.message, ev.level);
@@ -801,7 +816,9 @@ export function start() {
     setTimeout(showWindow, SHOW_WINDOW_MS);
     document.addEventListener("visibilitychange", () => {
         for (const t of toasts) pauseToast(t.id, "hidden", document.hidden);
+        recheckUpdate();
     });
+    window.addEventListener("focus", recheckUpdate);
     rpc.onSlow((slow) => setApp("slowRequest", slow));
     rpc.onEvent(onEvent);
     rpc.onState((s) => {
@@ -820,7 +837,7 @@ export function start() {
                 void refreshModels().catch(() => undefined);
                 void refreshLimits().catch(() => undefined);
                 // A server from before app.update.get has nothing to say: no update state, no button.
-                void refreshUpdate().catch(() => undefined);
+                void refreshUpdate().then(recheckUpdate, () => undefined);
                 // After a reconnect, the open sessions start over from fresh snapshots.
                 for (const h of [...handles.values()]) if (!h.ready()) await rpc.call("session.open", { id: h.id }).then(adopt, (e) => reopenFailed(h.id, e));
                 await restoreActiveSession();

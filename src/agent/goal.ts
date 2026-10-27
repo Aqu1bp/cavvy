@@ -22,6 +22,7 @@ import { redact } from "../util/redact";
 import { duration } from "../server/duration";
 import { formatTokens } from "../providers/pricing";
 import { ACCOUNT_PROVIDERS } from "../providers/accounts";
+import { agentCli } from "../backends/defs";
 import type { GoalState } from "../server/protocol";
 
 /** Claude Code's limit too. */
@@ -468,13 +469,13 @@ export function goalSummary(turns: number, ms: number, tokens: number): string {
 
 /**
  * Whether one-off requests (the goal check, titles) have a model that answers
- * them: the small model if one is set, else the session's provider. Claude Code
- * and Codex run whole turns only.
+ * them: the small model if one is set, else the session's provider. Agent CLIs
+ * (Claude Code, Codex, OpenCode) run whole turns only.
  */
 export function canAnswerOneOff(smallModel: string | undefined, sessionProvider: string | undefined): boolean {
     const i = smallModel?.indexOf(":") ?? -1;
     const provider = (smallModel && i > 0 ? smallModel.slice(0, i) : undefined) || sessionProvider;
-    return Boolean(provider) && !(ACCOUNT_PROVIDERS as readonly string[]).includes(provider!);
+    return Boolean(provider) && !agentCli(provider!);
 }
 
 /** Claude Code and Codex keep goals of their own: there /goal goes to them, not to the loop here. */

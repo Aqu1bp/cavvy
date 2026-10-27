@@ -98,6 +98,8 @@ interface Turn {
     /** Its ref, once its prompt is sent (undefined if that failed). */
     refKnown?: Promise<string | undefined>;
     interrupting?: boolean;
+    /** A stop of Cavvy's own came after the interrupt: unanswered at its deadline, the process goes too. */
+    stopAtDeadline?: boolean;
     timer?: unknown;
     /** Its stand-in in `abandoned`: it was ended here before its prompt was taken. */
     abandonedAs?: string;
@@ -312,21 +314,35 @@ export class LiveCliSession {
     /**
      * Interrupt a turn (the prompt's, or a wake's by its ref). The process and its background work stay. If
      * the CLI doesn't end the turn within interruptMs, it's ended here as aborted (unanswered) and the
-     * session counts as unresponsive.
+     * session counts as unresponsive. `own`: Cavvy's own stop (CliEvent "stop"): unanswered, the turn ends with its
+     * error and the process is stopped. One after an interrupt under way (Esc) keeps its deadline and its outcome, and
+     * stops the process at it.
      */
-    async interrupt(ref?: string): Promise<void> {
+    async interrupt(ref?: string, own?: { error?: string }): Promise<void> {
         const turn = ref === undefined || this.turn?.ref === ref ? this.turn : this.wakes.get(ref);
-        if (!turn || turn.result || turn.interrupting) return;
+        if (!turn || turn.result) return;
+        if (turn.interrupting) {
+            if (own) turn.stopAtDeadline = true;
+            return;
+        }
         turn.interrupting = true;
         const gen = this.generation;
         // The deadline runs from now, whether or not the CLI has taken the prompt yet.
         turn.timer = this.o.clock.setTimeout(() => {
             if (turn.result) return;
+            // What it said and started so far is the turn's, before the turn ends here (and its process maybe with it).
+            if (turn.ref !== undefined && gen === this.generation) this.conn?.settle?.(turn.ref);
+            if (own) {
+                this.finish(turn, { ref: turn.ref, reason: own.error ? "error" : "aborted", error: own.error });
+                void this.stop();
+                return;
+            }
             // Its prompt went to a process that hasn't said its session yet (a new session's: Claude Code says it with
             // the turn's system/init). The CLI may have the prompt in a session Cavvy can't name, so the next prompt
             // would go there as a new thread's, bringing it again (#435 review): the process goes, and the next prompt
             // starts a new one. Nothing ran in it before, so nothing is lost but that session.
-            if (turn.origin === "user" && turn.ref !== undefined && !this.cliSessionId && this.proc) {
+            // So too one a stop of Cavvy's own came after (a mode the process can't go on in).
+            if (turn.stopAtDeadline || (turn.origin === "user" && turn.ref !== undefined && !this.cliSessionId && this.proc)) {
                 this.finish(turn, { ref: turn.ref, reason: "aborted" });
                 void this.stop();
                 return;
@@ -413,6 +429,15 @@ export class LiveCliSession {
                 return undefined;
             }
             const gen = this.generation;
+            // What the last turn's Esc left to clean up comes first; a process stopped for it is replaced.
+            if (conn.settled) {
+                const ok = await untilAborted(conn.settled(), signal);
+                if (gen !== this.generation) continue;
+                if (!ok) {
+                    await this.stop();
+                    continue;
+                }
+            }
             let deferred: { tasks: number } | undefined;
             let restart = false;
             if (spec.fingerprint !== this.fingerprint) {
@@ -606,6 +631,15 @@ export class LiveCliSession {
                 return this.emitSession(e);
             case "session_id":
                 return this.noteSessionId(e.id);
+            case "stop":
+                // Its prompt is still being sent: once it's taken.
+                if (this.turn && this.turn.ref === undefined && !this.turn.result) return void this.turn.held.push(e);
+                return void this.interrupt(e.ref, { error: e.error });
+            case "turn_ending": {
+                const turn = this.turnFor({ t: "turn_ended", ref: e.ref, reason: "aborted" });
+                if (turn?.timer !== undefined) this.o.clock.clearTimeout(turn.timer);
+                return;
+            }
             case "limits":
             case "goal":
             case "commands":

@@ -338,6 +338,10 @@ describe("cavvy and git config edits", () => {
         join(W, ".git", "config"),
         join(W, ".claude", "settings.json"),
         join(W, ".codex", "config.toml"),
+        join(W, ".opencode", "plugins", "x.ts"),
+        join(W, "opencode.json"),
+        join(W, "pkg", "opencode.jsonc"),
+        join(W, ".grok", "config.toml"),
         paths.userSettings(),
         join(paths.userCommands(), "x.md"),
     ];
@@ -356,6 +360,29 @@ describe("cavvy and git config edits", () => {
         for (const p of configPaths()) expect(check(T("Write"), write(p), "bypassPermissions").behavior).toBe("allow");
     });
 
+    test.each(["acceptEdits", "auto"] as const)("OpenCode's global config (~/.config/opencode, or under XDG_CONFIG_HOME) and ~/.grok/ ask in %s, with the workspace at home", (mode) => {
+        const prev = process.env.XDG_CONFIG_HOME;
+        try {
+            delete process.env.XDG_CONFIG_HOME;
+            const home = homedir();
+            const atHome = new PermissionChecker(() => settings, home);
+            for (const p of [join(home, ".config", "opencode", "plugins", "x.ts"), join(home, ".config", "opencode", "opencode.json"), join(home, ".grok", "config.toml")]) {
+                const d = atHome.check(T("Write"), write(p), mode, home);
+                expect([p, d.behavior]).toEqual([p, "ask"]);
+                expect(d.reason).toMatch(/configures Cavvy or git/);
+            }
+            process.env.XDG_CONFIG_HOME = join(W, "xdg");
+            const d = check(T("Write"), write(join(W, "xdg", "opencode", "plugins", "x.ts")), mode);
+            expect(d.behavior).toBe("ask");
+            expect(d.reason).toMatch(/configures Cavvy or git/);
+            // The rest of the config folder is a normal edit.
+            expect(check(T("Write"), write(join(W, "xdg", "other", "x.json")), "acceptEdits").behavior).toBe("allow");
+        } finally {
+            if (prev === undefined) delete process.env.XDG_CONFIG_HOME;
+            else process.env.XDG_CONFIG_HOME = prev;
+        }
+    });
+
     test("a Claude Code worktree (.claude/worktrees/<name>/) is a project of its own: its files are normal edits, its own config still asks", () => {
         const tree = join(W, ".claude", "worktrees", "feature");
         mkdirSync(tree, { recursive: true });
@@ -366,7 +393,7 @@ describe("cavvy and git config edits", () => {
         for (const p of [join(tree, "src", "a.ts"), join(tree, "test", "fixtures", "fake-codex.ts"), join(inner, "README.md")]) {
             expect(check(T("Write"), write(p), "acceptEdits").behavior).toBe("allow");
         }
-        for (const p of [join(tree, ".claude", "settings.json"), join(tree, ".git"), join(tree, ".mcp.json"), join(tree, ".cavvy", "settings.json"), join(tree, ".codex", "config.toml"), join(inner, ".claude", "settings.json")]) {
+        for (const p of [join(tree, ".claude", "settings.json"), join(tree, ".git"), join(tree, ".mcp.json"), join(tree, ".cavvy", "settings.json"), join(tree, ".codex", "config.toml"), join(tree, ".opencode", "plugins", "x.ts"), join(tree, "opencode.json"), join(tree, ".grok", "config.toml"), join(inner, ".claude", "settings.json")]) {
             const d = check(T("Write"), write(p), "auto");
             expect(d.behavior).toBe("ask");
             expect(d.reason).toMatch(/configures Cavvy or git/);
@@ -400,7 +427,7 @@ describe("cavvy and git config edits", () => {
         const root = join(W, "nest", ".claude", "worktrees");
         const inRoot = new PermissionChecker(() => settings, root);
         const ask = (p: string) => expect(inRoot.check(T("Write"), write(p), "acceptEdits", root).behavior).toBe("ask");
-        const targets: Record<string, string> = { ".cavvy": "settings.json", ".claude": "settings.json", ".codex": "config.toml", ".git": join("hooks", "pre-commit"), ".mcp.json": "x" };
+        const targets: Record<string, string> = { ".cavvy": "settings.json", ".claude": "settings.json", ".codex": "config.toml", ".opencode": "opencode.json", ".grok": "config.toml", ".git": join("hooks", "pre-commit"), ".mcp.json": "x" };
         for (const [name, file] of Object.entries(targets)) {
             mkdirSync(join(root, name), { recursive: true });
             writeFileSync(join(root, name, ".git"), "gitdir: x\n");
@@ -415,7 +442,7 @@ describe("cavvy and git config edits", () => {
         rmSync(join(W, "nest"), { recursive: true, force: true });
     });
 
-    test.each([".gitignore", ".gitattributes", ".github/workflows/ci.yml", "cavvy/settings.json", ".mcp.json.bak", "src/.git-keep"])("look-alike %p is a normal edit", (rel) => {
+    test.each([".gitignore", ".gitattributes", ".github/workflows/ci.yml", "cavvy/settings.json", ".mcp.json.bak", "src/.git-keep", "opencode.json.bak", "my-opencode.json", "grok/config.toml"])("look-alike %p is a normal edit", (rel) => {
         expect(check(T("Write"), write(join(W, rel)), "acceptEdits").behavior).toBe("allow");
     });
 
@@ -810,6 +837,10 @@ describe("Bash", () => {
             "cp x .claude/settings.json",
             "cp /dev/null .claude/worktrees/x/.$!claude/settings.json",
             "cp x .codex/config.toml",
+            "cp x .opencode/plugins/x.ts",
+            "cp x opencode.json",
+            "echo {} > opencode.jsonc",
+            "cp x .grok/config.toml",
             "cp x ~/.claude/settings.json",
             "cp x .claude/worktrees/feature/.claude/settings.json",
             "cp x .claude/worktrees/feature/../../settings.json",
@@ -838,6 +869,30 @@ describe("Bash", () => {
         configTarget(`git commit -m ${JSON.stringify("a:.".repeat(50000))}`);
         configTarget("cp " + ".claude/worktrees/x/a ".repeat(10000) + "out");
         expect(performance.now() - started).toBeLessThan(2000);
+    });
+
+    test("an allowed program can't write OpenCode's global config, where XDG_CONFIG_HOME puts it too", () => {
+        settings.permissions!.allow = ["Bash(cp:*)", "Bash(echo:*)"];
+        const prev = process.env.XDG_CONFIG_HOME;
+        try {
+            process.env.XDG_CONFIG_HOME = join(W, "xdg");
+            for (const cmd of [
+                "cp x ~/.config/opencode/plugins/x.ts",
+                "cp x $HOME/.config/opencode/opencode.json",
+                `cp x ${join(homedir(), ".config", "opencode", "plugins", "x.ts")}`,
+                "echo 'export default {}' > ~/.config/opencode/plugins/x.ts",
+                `cp x ${join(W, "xdg", "opencode", "plugins", "x.ts")}`,
+                `cp x "$XDG_CONFIG_HOME/opencode/plugins/x.ts"`,
+                "cp x ${XDG_CONFIG_HOME}/opencode/plugins/x.ts",
+            ]) {
+                const d = check(T("Bash"), bash(cmd));
+                expect([cmd, d.behavior]).toEqual([cmd, "ask"]);
+            }
+            for (const cmd of [`cp x ${join(W, "xdg", "other", "x.json")}`, "cp x src/opencode/x.ts"]) expect([cmd, check(T("Bash"), bash(cmd)).behavior]).toEqual([cmd, "allow"]);
+        } finally {
+            if (prev === undefined) delete process.env.XDG_CONFIG_HOME;
+            else process.env.XDG_CONFIG_HOME = prev;
+        }
     });
 
     test("zsh continuations of numeric parameters still protect config from an allowed cp", async () => {

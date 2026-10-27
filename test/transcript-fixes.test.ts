@@ -497,7 +497,7 @@ describe("a request that doesn't answer fails visibly, in bounded time", () => {
         const event = { type: "retry", attempt: 1, delayMs: 120_000, reason: "Rate limited" };
         const ops: any[] = [];
         const activity: string[] = [];
-        const runtime = { turnId: "turn", responseBlocks: ["partial-text", "partial-tool"], openText: "partial-text", openThinking: "thinking", op: (o: any) => ops.push(o), activity: (label: string) => activity.push(label), worked() {} };
+        const runtime = { turnId: "turn", responseBlocks: ["partial-text", "partial-tool"], responseTurn: new Map<string, string>(), openText: "partial-text", openThinking: "thinking", op: (o: any) => ops.push(o), activity: (label: string) => activity.push(label), worked() {} };
         (Runtime.prototype as any).onEvent.call(runtime, event);
         expect(ops).toEqual(["partial-text", "partial-tool"].map((blockId) => ({ op: "block.remove", turnId: "turn", blockId })));
         expect(runtime.responseBlocks).toEqual([]);
@@ -1061,6 +1061,8 @@ describe("titles come from a prompt that says something", () => {
         ["<system-reminder>mode</system-reminder>\n\n  > why does   it hang?", "Why does it hang?"],
         ["src/auth.ts throws on sign-in", "src/auth.ts throws on sign-in"],
         ["untitled: fix it", "Untitled: fix it"],
+        ["https://github.com/t3dotgg/tstack/", "github.com/t3dotgg/tstack"],
+        ["look at https://www.example.com/docs and fix it", "Look at example.com/docs and fix it"],
         ["please read every file in this repository and then tell me what each one of them does", "Please read every file in this repository and then tell me…"],
         ["...", undefined],
     ])("named from the prompt itself: %p", async (prompt, want) => {

@@ -58,7 +58,8 @@ async function until(done: () => boolean, what: string, ms = 20_000) {
 function sent(tag: string): number {
     if (!existsSync(log)) return 0;
     return readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l))
-        .filter((l) => l.received && (l.received.type === "user" || l.received.method === "turn/start") && JSON.stringify(l.received).includes(tag)).length;
+        // Not the title Codex is asked for, in a one-off thread of its own.
+        .filter((l) => l.received && (l.received.type === "user" || (l.received.method === "turn/start" && l.received.params?.threadId !== "thr-oneoff")) && JSON.stringify(l.received).includes(tag)).length;
 }
 /** The prompt the CLIs were last sent, as JSON. */
 function lastSent(): string {

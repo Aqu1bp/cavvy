@@ -53,6 +53,9 @@ test("a maximized terminal's toolbar sits on the line, clear of the traffic ligh
     for (const selector of [".app.tauri.os-macos.rail-off .terminal-panel.max .terminal-toolbar", '.app.tauri.os-macos[data-rail="overlay"] .terminal-panel.max .terminal-toolbar']) {
         expect({ selector, left: decl(term, selector, "padding-left") }).toEqual({ selector, left: titleBar });
     }
-    // The lights end 78px from the window's left (header.css); the sheet starts win-pad in.
-    expect(winPad + px(titleBar)).toBeGreaterThan(78);
+    // The lights end 78px from the window's left (header.css). Over the sheet, it has no frame (shell.css): it starts
+    // win-pad in, 0 there, and the buttons 92px less that in from it.
+    const frameless = px(decl(css("shell.css"), ".app.rail-off", "--win-pad"));
+    expect(titleBar).toBe("calc(92px - var(--win-pad, 8px))");
+    expect(frameless + (92 - frameless)).toBeGreaterThan(78);
 });

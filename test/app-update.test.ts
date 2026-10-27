@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Subprocess } from "bun";
 import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import { AppUpdates, bundleOf, capture, lastLogLine } from "../src/server/app-update";
 import { appSourceDir, capUpdate, installRecordPath, lockUpdate, replaceBundle, runningUpdate, updateLockPath } from "../src/config/desktop-install";
 import type { AppUpdateInfo } from "../src/server/protocol";
@@ -124,6 +124,20 @@ describe("check", () => {
         const info = await updates().u.check();
         expect(info).toMatchObject({ available: false, behind: 0, changes: [], checking: false, installed: sh(work, "rev-parse", "--short=7", "HEAD") });
         expect(info.error).toBeUndefined();
+    });
+
+    test("maxAgeMs: no fetch while the last check is newer than that, one once it's older", async () => {
+        const { origin, work } = repos();
+        record({ commit: sh(work, "rev-parse", "HEAD"), source: work });
+        const { u } = updates();
+        expect((await u.check()).available).toBe(false);
+        // main moves on the remote.
+        const other = join(dir, "other");
+        sh(dir, "clone", "-q", origin, other);
+        sh(other, "commit", "-q", "--allow-empty", "-m", "four");
+        sh(other, "push", "-q", "origin", "HEAD:main");
+        expect((await u.check({ maxAgeMs: 60_000 })).available).toBe(false);
+        expect(await u.check({ maxAgeMs: 0 })).toMatchObject({ available: true, behind: 1 });
     });
 
     test("main's changes since the installed build, newest first", async () => {
@@ -258,6 +272,16 @@ describe("update", () => {
         expect(u.get().failed).toBe("The update failed: error: no space left");
         expect(await Bun.file(u.get().log!).text()).toContain("args --from-app");
         expect(events.some((e) => e.updating)).toBe(true);
+    });
+
+    test("the update finds the same bun first on its PATH, for the scripts that run it by name", async () => {
+        const { work } = repos();
+        record({ commit: sh(work, "rev-parse", "HEAD~1"), source: work });
+        script(work, `console.log("first " + process.env.PATH.split(":")[0]);`);
+        const { u } = updates();
+        await u.update();
+        await until(() => !u.get().updating);
+        expect(await Bun.file(u.get().log!).text()).toContain(`first ${dirname(process.execPath)}`);
     });
 
     test("installed: it waits for the restart, and says so if none comes", async () => {

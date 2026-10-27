@@ -25,7 +25,10 @@ export interface BackendPermission {
      * withdraw it; the session's end does.
      */
     background?: boolean;
-    /** With background: aborts when the request no longer matters (its sub-agent's turn ended), withdrawing the prompt. */
+    /**
+     * Aborts when the request no longer matters (a background sub-agent's turn ended, or the backend stopped waiting
+     * for the answer), withdrawing the prompt.
+     */
     signal?: AbortSignal;
     /** Cavvy tool whose rules apply: Bash, Edit, Write, Read, WebFetch, mcp__server__tool, or the backend's own name. */
     toolName: string;
@@ -46,9 +49,10 @@ export interface BackendPermission {
      */
     widens?: { read: string[]; write: string[] };
     /**
-     * The backend asks about every command (Codex in untrusted mode), so the
-     * ask says nothing of its own: a command Cavvy would run without
-     * asking for its own models is approved. False: it does say something.
+     * The backend asks about every command (Codex in untrusted mode), or
+     * holds every call (Grok's gate), so the ask says nothing of its own: a
+     * command, read, search or listing Cavvy would run without asking for
+     * its own models is approved. False: it does say something.
      * Left out, a read-only agent's asks count as saying nothing (they come
      * from Cavvy's own rule).
      */
@@ -61,8 +65,24 @@ export interface BackendPermission {
     hookDecision?: "allow" | "ask";
     /** The backend asked only because PreToolUse hooks needed to see it: approve what the mode allows. */
     hooksOnly?: boolean;
+    /**
+     * One of the backend's own the mode doesn't decide (Grok's bookkeeping, its plan file in plan mode): deny
+     * rules and Cavvy's protections refuse it, as in bypass; otherwise it's approved without asking. A change to
+     * Cavvy's or git's configuration is decided as any other.
+     */
+    exempt?: boolean;
+    /**
+     * With `exempt`: this file, the input's file_path, is the backend's own plan file (Grok's, under its home, for the
+     * session Cavvy opened), as it checked: not taken for the agent's configuration, though its home is.
+     */
+    planFile?: string;
     /** The backend's sub-agent asking, by its type (a Cavvy agent Claude Code runs natively): its own mode applies. */
     agentType?: string;
+    /**
+     * Its input isn't all of the call (the backend cut some of it, as Grok's gate does a long one): a yes covers this
+     * call only, never remembered, and "don't ask again" isn't offered.
+     */
+    incomplete?: boolean;
 }
 
 export type PermissionAnswer =
@@ -104,6 +124,8 @@ export interface BackendPrompt {
  * however many say the same words.
  */
 export interface SteerMessage {
+    /** The host's for this message alone (TurnSink.undelivered hands it back by it, never by its words): kept on any copy. */
+    id?: number;
     text: string;
     images: ImagePart[];
     documents: PdfPart[];
