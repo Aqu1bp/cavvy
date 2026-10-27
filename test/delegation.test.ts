@@ -127,7 +127,7 @@ beforeEach(() => {
     rmSync(LOG + ".tiers.json", { force: true });
     rmSync(LOG + ".usage.json", { force: true });
     process.env.FAKE_LOG = LOG;
-    for (const k of ["FAKE_PROJECT_MCP", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_SCENARIO", "FAKE_CODEX_SCENARIO", "FAKE_MCP_CALLS", "FAKE_MCP_REFUSE", "FAKE_DECLINE", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_REJECT_CONFIG", "FAKE_USER_MCP", "FAKE_NO_CONFIG_READ", "FAKE_LOG_ENV", "FAKE_NO_HOOKS"]) delete process.env[k];
+    for (const k of ["FAKE_PROJECT_MCP", "FAKE_PROJECT_PLUGINS", "FAKE_NO_CONFIG_LAYERS", "FAKE_FINAL_TEXT", "FAKE_SUBAGENT_V2", "FAKE_PHASES", "FAKE_ELICIT", "FAKE_ELICIT_FIELDS", "FAKE_CHILD_EARLY", "FAKE_SCENARIO", "FAKE_CODEX_SCENARIO", "FAKE_MCP_CALLS", "FAKE_MCP_REFUSE", "FAKE_DECLINE", "FAKE_COMMAND", "FAKE_COMMAND_SCRIPT", "FAKE_COMMAND_RAW", "FAKE_COMMAND_CWD", "FAKE_REJECT_CONFIG", "FAKE_USER_MCP", "FAKE_NO_CONFIG_READ", "FAKE_LOG_ENV"]) delete process.env[k];
     registry.saveAgentConfig("claude-code", { path: claudeBin });
     registry.saveAgentConfig("codex", { path: codexBin });
     forgetClient("claude-code");
@@ -1026,11 +1026,12 @@ describe("Claude Code as the main agent", () => {
         expect(thread).toMatchObject({ approvalPolicy: "untrusted", sandbox: "read-only" });
         expect(thread.developerInstructions).toContain("This task is read-only");
         expect(asked).toEqual([]);
-        // Cavvy's hook refuses it before it starts, and the task goes on to its report.
-        expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: false, blockedByHook: expect.stringContaining("This is a read-only agent") });
+        expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: false });
+        // Declined, not cancelled: a refused command doesn't end the task before it reports.
+        expect(received().find((m) => m.result?.decision)?.result.decision).toBe("decline");
         expect(mcpResults()[0]).toMatchObject({ isError: false, text: expect.stringContaining("Finished.") });
-        // No user MCP servers: only the hook's.
-        expect(Object.keys(thread.config.mcp_servers)).toEqual(["cavvy_hooks"]);
+        // No user MCP servers: no config.
+        expect(thread.config).toBeUndefined();
     });
 
     test("a read-only agent on Codex runs with the user's own MCP servers turned off, or not at all", async () => {
@@ -1041,10 +1042,7 @@ describe("Claude Code as the main agent", () => {
         const { run } = await makeAgent({ provider: "claude-code" });
         expect(await run("go")).toBe("done");
         expect(received().find((m) => m.method === "config/read")!.params).toEqual({ cwd, includeLayers: true });
-        // Turned off, and besides them only Cavvy's hook server, which keeps the agent to reads.
-        const servers = received().find((m) => m.method === "thread/start")!.params.config.mcp_servers;
-        expect(servers).toMatchObject({ files: { enabled: false }, "web.search": { enabled: false } });
-        expect(Object.keys(servers).sort()).toEqual(["cavvy_hooks", "files", "web.search"]);
+        expect(received().find((m) => m.method === "thread/start")!.params.config).toEqual({ mcp_servers: { files: { enabled: false }, "web.search": { enabled: false } } });
 
         // Codex can't list them: the task doesn't run there.
         rmSync(LOG, { force: true });
@@ -1313,25 +1311,11 @@ describe("Codex as the main agent", () => {
         const second = await makeAgent({ provider: "claude-code", ask: () => ({ allow: false }) });
         expect(await second.run("go")).toBe("done");
         expect(second.asked).toEqual([]);
-        // Cavvy's hook refuses it before it starts; Codex's model hears its reason: which part was refused, and which commands do run.
-        const refused = logLines().find((l) => "ran" in l);
-        expect(refused).toMatchObject({ ran: false });
-        expect(refused.blockedByHook).toContain("This is a read-only agent, and `touch y` isn't one of the read-only commands.");
-        expect(refused.blockedByHook).toContain("Only read-only commands run: plain commands such as cat");
-
-        // A Codex that doesn't run Cavvy's hooks asks about it: declined, not cancelled, so the task goes on to its report,
-        // and as Codex's model hears only "rejected", it's told the same by a steer.
-        rmSync(LOG, { force: true });
-        process.env.FAKE_NO_HOOKS = "1";
-        const third = await makeAgent({ provider: "claude-code", ask: () => ({ allow: false }) });
-        expect(await third.run("go")).toBe("done");
-        expect(third.asked).toEqual([]);
         expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: false });
-        expect(received().find((m) => m.result?.decision)?.result.decision).toBe("decline");
+        // Codex's model hears only "rejected": it's told which part was refused, and which commands do run.
         const steer = received().find((m) => m.method === "turn/steer")?.params.input[0].text;
         expect(steer).toContain("This is a read-only agent, and `touch y` isn't one of the read-only commands.");
         expect(steer).toContain("Only read-only commands run: plain commands such as cat");
-        expect(mcpResults()[0]).toMatchObject({ isError: false, text: expect.stringContaining("Finished.") });
     }, 20_000);
 
     test("a mode change reaches the Claude Code agents it delegated to, and a read-only one stays read-only", async () => {

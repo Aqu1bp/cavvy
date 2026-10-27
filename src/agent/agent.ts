@@ -40,7 +40,7 @@ import type { Sampler, Tool, ToolContext, ToolDisplay, ToolResult, ToolState, Ui
 import { formatWakes, wakeDisplay } from "./wakes";
 import { isReadOnly, isShellTool } from "../tools/types";
 import { coerceInput, validateInput, EXPLORE_TOOLS, toSchema } from "../tools/index";
-import { isReadOnlyCommand, readOnlyRefusal } from "../permissions/bash-safety";
+import { isReadOnlyCommand, notReadOnly } from "../permissions/bash-safety";
 import { mcpToolMatches } from "../permissions/rules";
 import { toolNameFor } from "../mcp/manager";
 import { costOf, promptTokens, type CostEstimate } from "../providers/pricing";
@@ -396,6 +396,17 @@ export function isImageRejection(e: unknown): boolean {
     if (!(err?.status === 400 || err?.status === 404 || err?.status === 413 || err?.status === 422) || isContextOverflow(e)) return false;
     if (/\b(tool|function)s?\b[^\n]{0,40}\b(schema|parameters)\b|\b(schema|parameters)\b[^\n]{0,40}\b(tool|function)s?\b|input_schema|\btools\.\d/i.test(msg)) return false;
     return /many-image|(?<![\w-])images?(?![\w-])[^.\n]{0,80}\b(exceeds?|too (large|big|many)|dimensions?|invalid|could not|couldn't|unable to|not supported|unsupported|does not match|not (a )?valid)|\b(invalid|unsupported|could not process|cannot process|can't process)\b[^.\n]{0,30}(?<![\w-])images?(?![\w-])|image_url|image input|image_parse_error/i.test(msg);
+}
+
+/**
+ * What a read-only agent hears when it tries to change something. For a
+ * command: what in it isn't read-only (so it doesn't send the same command
+ * again), and which ones do run.
+ */
+function readOnlyRefusal(toolName: string, command?: string, why?: string): string {
+    if (toolName !== "Bash") return "This is a read-only agent: that action isn't allowed. Report what should be changed instead.";
+    const what = why ?? (command !== undefined ? notReadOnly(command) : undefined);
+    return `This is a read-only agent, and ${what ?? "this command isn't read-only"}. Only read-only commands run: plain commands such as cat, rg, wc or git log, and pipes of them, with no loops, subshells, $(…) or > redirects. Tests, builds and scripts don't run either. Leave out or replace just that part, or report what should be run or changed instead.`;
 }
 
 /** How much of a wake's report is shown and told when the session can't take the wake over (#305). */

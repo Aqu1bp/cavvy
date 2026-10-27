@@ -20,7 +20,7 @@ const { PermissionChecker } = await import("../src/permissions/checker");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const { isAgentBackend } = await import("../src/backends/types");
 const { checkAgentCli } = await import("../src/backends/index");
-const { applyHunks, codexPolicy, changePreview, insideWorkspace, readOnlyRefusalOf } = await import("../src/backends/codex");
+const { applyHunks, codexPolicy, changePreview, insideWorkspace } = await import("../src/backends/codex");
 const trust = await import("../src/config/trust");
 const { mcpFingerprint, saveApproval } = await import("../src/mcp/approval");
 const { loadSettings } = await import("../src/config/settings");
@@ -1229,22 +1229,28 @@ describe("Codex backend", () => {
         expect(insideWorkspace(join(home, "proj", "src"), "/elsewhere", ["~/proj"])).toBe(true);
         expect(insideWorkspace(join(home, "other"), "/elsewhere", ["~/proj"])).toBe(false);
         expect(insideWorkspace(join(realpathSync(tmpdir()), "ws", "lib"), join(realpathSync(tmpdir()), "ws", "app"), ["../lib"])).toBe(true);
-        // A read-only agent in auto: reads run in the read-only sandbox. Codex's reviewer decides on more once Cavvy's hook
-        // keeps the agent to reads; without the hook (an older Codex), more asks Cavvy.
-        expect(codexPolicy("auto", ["/x"], true, false, true)).toEqual({ approvalPolicy: "on-request", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: false }, approvalsReviewer: "auto_review" });
-        expect(codexPolicy("auto", ["/x"], true)).toEqual({ approvalPolicy: "on-request", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: false }, approvalsReviewer: "user" });
-        // The hook changes nothing in other modes: Codex asks Cavvy there.
-        expect(codexPolicy("default", [], true, false, true)).toMatchObject({ approvalPolicy: "untrusted", approvalsReviewer: "user" });
-        // What the hook lets a read-only agent call: read-only commands, and calls known to only read or to run sub-agents
-        // (Codex 0.164's names among them); a patch, an MCP tool, or a call Cavvy doesn't know is refused.
-        const call = (toolName: string, input: Record<string, unknown> = {}) => readOnlyRefusalOf({ toolName, input });
-        for (const ok of [call("Bash", { command: "git log -5" }), call("Task"), call("collaborationspawn_agent"), call("collaborationwait_agent"), call("web_search"), call("view_image")]) expect(ok).toBeUndefined();
-        for (const no of [call("Bash", { command: "touch x" }), call("Write"), call("Edit"), call("mcp__files__write"), call("write_stdin"), call("image_gen"), call("")]) expect(no).toContain("This is a read-only agent");
+        // A read-only agent in auto: the read-only sandbox with network, never asking; in other modes it has no network.
+        expect(codexPolicy("auto", ["/x"], true)).toEqual({ approvalPolicy: "never", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: true }, approvalsReviewer: "user" });
+        expect(codexPolicy("default", ["/x"], true)).toMatchObject({ approvalPolicy: "untrusted", sandboxPolicy: { type: "readOnly", networkAccess: false } });
         expect(codexPolicy("auto", ["/x"])).toMatchObject({ approvalPolicy: "on-request", sandbox: "workspace-write", approvalsReviewer: "auto_review" });
         expect(codexPolicy("plan", [])).toMatchObject({ approvalPolicy: "untrusted", sandbox: "read-only", approvalsReviewer: "user" });
         expect(codexPolicy("acceptEdits", ["/x"])).toMatchObject({ approvalPolicy: "untrusted", sandbox: "workspace-write", sandboxPolicy: { type: "workspaceWrite", writableRoots: ["/x"] }, approvalsReviewer: "user" });
         expect(codexPolicy("auto", [])).toMatchObject({ approvalPolicy: "on-request", sandbox: "workspace-write", approvalsReviewer: "auto_review" });
         expect(codexPolicy("bypassPermissions", [])).toMatchObject({ approvalPolicy: "never", sandbox: "danger-full-access", approvalsReviewer: "user" });
+    });
+
+    test("auto mode, a read-only agent: the read-only sandbox with network, and Codex never asks", async () => {
+        process.env.FAKE_COMMAND = "ls";
+        const a = await makeAgent({ provider: "codex", mode: "auto", readOnly: true, ask: () => ({ allow: true }) });
+        expect(await a.run("look")).toBe("done");
+        expect(turnStarts()[0]).toMatchObject({ approvalPolicy: "never", sandboxPolicy: { type: "readOnly", networkAccess: true }, approvalsReviewer: "user" });
+        expect(received().some((m) => m.method?.endsWith("requestApproval"))).toBe(false);
+        expect(a.asked).toEqual([]);
+        expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: true, command: "ls" });
+        // Told it has the network and nothing outside the sandbox, not to ask to run outside it for the network.
+        const thread = received().find((m) => m.method === "thread/start")!.params;
+        expect(thread.developerInstructions).toContain("In auto mode the sandbox has network access, and nothing runs outside it");
+        expect(thread.developerInstructions).not.toContain("In every permission mode but bypass");
     });
 
     test("auto mode: Codex's own reviewer answers what leaves its sandbox, and its no is shown; other modes take it back", async () => {

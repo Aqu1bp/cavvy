@@ -22,14 +22,14 @@ import type { PlanLimits } from "../server/protocol";
 import { cliNotice } from "./notice-data";
 import { codexReachedType, creditsNote, limitAccountLabel, limitNotice, limitStopOf, limitStopReport, mergeLimits, parseCodexRateLimits, resetSentence } from "./limits";
 import type { PermissionMode } from "../permissions/modes";
-import { analyzeCommand, isReadOnlyCommand, readOnlyRefusal } from "../permissions/bash-safety";
+import { analyzeCommand } from "../permissions/bash-safety";
 import { APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
 import { redact } from "../util/redact";
 import { gitRoot } from "../util/git";
 import { canonical, expandPath, isInside } from "../util/files";
 import { CODEX_CLI, JsonLinesProcess, cliMessage, cliStatusString, commandTitle, extraArgs, requireCli, stopTiming } from "./cli";
 import { codexMcpOverrides } from "./codex-mcp";
-import { CODEX_HOOK_EVENTS, CODEX_HOOK_SERVER, type CodexHookEvent, codexHookArgs, codexHookEvents, codexHookFailed, codexHookTaken, codexHookTool, nativeCall, preToolUseAnswer, subagentAnswer } from "./codex-hooks";
+import { CODEX_HOOK_EVENTS, CODEX_HOOK_SERVER, type CodexHookEvent, codexHookArgs, codexHookFailed, codexHookTaken, codexHookTool, nativeCall, preToolUseAnswer, subagentAnswer } from "./codex-hooks";
 import { registerTools, type Registration, type ServerTool } from "../mcp/server";
 import { MONITOR_SERVER_TOOLS } from "../tools/monitor";
 import { servedBrowserTool } from "../tools/browser-tools";
@@ -137,16 +137,9 @@ export function untrustedArgs(cwd: string): string[] {
 }
 
 /** Start app-server (no handshake yet). */
-/**
- * A read-only agent's commands get no interactive pager, and less none of its shell escapes. Codex doesn't run the
- * PreToolUse hook for what's typed into a running command (write_stdin), so a read-only one in a terminal (`git log`,
- * `man`) mustn't open something that what's typed could make run another, outside the sandbox if it was let out.
- */
-export const READ_ONLY_ENV_ARGS = Object.entries({ PAGER: "cat", GIT_PAGER: "cat", MANPAGER: "cat", LESSSECURE: "1" }).flatMap(([k, v]) => ["-c", `shell_environment_policy.set.${k}=${JSON.stringify(v)}`]);
-
-function spawnRpc(providerId: string, cwd: string, onNotification: (method: string, params: any) => void, onRequest: (method: string, params: any) => Promise<unknown>, opts: { trusted?: boolean; accountId?: string; hooks?: CodexHookEvent[]; readOnly?: boolean } = {}): Rpc {
+function spawnRpc(providerId: string, cwd: string, onNotification: (method: string, params: any) => void, onRequest: (method: string, params: any) => Promise<unknown>, opts: { trusted?: boolean; accountId?: string; hooks?: CodexHookEvent[] } = {}): Rpc {
     const bin = requireCli(providerId, CODEX_CLI);
-    const args = ["app-server", ...extraArgs(providerId), ...(opts.trusted === false ? untrustedArgs(cwd) : []), ...(opts.hooks?.length ? codexHookArgs(opts.hooks) : []), ...(opts.readOnly ? READ_ONLY_ENV_ARGS : [])];
+    const args = ["app-server", ...extraArgs(providerId), ...(opts.trusted === false ? untrustedArgs(cwd) : []), ...(opts.hooks?.length ? codexHookArgs(opts.hooks) : [])];
     return new Rpc(new JsonLinesProcess(bin, args, { cwd, env: accountEnv(providerId, opts.accountId, cwd) }), onNotification, onRequest);
 }
 
@@ -260,12 +253,11 @@ interface Policy {
 }
 
 /** Cavvy's permission mode as Codex's approval policy and sandbox. */
-export function codexPolicy(mode: PermissionMode, additionalDirectories: string[], readOnly = false, preToolUse = false, readsHooked = false): Policy {
-    // A read-only agent in auto: reads run in the read-only sandbox without asking. What goes beyond it (the network,
-    // another folder), Codex's own reviewer decides, as in auto for any agent, once Cavvy's hook keeps the agent to
-    // reads (readsHooked: Codex runs it before every call). Without that hook (a Codex before 0.160) it asks Cavvy,
-    // which refuses what isn't a read and asks the user about the rest.
-    if (mode === "auto" && readOnly) return { approvalPolicy: "on-request", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: false }, approvalsReviewer: readsHooked ? "auto_review" : "user" };
+export function codexPolicy(mode: PermissionMode, additionalDirectories: string[], readOnly = false, preToolUse = false): Policy {
+    // A read-only agent in auto: the read-only sandbox with network access, and it never asks. Nothing it runs can
+    // change files, as the sandbox holds every program it starts (a pager's shell, a Git config's helper), and nothing
+    // runs outside it, so there's nothing to approve; gh and the like reach the network from inside.
+    if (mode === "auto" && readOnly) return { approvalPolicy: "never", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: true }, approvalsReviewer: "user" };
     const workspaceWrite = { type: "workspaceWrite", writableRoots: additionalDirectories, networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false };
     switch (mode) {
         case "acceptEdits":
@@ -307,6 +299,9 @@ const MANUAL_NOTE =
 // Said once for the thread, whatever the mode: the mode (and with it the sandbox) can change while the thread lives.
 export const LISTENER_NOTE =
     "In every permission mode but bypass, the sandbox has no network access, and that blocks local listeners too, including loopback servers that tests start. If a command needs one, ask to run that command outside the sandbox through the approval flow.";
+// The same for a read-only agent, whose sandbox in auto mode has the network and nothing outside it.
+export const READ_ONLY_LISTENER_NOTE =
+    "Nothing you run can change files. In auto mode the sandbox has network access, and nothing runs outside it, so don't ask to. In the other modes it has no network access, which blocks local listeners too; if a read-only command needs one, ask to run it outside the sandbox through the approval flow.";
 
 /** What a turn starts with for the mode: plan mode's rules, or (manual mode, an agent that may change things) that changes are asked about. */
 export function modeNote(mode: PermissionMode, readOnly: boolean): string | undefined {
@@ -604,8 +599,6 @@ export class CodexTurn {
     protected hookServer?: Registration;
     /** Codex runs Cavvy's hooks for these events itself (they're given to it, and it took them). */
     protected nativeHooks = false;
-    /** A run of Cavvy's PreToolUse hook failed: it isn't counted on for the rest of the session. */
-    protected hookFailed = false;
     protected nativeEvents: CodexHookEvent[] = [];
     /** What PreToolUse hooks (or the user, asked from one) already said of a call, for when Codex then asks about it. */
     protected hookAnswers = new Map<string, "allow">();
@@ -838,9 +831,9 @@ export class CodexTurn {
         const t = this.t;
         if (t.signal.aborted) return { reason: "aborted", text: "", actions: [], refused: true };
         // PreToolUse and sub-agent hooks go to Codex as its own, calling back to Cavvy, which runs them.
-        this.nativeEvents = this.hookEvents();
+        this.nativeEvents = CODEX_HOOK_EVENTS.filter((e) => this.hooked(e));
         if (this.nativeEvents.length) this.hookServer = registerTools(this.nativeEvents.map((e) => this.hookTool(e)));
-        this.rpc = spawnRpc(this.def.id, t.cwd, (m, p) => this.onNotification(m, p), (m, p) => this.onRequest(m, p), { trusted: t.trusted, accountId: t.accountId, hooks: this.nativeEvents, readOnly: t.readOnly });
+        this.rpc = spawnRpc(this.def.id, t.cwd, (m, p) => this.onNotification(m, p), (m, p) => this.onRequest(m, p), { trusted: t.trusted, accountId: t.accountId, hooks: this.nativeEvents });
         let abortTimer: ReturnType<typeof setTimeout> | undefined;
         /** Stopped by the user with the goal active: its pause, which goes in before Codex is stopped. */
         let pausing: Promise<void> | undefined;
@@ -880,15 +873,15 @@ export class CodexTurn {
             if (typeof overrides === "string") return { reason: "error", text: "", actions: [], error: overrides, refused: true };
             const off = overrides.config;
             if (overrides.collisions.includes(CODEX_HOOK_SERVER)) {
-                this.sink.emit({ type: "notice", level: "warn", message: this.hookServerTaken("this turn") });
+                this.sink.emit({ type: "notice", level: "warn", message: `Codex already has a server named ${CODEX_HOOK_SERVER}; it is disabled, and ${APP_TITLE} runs your hooks the older way this turn${this.nativeEvents.includes("PreToolUse") ? ", asking about every command so your PreToolUse hooks see them" : ""}.` });
                 this.nativeHooks = false;
             }
-            const policy = this.policyFor(startMode);
+            const policy = codexPolicy(startMode, t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse") && !this.nativeHooks);
             if (o && overrides.collisions.includes(o.name)) {
                 this.sink.emit({ type: "notice", level: "warn", message: "Codex already has a server named cavvy; it is disabled and this turn runs without Cavvy delegation to avoid merging server configurations." });
                 o = undefined;
             }
-            const baseInstructions = [t.appendSystemPrompt, LISTENER_NOTE].filter(Boolean).join("\n\n") || undefined;
+            const baseInstructions = [t.appendSystemPrompt, t.readOnly ? READ_ONLY_LISTENER_NOTE : LISTENER_NOTE].filter(Boolean).join("\n\n") || undefined;
             const developerInstructions = [baseInstructions, o?.instructions].filter(Boolean).join("\n\n") || undefined;
             let config: Record<string, unknown> | undefined = o && !t.readOnly ? { ...off, mcp_servers: { ...off?.mcp_servers, ...(orchestratorConfig(o).mcp_servers as Record<string, unknown>) } } : off;
             if (this.nativeHooks && this.hookServer) config = { ...config, mcp_servers: { ...(config?.mcp_servers as Record<string, unknown> | undefined), ...hookServerConfig(this.hookServer) } };
@@ -966,7 +959,7 @@ export class CodexTurn {
                     if (this.goalPausedForMode && !adopt) activate = true;
                     // The policy for the mode as it is now: it may have changed since the last turn.
                     const mode = this.cliSession.mode();
-                    const policy = this.policyFor(mode);
+                    const policy = codexPolicy(mode, t.additionalDirectories, Boolean(t.readOnly), this.hooked("PreToolUse") && !this.nativeHooks);
                     const note = modeNote(mode, Boolean(t.readOnly));
                     const asked = skills ? codexInput(text, request, skills, t.skills, after) : { text: pastedPrompt(text, request, t.skills ?? [], after), items: [] };
                     const input = [...this.input(note ? `${note}\n\n${asked.text}` : asked.text, images), ...asked.items];
@@ -1359,10 +1352,8 @@ export class CodexTurn {
     protected onNotification(method: string, p: any) {
         const thread = typeof p?.threadId === "string" ? p.threadId : undefined;
         if (method === "hook/completed" && this.nativeHooks && codexHookFailed(p)) {
-            // Codex goes on with a call whose hook didn't run: the turn stops instead, and a read-only agent's later
-            // turns ask Cavvy rather than Codex's reviewer, as the hook can't be counted on.
-            this.hookFailed = true;
-            this.sink.emit({ type: "notice", level: "error", message: `${this.readsHookOnly() ? "The check that keeps a read-only agent to reads" : "Your PreToolUse hooks"} couldn't run for a Codex tool call, so the turn was stopped.` });
+            // Codex goes on with a call whose hook didn't run: the turn stops instead.
+            this.sink.emit({ type: "notice", level: "error", message: "Your PreToolUse hooks couldn't run for a Codex tool call, so the turn was stopped." });
             this.interrupt(this.origin(p));
         }
         if (method === "thread/started" && typeof p?.thread?.id === "string" && typeof p.thread.model === "string") this.threadModels.set(p.thread.id, p.thread.model);
@@ -1865,29 +1856,6 @@ export class CodexTurn {
         return Boolean(this.t.hooks?.[event]?.length && this.cliSession.hooks);
     }
 
-    /** The hooks Codex runs as its own (codexHookEvents). */
-    protected hookEvents(): CodexHookEvent[] {
-        return codexHookEvents((e) => this.hooked(e), Boolean(this.t.readOnly));
-    }
-
-    /** Only the read-only agent's own hook goes to Codex: the user has none of the hooks it runs. */
-    protected readsHookOnly(): boolean {
-        return !CODEX_HOOK_EVENTS.some((e) => this.hooked(e));
-    }
-
-    /** Codex's policy for a mode, given the hooks it runs. */
-    protected policyFor(mode: PermissionMode): Policy {
-        const readOnly = Boolean(this.t.readOnly);
-        return codexPolicy(mode, this.t.additionalDirectories, readOnly, this.hooked("PreToolUse") && !this.nativeHooks, readOnly && this.nativeHooks && !this.hookFailed);
-    }
-
-    /** Codex already has a server by the hook's name: it's turned off, and the hooks run the older way. */
-    protected hookServerTaken(when: string): string {
-        const head = `Codex already has a server named ${CODEX_HOOK_SERVER}; it is disabled`;
-        if (this.readsHookOnly()) return `${head}, and what this read-only agent would do outside its sandbox comes to you ${when}.`;
-        return `${head}, and ${APP_TITLE} runs your hooks the older way ${when}${this.hooked("PreToolUse") ? ", asking about every command so your PreToolUse hooks see them" : ""}.`;
-    }
-
     /** Codex took Cavvy's PreToolUse hook, trusted (an older Codex doesn't list hooks, or doesn't run them). */
     protected async hooksTaken(cwd: string): Promise<boolean> {
         try {
@@ -1895,12 +1863,7 @@ export class CodexTurn {
         } catch (e) {
             if (this.aborted) throw e;
         }
-        const message = this.readsHookOnly()
-            ? `This Codex doesn't run ${APP_TITLE}'s hooks itself, so what a read-only agent would do outside its sandbox comes to you. Codex 0.160 or later runs them before every tool call.`
-            : this.hooked("PreToolUse")
-              ? `This Codex doesn't run ${APP_TITLE}'s hooks itself, so it asks about every command and your PreToolUse hooks see only those. Codex 0.160 or later runs them before every tool call.`
-              : `This Codex doesn't run ${APP_TITLE}'s hooks itself, so your SubagentStart and SubagentStop hooks can't add context or keep a sub-agent going. Codex 0.160 or later can.`;
-        if (!saidNoNativeHooks) this.sink.emit({ type: "notice", level: "info", message });
+        if (!saidNoNativeHooks) this.sink.emit({ type: "notice", level: "info", message: this.nativeEvents.includes("PreToolUse") ? `This Codex doesn't run ${APP_TITLE}'s hooks itself, so it asks about every command and your PreToolUse hooks see only those. Codex 0.160 or later runs them before every tool call.` : `This Codex doesn't run ${APP_TITLE}'s hooks itself, so your SubagentStart and SubagentStop hooks can't add context or keep a sub-agent going. Codex 0.160 or later can.` });
         saidNoNativeHooks = true;
         return false;
     }
@@ -1972,14 +1935,6 @@ export class CodexTurn {
         const agentLabel = from ? (from.sub?.label ?? "Codex sub-agent") : undefined;
         const id = typeof args.tool_use_id === "string" ? args.tool_use_id : undefined;
         const call = nativeCall(String(args.tool_name ?? ""), args.tool_input, this.t.cwd);
-        // A read-only agent's call that could change something is refused, whatever the user's hooks would say:
-        // Codex's reviewer, which decides on what goes beyond the sandbox, could approve it. Its sub-agents' calls come here too.
-        const refusal = this.t.readOnly ? readOnlyRefusalOf(call) : undefined;
-        if (refusal) {
-            this.refusedCall(id, call, refusal, from);
-            return preToolUseAnswer({ deny: refusal });
-        }
-        if (!this.hooked("PreToolUse")) return "";
         const h = await this.cliSession.hooks!("PreToolUse", { tool_name: call.toolName, tool_input: call.input, ...(id ? { tool_use_id: id } : {}) });
         const context = h?.additionalContext;
         const deny = (reason: string) => {
@@ -2479,22 +2434,6 @@ const WRAPPER_SHELL = /^\/(?:bin|usr\/bin|usr\/local\/bin|opt\/homebrew\/bin)\/(
 /** Is `dir` (resolved) in the session's folder or one of the added ones (`~/…` and relative ones as the checker reads them)? */
 export function insideWorkspace(dir: string, cwd: string, additionalDirectories: string[]): boolean {
     return [cwd, ...additionalDirectories].some((r) => isInside(dir, canonical(expandPath(r, cwd))));
-}
-
-/** Codex's calls that only read, or start and wait for sub-agents (whose own calls come to the hook too). */
-const READ_ONLY_CALLS = new Set(["Task", "view_image", "web_search", "update_plan"]);
-
-/**
- * Why a read-only agent can't make one of Codex's calls: a command that isn't read-only, or any other call but those
- * known to only read (a patch, an MCP tool, one Cavvy doesn't know). Undefined when it can.
- */
-export function readOnlyRefusalOf(call: { toolName: string; input: Record<string, unknown> }): string | undefined {
-    if (call.toolName === "Bash") {
-        const command = String(call.input.command ?? "");
-        return isReadOnlyCommand(command) ? undefined : readOnlyRefusal("Bash", command);
-    }
-    // Codex 0.164 names its sub-agent tools collaborationspawn_agent, collaborationwait_agent and so on.
-    return READ_ONLY_CALLS.has(call.toolName) || call.toolName.startsWith("collaboration") ? undefined : readOnlyRefusal(call.toolName);
 }
 
 function shownCommand(x: any, cwd: string): { command: string; dir: string; elsewhere: boolean } {

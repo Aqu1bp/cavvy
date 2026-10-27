@@ -357,59 +357,6 @@ describe("Codex's items run Cavvy's hooks", () => {
         expect(c.asked).toEqual([]);
     });
 
-    test("a read-only agent in auto: Codex's own reviewer decides, and Cavvy's hook keeps the agent to reads", async () => {
-        process.env.FAKE_COMMAND = "ls";
-        const a = await makeAgent("codex", {}, "auto", () => ({ allow: false, message: "no", stop: false }), { readOnly: true });
-        expect(await a.run("look")).toBe("done");
-        expect(received().find((m) => m.method === "thread/start")!.params.approvalsReviewer).toBe("auto_review");
-        expect(turnStarts()[0]).toMatchObject({ approvalPolicy: "on-request", sandboxPolicy: { type: "readOnly" }, approvalsReviewer: "auto_review" });
-        expect(hookArg()).toContain('"type"="mcp_tool"');
-        // Its commands get no interactive pager, which what's typed into one (no hook sees it) could make run another.
-        expect(logLines()[0].argv).toEqual(expect.arrayContaining(['shell_environment_policy.set.PAGER="cat"', 'shell_environment_policy.set.GIT_PAGER="cat"', 'shell_environment_policy.set.MANPAGER="cat"', 'shell_environment_policy.set.LESSSECURE="1"']));
-        expect(ranLine()).toMatchObject({ ran: true, command: "ls" });
-        expect(a.asked).toEqual([]);
-
-        // A write is refused by the hook before it starts, whatever Codex's reviewer would have said.
-        rmSync(LOG, { force: true });
-        process.env.FAKE_COMMAND = "touch x";
-        const b = await makeAgent("codex", {}, "auto", () => ({ allow: true }), { readOnly: true });
-        expect(await b.run("look")).toBe("done");
-        expect(ranLine()).toMatchObject({ ran: false, blockedByHook: expect.stringContaining("read-only agent") });
-        expect(b.asked).toEqual([]);
-        expect(toolEnds(b.events)[0]).toMatchObject({ call: { name: "Bash", input: { command: "touch x" } }, result: { isError: true, content: expect.stringContaining("read-only agent") } });
-    });
-
-    test("a read-only agent's Codex sub-agent is held to reads by the same hook", async () => {
-        process.env.FAKE_SCENARIO = "subagent";
-        const { run, asked } = await makeAgent("codex", {}, "auto", () => ({ allow: true }), { readOnly: true });
-        expect(await run("count")).toBe("done");
-        expect(turnStarts()[0]).toMatchObject({ approvalsReviewer: "auto_review" });
-        expect(logLines().find((l) => "childRan" in l)).toMatchObject({ childRan: false, childBlockedByHook: expect.stringContaining("This is a read-only agent") });
-        expect(asked).toEqual([]);
-    });
-
-    test("a read-only agent whose hook couldn't run: the turn stops, and later turns ask Cavvy, not Codex's reviewer", async () => {
-        process.env.FAKE_HOOK_SERVER_DOWN = "1";
-        process.env.FAKE_COMMAND = "ls";
-        const a = await makeAgent("codex", {}, "auto", () => ({ allow: true }), { readOnly: true });
-        await a.run("look");
-        expect(turnStarts()[0]).toMatchObject({ approvalsReviewer: "auto_review" });
-        expect(received().some((m) => m.method === "turn/interrupt")).toBe(true);
-        expect(a.events.some((e) => e.type === "notice" && e.level === "error" && e.message.includes("The check that keeps a read-only agent to reads couldn't run"))).toBe(true);
-        await a.run("look again");
-        expect(turnStarts().at(-1)).toMatchObject({ approvalsReviewer: "user" });
-    });
-
-    test("a read-only agent on a Codex that doesn't run Cavvy's hooks: what it asks comes to Cavvy, as before", async () => {
-        process.env.FAKE_NO_HOOKS = "1";
-        process.env.FAKE_COMMAND = "ls";
-        const { run, asked } = await makeAgent("codex", {}, "auto", () => ({ allow: true }), { readOnly: true });
-        expect(await run("look")).toBe("done");
-        expect(turnStarts()[0]).toMatchObject({ approvalPolicy: "on-request", sandboxPolicy: { type: "readOnly" }, approvalsReviewer: "user" });
-        expect(asked).toHaveLength(1);
-        expect(ranLine()).toMatchObject({ ran: true, command: "ls" });
-    });
-
     test("a PreToolUse ask answered by a PermissionRequest rewrite runs the rewrite on Codex, not the original", async () => {
         const ask = say({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask" } });
         const allowAs = (command: string) => say({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow", updatedInput: { command } } } });
