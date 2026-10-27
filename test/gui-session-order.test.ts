@@ -23,6 +23,12 @@ test("attention, pins, then activity; re-sorting does not mutate input", () => {
     expect(orderSessions(list).map((s) => s.id)).toEqual(["pin", "old", "new", "ask"]);
 });
 
+test("a running session is above one that finished after its turn started", () => {
+    // Its updatedAt is the turn's start; the other's is its end, a moment later.
+    const list = [session("done", { updatedAt: 20 }), session("working", { status: "running", updatedAt: 10 }), session("also", { status: "running", updatedAt: 5 }), session("pin", { pinned: true })];
+    expect(orderSessions(list).map((s) => s.id)).toEqual(["pin", "working", "also", "done"]);
+});
+
 for (const groupBy of ["date", "project"] as const) {
     test(`${groupBy}: page budget plus every waiting and open session, with keyboard in rendered order`, () => {
         const list = many();

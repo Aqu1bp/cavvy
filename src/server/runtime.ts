@@ -199,7 +199,8 @@ export function promptTitle(prompt: string): string | undefined {
     const line = prompt
         .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "")
         .split("\n")
-        .map((l) => l.replace(/^[\s#>*-]+/, "").replace(/\s+/g, " ").trim())
+        // A link reads as where it goes: no scheme or www (and no "Https" once capitalized below).
+        .map((l) => l.replace(/^[\s#>*-]+/, "").replace(/\bhttps?:\/\/(www\.)?/gi, "").replace(/\s+/g, " ").trim())
         .find((l) => /[\p{L}\p{N}]/u.test(l));
     if (!line) return undefined;
     let t = line;
@@ -207,7 +208,7 @@ export function promptTitle(prompt: string): string | undefined {
         const cut = t.slice(0, 60);
         const space = cut.lastIndexOf(" ");
         t = `${(space > 30 ? cut.slice(0, space) : cut).replace(/[\s,;:.-]+$/, "")}…`;
-    } else t = t.replace(/[\s.]+$/, "");
+    } else t = t.replace(/[\s./]+$/, "");
     // A plain first word starts it in capitals, as a model's title would; not a path or a name like `src/x`.
     return /^\p{Ll}[\p{L}']*(?=[\s,:;!?]|$)/u.test(t) ? t[0]!.toUpperCase() + t.slice(1) : t;
 }
@@ -3232,26 +3233,21 @@ export class Runtime {
         // Redacted before it's cut or capitalized: then a key in it no longer looks like one.
         this.titleFrom ??= redact(prompt);
         let title: string | undefined;
-        // Claude Code and Codex run whole turns only, so they can't be asked for one: without a
-        // smallModel on another provider the prompt names the session.
-        if (isAgentBackend((await this.smallTarget().catch(() => undefined))?.client ?? this.client)) {
-            const t = promptTitle(this.titleFrom);
-            if (t && !this.session.title) this.rename(t);
-            return;
-        }
+        // Claude Code and Codex answer it as a one-off (backends/one-off.ts), on their light model.
         try {
             const raw = await this.complete(
                 "You name coding-assistant sessions for a sidebar. Reply with only the title: 2 to 6 words, sentence case, no quotes, no trailing punctuation. Describe the task, not the user.",
                 // Cut after redacting, so a registered value crossing the cut can't leave a prefix.
                 redactPrefix(prompt, 3000),
-                AbortSignal.timeout(20_000),
+                // A CLI starts a process of its own for it: a few seconds more than an API call.
+                AbortSignal.timeout(45_000),
             );
             title = raw
                 .replace(/<[^>]*>/g, "")
                 .split("\n")
                 .map((l) => l.trim())
                 .find(Boolean)
-                ?.replace(/^title:\s*/i, "")
+                ?.replace(/^(session\s+)?(title|name):\s*/i, "")
                 .replace(/^["'`*#\s]+|["'`*.\s]+$/g, "")
                 .slice(0, 60);
             // Not a title: the prompt said back, or a paragraph.

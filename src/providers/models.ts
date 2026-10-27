@@ -365,6 +365,9 @@ const SMALL: Record<string, RegExp[]> = {
     xai: [/mini|fast/],
     mistral: [/small/],
     groq: [/instant|8b/],
+    // The CLIs answer one-offs (titles, summaries) on their own sign-in: a light model spends little of the plan.
+    "claude-code": [/^haiku$/, /haiku/],
+    codex: [/^gpt-6-luna$/, /luna/, /mini/],
 };
 
 function pick(models: ModelInfo[], prefs: RegExp[] | undefined): ModelInfo | undefined {

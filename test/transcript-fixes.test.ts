@@ -1061,6 +1061,8 @@ describe("titles come from a prompt that says something", () => {
         ["<system-reminder>mode</system-reminder>\n\n  > why does   it hang?", "Why does it hang?"],
         ["src/auth.ts throws on sign-in", "src/auth.ts throws on sign-in"],
         ["untitled: fix it", "Untitled: fix it"],
+        ["https://github.com/t3dotgg/tstack/", "github.com/t3dotgg/tstack"],
+        ["look at https://www.example.com/docs and fix it", "Look at example.com/docs and fix it"],
         ["please read every file in this repository and then tell me what each one of them does", "Please read every file in this repository and then tell me…"],
         ["...", undefined],
     ])("named from the prompt itself: %p", async (prompt, want) => {

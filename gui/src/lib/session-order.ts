@@ -3,10 +3,13 @@ import { basename } from "./format";
 
 export const SESSION_PAGE = 25;
 
-/** Attention first, then pins and recent activity. IDs break timestamp ties. */
+/** Attention first, then pins and recent activity. IDs break timestamp ties.
+ * A running session is working now (its row says so), though its updatedAt is when its turn started:
+ * summaries go out at a turn's edges, not with every event. Running ones keep their start order among themselves. */
 export function orderSessions(list: readonly SessionSummary[]): SessionSummary[] {
     return [...list].sort((a, b) => Number(b.status === "waiting") - Number(a.status === "waiting")
-        || Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+        || Number(b.pinned) - Number(a.pinned) || Number(b.status === "running") - Number(a.status === "running")
+        || b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
 }
 
 export function requiredSession(s: SessionSummary, activeId?: string): boolean {

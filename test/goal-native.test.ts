@@ -59,7 +59,8 @@ beforeEach(() => {
     forgetClient("codex");
 });
 
-const received = () => (existsSync(LOG) ? readFileSync(LOG, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []).flatMap((l: any) => (l.received ? [l.received] : []));
+/** What the CLIs were sent, but for the session's title: Codex is asked for it in a one-off thread of its own. */
+const received = () => (existsSync(LOG) ? readFileSync(LOG, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []).flatMap((l: any) => (l.received && !l.received.params?.ephemeral && l.received.params?.threadId !== "thr-oneoff" ? [l.received] : []));
 
 /**
  * `live`: Codex keeps one app-server for the session (#219), and the turns it starts by itself are wakes the host
