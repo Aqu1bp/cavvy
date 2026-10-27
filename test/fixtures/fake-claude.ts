@@ -325,7 +325,7 @@ let prompts = 0;
 /** The prompt the turn under way answers (its user message's uuid); none for a turn Claude Code starts itself. */
 let answering: string | undefined;
 // A busy CLI folds these into the current turn, rather than starting concurrent turns.
-let steering: { uuid?: string; text: string; images?: number }[] | undefined;
+let steering: { uuid?: string; synthetic?: boolean; text: string; images?: number }[] | undefined;
 /** FAKE_GOAL_HOLD=1: the goal's second turn waits for an interrupt. */
 let goalRelease: (() => void) | undefined;
 let steeringWake: (() => void) | undefined;
@@ -922,7 +922,10 @@ async function turn(content: any[], uuid?: string) {
         steeringWake = undefined;
         log({ foldedBeforeResult: folded.map((m) => m.text), foldedImages: folded.reduce((n, m) => n + (m.images ?? 0), 0) });
         text(folded.length ? `Adjusted: ${folded.map((m) => m.text).join(" | ")}` : "No steering received before result.");
-        return result("success", { user_message_uuids: [uuid, ...folded.map((m) => m.uuid)].slice(-64) });
+        // As Claude Code 2.1.310 does (test/fixtures/protocol/claude-synthetic-steer.jsonl): each message folded in is said
+        // completed just before the result, which doesn't name a synthetic one.
+        for (const m of folded) lifecycle(m.uuid, "completed");
+        return result("success", { user_message_uuids: [uuid, ...folded.filter((m) => !m.synthetic).map((m) => m.uuid)].slice(-64) });
     }
     if (scenario === "monitor-repeated-reports") {
         bgTasks.set("monitor-1", { task_id: "monitor-1", task_type: "monitor_mcp", description: "Watch checks" });
@@ -1461,7 +1464,7 @@ for await (const chunk of Bun.stdin.stream()) {
                 // mid-turn message's document blocks never reach the model; its images do.
                 const dropped = m.message.content.filter((b: any) => b?.type === "document").length;
                 if (dropped) log({ droppedMidTurnDocuments: dropped });
-                steering.push({ uuid: m.uuid, text: m.message.content.map((b: any) => b.text ?? "").join(""), images: m.message.content.filter((b: any) => b?.type === "image").length });
+                steering.push({ uuid: m.uuid, synthetic: m.isSynthetic === true, text: m.message.content.map((b: any) => b.text ?? "").join(""), images: m.message.content.filter((b: any) => b?.type === "image").length });
                 recordSent(steering.at(-1)!.text);
                 steeringWake?.();
             } else {
