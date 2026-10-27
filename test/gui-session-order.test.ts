@@ -29,6 +29,28 @@ test("a running session is above one that finished after its turn started", () =
     expect(orderSessions(list).map((s) => s.id)).toEqual(["pin", "working", "also", "done"]);
 });
 
+test("listed by date: pinned, then each day's sessions under its heading; working or waiting is today", () => {
+    const now = new Date(2026, 9, 27, 8, 30).getTime();
+    const at = (d: number, h: number) => new Date(2026, 9, 27 - d, h).getTime();
+    const list = [
+        session("today", { updatedAt: at(0, 7) }),
+        session("late", { updatedAt: at(1, 23) }),
+        session("week", { updatedAt: at(5, 12) }),
+        session("old", { updatedAt: at(30, 12) }),
+        session("pin", { pinned: true, updatedAt: at(30, 9) }),
+        session("ask", { status: "waiting", updatedAt: at(3, 9) }),
+        session("busy", { status: "running", updatedAt: at(1, 22) }),
+    ];
+    const entries = sidebarEntries(list, [], options({ now }));
+    expect(entries.map((e) => (e.kind === "day" ? `# ${e.label}` : "id" in e ? e.id : e.kind))).toEqual([
+        "# Pinned", "pin", "# Today", "ask", "busy", "today", "# Yesterday", "late", "# Previous 7 days", "week", "# Older", "old",
+    ]);
+    // Keys move through it in the order shown; without the time, no days.
+    expect(sidebarIds(entries)).toEqual(["pin", "ask", "busy", "today", "late", "week", "old"]);
+    expect(sidebarEntries(list, [], options()).some((e) => e.kind === "day")).toBe(false);
+    expect(sidebarEntries(list, [], options({ now, groupBy: "project" })).some((e) => e.kind === "day")).toBe(false);
+});
+
 for (const groupBy of ["date", "project"] as const) {
     test(`${groupBy}: page budget plus every waiting and open session, with keyboard in rendered order`, () => {
         const list = many();

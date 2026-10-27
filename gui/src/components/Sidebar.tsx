@@ -5,7 +5,7 @@
 // waiting on you are pinned above them all, under Needs you, until answered.
 
 import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack } from "solid-js";
-import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronsUpDown, ChevronUp, CircleAlert, Download, Folder, FolderPlus, Hand, Layers, ListFilter, MessageSquareText, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
+import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronsUpDown, ChevronUp, CircleAlert, Download, Folder, FolderPlus, Hand, Layers, ListFilter, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
 import { activate, app, handleFor, isUnread, refreshSessions, reportError } from "../state/app";
 import { createUpdateAction } from "./UpdateAction";
@@ -16,7 +16,7 @@ import { frameDrag } from "../lib/drag";
 import { ago, monogram, projectColor, since } from "../lib/format";
 import { holdSidebar, projectOf, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type SidebarEntry } from "../lib/session-order";
 import { sessionStatus } from "../lib/session-status";
-import { foldOrder, groupCounts, inFront, needsRowLine, needsYou, planFit, railFoot, railGlyph, type RailGlyph, type RailPlan } from "../lib/rail";
+import { foldOrder, groupCounts, inFront, needsRowLine, needsYou, planFit, railFoot, type RailPlan } from "../lib/rail";
 import { railSelection, setRailSelection, setSidebarOrder } from "../state/sidebar";
 import { bulkPlan, clickKind, clickSelect, extendSelect, pruneSelection, railTargets, selectAll, sessionCount, type BulkPlan, type RailList } from "../lib/rail-select";
 import { now } from "../lib/clock";
@@ -40,6 +40,9 @@ export function Monogram(p: { name: string; cwd?: string; label?: string; size?:
         </span>
     );
 }
+
+/** main or master: most sessions are on it, so the row doesn't say it. */
+const usualBranch = (branch: string | undefined) => branch === "main" || branch === "master";
 
 function branchOf(s: SessionSummary): string | undefined {
     if (s.id === app.activeId) return handleFor(s.id)?.view.state.branch;
@@ -193,44 +196,42 @@ function useRowMenu(more: () => HTMLElement | undefined) {
     return { menu, setMenu, point, contextMenu, contextKey, toggleMenu, returnFocus: () => returnTo };
 }
 
-/** How a session is doing, at the start of its row; a check in an accent disc while it's selected. */
-function Glyph(p: { kind: RailGlyph; picked?: boolean }) {
-    return (
-        <Show when={!p.picked} fallback={<span class="st pick" aria-hidden="true"><Check size={12} stroke-width={3} /></span>}>
-            <StatusGlyph kind={p.kind} />
-        </Show>
-    );
-}
-
-function StatusGlyph(p: { kind: RailGlyph }) {
-    return (
-        <span class={`st ${p.kind}`} aria-hidden="true">
-            <Switch fallback={<MessageSquareText size={15} />}>
-                <Match when={p.kind === "running"}><span class="spin-ring" /></Match>
-                <Match when={p.kind === "waiting"}><Hand size={15} /></Match>
-                <Match when={p.kind === "done"}><Check size={15} stroke-width={2} /></Match>
-                <Match when={p.kind === "error"}><CircleAlert size={15} /></Match>
-                <Match when={p.kind === "new"}><SquarePen size={15} /></Match>
-            </Switch>
-        </span>
-    );
-}
-
 /** What a screen reader hears for a row: its title, then how it's doing, and whether it's selected. */
 function rowLabel(s: SessionSummary, unread: boolean, picked = false): string {
     const word = sessionStatus(s, now())?.text;
     return [s.run ? `${s.run.modelName} · ${s.title}` : s.title, s.status === "idle" ? (unread ? "unread" : undefined) : word, s.pinned ? "pinned" : undefined, picked ? "selected" : undefined].filter(Boolean).join(", ");
 }
 
-/** The right end of a row: an amber dot while it needs you, else when it last moved (with a dot when unread). */
-function RowEnd(p: { s: SessionSummary; unread: boolean }) {
+/**
+ * The right end of a row, the one place it says how it's doing: a check while it's picked, an amber dot while it
+ * needs you, a ring while it works, a mark when it stopped on an error; else when it last moved (a dot when unread).
+ */
+function RowEnd(p: { s: SessionSummary; unread: boolean; picked?: boolean }) {
+    const word = () => sessionStatus(p.s, now())?.text;
     return (
-        <Show when={p.s.status !== "waiting"} fallback={<span class="wait-dot" title={sessionStatus(p.s, now())?.text} />}>
-            <Show when={p.unread}>
-                <span class="unread-dot" />
-            </Show>
-            <span class="when">{p.s.status === "running" ? "now" : (now(), since(p.s.updatedAt))}</span>
-        </Show>
+        <Switch
+            fallback={
+                <>
+                    <Show when={p.unread}>
+                        <span class="unread-dot" />
+                    </Show>
+                    <span class="when">{(now(), since(p.s.updatedAt))}</span>
+                </>
+            }
+        >
+            <Match when={p.picked}>
+                <span class="st pick" aria-hidden="true"><Check size={12} stroke-width={3} /></span>
+            </Match>
+            <Match when={p.s.status === "waiting"}>
+                <span class="wait-dot" title={word()} />
+            </Match>
+            <Match when={p.s.status === "running"}>
+                <span class="spin-ring" title={word()} />
+            </Match>
+            <Match when={p.s.status === "error"}>
+                <span class="st error" title={word()}><CircleAlert size={14} /></span>
+            </Match>
+        </Switch>
     );
 }
 
@@ -374,7 +375,6 @@ function NeedsRow(p: { s: SessionSummary; pick: RailPick }) {
     return (
         <div data-needs-id={p.s.id} class={`needs-row card ${waiting() ? "waiting" : ""}`}>
             <button class="card-hit needs-hit" onClick={() => p.pick.open(p.s.id)} aria-label={`${title()}, ${needsRowLine(p.s)}`} title={`${p.s.title}: ${needsRowLine(p.s)}`}>
-                <Glyph kind={railGlyph(p.s, unread())} />
                 <span class="t">{title()}</span>
                 <span class="end"><RowEnd s={p.s} unread={unread()} /></span>
                 <span class="m"><span class="truncate">{needsRowLine(p.s)}</span></span>
@@ -398,23 +398,22 @@ function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) =
     // Working in the background: it's fine, it can recede.
     const recede = () => p.s.status === "running" && !current();
     // Grouped by project, the heading names it; listed by date, the row does.
-    const where = () => [p.grouped ? undefined : p.s.projectName, branchOf(p.s)].filter(Boolean).join(" · ") || p.s.projectName;
+    const where = () => [p.grouped ? undefined : p.s.projectName, usualBranch(branchOf(p.s)) ? undefined : branchOf(p.s)].filter(Boolean).join(" · ") || p.s.projectName;
     const picked = () => p.pick.picked(p.s.id);
     return (
         <div
             ref={el}
             data-session-id={p.s.id}
-            class={`card ${current() ? "cur" : ""} ${picked() ? "picked" : ""} ${recede() ? "rec" : ""} ${unread() ? "unread" : ""} ${waiting() ? "waiting" : ""} ${menu() ? "menu-open" : ""}`}
+            class={`card ${current() ? "cur" : ""} ${picked() ? "picked" : ""} ${recede() ? "rec" : ""} ${unread() ? "unread" : ""} ${waiting() ? "waiting" : ""} ${menu() ? "menu-open" : ""} ${r.editing() ? "renaming" : ""}`}
             onContextMenu={contextMenu} onKeyDown={contextKey}
         >
             <button class="card-hit" onClick={(e) => p.pick.click(e, p.s.id)} onDblClick={(e) => !e.shiftKey && !e.metaKey && !e.ctrlKey && r.setEditing(true)} aria-current={current() ? "page" : undefined} aria-label={rowLabel(p.s, unread(), picked())} title={`${p.s.title}\n${p.s.cwd}`}>
-                <Glyph kind={railGlyph(p.s, unread())} picked={picked()} />
                 <span class="t">
                     {/* A run's sessions all start from one prompt (the group's label): each says which model it is. */}
                     <Show when={!r.editing()}>{p.s.run ? p.s.run.modelName : p.s.title}</Show>
                 </span>
                 <span class="end">
-                    <RowEnd s={p.s} unread={unread()} />
+                    <RowEnd s={p.s} unread={unread()} picked={picked()} />
                 </span>
                 <span class="m">
                     <Show when={p.s.pinned}>
@@ -464,10 +463,7 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
             <Show
                 when={!r.editing()}
                 fallback={
-                    <>
-                        <Glyph kind={railGlyph(p.s, unread())} />
-                        {r.input()}
-                    </>
+                    r.input()
                 }
             >
                 <button
@@ -478,7 +474,6 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
                     aria-label={rowLabel(p.s, unread(), picked())}
                     title={`${p.s.title}\n${p.s.cwd}\nUpdated ${(now(), ago(p.s.updatedAt))}`}
                 >
-                    <Glyph kind={railGlyph(p.s, unread())} picked={picked()} />
                     <span class="truncate">{p.s.run ? `${p.s.run.modelName} · ${p.s.title}` : p.s.title}</span>
                     <Show when={p.s.pinned}>
                         <Pin size={11} class="slim-pin" />
@@ -486,7 +481,7 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
                 </button>
                 <span class="slim-end">
                     <span class="t">
-                        <RowEnd s={p.s} unread={unread()} />
+                        <RowEnd s={p.s} unread={unread()} picked={picked()} />
                     </span>
                     <span class="slim-acts">
                         <button class="hb sm" title={p.s.pinned ? "Unpin" : "Pin"} aria-label={p.s.pinned ? "Unpin" : "Pin"} onClick={() => void pin(p.s.id, !p.s.pinned)}>
@@ -639,11 +634,13 @@ export function Sidebar() {
     const pinnedHeld = () => (hovered() && !manualLayout()) || locked().size > 0;
     // Waiting on you, but the session in front of you (not under Settings or a sub-agent's view: lib/rail.ts inFront): pinned at the top as well.
     const needs = createMemo(() => needsYou(all(), inFront({ activeId: app.activeId, settings: Boolean(settingsTab()), agentFocus: agentFocus() })).map((s) => s.id), undefined, { equals: (a, b) => a.length === b.length && a.every((id, i) => id === b[i]) });
+    // Today's midnight: the day headings move when the date does, not with every tick of the clock.
+    const today = createMemo(() => new Date(now()).setHours(0, 0, 0, 0));
     const layout = createMemo<SidebarEntry[]>((previous) => {
         const next = sidebarEntries(app.sessions, app.archived, {
             activeId: app.activeId, groupBy: prefs.groupBy, archived: showArchived(),
             settledOpen: prefs.settledOpen, cards: shown(), settled: settledShown(), archive: archiveShown(),
-            collapsed: prefs.collapsedProjects, needs: needs(),
+            collapsed: prefs.collapsedProjects, needs: needs(), now: prefs.groupBy === "date" ? today() : undefined,
         });
         return holdSidebar(previous ?? [], next, held(), all(), app.activeId, pinnedHeld());
     });
@@ -965,6 +962,7 @@ export function Sidebar() {
                             <button class="shelf-btn add" title={`New session in ${group().name}`} aria-label={`New session in ${group().name}`} onClick={() => newSession(group().cwd)}><Plus size={13} /></button>
                         </div>;
                     }
+                    if (kind === "day") return <div class="day-head">{(entry() as Extract<SidebarEntry, { kind: "day" }>).label}</div>;
                     if (kind === "settled") return <button class="shelf settled-head" aria-expanded={prefs.settledOpen} onClick={() => { allowLayout(); setPrefs("settledOpen", !prefs.settledOpen); }}>
                         <CheckCheck size={14} /><span>Settled</span><span class="n">{settledCount()}</span><ChevronUp size={14} class={`settled-chev ${prefs.settledOpen ? "" : "closed"}`} />
                     </button>;

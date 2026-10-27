@@ -313,7 +313,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
         const i = r.i;
         const on = () => (multi() ? picked(r.m.ref) : isCurrent(r.m.ref));
         return (
-            <div class={`mr ${i === sel() ? "sel" : ""} ${on() ? "on" : ""} ${r.line ? "two" : ""}`} onMouseMove={() => sel() !== i && setSel(i)}>
+            <div class={`mr ${i === sel() ? "sel" : ""} ${on() ? "on" : ""}`} onMouseMove={() => sel() !== i && setSel(i)}>
                 <button
                     class="mr-pick"
                     id={`${listId}-${i}`}
@@ -340,10 +340,9 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                             </span>
                         </Show>
                     </span>
+                    {/* One line: the name, then what it stands for (or whose it is, its window and price) dimmed, cut first. */}
                     <span class="mr-text">
-                        <span class="mr-top">
-                            <span class="mr-name truncate">{name}</span>
-                        </span>
+                        <span class="mr-name truncate">{name}</span>
                         <Show when={r.line}>
                             <span class="mr-sub truncate">{r.line}</span>
                         </Show>
@@ -448,9 +447,9 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                 anchor={() => anchor}
                 onClose={() => p.setOpen(false)}
                 placement={p.placement ?? "top"}
-                width={400}
-                maxHeight={440}
-                minHeight={300}
+                width={340}
+                maxHeight={380}
+                minHeight={240}
                 class="mp"
                 exit
             >
