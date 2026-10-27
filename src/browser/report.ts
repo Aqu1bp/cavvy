@@ -15,7 +15,7 @@ export async function pageHeader(session: BrowserSession, page: Page): Promise<s
     if (page.documentStatus !== undefined && page.documentStatus >= 400) lines.push(`The page answered HTTP ${page.documentStatus}.`);
     if (page.crashed) lines.push("This tab's page crashed: reload it (BrowserNavigate action=reload).");
     if (page.dialog) lines.push(`A JavaScript ${page.dialog.type} dialog is waiting: ${JSON.stringify(redact(page.dialog.message).slice(0, 300))}${page.dialog.defaultPrompt ? ` (default ${JSON.stringify(redact(page.dialog.defaultPrompt).slice(0, 100))})` : ""}. Answer it with BrowserAct action=dialog accept=true or false${page.dialog.type === "prompt" ? " (text= is the answer)" : ""}.`);
-    if (page.control.owner === "human") lines.push("The user has control of this tab: reading works, acting is refused until they hand it back.");
+    if (page.control.takeTouched()) lines.push("The user has used this tab since you last read it: what changed may be their doing. Don't undo it unless they asked.");
     const errors = page.console.unseenErrors;
     page.console.unseenErrors = 0;
     if (errors) lines.push(`${errors} new console error${errors === 1 ? "" : "s"} (BrowserLogs shows them).`);
@@ -28,10 +28,11 @@ export async function pageHeader(session: BrowserSession, page: Page): Promise<s
  * shorter than the whole). The outline is remembered either way, for the next diff.
  */
 export async function pageReport(session: BrowserSession, page: Page, o: { diff?: boolean } = {}): Promise<string> {
+    // Read before the header, which uses up what it tells (the user's use, new errors): a read that fails tells it next time.
+    const outline = page.crashed || page.dialog ? undefined : await page.outline();
     const header = await pageHeader(session, page);
     if (page.crashed) return header.join("\n");
-    if (page.dialog) return [...header, "(The page is blocked by the dialog, so its content can't be read until it's answered.)"].join("\n");
-    const outline = await page.outline();
+    if (page.dialog || !outline) return [...header, "(The page is blocked by the dialog, so its content can't be read until it's answered.)"].join("\n");
     const previous = page.lastOutline;
     page.lastOutline = { generation: page.refs.generation, text: outline.text };
     const changed = o.diff && previous && previous.generation === page.refs.generation ? outlineDiff(previous.text, outline.text) : undefined;

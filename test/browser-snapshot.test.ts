@@ -8,6 +8,7 @@ import { outlineDiff } from "../src/browser/diff";
 import { CONSOLE_CAPACITY, ConsoleLog, formatLogs, NETWORK_CAPACITY, NetworkLog, Ring } from "../src/browser/logs";
 import { RefTable } from "../src/browser/refs";
 import { pageHeader, pageReport } from "../src/browser/report";
+import { TabControl } from "../src/browser/control";
 import { displayUrl } from "../src/browser/url-policy";
 import { axTree, SHOP, SHOP_DOM, text, type AxSpec } from "./helpers/ax-tree";
 
@@ -419,7 +420,7 @@ describe("a page report", () => {
             crashed: false,
             documentStatus: 200 as number | undefined,
             dialog: undefined as undefined | { type: string; message: string; defaultPrompt?: string },
-            control: { owner: "agent" },
+            control: new TabControl("agent"),
             console: new ConsoleLog(),
             refs: { generation: 0 },
             lastOutline: undefined as undefined | { generation: number; text: string },
@@ -440,8 +441,12 @@ describe("a page report", () => {
     test("tells what is wrong with the page and what waits for the agent", async () => {
         const status = await pageHeader(fakes({ documentStatus: 404 }).session, fakes({ documentStatus: 404 }).page);
         expect(status).toContain("The page answered HTTP 404.");
-        const user = await pageReport(fakes().session, fakes({ control: { owner: "human" } }).page);
-        expect(user).toContain("The user has control of this tab: reading works, acting is refused until they hand it back.");
+        const used = new TabControl("agent");
+        used.humanInput();
+        const user = fakes({ control: used });
+        expect(await pageReport(user.session, user.page)).toContain("The user has used this tab since you last read it");
+        // told once
+        expect(await pageReport(user.session, user.page)).not.toContain("The user has used this tab");
         const crashed = await pageReport(fakes().session, fakes({ crashed: true }).page);
         expect(crashed).toContain("crashed: reload it");
         expect(crashed).not.toContain("button");

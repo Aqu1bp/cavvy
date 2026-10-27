@@ -1,6 +1,6 @@
 // The short names ("e12") a snapshot gives page elements, so a call can say which one without coordinates. A ref is
 // the number of a DOM node (its backendNodeId) in one tab, valid from the snapshot that listed it until the page
-// changes: a navigation, or the user taking over, ends the generation. Numbers are never reused within a tab, so a
+// changes: a navigation ends the generation. Numbers are never reused within a tab, so a
 // ref from an earlier generation can't point at a different element in a later one.
 
 export interface RefEntry {
