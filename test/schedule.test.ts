@@ -3,12 +3,12 @@ import { describeJob, intervalText, MAX_JOBS, parseInterval, parseLoopArgs, Sche
 
 let tz: string | undefined;
 beforeAll(() => {
-    tz = process.env.TZ;
+    // By name, never deleted: in Bun, deleting TZ freezes the zone for the rest of the process.
+    tz = process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
     process.env.TZ = "America/New_York";
 });
 afterAll(() => {
-    if (tz === undefined) delete process.env.TZ;
-    else process.env.TZ = tz;
+    process.env.TZ = tz;
 });
 
 const MIN = 60_000;

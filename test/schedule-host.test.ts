@@ -15,14 +15,14 @@ beforeAll(() => {
     home = mkdtempSync(join(tmpdir(), "cavvy-sched-"));
     prevHome = process.env.CAVVY_HOME;
     process.env.CAVVY_HOME = home;
-    prevTz = process.env.TZ;
+    // By name, never deleted: in Bun, deleting TZ freezes the zone for the rest of the process.
+    prevTz = process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
     process.env.TZ = "America/New_York";
 });
 afterAll(() => {
     if (prevHome === undefined) delete process.env.CAVVY_HOME;
     else process.env.CAVVY_HOME = prevHome;
-    if (prevTz === undefined) delete process.env.TZ;
-    else process.env.TZ = prevTz;
+    process.env.TZ = prevTz;
     rmSync(home, { recursive: true, force: true });
 });
 
