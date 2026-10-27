@@ -44,6 +44,7 @@ import {
     CodexTurn,
     FAST_TIERS,
     LISTENER_NOTE,
+    READ_ONLY_LISTENER_NOTE,
     Rpc,
     answerOf,
     clientMessageId,
@@ -393,7 +394,7 @@ export class CodexLiveConnection extends CodexTurn {
             this.sink.emit({ type: "notice", level: "warn", message: "Codex already has a server named cavvy; it is disabled and this session runs without Cavvy delegation to avoid merging server configurations." });
             orch = undefined;
         }
-        const baseInstructions = [t.appendSystemPrompt, LISTENER_NOTE].filter(Boolean).join("\n\n") || undefined;
+        const baseInstructions = [t.appendSystemPrompt, t.readOnly ? READ_ONLY_LISTENER_NOTE : LISTENER_NOTE].filter(Boolean).join("\n\n") || undefined;
         const developerInstructions = [baseInstructions, orch?.instructions].filter(Boolean).join("\n\n") || undefined;
         let config: Record<string, unknown> | undefined = orch && !t.readOnly ? { ...off, mcp_servers: { ...off?.mcp_servers, ...(orchestratorConfig(orch).mcp_servers as Record<string, unknown>) } } : off;
         if (this.nativeHooks && this.hookServer) config = { ...config, mcp_servers: { ...(config?.mcp_servers as Record<string, unknown> | undefined), ...hookServerConfig(this.hookServer) } };

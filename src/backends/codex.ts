@@ -254,8 +254,14 @@ interface Policy {
 
 /** Cavvy's permission mode as Codex's approval policy and sandbox. */
 export function codexPolicy(mode: PermissionMode, additionalDirectories: string[], readOnly = false, preToolUse = false): Policy {
-    // A read-only agent in auto: reads run in the read-only sandbox without asking; anything more asks Cavvy, which refuses it.
-    if (mode === "auto" && readOnly) return { approvalPolicy: "on-request", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: false }, approvalsReviewer: "user" };
+    // A read-only agent in auto: the read-only sandbox with network access, and it never asks. Nothing it runs can
+    // change files, as the sandbox holds every program it starts (a pager's shell, a Git config's helper), and nothing
+    // runs outside it, so there's nothing to approve; gh and the like reach the network from inside. With PreToolUse
+    // hooks Codex can't run itself (an older Codex), they'd see nothing then: no network, and what's more asks Cavvy.
+    if (mode === "auto" && readOnly)
+        return preToolUse
+            ? { approvalPolicy: "on-request", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: false }, approvalsReviewer: "user" }
+            : { approvalPolicy: "never", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: true }, approvalsReviewer: "user" };
     const workspaceWrite = { type: "workspaceWrite", writableRoots: additionalDirectories, networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false };
     switch (mode) {
         case "acceptEdits":
@@ -297,6 +303,9 @@ const MANUAL_NOTE =
 // Said once for the thread, whatever the mode: the mode (and with it the sandbox) can change while the thread lives.
 export const LISTENER_NOTE =
     "In every permission mode but bypass, the sandbox has no network access, and that blocks local listeners too, including loopback servers that tests start. If a command needs one, ask to run that command outside the sandbox through the approval flow.";
+// The same for a read-only agent, whose sandbox in auto mode has the network and nothing outside it.
+export const READ_ONLY_LISTENER_NOTE =
+    "Nothing you run can change files. In auto mode the sandbox has network access, and nothing runs outside it, so don't ask to. In the other modes it has no network access, which blocks local listeners too; if a read-only command needs one, ask to run it outside the sandbox through the approval flow.";
 
 /** What a turn starts with for the mode: plan mode's rules, or (manual mode, an agent that may change things) that changes are asked about. */
 export function modeNote(mode: PermissionMode, readOnly: boolean): string | undefined {
@@ -876,7 +885,7 @@ export class CodexTurn {
                 this.sink.emit({ type: "notice", level: "warn", message: "Codex already has a server named cavvy; it is disabled and this turn runs without Cavvy delegation to avoid merging server configurations." });
                 o = undefined;
             }
-            const baseInstructions = [t.appendSystemPrompt, LISTENER_NOTE].filter(Boolean).join("\n\n") || undefined;
+            const baseInstructions = [t.appendSystemPrompt, t.readOnly ? READ_ONLY_LISTENER_NOTE : LISTENER_NOTE].filter(Boolean).join("\n\n") || undefined;
             const developerInstructions = [baseInstructions, o?.instructions].filter(Boolean).join("\n\n") || undefined;
             let config: Record<string, unknown> | undefined = o && !t.readOnly ? { ...off, mcp_servers: { ...off?.mcp_servers, ...(orchestratorConfig(o).mcp_servers as Record<string, unknown>) } } : off;
             if (this.nativeHooks && this.hookServer) config = { ...config, mcp_servers: { ...(config?.mcp_servers as Record<string, unknown> | undefined), ...hookServerConfig(this.hookServer) } };

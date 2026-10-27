@@ -1229,13 +1229,31 @@ describe("Codex backend", () => {
         expect(insideWorkspace(join(home, "proj", "src"), "/elsewhere", ["~/proj"])).toBe(true);
         expect(insideWorkspace(join(home, "other"), "/elsewhere", ["~/proj"])).toBe(false);
         expect(insideWorkspace(join(realpathSync(tmpdir()), "ws", "lib"), join(realpathSync(tmpdir()), "ws", "app"), ["../lib"])).toBe(true);
-        // A read-only agent in auto: reads run in the read-only sandbox; anything more asks Cavvy, never Codex's reviewer.
-        expect(codexPolicy("auto", ["/x"], true)).toEqual({ approvalPolicy: "on-request", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: false }, approvalsReviewer: "user" });
+        // A read-only agent in auto: the read-only sandbox with network, never asking; in other modes it has no network.
+        expect(codexPolicy("auto", ["/x"], true)).toEqual({ approvalPolicy: "never", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: true }, approvalsReviewer: "user" });
+        // With PreToolUse hooks an older Codex can't run itself: no network, and what's more asks Cavvy, where they run.
+        expect(codexPolicy("auto", ["/x"], true, true)).toEqual({ approvalPolicy: "on-request", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: false }, approvalsReviewer: "user" });
+        expect(codexPolicy("default", ["/x"], true)).toMatchObject({ approvalPolicy: "untrusted", sandboxPolicy: { type: "readOnly", networkAccess: false } });
         expect(codexPolicy("auto", ["/x"])).toMatchObject({ approvalPolicy: "on-request", sandbox: "workspace-write", approvalsReviewer: "auto_review" });
         expect(codexPolicy("plan", [])).toMatchObject({ approvalPolicy: "untrusted", sandbox: "read-only", approvalsReviewer: "user" });
         expect(codexPolicy("acceptEdits", ["/x"])).toMatchObject({ approvalPolicy: "untrusted", sandbox: "workspace-write", sandboxPolicy: { type: "workspaceWrite", writableRoots: ["/x"] }, approvalsReviewer: "user" });
         expect(codexPolicy("auto", [])).toMatchObject({ approvalPolicy: "on-request", sandbox: "workspace-write", approvalsReviewer: "auto_review" });
         expect(codexPolicy("bypassPermissions", [])).toMatchObject({ approvalPolicy: "never", sandbox: "danger-full-access", approvalsReviewer: "user" });
+    });
+
+    test("auto mode, a read-only agent: the read-only sandbox with network, and Codex never asks", async () => {
+        process.env.FAKE_COMMAND = "ls";
+        const a = await makeAgent({ provider: "codex", mode: "auto", readOnly: true, ask: () => ({ allow: true }) });
+        expect(await a.run("look")).toBe("done");
+        expect(turnStarts()[0]).toMatchObject({ approvalPolicy: "never", sandboxPolicy: { type: "readOnly", networkAccess: true }, approvalsReviewer: "user" });
+        // Codex asked nothing: no answer to an approval request went back to it.
+        expect(received().some((m) => m.result?.decision)).toBe(false);
+        expect(a.asked).toEqual([]);
+        expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: true, command: "ls" });
+        // Told it has the network and nothing outside the sandbox, not to ask to run outside it for the network.
+        const thread = received().find((m) => m.method === "thread/start")!.params;
+        expect(thread.developerInstructions).toContain("In auto mode the sandbox has network access, and nothing runs outside it");
+        expect(thread.developerInstructions).not.toContain("In every permission mode but bypass");
     });
 
     test("auto mode: Codex's own reviewer answers what leaves its sandbox, and its no is shown; other modes take it back", async () => {
