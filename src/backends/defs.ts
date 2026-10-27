@@ -81,6 +81,8 @@ export interface AgentCliDef {
     protocol: "claude-stream-json" | "codex-app-server" | "acp";
     /** The arguments that start an ACP CLI in ACP mode. */
     acpArgs?: string[];
+    /** After its stdin is closed, how long it may take to exit before it's terminated (LiveOptions.stopGraceMs; 3 s when left out). */
+    stopGraceMs?: number;
     /** Separate accounts, each a config folder of its own. Left out: only the CLI's default sign-in. */
     account?: {
         /** The environment variable that selects the folder. */
@@ -222,7 +224,91 @@ const CODEX: AgentCliDef = {
     },
 };
 
-export const AGENT_CLIS: readonly AgentCliDef[] = [CLAUDE_CODE, CODEX];
+/**
+ * What an ACP agent can do here (src/backends/acp): a turn at a time, nothing in the background, none of Cavvy's
+ * hooks, MCP tools or compaction. Images as its initialize says. A message sent mid-turn joins the running turn at
+ * its next step (each agent's way: src/backends/acp/agents.ts).
+ */
+const ACP_CAPS: CliCapabilities = {
+    steering: "between-tool-rounds",
+    steersAttachments: ["text"],
+    backgroundTasks: false,
+    stopTask: false,
+    moveToBackground: false,
+    wakes: "none",
+    // session/set_config_option (or set_model) between turns.
+    live: { model: true, effort: true, mode: "per-turn" },
+    fork: false,
+    rewind: false,
+    compact: "none",
+    planLimits: "none",
+    hooks: "none",
+    mcpAttach: "none",
+    mcpInstructionsInSystemPrompt: false,
+    ownMonitor: false,
+    nativeAgents: false,
+    loadsPlugins: false,
+    skills: "paste",
+    cliCommandsAreSkills: false,
+    pdfs: false,
+    images: true,
+    autoReviewer: false,
+    resolvesUnknownCommands: false,
+    importSessions: false,
+    usageLogs: false,
+};
+
+// OpenCode 1.19.4 over ACP (`opencode acp`): test/fixtures/protocol/opencode-1.19.4-*.jsonl. What's its own beyond
+// this (its spawn environment, its model list) is in src/backends/acp/agents.ts.
+const OPENCODE: AgentCliDef = {
+    id: "opencode",
+    name: "OpenCode",
+    vendor: "OpenCode",
+    planLabel: "OpenCode",
+    cli: {
+        command: "opencode",
+        product: "OpenCode",
+        install: "Install OpenCode (https://opencode.ai/docs)",
+        signIn: "opencode auth login",
+        signOut: "opencode auth logout",
+    },
+    protocol: "acp",
+    acpArgs: ["acp"],
+    projectConfig: (cwd, has) => [...["opencode.json", "opencode.jsonc"].filter((f) => has(join(cwd, f))), ...(has(join(cwd, ".opencode")) ? [".opencode/"] : [])],
+    // Its own default, free without signing in.
+    preferredModels: [/^opencode\/big-pickle$/],
+    // A steering message is a session/prompt of its own, which takes images as any prompt does: the model saw one sent
+    // as its answer was being written (opencode-1.19.4-steer-late.jsonl).
+    caps: { ...ACP_CAPS, steersAttachments: ["image", "text"] },
+};
+
+// Grok Build 1.0.70 over ACP (`grok agent --no-leader stdio`): test/fixtures/protocol/grok-1.0.70-*.jsonl. Its modes,
+// model list and sign-in check are in src/backends/acp/agents.ts.
+const GROK: AgentCliDef = {
+    id: "grok",
+    name: "Grok Build",
+    vendor: "xAI",
+    planLabel: "Grok account",
+    cli: {
+        command: "grok",
+        product: "Grok Build",
+        install: "Install Grok Build (curl -fsSL https://x.ai/cli/install.sh | bash)",
+        signIn: "grok login",
+        signOut: "grok logout",
+    },
+    protocol: "acp",
+    // Agent options go between `agent` and `stdio`; --no-leader keeps it from joining a shared leader process.
+    acpArgs: ["agent", "--no-leader", "stdio"],
+    // It exits about 3 s after its stdin closes, and takes about 2.5 s after SIGTERM.
+    stopGraceMs: 5000,
+    // No projectConfig: a project's .grok/ and .claude/settings*.json are behind its own folder trust, not Cavvy's.
+    preferredModels: [/^grok-4\.7$/],
+    // Auto mode is its own reviewer (session _meta.autoMode). It steers with text only (_x.ai/interject takes no
+    // images): one with an image waits for its own turn.
+    caps: { ...ACP_CAPS, autoReviewer: true },
+};
+
+export const AGENT_CLIS: readonly AgentCliDef[] = [CLAUDE_CODE, CODEX, OPENCODE, GROK];
 
 export function agentCli(id: string): AgentCliDef | undefined {
     return AGENT_CLIS.find((d) => d.id === id);

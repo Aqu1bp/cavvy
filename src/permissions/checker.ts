@@ -32,7 +32,7 @@ import { accessNeeded, looksDestructive, sandboxEnabled, sandboxKind, sandboxPol
 import { stableStringify, type ApprovedAction } from "./classifier";
 import { isBrowserTool, isQuietBrowserCall, isReadOnly, isShellTool } from "../tools/types";
 import { canonical, expandPath, isInside, spellings } from "../util/files";
-import { cavvyHome, paths } from "../config/paths";
+import { cavvyHome, opencodeConfigDir, paths } from "../config/paths";
 import { homeAliases, LEGACY } from "../config/legacy";
 import { childEnv } from "../util/env";
 import { accountCredentialFiles, accountFolders, accountProtectedPaths } from "../providers/accounts";
@@ -116,7 +116,7 @@ function isLink(p: string): boolean {
 /** What isCavvyConfig looks for in a path. */
 /** Tools whose yes covers only the call it answered (see approve). */
 const ONE_CALL_APPROVAL = new Set(["GitCommit", "GitPush", "CreatePullRequest", "BrowserAct", "BrowserEval"]);
-const CONFIG_NAMES = new Set([".cavvy", LEGACY.dir, ".claude", ".codex", ".git", ".mcp.json"]);
+const CONFIG_NAMES = new Set([".cavvy", LEGACY.dir, ".claude", ".codex", ".opencode", ".grok", ".git", ".mcp.json", "opencode.json", "opencode.jsonc"]);
 
 /**
  * The path with each git checkout Claude Code keeps at …/.claude/worktrees/<name>
@@ -685,13 +685,15 @@ export class PermissionChecker {
 
     private isCavvyConfig(p: string): boolean {
         const forms = pathForms(p);
-        const home = homes().flatMap(pathForms);
+        // Cavvy's homes, and OpenCode's global config (its plugins run when it starts), as the homes are.
+        const home = [...homes(), opencodeConfigDir()].flatMap(pathForms);
         if (forms.some((f) => home.some((h) => isInside(f, h)))) return true;
         if (accountProtectedPaths().flatMap(pathForms).some((a) => forms.some((f) => isInside(f, a)))) return true;
         // `.git` may be a file too (worktrees, submodules): it says where the repo lives.
-        // .claude/ and .codex/ configure the agent CLIs Cavvy can run (hooks, skills, rules).
+        // .claude/, .codex/, .opencode/ (with opencode.json and opencode.jsonc) and .grok/ configure the agent CLIs
+        // Cavvy can run (hooks, plugins, skills, rules).
         const judged = new Set([p, canonical(p)].map(withoutWorktrees).flatMap(spellings));
-        return [...judged].some((c) => /(^|\/)\.(cavvy|harness|claude|codex)\//.test(c) || /(^|\/)\.mcp\.json$/.test(c) || /(^|\/)\.git(\/|$)/.test(c));
+        return [...judged].some((c) => /(^|\/)\.(cavvy|harness|claude|codex|opencode|grok)\//.test(c) || /(^|\/)(\.mcp\.json|opencode\.jsonc?)$/.test(c) || /(^|\/)\.git(\/|$)/.test(c));
     }
 
     private isSensitive(p: string): boolean {

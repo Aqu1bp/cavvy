@@ -25,44 +25,68 @@ const USER = (() => {
     }
 })();
 
+/** Exact strings a probe saw at run time (a session id, a temp folder) and the placeholder each becomes. */
+const LITERALS: [string, string][] = [];
+/** Adds a run-time value to the scrubber, e.g. `scrubAlso(sessionId, "<session-1>")`. Longest first, so a path wins over its parent. */
+export function scrubAlso(value: string, placeholder: string) {
+    if (!value || LITERALS.some(([v]) => v === value)) return;
+    LITERALS.push([value, placeholder]);
+    LITERALS.sort((a, b) => b[0].length - a[0].length);
+}
+
 /** Scrub anything that looks like an account email, an org, account, user or install id, or a token before it is written. */
 export function scrub<T>(v: T): T {
-    let s = JSON.stringify(v)
+    let s = JSON.stringify(v);
+    for (const [value, placeholder] of LITERALS) s = s.split(value).join(placeholder);
+    s = s
         .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, "<email>")
         .replace(/\b(sk|sess|ghp|gho|xox[a-z])-[A-Za-z0-9_-]{16,}/g, "<token>")
         .replace(/(eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,})/g, "<jwt>")
-        .replace(/("(?:[A-Za-z]*(?:account|org|organization|user|workspace|chatgpt|tenant|installation|device|machine)_?(?:id|uuid))"\s*:\s*)"[^"]*"/gi, '$1"<id>"')
+        .replace(/("(?:[A-Za-z]*(?:account|org|organization|user|workspace|chatgpt|tenant|installation|device|machine|agent|instance)_?(?:id|uuid))"\s*:\s*)"[^"]*"/gi, '$1"<id>"')
         .replace(/("(?:email|name|display_?name)"\s*:\s*)"[^"]*@[^"]*"/gi, '$1"<email>"')
         .replace(/\/Users\/[^/"\s]+/g, "/Users/<user>")
         // Cavvy's folder for a CLI's sign-in (a probe run from a Cavvy session uses it) is named for the account.
         .replace(/(\/accounts\/[\w-]+\/)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "$1<account>")
+        // macOS per-user temp folder (/var/folders/xx/<random>/T), which names this machine's user.
+        .replace(/(\/private)?\/var\/folders\/[^/"\s]+\/[^/"\s]+\/T\b/g, "/var/folders/<tmp>/T")
         // claude.ai's synced skills and plugins sit in a folder named for the organization and account (<org>_<account>).
         .replace(/\/synced\/[0-9a-f]{8}-[0-9a-f-]{27}_[0-9a-f]{8}-[0-9a-f-]{27}/gi, "/synced/<org>_<account>")
-        .replace(/("balance"\s*:\s*)"[^"]*"/g, '$1"<n>"');
+        .replace(/("balance"\s*:\s*)"[^"]*"/g, '$1"<n>"')
+        .replace(/("subscription_tier[A-Za-z_]*"\s*:\s*)"[^"]*"/g, '$1"<tier>"')
+        // Grok's addresses for a subagent's run (subagent_spawned and its progress).
+        .replace(/("(?:agentAddress|attempt_id|attemptId)"\s*:\s*)"[^"]*"/g, '$1"<id>"')
+        // Opaque, server-issued blobs (Grok's encrypted reasoning signatures).
+        .replace(/("signature"\s*:\s*)"[^"]{40,}"/g, '$1"<signature>"');
     if (HOST) s = s.replace(HOST, "<host>");
     if (USER) s = s.replace(USER, "<user>");
     return JSON.parse(s);
 }
 
 /** Keeps fixtures small: long strings are cut, long arrays keep their first items. The raw frames stay intact in memory. */
-export function trim(v: any, depth = 0): any {
-    if (typeof v === "string") return v.length > 500 ? `${v.slice(0, 500)}...[${v.length - 500} more chars]` : v;
-    if (Array.isArray(v)) return v.length > 6 ? [...v.slice(0, 3).map((x) => trim(x, depth + 1)), `...[${v.length - 3} more items]`] : v.map((x) => trim(x, depth + 1));
-    if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, trim(x, depth + 1)]));
+export function trim(v: any, depth = 0, limits: TrimLimits = {}): any {
+    const str = limits.maxString ?? 500;
+    const arr = limits.maxArray ?? 6;
+    if (typeof v === "string") return v.length > str ? `${v.slice(0, str)}...[${v.length - str} more chars]` : v;
+    if (Array.isArray(v)) return v.length > arr ? [...v.slice(0, Math.min(3, arr)).map((x) => trim(x, depth + 1, limits)), `...[${v.length - Math.min(3, arr)} more items]`] : v.map((x) => trim(x, depth + 1, limits));
+    if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, trim(x, depth + 1, limits)]));
     return v;
 }
+export type TrimLimits = { maxString?: number; maxArray?: number };
 
 export class Log {
     private t0 = Date.now();
     readonly frames: { t: number; dir: string; frame: any }[] = [];
-    constructor(readonly file: string) {
+    constructor(
+        readonly file: string,
+        readonly limits: TrimLimits = {},
+    ) {
         mkdirSync(dirname(file), { recursive: true });
         writeFileSync(file, "");
     }
     add(dir: "in" | "out" | "err" | "note", frame: unknown) {
         const e = { t: Date.now() - this.t0, dir, frame };
         this.frames.push(e);
-        appendFileSync(this.file, JSON.stringify(trim(scrub(e))) + "\n");
+        appendFileSync(this.file, JSON.stringify(trim(scrub(e), 0, this.limits)) + "\n");
         if (process.env.PROBE_VERBOSE) console.error(`[${e.t}] ${dir} ${JSON.stringify(scrub(frame)).slice(0, 220)}`);
     }
     note(text: string, extra?: unknown) {

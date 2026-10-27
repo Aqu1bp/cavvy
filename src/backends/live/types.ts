@@ -77,6 +77,12 @@ export type CliEvent =
      * `false`: a report said to be due won't come after all (none started in time).
      */
     | { t: "task"; task: BackgroundTaskInfo; wakeDue?: boolean }
+    /**
+     * The connection stopped a turn itself (Cavvy's own stop: ACP's tripwire, a no that ends the turn), having asked the
+     * CLI to: held to interrupt's deadline. Unanswered by then, the turn ends with `error` (aborted without one), and the
+     * process is stopped: it may still be doing what it was stopped for.
+     */
+    | { t: "stop"; ref: string; error?: string }
     | { t: "session_id"; id: string }
     | { t: "limits"; limits: PlanLimits; partial: boolean }
     | { t: "goal"; goal: NativeGoal | null }
@@ -97,6 +103,11 @@ export interface CliConnection {
     steer?(ref: string, input: TurnInput): Promise<boolean>;
     /** Interrupt a turn. Never stops the process or its background work. */
     interrupt(ref: string): Promise<void>;
+    /**
+     * The session is ending a turn itself (its stop went unanswered): what the turn said so far that's still held, and
+     * the tools it started, go into it now, as its end would have put them.
+     */
+    settle?(ref: string): void;
     /** Ask for a background task to stop; its task event says when it has. */
     stopTask?(id: string): Promise<void>;
     moveToBackground?(toolUseId: string): Promise<boolean>;

@@ -26,7 +26,10 @@ describe("sandboxPolicy", () => {
         expect(p.writable).toContain(ws);
         expect(p.writable).toContain(real(tmpdir()));
         expect(p.writable).toContain(process.platform === "darwin" ? "/private/tmp" : "/tmp");
-        expect(p.readOnly).toEqual([join(ws, ".cavvy"), join(ws, ".harness"), join(ws, ".mcp.json"), real(CAVVY_HOME)]);
+        // OpenCode's global config (its plugins run when it starts) too, wherever the workspace is.
+        expect(p.readOnly).toEqual([join(ws, ".cavvy"), join(ws, ".harness"), join(ws, ".mcp.json"), join(ws, "opencode.json"), join(ws, "opencode.jsonc"), real(CAVVY_HOME), join(home, ".config", "opencode")]);
+        // The agent CLIs' config folders: OpenCode's and Grok's (plugins, hooks) as Claude Code's and Codex's.
+        expect(p.cliConfig).toEqual([".claude", ".codex", ".opencode", ".grok"].map((c) => join(ws, c)));
         for (const c of [".ssh", ".aws", ".gnupg", ".config/gcloud", ".netrc", ".npmrc", ".git-credentials", "Library/Keychains"]) expect(p.unreadable).toContain(join(home, c));
         // The secrets and accounts/ can't be read or listed; the rest of the home can be listed, not read.
         for (const f of ["credentials.json", "providers.json", "accounts"]) expect(p.unreadable).toContain(join(real(CAVVY_HOME), f));
@@ -34,6 +37,34 @@ describe("sandboxPolicy", () => {
         expect(p.contentsUnreadable).toEqual([real(CAVVY_HOME)]);
         // Covered before a repo exists, so `git init` can't plant hooks either.
         expect(p.gitDirs).toEqual([join(ws, ".git")]);
+    });
+
+    test("OpenCode's global config where XDG_CONFIG_HOME puts it", () => {
+        const home = real(tempDir());
+        const prev = process.env.XDG_CONFIG_HOME;
+        try {
+            process.env.XDG_CONFIG_HOME = join(home, "xdg");
+            const p = sandboxPolicy([home], { cavvyHome: CAVVY_HOME, home });
+            expect(p.readOnly).toContain(join(home, "xdg", "opencode"));
+            expect(p.readOnly).not.toContain(join(home, ".config", "opencode"));
+        } finally {
+            if (prev === undefined) delete process.env.XDG_CONFIG_HOME;
+            else process.env.XDG_CONFIG_HOME = prev;
+        }
+    });
+
+    test("with the workspace at home, ~/.config can't be moved: moved away, edited and moved back, it'd plant OpenCode plugins", () => {
+        const home = real(tempDir());
+        const prev = process.env.XDG_CONFIG_HOME;
+        delete process.env.XDG_CONFIG_HOME;
+        try {
+            const p = sandboxPolicy([home], { cavvyHome: CAVVY_HOME, home });
+            const fixed = seatbeltProfile(p).split("\n").find((l) => l.startsWith("(deny file-write* (literal "))!;
+            expect(fixed).toContain(`(literal "${join(home, ".config")}")`);
+            expect(fixed).toContain(`(literal "${home}")`);
+        } finally {
+            if (prev !== undefined) process.env.XDG_CONFIG_HOME = prev;
+        }
     });
 
     test("a worktree's own git dir and the shared one are writable and protected", () => {
@@ -639,6 +670,48 @@ describe.skipIf(!seatbelt)("a sandboxed Bash command (Seatbelt)", () => {
         expect(existsSync(join(CAVVY_HOME, "settings.json"))).toBe(false);
         const read = await bash(`cat "${join(CAVVY_HOME, "credentials.json")}"`);
         expect(read.isError).toBe(true);
+    });
+
+    test("with the workspace at home, can't write OpenCode's global config (~/.config/opencode), or ~/.grok", async () => {
+        const home = real(tempDir());
+        const prev = process.env.XDG_CONFIG_HOME;
+        delete process.env.XDG_CONFIG_HOME;
+        try {
+            mkdirSync(join(home, ".config", "opencode", "plugins"), { recursive: true });
+            const sb: Sandbox = { kind: "seatbelt", policy: sandboxPolicy([home], { cavvyHome: CAVVY_HOME, home }) };
+            const run = (command: string) => BashTool.run({ command }, { ...ctx(sb), state: { ...state, cwd: home, projectRoot: home } });
+            const plugin = await run("echo 'export default {}' > .config/opencode/plugins/x.ts");
+            expect(plugin.isError).toBe(true);
+            expect(existsSync(join(home, ".config", "opencode", "plugins", "x.ts"))).toBe(false);
+            expect((await run("mkdir -p .grok && echo x > .grok/config.toml")).isError).toBe(true);
+            expect(existsSync(join(home, ".grok", "config.toml"))).toBe(false);
+            // The rest of ~/.config is the workspace's.
+            const other = await run("mkdir -p .config/other && echo x > .config/other/x.json && echo ok");
+            expect(other.content).toBe("ok");
+        } finally {
+            if (prev !== undefined) process.env.XDG_CONFIG_HOME = prev;
+        }
+    });
+
+    test("with the workspace at home, ~/.config can't be moved away to plant an OpenCode plugin and moved back", async () => {
+        const home = real(tempDir());
+        const prev = process.env.XDG_CONFIG_HOME;
+        delete process.env.XDG_CONFIG_HOME;
+        try {
+            mkdirSync(join(home, ".config", "opencode", "plugins"), { recursive: true });
+            mkdirSync(join(home, "other"));
+            const sb: Sandbox = { kind: "seatbelt", policy: sandboxPolicy([home], { cavvyHome: CAVVY_HOME, home }) };
+            const run = (command: string) => BashTool.run({ command }, { ...ctx(sb), state: { ...state, cwd: home, projectRoot: home } });
+            const moved = await run("mv .config staging && echo 'export default {}' > staging/opencode/plugins/p.ts && mv staging .config");
+            expect(moved.isError).toBe(true);
+            expect(existsSync(join(home, ".config", "opencode", "plugins"))).toBe(true);
+            expect(existsSync(join(home, "staging"))).toBe(false);
+            // Other folders in the workspace still move.
+            expect((await run("mv other moved && echo ok")).content).toBe("ok");
+            expect(existsSync(join(home, "moved"))).toBe(true);
+        } finally {
+            if (prev !== undefined) process.env.XDG_CONFIG_HOME = prev;
+        }
     });
 
     test("git worktree add fails inside, and the hint says why, how to finish, and about the branch it left", async () => {

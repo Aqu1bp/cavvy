@@ -67,6 +67,7 @@ In the terminal app, `/login` adds an API key (or `/login claude-code`, `/login 
 |---|---|
 | [Providers and models](docs/providers.md) | API keys, Vertex AI, the model list, fast mode, and how keys are kept safe |
 | [Claude and ChatGPT subscriptions](docs/subscriptions.md) | Running your own Claude Code or Codex, several accounts, continuing a CLI session |
+| [Other coding agents (ACP)](docs/acp-agents.md) | Running your own OpenCode or Grok Build, and how their permissions work |
 | [Permissions](docs/permissions.md) | Permission modes, auto mode's sandbox and reviewer, rules |
 | [The terminal app](docs/terminal.md) | Shortcuts, commands, rewinding and forking, the status line, notifications |
 | [Desktop app and GUI](docs/desktop.md) | Building, installing and updating, using it, the terminal panel, project scripts, security |

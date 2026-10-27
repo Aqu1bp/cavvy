@@ -4,7 +4,7 @@
 // decision, MCP servers and file index, shared by its sessions.
 
 import { noteScheduleIndex, readScheduleIndex } from "../agent/schedule-host";
-import { ACCOUNT_PROVIDERS, account, accountProvider, accountSharingWarning, addAccount, defaultAccount, holdLogin, listAccounts, removeAccount, renameAccount, setDefaultAccount, registerAccountRoots } from "../providers/accounts";
+import { ACCOUNT_PROVIDERS, account, accountProvider, cliAccounts, accountSharingWarning, addAccount, defaultAccount, holdLogin, listAccounts, removeAccount, renameAccount, setDefaultAccount, registerAccountRoots } from "../providers/accounts";
 import { loginCommand } from "../backends/account-login";
 import { redactedError } from "./git-handles";
 import { sessionWorktree } from "./session-worktrees";
@@ -37,7 +37,8 @@ import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAge
 import { checkAgentPlan, vendorOf, type AgentCliStatus } from "../backends/index";
 import { loadPlanLimits, savePlanLimits } from "./limits-store";
 import { AppUpdates } from "./app-update";
-import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
+import { findCli } from "../backends/cli";
+import { AGENT_CLIS, agentCli } from "../backends/defs";
 import { getKey, removeKey, setKey } from "../auth/credentials";
 import { detectKeyProvider, validateKey } from "../auth/detect";
 import { FileIndex } from "../ui/mentions";
@@ -1509,8 +1510,8 @@ export class Engine {
      */
     private checkPlans(): Promise<void> {
         const run = async () => {
-            const checks = ACCOUNT_PROVIDERS.filter((provider) => readAgentConfig(provider) && findCli(provider, provider === "codex" ? CODEX_CLI : CLAUDE_CLI))
-                .flatMap((provider) => listAccounts(provider).filter((a) => !a.invalid).map((a) => ({ provider, id: a.id })));
+            const checks = AGENT_CLIS.filter((d) => readAgentConfig(d.id) && findCli(d.id, d.cli))
+                .flatMap((d) => cliAccounts(d.id).filter((a) => !a.invalid).map((a) => ({ provider: d.id, id: a.id })));
             const changed = await Promise.all(checks.map(async ({ provider, id }) => {
                 if (this.stopping) return false;
                 try {
@@ -1550,8 +1551,8 @@ export class Engine {
     }
 
     private async accountsList(provider: string, refresh = false): Promise<AccountInfo[]> {
-        accountProvider(provider);
-        return Promise.all(listAccounts(provider).map(async (a) => {
+        if (!agentCli(provider)) accountProvider(provider);
+        return Promise.all(cliAccounts(provider).map(async (a) => {
             if (a.invalid) return { ...a, description: "Invalid account folder: use a non-empty absolute path with no '..'" };
             const key = `${provider}:${a.id}`;
             if (refresh) {
@@ -1564,7 +1565,7 @@ export class Engine {
                     this.accountStatus.set(key, { description: redact((e as Error).message).slice(0, 400) });
                 }
             }
-            const sharing = accountSharingWarning(provider, a.id);
+            const sharing = agentCli(provider)?.account ? accountSharingWarning(provider, a.id) : undefined;
             return { ...a, ...this.accountStatus.get(key), ...(sharing ? { sharing } : {}) };
         }));
     }
@@ -1579,7 +1580,8 @@ export class Engine {
             }
             if (p.auth === "cli") {
                 // Only looks for the program; asking it whether it's signed in waits for "Use my plan".
-                const cli = p.id === "codex" ? CODEX_CLI : CLAUDE_CLI;
+                const def = agentCli(p.id)!;
+                const cli = def.cli;
                 const on = Boolean(readAgentConfig(p.id));
                 out.push({
                     id: p.id,
@@ -1589,7 +1591,16 @@ export class Engine {
                     source: on ? "your plan" : undefined,
                     keyUrl: p.keyUrl,
                     requiresKey: false,
-                    agentCli: { accounts: await this.accountsList(p.id), defaultAccount: defaultAccount(p.id), installed: Boolean(findCli(p.id, cli)), signIn: cli.signIn, install: cli.install, plan: p.id === "codex" ? "ChatGPT plan" : "Claude subscription" },
+                    agentCli: {
+                        accounts: await this.accountsList(p.id),
+                        defaultAccount: def.account ? defaultAccount(p.id) : "default",
+                        installed: Boolean(findCli(p.id, cli)),
+                        signIn: cli.signIn,
+                        install: cli.install,
+                        plan: def.planLabel,
+                        multiAccount: Boolean(def.account),
+                        planLimits: def.caps.planLimits !== "none",
+                    },
                 });
                 continue;
             }
