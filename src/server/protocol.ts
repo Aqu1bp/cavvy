@@ -500,6 +500,11 @@ export interface ModelSummary {
     effortLevels?: EffortLevel[];
     supportsFastMode?: boolean;
     deprecated?: boolean;
+    /**
+     * false: a message sent while it works can't join the running turn (its agent CLI takes none mid-turn), so it
+     * waits for the turn's end, and nothing offers to steer. Missing: it can (Cavvy's own models, Claude Code, Codex).
+     */
+    steers?: false;
 }
 
 export interface TodoEntry {
@@ -699,6 +704,8 @@ export type SessionOp =
     | { op: "state"; patch: Partial<SessionState> }
     | { op: "turn"; turn: Turn }
     | { op: "turn.patch"; turnId: string; patch: Partial<Omit<Turn, "blocks" | "id">> }
+    /** A turn taken back (a steer its CLI never took). */
+    | { op: "turn.remove"; turnId: string }
     | { op: "block"; turnId: string; block: Block; parent?: string }
     | { op: "block.patch"; turnId: string; blockId: string; patch: Partial<Block>; parent?: string }
     | { op: "block.remove"; turnId: string; blockId: string }
@@ -1542,7 +1549,8 @@ export type ServerEvent =
       }
     | { type: "toast"; level: "info" | "warn" | "error"; message: string }
     /** What goes back into the session's input box (unsent messages after an interrupt, a rewound prompt). */
-    | { type: "draft"; sessionId: string; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] }
+    /** `after`: after what's typed in the composer (a steer handed back), not before it. */
+    | { type: "draft"; sessionId: string; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[]; after?: true }
     | { type: "models.changed" }
     /** A project's scripts changed (in any window); `project` is ProjectScripts.project. */
     | { type: "scripts.changed"; project: string }

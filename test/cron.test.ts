@@ -4,12 +4,12 @@ import { CronError, describeCron, nextRun, parseCron } from "../src/util/cron";
 // Local time throughout: these run in New York, which has both daylight-saving changes.
 let tz: string | undefined;
 beforeAll(() => {
-    tz = process.env.TZ;
+    // By name, never deleted: in Bun, deleting TZ freezes the zone for the rest of the process.
+    tz = process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
     process.env.TZ = "America/New_York";
 });
 afterAll(() => {
-    if (tz === undefined) delete process.env.TZ;
-    else process.env.TZ = tz;
+    process.env.TZ = tz;
 });
 
 const at = (y: number, mo: number, d: number, h = 0, mi = 0) => new Date(y, mo - 1, d, h, mi).getTime();

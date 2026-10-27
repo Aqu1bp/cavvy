@@ -31,7 +31,7 @@ import { motionMs } from "./LiveLine";
 import { composerStorage } from "../lib/drafts";
 import { composingKey, revealMenuOption } from "../lib/composer-menu";
 import { matchSkills, skillToken } from "../lib/commands";
-import { firstSendable, followUpFor, otherFollowUp } from "../lib/queue";
+import { firstSendable, FOLLOW_UP_WORDS, followUpFor, followUpLabels, otherFollowUp, restoreWaits, withDraft } from "../lib/queue";
 import { canStop } from "../lib/session-status";
 import { QueueTab } from "./QueueTab";
 import { StepsTray } from "./StepsTray";
@@ -158,15 +158,17 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     createEffect(on(() => st()?.accountNeeded, (provider, was) => {
         if (provider && provider !== was) setModelPickerOpen(true);
     }, { defer: true }));
-    // What the server hands back (interrupted queue, rewound prompt).
+    // What the server hands back (interrupted queue, rewound prompt, a steer the turn never took).
     createEffect(() => {
         const d = h()?.draft();
         if (d === undefined) return;
+        // A steer waits for a send under way to clear what it sent, and for a command being typed to go.
+        if (d.after && restoreWaits(text(), sending())) return;
         h()!.setDraft(undefined);
         // Comments sent with it come back as comments, not as their markup.
         const back = splitComments(d.text);
         if (back.comments.length) reviewComments.restore(h()!.id, back.comments.map((c) => ({ ...c, ...aroundOf(h()!.id, c), id: newCommentId(), created: Date.now() })));
-        if (back.text) setText((t) => (t.trim() ? `${back.text}\n${t}` : back.text));
+        if (back.text) setText((t) => withDraft(t, back.text, d.after));
         if (d.images?.length || d.files?.length) setAttachments((a) => [...a, ...fromWire(d.images, d.files)]);
         // Restored without focus while Settings covers it: that would take focus from what's typed there.
         requestAnimationFrame(() => {
@@ -360,8 +362,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     };
 
     // ---- sending
+    /** The session's model takes a message while its turn runs (an agent CLI may not: then every message is queued). */
+    const steers = () => st()?.model?.steers !== false;
     /** What a message sent now does while a turn runs: the setting, or with `opposite` (the steer-or-queue key, mod-click) the other. */
-    const followUp = (opposite = false): FollowUpMode => followUpFor(app.settings.followUpBehavior, opposite);
+    const followUp = (opposite = false): FollowUpMode => followUpFor(app.settings.followUpBehavior, opposite, steers());
     /** mod+shift held in the box: the send button shows the other. */
     const [flipped, setFlipped] = createSignal(false);
     const shown = () => followUp(flipped());
@@ -570,17 +574,13 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         if (shell()) return "Run a shell command";
         // A message doesn't wait for an idle compaction: it stops it and goes.
         if (busy() && st()?.activity?.idle) return "Send a message to stop compacting and carry on…";
-        if (busy()) return followUp() === "steer" ? "Steer: add to the current turn at its next step…" : "Queue a message for after this turn…";
+        if (busy()) return labels().placeholder;
         return p.placeholder ?? "Ask, plan, or describe a change…  (@ files, / commands, $ skills)";
     };
     const hasContent = () => Boolean(text().trim() || attachments().length || comments().length);
-    const sendTitle = () => {
-        const key = prefs.enterSends ? "Enter" : `${mod}+Enter`;
-        const other = otherFollowUp(followUp());
-        const now = followUp() === "steer" ? `Steer: joins the current turn at its next step (${key})` : `Queue: runs after this turn (${key})`;
-        const otherKey = shortcut("chat:submitOtherWay");
-        return `${now}. ${mod}-click${otherKey ? ` or ${otherKey}` : ""} to ${other} instead.`;
-    };
+    /** While a turn runs: what Enter does now and what the steer-or-queue key does, in the box and on the send button. */
+    const labels = () => followUpLabels({ mode: followUp(), steers: steers(), send: prefs.enterSends ? "Enter" : `${mod}+Enter`, other: shortcut("chat:submitOtherWay"), click: `${mod}-click`, who: st()?.model?.providerName });
+    const sendTitle = () => labels().title;
     /**
      * What the send button does, as a hint over it while it's pointed at (or focused): with a turn running, the key
      * that sends this way and the one that sends the other; with nothing written, the key that stops it.
@@ -592,10 +592,12 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             return [[k === "Esc" ? "esc" : k ?? "", busy() ? "Stop" : "Pause the goal"]];
         }
         if (!busy()) return undefined;
-        const word = (way: string) => (way === "steer" ? "Steer: joins this turn at its next step" : "Queue: runs after this turn");
+        const enter = prefs.enterSends ? "Enter" : `${mod} Enter`;
+        // Nothing to steer with: Enter queues, and no key does otherwise.
+        if (!steers()) return [[enter, FOLLOW_UP_WORDS.queue]];
         const other = otherFollowUp(shown());
         const otherKey = shortcutHint("chat:submitOtherWay");
-        return [[prefs.enterSends ? "Enter" : `${mod} Enter`, word(shown())], [otherKey || `${mod}-click`, word(other)]];
+        return [[enter, FOLLOW_UP_WORDS[shown()]], [otherKey || `${mod}-click`, FOLLOW_UP_WORDS[other]]];
     };
     const canSend = createMemo(() => hasContent() && !blocked());
     // The pickers open from their own button, left-aligned with it (design/glass placePop): above it in a

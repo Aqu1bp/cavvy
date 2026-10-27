@@ -56,7 +56,7 @@ What it means for the design (§4):
 1. The §4 Esc plan for Bash and Monitor is validated: `interrupt` mid-turn (and while idle) leaves `run_in_background` Bash and Monitor tasks running, and they report later through the wake path. The process must not be killed, which is what #203 does today.
 2. The background-sub-agent case is not covered by "Esc leaves background work alone". `interrupt` kills every running sub-agent, including `run_in_background` ones, and any shell they own, with a `task_notification` of `status:"stopped"` (not `"failed"`), and it does so even when no turn is active. §4's "Esc while idle does nothing to background work" is wrong for Claude Code unless the adapter does not forward the interrupt when there is no active turn. Recommended: when no Cavvy turn is active, Esc is a no-op for Claude Code and must not be sent to the CLI; when a turn is active, send it and expect background sub-agents to be stopped, and show them as stopped in the task strip. Tell the user ("Esc stops sub-agents; background commands keep running").
 3. "Move to background" (`background_tasks {tool_use_id}`) is for foreground tools (see Q4); the sub-agents killed above were already background, so it is not a way to protect them.
-4. `priority:"now"` is not a substitute for `interrupt` in `-p` mode on this version; do not use it as the steer path without re-probing (this contradicts the t3code assumption in §0). Unverified: whether it behaves differently in a TTY session or a newer version.
+4. `priority:"now"` is not a substitute for `interrupt` in `-p` mode on this version; do not use it as the steer path without re-probing (this contradicts the t3code assumption in §0). Unverified: whether it behaves differently in a TTY session or a newer version. Re-probed for steering on 2.1.310 (see "Steering: when a message written mid-turn is taken"): it isn't an interrupt, and Cavvy now steers with it only while no call runs.
 5. A sub-agent killed by the interrupt is idle-surfaced as a `task_notification` with `status:"stopped"`; the live layer should map that to a stopped (not failed) task.
 
 Caveat: all sub-agents in these runs were busy in a foreground Bash call when interrupted. A sub-agent generating text was probed in the follow-up below (also killed). The follow-up also found the way to stop only the foreground turn.
@@ -148,6 +148,20 @@ Fixtures: `claude-311-*.jsonl` (probe `claude-task-notices.ts`, `claude-sonnet-5
 
 Design meaning: only what a resumed process says before its first turn is about an earlier process's work; any other notification for a task Cavvy doesn't list is one of this process's own commands.
 
+### Steering: when a message written mid-turn is taken (2.1.310)
+
+Fixture: `claude-steer-immediate.jsonl` (probe `claude-steer-immediate.ts`, haiku, effort low, `--include-partial-messages`, `--permission-mode default` with the stdio permission tool: every request denied except the case's own `sleep` command; a scratch folder of its own; one run: five prompts and six messages written mid-turn). Each case is a turn and what was written to it as Cavvy now steers: the moment it's sent.
+
+| Case | Written | When | What Claude Code did |
+|---|---|---|---|
+| a | plain | a foreground `sleep 5` running | `queued` at once; `started` 5 ms after the command's `tool_result`; `completed` just before the result, which named the prompt and the message; the reply used it |
+| b | `priority:"now"` | the model streaming text (counting to 300) | the turn's result 4 ms later: `success`, `terminal_reason:"aborted_streaming"`, naming only the prompt; the partial text kept (an `assistant` frame up to the cut); the prompt `cancelled`, the message `started`, a new `system/init`, its own result naming it |
+| c | `priority:"now"` | a foreground `sleep 5` running | the command ran to its end; then the turn's result (`success`, `aborted_tools`) and the message as a turn of its own |
+| d | plain, then `cancel_async_message` for it; a second plain one, then `interrupt` | a foreground `sleep 5` running | the cancel answered `{cancelled:true}` (the message's lifecycle `cancelled`); the interrupt answered `{still_queued:[<second>]}`, the turn ended `error_during_execution`/`aborted_tools`, and the second message then ran as a turn of its own |
+| f | `priority:"now"` | the moment a command's result was in (the next request under way, no text yet) | cut in 13 ms (`success`, `aborted_streaming`), the message run next |
+
+Design meaning (src/backends/claude-live.ts `steerOnce`): a message to steer with is written as it's sent. While a call of the turn's runs, plain: it goes in with that call's result, in the same turn (a). Otherwise `priority:"now"`, so the model reads it at once instead of after its reply (b, f), the reply cut where it was and kept; Cavvy takes the turn that follows as the same Cavvy turn. Not "now" while a call runs (c ends the turn after the call). A plain interrupt keeps messages Claude Code hasn't taken and runs them after the stop (d), so Esc withdraws them first (`cancel_async_message`), and Cavvy takes them out of its history and hands them back to the composer.
+
 ## Codex
 
 ### Q5: two turns, one connection, thread stays loaded: YES
@@ -202,6 +216,7 @@ Design meaning: limits can be updated per turn from the notification, but showin
 | `claude-q2-f-reason.jsonl` | `PROBE_VARIANT=f-reason claude-interrupt-variants.ts` | Q2 follow-up |
 | `claude-q2-entry-desktop.jsonl` | `PROBE_VARIANT=entry-desktop claude-interrupt-variants.ts` | Q2 follow-up |
 | `claude-q2-entry-local-agent.jsonl` | `PROBE_VARIANT=entry-local-agent claude-interrupt-variants.ts` | Q2 follow-up |
+| `claude-steer-immediate.jsonl` | `claude-steer-immediate.ts` | Steering (2.1.310) |
 | `claude-311-a-esc-foreground.jsonl` | `claude-task-notices.ts A` | #311 |
 | `claude-311-b-subagent-commands.jsonl` | `claude-task-notices.ts B` | #311 |
 | `claude-311-c1-leave-behind.jsonl`, `claude-311-c2-resume.jsonl` | `claude-task-notices.ts C` | #311 |

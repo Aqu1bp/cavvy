@@ -584,7 +584,8 @@ function TurnViewContent(p: TurnViewProps) {
             if (segs().some((s) => (s.kind === "work" ? s.items.some(has) : s.interim && has(s.item)))) unfold(true);
         }),
     );
-    const hasOutput = () => p.turn.blocks.length > 0 || running();
+    // A prompt stopped before anything came still says how it ended (its line is in the reply's place).
+    const hasOutput = () => p.turn.blocks.length > 0 || running() || Boolean(p.turn.prompt && END_TEXT[p.turn.status]);
     const lastText = () => {
         for (let i = p.turn.blocks.length - 1; i >= 0; i--) {
             const b = p.turn.blocks[i]!;

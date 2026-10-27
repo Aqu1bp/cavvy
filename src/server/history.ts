@@ -76,6 +76,11 @@ export function readSegments(file: string): Segment[] {
         else if (l.t === "rewind" && typeof l.count === "number") {
             cur.messages = cur.messages.slice(0, l.count);
             if (cur.notices) cur.notices = noticesUpTo(cur.notices, l.count);
+        } else if (l.t === "withdraw" && typeof l.index === "number" && l.index >= 0 && l.index < cur.messages.length) {
+            // As Session.withdraw: the message goes, the notices after it move back one.
+            const at = l.index;
+            cur.messages.splice(at, 1);
+            if (cur.notices) cur.notices = cur.notices.map((n) => (n.index > at ? { ...n, index: n.index - 1 } : n));
         } else if (l.t === "notice") {
             const n = turnNotice(l);
             if (n) addNotice((cur.notices ??= []), n);

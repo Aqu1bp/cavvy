@@ -124,6 +124,8 @@ export interface BackendPrompt {
  * however many say the same words.
  */
 export interface SteerMessage {
+    /** The host's for this message alone (TurnSink.undelivered hands it back by it, never by its words): kept on any copy. */
+    id?: number;
     text: string;
     images: ImagePart[];
     documents: PdfPart[];

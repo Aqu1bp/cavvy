@@ -222,7 +222,7 @@ function General() {
                 <Row title="Compact automatically" desc="Summarize the conversation when the context window is nearly full.">
                     <Toggle label="Compact automatically" checked={s().autoCompact !== false} onChange={(v) => void update({ autoCompact: v })} />
                 </Row>
-                <Row title="Messages sent while working" desc={`Steer joins the running turn at its next step; queue waits for it to end. ${mod}+Shift+Enter does the other for one message.`}>
+                <Row title="Messages sent while working" desc={`Steer joins the running turn at its next step; queue waits for it to end. Neither one interrupts. ${mod}+Shift+Enter does the other for one message. A model that can't take messages mid-turn always queues.`}>
                     <SelectButton>
                         <select class="select" aria-label="Messages sent while working" value={s().followUpBehavior ?? "steer"} onChange={(e) => void update({ followUpBehavior: e.currentTarget.value as FollowUpMode })}>
                             <option value="steer">Steer the current turn</option>

@@ -1,4 +1,5 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
+import * as fs from "fs";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { isolate, tempDir, FAKE } from "./helpers/isolate";
@@ -10,6 +11,7 @@ const { projectStateDir } = await import("../src/config/paths");
 import type { AssistantMessage, Message, UserMessage } from "../src/providers/types";
 
 const PROJECTS = tempDir("cavvy-proj-");
+const realAppend = fs.appendFileSync;
 afterAll(() => {
     rmSync(PROJECTS, { recursive: true, force: true });
     iso.cleanup();
@@ -36,6 +38,56 @@ function lines(file: string): any[] {
 }
 
 describe("Session persistence", () => {
+    test("a message withdrawn from the middle (a steer never taken) is gone when read back; what came after, its notices and a backend's place move back one", () => {
+        const s = Session.create(project());
+        s.push(user("start"));
+        s.push(user("and then deploy"));
+        s.push(assistant("still working"));
+        s.recordNotice("warn", "after it");
+        s.setBackendSession("claude-code", "cli-1", 3);
+        const kept = s.messages[2];
+        s.withdraw(1);
+        expect(s.messages.map((m) => (m.content[0] as { text: string }).text)).toEqual(["start", "still working"]);
+        expect(s.messages[1]).toBe(kept!);
+        expect(s.notices.map((x) => [x.text, x.index])).toEqual([["after it", 2]]);
+        expect(s.backends.get("claude-code")).toMatchObject({ id: "cli-1", synced: 2 });
+        s.release();
+        const again = Session.load(s.path, { persist: false });
+        expect(JSON.stringify(again.messages)).not.toContain("and then deploy");
+        expect(again.messages).toHaveLength(2);
+        expect(again.notices.map((x) => [x.text, x.index])).toEqual([["after it", 2]]);
+        expect(again.backends.get("claude-code")).toMatchObject({ id: "cli-1", synced: 2 });
+    });
+
+    test("a withdrawal cut short anywhere (a partial append) reads back as the history before it, or after it: never short", () => {
+        const shapes = new Set<string>();
+        for (const share of [0.1, 0.5, 0.9, 1]) {
+            const s = Session.create(project());
+            s.push(user("start"));
+            s.push(user("and then deploy"));
+            s.push(assistant("still working"));
+            s.push(user("next one"));
+            // The withdrawal's append writes only its first bytes (a full disk), then fails.
+            const spy = spyOn(fs, "appendFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, data: string | Uint8Array, opts?: fs.WriteFileOptions) => {
+                const text = String(data);
+                const cut = Math.floor(text.length * share);
+                realAppend(file, text.slice(0, cut), opts);
+                if (cut < text.length) throw new Error("ENOSPC");
+            }) as typeof fs.appendFileSync);
+            try {
+                s.withdraw(1);
+            } finally {
+                spy.mockRestore();
+            }
+            s.release();
+            const said = Session.load(s.path, { persist: false }).messages.map((m) => (m.content[0] as { text: string }).text);
+            shapes.add(said.join(" | "));
+            expect([["start", "and then deploy", "still working", "next one"], ["start", "still working", "next one"]]).toContainEqual(said);
+        }
+        // Whole, it's the history after it.
+        expect(shapes).toContain("start | still working | next one");
+    });
+
     test("background tasks are kept as bgtask lines: the last for an id wins, bad ones are skipped, and a fork doesn't take them", () => {
         const s = Session.create(project());
         s.push(user("hi"));

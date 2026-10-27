@@ -45,6 +45,7 @@ import { mcpToolMatches } from "../permissions/rules";
 import { toolNameFor } from "../mcp/manager";
 import { costOf, promptTokens, type CostEstimate } from "../providers/pricing";
 import { redactMessage, Session } from "./session";
+import { liveDebug } from "../backends/live/debug";
 import { hookApplies, isAsync, matcherFn, runHandler, runHooks, runInBackground, type HookEvent, type HookOutcome, type HookServices } from "./hooks";
 import { FileWatchHooks, type FileEvent } from "./file-watch-hooks";
 import { instructionsLoadedHooks, sessionStartHooks } from "./session-hooks";
@@ -189,7 +190,7 @@ export interface AgentHost {
      * already, or there are none. `admit` is given what's attached too: its hooks read a long paste (which
      * rides as an attachment) as part of what the user wrote, as a prompt's do.
      */
-    drainQueued?(record?: () => void, admit?: (text: string, attachments?: readonly AttachedPart[]) => Promise<Admitted>): (string | Admitted)[] | Promise<(string | Admitted)[]>;
+    drainQueued?(record?: () => void, admit?: (text: string, attachments?: readonly AttachedPart[]) => Promise<Admitted>, id?: number): (string | Admitted)[] | Promise<(string | Admitted)[]>;
     /**
      * For a backend's CLI that's between its turns, waiting only on its background work: the first queued
      * message that can go now, as a prompt of its own, whatever its mode, prepared as a sent one is (its
@@ -200,6 +201,13 @@ export interface AgentHost {
      * until it's stored and sent.
      */
     drainWaiting?(steps: { record(): void; admit(parts: UserContent[], display: string): Promise<Admission> }): Promise<{ parts: UserContent[]; display: string } | undefined>;
+    /**
+     * Messages drainQueued handed over (each by the `id` it was given, with its texts and attachments as handed over)
+     * that the backend's turn ended before taking: called before the run is over (a backend decides first). It returns
+     * the ids it handed back to the user: only those leave the history. The rest, or all without it, go with the next
+     * prompt, in a note.
+     */
+    unsteered?(steers: { id: number; texts: string[]; attachments: AttachedPart[] }[]): number[];
     /** A backend's CLI started a turn by itself: start a wake turn that adopts it (run's `adopt`). */
     wake?(w: BackendWake): void;
     /** The session's background work changed (a delegated task started or settled, a CLI reported a task). */
@@ -684,6 +692,7 @@ export class Agent {
     async run(content: UserContent[], opts: RunOptions): Promise<TurnEndReason> {
         if (this.running) throw new Error("Agent is already running");
         this.running = true;
+        const thisRun: { over: boolean } = (this.thisRun = { over: false });
         this.prompted = false;
         this.limitStop = undefined;
         // Interrupting a turn stops the delegated tasks it waits on. Those in the background (started on this
@@ -713,6 +722,7 @@ export class Agent {
             }
             return reason;
         } finally {
+            thisRun.over = true;
             // A refusal is kept only once the retry is answered. A turn that ends first (stopped, max turns, an error) keeps
             // nothing out: a compaction or another request after it sends the images again.
             this.refusing = undefined;
@@ -1071,7 +1081,7 @@ export class Agent {
      * UserPromptSubmit hooks as a prompt sent on its own is (runInner): one a hook blocks doesn't join the
      * turn, and what they add goes with them. `live`: whether the backend can still take them.
      */
-    private async drainSteering(signal: AbortSignal, record?: () => void, live?: () => boolean, defer = false): Promise<{ texts: string[]; context: string[]; attachments: AttachedPart[]; transaction?: SteerTransaction }> {
+    private async drainSteering(signal: AbortSignal, record?: () => void, live?: () => boolean, defer = false, id?: number): Promise<{ texts: string[]; context: string[]; attachments: AttachedPart[]; transaction?: SteerTransaction }> {
         const hooked = !this.o.isSubagent && Boolean(this.hookSettings().hooks?.UserPromptSubmit?.length);
         const stopped = () => this.cutOff || signal.aborted || live?.() === false;
         const admit = async (text: string, attachments?: readonly AttachedPart[]): Promise<Admitted> => {
@@ -1080,7 +1090,7 @@ export class Agent {
             if (stopped()) return { text, admission: "stopped" };
             return h.blocked ? { text, admission: "blocked" } : { text, admission: "go", context: h.context };
         };
-        const drained = (await this.o.host.drainQueued?.(record, hooked ? admit : undefined)) ?? [];
+        const drained = (await this.o.host.drainQueued?.(record, hooked ? admit : undefined, id)) ?? [];
         const texts: string[] = [];
         const context: string[] = [];
         const attachments: AttachedPart[] = [];
@@ -2145,6 +2155,35 @@ export class Agent {
         }
     }
 
+    /**
+     * The user's messages a backend never took: those the host hands back (AgentHost.unsteered) leave the history,
+     * the latest first. Only one with no prompt or steer kept after it (what's after would move under the places the
+     * host keeps); the rest go with the next prompt, in a note.
+     */
+    private unsteer(taken: { id: number; message: Message; texts: string[]; attachments: AttachedPart[] }[]): Set<number> {
+        const msgs = this.session.messages;
+        const at = (t: { message: Message }) => msgs.indexOf(t.message);
+        const said = (m: Message) => m.role === "user" && ["prompt", "command", "wake"].includes(m.meta?.kind ?? "prompt");
+        /** Out with those going (`going`): nothing said after it stays. */
+        const last = (i: number, going: Set<number>) => i >= 0 && !msgs.some((m, j) => j > i && said(m) && !going.has(j));
+        const going = new Set<number>();
+        const can = [...taken].sort((a, b) => at(b) - at(a)).filter((t) => last(at(t), going) && going.add(at(t)));
+        // To the host in the order they were sent.
+        const back = new Set(can.length ? this.o.host.unsteered!([...can].reverse().map(({ id, texts, attachments }) => ({ id, texts, attachments }))) : []);
+        const out = new Set<number>();
+        for (const t of can) {
+            const i = at(t);
+            if (!back.has(t.id) || !last(i, new Set())) continue;
+            this.session.withdraw(i);
+            out.add(t.id);
+        }
+        return out;
+    }
+
+    /** The last SteerMessage.id given. */
+    private steerIds = 0;
+    /** The run under way (or the last): over once its run() ends, for good (what its callbacks capture). */
+    private thisRun: { over: boolean } = { over: true };
     private backendStopReminders: string[] = [];
     /** Messages the backend's turn ended before taking (TurnSink.undelivered): for its next prompt. */
     private undeliveredNotes: { text: string; resends: string[]; images: ImagePart[]; documents: PdfPart[] }[] = [];
@@ -2198,12 +2237,16 @@ export class Agent {
         const wakeTexts = new Set<string>();
         /** What drainQueued handed over from the user, to the words they typed (what hooks added follows). */
         const typed = new Map<string, string>();
+        /** The user's messages as stored, by their SteerMessage.id (two with the same words are two), with what the host handed over for each. */
+        const stored = new Map<number, { id: number; message: Message; texts: string[]; attachments: AttachedPart[] }>();
         // The session's side. Still made per turn for the backends that run a process per turn (its permission
         // answers end this turn); a live CLI session keeps the last turn's between turns (#219). Once this agent's
         // run is over (or another started), what's asked is the session's (a background sub-agent's prompt or
         // hook), not this turn's, which may have been stopped.
         const seq = ++this.backendTurns;
         const over = () => !this.running || this.backendTurns !== seq;
+        /** This turn's run, over for good once it ends (whatever runs after it). */
+        const run = this.thisRun;
         const hostAccount = this.session.accountId(provider);
         const sessionSignal = () => (over() ? this.lifetime.signal : signal);
         const session: SessionHost = {
@@ -2262,6 +2305,17 @@ export class Agent {
             diagnose: (paths) => this.diagnoseBackendEdits(paths, signal),
             // Messages with attachments never get here: they go only once the backend has them (SteerMessage.settle).
             undelivered: (messages) => {
+                // The user's that were stored go back to them (AgentHost.unsteered), out of the history: never said.
+                let mine = this.o.host.unsteered ? messages.filter((m) => m.id !== undefined && stored.has(m.id)) : [];
+                // Not once its run is over: what was stored since (the next prompt) would be after a hole. A backend
+                // decides before its run ends (claude-live: withdrawing); one that didn't gets the note.
+                if (mine.length && (run.over || over())) {
+                    liveDebug("agent", "steer handed back after its run: sent again in a note instead", { count: mine.length });
+                    mine = [];
+                }
+                const back = mine.length ? this.unsteer(mine.map((m) => stored.get(m.id!)!)) : new Set<number>();
+                for (const id of back) stored.delete(id);
+                messages = messages.filter((m) => m.id === undefined || !back.has(m.id));
                 const news = messages.filter((m) => wakeTexts.has(m.text)).map((m) => m.text);
                 const said = messages.filter((m) => !wakeTexts.has(m.text) && m.text).map((m) => m.text);
                 // With the words they were stored with: a catch-up that has those leaves the note out (missedPrompt).
@@ -2282,7 +2336,9 @@ export class Agent {
                     recorded = true;
                     this.recordBackendTurn(provider, name, progress());
                 };
-                const steer = await this.drainSteering(signal, record, live, true);
+                // Its id before the host hands any over: the host keeps by it what it handed over (AgentHost.unsteered).
+                const id = ++this.steerIds;
+                const steer = await this.drainSteering(signal, record, live, true, id);
                 const queued = steer.texts;
                 // Events a watch raised join the running turn as the user's messages do (Codex steers with them at once).
                 const woke = this.takeWakes();
@@ -2290,7 +2346,7 @@ export class Agent {
                 const display = joinSteered(queued, "\n");
                 const content: UserContent[] = [{ type: "text", text: joinSteered(queued, "\n\n") }, ...steer.attachments, ...steer.context.map(reminder)];
                 /** Its place in the session, after what the backend said before it, as the prompt it is. */
-                const store = () => this.checkpoint(display, false, (checkpoint) => void this.session.push({ role: "user", content, meta: { kind: "prompt", display, checkpoint } }));
+                const store = (id: number) => this.checkpoint(display, false, (checkpoint) => void stored.set(id, { id, message: this.session.push({ role: "user", content, meta: { kind: "prompt", display, checkpoint } }), texts: queued, attachments: steer.attachments }));
                 const out: SteerMessage[] = [];
                 const t = steer.transaction;
                 if (queued.length) {
@@ -2311,13 +2367,13 @@ export class Agent {
                             if (!sentIt || this.cutOff) return t.refused();
                             if (!t.accepted()) return;
                             record();
-                            await store();
+                            await store(id);
                         };
-                        out.push({ text, images, documents, settle });
+                        out.push({ id, text, images, documents, settle });
                     } else {
                         record();
-                        await store();
-                        out.push({ text, images, documents });
+                        await store(id);
+                        out.push({ id, text, images, documents });
                     }
                 } else record();
                 if (woke) {

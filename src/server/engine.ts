@@ -457,9 +457,10 @@ export class Engine {
         for (const c of this.clients) if (c.subs.has(sessionId)) c.send({ type: "session.ops", sessionId, seq, ops });
     }
 
-    draft(rt: Runtime, text: string, attachments?: AttachedPart[]) {
+    /** `after`: it goes after what's typed in the composer, not before it. */
+    draft(rt: Runtime, text: string, attachments?: AttachedPart[], after = false) {
         const back = toWire(attachments);
-        for (const c of this.clients) if (c.subs.has(rt.id)) c.send({ type: "draft", sessionId: rt.id, text, ...back });
+        for (const c of this.clients) if (c.subs.has(rt.id)) c.send({ type: "draft", sessionId: rt.id, text, ...back, ...(after ? { after: true as const } : {}) });
     }
 
     /** The session's name for a notification. */
