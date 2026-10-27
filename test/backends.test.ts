@@ -1231,6 +1231,8 @@ describe("Codex backend", () => {
         expect(insideWorkspace(join(realpathSync(tmpdir()), "ws", "lib"), join(realpathSync(tmpdir()), "ws", "app"), ["../lib"])).toBe(true);
         // A read-only agent in auto: the read-only sandbox with network, never asking; in other modes it has no network.
         expect(codexPolicy("auto", ["/x"], true)).toEqual({ approvalPolicy: "never", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: true }, approvalsReviewer: "user" });
+        // With PreToolUse hooks an older Codex can't run itself: no network, and what's more asks Cavvy, where they run.
+        expect(codexPolicy("auto", ["/x"], true, true)).toEqual({ approvalPolicy: "on-request", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: false }, approvalsReviewer: "user" });
         expect(codexPolicy("default", ["/x"], true)).toMatchObject({ approvalPolicy: "untrusted", sandboxPolicy: { type: "readOnly", networkAccess: false } });
         expect(codexPolicy("auto", ["/x"])).toMatchObject({ approvalPolicy: "on-request", sandbox: "workspace-write", approvalsReviewer: "auto_review" });
         expect(codexPolicy("plan", [])).toMatchObject({ approvalPolicy: "untrusted", sandbox: "read-only", approvalsReviewer: "user" });
@@ -1244,7 +1246,8 @@ describe("Codex backend", () => {
         const a = await makeAgent({ provider: "codex", mode: "auto", readOnly: true, ask: () => ({ allow: true }) });
         expect(await a.run("look")).toBe("done");
         expect(turnStarts()[0]).toMatchObject({ approvalPolicy: "never", sandboxPolicy: { type: "readOnly", networkAccess: true }, approvalsReviewer: "user" });
-        expect(received().some((m) => m.method?.endsWith("requestApproval"))).toBe(false);
+        // Codex asked nothing: no answer to an approval request went back to it.
+        expect(received().some((m) => m.result?.decision)).toBe(false);
         expect(a.asked).toEqual([]);
         expect(logLines().find((l) => "ran" in l)).toMatchObject({ ran: true, command: "ls" });
         // Told it has the network and nothing outside the sandbox, not to ask to run outside it for the network.

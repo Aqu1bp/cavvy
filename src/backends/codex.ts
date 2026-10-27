@@ -256,8 +256,12 @@ interface Policy {
 export function codexPolicy(mode: PermissionMode, additionalDirectories: string[], readOnly = false, preToolUse = false): Policy {
     // A read-only agent in auto: the read-only sandbox with network access, and it never asks. Nothing it runs can
     // change files, as the sandbox holds every program it starts (a pager's shell, a Git config's helper), and nothing
-    // runs outside it, so there's nothing to approve; gh and the like reach the network from inside.
-    if (mode === "auto" && readOnly) return { approvalPolicy: "never", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: true }, approvalsReviewer: "user" };
+    // runs outside it, so there's nothing to approve; gh and the like reach the network from inside. With PreToolUse
+    // hooks Codex can't run itself (an older Codex), they'd see nothing then: no network, and what's more asks Cavvy.
+    if (mode === "auto" && readOnly)
+        return preToolUse
+            ? { approvalPolicy: "on-request", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: false }, approvalsReviewer: "user" }
+            : { approvalPolicy: "never", sandbox: "read-only", sandboxPolicy: { type: "readOnly", networkAccess: true }, approvalsReviewer: "user" };
     const workspaceWrite = { type: "workspaceWrite", writableRoots: additionalDirectories, networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false };
     switch (mode) {
         case "acceptEdits":
