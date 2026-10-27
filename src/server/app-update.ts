@@ -13,7 +13,8 @@ import { cavvyHome, paths } from "../config/paths";
 import { REPO_VARS } from "../util/git";
 import type { AppUpdateChange, AppUpdateInfo } from "./protocol";
 
-const CHECK_EVERY_MS = 6 * 3600_000;
+/** main moves several times a day: a fetch of one branch is cheap, so it's looked at often. */
+const CHECK_EVERY_MS = 30 * 60_000;
 const FIRST_CHECK_MS = 5_000;
 /** How long a finished update may take to restart the app before it says so. */
 const RESTART_WAIT_MS = 90_000;
@@ -25,6 +26,11 @@ const STALL_MS = 30 * 60_000;
 /** The most one tick of the progress check counts as quiet: a longer gap is the Mac asleep, when nothing can run. */
 const TICK_CAP_MS = 5_000;
 const SHOWN = 20;
+
+/** bun on PATH, else where its installer or Homebrew puts it: an app opened from the Dock may have only the system's PATH. */
+function findBun(): string | undefined {
+    return Bun.which("bun", { PATH: process.env.PATH }) ?? [join(homedir(), ".bun", "bin", "bun"), "/opt/homebrew/bin/bun", "/usr/local/bin/bun"].find((p) => existsSync(p));
+}
 
 /** The .app bundle a program runs from (…/Cavvy.app/Contents/MacOS/cavvy), if it does. */
 export function bundleOf(execPath: string): string | undefined {
@@ -187,9 +193,14 @@ export class AppUpdates {
         this.ending.abort();
     }
 
-    /** Fetches main and compares it with the installed build. One at a time; none while an update runs. */
-    check(): Promise<AppUpdateInfo> {
+    /**
+     * Fetches main and compares it with the installed build. One at a time; none while an update runs. `maxAgeMs`: not
+     * if the last check is newer than that (a window coming to the front asks, and so does every other window).
+     */
+    check(o: { maxAgeMs?: number } = {}): Promise<AppUpdateInfo> {
         if (this.info.updating || this.starting) return Promise.resolve(this.get());
+        const at = this.info.checkedAt;
+        if (!this.checking && o.maxAgeMs !== undefined && at !== undefined && Date.now() - at < o.maxAgeMs) return Promise.resolve(this.get());
         this.checking ??= this.runCheck().finally(() => (this.checking = undefined));
         return this.checking;
     }
@@ -205,8 +216,7 @@ export class AppUpdates {
         await this.checking;
         const w = await this.where();
         if ("unavailable" in w) return this.replace({ unavailable: w.unavailable });
-        const home = join(homedir(), ".bun", "bin", "bun");
-        const bun = this.o.bun ?? Bun.which("bun") ?? (existsSync(home) ? home : undefined);
+        const bun = this.o.bun ?? findBun();
         if (!bun) return this.patch({ failed: "Updating needs bun, and it isn't on your PATH (https://bun.sh)." });
         // The worktree desktop:update keeps has the script once it has run; before that, the checkout the app came from.
         // Only a worktree of that checkout's repository, though: another's would update to its own main.
@@ -231,7 +241,8 @@ export class AppUpdates {
                     // Its own session: the app quitting to restart doesn't take it along.
                     detached: true,
                     stdio: ["ignore", fd, fd],
-                    env: repoEnv({ CAVVY_HOME: cavvyHome(), GIT_TERMINAL_PROMPT: "0" }),
+                    // The scripts run `bun` by name: this one, even if the login shell's PATH couldn't be had.
+                    env: repoEnv({ CAVVY_HOME: cavvyHome(), GIT_TERMINAL_PROMPT: "0", PATH: [dirname(bun), process.env.PATH].filter(Boolean).join(":") }),
                 });
             } finally {
                 closeSync(fd);

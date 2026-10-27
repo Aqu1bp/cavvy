@@ -41,7 +41,7 @@ test("not checked yet, and checking", () => {
 
 test("an update: how many changes, Update & restart, and the rail's button", () => {
     const v = updateView({ ...base, available: true, behind: 4, checkedAt: NOW }, 0, NOW)!;
-    expect(v).toMatchObject({ title: "4 new changes on main", detail: "This build abc1234 · main def5678", action: "update", busy: false });
+    expect(v).toMatchObject({ title: "4 new changes on main", detail: "This build abc1234 · main def5678 · checked just now", action: "update", busy: false });
     expect(v.rail).toEqual({ state: "ready", label: "4 new changes on main. Click to update and restart Cavvy." });
     expect(updateView({ ...base, available: true, behind: 1 }, 0)!.title).toBe("1 new change on main");
     // A check in flight doesn't take the update away.
@@ -62,7 +62,8 @@ test("sessions working: the restart would stop them", () => {
 
 test("updating: the build's last line, a spinner, and the rail says so", () => {
     const v = updateView({ ...base, available: true, behind: 2, updating: { startedAt: NOW, line: "Compiling tauri v2.1.0", restarting: false } }, 2)!;
-    expect(v).toMatchObject({ title: "Updating to main (def5678)…", detail: "Compiling tauri v2.1.0", busy: true });
+    // Not the hash the last check saw: the update fetches main again, and builds what's there then.
+    expect(v).toMatchObject({ title: "Updating to the latest main…", detail: "Compiling tauri v2.1.0", busy: true });
     expect(v.action).toBeUndefined();
     expect(v.warn).toContain("2 sessions working then will stop");
     expect(v.rail).toEqual({ state: "busy", label: "Updating Cavvy: Compiling tauri v2.1.0" });

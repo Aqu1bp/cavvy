@@ -598,6 +598,19 @@ export async function refreshUpdate() {
     setApp("update", reconcile(await rpc.call("app.update.get", {})));
 }
 
+/** How old the last check may be when the window comes to the front before main is looked at again. */
+const UPDATE_STALE_MS = 10 * 60_000;
+
+/**
+ * Coming back to the window, or to the server: main may have moved since the last check (the server's own are half an
+ * hour apart). None before the server's first, which comes a few seconds after it starts.
+ */
+function recheckUpdate() {
+    const u = app.update;
+    if (document.visibilityState !== "visible" || app.conn !== "open" || !u?.checkedAt || u.unavailable || u.updating || u.checking) return;
+    rpc.call("app.update.check", { maxAgeMs: UPDATE_STALE_MS }).then((info) => setApp("update", reconcile(info)), () => undefined);
+}
+
 let keybindingsLoaded = false;
 export async function refreshKeybindings() {
     const { fatal } = applyKeybindingsFile(await rpc.call("keybindings.get", {}));
@@ -801,7 +814,9 @@ export function start() {
     setTimeout(showWindow, SHOW_WINDOW_MS);
     document.addEventListener("visibilitychange", () => {
         for (const t of toasts) pauseToast(t.id, "hidden", document.hidden);
+        recheckUpdate();
     });
+    window.addEventListener("focus", recheckUpdate);
     rpc.onSlow((slow) => setApp("slowRequest", slow));
     rpc.onEvent(onEvent);
     rpc.onState((s) => {
@@ -820,7 +835,7 @@ export function start() {
                 void refreshModels().catch(() => undefined);
                 void refreshLimits().catch(() => undefined);
                 // A server from before app.update.get has nothing to say: no update state, no button.
-                void refreshUpdate().catch(() => undefined);
+                void refreshUpdate().then(recheckUpdate, () => undefined);
                 // After a reconnect, the open sessions start over from fresh snapshots.
                 for (const h of [...handles.values()]) if (!h.ready()) await rpc.call("session.open", { id: h.id }).then(adopt, (e) => reopenFailed(h.id, e));
                 await restoreActiveSession();

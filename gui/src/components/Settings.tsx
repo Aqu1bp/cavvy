@@ -902,11 +902,14 @@ function Updates() {
                     <Row title={v().title} desc={v().detail} class={`upd-row ${u().updating ? "running" : ""}`}>
                         <Show when={!v().busy && v().action} fallback={<Show when={v().busy}><Spinner size={16} class="upd-spin" /></Show>}>
                             {(a) => (
-                                <Show when={a() === "update"} fallback={<button class="btn sm" disabled={asking()} onClick={() => void check()}>Check now</button>}>
-                                    <button class="btn primary sm" disabled={update.pending()} onClick={update.request}>
-                                        <Download size={14} /> Update &amp; restart
-                                    </button>
-                                </Show>
+                                <>
+                                    <button class="btn sm" disabled={asking()} onClick={() => void check()}>Check now</button>
+                                    <Show when={a() === "update"}>
+                                        <button class="btn primary sm" disabled={update.pending()} onClick={update.request}>
+                                            <Download size={14} /> Update &amp; restart
+                                        </button>
+                                    </Show>
+                                </>
                             )}
                         </Show>
                     </Row>

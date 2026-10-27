@@ -39,6 +39,7 @@ export function mergePath(current: string | undefined, login: string | undefined
     return out.join(":");
 }
 
+/** Bun.which doesn't see this (it reads the PATH the process started with): pass it `{ PATH: process.env.PATH }`. */
 export async function adoptLoginPath() {
     const merged = mergePath(process.env.PATH, await loginShellPath());
     if (merged) process.env.PATH = merged;
