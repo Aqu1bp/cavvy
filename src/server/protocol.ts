@@ -1061,6 +1061,10 @@ export interface ProviderInfo {
         install: string;
         /** What the plan is called in buttons ("Claude subscription", "ChatGPT plan"). */
         plan: string;
+        /** It can have accounts besides Default (false: an ACP agent, with its own sign-in only). */
+        multiAccount?: boolean;
+        /** It reports plan limits (false: there's no plan row to show). */
+        planLimits?: boolean;
     };
 }
 

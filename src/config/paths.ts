@@ -58,6 +58,14 @@ export const paths = {
     projectMcp: (cwd: string) => join(cwd, ".mcp.json"),
 };
 
+/**
+ * OpenCode's global config folder: $XDG_CONFIG_HOME/opencode, ~/.config/opencode by default. Its opencode.json
+ * and plugins/ (code it loads when it starts) configure it as a project's .opencode/ does.
+ */
+export function opencodeConfigDir(home = homedir()): string {
+    return join(process.env.XDG_CONFIG_HOME ? resolve(process.env.XDG_CONFIG_HOME) : join(home, ".config"), "opencode");
+}
+
 /** Directory for a project's sessions: ~/.cavvy/projects/<slug>/ */
 export function projectStateDir(cwd: string): string {
     const slug = resolve(cwd).replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(-120) || "root";

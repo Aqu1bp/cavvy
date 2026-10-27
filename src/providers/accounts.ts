@@ -44,6 +44,11 @@ export function listAccounts(provider: string): CliAccount[] {
     accountProvider(provider);
     return [{ id: "default", name: "Default", folder: defaultFolder(provider), managed: false }, ...(readAgentConfig(provider)?.accounts ?? [])];
 }
+/** A CLI's accounts: its own folders, or for one without accounts (an ACP agent), only its default sign-in. */
+export function cliAccounts(provider: string): CliAccount[] {
+    if ((ACCOUNT_PROVIDERS as readonly string[]).includes(provider)) return listAccounts(provider);
+    return [{ id: "default", name: "Default", folder: "", managed: false }];
+}
 function findAccount(provider: string, id: string): CliAccount {
     accountProvider(provider);
     if (!validAccountId(id)) throw new RpcError("Invalid account id", "invalid");

@@ -17,6 +17,7 @@ import { cavvyHome, paths } from "./paths";
 import { LEGACY } from "./legacy";
 import { isInside } from "../util/files";
 import { readAgentConfig } from "../providers/registry";
+import { AGENT_CLIS, agentCli } from "../backends/defs";
 import { externalImports } from "../agent/memory";
 
 const file = () => join(cavvyHome(), "trusted.json");
@@ -92,13 +93,8 @@ export function trustForSession(dir: string) {
  * (hooks, skills, sub-agents, commands, permission rules). Claude Code also
  * reads .mcp.json, which Cavvy's own check already covers.
  */
-export function agentProjectConfig(cwd: string, provider: "claude-code" | "codex", has: (path: string) => boolean = existsSync): string[] {
-    const found: string[] = [];
-    if (provider === "claude-code") {
-        for (const f of ["settings.json", "settings.local.json"]) if (has(join(cwd, ".claude", f))) found.push(`.claude/${f}`);
-        for (const d of ["skills", "agents", "commands"]) if (has(join(cwd, ".claude", d))) found.push(`.claude/${d}/`);
-    } else if (has(join(cwd, ".codex"))) found.push(".codex/");
-    return found;
+export function agentProjectConfig(cwd: string, provider: string, has: (path: string) => boolean = existsSync): string[] {
+    return agentCli(provider)?.projectConfig?.(cwd, has) ?? [];
 }
 
 /** Whether the folder has anything that trust would unlock. `has` says whether a path exists (a commit's tree, for a checkout yet to be made). */
@@ -114,7 +110,7 @@ export function projectConfigSummary(cwd: string, has: (path: string) => boolean
     own("commands", "/");
     own("agents", "/");
     // Agent CLIs that are turned on load their own project configuration only in a folder the user trusted.
-    for (const p of ["claude-code", "codex"] as const) if (readAgentConfig(p)) found.push(...agentProjectConfig(cwd, p, has));
+    for (const d of AGENT_CLIS) if (readAgentConfig(d.id)) found.push(...agentProjectConfig(cwd, d.id, has));
     // Skills are instructions for the model, read natively from both folders whatever the model (src/agent/skills.ts).
     own("skills", "/");
     if (has(join(cwd, ".claude", "skills"))) found.push(".claude/skills/");

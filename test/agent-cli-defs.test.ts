@@ -19,11 +19,19 @@ test("CLAUDE_CLI and CODEX_CLI are the defs' CLI info", () => {
     expect(vendorOf("codex")).toBe("OpenAI");
 });
 
-test("every def is an agent provider with accounts, as today's lists have it", () => {
-    expect(AGENT_CLIS.map((d) => d.id)).toEqual([...ACCOUNT_PROVIDERS]);
+test("every def is an agent provider; those with accounts are the account providers", () => {
+    expect(AGENT_CLIS.filter((d) => d.account).map((d) => d.id)).toEqual([...ACCOUNT_PROVIDERS]);
+    expect(AGENT_CLIS.map((d) => d.id)).toEqual(["claude-code", "codex", "opencode", "grok"]);
     for (const d of AGENT_CLIS) {
         const p = BUILTIN_PROVIDERS.find((p) => p.id === d.id);
         expect(p).toMatchObject({ kind: "agent", auth: "cli", name: d.name });
+    }
+    // An ACP agent says how it's started, and what it can't do here.
+    for (const d of AGENT_CLIS.filter((d) => d.protocol === "acp")) {
+        expect(d.acpArgs?.length).toBeGreaterThan(0);
+        // Steering with text everywhere; images only where a steer is a prompt of its own (OpenCode's).
+        expect(d.caps.steersAttachments).toEqual(d.id === "opencode" ? ["image", "text"] : ["text"]);
+        expect(d.caps).toMatchObject({ steering: "between-tool-rounds", backgroundTasks: false, fork: false, compact: "none", planLimits: "none", hooks: "none", mcpAttach: "none", skills: "paste", importSessions: false, usageLogs: false });
     }
 });
 
@@ -37,6 +45,10 @@ test("the defs' capabilities agree with the branches they will replace", () => {
 test("project config and delegation agree with trust.ts and delegation.ts", () => {
     const all = (p: string) => p.includes(".claude") || p.includes(".codex");
     const settingsOnly = (p: string) => p.endsWith("settings.json");
+    expect(agentProjectConfig("/p", "opencode", () => true)).toEqual(["opencode.json", "opencode.jsonc", ".opencode/"]);
+    expect(agentProjectConfig("/p", "nope", () => true)).toEqual([]);
+    // Grok's own project settings are behind its own folder trust: Cavvy's doesn't change what it loads.
+    expect(agentProjectConfig("/p", "grok", () => true)).toEqual([]);
     for (const id of ["claude-code", "codex"] as const) {
         const def = agentCli(id)!;
         for (const has of [all, settingsOnly, () => false]) expect(def.projectConfig!("/p", has)).toEqual(agentProjectConfig("/p", id, has));

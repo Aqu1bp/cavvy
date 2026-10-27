@@ -84,14 +84,11 @@ export async function checkModelPicker(root: HTMLElement) {
         await until(() => !!panel() && document.activeElement?.matches(".mp-search input") === true, "the picker to open on the search field");
         await settle(250);
 
-        // The current model: only an accent check (and a hair heavier name). Names never show ids: the line under one
-        // does, for a name that doesn't say it ("Default (recommended)" → claude-opus-5-5), with its context and price, and
-        // so does the tooltip.
+        // The current model: only an accent check (and a hair heavier name). Rows are just names: no ids, context or price.
         const current = row("Opus 5.5");
         check(current, `rows read as clean names (${rows().map((r) => r.textContent).join(" | ")})`);
         check(rows().every((r) => !/claude-/.test(r.querySelector(".mr-name")?.textContent ?? "")), `names show no model ids (${rows().map((r) => r.textContent).join(" | ")})`);
-        check(row("Default (recommended)")?.querySelector(".mr-sub")?.textContent?.includes("claude-opus-5-5"), "an alias's line says the id it stands for");
-        check(row("Default (recommended)").querySelector("[role='option']")?.getAttribute("title")?.includes("claude-opus-5-5"), "and so does its tooltip");
+        check(rows().every((r) => !r.querySelector(".mr-sub")), `rows have no line under the name (${rows().map((r) => r.textContent).join(" | ")})`);
         check(current.querySelector(".mr-mark svg")?.checkVisibility(), "the current model has a check");
         check(rows().filter((r) => r.querySelector(".mr-mark svg")).length === 1, "only the current model has a check");
         check(current.querySelector("[role='option']")?.getAttribute("aria-selected") === "true", "the current model is the selected option");

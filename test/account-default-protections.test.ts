@@ -10,8 +10,10 @@ if (!process.env.CAVVY_TEST_DEFAULT_ACCOUNTS) {
     test("Default account protections in an isolated home", () => {
         const home = realpathSync(tempDir());
         try {
+            // XDG_CONFIG_HOME (set on CI runners) would put OpenCode's global config outside this home.
+            const { XDG_CONFIG_HOME: _, ...env } = process.env;
             const result = Bun.spawnSync([process.execPath, "--no-env-file", "test", import.meta.path], {
-                env: { ...process.env, HOME: home, CAVVY_HOME: join(home, ".cavvy"), CAVVY_TEST_DEFAULT_ACCOUNTS: home },
+                env: { ...env, HOME: home, CAVVY_HOME: join(home, ".cavvy"), CAVVY_TEST_DEFAULT_ACCOUNTS: home },
                 timeout: 15000,
             });
             expect({ code: result.exitCode, output: result.stderr.toString() }).toMatchObject({ code: 0 });
@@ -78,7 +80,8 @@ if (!process.env.CAVVY_TEST_DEFAULT_ACCOUNTS) {
         policy.writable = [home];
         const expected = await Bun.file(join(import.meta.dir, "fixtures", "seatbelt-no-accounts.txt")).text();
         // Frozen from origin/main's construction without account paths, including its literal deny set; since then Cavvy
-        // home's contents and extended attributes (not its listing) are what's denied, with its secrets and accounts/ wholly, and ps works.
+        // home's contents and extended attributes (not its listing) are what's denied, with its secrets and accounts/ wholly, ps works, and the
+        // folder above OpenCode's global config (~/.config) can't be moved.
         expect(seatbeltProfile(policy).replaceAll(home, "/workspace")).toBe(expected);
     });
 

@@ -25,17 +25,28 @@ const USER = (() => {
     }
 })();
 
+/** Exact strings a probe saw at run time (a session id, a temp folder) and the placeholder each becomes. */
+const LITERALS: [string, string][] = [];
+/** Adds a run-time value to the scrubber, e.g. `scrubAlso(sessionId, "<session-1>")`. Longest first, so a path wins over its parent. */
+export function scrubAlso(value: string, placeholder: string) {
+    if (!value || LITERALS.some(([v]) => v === value)) return;
+    LITERALS.push([value, placeholder]);
+    LITERALS.sort((a, b) => b[0].length - a[0].length);
+}
+
 /**
  * Scrub anything that looks like an account email, an org, account, user or install id, a session id, or a token before
  * it is written. `sessions`: the session ids seen so far and their placeholders (a log's), so the same session is
  * `<session-1>` throughout and a fixture still links its frames.
  */
 export function scrub<T>(v: T, sessions = new Map<string, string>()): T {
-    let s = JSON.stringify(v)
+    let s = JSON.stringify(v);
+    for (const [value, placeholder] of LITERALS) s = s.split(value).join(placeholder);
+    s = s
         .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, "<email>")
         .replace(/\b(sk|sess|ghp|gho|xox[a-z])-[A-Za-z0-9_-]{16,}/g, "<token>")
         .replace(/(eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,})/g, "<jwt>")
-        .replace(/("(?:[A-Za-z]*(?:account|org|organization|user|workspace|chatgpt|tenant|installation|device|machine)_?(?:id|uuid))"\s*:\s*)"[^"]*"/gi, '$1"<id>"')
+        .replace(/("(?:[A-Za-z]*(?:account|org|organization|user|workspace|chatgpt|tenant|installation|device|machine|agent|instance)_?(?:id|uuid))"\s*:\s*)"[^"]*"/gi, '$1"<id>"')
         .replace(/("(?:email|name|display_?name)"\s*:\s*)"[^"]*@[^"]*"/gi, '$1"<email>"')
         .replace(/\/Users\/[^/"\s]+/g, "/Users/<user>")
         // macOS's per-user temporary folder (a probe's scratch folder from mkdtemp), and Claude Code's name for it.
@@ -43,9 +54,16 @@ export function scrub<T>(v: T, sessions = new Map<string, string>()): T {
         .replace(/-private-var-folders-[A-Za-z0-9]+-[A-Za-z0-9-]+?-T-/g, "-tmp-")
         // Cavvy's folder for a CLI's sign-in (a probe run from a Cavvy session uses it) is named for the account.
         .replace(/(\/accounts\/[\w-]+\/)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "$1<account>")
+        // macOS per-user temp folder (/var/folders/xx/<random>/T), which names this machine's user.
+        .replace(/(\/private)?\/var\/folders\/[^/"\s]+\/[^/"\s]+\/T\b/g, "/var/folders/<tmp>/T")
         // claude.ai's synced skills and plugins sit in a folder named for the organization and account (<org>_<account>).
         .replace(/\/synced\/[0-9a-f]{8}-[0-9a-f-]{27}_[0-9a-f]{8}-[0-9a-f-]{27}/gi, "/synced/<org>_<account>")
-        .replace(/("balance"\s*:\s*)"[^"]*"/g, '$1"<n>"');
+        .replace(/("balance"\s*:\s*)"[^"]*"/g, '$1"<n>"')
+        .replace(/("subscription_tier[A-Za-z_]*"\s*:\s*)"[^"]*"/g, '$1"<tier>"')
+        // Grok's addresses for a subagent's run (subagent_spawned and its progress).
+        .replace(/("(?:agentAddress|attempt_id|attemptId)"\s*:\s*)"[^"]*"/g, '$1"<id>"')
+        // Opaque, server-issued blobs (Grok's encrypted reasoning signatures).
+        .replace(/("signature"\s*:\s*)"[^"]{40,}"/g, '$1"<signature>"');
     // A CLI's session id (its transcript's name, under the account's history): numbered in the order they come, and
     // replaced wherever it shows (a path, a resume argument), not only where it's named one.
     for (const [, id] of s.matchAll(/\\?"session_?id\\?"\s*:\s*\\?"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi)) {
@@ -58,26 +76,32 @@ export function scrub<T>(v: T, sessions = new Map<string, string>()): T {
 }
 
 /** Keeps fixtures small: long strings are cut, long arrays keep their first items. The raw frames stay intact in memory. */
-export function trim(v: any, depth = 0): any {
-    if (typeof v === "string") return v.length > 500 ? `${v.slice(0, 500)}...[${v.length - 500} more chars]` : v;
-    if (Array.isArray(v)) return v.length > 6 ? [...v.slice(0, 3).map((x) => trim(x, depth + 1)), `...[${v.length - 3} more items]`] : v.map((x) => trim(x, depth + 1));
-    if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, trim(x, depth + 1)]));
+export function trim(v: any, depth = 0, limits: TrimLimits = {}): any {
+    const str = limits.maxString ?? 500;
+    const arr = limits.maxArray ?? 6;
+    if (typeof v === "string") return v.length > str ? `${v.slice(0, str)}...[${v.length - str} more chars]` : v;
+    if (Array.isArray(v)) return v.length > arr ? [...v.slice(0, Math.min(3, arr)).map((x) => trim(x, depth + 1, limits)), `...[${v.length - Math.min(3, arr)} more items]`] : v.map((x) => trim(x, depth + 1, limits));
+    if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, trim(x, depth + 1, limits)]));
     return v;
 }
+export type TrimLimits = { maxString?: number; maxArray?: number };
 
 export class Log {
     private t0 = Date.now();
     /** The session ids it has written, and their placeholders (scrub). */
     private sessions = new Map<string, string>();
     readonly frames: { t: number; dir: string; frame: any }[] = [];
-    constructor(readonly file: string) {
+    constructor(
+        readonly file: string,
+        readonly limits: TrimLimits = {},
+    ) {
         mkdirSync(dirname(file), { recursive: true });
         writeFileSync(file, "");
     }
     add(dir: "in" | "out" | "err" | "note", frame: unknown) {
         const e = { t: Date.now() - this.t0, dir, frame };
         this.frames.push(e);
-        appendFileSync(this.file, JSON.stringify(trim(scrub(e, this.sessions))) + "\n");
+        appendFileSync(this.file, JSON.stringify(trim(scrub(e, this.sessions), 0, this.limits)) + "\n");
         if (process.env.PROBE_VERBOSE) console.error(`[${e.t}] ${dir} ${JSON.stringify(scrub(frame, this.sessions)).slice(0, 220)}`);
     }
     note(text: string, extra?: unknown) {

@@ -61,6 +61,7 @@ import type { Skill } from "./skills";
 import { limitNotice } from "../backends/limits";
 import { claudeAgents } from "../backends/claude-agents";
 import { isAgentBackend, type AgentBackendClient, type BackendPermission, type BackgroundStop, type BackendWake, type SessionEvent, type SessionHost, type TurnSink, type BackendResult, type BackendTurn, type OrchestratorServer, type PermissionAnswer, type SteerMessage } from "../backends/types";
+import { agentCli } from "../backends/defs";
 import { getProvider, imageTypesOf } from "../providers/registry";
 import { ACCOUNT_PROVIDERS, accountPlace, type AccountPlace } from "../providers/accounts";
 import { forBackend, pastedTexts, readsPdf } from "../providers/files";
@@ -1329,6 +1330,7 @@ export class Agent {
         if (this.o.isSubagent || this.running || this.lastEnd !== "done") return null;
         if (this.delegations?.running().length) return null;
         if (this.idleTried) return null;
+        if (isAgentBackend(this.client) && agentCli(this.model.provider)?.caps.compact === "none") return null;
         return idleCompactPlan({ settings: this.o.settings(), cache: this.cache, contextTokens: this.contextTokens, now });
     }
 
@@ -2254,9 +2256,12 @@ export class Agent {
             permission: async (req) => {
                 // A background sub-agent's goes on past the turn (and Esc): only the session's end, or the backend
                 // saying it no longer matters (req.signal: its sub-agent's turn ended), withdraws it.
-                const a = await this.backendPermission(req, req.background ? (req.signal ? AbortSignal.any([this.lifetime.signal, req.signal]) : this.lifetime.signal) : sessionSignal());
-                // A no to one of the backend's own sub-agents stops that one (the backend says so to it), not this turn.
-                if (!a.allow && a.stop && !req.agentLabel) declined = true;
+                // A request the backend withdraws (req.signal) withdraws its prompt too.
+                const own = req.background ? this.lifetime.signal : sessionSignal();
+                const a = await this.backendPermission(req, req.signal ? AbortSignal.any([own, req.signal]) : own);
+                // A no to one of the backend's own sub-agents stops that one (the backend says so to it), not this turn;
+                // nor does one the backend withdrew (it no longer waits for it).
+                if (!a.allow && a.stop && !req.agentLabel && !req.signal?.aborted) declined = true;
                 return a;
             },
             askQuestions: async (qs) => {
@@ -2651,6 +2656,7 @@ export class Agent {
 
     private async compactBackend(backend: AgentBackendClient, opts: { auto: boolean; signal: AbortSignal; instructions?: string; idle?: boolean }): Promise<boolean> {
         const provider = this.model.provider;
+        if (agentCli(provider)?.caps.compact === "none") throw new Error(`/compact isn't supported for ${getProvider(provider)?.name ?? provider}: it keeps its own context.`);
         const place = this.backendPlace(provider);
         const resume = this.backendResume(provider, place);
         if (!resume) return false;
@@ -2937,6 +2943,15 @@ export class Agent {
         const own = req.agentType ? this.nativeDefs.get(req.agentType) : undefined;
         const mode = childMode(this.o.mode.get(), own?.permissionMode);
         const cwd = this.state.cwd;
+        // One the mode doesn't decide: deny rules and Cavvy's protections only, as bypass checks them.
+        if (req.exempt) {
+            const d = this.o.checker.check(tool, input, "bypassPermissions", cwd, { memoryDir: this.o.memoryDir });
+            if (d.behavior === "deny") return { allow: false, message: d.reason ?? "Denied by a permission rule.", stop: false };
+            // Its own plan file is under its home, which configures it, but is no configuration itself.
+            const plan = req.planFile !== undefined && req.planFile === input.file_path;
+            const config = tool.category === "edit" && !plan && this.o.checker.check(tool, input, "default", cwd, { memoryDir: this.o.memoryDir }).config;
+            if (d.behavior === "allow" && !config) return { allow: true };
+        }
         // A read-only agent (explore) on a backend: reads, searches and read-only commands only.
         if (this.o.readOnly) {
             const reads = !req.widens && (tool.category === "read" || tool.category === "network" || (tool.name === "Bash" && isReadOnlyCommand(String(input.command ?? ""))));
@@ -2956,6 +2971,8 @@ export class Agent {
         const command = tool.name === "Bash" ? String(input.command ?? "") : "";
         // Allowed as read-only by the checker: no ask rule, nothing with credentials, not left to a sandbox.
         if (command && (req.asksAlways ?? this.o.readOnly) && decision.behavior === "allow" && !decision.sandbox && isReadOnlyCommand(command)) ruled = true;
+        // Likewise a read, search or listing (or a to-do list) Cavvy would let its own models do without asking.
+        if (req.asksAlways && decision.behavior === "allow" && (tool.category === "read" || tool.category === "meta" || tool.name === "WebSearch")) ruled = true;
         if (req.widens) {
             // More access for the backend's sandbox: never in plan mode, never past a deny rule, never without asking.
             if (mode === "plan") return { allow: false, message: "Plan mode is active: no extra permissions until the user approves a plan.", stop: false };
@@ -3007,14 +3024,15 @@ export class Agent {
             }
         }
         const ask = {
-            ...this.o.checker.withGrant(tool, input, decision, cwd),
+            // A call the backend gave only part of: nothing to allow for the session, or always.
+            ...(req.incomplete ? { ...decision, grant: undefined } : this.o.checker.withGrant(tool, input, decision, cwd)),
             behavior: "ask" as const,
             reason: decision.behavior === "ask" ? (decision.reason ?? req.reason) : req.reason,
-            suggestions: decision.suggestions ?? (command ? suggestBashRules(command) : tool.category === "mcp" ? [tool.name] : undefined),
+            suggestions: req.incomplete ? [] : (decision.suggestions ?? (command ? suggestBashRules(command) : tool.category === "mcp" ? [tool.name] : undefined)),
             sandbox: undefined,
             needsClassifier: undefined,
         };
-        const answer = await this.o.host.askPermission({ tool, input, title, decision: ask, preview, ...(req.agentLabel ? { agentLabel: req.agentLabel } : {}), ...(req.callId ? { callId: req.callId } : {}), ...(req.background ? { background: true, signal } : {}) });
+        const answer = await this.o.host.askPermission({ tool, input, title, decision: ask, preview, ...(req.agentLabel ? { agentLabel: req.agentLabel } : {}), ...(req.callId ? { callId: req.callId } : {}), ...(req.background ? { background: true, signal } : req.signal ? { signal } : {}) });
         if (signal.aborted) return { allow: false, message: "Interrupted by user", stop: true };
         if (answer.setMode) this.o.mode.set(answer.setMode);
         if (answer.rules?.length) {
@@ -3023,7 +3041,8 @@ export class Agent {
         }
         if (answer.allow) {
             const grant = answer.grant ? ask.grant : undefined;
-            this.o.checker.approve(tool, input, cwd, { sandbox: decision.sandbox, grant });
+            // A yes to part of a call isn't one to the next call that looks the same.
+            if (!req.incomplete) this.o.checker.approve(tool, input, cwd, { sandbox: decision.sandbox, grant });
             if (grant) this.o.checker.applyGrant(grant);
             return { allow: true, mode: answer.setMode };
         }

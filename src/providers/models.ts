@@ -17,6 +17,7 @@ import { anthropicPricing, anthropicTraits, ANTHROPIC_BUDGET_EFFORTS } from "./a
 import { ProviderError, parseModelRef, type ModelInfo, type ProviderClient } from "./types";
 import { getKey } from "../auth/credentials";
 import { createBackend } from "../backends/index";
+import { agentCli } from "../backends/defs";
 import { backendModel, isAgentBackend } from "../backends/types";
 import { readJson, writeJson } from "../config/settings";
 import { ensureDir, paths } from "../config/paths";
@@ -50,8 +51,9 @@ async function credentialFingerprint(def: ProviderDef): Promise<{ fp: string; ke
     if (def.auth === "cli") {
         // Turned on with /login; the CLI keeps its own sign-in.
         const cfg = readAgentConfig(def.id);
-        const selected = cfg ? account(def.id, defaultAccount(def.id)) : undefined;
-        return cfg ? { fp: `cli|${cfg.path ?? ""}|${(cfg.args ?? []).join("\0")}|${selected!.id}|${selected!.folder}` } : undefined;
+        // An agent without accounts (ACP) has only its default sign-in.
+        const selected = cfg && agentCli(def.id)?.account ? account(def.id, defaultAccount(def.id)) : undefined;
+        return cfg ? { fp: `cli|${cfg.path ?? ""}|${(cfg.args ?? []).join("\0")}|${selected?.id ?? "default"}|${selected?.folder ?? ""}` } : undefined;
     }
     const key = def.requiresKey ? await getKey(def.id) : undefined;
     if (def.requiresKey && !key) return undefined;
@@ -384,7 +386,7 @@ export function defaultModelFrom(listings: ProviderListing[]): ModelInfo | undef
     const usable = listings.filter((l) => l.models.length);
     usable.sort((a, b) => idx(order, a.provider.id) - idx(order, b.provider.id));
     for (const l of usable) {
-        const m = pick(l.models, PREFERRED[l.provider.id]);
+        const m = pick(l.models, PREFERRED[l.provider.id] ?? agentCli(l.provider.id)?.preferredModels);
         if (m) return m;
     }
     return undefined;

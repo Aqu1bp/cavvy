@@ -2087,7 +2087,7 @@ function claudeSkills(provider: string, t: Pick<BackendTurn, "skills" | "cwd" | 
 }
 
 /** Collects a turn's text and actions for its BackendResult, passing its events on. */
-class TurnRecord {
+export class TurnRecord {
     private texts: string[] = [];
     private actions: string[] = [];
     private ended = new Set<string>();

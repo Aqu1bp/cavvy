@@ -68,7 +68,9 @@ import { cliRunsSkills } from "../backends/native-skills";
 import { rewindCommand } from "./rewind";
 import { GoalController, goalClearedNotice, goalSummary, parseGoalCommand } from "../agent/goal";
 import { checkAgentCli, vendorOf, type AgentCliStatus } from "../backends/index";
-import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
+import { findCli } from "../backends/cli";
+import { agentCli } from "../backends/defs";
+import { acpAgent } from "../backends/acp/agents";
 import { account, accountSharingWarning, addAccount, holdLogin, listAccounts } from "../providers/accounts";
 import { loginCommand as accountLoginCommand } from "../backends/account-login";
 import { clockTime, limitAccountLabel, limitLines } from "../backends/limits";
@@ -191,6 +193,7 @@ function addDescription(p: ProviderDef): string {
     if (p.auth === "gcloud") return "set up with gcloud (Google Cloud billing and credits)";
     if (p.id === "claude-code") return "your Claude subscription, through your installed Claude Code";
     if (p.id === "codex") return "your ChatGPT plan, through your installed Codex CLI";
+    if (p.auth === "cli") return `through your installed ${p.name}, signed in its own way`;
     return "add an API key";
 }
 
@@ -442,10 +445,15 @@ async function loginCommand(app: App, args: string) {
  */
 async function agentLogin(app: App, providerId: string) {
     const def = getProvider(providerId)!;
-    const cli = providerId === "codex" ? CODEX_CLI : CLAUDE_CLI;
+    const agent = agentCli(providerId)!;
+    const cli = agent.cli;
+    // How it's asked: its own status command, or (an ACP agent) whether it answers initialize.
+    // An ACP agent with a status of its own (Grok: `grok models`) is asked that instead.
+    const acpHow = agent.protocol === "acp" ? (acpAgent(providerId).status ? `${cli.command} models` : `${cli.command} ${(agent.acpArgs ?? []).join(" ")} · initialize`) : undefined;
+    const how = acpHow ?? (providerId === "codex" ? "codex app-server · account/read" : "claude auth status");
     let st: AgentCliStatus | undefined;
     try {
-        st = await withProgress(app, [theme.permission(bold(`Checking ${def.name}…`)), theme.muted(providerId === "codex" ? "codex app-server · account/read" : "claude auth status")], (signal) => checkAgentCli(providerId, signal));
+        st = await withProgress(app, [theme.permission(bold(`Checking ${def.name}…`)), theme.muted(how)], (signal) => checkAgentCli(providerId, signal));
     } catch (e) {
         if ((e as Error).message !== "aborted") app.notice(`Couldn't check ${def.name}: ${redact((e as Error).message)}`, "error");
         return;
@@ -475,7 +483,7 @@ async function agentLogin(app: App, providerId: string) {
     ]);
     if (st.apiKey) app.notice(`${def.name} is signed in with an API key, so its usage is billed to that key, not a subscription. \`${st.signIn}\` switches it to your account.`, "warn");
     // It loads this folder's own configuration (hooks, skills, MCP servers) only if you trust the folder.
-    const projectConfig = [...agentProjectConfig(app.cwd, providerId as "claude-code" | "codex"), ...(providerId === "claude-code" && existsSync(paths.projectMcp(app.cwd)) ? [".mcp.json"] : [])];
+    const projectConfig = [...agentProjectConfig(app.cwd, providerId), ...(providerId === "claude-code" && existsSync(paths.projectMcp(app.cwd)) ? [".mcp.json"] : [])];
     if (projectConfig.length && !trustedByUser(app.cwd)) {
         const trust = await confirm(
             app,
@@ -843,7 +851,7 @@ async function logoutCommand(app: App, args: string) {
         }
     } else await removeKey(id);
     forgetClient(id);
-    const signOut = id === "codex" ? "codex logout" : "claude auth logout";
+    const signOut = agentCli(id)?.cli.signOut ?? "";
     app.print([
         "",
         row.source === "gcloud"
@@ -871,7 +879,7 @@ async function providersCommand(app: App) {
         }
         if (p.auth === "cli") {
             const on = readAgentConfig(p.id);
-            const bin = findCli(p.id, p.id === "codex" ? CODEX_CLI : CLAUDE_CLI);
+            const bin = findCli(p.id, agentCli(p.id)!.cli);
             const status = on ? theme.success(`✔ on${count}`) : theme.subtle(`off (/login ${p.id})`);
             lines.push(`  ${padEnd(bold(p.name), 22)}${padEnd(theme.muted(p.id), 14)}${padEnd(status, 34)}${theme.subtle(bin ? `your CLI: ${bin}` : "not installed")}`);
             continue;
@@ -1167,7 +1175,7 @@ async function statusCommand(app: App) {
         kv("Directory", displayPath(app.cwd, process.env.HOME ?? "/") + (app.init.trusted ? "" : theme.warning(" (not trusted: project config ignored)"))),
         ...(app.settings.permissions?.additionalDirectories ?? []).map((d) => kv("", theme.muted(`+ ${d}`))),
         kv("Model", m ? `${m.name ?? m.id} ${theme.muted(`(${modelRef(m)})`)}` : theme.warning("none — run /login")),
-        kv("Provider", def ? `${def.name} · ${def.auth === "cli" ? (findCli(def.id, def.id === "codex" ? CODEX_CLI : CLAUDE_CLI) ?? theme.warning("CLI not found")) : vertex ? vertexBaseUrl(vertex) : resolveBaseUrl(def)}` : "—"),
+        kv("Provider", def ? `${def.name} · ${def.auth === "cli" ? (findCli(def.id, agentCli(def.id)!.cli) ?? theme.warning("CLI not found")) : vertex ? vertexBaseUrl(vertex) : resolveBaseUrl(def)}` : "—"),
         def?.auth === "cli"
             ? kv("Credentials", `${def.name}'s own sign-in ${theme.muted(`(${APP_TITLE} never sees it)`)}`)
             : vertex

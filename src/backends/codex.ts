@@ -521,7 +521,7 @@ export function imagesOf(messages: readonly SteerMessage[] | undefined): ImagePa
 }
 
 /** How much a mode lets Codex do on its own; switching to a higher one mid-turn can't wait for the next turn. */
-const STRICTNESS: Record<PermissionMode, number> = { bypassPermissions: 0, auto: 1, acceptEdits: 2, default: 3, plan: 4 };
+export const STRICTNESS: Record<PermissionMode, number> = { bypassPermissions: 0, auto: 1, acceptEdits: 2, default: 3, plan: 4 };
 
 export interface OpenItem {
     name: string;

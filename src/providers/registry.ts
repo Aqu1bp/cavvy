@@ -160,6 +160,30 @@ export const BUILTIN_PROVIDERS: ProviderDef[] = [
         sorted: true,
     },
     {
+        // The user's own installed OpenCode, over ACP (src/backends/acp), with whatever it's signed in to.
+        id: "opencode",
+        name: "OpenCode",
+        kind: "agent",
+        baseUrl: "",
+        envKeys: [],
+        keyUrl: "https://opencode.ai/docs",
+        requiresKey: true,
+        auth: "cli",
+        sorted: true,
+    },
+    {
+        // The user's own installed Grok Build, over ACP (src/backends/acp), signed in its own way.
+        id: "grok",
+        name: "Grok Build",
+        kind: "agent",
+        baseUrl: "",
+        envKeys: [],
+        keyUrl: "https://x.ai/cli",
+        requiresKey: true,
+        auth: "cli",
+        sorted: true,
+    },
+    {
         id: "openrouter",
         // png, jpeg, webp, gif: openrouter.ai/docs, image understanding (2026-10-22).
         imageTypes: ["image/png", "image/jpeg", "image/gif", "image/webp"],

@@ -62,7 +62,8 @@ import { assistantText, modelRef, parseModelRef, textOf, type ImagePart, type Me
 import { formatCost, formatTokens } from "../providers/pricing";
 import { attachmentsNote } from "../providers/files";
 import { configuredProviders, storageDescription } from "../auth/credentials";
-import { CLAUDE_CLI, CODEX_CLI, findCli } from "../backends/cli";
+import { findCli } from "../backends/cli";
+import { AGENT_CLIS, agentCli } from "../backends/defs";
 import { commandList, commandRefusesImages, runCommand } from "../commands/index";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { loadSkills, skillMentions, withSkills, type Skill } from "../agent/skills";
@@ -517,8 +518,8 @@ export class App {
             this.screen.print(["", `${theme.warning("!")} No model is selected and none could be listed. Pick one with ${bold("/model")} or start with ${bold("--model provider:model")}.`]);
             return;
         }
-        // A Claude Code or Codex already on this machine can be used with the user's own plan.
-        const clis = (["claude-code", "codex"] as const).filter((id) => findCli(id, id === "codex" ? CODEX_CLI : CLAUDE_CLI));
+        // An agent CLI already on this machine can be used with the user's own plan or sign-in.
+        const clis = AGENT_CLIS.filter((d) => findCli(d.id, d.cli)).map((d) => d.id);
         if (clis.length) {
             this.screen.print(["", `${theme.warning("!")} No model is set up yet.`]);
             const choice = (await this.showDialog(
@@ -528,7 +529,9 @@ export class App {
                         ...clis.map((id) =>
                             id === "codex"
                                 ? { label: "Use my ChatGPT plan", value: "/login codex", description: "through your installed Codex CLI" }
-                                : { label: "Use my Claude subscription", value: "/login claude-code", description: "through your installed Claude Code" },
+                                : id === "claude-code"
+                                  ? { label: "Use my Claude subscription", value: "/login claude-code", description: "through your installed Claude Code" }
+                                  : { label: `Use ${agentCli(id)!.name}`, value: `/login ${id}`, description: `through your installed ${agentCli(id)!.name}` },
                         ),
                         { label: "Paste an API key", value: "/login", description: `stored in ${await storageDescription()}` },
                     ],
