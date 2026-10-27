@@ -962,7 +962,9 @@ function gitReadOnly(args: string[]): boolean {
     // unambiguous start of a long option (`--open=sh` is --open-files-in-pager=sh), and -O after
     // other letters or a context count in one word (`-n1Osh`).
     if (subArgs.some((a) => /^--(output|ext-diff|open-files-in-pager)(=|$)/.test(a) || (sub === "grep" && (/^-[a-zA-Z0-9]*O/.test(a) || longPrefixOf(a, "open-files-in-pager", 2))))) return false;
-    if (sub === "reflog") return !["expire", "delete", "drop"].includes(subArgs[0] ?? "");
+    // Only its reading forms: expire, delete, drop and write change the reflogs. A ref without `show` is refused too,
+    // as a new subcommand would look like one.
+    if (sub === "reflog") return subArgs[0] === undefined || subArgs[0].startsWith("-") || ["show", "exists", "list"].includes(subArgs[0]);
     if (GIT_READ_ONLY.has(sub)) return true;
     if (sub === "branch") return gitBranchListsOnly(subArgs);
     if (sub === "remote") return subArgs.every((a) => a === "-v" || a === "--verbose") || ((subArgs[0] === "show" || subArgs[0] === "get-url") && subArgs.slice(1).every((a) => !a.startsWith("-") || a === "-n" || a === "--all" || a === "--push"));
@@ -1004,6 +1006,8 @@ export function isReadOnlySimple(argv0: string[]): boolean {
     if (base === "file") return !args.some((a) => /^-[a-zA-Z]*C/.test(a) || a === "--compile");
     if (base === "man") return args.every((a) => !a.startsWith("-") || ["-k", "-f", "-a", "-w"].includes(a));
     if (base === "hostname") return positional(args).length === 0; // `hostname name` sets it
+    // `date 0101` and `date -s …` set the clock; an operand only reads with BSD's -j, and +FORMAT always does.
+    if (base === "date") return !args.some((a) => /^-[a-zA-Z]*s/.test(a) || a.startsWith("--set")) && (args.some((a) => /^-[a-zA-Z]*j/.test(a)) || positional(args).every((a) => a.startsWith("+")));
     if (base === "ls") return true;
     if (base === "git") return gitReadOnly(args);
     if (["npm", "pnpm", "yarn", "bun"].includes(base)) {
