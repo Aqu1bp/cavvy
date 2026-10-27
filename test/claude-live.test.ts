@@ -17,6 +17,7 @@ const { Session } = await import("../src/agent/session");
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const { SessionBackground } = await import("../src/agent/background");
+const { WakeQueue } = await import("../src/agent/wakes");
 const { liveTiming, CARRIER_COMMAND, outputTail, claudePathSlug } = await import("../src/backends/claude-live");
 const { stopTiming } = await import("../src/backends/cli");
 const trust = await import("../src/config/trust");
@@ -89,6 +90,10 @@ interface Opts {
     oneShot?: boolean;
     session?: InstanceType<typeof Session>;
     queued?: string[][];
+    /** The host's drainQueued, in place of taking `queued` one batch at a time. */
+    drain?: () => string[] | Promise<string[]>;
+    /** The watches' events, which join a running turn (synthetic). */
+    watch?: InstanceType<typeof WakeQueue>;
 }
 
 async function makeAgent(o: Opts = {}) {
@@ -109,10 +114,10 @@ async function makeAgent(o: Opts = {}) {
         checker: new PermissionChecker(() => settings, cwd),
         tools: BUILTIN_TOOLS,
         mode: { get: () => mode, set: (m) => (mode = m) },
-        toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map(), background },
+        toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map(), background, ...(o.watch ? { wakes: o.watch, watchers: new Map() } : {}) },
         host: {
             emit: (e) => events.push(e),
-            drainQueued: () => queued.shift() ?? [],
+            drainQueued: o.drain ?? (() => queued.shift() ?? []),
             ui: {},
             askPermission: o.ask ? async (req) => o.ask!(req) : o.oneShot ? undefined : async () => ({ allow: true }),
             ...(o.oneShot ? {} : { wake: (w: BackendWake) => void wakes.push(w) }),
@@ -1435,5 +1440,390 @@ describe("#429: Claude Code's turns for what an earlier process left behind", ()
         expect(unanswered(later)).toEqual([]);
         expect(leftBehind(later)).toEqual([LEFT]);
         expect(wakes).toEqual([]);
+    });
+});
+
+describe("steering: a message sent while Claude Code works goes to it at once", () => {
+    const midTurn = () => logLines().flatMap((l) => (l.midTurn ? [l.midTurn] : []));
+    const userSent = (text: string) => received().find((m) => m.type === "user" && JSON.stringify(m.message.content).includes(text));
+    /** The session's messages as role and text, in order. */
+    const timeline = (session: InstanceType<typeof Session>) => session.messages.map((m) => `${m.role}: ${m.content.map((c: any) => c.text ?? "").join(" ")}`);
+    const steer = (agent: InstanceType<typeof Agent>, queued: string[][], text: string) => {
+        queued.push([text]);
+        agent.queueChanged();
+    };
+
+    test("while a call runs: written at once, plain, and taken into the turn with the call's result; what came before it stays before it", async () => {
+        process.env.FAKE_SCENARIO = "steer-live";
+        process.env.FAKE_TOOL_MS = "1500";
+        const { run, events, agent, queued, session } = await makeAgent();
+        const done = run("start");
+        await until(() => events.some((e) => e.type === "tool_start" && e.call.id === "toolu_live"), 5000, "the call");
+        const at = Date.now();
+        steer(agent, queued, "use the other file");
+        await until(() => Boolean(userSent("use the other file")), 2000, "the steer written");
+        // Not held for the call's result (1.5 s away).
+        expect(Date.now() - at).toBeLessThan(700);
+        expect(userSent("use the other file").priority).toBeUndefined();
+        expect(await done).toBe("done");
+        expect(midTurn()).toEqual([{ text: "use the other file", priority: null, phase: "tool", synthetic: false }]);
+        expect(logLines().find((l) => l.foldedAtToolResult)?.foldedAtToolResult).toEqual(["use the other file"]);
+        expect(texts(events).join("\n")).toContain("Adjusted: use the other file");
+        // The reply and the call it was running come before the message; what it said after, after.
+        const t = timeline(session);
+        const at2 = t.findIndex((l) => l === "user: use the other file");
+        expect(at2).toBeGreaterThan(0);
+        expect(t.slice(0, at2).join("\n")).toContain("Working on it.");
+        expect(t.slice(0, at2).join("\n")).toContain("sleep 1");
+        expect(t.slice(at2 + 1).join("\n")).toContain("Adjusted: use the other file");
+        expect(t.slice(at2 + 1).join("\n")).not.toContain("sleep 1");
+        expect(starts()).toHaveLength(1);
+    });
+
+    test("two in a row go in the order sent", async () => {
+        process.env.FAKE_SCENARIO = "steer-live";
+        process.env.FAKE_TOOL_MS = "1500";
+        const { run, events, agent, queued, session } = await makeAgent();
+        const done = run("start");
+        await until(() => events.some((e) => e.type === "tool_start" && e.call.id === "toolu_live"), 5000, "the call");
+        steer(agent, queued, "first");
+        await until(() => Boolean(userSent("first")), 2000, "the first written");
+        steer(agent, queued, "second");
+        await until(() => Boolean(userSent("second")), 2000, "the second written");
+        expect(await done).toBe("done");
+        expect(userTexts()).toEqual(["start", "first", "second"]);
+        expect(logLines().find((l) => l.foldedAtToolResult)?.foldedAtToolResult).toEqual(["first", "second"]);
+        const t = timeline(session);
+        expect(t.indexOf("user: first")).toBeLessThan(t.indexOf("user: second"));
+    });
+
+    test("while it writes its reply: written \"now\", the reply cut where it was (kept, before the message), and the message runs at once in the same turn", async () => {
+        process.env.FAKE_SCENARIO = "steer-live";
+        process.env.FAKE_TOOL_MS = "50";
+        process.env.FAKE_WRITE_MS = "4000";
+        const { run, events, agent, queued, session, wakes } = await makeAgent();
+        const done = run("start");
+        await until(() => events.some((e) => e.type === "text" && e.text.startsWith("Counting")), 5000, "the reply being written");
+        steer(agent, queued, "stop counting");
+        await until(() => Boolean(userSent("stop counting")), 2000, "the steer written");
+        expect(userSent("stop counting").priority).toBe("now");
+        expect(await done).toBe("done");
+        expect(midTurn()).toEqual([{ text: "stop counting", priority: "now", phase: "writing", synthetic: false }]);
+        expect(logLines().find((l) => "liveReply" in l)).toMatchObject({ cut: true });
+        expect(texts(events)).toContain("Took: stop counting");
+        expect(wakes).toHaveLength(0);
+        const t = timeline(session);
+        const at = t.indexOf("user: stop counting");
+        expect(t.slice(0, at).join("\n")).toContain("Counting:");
+        expect(t.slice(at + 1).join("\n")).toContain("Took: stop counting");
+        // Its whole reply came in well under the 4 s it would have taken.
+        expect(logLines().find((l) => "liveReply" in l)?.liveReply).not.toContain(" 9.");
+    });
+
+    test("sent as the turn ends (its result in while the message is taken): Claude Code runs it after, as the same turn, once", async () => {
+        process.env.FAKE_SCENARIO = "steer-live";
+        process.env.FAKE_TOOL_MS = "50";
+        process.env.FAKE_WRITE_MS = "300";
+        let slow: (() => void) | undefined;
+        const later: string[][] = [];
+        // The host is slow to hand it over (its hooks, say): the turn's result comes meanwhile.
+        const drain = async () => {
+            const take = later.shift();
+            if (!take) return [];
+            await new Promise<void>((r) => (slow = r));
+            return take;
+        };
+        const { run, events, agent, session, wakes } = await makeAgent({ drain });
+        const done = run("start");
+        await until(() => events.some((e) => e.type === "text" && e.text.startsWith("Counting")), 5000, "the reply being written");
+        later.push(["one more thing"]);
+        agent.queueChanged();
+        await until(() => slow !== undefined, 2000, "the drain under way");
+        await until(() => logLines().some((l) => "liveReply" in l), 5000, "the turn's reply in");
+        await Bun.sleep(150);
+        slow!();
+        expect(await done).toBe("done");
+        expect(userTexts()).toEqual(["start", "one more thing"]);
+        // Claude Code was idle: a plain message, its own turn, taken as this one's.
+        expect(userSent("one more thing").priority).toBeUndefined();
+        expect(texts(events)).toContain("Took: one more thing");
+        expect(wakes).toHaveLength(0);
+        const t = timeline(session);
+        expect(t.filter((l) => l === "user: one more thing")).toHaveLength(1);
+        expect(t.findIndex((l) => l.includes("Counting:"))).toBeLessThan(t.indexOf("user: one more thing"));
+    });
+
+    test("sent before Claude Code begins the turn: it goes as soon as the turn starts", async () => {
+        process.env.FAKE_SCENARIO = "steer-live";
+        process.env.FAKE_TOOL_MS = "300";
+        process.env.FAKE_INIT_DELAY_MS = "300";
+        const { run, events, agent, queued } = await makeAgent();
+        const done = run("start");
+        await until(() => received().some((m) => m.type === "user"), 5000, "the prompt sent");
+        steer(agent, queued, "early word");
+        expect(await done).toBe("done");
+        expect(userTexts()).toEqual(["start", "early word"]);
+        expect(texts(events).join("\n")).toMatch(/Adjusted: early word|Took: early word/);
+    });
+
+    test("Esc with a message Claude Code hasn't taken: withdrawn before the stop (it would run after it), and the next prompt carries it", async () => {
+        process.env.FAKE_SCENARIO = "steer-live";
+        process.env.FAKE_TOOL_MS = "5000";
+        const { run, events, agent, queued, wakes } = await makeAgent();
+        const ac = new AbortController();
+        const done = run("start", ac.signal);
+        await until(() => events.some((e) => e.type === "tool_start" && e.call.id === "toolu_live"), 5000, "the call");
+        steer(agent, queued, "and then deploy");
+        await until(() => Boolean(userSent("and then deploy")), 2000, "the steer written");
+        await Bun.sleep(100);
+        ac.abort();
+        expect(await done).toBe("aborted");
+        const uuid = userSent("and then deploy").uuid;
+        const order = received().filter((m) => m.type === "control_request").map((m) => m.request.subtype);
+        expect(controls("cancel_async_message")).toEqual([{ subtype: "cancel_async_message", message_uuid: uuid }]);
+        expect(order.indexOf("cancel_async_message")).toBeLessThan(order.indexOf("interrupt"));
+        await Bun.sleep(300);
+        expect(wakes).toHaveLength(0);
+        expect(texts(events).join("\n")).not.toContain("Took: and then deploy");
+        expect(await run("next")).toBe("done");
+        const last = JSON.stringify(received().filter((m) => m.type === "user").at(-1).message.content);
+        expect(last).toContain("your turn ended before it reached you");
+        expect(last).toContain("and then deploy");
+    });
+
+    test("Esc with a message Claude Code won't withdraw, and keeps (still_queued): withdrawn again, then Claude Code is stopped, so it never runs as a turn of its own", async () => {
+        process.env.FAKE_SCENARIO = "steer-live";
+        process.env.FAKE_TOOL_MS = "5000";
+        process.env.FAKE_CANCEL_REFUSE = "1";
+        // What's kept waits a moment before it starts: time for the second withdrawal and the stop.
+        process.env.FAKE_START_DELAY_MS = "600";
+        const { run, events, agent, queued, wakes } = await makeAgent();
+        const ac = new AbortController();
+        const done = run("start", ac.signal);
+        await until(() => events.some((e) => e.type === "tool_start" && e.call.id === "toolu_live"), 5000, "the call");
+        steer(agent, queued, "and then deploy");
+        await until(() => Boolean(userSent("and then deploy")), 2000, "the steer written");
+        await Bun.sleep(100);
+        ac.abort();
+        expect(await done).toBe("aborted");
+        await Bun.sleep(1200);
+        // Not started as a turn Claude Code took by itself (a wake), nor run at all.
+        expect(wakes).toHaveLength(0);
+        expect(logLines().filter((l) => l.init)).toHaveLength(1);
+        const uuid = userSent("and then deploy").uuid;
+        expect(controls("cancel_async_message")).toEqual([{ subtype: "cancel_async_message", message_uuid: uuid }, { subtype: "cancel_async_message", message_uuid: uuid }]);
+        // Claude Code may have had it: not sent again. The next prompt goes to a new process.
+        expect(await run("next")).toBe("done");
+        expect(starts()).toHaveLength(2);
+        expect(JSON.stringify(received().filter((m) => m.type === "user").at(-1).message.content)).not.toContain("and then deploy");
+    }, 15_000);
+
+    /** Esc on the steer-live turn while its call runs, with "and then deploy" written to it and not taken yet. */
+    const escWithSteer = async () => {
+        const a = await makeAgent();
+        const ac = new AbortController();
+        const done = a.run("start", ac.signal);
+        await until(() => a.events.some((e) => e.type === "tool_start" && e.call.id === "toolu_live"), 5000, "the call");
+        steer(a.agent, a.queued, "and then deploy");
+        await until(() => Boolean(userSent("and then deploy")), 2000, "the steer written");
+        await Bun.sleep(100);
+        ac.abort();
+        expect(await done).toBe("aborted");
+        return a;
+    };
+    const lastPrompt = () => JSON.stringify(received().filter((m) => m.type === "user").at(-1).message.content);
+
+    test("Esc whose withdrawal is answered only after the turn has ended and the message started as a turn of its own: that turn is stopped unseen, never taken for a wake (S2-1)", async () => {
+        process.env.FAKE_SCENARIO = "steer-live";
+        process.env.FAKE_TOOL_MS = "5000";
+        process.env.FAKE_CANCEL_FOLDED = "run";
+        const { run, events, wakes } = await escWithSteer();
+        await until(() => logLines().filter((l) => l.init).length === 2, 3000, "the message's own turn");
+        await Bun.sleep(200);
+        expect(wakes).toHaveLength(0);
+        const interrupts = () => received().filter((m) => m.type === "control_request" && m.request.subtype === "interrupt").length;
+        await until(() => interrupts() > 0, 3000, "its stop");
+        expect(texts(events).join("\n")).not.toContain("Took: and then deploy");
+        // Claude Code took it (in its transcript): delivered, not sent again; nothing in doubt, so its process stays.
+        expect(await run("next")).toBe("done");
+        expect(lastPrompt()).not.toContain("and then deploy");
+        expect(starts()).toHaveLength(1);
+        expect(wakes).toHaveLength(0);
+    }, 15_000);
+
+    test("Esc with a message Claude Code won't withdraw, and the next prompt sent at once: it waits for the withdrawal to settle, and goes to a new process (S2-2)", async () => {
+        process.env.FAKE_SCENARIO = "steer-live";
+        process.env.FAKE_TOOL_MS = "5000";
+        process.env.FAKE_CANCEL_REFUSE = "1";
+        process.env.FAKE_START_DELAY_MS = "600";
+        const { run, wakes } = await escWithSteer();
+        expect(await run("next")).toBe("done");
+        expect(starts()).toHaveLength(2);
+        expect(lastPrompt()).not.toContain("and then deploy");
+        expect(lastPrompt()).toContain("next");
+        expect(wakes).toHaveLength(0);
+    }, 15_000);
+
+    test("Esc where Claude Code says the message dropped, and answers the withdrawal past its wait: that's final, so it's handed back once and nothing is stopped (S2-3)", async () => {
+        process.env.FAKE_SCENARIO = "steer-live";
+        process.env.FAKE_TOOL_MS = "5000";
+        process.env.FAKE_CANCEL_ANSWER_MS = "800";
+        liveTiming.withdrawMs = 300;
+        const { run, events } = await escWithSteer();
+        await Bun.sleep(900);
+        expect(notices(events).join("\n")).not.toContain("didn't withdraw");
+        expect(await run("next")).toBe("done");
+        expect(starts()).toHaveLength(1);
+        expect(lastPrompt()).toContain("your turn ended before it reached you");
+        expect(lastPrompt().split("and then deploy")).toHaveLength(2);
+    }, 15_000);
+
+    test("Esc whose withdrawal is answered after the message started as a turn of its own, before that turn's system/init, and the next prompt sent at once: it waits for that turn to be stopped, so the stop never meets it (S3-1)", async () => {
+        process.env.FAKE_SCENARIO = "steer-live";
+        process.env.FAKE_TOOL_MS = "5000";
+        process.env.FAKE_CANCEL_FOLDED = "run";
+        // The withdrawal is answered 300 ms after it's asked, the message's turn already started; its system/init comes later.
+        process.env.FAKE_INIT_DELAY_MS = "800";
+        const { run, events, wakes } = await escWithSteer();
+        const from = events.length;
+        expect(await run("next")).toBe("done");
+        expect(texts(events.slice(from))).toEqual(["Took: next"]);
+        expect(texts(events).join("\n")).not.toContain("Took: and then deploy");
+        expect(lastPrompt()).toContain("next");
+        expect(lastPrompt()).not.toContain("and then deploy");
+        expect(starts()).toHaveLength(1);
+        expect(wakes).toHaveLength(0);
+    }, 15_000);
+
+    test("Esc whose withdrawn message started as a turn of its own that isn't over within the wait: its process is stopped, and the next prompt goes to a new one, which no stop meant for that turn can reach (S4-1)", async () => {
+        process.env.FAKE_SCENARIO = "steer-live";
+        process.env.FAKE_TOOL_MS = "5000";
+        process.env.FAKE_CANCEL_FOLDED = "run";
+        // The message's turn has started; its system/init (and so its stop) comes only after the wait is over.
+        process.env.FAKE_INIT_DELAY_MS = "1500";
+        liveTiming.controlMs = 400;
+        const { run, events, wakes } = await escWithSteer();
+        const from = events.length;
+        expect(await run("next")).toBe("done");
+        expect(notices(events).join("\n")).toContain("its process was stopped");
+        expect(starts()).toHaveLength(2);
+        // The next turn wasn't stopped: on the new process, it's that process's first.
+        expect(texts(events.slice(from)).join("\n")).toContain("Counting: 1 2 3");
+        expect(texts(events).join("\n")).not.toContain("Took: and then deploy");
+        expect(lastPrompt()).toContain("next");
+        expect(lastPrompt()).not.toContain("and then deploy");
+        expect(wakes).toHaveLength(0);
+    }, 15_000);
+
+    test("Esc with a message Claude Code didn't withdraw, which starts as a turn of its own while it's withdrawn again, and isn't withdrawn then either: that turn is stopped, and its process kept (S4-2)", async () => {
+        process.env.FAKE_SCENARIO = "steer-live";
+        process.env.FAKE_TOOL_MS = "5000";
+        process.env.FAKE_CANCEL_REFUSE = "1";
+        // Each withdrawal is refused 600 ms after it's asked; what Esc's interrupt kept starts 300 ms after it, and its
+        // system/init (so its stop and its result) comes 800 ms later, after the second refusal.
+        process.env.FAKE_CANCEL_ANSWER_MS = "600";
+        process.env.FAKE_START_DELAY_MS = "300";
+        process.env.FAKE_INIT_DELAY_MS = "800";
+        const { run, events, wakes } = await escWithSteer();
+        const from = events.length;
+        expect(await run("next")).toBe("done");
+        expect(notices(events).join("\n")).not.toContain("its process was stopped");
+        expect(starts()).toHaveLength(1);
+        expect(texts(events.slice(from))).toEqual(["Took: next"]);
+        expect(texts(events).join("\n")).not.toContain("Took: and then deploy");
+        expect(wakes).toHaveLength(0);
+    }, 15_000);
+
+    test("Esc on a turn that has ended, its message to steer with written while a turn Claude Code started by itself runs, with a message to send now, and Claude Code won't withdraw the steer: its process is stopped, and the message to send now is handed back for a later turn, never written to it (the earlier path's B-1)", async () => {
+        process.env.FAKE_SCENARIO = "steer-live";
+        process.env.FAKE_TOOL_MS = "1500";
+        process.env.FAKE_WRITE_MS = "200";
+        process.env.FAKE_LIVE_WAKE_MS = "100";
+        process.env.FAKE_CANCEL_REFUSE = "1";
+        let release: (() => void) | undefined;
+        let slow = false;
+        // The host is slow to hand the steer over: the turn's result, and Claude Code's own turn, come meanwhile.
+        const drain = async () => {
+            if (!slow) return [];
+            slow = false;
+            await new Promise<void>((r) => (release = r));
+            return ["and then deploy"];
+        };
+        const { run, events, agent, wakes } = await makeAgent({ drain });
+        const ac = new AbortController();
+        const done = run("start", ac.signal);
+        await until(() => events.some((e) => e.type === "text" && e.text.startsWith("Counting")), 5000, "the reply being written");
+        slow = true;
+        agent.queueChanged();
+        await until(() => release !== undefined, 2000, "the drain under way");
+        await until(() => logLines().some((l) => l.liveWake) && wakes.length > 0, 5000, "the turn Claude Code started by itself");
+        release!();
+        await until(() => Boolean(userSent("and then deploy")), 2000, "the steer written");
+        expect(agent.sendNow("use the other branch")).toBe(true);
+        ac.abort();
+        expect(await done).toBe("aborted");
+        expect(await run("next")).toBe("done");
+        expect(await run("after")).toBe("done");
+        expect(starts()).toHaveLength(2);
+        // Never written to the process stopped: handed back, and a later turn is told of it, once.
+        expect(userTexts().filter((t) => t === "use the other branch")).toHaveLength(0);
+        const sent = received().filter((m) => m.type === "user").map((m) => JSON.stringify(m.message.content)).join("\n");
+        expect(sent.split("use the other branch")).toHaveLength(2);
+        expect(sent).toContain("your turn ended before it reached you");
+    }, 15_000);
+
+    for (const ending of ["run", "drop"] as const) {
+        test(`Esc with a message to send now, and one to steer with Claude Code hasn't taken, the turn ending as that's withdrawn (the message ${ending === "run" ? "run as a turn of its own" : "dropped"}): the message to send now goes once, as a turn of its own (B-1)`, async () => {
+            process.env.FAKE_SCENARIO = "steer-live";
+            process.env.FAKE_TOOL_MS = "5000";
+            process.env.FAKE_CANCEL_FOLDED = ending;
+            const { run, events, agent, queued, wakes, adopt } = await makeAgent();
+            const ac = new AbortController();
+            const done = run("start", ac.signal);
+            await until(() => events.some((e) => e.type === "tool_start" && e.call.id === "toolu_live"), 5000, "the call");
+            steer(agent, queued, "and then deploy");
+            await until(() => Boolean(userSent("and then deploy")), 2000, "the steer written");
+            await Bun.sleep(100);
+            expect(agent.sendNow("use the other branch")).toBe(true);
+            ac.abort();
+            expect(await done).toBe("aborted");
+            await until(() => wakes.length > 0, 5000, "the follow-up's turn");
+            expect(wakes[0]).toMatchObject({ prompt: true, label: "use the other branch" });
+            expect(await adopt(wakes[0]!)).toBe("done");
+            expect(userTexts().filter((t) => t === "use the other branch")).toHaveLength(1);
+            expect(texts(events).join("\n")).toContain("Took: use the other branch");
+            expect(texts(events).join("\n")).not.toContain("Took: and then deploy");
+        }, 15_000);
+    }
+
+    test("a watch's event taken from the queue as the turn ends, written while a turn Claude Code started by itself runs, and taken into that turn: the turn it was for ends", async () => {
+        process.env.FAKE_SCENARIO = "steer-live";
+        process.env.FAKE_TOOL_MS = "600";
+        process.env.FAKE_WRITE_MS = "200";
+        process.env.FAKE_LIVE_WAKE_MS = "100";
+        const watch = new WakeQueue({ coalesceMs: 60_000 });
+        let release: (() => void) | undefined;
+        let slow = false;
+        // The host is slow to hand it over (its hooks, say): the turn's result, and the next turn's start, come meanwhile.
+        const drain = async () => {
+            if (!slow) return [];
+            slow = false;
+            await new Promise<void>((r) => (release = r));
+            return [];
+        };
+        const { run, events, agent, wakes } = await makeAgent({ drain, watch });
+        const done = run("start");
+        await until(() => events.some((e) => e.type === "text" && e.text.startsWith("Counting")), 5000, "the reply being written");
+        watch.push({ source: "pull-request", label: "PR #12: checks passed", text: "- ci passed" });
+        slow = true;
+        agent.queueChanged();
+        await until(() => release !== undefined, 2000, "the drain under way");
+        await until(() => logLines().some((l) => l.liveWake) && wakes.length > 0, 5000, "the turn Claude Code started by itself");
+        release!();
+        await until(() => logLines().some((l) => l.foldedAtToolResult?.some((t: string) => t.includes("ci passed"))), 5000, "the event taken into that turn");
+        const r = await Promise.race([done, Bun.sleep(3000).then(() => "still running")]);
+        expect(r).toBe("done");
+        expect(received().find((m) => m.type === "user" && JSON.stringify(m.message.content).includes("ci passed"))?.isSynthetic).toBe(true);
+        watch.dispose();
     });
 });

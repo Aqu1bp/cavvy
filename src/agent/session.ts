@@ -106,6 +106,8 @@ export type Line =
     /** kept: the last message before it goes on after the summary, the same message moved (the GUI shows it once, where it went). */
     | { t: "compact"; summary: string; /** Compacted while idle, before the prompt cache expired. */ idle?: true; kept?: true }
     | { t: "rewind"; count: number }
+    /** Message `index` taken out (a steer its backend never took): what came after it, its notices and backends' places, move back one. Older versions skip these lines. */
+    | { t: "withdraw"; index: number }
     /** unknown: no price was known; at: when spent (ms), absent in older records. */
     | { t: "usage"; usage: Usage; cost: number; model: string; unknown?: true; at?: number }
     | ({ t: "notice" } & TurnNotice)
@@ -770,6 +772,25 @@ export class Session {
     }
 
     /**
+     * Take message `index` out (a steer its backend never took: TurnSink.undelivered). One line, so a write cut short
+     * (a torn last line, skipped on load) leaves the history as it was, never short of what came after it.
+     */
+    withdraw(index: number) {
+        if (!this.unsay(index)) return;
+        this.write({ t: "withdraw", index });
+    }
+
+    /** As a withdraw line reads: the message goes, and what counted past it (notices, backends' places) moves back one. */
+    private unsay(index: number): boolean {
+        if (!Number.isInteger(index) || index < 0 || index >= this.messages.length) return false;
+        this.messages.splice(index, 1);
+        this.notices = this.notices.map((n) => (n.index > index ? { ...n, index: n.index - 1 } : n));
+        for (const [p, b] of this.backends) if (b.synced > index) this.backends.set(p, { ...b, synced: b.synced - 1 });
+        this.parked = this.parked.map((p) => (p.session.synced > index ? { ...p, session: { ...p.session, synced: p.session.synced - 1 } } : p));
+        return true;
+    }
+
+    /**
      * `model` refused a request for these messages' images: from now on it's
      * sent them without, here and in a resumed or forked copy (the mark is on
      * the message). Another model is still sent them, and the images stay.
@@ -858,6 +879,7 @@ export class Session {
                 s.notices = noticesUpTo(s.notices, l.count);
                 s.dropBackendsAfter(l.count);
             }
+            else if (l.t === "withdraw") s.unsay(l.index);
             else if (l.t === "notice") {
                 const n = turnNotice(l);
                 if (n) addNotice(s.notices, n);
@@ -1371,6 +1393,10 @@ function readHeadLine(raw: string, head: SessionHead) {
     } else if (l.t === "rewind") {
         head.count = Math.min(head.count, l.count);
         if (head.firstAt !== undefined && head.firstAt >= l.count) head.first = head.firstAt = undefined;
+    } else if (l.t === "withdraw" && l.index < head.count) {
+        head.count--;
+        if (head.firstAt === l.index) head.first = head.firstAt = undefined;
+        else if (head.firstAt !== undefined && head.firstAt > l.index) head.firstAt--;
     } else if (l.t === "compact") {
         head.count = 0;
         // The conversation's opening prompt still names it after a compaction.

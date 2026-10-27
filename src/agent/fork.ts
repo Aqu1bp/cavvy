@@ -31,6 +31,7 @@ const COPIED: Record<Line["t"], boolean> = {
     msg: true,
     compact: true,
     rewind: true,
+    withdraw: true,
     model: false,
     fastMode: false,
     account: false,
@@ -136,15 +137,18 @@ function recordsUpTo(lines: Line[], cut: number): Line[] {
         if (l.t === "msg") count++;
         else if (l.t === "compact") count = 0;
         else if (l.t === "rewind") count = Math.min(count, l.count);
+        else if (l.t === "withdraw" && l.index < count) count--;
         counts.push(count);
         if (l.t === "compact" || (l.t === "rewind" && l.count < cut)) from = i + 1;
+        // One of the first `cut` taken out: the history has them all again only from here (this line on).
+        else if (l.t === "withdraw" && l.index < cut) from = i;
     });
     for (let i = from; i < lines.length; i++) {
-        if (lines[i]!.t !== "msg" || counts[i] !== cut) continue;
+        if ((lines[i]!.t !== "msg" && lines[i]!.t !== "withdraw") || counts[i] !== cut) continue;
         // A turn's ending notice follows its last message. Keep that metadata,
         // stopping before anything changes the conversation again.
         let end = i + 1;
-        while (end < lines.length && !["msg", "compact", "rewind"].includes(lines[end]!.t)) end++;
+        while (end < lines.length && !["msg", "compact", "rewind", "withdraw"].includes(lines[end]!.t)) end++;
         return lines.slice(0, end);
     }
     throw new Error("The session's file doesn't have that part of the conversation.");
@@ -157,6 +161,7 @@ function historyOf(lines: Line[]): Message[] {
         if (l.t === "msg") messages.push(l.m);
         else if (l.t === "compact") messages = [];
         else if (l.t === "rewind") messages = messages.slice(0, l.count);
+        else if (l.t === "withdraw") messages.splice(l.index, 1);
         else if (l.t === "imagesRefused") for (const i of l.indexes) {
             const m = messages[i];
             // A copy: the message is also a record written to the fork.
@@ -185,6 +190,10 @@ function firstPrompt(lines: Line[]): string | undefined {
         } else if (l.t === "rewind") {
             count = Math.min(count, l.count);
             if (first && first.at >= l.count) first = undefined;
+        } else if (l.t === "withdraw" && l.index < count) {
+            count--;
+            if (first?.at === l.index) first = undefined;
+            else if (first && first.at > l.index) first.at--;
         } else if (l.t === "compact") {
             count = 0;
             if (first) first.at = -1;

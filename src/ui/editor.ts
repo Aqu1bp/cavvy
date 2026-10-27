@@ -277,10 +277,11 @@ export class Editor {
         return { text, attachments };
     }
 
-    /** Put drafts (and their images) back in the prompt, ahead of what's there. */
-    restore(drafts: Draft[]) {
+    /** Put drafts (and their images) back in the prompt, ahead of what's there (`after`: after it, a blank line between). */
+    restore(drafts: Draft[], after = false) {
         for (const d of drafts) for (const [uid, a] of d.attachments) this.attachments.set(uid, { ...a });
-        this.set([...drafts.map((d) => d.text), this.text].filter(Boolean).join("\n"));
+        const back = drafts.map((d) => d.text);
+        this.set(after ? [this.text.trimEnd(), back.filter(Boolean).join("\n\n")].filter(Boolean).join("\n\n") : [...back, this.text].filter(Boolean).join("\n"));
     }
 
     /**
