@@ -6,7 +6,7 @@
 //   - the few browser-wide ones the pool uses are answered here: making a tab (Target.createTarget), closing and
 //     fronting one, the browser's version, and what the pool turns on (auto-attach, discovery, downloads);
 //   - Cavvy.viewSize tells a page its real size and scale (it is never emulated), Cavvy.humanInput that the person
-//     used it directly (the tab becomes theirs, as a click in the streamed pane makes it).
+//     used it directly (as a click in the streamed pane does: the agent is told, not kept out).
 // No DevTools port is opened: only the server, with its token, reaches these pages.
 //
 // A popup the person opens (a page's sign-in window, say: window.open asking for a window, within moments of their
@@ -38,6 +38,8 @@ interface Tab {
     usedAt: number;
     /** When the person last used it directly (ms since the epoch): a popup it opens soon after is theirs. */
     personAt: number;
+    /** When the agent last acted in it (its input, its scripts): a popup after that is the agent's, a tab. */
+    agentAt: number;
     /** The popup windows it opened for the person, and the ones those opened. */
     popups: Set<BrowserWindow>;
     /** The sessions of its frames from other sites, each with the frame's session it's in (undefined: the page). */
@@ -349,6 +351,8 @@ export class BrowserHost {
             await this.wake(tab);
             const input = cmd.method.startsWith("Input.");
             if (input) tab.agentInputs++;
+            // The agent's own script is the one evaluation with a user gesture (BrowserEval); reading the title isn't acting.
+            if (input || cmd.method === "Runtime.callFunctionOn" || (cmd.method === "Runtime.evaluate" && p.userGesture === true)) tab.agentAt = Date.now();
             try {
                 // Never through the window's focus into the UI (guest-input.ts).
                 const result = await sendToTab(tab.wc, cmd.method, p);
@@ -408,7 +412,7 @@ export class BrowserHost {
         if (wc.isLoading()) await new Promise<void>((r) => wc.once("did-stop-loading", () => r()));
         wc.debugger.attach("1.3");
         const { targetInfo } = (await wc.debugger.sendCommand("Target.getTargetInfo")) as { targetInfo: { targetId: string } };
-        const tab: Tab = { targetId: targetInfo.targetId, sid: `desktop-${n}`, key, wc, channel, openerId, agentInputs: 0, closed: false, usedAt: Date.now(), personAt: 0, popups: new Set(), children: new Map(), frozen: false };
+        const tab: Tab = { targetId: targetInfo.targetId, sid: `desktop-${n}`, key, wc, channel, openerId, agentInputs: 0, closed: false, usedAt: Date.now(), personAt: 0, agentAt: 0, popups: new Set(), children: new Map(), frozen: false };
         channel.tabs.set(tab.targetId, tab);
         this.tabsById.set(tab.targetId, tab);
         this.tabsBySid.set(tab.sid, tab);
@@ -437,7 +441,7 @@ export class BrowserHost {
         // The person's popup is a window (above); otherwise a page opening another opens a tab of the same session, as in
         // Chrome (the pool adopts it by its opener).
         wc.setWindowOpenHandler(({ url, disposition }) => {
-            if (disposition === "new-window" && Date.now() - tab.personAt < PERSON_POPUP_MS && popupUrl(url)) return { action: "allow", overrideBrowserWindowOptions: POPUP };
+            if (disposition === "new-window" && Date.now() - tab.personAt < PERSON_POPUP_MS && tab.personAt > tab.agentAt && popupUrl(url)) return { action: "allow", overrideBrowserWindowOptions: POPUP };
             void this.openTab(channel, tab.targetId).then((child) => {
                 child.pendingUrl = url;
                 this.announce(child);

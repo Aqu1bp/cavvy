@@ -1,6 +1,6 @@
 // One tab: what it shows and says (URL, title, console, requests, dialogs), and the commands that read or move it.
 // A Page is attached to a browser target through the shared CDP connection (cdp.ts). Acting on a page by ref or
-// coordinates is in interact.ts; who may act on it, in control.ts.
+// coordinates is in interact.ts; who drove it last, in control.ts.
 
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -9,7 +9,7 @@ import { redact } from "../util/redact";
 import { domFacts, outlineOf, SNAPSHOT_CHARS, type AxNode } from "./ax";
 import { CdpClient, COMMAND_TIMEOUT_MS } from "./cdp";
 import type { ChromeIdentity } from "./chrome";
-import { TAKEN_OVER, TabControl, type Owner } from "./control";
+import { TabControl, type Owner } from "./control";
 import { ConsoleLog, NetworkLog, type ConsoleLevel } from "./logs";
 import { RefTable } from "./refs";
 import { allowedPage, checkUrl, displayUrl, hostOf, type BrowserApproval } from "./url-policy";
@@ -38,11 +38,11 @@ export interface Frame {
 }
 
 export interface PageHooks {
-    /** Something a viewer shows changed: address, title, loading, dialog, who has control. */
+    /** Something a viewer shows changed: address, title, loading, dialog, who drove it last. */
     changed(page: Page): void;
     frame(page: Page, frame: Frame): void;
-    /** The person used the page directly, in the desktop app's own view of it (host.ts): the tab is theirs. */
-    taken?(page: Page): void;
+    /** The person used the page directly, in the desktop app's own view of it (host.ts): they drive the tab now. */
+    touched?(page: Page): void;
 }
 
 export interface PendingDialog {
@@ -261,22 +261,22 @@ export class Page {
         return run;
     }
 
-    /** An input the agent sends: refused once the person has the tab or the call is cancelled, so a click queued behind a long wait doesn't land on their page. */
+    /** An input the agent sends: refused once the call is cancelled, so a click queued behind a long wait doesn't land after the user stopped it. */
     agentInput(method: string, params: Record<string, unknown>, signal?: AbortSignal) {
         this.stillAgent(signal);
         return this.input(method, params);
     }
 
-    /** The start of an action by the agent: the tab is up to it (ready), and still the agent's to act on. */
+    /** The start of an action by the agent: the tab is up to it (ready), and the call wasn't cancelled. */
     actable(signal?: AbortSignal) {
         this.ready();
         this.stillAgent(signal);
     }
 
-    /** Throws if the agent may no longer act on the tab: the call was cancelled, or the person took the tab. */
+    /** Throws if the agent's call was cancelled. Otherwise the agent drives the tab from this step: a person's input just before doesn't lend it their approval. */
     stillAgent(signal?: AbortSignal) {
         if (signal?.aborted) throw new BrowserError("Interrupted by user.");
-        if (this.control.owner === "human") throw new BrowserError(TAKEN_OVER);
+        if (this.control.agentAct()) this.changed();
     }
 
     /** Fails a call that can't run now: the tab crashed, or a dialog is holding the page. */
@@ -329,7 +329,7 @@ export class Page {
             this.network.forgetInflight();
             this.lastOutline = undefined;
             this.documentStatus = this.document && this.document.loaderId === p.frame.loaderId ? this.document.status : undefined;
-            // Where a person goes is theirs to go; otherwise a yes holds only while the tab stays on the host it was for. The
+            // Where a person goes (the tab's last driver) is theirs to go; otherwise a yes holds only while the tab stays on the host it was for. The
             // browser's error page for a load refused just before can land while the next yes is on its way, and is no leaving
             // (no other page can script it; a blank page another opened, it could).
             const late = this.approving > 0 && this.url.startsWith("chrome-error:");
@@ -419,7 +419,7 @@ export class Page {
             if (this.o.hosted && p.width > 0 && p.height > 0) this.viewport = { width: p.width, height: p.height, scale: p.scale > 0 ? p.scale : 1 };
         });
         this.on("Cavvy.humanInput", () => {
-            if (this.o.hosted && !this.closed) this.o.hooks.taken?.(this);
+            if (this.o.hosted && !this.closed) this.o.hooks.touched?.(this);
         });
         this.on("Page.screencastFrame", (p: { data: string; sessionId: number; metadata: { deviceWidth: number; deviceHeight: number } }) => {
             // Acknowledged at once: Chrome sends the next frame when the page changes; the pane's own pace is the feed's (feed.ts).
@@ -683,6 +683,8 @@ export class Page {
             let text: string | undefined;
             if (o.type === "undefined") text = "undefined";
             else if (o.objectId && o.type === "object" && o.subtype !== "null") {
+                // Reading the value runs the page's getters: the agent's step, though the user may have used the tab meanwhile.
+                if (signal) this.stillAgent(signal);
                 const s = await this.send<{ result: { value?: string } }>("Runtime.callFunctionOn", { objectId: o.objectId, functionDeclaration: SERIALIZE, returnByValue: true });
                 text = s.result.value;
             } else text = o.value !== undefined ? (JSON.stringify(o.value, null, 2) ?? String(o.value)) : (o.unserializableValue ?? o.description ?? o.type);

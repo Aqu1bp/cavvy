@@ -70,14 +70,14 @@ async function run() {
         check(pixel[0] > 240 && pixel[1] < 20, `frame was not drawn: ${pixel}`);
         check(calls.some(c => c.method === "browser.ack" && c.params.frameId === "red"), "matching acknowledgement missing");
 
-        // Taking control and a page's dialog leave the page its size: a resize would reflow it under the click.
+        // The person driving and a page's dialog leave the page its size: a resize would reflow it under the click.
         const size = `${view.clientWidth}x${view.clientHeight}`;
         const human = state(1);
         human.tabs[0]!.owner = "human";
         adoptBrowserState(id, human);
         await tick();
-        check(root.textContent?.includes("Hand back to agent"), "human control has no hand-back");
-        check(`${view.clientWidth}x${view.clientHeight}` === size, `taking control resized the page view from ${size} to ${view.clientWidth}x${view.clientHeight}`);
+        check(!root.textContent?.includes("Hand back to agent") && !root.textContent?.includes("You're in control"), "the person using the tab shows a takeover");
+        check(`${view.clientWidth}x${view.clientHeight}` === size, `the person driving resized the page view from ${size} to ${view.clientWidth}x${view.clientHeight}`);
         human.tabs[0]!.dialog = { type: "confirm", message: "Leave this page?" };
         adoptBrowserState(id, { ...human });
         await tick();
