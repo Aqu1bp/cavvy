@@ -168,6 +168,8 @@ export interface ChatRequest {
     webSearch?: boolean;
     /** Stable per-session key for providers with keyed prompt caches (OpenAI). */
     cacheKey?: string;
+    /** Claude Code and Codex: the account a one-off goes through (the session's); else the CLI's default. */
+    account?: string;
 }
 
 export type StreamEvent =

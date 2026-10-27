@@ -59,10 +59,10 @@
 }
 
 /* The lights end 78px from the window's left (x 18, three 14px buttons 23px apart, measured in
-   the app); the sheet starts 8px in, so the buttons start 14px after them, as in the mockup. */
+   the app); the sheet starts --win-pad in, so the buttons start 14px after them, as in the mockup. */
 .header.traffic.rail-off,
 [data-rail="overlay"] .header.traffic {
-    padding-left: 84px;
+    padding-left: calc(92px - var(--win-pad, 8px));
 }
 
 .header.rail-off .bar-rail,

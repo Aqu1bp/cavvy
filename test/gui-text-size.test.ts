@@ -29,7 +29,7 @@ const KEY: [file: string, selector: string, property: string, at14: string][] = 
     ["base.css", ".menu-item", "padding", "6px 8px"],
     ["base.css", '.toggle.on .toggle-knob', "transform", "translateX(15px)"],
     ["sidebar.css", ".side-search", "height", "32px"],
-    ["sidebar.css", ".card-hit", "padding", "7px 10px 7px 8px"],
+    ["sidebar.css", ".card-hit", "padding", "7px 10px"],
     ["composer.css", ".send", "width", "34px"],
     ["composer.css", ".uq-row", "height", "34px"],
     ["transcript.css", ".tool-line", "min-height", "26px"],

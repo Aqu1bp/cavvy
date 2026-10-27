@@ -77,22 +77,56 @@
     }
 }
 
-/* While a turn runs: the other way to send what's written (steer or queue), beside the send button. */
-.composer kbd.c-alt {
+/* The send button's keys, over it while it's pointed at or focused: steer or queue (and the other way) while a
+   turn runs, esc to stop. Nothing beside it in the box. A moment's wait, so passing over it doesn't flash it. */
+.send-wrap {
+    position: relative;
+    display: inline-flex;
     flex: none;
-    height: auto;
-    margin-right: calc(2 * var(--sp));
-    padding: calc(3 * var(--sp)) calc(6 * var(--sp));
-    font-size: 0.786rem;
-    color: var(--fg-3);
-    background: var(--hover);
-    white-space: nowrap;
 }
 
-/* While a turn runs: how to stop it, beside the stop button (the box doesn't grow a status row). */
-.composer kbd.c-esc {
-    margin-right: calc(4 * var(--sp));
-    animation: fade 200ms var(--ease);
+.send-hint {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 8 * var(--sp));
+    z-index: 12;
+    display: grid;
+    gap: calc(4 * var(--sp));
+    padding: calc(7 * var(--sp)) calc(9 * var(--sp));
+    border-radius: calc(10 * var(--sp));
+    background: var(--ctl-strong);
+    -webkit-backdrop-filter: blur(20px) saturate(1.9);
+    backdrop-filter: blur(20px) saturate(1.9);
+    box-shadow: var(--pop-shadow), inset 0 1px 0 var(--ctl-hi);
+    font-size: 0.821rem;
+    color: var(--fg-2);
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(3px);
+    transition: opacity 120ms var(--ease), transform 120ms var(--ease);
+}
+
+.send-wrap:hover .send-hint,
+.send-wrap:has(.send:focus-visible) .send-hint {
+    opacity: 1;
+    transform: none;
+    transition-delay: 300ms;
+}
+
+.sh-row {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+}
+
+.sh-row kbd {
+    min-width: calc(34 * var(--sp));
+    height: auto;
+    padding: calc(2 * var(--sp)) calc(5 * var(--sp));
+    font-size: 0.75rem;
+    color: var(--fg-3);
+    text-align: center;
 }
 
 .composer .grow {
@@ -1473,7 +1507,8 @@
     right: 0;
     bottom: calc(100% + 8 * var(--sp));
     z-index: 10;
-    max-height: calc(320 * var(--sp));
+    /* --room: Home's, the window's height under it (Composer.tsx). */
+    max-height: min(calc(320 * var(--sp)), var(--room, calc(320 * var(--sp))));
     overflow-y: auto;
     padding: calc(5 * var(--sp));
     border-radius: calc(16 * var(--sp));
@@ -1483,6 +1518,51 @@
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--ctl-hi);
     transform-origin: bottom left;
     animation: c-pop 240ms var(--spring);
+}
+
+/* Home: the box sits in the middle of the page, under its heading. The menu drops below it (and the strip), as
+   the pickers do there, over the list of sessions rather than the heading and the top of the window. */
+.composer.v-home .composer-menu {
+    top: var(--menu-top, calc(100% + 6 * var(--sp)));
+    bottom: auto;
+    transform-origin: top left;
+    /* Over the strip's words: the glass on a solid sheet, so nothing reads through it. */
+    background: linear-gradient(var(--ctl-strong), var(--ctl-strong)), var(--sheet);
+}
+
+/* Files: a compact list by the text, not a slab the composer's width. Each row is the file's name, then its
+   folder, quieter; the / menu keeps the width its descriptions need. */
+.composer-menu.files {
+    right: auto;
+    width: min(calc(420 * var(--sp)), 100%);
+    max-height: min(calc(286 * var(--sp)), var(--room, calc(286 * var(--sp))));
+    padding: calc(4 * var(--sp));
+    border-radius: calc(13 * var(--sp));
+}
+
+.composer-menu.files .cm-item {
+    gap: calc(8 * var(--sp));
+    padding: calc(5 * var(--sp)) calc(8 * var(--sp));
+    border-radius: calc(9 * var(--sp));
+}
+
+.composer-menu.files .cm-icon {
+    width: calc(16 * var(--sp));
+    color: var(--fg-3);
+}
+
+/* The name gives way last: its folder shrinks ten times as fast. */
+.composer-menu.files .cm-name {
+    flex: 0 1 auto;
+    max-width: none;
+    min-width: 0;
+}
+
+.cm-dir {
+    flex: 0 10 auto;
+    min-width: 0;
+    font-size: 0.821rem;
+    color: var(--fg-3);
 }
 
 @keyframes c-pop {
@@ -1923,7 +2003,7 @@
     gap: calc(8 * var(--sp));
     margin: calc(6 * var(--sp)) calc(6 * var(--sp)) 0;
     padding: 0 calc(5 * var(--sp)) 0 calc(11 * var(--sp));
-    height: calc(36 * var(--sp));
+    height: calc(32 * var(--sp));
     border-radius: calc(12 * var(--sp));
     background: var(--hover);
     color: var(--fg-3);
@@ -2238,11 +2318,6 @@
     contain-intrinsic-size: auto calc(34 * var(--sp));
 }
 
-.mr.two {
-    height: calc(46 * var(--sp));
-    contain-intrinsic-size: auto calc(46 * var(--sp));
-}
-
 .mr.sel {
     background: var(--hover);
 }
@@ -2274,6 +2349,7 @@
     color: var(--accent);
 }
 
+/* ⌘1–9: on the row under the pointer or keyboard, not down every row. */
 .mr-pick kbd {
     flex: none;
     height: auto;
@@ -2282,25 +2358,25 @@
     font-size: 0.75rem;
     color: var(--fg-3);
     background: none;
+    visibility: hidden;
+}
+
+.mr.sel .mr-pick kbd {
+    visibility: visible;
 }
 
 .mr-text {
     display: flex;
-    flex-direction: column;
+    align-items: baseline;
     flex: 1;
-    min-width: 0;
-}
-
-.mr-top {
-    display: flex;
-    align-items: center;
     gap: calc(8 * var(--sp));
     min-width: 0;
     line-height: calc(20 * var(--sp));
 }
 
+/* The name keeps its room; the line beside it gives way. */
 .mr-name {
-    flex: 0 1 auto;
+    flex: 0 0 auto;
     max-width: 100%;
     font-weight: 500;
 }
@@ -2309,10 +2385,11 @@
     font-weight: 600;
 }
 
-/* Under the name: whose it is (in Favorites), the id an alias stands for, its context window and price. */
+/* Beside the name: whose it is (in Favorites), the id an alias stands for, its context window and price. */
 .mr-sub {
+    flex: 0 1 auto;
+    min-width: 0;
     font-size: 0.821rem;
-    line-height: calc(16 * var(--sp));
     color: var(--fg-3);
 }
 
@@ -2596,7 +2673,6 @@
         white-space: nowrap;
     }
 
-    .composer kbd.c-alt,
     .ask .pbtn kbd,
     .ctx-limit .lbl {
         display: none;

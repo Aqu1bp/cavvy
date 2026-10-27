@@ -199,7 +199,8 @@ export function promptTitle(prompt: string): string | undefined {
     const line = prompt
         .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "")
         .split("\n")
-        .map((l) => l.replace(/^[\s#>*-]+/, "").replace(/\s+/g, " ").trim())
+        // A link reads as where it goes: no scheme or www (and no "Https" once capitalized below).
+        .map((l) => l.replace(/^[\s#>*-]+/, "").replace(/\bhttps?:\/\/(www\.)?/gi, "").replace(/\s+/g, " ").trim())
         .find((l) => /[\p{L}\p{N}]/u.test(l));
     if (!line) return undefined;
     let t = line;
@@ -207,7 +208,7 @@ export function promptTitle(prompt: string): string | undefined {
         const cut = t.slice(0, 60);
         const space = cut.lastIndexOf(" ");
         t = `${(space > 30 ? cut.slice(0, space) : cut).replace(/[\s,;:.-]+$/, "")}…`;
-    } else t = t.replace(/[\s.]+$/, "");
+    } else t = t.replace(/[\s./]+$/, "");
     // A plain first word starts it in capitals, as a model's title would; not a path or a name like `src/x`.
     return /^\p{Ll}[\p{L}']*(?=[\s,:;!?]|$)/u.test(t) ? t[0]!.toUpperCase() + t.slice(1) : t;
 }
@@ -323,6 +324,8 @@ export class Runtime {
     private committing = false;
     private commitDone?: Promise<unknown>;
     private commitAbort?: AbortController;
+    /** The title being asked for: closing the session stops it (on a CLI, its process). */
+    private titleAbort?: AbortController;
     /** Being closed: it starts nothing more and sends nothing more (the session may be open again by then). */
     private closed = false;
     /** /loop, cron jobs and the resume after a usage limit (src/agent/schedule.ts). */
@@ -1189,8 +1192,11 @@ export class Runtime {
         } else if (opts?.main) {
             // the session's own model
         } else ({ model, client } = await this.smallTarget());
+        // Stopped while the model was being picked (the session closed): a CLI would still start for it.
+        signal?.throwIfAborted();
         const res = await client.stream(
-            { model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: opts?.maxTokens ?? 2048, effort: "low", lightweight: true, signal, ...(opts?.review ? REVIEW_REQUEST[opts.review] : {}) },
+            // On Claude Code or Codex, through the session's account, not the CLI's default.
+            { model, system, messages: [{ role: "user", content: [{ type: "text", text: redact(prompt) }] }], tools: [], maxTokens: opts?.maxTokens ?? 2048, effort: "low", lightweight: true, signal, account: this.session.accountId(model.provider), ...(opts?.review ? REVIEW_REQUEST[opts.review] : {}) },
             () => {},
         );
         if (res.usage) {
@@ -3232,26 +3238,21 @@ export class Runtime {
         // Redacted before it's cut or capitalized: then a key in it no longer looks like one.
         this.titleFrom ??= redact(prompt);
         let title: string | undefined;
-        // Claude Code and Codex run whole turns only, so they can't be asked for one: without a
-        // smallModel on another provider the prompt names the session.
-        if (isAgentBackend((await this.smallTarget().catch(() => undefined))?.client ?? this.client)) {
-            const t = promptTitle(this.titleFrom);
-            if (t && !this.session.title) this.rename(t);
-            return;
-        }
+        // Claude Code and Codex answer it as a one-off (backends/one-off.ts), on their light model.
         try {
             const raw = await this.complete(
                 "You name coding-assistant sessions for a sidebar. Reply with only the title: 2 to 6 words, sentence case, no quotes, no trailing punctuation. Describe the task, not the user.",
                 // Cut after redacting, so a registered value crossing the cut can't leave a prefix.
                 redactPrefix(prompt, 3000),
-                AbortSignal.timeout(20_000),
+                // A CLI starts a process of its own for it: a few seconds more than an API call.
+                AbortSignal.any([AbortSignal.timeout(45_000), (this.titleAbort = new AbortController()).signal]),
             );
             title = raw
                 .replace(/<[^>]*>/g, "")
                 .split("\n")
                 .map((l) => l.trim())
                 .find(Boolean)
-                ?.replace(/^title:\s*/i, "")
+                ?.replace(/^(session\s+)?(title|name):\s*/i, "")
                 .replace(/^["'`*#\s]+|["'`*.\s]+$/g, "")
                 .slice(0, 60);
             // Not a title: the prompt said back, or a paragraph.
@@ -3889,6 +3890,7 @@ export class Runtime {
         this.idleCompact.disarm();
         this.abort?.abort();
         this.commitAbort?.abort();
+        this.titleAbort?.abort();
         this.cancelInteractions();
         this.toolState.secrets?.clear();
         stopWatchers(this.toolState);

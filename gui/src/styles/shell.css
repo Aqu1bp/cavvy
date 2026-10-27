@@ -85,6 +85,26 @@
     padding-left: var(--win-pad);
 }
 
+/* Just the conversation (the rail hidden, or a drawer over it below 900px): no band of the window's glass framing
+   the sheet. The glass is the rail's ground; with no rail beside it, it was only a coloured edge. The sheet meets the
+   window's edges, its corners the window's own on macOS (square where the window is: a browser, other systems).
+   Whatever lines up with the lights from --win-pad (the title bar, the drawer's top line) follows. */
+.app.rail-off,
+.app[data-rail="overlay"] {
+    --win-pad: 0px;
+}
+
+.rail-off .sheet,
+[data-rail="overlay"] .sheet {
+    border-radius: 0;
+    box-shadow: none;
+}
+
+.app.tauri.os-macos.rail-off .sheet,
+.app.tauri.os-macos[data-rail="overlay"] .sheet {
+    border-radius: var(--r-window);
+}
+
 /* The window moves by its edges: this lies under the rail and the sheet, so
    only the gaps around them take the drag (data-window-drag). The whole top
    strip moves it too, whatever is on it (lib/window-drag.ts). */
@@ -175,11 +195,18 @@
 [data-rail="overlay"] .win-rail {
     position: absolute;
     z-index: 40;
-    left: var(--win-pad);
-    top: var(--win-pad);
-    bottom: var(--win-pad);
-    width: var(--rail-w);
-    border-radius: calc(14 * var(--sp));
+    /* Flush with the window's edge, top to bottom, as a drawer out of it: inset like the sheet, it floated apart.
+       Out of the grid, so these measure from the window's edge, not from the rail's track inside its padding. */
+    grid-column: auto;
+    grid-row: auto;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    /* The rail's own width, but never more than leaves a clear band of the dimmed window beside it (one to
+       click to close it): a docked rail made wide would otherwise cover all but a sliver of cut-off words. */
+    width: min(var(--rail-w), calc(100% - 64 * var(--sp)));
+    grid-template-columns: minmax(0, 1fr);
+    border-radius: 0 calc(14 * var(--sp)) calc(14 * var(--sp)) 0;
     transform: translateX(calc(-100% - 16px));
 }
 
@@ -199,8 +226,14 @@
     transition: opacity var(--dur) var(--ease);
 }
 
+/* Dim enough, and softened, that what's beside the drawer reads as the window behind it, not as a page cut off. */
 [data-theme="dark"] .rail-scrim {
-    background: color-mix(in srgb, var(--win-stroke) 30%, transparent);
+    background: rgba(0, 0, 0, 0.5);
+}
+
+[data-rail="overlay"] .rail-scrim {
+    -webkit-backdrop-filter: blur(3px);
+    backdrop-filter: blur(3px);
 }
 
 [data-rail="overlay"][data-railopen="on"] .rail-scrim {

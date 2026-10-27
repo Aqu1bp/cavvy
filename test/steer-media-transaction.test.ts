@@ -63,7 +63,8 @@ const received = (): any[] => {
     const f = process.env.FAKE_LOG!;
     return existsSync(f) ? readFileSync(f, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)).flatMap((l) => (l.received?.method ? [l.received] : [])) : [];
 };
-const turnStarts = () => received().filter((m) => m.method === "turn/start").map((m) => m.params);
+// Not the session's title, which Codex is asked for in a one-off thread of its own.
+const turnStarts = () => received().filter((m) => m.method === "turn/start" && m.params?.threadId !== "thr-oneoff").map((m) => m.params);
 const steers = () => received().filter((m) => m.method === "turn/steer").map((m) => m.params);
 const imagesIn = (input: any[]) => input.filter((i: any) => i.type === "image");
 /** The images Codex took: in turns it started (every steer here is refused). */

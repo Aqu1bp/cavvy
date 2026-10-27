@@ -3,10 +3,13 @@ import { basename } from "./format";
 
 export const SESSION_PAGE = 25;
 
-/** Attention first, then pins and recent activity. IDs break timestamp ties. */
+/** Attention first, then pins and recent activity. IDs break timestamp ties.
+ * A running session is working now (its row says so), though its updatedAt is when its turn started:
+ * summaries go out at a turn's edges, not with every event. Running ones keep their start order among themselves. */
 export function orderSessions(list: readonly SessionSummary[]): SessionSummary[] {
     return [...list].sort((a, b) => Number(b.status === "waiting") - Number(a.status === "waiting")
-        || Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+        || Number(b.pinned) - Number(a.pinned) || Number(b.status === "running") - Number(a.status === "running")
+        || b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
 }
 
 export function requiredSession(s: SessionSummary, activeId?: string): boolean {
@@ -40,6 +43,8 @@ export type SidebarEntry =
     /** A project heading; `collapsed`: its sessions in play (`ids`) are folded under it. */
     | { key: string; kind: "project"; cwd: string; name: string; collapsed?: boolean; ids?: string[] }
     | { key: string; kind: "settled" | "archived" }
+    /** Listed by date: the day its sessions below were last at work (dayOf). */
+    | { key: string; kind: "day"; label: DayLabel }
     | { key: string; kind: "more"; page: "cards" | "settled" | "archived"; remaining: number }
     /**
      * Needs you, pinned above everything: the sessions waiting on you (`ids`), each
@@ -59,6 +64,23 @@ export interface SidebarOptions {
     collapsed?: readonly string[];
     /** Sessions waiting on you but the one in front of you (rail.ts needsYou), pinned at the top of the active list. */
     needs?: readonly string[];
+    /** Listed by date: the time now, to put them under Today, Yesterday and so on. Without it, no days. */
+    now?: number;
+}
+
+export type DayLabel = "Pinned" | "Today" | "Yesterday" | "Previous 7 days" | "Older";
+const DAYS: readonly DayLabel[] = ["Pinned", "Today", "Yesterday", "Previous 7 days", "Older"];
+
+/** The heading a session is listed under by date. Working or waiting on you is today, whenever its turn started. */
+export function dayOf(s: Pick<SessionSummary, "pinned" | "status" | "updatedAt">, now: number): DayLabel {
+    if (s.pinned) return "Pinned";
+    if (s.status === "running" || s.status === "waiting") return "Today";
+    const midnight = new Date(now);
+    midnight.setHours(0, 0, 0, 0);
+    const day = (n: number) => new Date(midnight).setDate(midnight.getDate() - n);
+    if (s.updatedAt >= day(0)) return "Today";
+    if (s.updatedAt >= day(1)) return "Yesterday";
+    return s.updatedAt >= day(7) ? "Previous 7 days" : "Older";
 }
 
 /** The project a session is listed under when grouped by project: a run's own folder, else its folder. */
@@ -128,7 +150,18 @@ export function sidebarEntries(sessions: readonly SessionSummary[], archived: re
                 rows(group, "card", "cards");
             }
         }
-    } else rows(visible, "card", "cards");
+    } else if (o.now === undefined) rows(visible, "card", "cards");
+    else {
+        // Each day's sessions in their order; a run goes by its first. (Waiting on you sorts first: here it's in its day.)
+        const now = o.now;
+        const days = new Map<DayLabel, SessionSummary[]>(DAYS.map((d) => [d, []]));
+        for (const group of sessionGroups(visible)) days.get(dayOf(group[0]!, now))!.push(...group);
+        for (const [label, list] of days) {
+            if (!list.length) continue;
+            entries.push({ key: `day:${label}`, kind: "day", label });
+            rows(list, "card", "cards");
+        }
+    }
     more("cards", sessionGroups(cards).length - sessionGroups(visible).length);
     const settled = orderSessions(sessions.filter((s) => s.settled));
     if (settled.length) {

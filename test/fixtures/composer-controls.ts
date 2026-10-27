@@ -146,18 +146,30 @@ input("costs $5");
 assert.equal(ta.props["aria-expanded"], false);
 input("echo $HOME");
 assert.equal(ta.props["aria-expanded"], false);
+let shownFrom = renderedText.length;
 input("@missing");
-assert.ok(renderedText.includes("Searching…"));
+// A quick answer opens the menu with its rows, no "Searching…" first; a slow one says it's looking.
+assert.ok(!renderedText.slice(shownFrom).includes("Searching…"), "no flash of Searching… for an answer that comes quickly");
+await Bun.sleep(220);
+assert.ok(renderedText.slice(shownFrom).includes("Searching…"), "a slow search says so");
 assert.equal(ta.props["aria-expanded"], true);
 assert.ok(nodes.some((n) => n.props.role === "listbox" && n.props["aria-busy"] === true));
-await Bun.sleep(80);
 replies.at(-1)!.resolve([]);
 await Bun.sleep(0);
 assert.equal(ta.props["aria-expanded"], true); // Empty state remains visible.
 assert.ok(renderedText.includes("No matching files"));
 assert.equal(ta.props["aria-activedescendant"], undefined);
-input("@files");
+input("@fil");
 await Bun.sleep(80);
+replies.at(-1)!.resolve(["one", "two", "three"]);
+await Bun.sleep(0);
+// Typing on: the rows stay while the next search runs, so the menu doesn't blink empty at each key.
+shownFrom = renderedText.length;
+input("@files");
+assert.notEqual(ta.props["aria-activedescendant"], undefined, "the rows stay while it searches again");
+await Bun.sleep(220);
+assert.notEqual(ta.props["aria-activedescendant"], undefined, "even while the search is slow");
+assert.ok(!renderedText.slice(shownFrom).includes("Searching…"), "and it doesn't say Searching… over them");
 replies.at(-1)!.resolve(["one", "two", "three"]);
 await Bun.sleep(0);
 const first = ta.props["aria-activedescendant"];
@@ -275,12 +287,12 @@ assert.equal(ta.props.value, "");
 assert.equal(sent.at(-1)!.followUp, undefined);
 setWorking(true);
 assert.match(ta.props.placeholder, /^Steer/);
-// Writing while it runs: the key that sends it the other way shows by the send button.
-const altHints = () => nodes.filter((n) => n.props.class === "c-alt").length;
-const hintsBefore = altHints();
+// Writing while it runs: nothing beside the send button; pointed at, it says both ways and their keys.
+const hintFrom = renderedText.length;
 input("steer this");
-assert.equal(altHints(), hintsBefore + 1, "the other way's key shows once something is written");
-assert.ok(renderedText.includes("queue"), "it names the other way: queue");
+assert.equal(nodes.filter((n) => String(n.props.class).startsWith("c-alt")).length, 0, "no key chip in the box");
+const hint = renderedText.slice(hintFrom);
+assert.ok(hint.includes("Steer: joins this turn at its next step") && hint.includes("Queue: runs after this turn"), "the send button's hint names this way and the other");
 key("Enter");
 await Bun.sleep(0);
 assert.deepEqual(sent.at(-1), { text: "steer this", followUp: "steer" });
@@ -321,9 +333,10 @@ assert.equal(key("s", { altKey: true }).prevented, true);
 await Bun.sleep(0);
 assert.deepEqual(sent.at(-1), { text: "keep this draft", followUp: "steer" });
 input("titled");
-assert.ok(nodes.some((n) => typeof n.props.title === "string" && n.props.title.endsWith(`-click or ${shortcut("chat:submitOtherWay")} to steer instead.`)), "the send button names the moved key");
+// Said to a screen reader as it was in the tooltip; shown in the hint over the button.
+assert.ok(nodes.some((n) => typeof n.props["aria-description"] === "string" && n.props["aria-description"].endsWith(`-click or ${shortcut("chat:submitOtherWay")} to steer instead.`)), "the send button names the moved key");
 applyKeybindingsFile({ path: "/test/keybindings.json", text: JSON.stringify({ bindings: [{ context: "Global", bindings: { "mod+shift+enter": null } }] }) });
-assert.ok(nodes.some((n) => typeof n.props.title === "string" && n.props.title.endsWith("-click to steer instead.")), "an unbound key isn't named");
+assert.ok(nodes.some((n) => typeof n.props["aria-description"] === "string" && n.props["aria-description"].endsWith("-click to steer instead.")), "an unbound key isn't named");
 applyKeybindingsFile({ path: "/test/keybindings.json" });
 // The opposite-send shortcut still works with file suggestions open.
 input("@queue-file");
@@ -358,7 +371,8 @@ for (const state of ["checking", "waiting", "active"]) {
 }
 assert.equal(interrupts, stopsBefore + 3);
 const stop = nodes.findLast((n) => n.props.class === "send stop");
-assert.equal(stop?.props.title, "Pause the goal (Esc)");
+assert.equal(stop?.props["aria-label"], "Pause the goal");
+assert.ok(renderedText.includes("Pause the goal"), "its hint says so, with the key");
 for (const g of [{ state: "paused", judge: "model" }, { state: "active", judge: "native" }]) {
     setGoal({ condition: "the tests pass", ...g });
     key("Escape");
@@ -366,13 +380,12 @@ for (const g of [{ state: "paused", judge: "model" }, { state: "active", judge: 
 assert.equal(interrupts, stopsBefore + 3);
 setGoal(undefined);
 // No status row while a turn runs: the turn's live line says what it's doing; the box keeps its height,
-// with "esc" beside the stop button.
-const escs = () => nodes.filter((n) => n.props.class === "c-alt c-esc").length;
-const escsBefore = escs();
+// and "esc" is the stop button's hint, not a chip beside it.
 setWorking(true);
 assert.equal(nodes.filter((n) => n.props.class === "c-status").length, 0, "no status row");
 assert.ok(!renderedText.includes("Running bun test"), "the composer doesn't say what the turn is doing");
-assert.equal(escs(), escsBefore + 1, "an esc hint beside the stop button");
+assert.equal(nodes.filter((n) => String(n.props.class).startsWith("c-alt")).length, 0, "no esc chip beside the stop button");
+assert.ok(renderedText.includes("esc"), "the stop button's hint names the key");
 setActivity({ label: "Compacting", since: Date.now() - 2000, idle: true });
 assert.ok(!renderedText.includes("Compacting"), "nor an idle compaction (the transcript's live line does)");
 setActivity({ label: "Running bun test", since: Date.now() });

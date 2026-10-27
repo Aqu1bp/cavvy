@@ -115,9 +115,9 @@ test("actual sidebar holds hover/menu/rename; open and waiting rows appear past 
         expect(f.ids.slice(-2)).toEqual(["40", "59"]);
         f.nav.props.onPointerLeave();
         expect(f.ids[0]).toBe("40");
-        // Finished since last looked: a check glyph and the unread dot, not a word.
-        expect(f.nodes.some((n) => n.props.class === "st done")).toBe(true);
+        // Finished since last looked: the unread dot by its time, not a word or a glyph at the start.
         expect(f.nodes.some((n) => n.props.class === "unread-dot")).toBe(true);
+        expect(f.nodes.some((n) => String(n.props.class).startsWith("st "))).toBe(false);
         const card = f.nodes.findLast((n) => String(n.props.class).startsWith("card "));
         f.contextMenu(card);
         const held = f.ids;
@@ -173,7 +173,8 @@ test("rail rows: needs-you rows get an amber dot and no archive; others archive 
         expect(String(waiting.props.class)).toContain("waiting");
         expect(waiting.querySelector().props["aria-label"]).toBe("Session 1, Needs approval");
         expect(f.descendants(waiting).some((n) => n.props?.class === "wait-dot")).toBe(true);
-        expect(f.descendants(waiting).some((n) => n.props?.class === "st waiting")).toBe(true);
+        // The dot alone says it: no hand at the start of the row.
+        expect(f.descendants(waiting).some((n) => n.props?.class === "st waiting")).toBe(false);
         expect(buttons(waiting).some((n) => n.props.title === "Archive")).toBe(false);
         expect(buttons(waiting).some((n) => n.props.title === "More")).toBe(true);
         const idle = rowOf("Session 3");
