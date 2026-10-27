@@ -10,8 +10,10 @@ if (!process.env.CAVVY_TEST_DEFAULT_ACCOUNTS) {
     test("Default account protections in an isolated home", () => {
         const home = realpathSync(tempDir());
         try {
+            // XDG_CONFIG_HOME (set on CI runners) would put OpenCode's global config outside this home.
+            const { XDG_CONFIG_HOME: _, ...env } = process.env;
             const result = Bun.spawnSync([process.execPath, "--no-env-file", "test", import.meta.path], {
-                env: { ...process.env, HOME: home, CAVVY_HOME: join(home, ".cavvy"), CAVVY_TEST_DEFAULT_ACCOUNTS: home },
+                env: { ...env, HOME: home, CAVVY_HOME: join(home, ".cavvy"), CAVVY_TEST_DEFAULT_ACCOUNTS: home },
                 timeout: 15000,
             });
             expect({ code: result.exitCode, output: result.stderr.toString() }).toMatchObject({ code: 0 });
