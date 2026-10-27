@@ -1,4 +1,4 @@
-// The browser tools: a headless Chrome the agent drives (src/browser), which the user can watch and take over in the
+// The browser tools: a headless Chrome the agent drives (src/browser), which the user can watch and use too in the
 // GUI's Browser pane. Six tools, to keep their definitions short (every one goes to the model with every request):
 // navigate, read (snapshot, screenshot, logs), act, evaluate. They share a session's tabs through ToolState.browser.
 
@@ -24,7 +24,7 @@ export const BROWSER_SERVER_TOOLS = ["browser_navigate", "browser_snapshot", "br
 
 const ACTIONS = ["click", "double_click", "hover", "type", "press", "select", "scroll", "wait", "dialog"] as const;
 const NAVIGATIONS = ["goto", "back", "forward", "reload", "new_tab", "close_tab", "switch_tab", "list_tabs", "resize"] as const;
-/** Actions that send the page no input: they run while the user has the tab. */
+/** Actions that send the page no input: they leave who drives the tab as it is. */
 const OBSERVING = new Set<string>(["wait"]);
 
 function browserOf(ctx: ToolContext): BrowserSession {
@@ -40,12 +40,14 @@ function failure(e: unknown, ctx: ToolContext): ToolResult {
     return { content: redact(message), isError: true };
 }
 
-/**
- * The agent is about to act on a tab: refused if the call was cancelled or the user has the tab. Checked when the call
- * arrives, and again when it comes to the front of the tab's queue (the user may have taken the tab meanwhile).
- */
-function acting(b: BrowserSession, page: Page, ctx: ToolContext) {
+/** The agent's call arrives: refused if it was cancelled. */
+function arriving(ctx: ToolContext) {
     if (ctx.signal.aborted) throw new BrowserError("Interrupted by user.");
+}
+
+/** It comes to the front of the tab's queue: refused if cancelled meanwhile, and the agent drives the tab from here. */
+function acting(b: BrowserSession, page: Page, ctx: ToolContext) {
+    arriving(ctx);
     b.agentAct(page);
 }
 
@@ -86,7 +88,7 @@ export const BrowserNavigateTool: Tool<NavigateInput> = {
     name: "BrowserNavigate",
     category: "network",
     readOnly: false,
-    description: `Opens pages in a headless Chrome that the user can watch (and take over) in Cavvy's Browser pane. Returns what the page shows as a text outline with refs like [e12] that BrowserAct takes. Use it to check web UI work: start the dev server first (Bash with run_in_background, wait until it answers), then open http://localhost:PORT.
+    description: `Opens pages in a headless Chrome that the user can watch (and use too) in Cavvy's Browser pane. Returns what the page shows as a text outline with refs like [e12] that BrowserAct takes. Use it to check web UI work: start the dev server first (Bash with run_in_background, wait until it answers), then open http://localhost:PORT.
 
 action: goto (default; needs url), back, forward, reload, new_tab (url optional), switch_tab, close_tab, list_tabs, resize (width, height in CSS pixels). Tabs belong to this session and have numbers. Only http(s) pages, about:blank and files inside the project open; logins and cookies stay in the browser's own profile for the project.`,
     parameters: {
@@ -138,7 +140,7 @@ action: goto (default; needs url), back, forward, reload, new_tab (url optional)
                 page = await b.openTab("agent");
                 if (!url) return { content: await pageReport(b, page) };
             } else page = await b.page(input.tab, { open: true });
-            acting(b, page, ctx);
+            arriving(ctx);
             return page.exclusive(async () => {
                 acting(b, page, ctx);
                 let loaded = true;
@@ -173,7 +175,7 @@ export const BrowserSnapshotTool: Tool<{ tab?: number; screenshot?: boolean }> =
     name: "BrowserSnapshot",
     category: "read",
     readOnly: true,
-    description: `Reads the current page as a text outline: headings, text, links (with their targets) and form controls with roles, names, values and states, and a ref like [e12] on each element BrowserAct can act on. Refs stay valid until the page navigates (or the user takes over); then take a new snapshot. Pass screenshot only when how the page looks matters: the outline is cheaper and exact.`,
+    description: `Reads the current page as a text outline: headings, text, links (with their targets) and form controls with roles, names, values and states, and a ref like [e12] on each element BrowserAct can act on. Refs stay valid until the page navigates; then take a new snapshot. Pass screenshot only when how the page looks matters: the outline is cheaper and exact.`,
     parameters: {
         type: "object",
         properties: { tab: TAB, screenshot: { type: "boolean", description: "Also return a screenshot of the viewport" } },
@@ -226,7 +228,7 @@ export const BrowserActTool: Tool<ActInput> = {
 - scroll: deltaY pixels (positive is down), the page or the element at ref/x,y.
 - wait: for text, or a CSS selector, to appear (timeoutMs, default 10000); with neither, for the page to settle.
 - dialog: accept (true/false) the confirm or prompt that's open; text answers a prompt.
-Returns what changed on the page (or the new outline). Refused while the user has control of the tab.`,
+Returns what changed on the page (or the new outline), including anything the user did in the tab since you last read it.`,
     parameters: {
         type: "object",
         properties: {
@@ -279,7 +281,7 @@ Returns what changed on the page (or the new outline). Refused while the user ha
     run: (input, ctx) =>
         guarded(ctx, async (b) => {
             const page = await b.page(input.tab);
-            if (!OBSERVING.has(input.action)) acting(b, page, ctx);
+            if (!OBSERVING.has(input.action)) arriving(ctx);
             return page.exclusive(async () => {
                 if (!OBSERVING.has(input.action)) acting(b, page, ctx);
                 const target = { ref: input.ref, x: input.x, y: input.y };
@@ -340,7 +342,7 @@ export const BrowserScreenshotTool: Tool<{ tab?: number; fullPage?: boolean; ref
         guarded(ctx, async (b) => {
             const page = await b.page(input.tab);
             // An element is scrolled into view first: that moves the page, which the user may be using.
-            if (input.ref) acting(b, page, ctx);
+            if (input.ref) arriving(ctx);
             return page.exclusive(async () => {
                 if (input.ref) acting(b, page, ctx);
                 const clip = input.ref ? await boxOf(page, input.ref, ctx.signal) : undefined;
@@ -375,7 +377,7 @@ export const BrowserEvalTool: Tool<{ expression: string; tab?: number }> = {
     run: (input, ctx) =>
         guarded(ctx, async (b) => {
             const page = await b.page(input.tab);
-            acting(b, page, ctx);
+            arriving(ctx);
             return page.exclusive(async () => {
                 acting(b, page, ctx);
                 return { content: await page.evaluate(input.expression, ctx.signal) };
@@ -469,4 +471,4 @@ export function servedBrowserTool(server: string | undefined, toolName: unknown)
 
 export const BROWSER_INSTRUCTIONS = `# Browser (cavvy)
 
-browser_navigate, browser_snapshot, browser_act, browser_screenshot, browser_eval and browser_logs drive a headless Chrome the user can watch in Cavvy's Browser pane. To check web UI work, start the dev server (in the background), open its address with browser_navigate, then read the page with browser_snapshot: its refs (e12) name elements for browser_act. Take a screenshot only when how the page looks matters. The user can take a tab over; acting on it then fails until they hand it back.`;
+browser_navigate, browser_snapshot, browser_act, browser_screenshot, browser_eval and browser_logs drive a headless Chrome the user can watch in Cavvy's Browser pane. To check web UI work, start the dev server (in the background), open its address with browser_navigate, then read the page with browser_snapshot: its refs (e12) name elements for browser_act. Take a screenshot only when how the page looks matters. The user can use a tab too: when they have, the next result says so.`;

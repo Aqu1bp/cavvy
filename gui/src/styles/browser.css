@@ -215,13 +215,6 @@
     box-shadow: var(--sheet-shadow);
 }
 
-/* The height of a tab, so control changing hands never changes the strip's (and so the page's) height. */
-.br-tabs .btn.br-handback {
-    flex: none;
-    height: calc(26 * var(--sp));
-    margin-left: calc(6 * var(--sp));
-}
-
 /* The agent is driving this tab. */
 .br-dot {
     width: calc(7 * var(--sp));

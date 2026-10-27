@@ -10,7 +10,7 @@ import { cachedChrome } from "./chrome";
 import { desktopHost } from "./host";
 import type { Owner } from "./control";
 import { FrameFeed } from "./feed";
-import { forward, parseInput, takesControl } from "./interact";
+import { forward, parseInput, usesTab } from "./interact";
 import { AGENT_VIEWPORT, BrowserError, MAX_SIDE, MIN_SIDE, type Frame, type Page, type PageHooks, type Viewport } from "./page";
 import { acquirePool, lostBrowser, releasePool, type BrowserPool, type PoolClient, type PoolOptions } from "./pool";
 import { addressToUrl, checkUrl, hostOf, type BrowserApproval } from "./url-policy";
@@ -184,7 +184,7 @@ export class BrowserSession implements PoolClient {
     get hooks(): PageHooks {
         return {
             changed: () => this.announce(),
-            taken: (page) => this.taken(page),
+            touched: (page) => this.touched(page),
             frame: (page, frame) => {
                 const id = this.ids.get(page);
                 if (id !== undefined && id === this.active) this.feed.push({ ...frame, tab: id });
@@ -325,7 +325,7 @@ export class BrowserSession implements PoolClient {
     /** The tabs as the agent reads them. */
     tabsText(): string {
         if (!this.tabs.size) return "No tabs are open.";
-        return `Tabs:\n${[...this.tabs].map(([id, p]) => `  [${id}] ${p.title ? `${JSON.stringify(p.title)} ` : ""}${p.url || "about:blank"}${id === this.active ? " (current)" : ""}${p.control.owner === "human" ? " (the user has control)" : ""}`).join("\n")}`;
+        return `Tabs:\n${[...this.tabs].map(([id, p]) => `  [${id}] ${p.title ? `${JSON.stringify(p.title)} ` : ""}${p.url || "about:blank"}${id === this.active ? " (current)" : ""}`).join("\n")}`;
     }
 
     get tabCount(): number {
@@ -345,12 +345,9 @@ export class BrowserSession implements PoolClient {
         }
     }
 
-    /** The agent is about to change a tab (not just read it): refused while a person has it. */
+    /** The agent is about to change a tab (not just read it): it drives the tab now. */
     agentAct(page: Page) {
-        const was = page.control.owner;
-        const g = page.control.agentAct();
-        if (!g.ok) throw new BrowserError(g.error);
-        if (was !== page.control.owner) this.announce();
+        if (page.control.agentAct()) this.announce();
     }
 
     // -----------------------------------------------------------------------
@@ -362,12 +359,12 @@ export class BrowserSession implements PoolClient {
         return page;
     }
 
-    /** The person took the tab: the agent's refs no longer mean anything, and it must wait to be handed it back. */
-    private taken(page: Page) {
-        if (!page.control.humanInput()) return;
-        page.refs.invalidate();
-        page.lastOutline = undefined;
-        this.announce();
+    /**
+     * The person used the tab. The agent keeps it too: its refs still name the same elements (a navigation ends them),
+     * and the next time it reads the page it's told the person was there, with what changed since it last looked.
+     */
+    private touched(page: Page) {
+        if (page.control.humanInput()) this.announce();
     }
 
     /** What the person did in the pane (checked here: it comes off the wire). */
@@ -375,8 +372,7 @@ export class BrowserSession implements PoolClient {
         const input = parseInput(raw);
         const page = this.tabs.get(tab ?? this.active ?? -1);
         if (!input || !page || page.closed) return;
-        if ((input.kind === "key" || input.kind === "mouse") && input.type === "up" && page.control.owner !== "human") return;
-        if (takesControl(input)) this.taken(page);
+        if (usesTab(input)) this.touched(page);
         this.pool?.touch();
         // Sent as they come: Chrome merges wheel turns and pointer moves the page hasn't taken yet itself.
         try {
@@ -386,7 +382,7 @@ export class BrowserSession implements PoolClient {
         }
     }
 
-    /** What the pane's address bar and tab strip ask for. Opening or navigating a page is the person acting: the tab is theirs. */
+    /** What the pane's address bar and tab strip ask for. Opening or navigating a page is the person driving the tab. */
     async command(c: { command: string; url?: string; tab?: number }): Promise<void> {
         switch (c.command) {
             case "new_tab": {
@@ -406,7 +402,7 @@ export class BrowserSession implements PoolClient {
             case "forward":
             case "reload": {
                 const page = this.tab(c.tab);
-                this.taken(page);
+                this.touched(page);
                 await this.run(() => (c.command === "reload" ? page.reload() : page.go(c.command === "back" ? -1 : 1)));
                 return;
             }
@@ -423,19 +419,13 @@ export class BrowserSession implements PoolClient {
         // The person asks for the host themselves: only a deny rule (or the rules for a file) stops them.
         const refused = this.refuse(checked.url, { host: hostOf(checked.url) });
         if (refused) throw new BrowserError(`${redact(checked.url).slice(0, 100)} can't be opened: ${refused}`);
-        this.taken(page);
+        this.touched(page);
         await this.run(() => page.goto(checked.url));
-    }
-
-    /** The person gives the tab back to the agent. */
-    handBack(tab?: number) {
-        const page = this.tab(tab);
-        if (page.control.handBack()) this.announce();
     }
 
     async answerDialog(accept: boolean, promptText?: string, tab?: number) {
         const page = this.tab(tab);
-        this.taken(page);
+        this.touched(page);
         await page.answerDialog(accept, promptText);
     }
 

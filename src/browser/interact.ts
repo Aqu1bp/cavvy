@@ -108,7 +108,7 @@ async function where(page: Page, t: Target, signal?: AbortSignal): Promise<{ poi
 type MouseButton = "left" | "middle" | "right";
 const HELD = { left: 1, right: 2, middle: 4 } as const;
 
-/** `agent`: the agent's input, which stops the moment the person takes the tab or the call is cancelled; without it, the person's. */
+/** `agent`: the agent's input, which stops the moment the call is cancelled; without it, the person's. */
 function mouse(page: Page, type: "mouseMoved" | "mousePressed" | "mouseReleased" | "mouseWheel", p: Point, extra: Record<string, unknown> = {}, agent?: { signal?: AbortSignal }) {
     const params = { type, x: p.x, y: p.y, ...extra };
     return agent ? page.agentInput("Input.dispatchMouseEvent", params, agent.signal) : page.input("Input.dispatchMouseEvent", params);
@@ -383,8 +383,8 @@ export function parseInput(raw: unknown): BrowserInput | undefined {
     }
 }
 
-/** Whether an input takes the tab from the agent: moving the pointer over the pane doesn't. */
-export const takesControl = (e: BrowserInput) => e.kind === "mouse" ? e.type === "down" || (e.type === "move" && !!e.buttons) : e.kind === "key" ? e.type === "down" : true;
+/** Whether an input is the person using the tab (the agent is told): moving the pointer over the pane isn't. */
+export const usesTab = (e: BrowserInput) => e.kind === "mouse" ? e.type === "down" || (e.type === "move" && !!e.buttons) : e.kind === "key" ? e.type === "down" : true;
 
 /** Forwards what a person did in the pane to the page. */
 export async function forward(page: Page, e: BrowserInput): Promise<void> {

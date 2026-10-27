@@ -347,46 +347,33 @@ describe.skipIf(!chromePath)("the browser tools, with Chrome", () => {
         await nav({ action: "close_tab", tab });
     });
 
-    test("when the user takes a tab, the agent can read it but not act, until it's handed back; their input invalidates refs", async () => {
+    test("when the user uses a tab the agent isn't kept out: its refs still work, and it's told once", async () => {
         const { tab, content } = await openMain();
         const button = refOf(content, "button", "Click me");
         const states: number[] = [];
         const stop = session.onChange(() => states.push(Date.now()));
-        // Moving the pointer doesn't take the tab.
+        // Moving the pointer isn't using the tab.
         await session.input({ kind: "mouse", type: "move", x: 40, y: 40 }, tab);
         expect(session.state().tabs.find((t) => t.id === tab)!.owner).toBe("agent");
-        // A click does, and it reaches the page.
+        // A click is, and it reaches the page.
         const box = JSON.parse((await run(BrowserEvalTool, { expression: "(() => { const r = document.getElementById('count').getBoundingClientRect(); return {x: r.x + r.width / 2, y: r.y + r.height / 2}; })()" })).content);
         await session.input({ kind: "mouse", type: "down", ...box, button: "left", buttons: 1, clickCount: 1 }, tab);
         await session.input({ kind: "mouse", type: "up", ...box, button: "left", buttons: 0, clickCount: 1 }, tab);
         await until(() => states.length > 0, "the state announcement");
         stop();
         expect(session.state().tabs.find((t) => t.id === tab)!.owner).toBe("human");
-        // evaluating can change the page, so it is the agent acting
-        expect((await run(BrowserEvalTool, { expression: "document.getElementById('count').textContent" })).isError).toBe(true);
-
-        const refused = await act({ action: "click", ref: button });
-        expect(refused.isError).toBe(true);
-        expect(refused.content).toContain("The user has taken control of this tab");
-        expect((await nav({ url: `${site.url}/other` })).isError).toBe(true);
-        const read = await run(BrowserSnapshotTool, {});
-        expect(read.isError).toBeFalsy();
-        expect(read.content).toContain("The user has control of this tab");
-        expect(read.content).toContain('button "Clicked 1"');
-        expect((await run(BrowserScreenshotTool, {})).images).toHaveLength(1);
-        expect((await run(BrowserLogsTool, {})).isError).toBeFalsy();
-        // the refs from before the takeover are gone
-        session.handBack(tab);
-        const stale = await act({ action: "click", ref: button });
-        expect(stale.isError).toBe(true);
-        expect(stale.content).toMatch(/stale|Unknown ref/);
-        const fresh = await run(BrowserSnapshotTool, {});
-        const clicked = await act({ action: "click", ref: refOf(fresh.content, "button", "Clicked 1") });
+        // the agent's ref from before their click still names the button, and it hears the user was there
+        const clicked = await act({ action: "click", ref: button });
         expect(clicked.isError).toBeFalsy();
-        // typing in the pane takes it too
+        expect(clicked.content).toContain("The user has used this tab since you last read it");
+        expect(session.state().tabs.find((t) => t.id === tab)!.owner).toBe("agent");
+        const read = await run(BrowserSnapshotTool, {});
+        expect(read.content).toContain('button "Clicked 2"');
+        expect(read.content).not.toContain("The user has used this tab");
+        // typing in the pane is using it too
         await session.input({ kind: "key", type: "down", key: "a", code: "KeyA", modifiers: 0 }, tab);
         expect(session.state().tabs.find((t) => t.id === tab)!.owner).toBe("human");
-        session.handBack(tab);
+        await session.input({ kind: "key", type: "up", key: "a", code: "KeyA", modifiers: 0 }, tab);
         await nav({ action: "close_tab", tab });
     });
 
@@ -398,20 +385,16 @@ describe.skipIf(!chromePath)("the browser tools, with Chrome", () => {
         await session.input({ kind: "key", type: "down", key: "h", code: "KeyH", modifiers: 0 }, tab);
         await session.input({ kind: "key", type: "up", key: "h", code: "KeyH", modifiers: 0 }, tab);
         await session.input({ kind: "text", text: "ello" }, tab);
-        expect((await run(BrowserEvalTool, { expression: "document.getElementById('q').value" })).isError).toBe(true);
-        session.handBack(tab);
-        expect((await run(BrowserEvalTool, { expression: "document.getElementById('q').value" })).content).toBe('"hello"');
+        expect((await run(BrowserEvalTool, { expression: "document.getElementById('q').value" })).content).toContain('"hello"');
         await session.input({ kind: "wheel", x: 100, y: 100, deltaX: 0, deltaY: 400 }, tab);
         const shown = await session.page(tab);
         await until(async () => (await shown.send("Runtime.evaluate", { expression: "scrollY" })).result.value === 400, "the page to scroll");
-        session.handBack(tab);
         // a confirm opened by the page, answered from the pane
         const asked = await act({ action: "click", ref: refOf((await run(BrowserSnapshotTool, {})).content, "button", "Ask") });
         expect(asked.content).toContain("confirm dialog is waiting");
         expect(session.state().tabs.find((t) => t.id === tab)!.dialog?.type).toBe("confirm");
         await session.answerDialog(true, undefined, tab);
         await until(() => session.state().tabs.find((t) => t.id === tab)!.dialog === undefined, "the dialog to close");
-        session.handBack(tab);
         expect((await run(BrowserEvalTool, { expression: "document.getElementById('out').textContent" })).content).toBe('"confirm:true"');
         // the address bar: a person's input is checked like the agent's
         await session.command({ command: "goto", url: `${site.url}/other`, tab });
@@ -422,12 +405,12 @@ describe.skipIf(!chromePath)("the browser tools, with Chrome", () => {
         expect(session.state().tabs.find((t) => t.id === tab)!.url).toBe(`${site.url}/`);
         expect(session.state().tabs.find((t) => t.id === tab)!.canGoForward).toBe(true);
         await nav({ action: "close_tab", tab });
-        // a tab the person opens is theirs
+        // a tab the person opens is theirs to begin with; the agent can still act in it
         await session.command({ command: "new_tab", url: `${site.url}/other` });
         const theirs = session.state().tabs.find((t) => t.id === session.active)!;
         expect(theirs.owner).toBe("human");
-        expect((await act({ action: "press", key: "Tab" })).content).toContain("taken control");
-        session.handBack(theirs.id);
+        expect((await act({ action: "press", key: "Tab" })).isError).toBeFalsy();
+        expect(session.state().tabs.find((t) => t.id === theirs.id)!.owner).toBe("agent");
         await session.command({ command: "close_tab", tab: theirs.id });
     });
 

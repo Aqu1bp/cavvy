@@ -1999,9 +1999,6 @@ export class Engine {
                 await browserCall(() => rt.browser.command({ command: str(p.command, "command"), url: typeof p.url === "string" ? p.url : undefined, tab: typeof p.tab === "number" ? p.tab : undefined }));
                 return rt.browser.state();
             }
-            case "browser.handBack":
-                await browserCall(async () => this.runtime(p.id).browser.handBack(typeof p.tab === "number" ? p.tab : undefined));
-                return null;
             case "browser.dialog":
                 if (typeof p.accept !== "boolean") throw new RpcError("accept must be a boolean");
                 await browserCall(() => this.runtime(p.id).browser.answerDialog(p.accept, typeof p.text === "string" ? p.text : undefined, typeof p.tab === "number" ? p.tab : undefined));

@@ -1762,15 +1762,15 @@ describe("Browser tools for Codex and Claude Code", () => {
         expect(scroll.isError).toBe(false);
     });
 
-    test("a call the user already has the tab for is refused as the Cavvy tool is, and the page stays theirs", async () => {
+    test("a call on a tab the user has been using runs, and says the user was there", async () => {
         process.env.FAKE_SCENARIO = "mcp";
         calls([open]);
         const { run, agent } = await codex();
         await run("open it");
         await agent.state.browser!.input({ kind: "key", type: "down", key: "a", code: "KeyA" });
         const r = await (agent as any).runServed((await import("../src/tools/browser-tools")).BrowserActTool, { action: "scroll", deltaY: 100 }, new AbortController().signal);
-        expect(r.isError).toBe(true);
-        expect(r.text).toContain("taken control");
+        expect(r.isError).toBeFalsy();
+        expect(r.text).toContain("The user has used this tab");
     });
 });
 

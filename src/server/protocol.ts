@@ -1467,7 +1467,7 @@ export type BrowserInput =
     /** Text as it is (a paste, an input method's result), not keys. */
     | { kind: "text"; text: string };
 
-/** Who is driving a tab: the agent, the person watching, or neither yet. */
+/** Who drove a tab last: the agent, the person watching, or neither yet. Neither keeps the other out. */
 export type BrowserOwner = "agent" | "human" | "none";
 
 export interface BrowserTabInfo {
@@ -1616,12 +1616,10 @@ export interface Methods {
     "browser.unwatch": { params: { id: string }; result: null };
     /** The window has received this frame; decoding independently retains only the latest waiting picture. */
     "browser.ack": { params: { id: string; frameId: string }; result: null };
-    /** What the person did in the pane; it takes the tab from the agent (a pointer only moving doesn't). */
+    /** What the person did in the pane; the agent is told of it (a pointer only moving isn't). */
     "browser.input": { params: { id: string; tab?: number; input: BrowserInput }; result: null };
-    /** The address bar and the tab strip: the person opening or leaving a page takes the tab. */
+    /** The address bar and the tab strip: the person opening or leaving a page drives the tab. */
     "browser.command": { params: { id: string; command: BrowserCommand; url?: string; tab?: number }; result: BrowserState };
-    /** The person gives the tab back to the agent. */
-    "browser.handBack": { params: { id: string; tab?: number }; result: null };
     /** The person answers a confirm or prompt the page is showing. */
     "browser.dialog": { params: { id: string; accept: boolean; text?: string; tab?: number }; result: null };
     /** After scripts.run, once the window has sent what was typed while it opened: the script's command may be typed now. */

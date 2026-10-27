@@ -8,9 +8,9 @@ import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
 const { fromKeyboardEvent, modifierBits, parseKey } = await import("../src/browser/keys");
-const { TabControl, TAKEN_OVER } = await import("../src/browser/control");
+const { TabControl } = await import("../src/browser/control");
 const { FrameFeed } = await import("../src/browser/feed");
-const { parseInput, takesControl } = await import("../src/browser/interact");
+const { parseInput, usesTab } = await import("../src/browser/interact");
 const { addressToUrl, allowedPage, checkUrl, displayUrl, isLocalHost, navigationTarget } = await import("../src/browser/url-policy");
 
 afterAll(iso.cleanup);
@@ -115,45 +115,34 @@ describe("a person's key events", () => {
     });
 });
 
-describe("who has a tab", () => {
-    test("the agent may act on its own tab, and on one nobody has", () => {
+describe("who drives a tab", () => {
+    test("the agent acting makes it the driver, of its own tab or one nobody had", () => {
         const own = new TabControl("agent");
-        expect(own.agentAct()).toEqual({ ok: true });
+        expect(own.agentAct()).toBe(false);
         const open = new TabControl();
         expect(open.owner).toBe("none");
-        expect(open.agentAct()).toEqual({ ok: true });
+        expect(open.agentAct()).toBe(true);
         expect(open.owner).toBe("agent");
     });
 
-    test("a person using the pane takes the tab, and the agent is refused with what to do", () => {
+    test("a person using the pane makes them the driver without keeping the agent out, and the agent is told once", () => {
         const c = new TabControl("agent");
+        expect(c.takeTouched()).toBe(false);
         expect(c.humanInput()).toBe(true);
         expect(c.owner).toBe("human");
-        const refused = c.agentAct();
-        expect(refused).toEqual({ ok: false, error: TAKEN_OVER });
-        expect(TAKEN_OVER).toContain("taken control");
-        expect(TAKEN_OVER).toContain("Hand back to agent");
-        expect(c.owner).toBe("human");
-        // more input from them changes nothing: the refs were stale already
+        // more input from them doesn't change who drives, but still counts as their use
         expect(c.humanInput()).toBe(false);
-    });
-
-    test("handing back returns it to the agent, once", () => {
-        const c = new TabControl("agent");
-        expect(c.handBack()).toBe(false);
-        c.humanInput();
-        expect(c.handBack()).toBe(true);
+        expect(c.agentAct()).toBe(true);
         expect(c.owner).toBe("agent");
-        expect(c.agentAct()).toEqual({ ok: true });
-        expect(c.handBack()).toBe(false);
+        expect(c.takeTouched()).toBe(true);
+        expect(c.takeTouched()).toBe(false);
     });
 
-    test("a tab the person opened is theirs from the start; a tab nobody had is taken from nobody", () => {
+    test("a tab the person opened is theirs from the start; the agent can still act in it", () => {
         const theirs = new TabControl("human");
-        expect(theirs.agentAct().ok).toBe(false);
         expect(theirs.humanInput()).toBe(false);
-        const free = new TabControl("none");
-        expect(free.humanInput()).toBe(true);
+        expect(theirs.agentAct()).toBe(true);
+        expect(new TabControl("none").humanInput()).toBe(true);
     });
 });
 
@@ -193,13 +182,13 @@ describe("what the pane may send", () => {
     });
 
     test("only a pointer moving, with nothing held, leaves the tab with the agent", () => {
-        expect(takesControl({ kind: "mouse", type: "move", x: 1, y: 1, buttons: 0 })).toBe(false);
-        expect(takesControl({ kind: "mouse", type: "move", x: 1, y: 1 })).toBe(false);
-        expect(takesControl({ kind: "mouse", type: "move", x: 1, y: 1, buttons: 1 })).toBe(true);
-        expect(takesControl({ kind: "mouse", type: "down", x: 1, y: 1 })).toBe(true);
-        expect(takesControl({ kind: "wheel", x: 1, y: 1, deltaX: 0, deltaY: 5 })).toBe(true);
-        expect(takesControl({ kind: "key", type: "down", key: "a", code: "KeyA" })).toBe(true);
-        expect(takesControl({ kind: "text", text: "a" })).toBe(true);
+        expect(usesTab({ kind: "mouse", type: "move", x: 1, y: 1, buttons: 0 })).toBe(false);
+        expect(usesTab({ kind: "mouse", type: "move", x: 1, y: 1 })).toBe(false);
+        expect(usesTab({ kind: "mouse", type: "move", x: 1, y: 1, buttons: 1 })).toBe(true);
+        expect(usesTab({ kind: "mouse", type: "down", x: 1, y: 1 })).toBe(true);
+        expect(usesTab({ kind: "wheel", x: 1, y: 1, deltaX: 0, deltaY: 5 })).toBe(true);
+        expect(usesTab({ kind: "key", type: "down", key: "a", code: "KeyA" })).toBe(true);
+        expect(usesTab({ kind: "text", text: "a" })).toBe(true);
     });
 });
 
