@@ -3,7 +3,7 @@
 // with thread/goal/* and the run waits through the turns Codex starts for it. Fake CLIs (test/fixtures).
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { appendFileSync, chmodSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 import { fakeEnvFile, stopLiveCodex } from "./helpers/fake-env";
@@ -238,6 +238,31 @@ describe("ClaudeGoalWatch", () => {
         expect(seen[1].since).toBe(seen[0].since);
         const broken = new ClaudeGoalWatch(() => bin, 0, () => {});
         expect(() => broken.poll()).not.toThrow();
+    });
+
+    test("a goal the last turn left set, cleared or met just before the next turn's watch began, is reported gone (#4, #14)", () => {
+        const file = join(bin, "t3.jsonl");
+        const seen: any[] = [];
+        const statuses = () => seen.map((g) => g?.status ?? null);
+        writeFileSync(file, line({ met: false, sentinel: true, condition: "ship" }));
+        new ClaudeGoalWatch(() => file, Date.now() - 1000, (g: any) => seen.push(g)).poll();
+        expect(statuses()).toEqual(["active"]);
+        // The /goal clear turn: Claude Code writes the clear in the moment before its init is read, so it predates the watch.
+        appendFileSync(file, line({ met: true, sentinel: true, condition: "ship" }, Date.now() - 5));
+        new ClaudeGoalWatch(() => file, Date.now(), (g: any) => seen.push(g)).poll();
+        expect(statuses()).toEqual(["active", null]);
+        // Set again, and met in the same moment of the next turn: how it ended is said (the notice), once.
+        appendFileSync(file, line({ met: false, sentinel: true, condition: "ship" }));
+        new ClaudeGoalWatch(() => file, Date.now() - 1000, (g: any) => seen.push(g)).poll();
+        appendFileSync(file, line({ met: true, condition: "ship", reason: "Shipped.", iterations: 1 }, Date.now() - 5));
+        const w = new ClaudeGoalWatch(() => file, Date.now(), (g: any) => seen.push(g));
+        w.poll();
+        w.poll();
+        expect(statuses()).toEqual(["active", null, "active", "complete"]);
+        // Nothing known, and set and cleared before the turn: nothing to say.
+        appendFileSync(file, line({ met: false, sentinel: true, condition: "again" }, Date.now() - 6) + line({ met: true, sentinel: true, condition: "again" }, Date.now() - 5));
+        new ClaudeGoalWatch(() => file, Date.now(), (g: any) => seen.push(g)).poll();
+        expect(seen).toHaveLength(4);
     });
 });
 

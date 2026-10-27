@@ -43,6 +43,9 @@ const CLAUDE_WINDOWS: Record<string, string> = {
     seven_day: "Weekly",
     seven_day_opus: "Weekly Opus",
     seven_day_sonnet: "Weekly Sonnet",
+    // Claude Code 2.1.310 calls it the "Fable limit": the models on its
+    // overage-included allowlist count here.
+    seven_day_overage_included: "Weekly Fable",
 };
 
 function claudeLabel(key: string): string {
