@@ -57,7 +57,9 @@ const folderName = (cwd: string) => cwd.replace(/[^A-Za-z0-9]/g, "-");
 
 /**
  * Follows one turn's transcript. What was there before the turn began (a resumed session's) is where the goal
- * stood, reported once if it's still set (Claude Code carries it on); what's written since is reported as it comes.
+ * stood, reported once if it's still set (Claude Code carries it on), or if the last turn's watch knew one and it
+ * has ended or been cleared since (#4: /goal clear writes its entry in the moment before the turn's init is read, so
+ * it predates the watch); what's written since is reported as it comes.
  */
 export class ClaudeGoalWatch {
     private file?: string;
@@ -65,6 +67,10 @@ export class ClaudeGoalWatch {
     private goal: NativeGoal | null = null;
     /** What was before the turn changed the goal, and hasn't been reported yet. */
     private unreported = false;
+    /** The goal as the last entry read left it, ended or not (`goal` drops one that ended). */
+    private last: NativeGoal | null = null;
+    /** What the last turn's watch reported for this transcript: a goal it knew that is gone now is news. */
+    private known: NativeGoal | null = null;
 
     constructor(
         private locate: () => string | undefined,
@@ -87,6 +93,7 @@ export class ClaudeGoalWatch {
             if (known) {
                 this.offset = known.offset;
                 this.goal = known.goal;
+                this.known = known.goal;
                 this.unreported = Boolean(known.goal);
             }
         }
@@ -160,14 +167,17 @@ export class ClaudeGoalWatch {
         else next = { ...base, status: "active", turns: (same?.turns ?? 0) + 1, ...(reason ? { lastReason: reason } : {}) };
         if (live) this.report(next);
         else this.unreported = true;
+        this.last = next;
         // Met or judged impossible: Claude Code has dropped it.
         this.goal = next && (next.status === "complete" || next.status === "failed") ? null : next;
     }
 
-    /** Where the goal stood before the turn, once: only a goal still set is news. */
+    /** Where the goal stood before the turn, once: a goal still set is news, and so is how one the last turn knew ended. */
     private flush() {
         if (!this.unreported) return;
         this.unreported = false;
         if (this.goal) this.report(this.goal);
+        else if (this.known) this.report(this.last);
+        this.known = this.goal;
     }
 }

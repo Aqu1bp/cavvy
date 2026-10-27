@@ -853,7 +853,19 @@ function DiffViewContent(p: DiffProps) {
 
     /** A line's code: set again only when its highlighting changes, not each time a part of the file's lands. */
     const Code = (c: { class: string; row?: Line }) => {
-        const content = createMemo(() => (c.row ? html(c.row) : ""));
+        // While a row is inside a live selection, its markup is held as it is: swapping innerHTML (a highlight
+        // part landing for it once the view has scrolled past, say) would destroy the text nodes the selection
+        // points into and truncate it (#6). It takes the newest highlighting once the selection leaves it.
+        const pinned = () => {
+            if (!windowed || !c.row) return false;
+            const u = unitOfRow().get(c.row.idx);
+            const s = selectionPin();
+            return u !== undefined && s !== undefined && u >= s[0] && u <= s[1];
+        };
+        const content = createMemo<string>((prev) => {
+            const next = c.row ? html(c.row) : "";
+            return pinned() && prev !== undefined ? prev : next;
+        });
         return <span class={c.class} innerHTML={content()} />;
     };
     /** Stands in for rows that aren't drawn, at their height. */

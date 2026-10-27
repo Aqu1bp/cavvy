@@ -25,11 +25,14 @@ let srv: Awaited<ReturnType<typeof startServer>>;
 beforeAll(async () => {
     srv = await startServer({ token: TOKEN, unloadAfterMs: 200 });
 });
+// Each test waits for the turns it stops to end before its client goes, so the server has nothing live to stop here
+// (about 50 ms). A turn still running would be stopped and waited for (Runtime.close waits 3 s for it, then its hooks),
+// which a loaded runner has taken past Bun's 5 s hook limit (#7): the budget covers that too, so a slow stop is slow, not a failure.
 afterAll(async () => {
     await srv.stop();
     mock.stop();
     iso.cleanup();
-});
+}, { timeout: 30_000 });
 
 type View = { state: SessionState; turns: Turn[]; seq: number; agents: [] };
 
@@ -235,6 +238,7 @@ describe("implementing a plan in a new worktree", () => {
         expect(c.view(next).state.cwd).toBe(join(r.path, "src"));
         expect(c.view(next).state.mode).toBe("auto");
         await c.call("session.interrupt", { id: next });
+        await c.until(next, done);
         c.close();
     });
 
@@ -252,6 +256,7 @@ describe("implementing a plan in a new worktree", () => {
         // Nothing was answered: the card still waits.
         expect(c.view(id).state.interactions).toHaveLength(1);
         await c.call("session.interrupt", { id });
+        await c.until(id, done);
 
         const plain = realpathSync(tempDir("cavvy-plan-plain-"));
         writeFileSync(join(plain, "a.ts"), "");
@@ -261,6 +266,7 @@ describe("implementing a plan in a new worktree", () => {
         expect(info.notGit).toContain("isn't in a Git repository");
         await expect(c.call("session.implementPlan", { id: other.id, branch: "x", mode: "default" })).rejects.toMatchObject({ code: "not_git" });
         await c.call("session.interrupt", { id: other.id });
+        await c.until(other.id, done);
         c.close();
     });
 
@@ -273,6 +279,7 @@ describe("implementing a plan in a new worktree", () => {
         trustFolder(main);
         git(main, "config", "--unset", "filter.evil.smudge");
         await c.call("session.interrupt", { id });
+        await c.until(id, done);
 
         // Project config checked in: the worktree is made, but its session waits for trust. Nothing is deleted.
         const repo2 = repo("configured");
@@ -295,8 +302,10 @@ describe("implementing a plan in a new worktree", () => {
         await expect(c.call("session.implementPlan", { id: p2.id, branch: "other", mode: "default", resume: r.path })).rejects.toMatchObject({ code: "not_managed" });
         const again = await c.call<ImplementPlanResult>("session.implementPlan", { id: p2.id, branch: "configured", mode: "default", resume: r.path });
         expect(again.sessionId).toBeDefined();
-        await c.until(p2.id, (v) => !v.state.interactions.length);
-        await c.call("session.interrupt", { id: again.sessionId });
+        await c.until(p2.id, (v) => done(v) && !v.state.interactions.length);
+        const started = await c.open("session.open", { id: again.sessionId! });
+        await c.call("session.interrupt", { id: started });
+        await c.until(started, done);
         c.close();
     });
 });
@@ -324,6 +333,7 @@ describe("saving a plan", () => {
         await c.call("session.savePlan", { id, path: "docs/plans/sso.md", replace: true });
         expect(readFileSync(rel.path, "utf8")).toContain("SamlProvider");
         await c.call("session.interrupt", { id });
+        await c.until(id, done);
         c.close();
     });
 
@@ -354,6 +364,7 @@ describe("saving a plan", () => {
         await expect(c.call("session.savePlan", { id, path: "link.md", replace: true })).rejects.toMatchObject({ code: "path_outside" });
         expect(existsSync(join(outside, "target.md"))).toBe(false);
         await c.call("session.interrupt", { id });
+        await c.until(id, done);
         c.close();
     });
 });
@@ -477,6 +488,7 @@ describe("archiving a session in a managed worktree", () => {
         expect(await c.call<ArchiveResult>("session.archive", { id, archived: true, removeWorktree: true })).toMatchObject({ archived: true, removed: false, code: "running" });
         expect(existsSync(wt)).toBe(true);
         await c.call("session.interrupt", { id });
+        await c.until(id, done);
         c.close();
     });
 
