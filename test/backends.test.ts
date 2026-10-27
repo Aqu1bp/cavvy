@@ -2806,6 +2806,21 @@ describe("Claude Code turn reliability (#60, #61, #64)", () => {
         wakes.dispose();
     });
 
+    test("a wake sent mid-turn that Claude Code takes as a turn of its own (its turn had ended meanwhile) is waited for", async () => {
+        process.env.FAKE_SCENARIO = "steering";
+        const wakes = new WakeQueue({ coalesceMs: 60_000 });
+        wakes.push({ source: "pull-request", label: "PR #12: checks passed", text: "- ci passed" });
+        // The queue is slow to hand over: Claude Code's turn is over (its result unread) by the time the wake goes.
+        let drains = 0;
+        const a = await makeAgent({ provider: "claude-code", wakes, drainQueued: async () => (++drains === 1 && (await Bun.sleep(1500)), []) });
+        expect(await a.run("start")).toBe("done");
+        // The wake's own turn ran to its end, and what it said was kept.
+        const last = a.session.messages.at(-1)!;
+        expect(last.role).toBe("assistant");
+        expect(JSON.stringify(last.content).match(/No steering received before result/g)).toHaveLength(2);
+        wakes.dispose();
+    }, 20_000);
+
     test("a wake goes to Claude Code marked synthetic, so it expands no @mentions in others' words; the user's queued words don't", async () => {
         process.env.FAKE_SCENARIO = "steering";
         const wakes = new WakeQueue({ coalesceMs: 60_000 });
