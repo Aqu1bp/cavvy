@@ -3144,6 +3144,10 @@ export class Agent {
         if (decision.behavior === "allow" && hookDecision !== "ask") return { tool, input, sandbox, auto: sandbox ? "sandboxed" : undefined };
         if (hookDecision === "allow" && !decision.dangerous) return { tool, input, sandbox, auto: "hook" };
 
+        // A browser tool Claude Code or Codex calls, in auto mode: runs without Cavvy's reviewer, as T3 Code's do (that
+        // reviewer would be a one-off run of the CLI itself). Rules, plan mode, read-only agents and hooks still hold.
+        if (served && servedBrowserName(tool.name) && decision.needsClassifier && !decision.dangerous && hookDecision !== "ask") return { tool, input, sandbox, auto: "auto mode" };
+
         let classifierReason: string | undefined;
         let summary: string | undefined;
         // A hook that asked wants the user, not the auto-mode reviewer.
