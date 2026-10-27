@@ -26,6 +26,11 @@ const STALL_MS = 30 * 60_000;
 const TICK_CAP_MS = 5_000;
 const SHOWN = 20;
 
+/** bun on PATH, else where its installer or Homebrew puts it: an app opened from the Dock may have only the system's PATH. */
+function findBun(): string | undefined {
+    return Bun.which("bun", { PATH: process.env.PATH }) ?? [join(homedir(), ".bun", "bin", "bun"), "/opt/homebrew/bin/bun", "/usr/local/bin/bun"].find((p) => existsSync(p));
+}
+
 /** The .app bundle a program runs from (…/Cavvy.app/Contents/MacOS/cavvy), if it does. */
 export function bundleOf(execPath: string): string | undefined {
     return /^(.+\.app)\/Contents\/MacOS\/[^/]+$/.exec(execPath)?.[1];
@@ -205,8 +210,7 @@ export class AppUpdates {
         await this.checking;
         const w = await this.where();
         if ("unavailable" in w) return this.replace({ unavailable: w.unavailable });
-        const home = join(homedir(), ".bun", "bin", "bun");
-        const bun = this.o.bun ?? Bun.which("bun") ?? (existsSync(home) ? home : undefined);
+        const bun = this.o.bun ?? findBun();
         if (!bun) return this.patch({ failed: "Updating needs bun, and it isn't on your PATH (https://bun.sh)." });
         // The worktree desktop:update keeps has the script once it has run; before that, the checkout the app came from.
         // Only a worktree of that checkout's repository, though: another's would update to its own main.
@@ -231,7 +235,8 @@ export class AppUpdates {
                     // Its own session: the app quitting to restart doesn't take it along.
                     detached: true,
                     stdio: ["ignore", fd, fd],
-                    env: repoEnv({ CAVVY_HOME: cavvyHome(), GIT_TERMINAL_PROMPT: "0" }),
+                    // The scripts run `bun` by name: this one, even if the login shell's PATH couldn't be had.
+                    env: repoEnv({ CAVVY_HOME: cavvyHome(), GIT_TERMINAL_PROMPT: "0", PATH: [dirname(bun), process.env.PATH].filter(Boolean).join(":") }),
                 });
             } finally {
                 closeSync(fd);

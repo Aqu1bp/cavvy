@@ -58,7 +58,7 @@ let detected: SandboxKind | null | undefined;
 export function sandboxKind(): SandboxKind | undefined {
     if (detected === undefined) {
         if (process.platform === "darwin" && existsSync(SEATBELT)) detected = seatbeltWorks() ? "seatbelt" : null;
-        else if (process.platform === "linux" && Bun.which("bwrap")) detected = bwrapWorks() ? "bwrap" : null;
+        else if (process.platform === "linux" && Bun.which("bwrap", { PATH: process.env.PATH })) detected = bwrapWorks() ? "bwrap" : null;
         else detected = null;
     }
     return detected ?? undefined;

@@ -26,7 +26,7 @@ export interface ChromeEnvironment {
 }
 
 export function hostEnvironment(): ChromeEnvironment {
-    return { platform: osPlatform(), env: process.env, home: homedir(), exists: existsSync, which: (name) => Bun.which(name) };
+    return { platform: osPlatform(), env: process.env, home: homedir(), exists: existsSync, which: (name) => Bun.which(name, { PATH: process.env.PATH }) };
 }
 
 export type ChromeLookup = { ok: true; path: string; source: "CAVVY_BROWSER" | "browser.executable" | "installed" } | { ok: false; error: string };
