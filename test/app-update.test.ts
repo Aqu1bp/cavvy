@@ -126,6 +126,20 @@ describe("check", () => {
         expect(info.error).toBeUndefined();
     });
 
+    test("maxAgeMs: no fetch while the last check is newer than that, one once it's older", async () => {
+        const { origin, work } = repos();
+        record({ commit: sh(work, "rev-parse", "HEAD"), source: work });
+        const { u } = updates();
+        expect((await u.check()).available).toBe(false);
+        // main moves on the remote.
+        const other = join(dir, "other");
+        sh(dir, "clone", "-q", origin, other);
+        sh(other, "commit", "-q", "--allow-empty", "-m", "four");
+        sh(other, "push", "-q", "origin", "HEAD:main");
+        expect((await u.check({ maxAgeMs: 60_000 })).available).toBe(false);
+        expect(await u.check({ maxAgeMs: 0 })).toMatchObject({ available: true, behind: 1 });
+    });
+
     test("main's changes since the installed build, newest first", async () => {
         const { work } = repos(["one", "two", "three", "four"]);
         record({ commit: sh(work, "rev-parse", "HEAD~2"), source: work });

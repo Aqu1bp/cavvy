@@ -1802,8 +1802,8 @@ export interface Methods {
     "usage.summary": { params: { days: UsageDays }; result: UsageSummary };
     /** Whether the desktop app is behind origin/main, as of the last check. */
     "app.update.get": { params: Record<string, never>; result: AppUpdateInfo };
-    /** Fetch origin/main now and compare it with the installed build. */
-    "app.update.check": { params: Record<string, never>; result: AppUpdateInfo };
+    /** Fetch origin/main now and compare it with the installed build. `maxAgeMs`: unless the last check is newer than that. */
+    "app.update.check": { params: { maxAgeMs?: number }; result: AppUpdateInfo };
     /** Build and install main (scripts/update-desktop.ts), then restart the app. It runs on its own: progress comes as app.update events. */
     "app.update.start": { params: Record<string, never>; result: AppUpdateInfo };
     /**

@@ -13,7 +13,8 @@ import { cavvyHome, paths } from "../config/paths";
 import { REPO_VARS } from "../util/git";
 import type { AppUpdateChange, AppUpdateInfo } from "./protocol";
 
-const CHECK_EVERY_MS = 6 * 3600_000;
+/** main moves several times a day: a fetch of one branch is cheap, so it's looked at often. */
+const CHECK_EVERY_MS = 30 * 60_000;
 const FIRST_CHECK_MS = 5_000;
 /** How long a finished update may take to restart the app before it says so. */
 const RESTART_WAIT_MS = 90_000;
@@ -192,9 +193,14 @@ export class AppUpdates {
         this.ending.abort();
     }
 
-    /** Fetches main and compares it with the installed build. One at a time; none while an update runs. */
-    check(): Promise<AppUpdateInfo> {
+    /**
+     * Fetches main and compares it with the installed build. One at a time; none while an update runs. `maxAgeMs`: not
+     * if the last check is newer than that (a window coming to the front asks, and so does every other window).
+     */
+    check(o: { maxAgeMs?: number } = {}): Promise<AppUpdateInfo> {
         if (this.info.updating || this.starting) return Promise.resolve(this.get());
+        const at = this.info.checkedAt;
+        if (!this.checking && o.maxAgeMs !== undefined && at !== undefined && Date.now() - at < o.maxAgeMs) return Promise.resolve(this.get());
         this.checking ??= this.runCheck().finally(() => (this.checking = undefined));
         return this.checking;
     }

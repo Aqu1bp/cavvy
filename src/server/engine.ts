@@ -2597,7 +2597,7 @@ export class Engine {
             case "app.update.get":
                 return this.updates.get();
             case "app.update.check":
-                return await this.updates.check();
+                return await this.updates.check({ maxAgeMs: num(p.maxAgeMs, 0) });
             case "app.update.start":
                 return await this.updates.update();
             default:

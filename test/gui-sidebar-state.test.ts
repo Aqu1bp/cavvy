@@ -3,7 +3,9 @@ import { app, refreshSessions, rpc, setApp, start } from "../gui/src/state/app";
 import type { ServerEvent, SessionSummary } from "../src/server/protocol";
 
 const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
 Object.defineProperty(globalThis, "document", { configurable: true, value: { addEventListener() {} } });
+Object.defineProperty(globalThis, "window", { configurable: true, value: { addEventListener() {} } });
 let event!: (e: ServerEvent) => void;
 const onEvent = spyOn(rpc, "onEvent").mockImplementation((fn) => { event = fn; return () => {}; });
 const onState = spyOn(rpc, "onState").mockImplementation(() => () => {});
@@ -13,6 +15,8 @@ start();
 for (const spy of [onEvent, onState, onSlow, connect]) spy.mockRestore();
 if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
 else Reflect.deleteProperty(globalThis, "document");
+if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+else Reflect.deleteProperty(globalThis, "window");
 
 const original = { conn: app.conn, sessionsError: app.sessionsError, sessionsLoaded: app.sessionsLoaded, sessions: [...app.sessions], archived: [...app.archived], activeId: app.activeId, seen: { ...app.seen } };
 afterEach(() => setApp({ conn: original.conn, sessionsError: false, sessionsLoaded: false, sessions: [], archived: [], activeId: undefined, seen: {} }));
