@@ -696,7 +696,7 @@ export class CodexLiveConnection extends CodexTurn {
         await this.steering;
         // Recorded as sent but never taken (the turn failed or was stopped): saved for the next turn. A prompt's images
         // kept here (claim, steerInto) go with it (#438): none of a queued message's (holdOver keeps those queued).
-        if (this.unsteered.length) run.t.sink.undelivered?.(this.unsteered.splice(0).map((m) => ({ text: m.text, images: m.images, documents: [] })).filter((m) => m.text || m.images.length));
+        if (this.unsteered.length) run.t.sink.undelivered?.(this.unsteered.splice(0).map((m) => ({ ...(m.id !== undefined ? { id: m.id } : {}), text: m.text, images: m.images, documents: [] })).filter((m) => m.text || m.images.length));
         this.liveRun = undefined;
         this.aborted = false;
         this.failure = undefined;

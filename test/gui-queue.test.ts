@@ -5,7 +5,17 @@
 
 import { describe, expect, test } from "bun:test";
 
-const { clampDrag, dragTarget, firstSendable, followUpFor, joiningRow, moved, movedAnnouncement, otherFollowUp, queueRow, settleMs, slotOf, stepTarget } = await import("../gui/src/lib/queue");
+const { clampDrag, dragTarget, firstSendable, followUpFor, followUpLabels, joiningRow, moved, movedAnnouncement, otherFollowUp, queueRow, settleMs, slotOf, stepTarget, withDraft } = await import("../gui/src/lib/queue");
+
+describe("text handed back to the composer", () => {
+    test("a steer the turn never took goes after what's typed, a blank line between; nothing typed: it's all there is", () => {
+        expect(withDraft("half a thought", "and then deploy", true)).toBe("half a thought\n\nand then deploy");
+        expect(withDraft("half a thought\n", "and then deploy", true)).toBe("half a thought\n\nand then deploy");
+        expect(withDraft("  ", "and then deploy", true)).toBe("and then deploy");
+        // The others (an interrupted queue, a rewound prompt) still go ahead of it.
+        expect(withDraft("half a thought", "queued one")).toBe("queued one\nhalf a thought");
+    });
+});
 
 describe("steer or queue", () => {
     test("the setting decides, steer when unset; the opposite key flips it", () => {
@@ -16,6 +26,32 @@ describe("steer or queue", () => {
         expect(followUpFor("queue", true)).toBe("steer");
         expect(otherFollowUp("steer")).toBe("queue");
         expect(otherFollowUp("queue")).toBe("steer");
+    });
+
+    test("a model that can't be steered queues either way", () => {
+        for (const setting of [undefined, "steer", "queue"] as const) for (const opposite of [false, true]) expect(followUpFor(setting, opposite, false)).toBe("queue");
+    });
+
+    test("the box says in a few words what sending does now; the send button, what Enter and the other key do", () => {
+        expect(followUpLabels({ mode: "steer", steers: true, send: "Enter", other: "⇧⌘Enter", click: "⌘-click" })).toEqual({
+            placeholder: "Steer this turn…",
+            title: "Steer: joins this turn at its next step (Enter). ⌘-click or ⇧⌘Enter to queue instead.",
+        });
+        expect(followUpLabels({ mode: "queue", steers: true, send: "Ctrl+Enter", other: "Ctrl+Shift+Enter", click: "Ctrl-click" })).toEqual({
+            placeholder: "Queue for after this turn…",
+            title: "Queue: runs after this turn (Ctrl+Enter). Ctrl-click or Ctrl+Shift+Enter to steer instead.",
+        });
+        // macOS's symbols run together, as the menus show them.
+        expect(followUpLabels({ mode: "steer", steers: true, send: "⌘+Enter", other: "⌥+S", click: "⌘-click" }).title).toBe("Steer: joins this turn at its next step (⌘Enter). ⌘-click or ⌥S to queue instead.");
+        // The other key unbound: only mod-click is left.
+        expect(followUpLabels({ mode: "steer", steers: true, send: "Enter", click: "⌘-click" })).toEqual({ placeholder: "Steer this turn…", title: "Steer: joins this turn at its next step (Enter). ⌘-click to queue instead." });
+    });
+
+    test("where the model can't be steered, both say it queues; the send button, why", () => {
+        expect(followUpLabels({ mode: "queue", steers: false, send: "Enter", other: "⇧⌘Enter", click: "⌘-click", who: "Slow CLI" })).toEqual({
+            placeholder: "Queue for after this turn…",
+            title: "Queue: runs after this turn (Enter). Slow CLI can't take messages mid-turn.",
+        });
     });
 });
 

@@ -4,13 +4,60 @@
 
 import type { FollowUpMode, QueuedMode } from "@shared/protocol";
 
-/** What Enter does mid-turn: the setting, or (mod+shift+enter, mod-click) the other one. */
-export function followUpFor(setting: FollowUpMode | null | undefined, opposite: boolean): FollowUpMode {
+/**
+ * What Enter does mid-turn: the setting, or (mod+shift+enter, mod-click) the other one. `steers` false: the running
+ * model takes nothing mid-turn (ModelSummary.steers), so a message is queued whichever way it's sent.
+ */
+export function followUpFor(setting: FollowUpMode | null | undefined, opposite: boolean, steers = true): FollowUpMode {
+    if (!steers) return "queue";
     const base: FollowUpMode = setting === "queue" ? "queue" : "steer";
     return opposite ? (base === "steer" ? "queue" : "steer") : base;
 }
 
 export const otherFollowUp = (m: FollowUpMode): FollowUpMode => (m === "steer" ? "queue" : "steer");
+
+/** Each way, in a few words: what the send button's hint says of it. */
+export const FOLLOW_UP_WORDS: Record<FollowUpMode, string> = { steer: "Steer: joins this turn at its next step", queue: "Queue: runs after this turn" };
+
+/** A key as words read it: macOS's symbols run together (⌘⇧Enter), others keep their + (Ctrl+Shift+Enter). */
+const keyText = (k: string) => (/[⌘⌥⇧⌃]/.test(k) ? k.replaceAll("+", "") : k);
+
+/**
+ * What the composer says while a turn runs: its placeholder, in a few words, what sending does now; the send button's
+ * description, the keys: what Enter (`send`) does and what the other key (`other`, unbound: none) does. Where the
+ * model can't be steered (`steers` false), both queue, and the description says why (`who`: the model's or CLI's name).
+ */
+export function followUpLabels(o: { mode: FollowUpMode; steers: boolean; send: string; other?: string; click: string; who?: string }): { placeholder: string; title: string } {
+    const send = keyText(o.send);
+    if (!o.steers) {
+        const why = `${o.who ?? "This model"} can't take messages mid-turn`;
+        return { placeholder: "Queue for after this turn…", title: `${FOLLOW_UP_WORDS.queue} (${send}). ${why}.` };
+    }
+    const other = otherFollowUp(o.mode);
+    const otherKey = o.other ? keyText(o.other) : undefined;
+    return {
+        placeholder: o.mode === "steer" ? "Steer this turn…" : "Queue for after this turn…",
+        title: `${FOLLOW_UP_WORDS[o.mode]} (${send}). ${o.click}${otherKey ? ` or ${otherKey}` : ""} to ${other} instead.`,
+    };
+}
+
+/**
+ * The box once the server hands text back (`back`): before what's typed (an interrupted queue, a rewound prompt), or
+ * `after` it, a blank line between (a steer the turn never took). What's typed always stays.
+ */
+export function withDraft(typed: string, back: string, after = false): string {
+    if (!typed.trim()) return back;
+    return after ? `${typed.trimEnd()}\n\n${back}` : `${back}\n${typed}`;
+}
+
+/**
+ * A steer handed back (withDraft's `after`) waits: while a message is being sent (it would change the box under that
+ * send, which then can't clear what it sent), and while the box holds a command (`/` or `!`), which would take it as
+ * its arguments or its shell input. It goes in once neither holds.
+ */
+export function restoreWaits(typed: string, sending: boolean): boolean {
+    return sending || /^\s*[/!]/.test(typed);
+}
 
 /** What a queued message's button does: steer it into the running turn, or (idle) send it now. */
 export interface QueueAction {

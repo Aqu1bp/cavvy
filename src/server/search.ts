@@ -21,7 +21,7 @@ const MAX_LINE_BYTES = 4 * 1024 * 1024;
 /** A message's text beyond this isn't searched. */
 const MAX_TEXT = 256 * 1024;
 const MSG_PREFIX = '{"t":"msg"';
-const WANTED = /^\{"t":"(msg|meta|title|compact|rewind)"/;
+const WANTED = /^\{"t":"(msg|meta|title|compact|rewind|withdraw)"/;
 
 /** Hits from one session, at most (a session that says the word often doesn't fill the list). */
 const PER_SESSION = 3;
@@ -283,7 +283,7 @@ async function readDoc(file: string, size: number, mtimeMs: number, ctl: Control
                 if (prefix.startsWith(MSG_PREFIX) && whole) count++;
                 return;
             }
-            let l: { t?: string; m?: Message; cwd?: unknown; title?: unknown; count?: unknown; kept?: unknown };
+            let l: { t?: string; m?: Message; cwd?: unknown; title?: unknown; count?: unknown; kept?: unknown; index?: unknown };
             try {
                 l = JSON.parse(line);
             } catch {
@@ -321,6 +321,13 @@ async function readDoc(file: string, size: number, mtimeMs: number, ctl: Control
                 doc.entries = doc.entries.filter((e) => e.seg !== seg || e.index < keep);
                 doc.starts = doc.starts.filter((t) => t.seg !== seg || t.index < keep);
                 if (seg === 0 && !doc.entries.some((e) => e.role === "user")) first = undefined;
+            } else if (l.t === "withdraw" && typeof l.index === "number" && l.index < count) {
+                // As Session.withdraw: the message goes, what came after it moves back one.
+                const at = l.index;
+                count--;
+                const moved = <T extends { seg: number; index: number }>(xs: T[]) => xs.filter((e) => e.seg !== seg || e.index !== at).map((e) => (e.seg === seg && e.index > at ? { ...e, index: e.index - 1 } : e));
+                doc.entries = moved(doc.entries);
+                doc.starts = moved(doc.starts);
             }
         },
         ctl,

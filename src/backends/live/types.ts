@@ -71,6 +71,8 @@ export type CliEvent =
      * reached the CLI's session (Esc withdrew it, and the CLI said it dropped it): LiveTurnResult.refused.
      */
     | { t: "turn_ended"; ref: string; answers?: string[]; reason: TurnEndReason; error?: string; usage?: Usage; limit?: { resetsAt?: number; window?: string }; refused?: boolean }
+    /** The CLI has ended a turn (it answered the stop), whose end waits on cleanup of its own, bounded: the stop watchdog lets go. */
+    | { t: "turn_ending"; ref: string }
     /**
      * A background task started, changed or ended. `wakeDue`: the CLI will start a turn of its own to report
      * it (Claude Code after a task_notification); until a turn starts or ends, the session isn't quiet.
@@ -97,6 +99,11 @@ export interface CliConnection {
     steer?(ref: string, input: TurnInput): Promise<boolean>;
     /** Interrupt a turn. Never stops the process or its background work. */
     interrupt(ref: string): Promise<void>;
+    /**
+     * Once what the last interrupt left to clean up is done (no prompt goes before): false when the process was
+     * stopped for it, so the next prompt goes to a new one.
+     */
+    settled?(): Promise<boolean>;
     /** Ask for a background task to stop; its task event says when it has. */
     stopTask?(id: string): Promise<void>;
     moveToBackground?(toolUseId: string): Promise<boolean>;

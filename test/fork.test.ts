@@ -284,6 +284,24 @@ describe("the fork's file", () => {
         expect(JSON.stringify(f.messages)).not.toContain('"two"');
     });
 
+    test("an original a steer was withdrawn from (Session.withdraw): a fork at any point has the history it has now", () => {
+        const s = original();
+        s.push(prompt("second", 2000));
+        s.push(prompt("and then deploy"));
+        s.push(reply("two"));
+        s.withdraw(7);
+        s.push(prompt("third", 3000));
+        s.push(reply("three"));
+        for (const cut of [6, 7, 8, 9, 10]) {
+            const f = forkSession(s, { cut });
+            f.release();
+            expect(f.messages).toEqual(s.messages.slice(0, cut));
+            const again = Session.load(f.path, { persist: false });
+            expect(again.messages).toEqual(s.messages.slice(0, cut));
+        }
+        expect(JSON.stringify(readSegments(s.path))).not.toContain("and then deploy");
+    });
+
     test("titles: a fork of a fork isn't 'Fork of Fork of', and one without a title is named after its first prompt", () => {
         expect(forkTitle("Fork of Fork of Layout")).toBe("Fork of Layout");
         const s = original();

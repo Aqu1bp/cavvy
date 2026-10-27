@@ -413,6 +413,15 @@ export class LiveCliSession {
                 return undefined;
             }
             const gen = this.generation;
+            // What the last turn's Esc left to clean up comes first; a process stopped for it is replaced.
+            if (conn.settled) {
+                const ok = await untilAborted(conn.settled(), signal);
+                if (gen !== this.generation) continue;
+                if (!ok) {
+                    await this.stop();
+                    continue;
+                }
+            }
             let deferred: { tasks: number } | undefined;
             let restart = false;
             if (spec.fingerprint !== this.fingerprint) {
@@ -606,6 +615,11 @@ export class LiveCliSession {
                 return this.emitSession(e);
             case "session_id":
                 return this.noteSessionId(e.id);
+            case "turn_ending": {
+                const turn = this.turnFor({ t: "turn_ended", ref: e.ref, reason: "aborted" });
+                if (turn?.timer !== undefined) this.o.clock.clearTimeout(turn.timer);
+                return;
+            }
             case "limits":
             case "goal":
             case "commands":

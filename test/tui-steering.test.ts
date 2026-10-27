@@ -12,6 +12,7 @@ const { App } = await import("../src/ui/app");
 const { Session } = await import("../src/agent/session");
 const { runCommand } = await import("../src/commands/index");
 const { queueFile, loadQueue, saveQueue } = await import("../src/agent/queue-store");
+const { agentCli } = await import("../src/backends/defs");
 
 afterAll(() => cleanup());
 
@@ -54,6 +55,58 @@ const drain = (app: InstanceType<typeof App>): string[] => (app as any).drainQue
 const image = (name: string) => ({ name, bytes: 1, part: { type: "image" as const, mediaType: "image/png", data: "AA==" } });
 
 describe("steer or queue", () => {
+    test("while a turn runs, the prompt says what enter does now and what tab does", async () => {
+        const { app } = testApp();
+        const { end } = workingAgent(app);
+        const turn = app.submitText("first");
+        await Bun.sleep(10);
+        expect((app as any).followUpPlaceholder()).toBe("Steer the current turn (enter) · tab to queue it for after");
+        app.settings.followUpBehavior = "queue";
+        expect((app as any).followUpPlaceholder()).toBe("Queue a message for after this turn (enter) · tab to steer now");
+        app.settings.followUpBehavior = "steer";
+        await app.submitText("steer this");
+        const shown = (app as any).renderActivity(100, 40).status.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+        expect(shown).toContain("steering: steer this");
+        expect(drain(app)).toEqual(["steer this"]);
+        end();
+        await turn;
+    });
+
+    test("on a model that can't take a message mid-turn: every one is queued (tab too), shown as queued, and the prompt says why", async () => {
+        const caps = agentCli("codex")!.caps as { steering: string };
+        const was = caps.steering;
+        caps.steering = "none";
+        try {
+            const { app, printed } = testApp();
+            app.model = { provider: "codex", id: "gpt-test", name: "GPT Test" } as any;
+            const { agent, end } = workingAgent(app);
+            const turn = app.submitText("first");
+            await Bun.sleep(10);
+            expect((app as any).followUpPlaceholder()).toBe("Queue a message for after this turn (enter) · Codex can't take one mid-turn");
+            await app.submitText("also this");
+            app.editor.set("the other way");
+            (app as any).handleEditorKey({ name: "tab" });
+            await Bun.sleep(10);
+            expect(queued(app)).toEqual([["also this", "queue"], ["the other way", "queue"]]);
+            expect(agent.nudges).toBe(0);
+            expect(drain(app)).toEqual([]);
+            expect(app.queueEntries().map((q) => [q.steering, q.canSteer])).toEqual([[false, false], [false, false]]);
+            expect(app.sendQueuedNow(app.queueEntries()[0]!.draft)).toBe("cant");
+            const shown = (app as any).renderActivity(100, 40).status.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+            expect(shown).toContain("⏵ queued: also this");
+            expect(shown).not.toContain("steering:");
+            void printed;
+            end();
+            await Bun.sleep(20);
+            end();
+            await Bun.sleep(20);
+            end();
+            await turn;
+        } finally {
+            caps.steering = was;
+        }
+    });
+
     test("by default a message steers: the running turn is told, and takes it at its next step", async () => {
         const { app } = testApp();
         const { agent, end } = workingAgent(app);
@@ -64,6 +117,21 @@ describe("steer or queue", () => {
         expect(agent.nudges).toBe(1);
         expect(drain(app)).toEqual(["also this"]);
         expect(queued(app)).toEqual([]);
+        end();
+        await turn;
+    });
+
+    test("one the CLI never took (Esc withdrew it) comes back to the prompt, after what's typed there", async () => {
+        const { app, printed } = testApp();
+        const { end } = workingAgent(app);
+        const turn = app.submitText("first");
+        await Bun.sleep(10);
+        await app.submitText("left one");
+        expect(drain(app)).toEqual(["left one"]);
+        (app as any).editor.set("half typed");
+        expect((app as any).unsteered(["left one"], [7])).toEqual([7]);
+        expect((app as any).editor.text).toBe("half typed\n\nleft one");
+        expect(printed.join("\n")).toContain("not sent: back in the prompt");
         end();
         await turn;
     });

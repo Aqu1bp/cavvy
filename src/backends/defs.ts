@@ -15,7 +15,11 @@ export type AttachmentKind = "image" | "text" | "pdf";
 
 /** What an agent CLI can do, for Cavvy to read instead of its id. Static defaults; a connection may refine them after its handshake. */
 export interface CliCapabilities {
-    /** How a message sent mid-turn reaches it: folded in between tool rounds (Claude Code's stdin), at once (Codex's turn/steer), or not at all. */
+    /**
+     * How a message sent mid-turn reaches it: at once, taken at the turn's next step (Codex's turn/steer, Claude Code's
+     * stdin); folded in only between tool rounds; or not at all (it waits for the turn's end, and Cavvy doesn't offer
+     * to steer).
+     */
     steering: "between-tool-rounds" | "immediate" | "none";
     /**
      * What a message steering a running turn can carry, by kind, sent as a prompt carries them. One carrying
@@ -130,7 +134,9 @@ const CLAUDE_CODE: AgentCliDef = {
     preferredModels: [/^default$/, /^opus$/],
     delegation: { providers: ["claude-code", "anthropic"], vendorPrefix: "anthropic/", models: "Claude models", own: "your own Agent tool" },
     caps: {
-        steering: "between-tool-rounds",
+        // Written to its stdin as it's sent: with a call's result while one runs, else "now", which cuts the reply being
+        // written (2.1.310: test/fixtures/protocol/claude-steer-immediate.jsonl; src/backends/claude-live.ts steerOnce).
+        steering: "immediate",
         // A mid-turn stream-json user message's image blocks reach the model; its document blocks (PDFs) are dropped
         // without a word (2.1.304: test/fixtures/protocol/claude-2.1.304-steer-*.jsonl). Text files go as text.
         steersAttachments: ["image", "text"],
@@ -226,4 +232,9 @@ export const AGENT_CLIS: readonly AgentCliDef[] = [CLAUDE_CODE, CODEX];
 
 export function agentCli(id: string): AgentCliDef | undefined {
     return AGENT_CLIS.find((d) => d.id === id);
+}
+
+/** Whether a message sent while a turn runs can join it (steer) on this provider: Cavvy's own API models always can. */
+export function steersMidTurn(provider: string): boolean {
+    return (agentCli(provider)?.caps.steering ?? "immediate") !== "none";
 }

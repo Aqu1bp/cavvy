@@ -165,4 +165,11 @@ try {
     disposeAgain();
     prefs.expandActivity = false;
     assert.equal(motionMs(260), 0, "no motion without a browser's reduced-motion query");
+    // Stopped before anything came (a steered message, Esc at once): it still says it was stopped.
+    const stopped = node("root");
+    const disposeStopped = renderer.render(() => TurnView({ turn: { id: "stopped", status: "aborted", archived: true, startedAt: 1000, endedAt: 1200, prompt: { text: "hii", steered: true }, blocks: [] }, state: { ...state(), busy: false }, last: true }), stopped);
+    const ends = all(stopped).filter((n) => hasClass(n, "end-note"));
+    assert.equal(ends.length, 1, "a stopped turn with no output shows the stop line");
+    assert.ok(text(ends[0]!).includes("Stopped. Nothing after this point ran."));
+    disposeStopped();
 } finally { dispose(); }

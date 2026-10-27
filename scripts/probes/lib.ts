@@ -25,8 +25,12 @@ const USER = (() => {
     }
 })();
 
-/** Scrub anything that looks like an account email, an org, account, user or install id, or a token before it is written. */
-export function scrub<T>(v: T): T {
+/**
+ * Scrub anything that looks like an account email, an org, account, user or install id, a session id, or a token before
+ * it is written. `sessions`: the session ids seen so far and their placeholders (a log's), so the same session is
+ * `<session-1>` throughout and a fixture still links its frames.
+ */
+export function scrub<T>(v: T, sessions = new Map<string, string>()): T {
     let s = JSON.stringify(v)
         .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, "<email>")
         .replace(/\b(sk|sess|ghp|gho|xox[a-z])-[A-Za-z0-9_-]{16,}/g, "<token>")
@@ -34,11 +38,20 @@ export function scrub<T>(v: T): T {
         .replace(/("(?:[A-Za-z]*(?:account|org|organization|user|workspace|chatgpt|tenant|installation|device|machine)_?(?:id|uuid))"\s*:\s*)"[^"]*"/gi, '$1"<id>"')
         .replace(/("(?:email|name|display_?name)"\s*:\s*)"[^"]*@[^"]*"/gi, '$1"<email>"')
         .replace(/\/Users\/[^/"\s]+/g, "/Users/<user>")
+        // macOS's per-user temporary folder (a probe's scratch folder from mkdtemp), and Claude Code's name for it.
+        .replace(/(?:\/private)?\/var\/folders\/[^/"\s]+\/[^/"\s]+\/T\//g, "/tmp/")
+        .replace(/-private-var-folders-[A-Za-z0-9]+-[A-Za-z0-9-]+?-T-/g, "-tmp-")
         // Cavvy's folder for a CLI's sign-in (a probe run from a Cavvy session uses it) is named for the account.
         .replace(/(\/accounts\/[\w-]+\/)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "$1<account>")
         // claude.ai's synced skills and plugins sit in a folder named for the organization and account (<org>_<account>).
         .replace(/\/synced\/[0-9a-f]{8}-[0-9a-f-]{27}_[0-9a-f]{8}-[0-9a-f-]{27}/gi, "/synced/<org>_<account>")
         .replace(/("balance"\s*:\s*)"[^"]*"/g, '$1"<n>"');
+    // A CLI's session id (its transcript's name, under the account's history): numbered in the order they come, and
+    // replaced wherever it shows (a path, a resume argument), not only where it's named one.
+    for (const [, id] of s.matchAll(/\\?"session_?id\\?"\s*:\s*\\?"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi)) {
+        if (!sessions.has(id!.toLowerCase())) sessions.set(id!.toLowerCase(), `<session-${sessions.size + 1}>`);
+    }
+    for (const [id, name] of sessions) s = s.replace(new RegExp(id, "gi"), name);
     if (HOST) s = s.replace(HOST, "<host>");
     if (USER) s = s.replace(USER, "<user>");
     return JSON.parse(s);
@@ -54,6 +67,8 @@ export function trim(v: any, depth = 0): any {
 
 export class Log {
     private t0 = Date.now();
+    /** The session ids it has written, and their placeholders (scrub). */
+    private sessions = new Map<string, string>();
     readonly frames: { t: number; dir: string; frame: any }[] = [];
     constructor(readonly file: string) {
         mkdirSync(dirname(file), { recursive: true });
@@ -62,8 +77,8 @@ export class Log {
     add(dir: "in" | "out" | "err" | "note", frame: unknown) {
         const e = { t: Date.now() - this.t0, dir, frame };
         this.frames.push(e);
-        appendFileSync(this.file, JSON.stringify(trim(scrub(e))) + "\n");
-        if (process.env.PROBE_VERBOSE) console.error(`[${e.t}] ${dir} ${JSON.stringify(scrub(frame)).slice(0, 220)}`);
+        appendFileSync(this.file, JSON.stringify(trim(scrub(e, this.sessions))) + "\n");
+        if (process.env.PROBE_VERBOSE) console.error(`[${e.t}] ${dir} ${JSON.stringify(scrub(frame, this.sessions)).slice(0, 220)}`);
     }
     note(text: string, extra?: unknown) {
         this.add("note", extra === undefined ? text : { text, ...(extra as object) });

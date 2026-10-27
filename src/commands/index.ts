@@ -1314,7 +1314,7 @@ async function queueCommand(app: App) {
             label: truncate(q.text.replace(/\s+/g, " ") || "(images)", 70),
             value: q.draft,
             detail: q.steering ? theme.accent("next step") : theme.muted("after this turn"),
-            description: q.steering ? undefined : q.canSteer ? undefined : "images and commands can't join a running turn",
+            description: q.steering || q.canSteer ? undefined : app.backendSteers() ? "images and commands can't join a running turn" : "this model can't take messages mid-turn",
         }));
     const hint = "enter send now · shift+↑↓ move · e edit · x remove · esc close";
     const d = new SelectDialog<QueuedDraft>({

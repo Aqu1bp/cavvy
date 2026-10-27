@@ -88,6 +88,8 @@ export const liveTiming = {
     carrierQueuedMs: 3000,
     /** For a control request's answer. */
     controlMs: 10_000,
+    /** For the answer to withdrawing a steering message on Esc, which waits for it. */
+    withdrawMs: 2000,
     /** After a background task's notification, for the turn that reports it; then the session counts as quiet again. */
     wakeDueMs: 15_000,
     /** A background shell or monitor that leaves Claude Code's list without a word on how it ended: ended after this. */
@@ -228,11 +230,29 @@ interface PromptInfo {
      * was dropped (2.1.304 says it of a prompt whose turn was stopped: claude-2.1.304-sendnow-effort.jsonl).
      */
     taken?: boolean;
+    /**
+     * command_lifecycle said cancelled before it started: Claude Code dropped it. Final: a withdrawal goes by it,
+     * whatever its answer says, or when none came (withdrawSteers).
+     */
+    dropped?: boolean;
     /** A carrier whose turn isn't shown (CARRIER_COMMAND). */
     hidden?: boolean;
     /** The user's message, for a carrier that is one. */
     text?: string;
+    /** A steering message's messages as the host drained them: handed back (TurnSink.undelivered) if Claude Code drops it untaken. */
+    parts?: SteerMessage[];
     onQueued?: () => void;
+}
+
+/** A message to steer the running turn with, as the backend drained it (LiveTurnConfig.steer). */
+export interface LiveSteer {
+    text: string;
+    synthetic?: boolean;
+    images?: ImagePart[];
+    documents?: PdfPart[];
+    settle?: (sent: boolean) => Promise<void>;
+    /** The drained messages it joins. */
+    parts?: SteerMessage[];
 }
 
 /** The turn Claude Code is in now. */
@@ -246,11 +266,17 @@ export interface LiveTurnConfig {
     /** The turn's settings (spawn settings, the orchestrator, hooks…). */
     t: BackendTurn;
     /**
-     * Messages to steer the running turn with (taken between its tool rounds), as Claude Code takes them: the
-     * user's together (their images and files with them), a watch's events apart. `settle`: told once the write is
-     * done whether it went, for those with attachments, which are the queue's until then (SteerMessage.settle, #299).
+     * Messages to steer the running turn with, taken from the queue as they're sent: the user's together (their
+     * images and files with them), a watch's events apart. `settle`: told once the write is done whether it went, for
+     * those with attachments, which are the queue's until then (SteerMessage.settle, #299). `live`: whether they can
+     * still go (checked before they're taken); `recording`: called just before what the turn said so far is recorded
+     * ahead of them.
      */
-    steer?: () => Promise<{ text: string; synthetic?: boolean; images?: ImagePart[]; documents?: PdfPart[]; settle?: (sent: boolean) => Promise<void> }[]>;
+    steer?: (o: { live: () => boolean; recording: () => void }) => Promise<LiveSteer[]>;
+    /** Drained messages Claude Code dropped before it took them (Esc): the next turn is told of them (TurnSink.undelivered). */
+    undelivered?: (messages: SteerMessage[]) => void;
+    /** A message to steer with was sent before Claude Code began the turn (or its process was up): it goes once the turn starts. */
+    steerWanted?: boolean;
     /** A context block to go before the prompt's text (the conversation so far, beside a /goal). */
     context?: string;
 }
@@ -284,14 +310,40 @@ export class ClaudeConnection implements CliConnection {
     private answeredBy = new Map<string, string[]>();
     /** Cavvy turns being interrupted. */
     private stopping = new Set<string>();
-    /** Prompts Esc withdrew before Claude Code started them: stopped if it starts one anyway. */
-    private withdrawn = new Set<string>();
+    /**
+     * Prompts Esc withdraws or withdrew before Claude Code started them: stopped if it starts one anyway. In from before
+     * the withdrawal is asked for until Claude Code says it dropped it (or it starts), with its record, which outlives its
+     * turn here: what Claude Code says of it after the turn's end is still read (onLifecycle).
+     */
+    private withdrawn = new Map<string, PromptInfo>();
+    /** Esc's withdrawals of messages to steer with, under way: no prompt goes before they're done (settled). */
+    private cleaning = new Set<Promise<void>>();
+    /** Stopped for a message Claude Code wouldn't withdraw (withdrawKept): it takes no more prompts. */
+    private retired = false;
     /**
      * Cavvy turns Esc stopped after Claude Code took their prompt, before its system/init (#424): stopped as that
      * comes (startTurn), with the message to send in its place (sendNow), if any.
      */
     private stopOnStart = new Map<string, string | undefined>();
     private cur?: CliTurn;
+    /**
+     * The turn's own calls Claude Code is running (from their tool_use to their tool_result). A message written then
+     * goes in with their result; one written while none runs goes "now", which cuts what the model is writing (2.1.310:
+     * test/fixtures/protocol/claude-steer-immediate.jsonl). "now" while a call runs would end the turn after it instead.
+     */
+    private inTool = new Set<string>();
+    /** Steering, one drain and write at a time, in the order asked for. */
+    private steering: Promise<void> = Promise.resolve();
+    /** Cavvy turns whose messages are being taken from the queue: the end of their turn waits for them (heldEnds). */
+    private draining = new Set<string>();
+    /** A turn's end that came while its messages were being taken: it ends once none were, or they continue it. */
+    private heldEnds = new Map<string, TurnEndReason>();
+    /** Cavvy turns Esc is withdrawing steering messages of (how many withdrawals): their end waits for it (withdrawing). */
+    private withdrawals = new Map<string, number>();
+    /** The end of each of those that came meanwhile (endTurn's arguments). */
+    private endsAfterWithdrawal = new Map<string, [ref: string, reason: TurnEndReason, error?: string, limit?: { resetsAt?: number; window?: string }, refused?: boolean]>();
+    /** Frames wait while a steer is recorded and written, so what Claude Code said before it stays before it. */
+    private gate?: Promise<void>;
     /** The prompt command_lifecycle said started, before its system/init. */
     private startedUuid?: string;
     /** What each wake is about, for its row; and whether it answers a message of the user's. */
@@ -409,7 +461,7 @@ export class ClaudeConnection implements CliConnection {
         } catch (e) {
             throw new PromptRefused(e instanceof Error ? e.message : String(e));
         }
-        if (this.ended) throw new PromptRefused(`${this.def.name} has exited`);
+        if (!(await this.settled()) || this.ended) throw new PromptRefused(`${this.def.name} has exited`);
         const uuid = randomUUID();
         const context = this.turn().context;
         // The text goes last: Claude Code reads a /command only from the last block (what's before it goes along with it).
@@ -420,6 +472,51 @@ export class ClaudeConnection implements CliConnection {
         void this.sendUser(uuid, content, input.synthetic);
         liveDebug("claude", "prompt", { uuid, chars: input.text.length, images: input.images.length });
         return { ref: uuid };
+    }
+
+    /**
+     * Once what Esc withdrew is settled: each message confirmed dropped or taken, or the process stopped for one that
+     * isn't (withdrawKept). Whether this process can take a prompt (LiveCliSession.prepare starts a new one if not).
+     */
+    async settled(): Promise<boolean> {
+        while (this.cleaning.size) await Promise.all(this.cleaning);
+        return !this.retired;
+    }
+
+    /** Esc's withdrawal of messages to steer with: prompts wait for it (settled). */
+    private cleanup(work: Promise<void>): Promise<void> {
+        const done: Promise<void> = work
+            .then(() => this.withdrawnRunEnded())
+            .catch((e) => liveDebug("claude", "withdrawal failed", { error: redact((e as Error).message) }))
+            .finally(() => void this.cleaning.delete(done));
+        this.cleaning.add(done);
+        return done;
+    }
+
+    /**
+     * Until no message Esc withdrew is one Claude Code started as a turn of its own (taken, still in `withdrawn` till
+     * that turn's result): startTurn stops it with an interrupt the next prompt mustn't meet. Or the process ended;
+     * still running past the wait, it's stopped (settled then says it can't take a prompt).
+     */
+    private async withdrawnRunEnded(): Promise<void> {
+        const deadline = Date.now() + liveTiming.controlMs;
+        const running = () => [...this.withdrawn.values()].some((p) => p.taken);
+        while (!this.ended && Date.now() < deadline && running()) await Bun.sleep(50);
+        if (this.ended || this.retired || !running()) return;
+        liveDebug("claude", "withdrawn message's turn not over after Esc: stopping Claude Code");
+        this.emit({ type: "notice", level: "warn", message: `${this.def.name} didn't stop a message sent to steer the turn you stopped, which it had started, so its process was stopped, with its background work.` });
+        this.retired = true;
+        await this.proc.kill();
+    }
+
+    /**
+     * Esc's message to send now, as a turn of its own once nothing Esc withdrew can be stopped into it; with the
+     * process stopped for one (withdrawKept, withdrawnRunEnded), or gone, the next turn is told of it.
+     */
+    private async sendFollowUp(followUp: string, cfg: LiveTurnConfig): Promise<void> {
+        await this.withdrawnRunEnded();
+        if (this.retired || this.ended) cfg.undelivered?.([{ text: followUp, images: [], documents: [] }]);
+        else this.sendCarrier(followUp);
     }
 
     /** The turn Claude Code runs is being stopped (an interrupt is under way). */
@@ -437,28 +534,77 @@ export class ClaudeConnection implements CliConnection {
         this.followUp = undefined;
         if (this.cur?.ref !== ref) {
             const waiting = [...this.prompts.entries()].filter(([, p]) => p.ref === ref && (p.state === "sent" || p.state === "queued"));
-            liveDebug("claude", "interrupt: not running", { ref, waiting: waiting.length });
-            if (!waiting.length) return;
+            liveDebug("claude", "interrupt: not running", { ref, waiting: waiting.length, held: this.heldEnds.has(ref) });
+            if (!waiting.length) {
+                // Its turn is over, held open only while messages to steer with are taken: it ends stopped, and they don't go.
+                if (this.heldEnds.delete(ref)) this.endTurn(ref, "aborted");
+                return;
+            }
             const own = waiting.find(([uuid, p]) => uuid === ref && p.kind === "prompt");
             if (own) return this.unstartedPrompt(ref, own[1], followUp);
             // Steering messages still to come as a turn of their own (the turn they were for has ended): withdrawn, and
-            // the turn ends here. Its prompt reached Claude Code before them.
-            for (const [uuid, p] of waiting) {
-                p.state = "cancelled";
-                this.withdrawn.add(uuid);
-                void this.control({ subtype: "cancel_async_message", message_uuid: uuid });
+            // the turn ends here. Its prompt reached Claude Code before them. Those it says it dropped, the next turn is told of.
+            const cfg = this.turn();
+            for (const [, p] of waiting) p.state = "cancelled";
+            return this.cleanup(
+                this.withdrawing(ref, async () => {
+                    const unsure = await this.withdrawSteers(waiting, cfg);
+                    this.endTurn(ref, "aborted");
+                    await this.withdrawKept(ref, undefined, unsure, cfg);
+                    if (followUp) await this.sendFollowUp(followUp, cfg);
+                }),
+            );
+        }
+        // Messages written to steer it that Claude Code hasn't taken yet: an interrupt keeps them, to run after it
+        // (2.1.310: claude-steer-immediate.jsonl, case d). Withdrawn first; the next turn is told of them.
+        const untaken = [...this.prompts.entries()].filter(([, p]) => p.ref === ref && p.kind === "steer" && !p.taken && (p.state === "sent" || p.state === "queued"));
+        return untaken.length ? this.cleanup(this.withdrawing(ref, () => this.stopRunning(ref, followUp, untaken))) : this.stopRunning(ref, followUp, untaken);
+    }
+
+    /**
+     * Esc's withdrawal of a turn's steering messages (`work`): the turn doesn't end before it's settled, so every one
+     * Claude Code dropped is handed back (TurnSink.undelivered) before the run is over, and nothing the user sends
+     * next is stored before it. Bounded: its controls time out (withdrawMs, controlMs), and one Claude Code won't drop
+     * has its process stopped (withdrawKept).
+     */
+    private async withdrawing(ref: string, work: () => Promise<void>): Promise<void> {
+        this.withdrawals.set(ref, (this.withdrawals.get(ref) ?? 0) + 1);
+        try {
+            await work();
+        } finally {
+            const left = (this.withdrawals.get(ref) ?? 1) - 1;
+            if (left) this.withdrawals.set(ref, left);
+            else {
+                this.withdrawals.delete(ref);
+                const end = this.endsAfterWithdrawal.get(ref);
+                this.endsAfterWithdrawal.delete(ref);
+                if (end) this.endTurn(...end);
             }
-            this.endTurn(ref, "aborted");
-            if (followUp) this.sendCarrier(followUp);
-            return;
+        }
+    }
+
+    /** Esc on the turn Claude Code runs, after withdrawing the messages to steer it that it hasn't taken (`untaken`). */
+    private async stopRunning(ref: string, followUp: string | undefined, untaken: [string, PromptInfo][]): Promise<void> {
+        const cfg = this.turn();
+        let unsure: [string, PromptInfo][] = [];
+        if (untaken.length) {
+            unsure = await this.withdrawSteers(untaken, cfg);
+            // Its turn ended meanwhile: stopped as one that isn't running is, and what Claude Code may still have is
+            // withdrawn again (or its process stopped).
+            if (this.cur?.ref !== ref) {
+                await this.interrupt(ref);
+                await this.withdrawKept(ref, undefined, unsure, cfg);
+                if (followUp !== undefined) await this.sendFollowUp(followUp, cfg);
+                return;
+            }
         }
         const agents = this.runningAgents();
         if (this.sendNowCap && (followUp !== undefined || agents.length)) {
             const r = await this.sendNow(ref, followUp);
-            if (r === "stopped" || this.cur?.ref !== ref) return;
+            if (r === "stopped" || this.cur?.ref !== ref) return this.withdrawKept(ref, undefined, unsure, cfg);
             liveDebug("claude", "interrupt: send_now didn't stop it", { ref, r });
         }
-        if (this.cur?.ref !== ref) return;
+        if (this.cur?.ref !== ref) return this.withdrawKept(ref, undefined, unsure, cfg);
         const left = this.runningAgents();
         if (left.length) {
             // A plain interrupt stops the background sub-agents too (Claude Code 2.1.304): the user's Esc stopped them.
@@ -468,7 +614,9 @@ export class ClaudeConnection implements CliConnection {
             this.emit({ type: "notice", level: "warn", message: `Stopped ${what} when you pressed Esc (${why}). ${left.length === 1 ? "It won't" : "They won't"} report back. Background commands and monitors keep running.` });
         }
         liveDebug("claude", "interrupt", { ref, agents: left.length });
-        void this.control({ subtype: "interrupt" });
+        const stopped = this.control({ subtype: "interrupt" }).then((r) => this.withdrawKept(ref, r, unsure, cfg));
+        // Esc's withdrawal lasts until what the interrupt kept is settled too.
+        if (untaken.length) await stopped;
     }
 
     /**
@@ -511,7 +659,7 @@ export class ClaudeConnection implements CliConnection {
         const followUp = this.stopOnStart.get(ref);
         this.stopOnStart.delete(ref);
         p.state = "cancelled";
-        if (!dropped) this.withdrawn.add(ref);
+        if (!dropped) this.withdrawn.set(ref, p);
         this.endTurn(ref, "aborted", undefined, undefined, dropped);
         if (followUp) this.sendCarrier(followUp);
     }
@@ -600,6 +748,7 @@ export class ClaudeConnection implements CliConnection {
     private async read(): Promise<void> {
         try {
             for await (const m of this.proc.messages({ quietAfterExitMs: EXIT_DRAIN_MS })) {
+                while (this.gate) await this.gate;
                 try {
                     await this.onFrame(m);
                 } catch (e) {
@@ -644,9 +793,10 @@ export class ClaudeConnection implements CliConnection {
             case "user":
                 if (m.parent_tool_use_id) return this.onSubToolResults(m);
                 this.onToolResults(m);
-                // stream-json takes user messages while a turn runs; Claude Code folds them in between tool rounds.
+                if (Array.isArray(m.message?.content)) for (const b of m.message.content) if (b?.type === "tool_result") this.inTool.delete(String(b.tool_use_id));
+                // A step ended: what a host that doesn't say when it queues (TurnSink.onQueued) has waiting goes now.
                 // Awaited, so the timeline keeps the order they were delivered in.
-                if (this.cur && this.cur.kind !== "hidden" && Array.isArray(m.message?.content) && m.message.content.some((b: any) => b?.type === "tool_result")) await this.steerNow();
+                if (this.cur && this.cur.kind !== "hidden" && Array.isArray(m.message?.content) && m.message.content.some((b: any) => b?.type === "tool_result")) await this.steerSoon();
                 return;
             case "rate_limit_event":
                 return this.onRateLimit(m.rate_limit_info ?? {});
@@ -659,46 +809,165 @@ export class ClaudeConnection implements CliConnection {
         }
     }
 
-    /** Messages the user sent while the turn runs: to Claude Code now, folded into the turn. */
-    private async steerNow() {
+    /**
+     * The user sent a message to steer with (TurnSink.onQueued), or a step ended: what's queued goes to Claude Code
+     * now, in order, one drain at a time. A turn of the user's that hasn't started yet takes it once it does.
+     */
+    steerSoon(): Promise<void> {
+        const next = this.steering.then(() => this.steerOnce());
+        this.steering = next.catch((e) => liveDebug("claude", "steer failed", { error: redact((e as Error).message) }));
+        return this.steering;
+    }
+
+    /**
+     * Messages the user sent while the turn runs, to Claude Code as they're sent, taken into the turn at its next step
+     * (2.1.310: claude-steer-immediate.jsonl). While one of its calls runs, a plain message goes in with that call's
+     * result (case a). Otherwise it goes "now", which cuts what the model is writing (its words so far kept) and runs
+     * the message at once, as a turn of Claude Code's own that's still this one (cases b, f). A watch's events never
+     * cut the model off: they wait for a step, or for the turn's end.
+     */
+    private async steerOnce() {
+        const cfg = this.turn();
+        const steer = cfg.steer;
+        if (!steer || !this.midTurnInput || this.ended) return;
         const cur = this.cur;
-        const steer = this.turn().steer;
-        if (!cur || !steer || !this.midTurnInput || this.stopping.has(cur.ref)) return;
-        const pending = this.outstanding.get(cur.ref);
-        if (pending && pending.size >= 64) return;
-        const taken = await steer();
-        if (!taken.length) return;
-        if (this.ended) {
-            // Gone before they went: those with attachments stay queued, to go as a prompt of their own.
-            for (const m of taken) await m.settle?.(false);
+        if (!cur || cur.kind === "hidden") {
+            cfg.steerWanted = true;
             return;
         }
-        // Each buffered in order now; each known written (or not) once its write is done.
-        const writes = taken.map((m) => {
-            const uuid = randomUUID();
-            this.prompts.set(uuid, { ref: cur.ref, kind: "steer", state: "sent" });
-            if (!this.outstanding.has(cur.ref)) this.outstanding.set(cur.ref, new Set());
-            this.outstanding.get(cur.ref)!.add(uuid);
-            liveDebug("claude", "steer", { ref: cur.ref, uuid, media: (m.images?.length ?? 0) + (m.documents?.length ?? 0) });
-            // Their images and files first, as a prompt's; the text last (none when there are no words).
-            const content = [...mediaBlocks(m.images ?? [], m.documents ?? []), ...(m.text ? [{ type: "text", text: m.text }] : [])];
-            return this.sendUser(uuid, content, m.synthetic).then((sent) => {
-                if (!sent) {
-                    this.prompts.delete(uuid);
-                    this.outstanding.get(cur.ref)?.delete(uuid);
-                }
-                return sent;
+        cfg.steerWanted = false;
+        const ref = cur.ref;
+        if (this.stopping.has(ref)) return;
+        if (!this.outstanding.has(ref)) this.outstanding.set(ref, new Set());
+        // At most 64 unanswered at once, as many as a result names.
+        if (this.outstanding.get(ref)!.size >= 64) return;
+        let release: (() => void) | undefined;
+        // What came before them is recorded before them: nothing after it is read until they're written.
+        const recording = () => void (this.gate ??= new Promise<void>((r) => (release = r)));
+        this.draining.add(ref);
+        try {
+            const taken = await steer({ live: () => !this.ended && !this.stopping.has(ref) && this.turnOn(ref), recording });
+            if (!taken.length) return;
+            if (this.ended || this.stopping.has(ref) || !this.turnOn(ref)) {
+                // Stopped or gone once they were taken: those with attachments stay queued; the rest (in the transcript
+                // already) the next turn is told of, rather than them vanishing.
+                for (const m of taken) await m.settle?.(false);
+                const told = taken.filter((m) => !m.settle).flatMap((m) => m.parts ?? []);
+                if (told.length) cfg.undelivered?.(told);
+                return;
+            }
+            // Into the turn that runs; when it ended meanwhile (its end held), Claude Code runs them as a turn of their own.
+            const now = this.cur?.ref === ref && !this.inTool.size;
+            // One with attachments is recorded once it's written (settle): what Claude Code says to it is read after that.
+            if (taken.some((m) => m.settle)) recording();
+            const pending = this.outstanding.get(ref)!;
+            const writes = taken.map((m) => {
+                const uuid = randomUUID();
+                this.prompts.set(uuid, { ref, kind: "steer", state: "sent", ...(m.parts ? { parts: m.parts } : {}) });
+                pending.add(uuid);
+                const priority = now && !m.synthetic ? "now" : undefined;
+                liveDebug("claude", "steer", { ref, uuid, priority, media: (m.images?.length ?? 0) + (m.documents?.length ?? 0) });
+                // Their images and files first, as a prompt's; the text last (none when there are no words).
+                const content = [...mediaBlocks(m.images ?? [], m.documents ?? []), ...(m.text ? [{ type: "text", text: m.text }] : [])];
+                return this.sendUser(uuid, content, m.synthetic, priority).then((sent) => {
+                    if (!sent) {
+                        this.prompts.delete(uuid);
+                        pending.delete(uuid);
+                    }
+                    return sent;
+                });
             });
+            const sent = await Promise.all(writes);
+            // Written whole to its stdin: one with attachments is the host's to record now; not, it stays queued.
+            for (const [i, m] of taken.entries()) await m.settle?.(sent[i]!);
+        } finally {
+            this.draining.delete(ref);
+            this.gate = undefined;
+            release?.();
+            this.endHeld(ref);
+        }
+    }
+
+    /** Whether a Cavvy turn is still on: Claude Code runs it, or it waits for what's to come in it. */
+    private turnOn(ref: string): boolean {
+        return this.cur?.ref === ref || this.heldEnds.has(ref) || this.outstanding.has(ref);
+    }
+
+    /** A turn whose end was held while messages were taken: it ends now, unless they went (then they continue it). */
+    private endHeld(ref: string) {
+        const reason = this.heldEnds.get(ref);
+        if (reason === undefined || this.draining.has(ref)) return;
+        this.heldEnds.delete(ref);
+        const left = [...(this.outstanding.get(ref) ?? [])].some((id) => {
+            const s = this.prompts.get(id)?.state;
+            return s === "sent" || s === "queued";
         });
-        const sent = await Promise.all(writes);
-        // Written whole to its stdin: one with attachments is the host's to record now; not, it stays queued.
-        for (const [i, m] of taken.entries()) await m.settle?.(sent[i]!);
+        if (left) liveDebug("claude", "turn: result, steering written as it ended", { ref });
+        else this.endTurn(ref, reason);
+    }
+
+    /**
+     * Steering messages Claude Code hasn't taken, withdrawn (cancel_async_message, which 2.1.310 does for a queued
+     * one: claude-steer-immediate.jsonl, case d). In `withdrawn` before it's asked, so one that starts a turn
+     * meanwhile, even once its own turn has ended, is stopped unseen (startTurn), never taken for a wake. Those it
+     * says it dropped (its answer, or its lifecycle, which is final) are handed back, once, for the next turn. The
+     * rest, which it may still run and haven't started, are returned, and stay in `withdrawn`.
+     */
+    private async withdrawSteers(list: [string, PromptInfo][], cfg: LiveTurnConfig): Promise<[string, PromptInfo][]> {
+        for (const [uuid, p] of list) this.withdrawn.set(uuid, p);
+        const answers = await Promise.all(list.map(([uuid]) => this.control({ subtype: "cancel_async_message", message_uuid: uuid }, liveTiming.withdrawMs)));
+        const dropped: SteerMessage[] = [];
+        const unsure: [string, PromptInfo][] = [];
+        list.forEach(([uuid, p], i) => {
+            const r = answers[i];
+            if (!p.dropped && (r?.subtype !== "success" || r.response?.cancelled !== true)) {
+                // Taken meanwhile: in the turn, which the interrupt stops, or stopped as it started (startTurn).
+                if (!p.taken) unsure.push([uuid, p]);
+                return;
+            }
+            p.state = "cancelled";
+            this.withdrawn.delete(uuid);
+            this.outstanding.get(p.ref)?.delete(uuid);
+            dropped.push(...(p.parts ?? []));
+            p.parts = undefined;
+        });
+        liveDebug("claude", "steering withdrawn", { asked: list.length, dropped: dropped.length, unsure: unsure.length });
+        if (dropped.length) cfg.undelivered?.(dropped);
+        return unsure;
+    }
+
+    /**
+     * After Esc's interrupt (`r`, its answer): steering messages of the turn's Claude Code still has (its answer's
+     * still_queued) or didn't say it dropped would run after the stop (claude-steer-immediate.jsonl, case d), as a
+     * turn nobody asked for. Withdrawn again; one it still doesn't drop, and hasn't started (startTurn stops that one),
+     * Claude Code is stopped for, so it never runs. It counts as delivered (Claude Code may have it): not sent again.
+     */
+    private async withdrawKept(ref: string, r: Record<string, any> | undefined, unsure: [string, PromptInfo][], cfg: LiveTurnConfig) {
+        const queued: unknown[] | undefined = Array.isArray(r?.response?.still_queued) ? r.response.still_queued : undefined;
+        const kept = queued ? unsure.filter(([uuid]) => queued.includes(uuid)) : unsure;
+        for (const uuid of queued ?? []) {
+            const p = typeof uuid === "string" ? this.prompts.get(uuid) : undefined;
+            if (p?.kind === "steer" && p.ref === ref && !kept.some(([u]) => u === uuid)) kept.push([uuid as string, p]);
+        }
+        if (!kept.length) return;
+        const left = (await this.withdrawSteers(kept, cfg)).filter(([uuid]) => this.withdrawn.has(uuid));
+        if (!left.length || this.ended) return;
+        liveDebug("claude", "steering kept after Esc: stopping Claude Code", { ref, left: left.length });
+        this.emit({ type: "notice", level: "warn", message: `${this.def.name} didn't withdraw a message sent to steer the turn you stopped, so its process was stopped before it could run it, with its background work.` });
+        this.retired = true;
+        await this.proc.kill();
     }
 
     private onLifecycle(m: Record<string, any>) {
         const uuid = String(m.command_uuid ?? "");
-        const p = this.prompts.get(uuid);
+        // One being withdrawn is followed past its turn's end.
+        const p = this.prompts.get(uuid) ?? this.withdrawn.get(uuid);
         if (!p) return;
+        // Dropped before it started: it won't start, and that's final (withdrawSteers).
+        if (m.state === "cancelled" && !p.taken) {
+            p.dropped = true;
+            this.withdrawn.delete(uuid);
+        }
         switch (m.state) {
             case "queued":
                 if (p.state === "sent") p.state = "queued";
@@ -708,6 +977,22 @@ export class ClaudeConnection implements CliConnection {
             case "started":
                 this.startedUuid = uuid;
                 p.taken = true;
+                // A steering message taken into the turn that runs (with a call's result), its own or another (a wake
+                // Claude Code started as it was written): answered with it, whether or not its result names it
+                // (2.1.310's doesn't name a synthetic one: claude-synthetic-steer.jsonl).
+                if (p.kind === "steer" && this.cur && this.cur.kind !== "hidden" && (p.state === "sent" || p.state === "queued")) {
+                    p.state = "started";
+                    // In the turn: Esc's interrupt stops it with that, nothing to withdraw.
+                    this.withdrawn.delete(uuid);
+                }
+                break;
+            case "completed":
+                // Taken into a turn not its own: over now (that turn's result may not name it), and so may its own turn be.
+                if (p.kind === "steer" && this.cur?.ref !== p.ref && p.state === "started") {
+                    p.state = "done";
+                    this.outstanding.get(p.ref)?.delete(uuid);
+                    this.settleWaiting(p.ref);
+                }
                 break;
             case "cancelled":
                 // Claude Code dropped it (the turn it waited for was stopped, or it was withdrawn).
@@ -742,7 +1027,7 @@ export class ClaudeConnection implements CliConnection {
         const withdrawn = named.find((u: string) => this.withdrawn.has(u)) ?? (this.startedUuid && this.withdrawn.has(this.startedUuid) ? this.startedUuid : undefined);
         if (withdrawn) {
             this.startedUuid = undefined;
-            this.withdrawn.delete(withdrawn);
+            // Left in `withdrawn` until its result: Esc's cleanup waits for that (withdrawnRunEnded).
             this.cur = { ref: withdrawn, kind: "hidden" };
             liveDebug("claude", "turn: withdrawn prompt started; stopping it", { uuid: withdrawn });
             void this.interruptHidden();
@@ -792,7 +1077,7 @@ export class ClaudeConnection implements CliConnection {
                 this.stopOnStart.delete(ref);
                 liveDebug("claude", "turn: started after Esc; stopping it", { ref });
                 void this.interrupt(ref);
-            }
+            } else if (this.turn().steerWanted) void this.steerSoon();
             return;
         }
         this.startWake(`wake-${++wakeRefs}`, { label: this.dues[0]?.label, ...(this.dues[0]?.report ? { report: this.dues[0].report } : {}) });
@@ -807,6 +1092,7 @@ export class ClaudeConnection implements CliConnection {
         liveDebug("claude", "turn: wake", { ref, prompt: info.prompt });
         this.events({ t: "turn_started", ref, origin: "wake" });
         this.stillDue();
+        if (this.turn().steerWanted) void this.steerSoon();
     }
 
     /** A prompt started after Esc withdrew it: stopped (sparing the sub-agents) without showing it. */
@@ -821,6 +1107,7 @@ export class ClaudeConnection implements CliConnection {
     }
 
     private resetTurnState(m: Record<string, any>) {
+        this.inTool.clear();
         this.failure = undefined;
         this.diagnostic = undefined;
         this.signedOut = false;
@@ -862,10 +1149,13 @@ export class ClaudeConnection implements CliConnection {
         this.reportFastMode(m);
         const turn = this.cur;
         this.cur = undefined;
+        this.inTool.clear();
         const ids = [m.user_message_uuid, ...(Array.isArray(m.user_message_uuids) ? m.user_message_uuids : [])].filter((x): x is string => typeof x === "string" && x !== "");
         if (turn?.kind === "hidden") {
             liveDebug("claude", "turn: hidden ended", { ref: turn.ref });
             for (const id of [turn.ref, ...ids]) {
+                // Over, with any other withdrawn message it took (withdrawnRunEnded no longer waits for them).
+                this.withdrawn.delete(id);
                 const p = this.prompts.get(id);
                 if (p) p.state = "done";
             }
@@ -905,8 +1195,24 @@ export class ClaudeConnection implements CliConnection {
                 const p = this.prompts.get(id);
                 if (p) p.state = "done";
             }
+            // Taken into this turn and not named by its result (a synthetic one): answered with it all the same.
+            for (const id of [...pending]) {
+                const p = this.prompts.get(id);
+                if (p?.kind !== "steer" || p.state !== "started") continue;
+                pending.delete(id);
+                p.state = "done";
+            }
         } else answered.push(...ids);
         this.answeredBy.set(ref, answered);
+        // A steering message written as its own turn ended, taken into a turn Claude Code started meanwhile (a wake's):
+        // answered there, so its own turn has nothing more to wait for.
+        for (const id of ids) {
+            const p = this.prompts.get(id);
+            if (!p || p.ref === ref || p.kind !== "steer" || p.state === "done" || p.state === "cancelled") continue;
+            p.state = "done";
+            this.outstanding.get(p.ref)?.delete(id);
+            this.settleWaiting(p.ref);
+        }
         // A steering message Claude Code runs as a turn of its own after this one: still this Cavvy turn.
         const left = [...(pending ?? [])].filter((id) => {
             const s = this.prompts.get(id)?.state;
@@ -916,12 +1222,27 @@ export class ClaudeConnection implements CliConnection {
             liveDebug("claude", "turn: result, steering still to come", { ref, left });
             return;
         }
+        // Messages to steer it with are being taken from the queue as it ends: they'll continue it, or it ends then (endHeld).
+        if (this.draining.has(ref) && reason !== "aborted" && reason !== "error") {
+            liveDebug("claude", "turn: result while steering is taken", { ref });
+            this.heldEnds.set(ref, reason);
+            return;
+        }
         this.endTurn(ref, reason, reason === "error" ? failure : undefined, reason === "error" && this.limitHit ? limitStopOf(this.limits, this.limits?.reached ? this.limits.resetsAt : undefined) : undefined);
     }
 
     /** Cavvy turn is over: once only. `refused`: its prompt never reached Claude Code's session (unstartedPrompt). */
     private endTurn(ref: string, reason: TurnEndReason, error?: string, limit?: { resetsAt?: number; window?: string }, refused = false) {
+        // Esc is withdrawing its steering messages: it ends once that's settled (withdrawing), as it ends now.
+        if (this.withdrawals.has(ref)) {
+            if (this.endsAfterWithdrawal.has(ref)) return;
+            this.endsAfterWithdrawal.set(ref, [ref, reason, error, limit, refused]);
+            // Claude Code has ended it: the stop was answered, and what's left is bounded (withdrawing).
+            this.events({ t: "turn_ending", ref });
+            return;
+        }
         this.stopOnStart.delete(ref);
+        this.heldEnds.delete(ref);
         const answers = this.answeredBy.get(ref) ?? [ref];
         for (const id of this.outstanding.get(ref) ?? []) {
             const p = this.prompts.get(id);
@@ -1288,6 +1609,7 @@ export class ClaudeConnection implements CliConnection {
                 const { name, input } = toCavvy(b.name, b.input ?? {});
                 const title = titleFor(name, input);
                 this.tools.set(b.id, { name, input, title, started: Date.now() });
+                if (this.cur) this.inTool.add(b.id);
                 if (b.name === "Agent" || b.name === "Task") this.agentLabels.set(b.id, String(input.description ?? input.subagent_type ?? "sub-agent"));
                 // A skill can run as its own agent (/code-review does): one only if its steps come (task_started, its messages).
                 if (b.name === "Skill") this.agentLabels.set(b.id, String(input.skill ?? "skill"));
@@ -1554,8 +1876,9 @@ export class ClaudeConnection implements CliConnection {
     // ---- control
 
     /** False when it didn't go: Claude Code's stdin is gone (known once the write is done: JsonLinesProcess.send). */
-    private sendUser(uuid: string, content: unknown[], synthetic = false): Promise<boolean> {
-        return this.proc.send({ type: "user", uuid, message: { role: "user", content }, parent_tool_use_id: null, session_id: this.sessionId ?? "", ...(synthetic ? { isSynthetic: true } : {}) });
+    /** `priority` "now": taken at once, cutting what the model is writing (see steerOnce). */
+    private sendUser(uuid: string, content: unknown[], synthetic = false, priority?: "now"): Promise<boolean> {
+        return this.proc.send({ type: "user", uuid, message: { role: "user", content }, parent_tool_use_id: null, session_id: this.sessionId ?? "", ...(synthetic ? { isSynthetic: true } : {}), ...(priority ? { priority } : {}) });
     }
 
     /** Send a control request; its answer, or undefined when none comes (the CLI went away, or `timeoutMs` passed). */
@@ -1768,6 +2091,11 @@ class TurnRecord {
     private texts: string[] = [];
     private actions: string[] = [];
     private ended = new Set<string>();
+    /** The reply being written (its words so far: its assistant frame isn't in yet), and how much of it a take had. */
+    private writing = "";
+    private writingTaken = 0;
+    /** Calls under way, by id: their titles. */
+    private running = new Map<string, string>();
     any = false;
     readonly sink: TurnSink;
 
@@ -1775,12 +2103,22 @@ class TurnRecord {
         this.sink = {
             ...inner,
             emit: (e) => {
-                if (e.type === "assistant") {
-                    const text = e.message.content.map((c) => (c.type === "text" ? c.text : "")).join("");
+                if (e.type === "request_start") {
+                    this.writing = "";
+                    this.writingTaken = 0;
+                } else if (e.type === "text") this.writing += e.text;
+                else if (e.type === "assistant") {
+                    let text = e.message.content.map((c) => (c.type === "text" ? c.text : "")).join("");
+                    // Its start went before a message steered in while it was written (take): the rest goes after it.
+                    if (this.writingTaken && text.startsWith(this.writing.slice(0, this.writingTaken))) text = text.slice(this.writingTaken);
+                    this.writing = "";
+                    this.writingTaken = 0;
                     if (text.trim()) this.texts.push(text);
                     this.any = true;
-                } else if (e.type === "tool_end" && !this.ended.has(e.call.id)) {
+                } else if (e.type === "tool_start") this.running.set(e.call.id, titleFor(e.call.name, (e.call.input ?? {}) as Record<string, unknown>));
+                else if (e.type === "tool_end" && !this.ended.has(e.call.id)) {
                     this.ended.add(e.call.id);
+                    this.running.delete(e.call.id);
                     this.actions.push(titleFor(e.call.name, (e.call.input ?? {}) as Record<string, unknown>));
                     this.any = true;
                 }
@@ -1789,8 +2127,21 @@ class TurnRecord {
         };
     }
 
-    /** What it said and did since this was last taken. */
-    take(): BackendResult {
+    /**
+     * What it said and did since this was last taken. `inFlight`: for a message steered in now, which Claude Code
+     * takes after them: with the words of the reply being written and the calls under way.
+     */
+    take(inFlight = false): BackendResult {
+        if (inFlight) {
+            const words = this.writing.slice(this.writingTaken);
+            if (words.trim()) this.texts.push(words);
+            this.writingTaken = this.writing.length;
+            for (const [id, title] of this.running) {
+                this.ended.add(id);
+                this.actions.push(title);
+            }
+            this.running.clear();
+        }
         return { reason: "done", text: this.texts.splice(0).join("\n\n"), actions: this.actions.splice(0) };
     }
 }
@@ -1873,8 +2224,10 @@ export class ClaudeLive {
         adapter.current = {
             t,
             context: t.goalContext ?? preamble,
-            steer: async () => {
-                const queued = await rec.sink.drainQueued(() => rec.take());
+            steer: async ({ live, recording }) => {
+                // What the turn said and did up to now, the reply it's writing and the calls it's running too: Claude
+                // Code takes the message after them.
+                const queued = await rec.sink.drainQueued(() => (recording(), rec.take(true)), live);
                 // One with attachments (settle) is the user's, whatever its words.
                 const fromWake = (m: SteerMessage) => !m.settle && Boolean(rec.sink.fromWake?.(m.text));
                 const typed = queued.filter((m) => !fromWake(m));
@@ -1886,19 +2239,33 @@ export class ClaudeLive {
                               text: typed.map((m) => m.text).filter(Boolean).join("\n\n"),
                               images: typed.flatMap((m) => m.images),
                               documents: typed.flatMap((m) => m.documents),
+                              parts: typed,
                               ...(settles.length ? { settle: async (sent: boolean) => void (await Promise.all(settles.map((s) => s(sent)))) } : {}),
                           }]
                         : []),
-                    ...(woke.length ? [{ text: woke.map((m) => m.text).join("\n\n"), synthetic: true }] : []),
+                    ...(woke.length ? [{ text: woke.map((m) => m.text).join("\n\n"), synthetic: true, parts: woke }] : []),
                 ];
             },
+            undelivered: (messages) => rec.sink.undelivered?.(messages),
+            // What was sent to steer with before this subscribed (below) goes once the turn starts.
+            steerWanted: true,
         };
+        // A message to steer with goes to Claude Code as it's sent, not at the next step (Codex's turn/steer does the same).
+        const stopSteering = t.sink.onQueued?.(() => {
+            if (adapter.current?.t !== t) return;
+            adapter.current.steerWanted = true;
+            void this.adapter(key)?.conn?.steerSoon();
+        });
         let r: LiveTurnResult;
-        if (t.adopt) {
-            live.bind(t.session);
-            r = await live.adopt(t.adopt, rec.sink, t.signal).catch((e) => ({ reason: "error" as const, error: (e as Error).message }));
-        } else {
-            r = await live.runTurn({ text: prompt, images: t.images, documents: t.documents, synthetic: t.synthetic }, rec.sink, t.signal, { spawn: t, settings: { model: t.model, mode: t.mode, effort: t.effort, fastMode: t.fastMode }, host: t.session });
+        try {
+            if (t.adopt) {
+                live.bind(t.session);
+                r = await live.adopt(t.adopt, rec.sink, t.signal).catch((e) => ({ reason: "error" as const, error: (e as Error).message }));
+            } else {
+                r = await live.runTurn({ text: prompt, images: t.images, documents: t.documents, synthetic: t.synthetic }, rec.sink, t.signal, { spawn: t, settings: { model: t.model, mode: t.mode, effort: t.effort, fastMode: t.fastMode }, host: t.session });
+            }
+        } finally {
+            stopSteering?.();
         }
         if (adapter.current?.t === t) adapter.current = { t };
         liveDebug("claude", "turn result", { key, ref: r.ref, reason: r.reason, unanswered: r.unanswered, deferred: r.deferred });
