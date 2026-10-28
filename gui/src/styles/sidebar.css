@@ -887,21 +887,17 @@
     pointer-events: none;
 }
 
-/* The detail: every plan, each window as a row with its bar, how full it is and when it resets. */
-.plans-card .menu-head {
-    padding-right: calc(12 * var(--sp));
-}
-
-.pu-rh {
-    font-weight: 500;
+/* The detail, inside the rail: every plan, each window with its bar and how full it is, and under them when it
+   resets. The popovers' own colour, made opaque: the rows it covers don't show through its figures. */
+.popover.plans-card {
+    background: var(--sheen), linear-gradient(var(--ctl-strong) 0 0), var(--sheet);
 }
 
 .pu-plan {
-    padding: calc(4 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(10 * var(--sp)) calc(8 * var(--sp));
 }
 
 .pu-plan + .pu-plan {
-    padding-top: calc(8 * var(--sp));
     border-top: 0.5px solid var(--line);
 }
 
@@ -930,13 +926,17 @@
 
 .pu-w {
     display: grid;
-    grid-template-columns: calc(46 * var(--sp)) minmax(0, 1fr) calc(34 * var(--sp)) calc(70 * var(--sp));
+    grid-template-columns: calc(46 * var(--sp)) minmax(0, 1fr) minmax(calc(32 * var(--sp)), auto);
     align-items: center;
-    gap: calc(8 * var(--sp));
-    height: calc(20 * var(--sp));
+    column-gap: calc(8 * var(--sp));
     padding-left: calc(21 * var(--sp));
     font-size: 0.821rem;
+    line-height: calc(20 * var(--sp));
     color: var(--fg-3);
+}
+
+.pu-w + .pu-w {
+    margin-top: calc(4 * var(--sp));
 }
 
 .pu-w.none {
@@ -964,8 +964,13 @@
     font-variant-numeric: tabular-nums;
 }
 
+/* Under the bar, from its start. */
 .pu-r {
-    text-align: right;
+    grid-column: 2 / -1;
+    margin-top: calc(-3 * var(--sp));
+    font-size: 0.75rem;
+    line-height: calc(16 * var(--sp));
+    color: var(--fg-3);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;

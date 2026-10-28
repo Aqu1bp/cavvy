@@ -338,8 +338,9 @@ function PlanRow(p: { plans: RailPlan[] }) {
                 {/* Always there, to be measured: out of the row (and unseen) while nothing is folded. */}
                 <span ref={more} class={`pl more ${folded() ? "" : "measure"}`} aria-hidden={folded() ? undefined : "true"}>+{Math.max(1, folded())}</span>
             </button>
-            <Menu kind="dialog" label="Plan usage" open={open()} anchor={() => row} onClose={() => setOpen(false)} placement="top" align="start" width={320} class="plans-card">
-                <div class="menu-head">Plan usage<span class="pu-rh">Resets</span></div>
+            {/* Inside the rail, edge to edge with its footer (and the rows above), however wide the rail is. */}
+            <Menu kind="dialog" label="Plan usage" open={open()} anchor={() => row} span={() => row?.closest<HTMLElement>(".side-foot") ?? undefined} onClose={() => setOpen(false)} placement="top" class="plans-card">
+                <div class="menu-head">Plan usage</div>
                 <For each={p.plans}>{(plan) => (
                     <div class="pu-plan">
                         <div class="pu-h" title={plan.detail}>
@@ -352,7 +353,7 @@ function PlanRow(p: { plans: RailPlan[] }) {
                                 <span class="truncate">{w.label}</span>
                                 <span class="pu-bar" aria-hidden="true"><i style={{ width: `${w.reached ? 100 : w.pct ?? 0}%` }} /></span>
                                 <b>{w.reached ? "Full" : w.pct !== undefined ? `${w.pct}%` : "–"}</b>
-                                <span class="pu-r" title={w.resets}>{w.resets}</span>
+                                <Show when={w.resets}>{(r) => <span class="pu-r" title={`Resets ${r()}`}>Resets {r()}</span>}</Show>
                             </div>
                         )}</For>
                     </div>

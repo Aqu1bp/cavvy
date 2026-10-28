@@ -18,6 +18,8 @@ export interface PopoverProps {
     align?: "start" | "end";
     /** Its width (default 320), and the heights below, in px at text size 14: they follow the text (`sp`). */
     width?: number;
+    /** Lines up with this element's left and right edges instead (a panel that stays inside its column). */
+    span?: () => HTMLElement | undefined;
     /** Its tallest (default 560); a longer list scrolls inside. */
     maxHeight?: number;
     /** How short it can get, scrolling, and still stay on the preferred side (default: its full height). */
@@ -64,10 +66,12 @@ export function Popover(p: PopoverProps) {
     const place = () => {
         const a = p.anchor();
         if (!a) return;
-        const r = p.point ? { top: p.point.y, bottom: p.point.y, left: p.point.x, right: p.point.x } : a.getBoundingClientRect();
+        const at = p.point ? { top: p.point.y, bottom: p.point.y, left: p.point.x, right: p.point.x } : a.getBoundingClientRect();
+        const span = p.span?.()?.getBoundingClientRect();
+        const r = span ? { top: at.top, bottom: at.bottom, left: span.left, right: span.right } : at;
         // Its own height once rendered, so a tall menu opens on the side it fits.
         const need = Math.min(el?.scrollHeight || 220, sp(p.maxHeight ?? 560));
-        setPos(placePopover(r, { width: sp(p.width ?? 320), least: Math.min(need, p.minHeight === undefined ? need : sp(p.minHeight)), placement: p.placement ?? "bottom", align: p.point ? "start" : p.align, vw: window.innerWidth, vh: window.innerHeight }));
+        setPos(placePopover(r, { width: span ? span.width : sp(p.width ?? 320), least: Math.min(need, p.minHeight === undefined ? need : sp(p.minHeight)), placement: p.placement ?? "bottom", align: p.point || span ? "start" : p.align, vw: window.innerWidth, vh: window.innerHeight }));
     };
 
     createEffect(() => {
