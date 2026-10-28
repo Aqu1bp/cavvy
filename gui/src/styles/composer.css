@@ -2234,7 +2234,10 @@
     padding: calc(4 * var(--sp));
     overflow-y: auto;
     border-radius: calc(9 * var(--sp));
-    background: var(--sheet);
+    /* The picker's own surface (.popover), frosted over the rows it covers. */
+    background: var(--ctl-strong);
+    -webkit-backdrop-filter: blur(16px) saturate(1.08);
+    backdrop-filter: blur(16px) saturate(1.08);
     box-shadow: var(--pop-shadow);
     animation: pop var(--dur-panel) var(--ease-out);
     transform-origin: top right;
