@@ -170,11 +170,40 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         }
         return out;
     };
+    /**
+     * Something in the upper part of the view, and where it is in the column (by layout: a glide's translate isn't
+     * counted). Moved down since it was last looked at, it means what changed is above what the reader sees: an image
+     * getting its size, rows drawn again after being skipped, turns going in. Following the end, the view then stays
+     * still at once, before the frame is drawn. Only growth in view, or at the end, glides. Asked on every change of
+     * size, every scroll while following and every glide's frame, each acting on what it finds (one only looking would
+     * take growth it saw for where things are).
+     */
+    let seen: { el: HTMLElement; top: number } | undefined;
+    const layoutTop = (el: HTMLElement) => {
+        let y = 0;
+        for (let e: HTMLElement | null = el; e; e = e.offsetParent as HTMLElement | null) y += e.offsetTop;
+        return y;
+    };
+    const look = () => {
+        seen = undefined;
+        if (!scroller || !content) return;
+        const box = scroller.getBoundingClientRect();
+        const hit = document.elementFromPoint?.(box.left + box.width / 2, box.top + box.height / 4);
+        // Not the room kept at the end for the composer: the turn above it growing moves it, and that's growth in view.
+        if (hit instanceof HTMLElement && content.contains(hit) && hit !== content.lastElementChild) seen = { el: hit, top: layoutTop(hit) - layoutTop(content) };
+    };
+    const grewAbove = () => {
+        const moved = !!content && seen !== undefined && seen.el.isConnected && layoutTop(seen.el) - layoutTop(content) > seen.top + 0.5;
+        look();
+        return moved;
+    };
     const pin = () => {
         if (pinFrame) return;
         pinFrame = requestAnimationFrame(() => {
             pinFrame = 0;
             if (!scroller || !stick() || smoothScroll) return;
+            // Grown above what's in view since this was asked for (an image in the turns that just went in): no glide.
+            if (grewAbove()) return toBottom();
             const before = scroller.scrollTop;
             const end = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
             if (Math.abs(end - before) <= 0.5) return;
@@ -332,6 +361,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             reading = capture();
         }));
         const ro = new ResizeObserver(() => {
+            const above = grewAbove();
             if (!ready) return;
             const running = turns().at(-1)?.status === "running";
             // A jump down (a send, "Latest") near the end while a turn grows: the rest of the way is a glide, which
@@ -344,7 +374,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             else if (smoothScroll) toBottom(true);
             // Glides only while a turn is running, or its reply's last words are still coming out: the end of a
             // turn (its footer, the composer settling) lands at once. Its work folding away glides (fold()).
-            else if (stick()) running || revealing() ? pin() : toBottom();
+            else if (stick()) (running || revealing()) && !above ? pin() : toBottom();
             else {
                 restore();
                 // Nothing left to scroll (something folded until it all fits): no scroll event will come to say the
@@ -525,6 +555,8 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         measureEnd();
         // Following the end, nothing is anchored (every way out of it takes its own reading).
         if (!stick()) reading = capture();
+        // Scroll events come before the frame's glide: growth above seen here lands here, before it's drawn.
+        else if (grewAbove() && !smoothScroll) toBottom();
     };
     /** Find moved to a match: up from the end, it stops following (its scroll may come just after a write of ours). */
     const navigated = () => {
