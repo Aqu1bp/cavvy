@@ -1,6 +1,6 @@
 # Development
 
-Working rules for branches, tests and CI are in [AGENTS.md](../AGENTS.md).
+Working rules for agents (and people) are in [AGENTS.md](../AGENTS.md).
 
 ```bash
 bun run typecheck
@@ -29,3 +29,14 @@ bun run test ./test/foo.test.ts    # the test files for what you changed; CI run
 ## Adding features
 
 Anything in the core (`src/agent`, `src/tools`, `src/providers`, `src/permissions`, `src/mcp`) reaches both apps by itself. Something you see or click needs a part in each: the terminal's in `src/ui` and `src/commands`, the GUI's in `src/server/runtime.ts` (which plays the role of `src/ui/app.ts`) and `gui/`. Keeping the logic in the core and the two front ends thin keeps them from drifting apart.
+
+## CI
+
+`.github/workflows/ci.yml` runs on every pull request and every push to `main`: the typechecks, the GUI build, and the test suite split across four machines by `scripts/test-shard.ts` using each file's time from `test/timings.json`. A new file counts as the median file until the timings are refreshed. To refresh them, download a recent `main` run's reports and rewrite the file:
+
+```bash
+gh run download <run-id> -p 'junit-*' -D /tmp/junit
+bun scripts/test-shard.ts --timings /tmp/junit/*/*.xml
+```
+
+Branch protection requires the `ci` check, which passes only when every other job did.
