@@ -334,9 +334,11 @@ const ANTIGRAVITY: AgentCliDef = {
     // No projectConfig: it loads a project's .agents/ (hooks among them) by its own rules, not Cavvy's folder trust.
     preferredModels: [/^gemini-4-carbon/, /^gemini-4-argon-high$/, /^gemini-4-argon/],
     caps: {
-        // A message sent while a turn runs waits for the next turn (agy-1.4.9-midturn.jsonl).
-        steering: "none",
-        steersAttachments: [],
+        // A message sent while a turn runs joins it at its next model call, through the gate's PreInvocation hook
+        // (agy-1.4.9-steer.jsonl); on stdin it would wait for the next turn (-midturn.jsonl). Its attachments go as
+        // files, as a prompt's do.
+        steering: "between-tool-rounds",
+        steersAttachments: ["image", "text", "pdf"],
         // A command it starts in the background, the turn waits for (agy-1.4.9-cancel-*.jsonl).
         backgroundTasks: false,
         stopTask: false,
@@ -356,9 +358,10 @@ const ANTIGRAVITY: AgentCliDef = {
         loadsPlugins: false,
         skills: "paste",
         cliCommandsAreSkills: false,
-        pdfs: false,
-        // Its stream-json input takes text only (agy-1.4.9-image.jsonl).
-        images: false,
+        // Its stream-json input takes text only (agy-1.4.9-image.jsonl), but read_file shows it an image or a PDF
+        // (-attach-files.jsonl): attachments go as files of Cavvy's, named in the message.
+        pdfs: true,
+        images: true,
         autoReviewer: false,
         resolvesUnknownCommands: false,
         importSessions: false,

@@ -35,11 +35,11 @@ test("every def is an agent provider; those with accounts are the account provid
     }
 });
 
-test("Antigravity's CLI: text only, one turn at a time, nothing of Cavvy's attached", () => {
+test("Antigravity's CLI: steered between tool rounds, attachments as files, nothing of Cavvy's attached", () => {
     const d = agentCli("antigravity")!;
     expect(d.protocol).toBe("agy-stream-json");
     expect(d.cli.command).toBe("agy");
-    expect(d.caps).toMatchObject({ steering: "none", images: false, pdfs: false, backgroundTasks: false, fork: false, compact: "none", hooks: "none", mcpAttach: "none", skills: "paste", importSessions: false, usageLogs: false });
+    expect(d.caps).toMatchObject({ steering: "between-tool-rounds", steersAttachments: ["image", "text", "pdf"], images: true, pdfs: true, backgroundTasks: false, fork: false, compact: "none", hooks: "none", mcpAttach: "none", skills: "paste", importSessions: false, usageLogs: false });
 });
 
 test("the defs' capabilities agree with the branches they will replace", () => {

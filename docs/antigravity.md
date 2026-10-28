@@ -29,7 +29,8 @@ macOS and Linux only for now: the permission hook is a shell script that needs `
   - When a new conversation starts, the hook tells the model which folder is its own: `agy` lists its workspaces by path, and Cavvy's comes second for most project folders but not all of them. Writes into Cavvy's folder are refused.
 - **The tripwire.** If `agy` runs a command, a write or an edit that never reached the gate, in any mode but Bypass, Cavvy stops the turn and says which call it was. Something got past the gate then: an `agy` that no longer loads the hook, say.
 - `esc` stops the turn. Nothing on `agy`'s input stops a turn, so Cavvy sends it SIGINT: it ends the turn and exits, and your next message starts it again on the same conversation. That takes a few seconds.
-- A message sent while a turn runs waits for the next turn: `agy` doesn't take one mid-turn.
+- **Steer** (a message you send while the turn runs) joins it at `agy`'s next model call: after the tool running now, through the same hook folder (a `PreInvocation` hook that adds it as your message). It leaves Cavvy's queue then, and shows in the transcript where it joined. If the turn ends before another model call (it was writing its answer), the message goes as your next turn. `esc` stops the turn, and a message that hadn't reached `agy` yet goes back to the queue. Cavvy knows which reached it: each shows in `agy`'s output as a message of its own.
+- **Images and PDFs.** `agy` takes text only on its input, but its `read_file` shows the model an image or a PDF. So Cavvy writes each attachment to a folder of its own (beside the hook folder, readable only by you) and names it in the message, and the model reads it there. Reading those files goes without asking (deny rules still apply). They're deleted when `agy` stops. Steering messages carry them the same way.
 - Changing the model restarts `agy` on the same conversation.
 - Usage is recorded in tokens only. It's covered by your plan, so no dollar cost is recorded.
 
@@ -49,8 +50,7 @@ Cavvy never reads, copies or stores Antigravity's sign-in. It starts your instal
 
 ## What isn't available
 
-- Images and PDFs: `agy` takes text only this way. A message's attachments aren't sent, and the transcript says so.
-- Steering a running turn, several accounts, and plan limits.
+- Several accounts, and plan limits.
 - Cavvy's MCP tools (delegation, secrets, schedules, watches, the browser, worktrees) and Cavvy's hooks on the agent's tool calls.
 - `/compact` (`agy` keeps its own context), forking or rewinding its conversation, importing its conversations, and its usage logs.
 - One-off requests (titles, goal checks, summaries): set `smallModel` to another provider's model.

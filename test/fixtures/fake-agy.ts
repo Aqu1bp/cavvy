@@ -6,7 +6,11 @@
 //   [[tool:<name>]]    a tool of its own with no arguments, through the gate
 //   [[unasked]]        a run_command of `touch unasked.txt` that runs without the gate
 //   [[hang]]           waits until SIGINT
+//   [[slow]]           a run_command of `sleep 1` that takes a second, through the gate
+//   [Image attached: <path>. ...] / [PDF attached: ...]   read_file of each, through the gate
 //   anything else      replies "hi"
+// Before each model call it runs the PreInvocation hooks; a userMessage they inject is a user_input step, and the reply
+// says what it heard.
 // `agy models` lists two models; FAKE_AGY_SIGNED_OUT=1 says to sign in instead (and so does a run). FAKE_LOG: what it
 // did, as JSON lines.
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "fs";
@@ -97,6 +101,20 @@ async function tool(name: string, args: Record<string, unknown>, run: () => stri
     return output;
 }
 
+/** Before a model call: what the PreInvocation hooks inject, as user_input steps. */
+let invocation = 0;
+const heard: string[] = [];
+async function invoke() {
+    for (const a of await hooks("PreInvocation", { invocationNum: invocation++, initialNumSteps: step + 1 })) {
+        for (const s of a.injectSteps ?? []) {
+            if (typeof s.userMessage !== "string") continue;
+            heard.push(s.userMessage);
+            log({ injected: s.userMessage });
+            out({ event: "step_update", step_update: { conversation_id: conversation, step_index: ++step, state: "DONE", step_type: "user_input" } });
+        }
+    }
+}
+
 function reply(text: string) {
     const i = ++step;
     out({ event: "step_update", step_update: { conversation_id: conversation, step_index: i, state: "ACTIVE", step_type: "agent_response", text_delta: text } });
@@ -144,6 +162,9 @@ for (;;) {
             await hooks("SessionStart", {});
         }
         let said = "hi";
+        invocation = 0;
+        heard.length = 0;
+        await invoke();
         const write = /\[\[write:([^\]]+)\]\]/.exec(text);
         const run = /\[\[run:([^\]]+)\]\]/.exec(text);
         const own = /\[\[tool:([^\]]+)\]\]/.exec(text);
@@ -152,6 +173,12 @@ for (;;) {
             said = await tool("write_file", { Path: path, Content: "x" }, () => (writeFileSync(path, "x"), "Created file"));
         } else if (run) said = await tool("run_command", { CommandLine: run[1], WaitMsBeforeAsync: 5000 }, () => "Command exited with code 0.");
         else if (own) said = await tool(own[1]!, {}, () => "ok");
+        else if (text.includes("[[slow]]")) said = await tool("run_command", { CommandLine: "sleep 1" }, () => (Bun.sleepSync(1000), "Command exited with code 0."));
+        else if (/\[(Image|PDF) attached: /.test(text)) {
+            const outs: string[] = [];
+            for (const m of text.matchAll(/\[(?:Image|PDF) attached: (\S+)\. /g)) outs.push(await tool("read_file", { Path: m[1] }, () => `read ${readFileSync(m[1]!).length} bytes`));
+            said = outs.join("; ");
+        }
         else if (text.includes("[[unasked]]")) said = await tool("run_command", { CommandLine: "touch unasked.txt" }, () => (writeFileSync(join(cwd, "unasked.txt"), ""), "Command exited with code 0."), false);
         else if (text.includes("[[hang]]")) {
             hang = true;
@@ -159,6 +186,8 @@ for (;;) {
             await hooks("PreToolUse", { stepIdx: step, toolCall: { name: "run_command", args: { CommandLine: "sleep 600" } } });
             await Bun.sleep(600_000);
         }
+        await invoke();
+        if (heard.length) said += ` (heard: ${heard.join(" | ")})`;
         reply(said);
         out({ event: "result", result: { conversation_id: conversation, status: "SUCCESS", response: said, num_turns: turns, usage: usage(turns) } });
     }

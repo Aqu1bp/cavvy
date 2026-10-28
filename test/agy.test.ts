@@ -56,7 +56,7 @@ afterEach(async () => {
     await (c as any).shutdown?.();
 });
 
-async function makeAgent(o: { mode?: PermissionMode; settings?: any; ask?: (r: PermissionRequest) => PermissionResponse | Promise<PermissionResponse> } = {}) {
+async function makeAgent(o: { mode?: PermissionMode; settings?: any; ask?: (r: PermissionRequest) => PermissionResponse | Promise<PermissionResponse>; queued?: string[] } = {}) {
     const settings = o.settings ?? {};
     const events: AgentEvent[] = [];
     const asked: PermissionRequest[] = [];
@@ -74,7 +74,7 @@ async function makeAgent(o: { mode?: PermissionMode; settings?: any; ask?: (r: P
         mode: { get: () => mode, set: (m) => (mode = m) },
         toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() },
         host: {
-            drainQueued: () => [],
+            drainQueued: () => o.queued?.splice(0) ?? [],
             emit: (e) => events.push(e),
             ui: {},
             askPermission: o.ask
@@ -141,6 +141,8 @@ describe("the gate, by Cavvy's mode", () => {
         const a = await makeAgent({ mode: "plan", ask: () => ({ allow: true }) });
         await a.run("[[write:p.txt]]");
         expect(a.asked).toEqual([]);
+        // It has no ExitPlanMode: the reason it reads says what it can do.
+        expect(logLines().find((l) => l.hook === "PreToolUse").answers[0].reason).toBe("Plan mode is active: files can't be modified. Present your plan in your reply: the user leaves Plan mode when it's ready.");
         expect(existsSync(join(cwd, "p.txt"))).toBe(false);
         const b = await makeAgent({ mode: "bypassPermissions", settings: { permissions: { deny: ["Bash(curl:*)"] } }, ask: () => ({ allow: true }) });
         await b.run("[[run:make build]]");
@@ -214,11 +216,49 @@ describe("turns and the conversation", () => {
         expect(s[1]).toContain(id!);
     });
 
-    test("images aren't sent: it takes text only, and the transcript says so", async () => {
-        const a = await makeAgent();
-        await a.agent.run([{ type: "text", text: "look" }, { type: "image", mediaType: "image/png", data: "iVBORw0KGgo=" } as any], { signal: new AbortController().signal });
-        expect(notices(a.events).join("\n")).toContain("takes text only");
-        expect(logLines().some((l) => l.input && typeof l.input.message.content === "string")).toBe(true);
+    test("an image and a PDF go as files of Cavvy's it reads, without asking; they're gone with its process", async () => {
+        const a = await makeAgent({ ask: () => ({ allow: false, feedback: "no" }) });
+        const png = Buffer.from("iVBORw0KGgo=", "base64");
+        const r = await a.agent.run(
+            [
+                { type: "text", text: "look" },
+                { type: "image", mediaType: "image/png", data: png.toString("base64") },
+                { type: "file", kind: "pdf", name: "spec sheet.pdf", size: 4, mediaType: "application/pdf", data: Buffer.from("%PDF").toString("base64") },
+            ] as any,
+            { signal: new AbortController().signal },
+        );
+        expect(r).toBe("done");
+        const sent: string = logLines().find((l) => l.input)!.input.message.content;
+        const files = [...sent.matchAll(/\[(?:Image|PDF) attached: (\S+)\. Read it with read_file to see it\.\]/g)].map((m) => m[1]!);
+        expect(sent.startsWith("look\n\n")).toBe(true);
+        expect(files).toHaveLength(2);
+        expect(files[0]).toMatch(/image-1\.png$/);
+        expect(files[1]).toMatch(/spec_sheet\.pdf$/);
+        expect(files.every((f) => f.startsWith(`${gate.gateDir()}-files/`))).toBe(true);
+        expect(decisions()).toEqual(["auto_approve", "auto_approve"]);
+        expect(a.asked).toEqual([]);
+        expect(said(a.events).join("")).toContain(`read ${png.length} bytes; read 4 bytes`);
+        // Their rows name the attachment, not Cavvy's file.
+        expect(ends(a.events).map((e) => e.call.input.file_path)).toEqual(["image-1.png", "spec sheet.pdf"]);
+        // Another file outside the folder is asked about as any read is.
+        await a.run(`[Image attached: ${join(tempDir("agy-other-"), "x.png")}. Read it]`);
+        expect(a.asked).toHaveLength(1);
+        const c = await clientFor("antigravity");
+        await (c as any).shutdown();
+        expect(files.some((f) => existsSync(f))).toBe(false);
+    });
+
+    test("a message sent mid-turn joins it at its next model call, after the tool running", async () => {
+        const queued: string[] = [];
+        const a = await makeAgent({ ask: () => ({ allow: true }), queued });
+        const run = a.run("[[slow]]");
+        while (!logLines().some((l) => l.hook === "PreToolUse")) await Bun.sleep(10);
+        queued.push("also say banana");
+        expect(await run).toBe("done");
+        expect(logLines().filter((l) => l.injected).map((l) => l.injected)).toEqual(["also say banana"]);
+        expect(said(a.events).join("")).toContain("(heard: also say banana)");
+        expect(queued).toEqual([]);
+        expect(spawns()).toHaveLength(1);
     });
 });
 

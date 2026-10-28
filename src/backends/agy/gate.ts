@@ -45,6 +45,8 @@ const hooks = (script: string) =>
         {
             "cavvy-gate": {
                 SessionStart: [{ type: "command", command: `'${script}' session`, timeout: 30 }],
+                // Before each model call: messages queued to steer the turn join it here.
+                PreInvocation: [{ type: "command", command: `'${script}' invocation`, timeout: 60 }],
                 PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: `'${script}' pre`, timeout: HOOK_TIMEOUT_S }] }],
             },
         },
@@ -85,6 +87,11 @@ function keep(path: string, content: string, mode: number) {
     }
     if (now !== content) writeFileSync(path, content, { mode });
     chmodSync(path, mode);
+}
+
+/** Where a session's attachments are written for it to read: beside the gate folder, not a workspace of its own. */
+export function filesDir(token: string): string {
+    return join(`${gateDir()}-files`, token);
 }
 
 /** What the model is told when its conversation starts: which folder is its own. */

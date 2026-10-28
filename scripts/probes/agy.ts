@@ -81,6 +81,7 @@ writeFileSync(
     JSON.stringify({
         "cavvy-gate": {
             SessionStart: [{ type: "command", command: `${script} session`, timeout: 30 }],
+            PreInvocation: [{ type: "command", command: `${script} invocation`, timeout: 30 }],
             PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: `${script} pre`, timeout: hookTimeout }] }],
             Stop: [{ type: "command", command: `${script} stop`, timeout: 30 }],
         },
@@ -122,6 +123,27 @@ function redPng(size: number): Buffer {
     const row = Buffer.concat([Buffer.from([0]), Buffer.alloc(size * 3, Buffer.from([255, 0, 0]))]);
     const raw = Buffer.concat(Array.from({ length: size }, () => row));
     return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
+}
+
+/** A one-page PDF saying `text`. */
+function tinyPdf(text: string): Buffer {
+    const stream = `BT /F1 24 Tf 72 720 Td (${text}) Tj ET`;
+    const objs = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+        `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ];
+    let out = "%PDF-1.4\n";
+    const offsets: number[] = [];
+    objs.forEach((o, i) => {
+        offsets.push(out.length);
+        out += `${i + 1} 0 obj\n${o}\nendobj\n`;
+    });
+    const xref = out.length;
+    out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${offsets.map((o) => `${String(o).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+    return Buffer.from(out);
 }
 
 // --- The CLI ---------------------------------------------------------------------------------------------------
@@ -227,6 +249,35 @@ async function main() {
             await track(p);
             p.send(user("Do these one tool call each, in order, using your dedicated tools and not run_command: 1) list_dir on the current folder; 2) read README.txt; 3) grep_search the folder for the text 'second'; 4) find_by_name for files matching *.txt; 5) edit README.txt to replace 'hello world' with 'hello there'; 6) read_url_content of https://example.com. Then say what each returned, briefly."));
             await result(p, 0, 170_000);
+            await p.kill();
+            break;
+        }
+        // An image and a PDF as files in the workspace: does read_file show the model what's in them?
+        case "attach-files": {
+            decide = gate();
+            writeFileSync(join(ws, "dot.png"), redPng(64));
+            writeFileSync(join(ws, "doc.pdf"), tinyPdf("The secret word is pineapple."));
+            const p = start();
+            await track(p);
+            p.send(user("Read the image dot.png with your file-reading tool and tell me its color in one word. Then read doc.pdf and tell me the secret word in it."));
+            await result(p, 0, 150_000);
+            await p.kill();
+            break;
+        }
+        // A message added mid-turn by PreInvocation's injectSteps, at the model's next call after a tool.
+        case "steer": {
+            let injected = false;
+            decide = async (event, input) => {
+                if (event === "invocation" && input.invocationNum >= 1 && !injected) {
+                    injected = true;
+                    return { injectSteps: [{ userMessage: "Also: end your reply with the word banana." }] };
+                }
+                return event === "invocation" ? {} : gate(["sleep 3"])(event, input);
+            };
+            const p = start();
+            await track(p);
+            p.send(user("Run the shell command `sleep 3`, then reply with just the word first."));
+            await result(p, 0, 120_000);
             await p.kill();
             break;
         }

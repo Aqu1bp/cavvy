@@ -8,7 +8,7 @@ import { randomUUID } from "crypto";
 import { homedir } from "os";
 import type { ProviderDef } from "../../providers/registry";
 import { ProviderError, type AssistantMessage, type ChatRequest, type ModelInfo } from "../../providers/types";
-import { RESUME_FAILED } from "../acp/connection";
+import { RESUME_FAILED, type SteerSource } from "../acp/connection";
 import { TurnRecord } from "../claude-live";
 import { JsonLinesProcess, cliMessage, extraArgs, findCli, requireCli, runCli } from "../cli";
 import { agentCli, type AgentCliDef } from "../defs";
@@ -20,7 +20,7 @@ import type { AgentCliAdapter, CliConnection, CliEventSink, SpawnConfig, SpawnSp
 import { oneOffRefusal } from "../one-off";
 import { backendModel, type AgentBackendClient, type BackendResult, type BackendTurn, type SessionHost } from "../types";
 import { AgyConnection, SIGN_IN_NEEDED } from "./connection";
-import { GATE_TOKEN_ENV, GATE_URL_ENV, gateDir, gateUrl } from "./gate";
+import { GATE_TOKEN_ENV, GATE_URL_ENV, filesDir, gateDir, gateUrl } from "./gate";
 
 function agyDef(id: string): AgentCliDef {
     const def = agentCli(id);
@@ -37,6 +37,8 @@ function agyArgs(id: string, cfg: Pick<SpawnConfig, "model">, gate: string): str
 class AgyAdapter implements AgentCliAdapter {
     /** The turn under way, or the last one (set before each). */
     current?: Pick<BackendTurn, "cwd">;
+    /** Where the turn under way takes messages to steer it with. */
+    steering?: SteerSource;
     /** The session's token for the gate: the hook calls back with it, so its calls reach this session only. */
     private token = randomUUID();
 
@@ -54,7 +56,7 @@ class AgyAdapter implements AgentCliAdapter {
 
     async connect(proc: JsonLinesProcess, events: CliEventSink, host: SessionHost): Promise<CliConnection> {
         liveDebug("agy", "spawned", { pid: proc.pid });
-        return new AgyConnection(proc, events, host, this.def, this.current?.cwd ?? homedir(), { dir: gateDir(), token: this.token });
+        return new AgyConnection(proc, events, host, this.def, this.current?.cwd ?? homedir(), { dir: gateDir(), token: this.token, files: filesDir(this.token) }, () => this.steering);
     }
 
     status(_accountId: string | undefined, signal?: AbortSignal) {
@@ -140,13 +142,26 @@ export class AgyBackend implements AgentBackendClient {
             await this.release(key);
             live = this.pool.session(key, this.def.id);
         }
-        (live.adapter as AgyAdapter).current = t;
+        const adapter = live.adapter as AgyAdapter;
+        adapter.current = t;
         const rec = new TurnRecord(t.sink);
-        const r = await live.runTurn({ text: t.prompt, images: t.images, documents: t.documents }, rec.sink, t.signal, {
-            spawn: t,
-            settings: { model: t.model, mode: t.session.mode(), effort: t.effort, fastMode: t.fastMode },
-            host: t.session,
-        });
+        // A message the user sends meanwhile joins the turn at its next model call (the gate's PreInvocation), recorded
+        // after what was said before it; one taken that never went goes with the next turn.
+        const steering: SteerSource = {
+            drain: async (live, flush) => rec.sink.drainQueued(() => (flush(), rec.take()), live),
+            undelivered: (messages) => rec.sink.undelivered?.(messages),
+        };
+        adapter.steering = steering;
+        let r: LiveTurnResult;
+        try {
+            r = await live.runTurn({ text: t.prompt, images: t.images, documents: t.documents }, rec.sink, t.signal, {
+                spawn: t,
+                settings: { model: t.model, mode: t.session.mode(), effort: t.effort, fastMode: t.fastMode },
+                host: t.session,
+            });
+        } finally {
+            if (adapter.steering === steering) adapter.steering = undefined;
+        }
         liveDebug("agy", "turn result", { key, ref: r.ref, reason: r.reason, unanswered: r.unanswered });
         return this.result(t, rec, r);
     }

@@ -10,21 +10,26 @@
 //     DONE), tool (ACTIVE, then DONE with tool_info.output or ERROR with tool_info.error). It ends with {"event":"result"}:
 //     status SUCCESS or ERROR (and its error). Usage there is the conversation's so far; each step's is its own.
 //   - Nothing on stdin stops a turn (-cancel-*.jsonl). SIGINT does: the result says "interrupted", and the process exits.
+//   - A PreInvocation hook runs before each model call, and a userMessage in its injectSteps joins the turn there, as a
+//     user_input step of its own (-steer.jsonl): that's how a message sent mid-turn steers it.
+//   - read_file shows the model an image or a PDF (-attach-files.jsonl): an attachment goes as a file of Cavvy's, named
+//     in the message.
 
 import { randomUUID } from "crypto";
-import { relative } from "path";
+import { mkdirSync, rmSync, writeFileSync } from "fs";
+import { join, relative } from "path";
 import type { AgentEvent, TurnEndReason } from "../../agent/agent";
 import { APP_TITLE } from "../../config/paths";
 import { stableStringify } from "../../permissions/classifier";
-import type { Usage } from "../../providers/types";
+import type { ImagePart, PdfPart, Usage } from "../../providers/types";
 import { titleFor } from "../claude-code";
 import { cliMessage, type JsonLinesProcess } from "../cli";
 import type { AgentCliDef, CliCapabilities } from "../defs";
-import { RESUME_FAILED } from "../acp/connection";
+import { RESUME_FAILED, type SteerSource } from "../acp/connection";
 import { liveDebug } from "../live/debug";
 import { EXIT_DRAIN_MS, PromptRefused } from "../live/session";
 import type { CliConnection, CliEventSink, LiveSettings, TurnInput } from "../live/types";
-import type { BackendPermission, PermissionAnswer, SessionHost } from "../types";
+import type { BackendPermission, PermissionAnswer, SessionHost, SteerMessage } from "../types";
 import { GATE_DEADLINE_MS, agyTool, onGate, sessionStartAnswer, type AgyTool } from "./gate";
 
 /** How long to wait for it to say it's ready (it takes 5 to 8 seconds), and how often to look for a sign-in prompt meanwhile. */
@@ -60,6 +65,10 @@ interface Turn {
     usage: Usage;
     /** The context as its last model call had it. */
     context?: number;
+    /** Its prompt's user_input step has come: each one after is a message injected to steer it. */
+    prompted?: boolean;
+    /** Messages injected to steer it, each batch waiting for its user_input step. */
+    injected: SteerMessage[][];
     /** SIGINT was sent. */
     cancelling?: boolean;
     /** Why the tripwire stopped it. */
@@ -82,6 +91,9 @@ export class AgyConnection implements CliConnection {
     private readyReject!: (e: Error) => void;
     private unroute: () => void;
     private model?: string;
+    /** Attachments written for it to read, and where. */
+    private files = new Map<string, string>();
+    private fileCount = 0;
 
     constructor(
         readonly proc: JsonLinesProcess,
@@ -89,8 +101,10 @@ export class AgyConnection implements CliConnection {
         private host: SessionHost,
         private def: AgentCliDef,
         private cwd: string,
-        /** The gate folder, and the token the hook calls back with. */
-        private gate: { dir: string; token: string },
+        /** The gate folder, the token the hook calls back with, and the folder its attachments are written to. */
+        private gate: { dir: string; token: string; files: string },
+        /** The turn running's, set by the backend with each: the messages queued to steer it. */
+        private steering: () => SteerSource | undefined = () => undefined,
     ) {
         this.caps = { ...def.caps };
         this.ready = new Promise<string>((resolve, reject) => ((this.readyResolve = resolve), (this.readyReject = reject)));
@@ -134,11 +148,17 @@ export class AgyConnection implements CliConnection {
         if (!this.conversationId) throw new PromptRefused(`${this.def.name} has no conversation open`);
         if (this.turn && !this.turn.ended) throw new PromptRefused(`${this.def.name} is still finishing its last turn. Try again in a moment.`);
         if (this.interrupted) throw new PromptRefused(`${this.def.name} is stopping. Try again in a moment.`);
-        const turn: Turn = { ref: randomUUID(), text: "", rows: new Map(), gated: new Set(), waiting: new Set(), usage: { inputTokens: 0, outputTokens: 0 } };
+        const turn: Turn = { ref: randomUUID(), text: "", rows: new Map(), gated: new Set(), waiting: new Set(), injected: [], usage: { inputTokens: 0, outputTokens: 0 } };
         this.turn = turn;
-        const dropped = input.images.length + (input.documents?.length ?? 0);
-        if (dropped) this.emit({ type: "notice", level: "warn", message: `${this.def.name} takes text only, so ${dropped === 1 ? "the attachment wasn't" : "the attachments weren't"} sent.` });
-        if (!(await this.proc.send({ event: "user", message: { role: "user", content: input.text } }))) {
+        let content: string;
+        try {
+            content = this.withFiles(input.text, input.images, input.documents ?? []);
+        } catch (e) {
+            turn.ended = true;
+            if (this.turn === turn) this.turn = undefined;
+            throw new PromptRefused(`Couldn't hand the attachments to ${this.def.name}: ${e instanceof Error ? e.message : String(e)}`);
+        }
+        if (!(await this.proc.send({ event: "user", message: { role: "user", content } }))) {
             turn.ended = true;
             if (this.turn === turn) this.turn = undefined;
             throw new PromptRefused(`${this.def.name} stopped before it took the message`);
@@ -208,6 +228,12 @@ export class AgyConnection implements CliConnection {
         // Between turns, or a subagent's step (its calls go through the gate all the same).
         if (!turn || turn.ended || s.conversation_id !== this.conversationId) return;
         const step = typeof s.step_index === "number" ? s.step_index : -1;
+        if (s.step_type === "user_input") {
+            // The prompt's, then one for each batch the gate injected: that batch has reached it.
+            if (!turn.prompted) turn.prompted = true;
+            else for (const m of turn.injected.shift() ?? []) void m.settle?.(true);
+            return;
+        }
         if (s.step_type === "agent_response") {
             if (typeof s.text_delta === "string" && s.text_delta) {
                 turn.text += s.text_delta;
@@ -244,7 +270,9 @@ export class AgyConnection implements CliConnection {
         if (had) return had;
         this.flushText(turn);
         const tool = mapped && !mapped.refuse ? mapped : { toolName: this.def.name, input: { tool: name, ...args }, title: `${this.def.name}: ${name}` };
-        const shown = tool.toolName === "Write" || tool.toolName === "Edit" ? { file_path: tool.input.file_path } : tool.input;
+        const attachment = tool.toolName === "Read" ? this.files.get(String(tool.input.file_path)) : undefined;
+        // An attachment shows by its own name, not the file of Cavvy's it went as.
+        const shown = attachment ? { file_path: attachment } : tool.toolName === "Write" || tool.toolName === "Edit" ? { file_path: tool.input.file_path } : tool.input;
         const row: Row = {
             id: `${this.conversationId}:${step}`,
             name: tool.toolName,
@@ -299,6 +327,7 @@ export class AgyConnection implements CliConnection {
     private finish(turn: Turn, reason: TurnEndReason, error?: string) {
         turn.ended = true;
         for (const w of [...turn.waiting]) w("Turn stopped");
+        this.handBack(turn);
         this.flushText(turn);
         for (const step of [...turn.rows.keys()]) this.endRow(turn, step, "Cancelled: the turn ended before it finished.", true);
         if (turn.usage.inputTokens || turn.usage.outputTokens) {
@@ -314,17 +343,97 @@ export class AgyConnection implements CliConnection {
         this.gone = true;
         this.unroute();
         this.readyReject(new Error(`${this.def.name} stopped: ${cliMessage(this.proc.stderr()) || "it closed its output"}`));
+        rmSync(this.gate.files, { recursive: true, force: true });
         const turn = this.turn;
         if (!turn || turn.ended) return;
         for (const w of [...turn.waiting]) w("Turn stopped");
+        this.handBack(turn);
         this.flushText(turn);
         for (const step of [...turn.rows.keys()]) this.endRow(turn, step, `Cancelled: ${this.def.name} stopped before it finished.`, true);
+    }
+
+    /** Messages injected that it never said it took (the turn ended first): they go with the next turn. */
+    private handBack(turn: Turn) {
+        const back = turn.injected.splice(0).flat();
+        if (!back.length) return;
+        liveDebug("agy", "steer not taken: handed back", { n: back.length });
+        const plain = back.filter((m) => !m.settle);
+        for (const m of back) void m.settle?.(false);
+        if (plain.length) this.steering()?.undelivered(plain);
+    }
+
+    /** Whether a message can still join the turn. */
+    private steerable(turn: Turn): boolean {
+        return this.turn === turn && !turn.ended && !turn.cancelling && !turn.tripped && !this.gone;
+    }
+
+    /** Before a model call: the messages queued to steer the turn, as one user message (and nothing when none are). */
+    private async injectQueued(): Promise<Record<string, unknown>> {
+        const turn = this.turn;
+        const source = this.steering();
+        if (!turn || !source || !this.steerable(turn)) return {};
+        let taken: SteerMessage[];
+        try {
+            taken = await source.drain(() => this.steerable(turn), () => this.flushText(turn));
+        } catch (e) {
+            liveDebug("agy", "steer failed", { error: String(e) });
+            return {};
+        }
+        if (!taken.length) return {};
+        const texts: string[] = [];
+        const sent: SteerMessage[] = [];
+        for (const m of taken) {
+            try {
+                texts.push(this.withFiles(m.text, m.images, m.documents));
+                sent.push(m);
+            } catch (e) {
+                this.emit({ type: "notice", level: "warn", message: `Couldn't hand the attachments to ${this.def.name}: ${e instanceof Error ? e.message : String(e)}` });
+                if (m.settle) void m.settle(false);
+                else this.steering()?.undelivered([m]);
+            }
+        }
+        if (!sent.length) return {};
+        // Stopped while they were taken: they go with the next turn.
+        if (!this.steerable(turn)) {
+            turn.injected.push(sent);
+            this.handBack(turn);
+            return {};
+        }
+        turn.injected.push(sent);
+        liveDebug("agy", "steer", { n: sent.length });
+        return { injectSteps: [{ userMessage: texts.join("\n\n") }] };
+    }
+
+    /**
+     * The text with its images and PDFs as files of Cavvy's it can read (its stream-json input takes text only), each
+     * named on a line of its own.
+     */
+    private withFiles(text: string, images: ImagePart[], documents: PdfPart[]): string {
+        if (!images.length && !documents.length) return text;
+        mkdirSync(this.gate.files, { recursive: true, mode: 0o700 });
+        const lines: string[] = [];
+        const write = (name: string, data: string, shown = name) => {
+            const path = join(this.gate.files, `${++this.fileCount}-${name}`);
+            writeFileSync(path, Buffer.from(data, "base64"), { mode: 0o600 });
+            this.files.set(path, shown);
+            return path;
+        };
+        images.forEach((img, i) => {
+            const ext = (img.mediaType.split("/")[1] ?? "png").replace(/[^a-z0-9]/gi, "").replace(/^jpeg$/, "jpg") || "png";
+            lines.push(`[Image attached: ${write(`image-${i + 1}.${ext}`, img.data)}. Read it with read_file to see it.]`);
+        });
+        for (const d of documents) {
+            const name = d.name.replace(/[^\w.-]+/g, "_").replace(/^\.+/, "").slice(-80) || "document.pdf";
+            lines.push(`[PDF attached: ${write(name.endsWith(".pdf") ? name : `${name}.pdf`, d.data, d.name)}. Read it with read_file to see it.]`);
+        }
+        return `${text}\n\n${lines.join("\n")}`;
     }
 
     // --- The gate -----------------------------------------------------------------------------------------------
 
     private async onGate(event: string, input: any): Promise<Record<string, unknown>> {
         if (event === "session") return sessionStartAnswer(this.cwd, this.gate.dir);
+        if (event === "invocation") return input?.conversationId === this.conversationId ? this.injectQueued() : {};
         if (event !== "pre") return {};
         const deny = (reason: string) => ({ decision: "deny", reason });
         const name = typeof input?.toolCall?.name === "string" ? input.toolCall.name : undefined;
@@ -376,8 +485,8 @@ export class AgyConnection implements CliConnection {
         const own = agyTool(name, args, this.cwd, this.gate.dir);
         if (own?.refuse) return { allow: false, reason: own.refuse };
         const label = main ? undefined : `${this.def.name} subagent`;
-        // Its own bookkeeping goes, unless a deny rule names it.
-        if (own?.free) {
+        // Its own bookkeeping, and a read of an attachment Cavvy gave it, go unless a deny rule names them.
+        if (own?.free || (own?.toolName === "Read" && this.files.has(String(own.input.file_path)))) {
             const a = await this.host.permission({ toolName: own.toolName, input: own.input, asksAlways: true, exempt: true, ...(label ? { agentLabel: label } : {}), signal });
             return a.allow ? { allow: true } : { allow: false, reason: a.message || "Denied.", stop: a.stop };
         }
@@ -403,8 +512,13 @@ export class AgyConnection implements CliConnection {
         // A hook's rewrite: the call would run as agy asked, so neither runs.
         if (a.allow && rewritten(a, req.input)) return { allow: false, reason: `A hook rewrote this call, and ${this.def.name} runs calls only as it asked them, so neither ran.` };
         if (a.allow) return { allow: true };
-        return { allow: false, reason: a.message || "Denied.", stop: a.stop };
+        return { allow: false, reason: ownWords(a.message || "Denied."), stop: a.stop };
     }
+}
+
+/** Plan mode's refusals name Cavvy's ExitPlanMode, which agy hasn't got: it presents its plan in its reply. */
+function ownWords(reason: string): string {
+    return reason.replace(/\s*(Finish planning and call|Call) ExitPlanMode[^.]*\./, " Present your plan in your reply: the user leaves Plan mode when it's ready.");
 }
 
 /** A hook approved other input than was asked about. */
