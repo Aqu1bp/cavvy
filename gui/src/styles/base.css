@@ -147,9 +147,10 @@ textarea,
     }
 }
 
+/* --drag-cursor: a drag's own (the floating browser's corner); the panels' edges are col-resize. */
 body.resizing,
 body.resizing * {
-    cursor: col-resize !important;
+    cursor: var(--drag-cursor, col-resize) !important;
     user-select: none !important;
 }
 

@@ -8,7 +8,7 @@ import * as format from "../../gui/src/lib/format";
 import * as toolWords from "../../gui/src/lib/tool-words";
 import * as liveLine from "../../gui/src/lib/live-line";
 import * as notices from "../../gui/src/lib/notices";
-import { createReveal } from "../../gui/src/lib/reveal";
+import { createReveal, DrawnAgain } from "../../gui/src/lib/reveal";
 import * as diffWindow from "../../gui/src/lib/diff-window";
 import { registerSecret, unregisterSecret } from "../../src/util/redact";
 import { columnSteps, COLUMN_NARROW, COLUMN_SHORT } from "../../gui/src/lib/layout";
@@ -84,7 +84,7 @@ for (const kind of ["Markdown", "CodeBlock", "DiffView", "ToolRow", "ToolDetails
             MarkdownRenderer: class { segments() { throw Error("bad markdown"); } },
             ...format, ...toolWords, ...liveLine, ...notices, now: () => 0, prefs: {}, findReveal: () => undefined, motionMs: () => 0,
             ...Object.fromEntries(["Wrench", "Bot", "FileText", "ChevronRight", "CopyButton"].map((name) => [name, () => node(name)])),
-            onMount() {}, highlight: async () => undefined, createReveal, paint() {},
+            onMount() {}, highlight: async () => undefined, createReveal, DrawnAgain, paint() {},
             groupBlocks: () => { throw Error("bad turn"); },
         });
         const View = component('export function View() { return <><Widget {...props} /><button>still usable</button></>; }', "View", { Widget, props: props[kind] });

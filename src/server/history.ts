@@ -529,8 +529,8 @@ export interface ReplayInput {
 
 /** A kept notice as the transcript shows it (a live one is built the same way: Runtime.notice). */
 export function noticeBlock(n: Omit<TurnNotice, "index" | "at">, id: string): NoticeBlock {
-    const { level, text, details, source, title, link, account, stopped, limit } = n;
-    return { t: "notice", id, level, text, ...(details ? { details } : {}), ...(source ? { source } : {}), ...(title ? { title } : {}), ...(link ? { link } : {}), ...(account ? { account } : {}), ...(stopped ? { stopped } : {}), ...(limit ? { limit } : {}) };
+    const { level, text, details, source, title, link, account, stopped, limit, compacted } = n;
+    return { t: "notice", id, level, text, ...(details ? { details } : {}), ...(source ? { source } : {}), ...(title ? { title } : {}), ...(link ? { link } : {}), ...(account ? { account } : {}), ...(stopped ? { stopped } : {}), ...(limit ? { limit } : {}), ...(compacted ? { compacted } : {}) };
 }
 
 /** A notice as it happens (an agent's event): its text the data's, if it has one, else the message; redacted. */

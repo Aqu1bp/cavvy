@@ -3,7 +3,7 @@
 // a Solid store's produce(), so only what changed re-renders). Pure: no Bun,
 // Node or DOM imports.
 
-import type { AgentRun, Block, SessionOp, SessionState, ToolBlock, Turn } from "./protocol";
+import type { AgentRun, Block, PlanLimits, SessionOp, SessionState, ToolBlock, Turn } from "./protocol";
 
 export interface SessionView {
     state: SessionState;
@@ -71,6 +71,15 @@ export function fromWireState(state: SessionState): SessionState {
     const out = { ...state } as Record<string, unknown>;
     for (const [k, v] of Object.entries(out)) if (v === null) out[k] = undefined;
     return out as unknown as SessionState;
+}
+
+/**
+ * A plan's limits as they arrive (the "limits" event, limits.get), the same way: unset again, the plan's fields and
+ * each window's. (A limit restored after a restart has no percentage: on the wire it was `usedPercent: null`.)
+ */
+export function fromWireLimits(limits: PlanLimits): PlanLimits {
+    const unset = <T extends object>(o: T): T => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== null)) as T;
+    return { ...unset(limits), windows: (limits.windows ?? []).map(unset) };
 }
 
 export function applyOp(view: SessionView, op: SessionOp): void {

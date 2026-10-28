@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "fs";
-import { agentRows, backgroundOf, clearKey, combineEnded, commandRows, endedAllCleared, finishedOf, kindName, noticeRoute, rowLive, rowMeta, rowProvider, rowTone, runnerName, runningCount, stopAllOf, stopOutcome, stopTarget, stopTasks, taskMeta, workSection, type WorkTab } from "../gui/src/lib/background";
+import { agentRows, backgroundOf, clearKey, combineEnded, commandRows, endedAllCleared, finishedOf, kindName, noticeRoute, rowLive, rowMeta, rowProvider, rowTone, runnerName, stopAllOf, stopOutcome, stopTarget, stopTasks, taskMeta, workSection, type WorkTab } from "../gui/src/lib/background";
 import { tagId } from "../gui/src/lib/platform";
 import type { AgentRun, BackgroundTaskInfo } from "../src/server/protocol";
 import { componentCode, elements } from "./gui-component-harness";
@@ -42,7 +42,6 @@ test("the Background panel lists what the server keeps: running tasks, then the 
     const tasks = [task(), task({ id: "t2", status: "done", endedAt: 50 }), task({ id: "t3", status: "stopped", lost: true, endedAt: 10 }), task({ id: "t4", status: "failed", endedAt: 90 })];
     const listed = backgroundOf({ backgroundTasks: tasks, shells: [] });
     expect(listed.map((t) => t.id)).toEqual(["t1", "t2", "t3", "t4"]);
-    expect(runningCount(listed)).toBe(1);
     expect(finishedOf(listed).map((t) => t.id)).toEqual(["t4", "t2", "t3"]);
     expect(backgroundOf(undefined)).toEqual([]);
 });
@@ -108,13 +107,13 @@ test("a stop's toast says what stopped and what couldn't be", () => {
     expect(stopOutcome({ a: "stopped", b: "ended" })).toEqual({ message: "Stopped 1 task; 1 had already ended", level: "success" });
 });
 
-test("the side panel lists background work in its Agents and Commands tabs, and the composer has its count", () => {
+test("the side panel lists background work in its Agents and Commands tabs, and the composer has no count of it", () => {
     const panel = readFileSync(new URL("../gui/src/components/RightPanel.tsx", import.meta.url), "utf8");
     expect(panel).toContain('<WorkList handle={p.handle} tab="agents" rows={p.rows} />');
     expect(panel).toContain('<WorkList handle={p.handle} tab="commands" rows={p.rows} />');
     expect(panel).not.toContain("function Lineage(");
     const composer = readFileSync(new URL("../gui/src/components/Composer.tsx", import.meta.url), "utf8");
-    expect(composer).toContain("<BackgroundChip sessionId={p.sessionId} />");
+    expect(composer).not.toContain("BackgroundChip");
     const list = readFileSync(new URL("../gui/src/components/BackgroundTasks.tsx", import.meta.url), "utf8");
     // Stop all asks first; each row stops its own tasks, or its delegated run, as before.
     expect(list).toContain("title={`Stop all background ${what()}s?`}");
@@ -138,17 +137,15 @@ function renderList(tasks: BackgroundTaskInfo[], agents: AgentRun[] = [], tab: W
         For: (p: { each: unknown[]; children: (x: unknown) => unknown }) => p.each.map((x) => p.children(x)),
         Show: (p: { when: unknown; children: unknown; fallback?: unknown }) => (p.when ? (typeof p.children === "function" ? p.children(() => p.when) : p.children) : p.fallback),
         ConfirmDialog: (p: Record<string, any>) => ({ tag: "ConfirmDialog", props: p, children: [p.children] }),
-        Bot: "Bot", ChevronRight: "ChevronRight", Layers: "Layers", Radar: "Radar", Terminal: "Terminal", Workflow: "Workflow",
+        Bot: "Bot", ChevronRight: "ChevronRight", Radar: "Radar", Terminal: "Terminal", Workflow: "Workflow",
         AgentMark: (p: { provider?: string }) => ({ tag: "AgentMark", props: p, children: [] }),
         agentStep,
         app: { providers: [{ id: "claude-code", name: "Claude Code" }] },
-        handleFor: () => undefined,
         openAgents: (id: string) => void opened.push(id),
-        openBackground() {},
         stopBackground: async (id: string, ids?: string[]) => void stops.push({ id, ids }),
         stopAgent: async (id: string, agent?: string) => void agentStops.push({ id, agent }),
         clearBackground: async (id: string) => void cleared.push(id),
-        agentRows, backgroundOf, clearKey, commandRows, endedAllCleared, kindName, rowLive, rowMeta, rowProvider, rowTone, runnerName, runningCount, stopAllOf, stopTarget, workSection,
+        agentRows, backgroundOf, clearKey, commandRows, endedAllCleared, kindName, rowLive, rowMeta, rowProvider, rowTone, runnerName, stopAllOf, stopTarget, workSection,
         shortModelRef: (ref?: string) => ref?.slice(ref.indexOf(":") + 1),
         duration: (ms: number) => `${Math.round(ms / 1000)}s`,
         plural,

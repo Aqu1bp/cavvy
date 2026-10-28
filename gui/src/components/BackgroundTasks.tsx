@@ -4,15 +4,14 @@
 // and monitors), with Stop on each and Stop all. Esc stops only the turn: this
 // is where background work is stopped. Finished ones fold away under the
 // running ones, with how they ended, until cleared. The Agents tab lists each
-// sub-agent once (lib/background.ts agentRows), and a click opens it. And the
-// composer's count of it, which opens the panel.
+// sub-agent once (lib/background.ts agentRows), and a click opens it.
 
 import { createMemo, createSignal, For, Show } from "solid-js";
-import { Bot, ChevronRight, Layers, Radar, Terminal, Workflow } from "lucide-solid";
+import { Bot, ChevronRight, Radar, Terminal, Workflow } from "lucide-solid";
 import type { SessionHandle } from "../state/app";
-import { app, handleFor } from "../state/app";
-import { clearBackground, openAgents, openBackground, stopAgent, stopBackground } from "../state/actions";
-import { agentRows, backgroundOf, clearKey, commandRows, endedAllCleared, kindName, rowLive, rowMeta, rowProvider, rowTone, runnerName, runningCount, stopAllOf, stopTarget, workSection, type Placed, type WorkRow, type WorkTab } from "../lib/background";
+import { app } from "../state/app";
+import { clearBackground, openAgents, stopAgent, stopBackground } from "../state/actions";
+import { agentRows, backgroundOf, clearKey, commandRows, endedAllCleared, kindName, rowLive, rowMeta, rowProvider, rowTone, runnerName, stopAllOf, stopTarget, workSection, type Placed, type WorkRow, type WorkTab } from "../lib/background";
 import { shortModelRef } from "../lib/tool-words";
 import { duration, plural } from "../lib/format";
 import { now } from "../lib/clock";
@@ -163,19 +162,6 @@ export function WorkList(p: { handle: SessionHandle; tab: WorkTab; rows: WorkRow
             <ConfirmDialog open={confirm()} title={`Stop all background ${what()}s?`} confirmLabel="Stop all" onClose={() => setConfirm(false)} onConfirm={stopAll}>
                 {plural(sec().stoppable, what())} will stop, and won't report back. The current turn, if any, keeps going.
             </ConfirmDialog>
-        </Show>
-    );
-}
-
-/** In the composer: how many tasks run in the background; opens the side panel on them. */
-export function BackgroundChip(p: { sessionId?: string }) {
-    const n = () => runningCount(backgroundOf(p.sessionId ? handleFor(p.sessionId)?.view.state : undefined));
-    return (
-        <Show when={n()}>
-            <button class="cb bg-chip" title={`${plural(n(), "task")} running in the background. Show them`} aria-label={`${plural(n(), "background task")} running. Show them`} onClick={() => openBackground(p.sessionId)}>
-                <Layers size={14} />
-                <span class="num">{n()}</span>
-            </button>
         </Show>
     );
 }

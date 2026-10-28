@@ -1438,7 +1438,7 @@ export class CodexTurn {
                 this.turnDone?.();
                 break;
             case "thread/compacted":
-                this.sink.emit({ type: "notice", level: "info", message: "Codex compacted its context." });
+                this.sink.emit({ type: "notice", level: "info", message: "Codex compacted its context.", data: { compacted: true } });
                 // One Cavvy asked for (compact) runs the hooks itself.
                 if (!this.compacting && this.hooked("PostCompact")) void this.cliSession.hooks!("PostCompact", { trigger: "auto", compact_summary: "" });
                 this.status ??= "completed";
@@ -1751,7 +1751,7 @@ export class CodexTurn {
             return;
         }
         if (item.type === "contextCompaction") {
-            if (!sub) this.sink.emit({ type: "notice", level: "info", message: "Codex compacted its context." });
+            if (!sub) this.sink.emit({ type: "notice", level: "info", message: "Codex compacted its context.", data: { compacted: true } });
             return;
         }
         if (item.type === "subAgentActivity") {

@@ -1590,7 +1590,7 @@ class ClaudeTurn {
                 break;
             }
             case "compact_boundary":
-                this.sink.emit({ type: "notice", level: "info", message: "Claude Code compacted its context." });
+                this.sink.emit({ type: "notice", level: "info", message: "Claude Code compacted its context.", data: { compacted: true } });
                 break;
             case "task_started": {
                 const id = String(m.tool_use_id ?? "");

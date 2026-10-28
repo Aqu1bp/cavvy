@@ -292,6 +292,24 @@ export function App() {
         const id = agentFocus();
         return id ? active()?.view.agents.find((a) => a.id === id) : undefined;
     };
+    /**
+     * The session the stage shows: the one picked or, while one that isn't open here yet opens (until "Opening
+     * session…" would show), the one it was picked from, held as it was and inert: the stage doesn't go empty, and
+     * the panel close, for the moment the session takes to come. Not a sub-agent's view (that one goes back to its
+     * session as another is picked).
+     */
+    const shown = createMemo<{ h: SessionHandle; plain: boolean } | undefined>((prev) => {
+        const h = active();
+        if (h) return prev?.h === h && prev.plain === !agent() ? prev : { h, plain: !agent() };
+        const o = app.opening;
+        const waiting = o !== undefined && o.id === app.activeId && !o.visible && !o.error;
+        return waiting && prev?.plain && handleFor(prev.h.id) === prev.h ? prev : undefined;
+    });
+    const stage = () => shown()?.h;
+    /** Another session is opening while the last one is held on the stage (shown). */
+    const holding = () => Boolean(stage() && stage() !== active());
+    /** The opening screen: a session opening, with none held while it does (or past the moment one is). */
+    const openingScreen = () => app.opening?.id === app.activeId && !holding();
     const blocked = () => Boolean(document.querySelector(".dialog-backdrop, .popover"));
 
     // Another session: its own view, not the last one's sub-agent or review.
@@ -409,7 +427,8 @@ export function App() {
 
     // The inspector column shows the diff reader while a review is open, else the session's panel.
     const reviewing = () => Boolean(review() && active() && !settingsTab());
-    const panelShown = () => Boolean(prefs.panel && active() && !agent() && !settingsTab() && app.opening?.id !== app.activeId);
+    // Its column stays while a session opens (empty until it comes), rather than closing and opening again.
+    const panelShown = () => Boolean(prefs.panel && (openingScreen() ? !app.opening?.error : stage()) && !agent() && !settingsTab());
     const layout = () => shellLayout();
     const drawerOpen = () => layout().railMode === "overlay" && railOpen();
     // The drawer takes focus as it opens, so nothing behind it keeps it.
@@ -419,7 +438,7 @@ export function App() {
     const inspOpen = () => reviewing() || panelShown();
     // Under Settings the inspector's column closes, but what was in it stays mounted (covered), as the session does.
     const reviewKept = () => Boolean(review() && active());
-    const panelKept = () => Boolean(prefs.panel && active() && !agent() && app.opening?.id !== app.activeId);
+    const panelKept = () => Boolean(prefs.panel && stage() && !agent() && !openingScreen());
     // The sizes go on the elements that use them, not on .app: a custom property changing on an
     // element restyles everything under it, so on .app each frame of a drag restyled the window.
     // shell.css registers them as not inherited, and nothing takes one with `inherit` (WebKit keeps a
@@ -483,7 +502,7 @@ export function App() {
                             </div>
                             {/* What the settings page covers stays mounted and laid out under it: coming back shows it
                                 as it was (scrolled where it was, nothing to build, lay out or fetch again). See lib/cover.ts. */}
-                            <div class="keep" data-covered={settingsTab() ? "" : undefined} aria-hidden={settingsTab() ? "true" : undefined} onFocusIn={skipCovered}>
+                            <div class="keep" data-covered={settingsTab() ? "" : undefined} aria-hidden={settingsTab() ? "true" : undefined} inert={holding() || undefined} onFocusIn={skipCovered}>
                                 <RenderBoundary resetKey={() => `${app.activeId}:${agentFocus()}`}>
                                     <Switch
                                         fallback={
@@ -493,9 +512,9 @@ export function App() {
                                             </>
                                         }
                                     >
-                                        <Match when={app.opening?.id === app.activeId && app.opening}>
+                                        <Match when={openingScreen() && app.opening}>
                                             {(opening) => <>
-                                                <Header />
+                                                <Header title={(app.sessions.find((s) => s.id === opening().id) ?? app.archived.find((s) => s.id === opening().id))?.title} />
                                                 <div class="session-opening" aria-busy={!opening().error}>
                                                     <Show when={opening().error} fallback={<Show when={opening().visible}><div role="status"><Spinner size={16} /> Opening session…</div><div class="session-skeleton" aria-hidden="true"><i /><i /><i /></div></Show>}>
                                                         <p role="alert" class="selectable">Couldn't open this session: {opening().error}</p>
@@ -507,7 +526,7 @@ export function App() {
                                         <Match when={active() && agent()}>
                                             <AgentView handle={active()!} agent={agent()!} />
                                         </Match>
-                                        <Match when={active()} keyed>
+                                        <Match when={stage()} keyed>
                                             {(h) => <SessionView handle={h} />}
                                         </Match>
                                         <Match when={app.activeId}>
@@ -521,14 +540,14 @@ export function App() {
                                 </RenderBoundary>
                             </div>
                         </main>
-                        <div class="insp" data-covered={settingsTab() ? "" : undefined} aria-hidden={settingsTab() ? "true" : undefined} onFocusIn={skipCovered} style={{ "--insp-w": `${layout().inspector.width}px`, "--insp-bottom": `${layout().inspector.bottom}px` }}>
+                        <div class="insp" data-covered={settingsTab() ? "" : undefined} aria-hidden={settingsTab() ? "true" : undefined} inert={holding() || undefined} onFocusIn={skipCovered} style={{ "--insp-w": `${layout().inspector.width}px`, "--insp-bottom": `${layout().inspector.bottom}px` }}>
                             <Show when={panelShown() && !reviewing() && layout().inspector.mode === "dock"}>
                                 <InspectorResizer />
                             </Show>
                             <Show
                                 when={reviewKept()}
                                 fallback={
-                                    <Show when={panelKept() && active()} keyed>
+                                    <Show when={panelKept() && stage()} keyed>
                                         {(h) => <RenderBoundary resetKey={() => app.activeId}><RightPanel handle={h} /></RenderBoundary>}
                                     </Show>
                                 }

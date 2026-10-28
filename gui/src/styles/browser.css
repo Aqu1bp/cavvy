@@ -276,10 +276,11 @@
     transform-origin: 0 0;
 }
 
-/* Watched in the floating view: the page is for looking at; a click on it opens the pane (FloatingBrowser). */
+/* Watched in the floating view: the page is for looking at; a click on it opens the pane (FloatingBrowser).
+   Rounded as its frame's inside is (.br-float-page). */
 .br-host-tab.shown.fit {
     pointer-events: none;
-    border-radius: 0 0 var(--radius-md) var(--radius-md);
+    border-radius: calc(var(--radius-md) - var(--br-float-inset));
 }
 
 .br-host-tab.fit .br-host-view {
@@ -291,37 +292,172 @@ body.resizing .br-host-tab {
     pointer-events: none;
 }
 
-/* The agent's browser floating over the chat (FloatingBrowser): its page box is drawn over by the real page. */
+/* The agent's browser floating over the chat (FloatingBrowser): pinned at the top right, as wide as it's been made
+   (within the room it has). Its page box, inside a thin frame of the card, is drawn over by the real page: the page
+   rounded inside the frame, so the card's own edge is the only one at its corners. */
+:root {
+    --br-float-inset: calc(5 * var(--sp));
+}
+
 .br-float {
     position: absolute;
     top: calc(var(--header-h) + 8 * var(--sp));
     right: calc(16 * var(--sp));
     z-index: 20;
     width: min(calc(400 * var(--sp)), calc(100% - 32 * var(--sp)));
-    border-radius: var(--radius-md);
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
+    transform-origin: top right;
+    animation: br-float-in calc(var(--dur-panel) * 1.25) var(--ease-out);
 }
 
+/* Going: it fades, shrinking a little toward its corner, and the page with it (.br-host-tab.leaving, the same
+   origin). Not to be caught on the way out. */
+.br-float.leaving {
+    pointer-events: none;
+    animation: br-float-out calc(var(--dur-panel) * 1.25) var(--ease-in-out) forwards;
+}
+
+.br-host-tab.shown.fit.entering {
+    animation: br-float-in calc(var(--dur-panel) * 1.25) var(--ease-out);
+}
+
+.br-host-tab.shown.fit.leaving {
+    animation: br-float-out calc(var(--dur-panel) * 1.25) var(--ease-in-out) forwards;
+}
+
+@keyframes br-float-in {
+    from {
+        opacity: 0;
+    }
+}
+
+@keyframes br-float-out {
+    to {
+        opacity: 0;
+        transform: scale(0.94);
+    }
+}
+
+.br-float-card {
+    display: flex;
+    flex-direction: column;
+    padding: 0 var(--br-float-inset) var(--br-float-inset);
+    border-radius: var(--radius-md);
+}
+
+/* One size of text: the page's title, then its host in a quieter tone. */
 .br-float-bar {
     display: flex;
     align-items: center;
     gap: calc(6 * var(--sp));
-    height: calc(30 * var(--sp));
-    padding: 0 calc(4 * var(--sp)) 0 calc(10 * var(--sp));
-    color: var(--fg-2);
+    height: calc(32 * var(--sp));
+    padding: 0 0 0 calc(8 * var(--sp));
     font-size: 0.857rem;
+    line-height: 1;
 }
 
 .br-float-title {
-    flex: 1;
+    flex: 0 1 auto;
     min-width: 0;
+    padding-block: calc(2 * var(--sp));
+    color: var(--fg-2);
+    font-weight: 500;
+}
+
+/* Gives way first when the bar is short. */
+.br-float-host {
+    flex: 0 100 auto;
+    min-width: 0;
+    padding-block: calc(2 * var(--sp));
+    color: var(--fg-4);
+}
+
+.br-float-bar .hb {
+    color: var(--fg-3);
+}
+
+.br-float-bar .hb:hover {
+    color: var(--fg);
+}
+
+/* Live while the agent's turn runs: the dot breathes; afterwards (the view lingers a moment) it's still and grey. */
+.br-live {
+    flex: none;
+    width: calc(6 * var(--sp));
+    height: calc(6 * var(--sp));
+    margin-right: calc(1 * var(--sp));
+    border-radius: 50%;
+    background: var(--fg-4);
+    transition: background 200ms;
+}
+
+.br-live.on {
+    background: var(--accent);
+    animation: pulse 1.8s ease-in-out infinite;
 }
 
 /* The agent's page is 1280×800: the box keeps that shape. */
 .br-float-page {
     aspect-ratio: 1280 / 800;
+    border-radius: calc(var(--radius-md) - var(--br-float-inset));
     background: var(--sheet-2);
     cursor: pointer;
+}
+
+/* Its free edges, astride the card's edge: dragged, they resize it (the page's shape kept). */
+.br-float-edge {
+    position: absolute;
+}
+
+.br-float-edge.left {
+    top: var(--radius-md);
+    bottom: var(--radius-md);
+    left: calc(-4 * var(--sp));
+    width: calc(9 * var(--sp));
+    cursor: ew-resize;
+}
+
+.br-float-edge.bottom {
+    left: var(--radius-md);
+    right: var(--radius-md);
+    bottom: calc(-4 * var(--sp));
+    height: calc(9 * var(--sp));
+    cursor: ns-resize;
+}
+
+.br-float-grip {
+    position: absolute;
+    left: calc(-7 * var(--sp));
+    bottom: calc(-7 * var(--sp));
+    width: calc(24 * var(--sp));
+    height: calc(24 * var(--sp));
+    cursor: nesw-resize;
+    outline: none;
+}
+
+/* Its handle: an arc around the corner, just outside it (its center the corner's: the grip is 7 past the card's
+   corner, which is --radius-md round), while the pointer is on the view, during a drag, and when the keyboard is on it. */
+.br-float-arc {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 3;
+    stroke-linecap: round;
+    color: var(--fg-3);
+    opacity: 0;
+    transition: opacity 160ms, color 160ms;
+}
+
+.br-float:hover .br-float-arc,
+.br-float.resizing .br-float-arc,
+.br-float-grip:focus-visible .br-float-arc {
+    opacity: 1;
+}
+
+.br-float-grip:hover .br-float-arc,
+.br-float.resizing .br-float-arc,
+.br-float-grip:focus-visible .br-float-arc {
+    color: var(--fg-2);
 }

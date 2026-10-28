@@ -423,6 +423,7 @@ export class Runtime {
             identity: () => this.limitIdentity(),
             run: (prompt, job, label) => this.runScheduled(prompt, job, label),
             notice: (text, level) => this.notice(text, level),
+            resumeShown: true,
             changed: () => {
                 if (this.view) this.setState({ schedules: this.schedules.scheduler.info() });
                 this.engine.sessionChanged(this);
@@ -608,6 +609,21 @@ export class Runtime {
     /** session.schedule: one of the composer's schedule buttons. */
     scheduleAction(scheduleId: string, action: ScheduleAction): boolean {
         return Boolean(this.schedules.act(scheduleId, action));
+    }
+
+    /**
+     * Picks up again by itself once the limit that stopped the last turn resets, as that turn's end would have had it
+     * (the user called it off, or has it turned off). By the limit the session kept with its card, so it holds after a
+     * restart; refused once a message has come since, on another account, or with no reset time.
+     */
+    resumeAfterLimit() {
+        const n = this.session.notices.findLast((x) => x.level === "error" && x.limit);
+        const l = n?.limit;
+        if (!n || !l || this.session.messages.slice(n.index).some((m) => m.role === "user")) throw new RpcError("No turn is waiting on a usage limit", "invalid");
+        if (this.model?.provider !== l.provider || this.session.accountId(l.provider) !== l.accountId) throw new RpcError("The session is on another account or model now", "invalid");
+        if (l.resetsAt === undefined) throw new RpcError("When the limit resets isn't known: send a message once it has", "invalid");
+        const why = this.schedules.resumeAfter(l.resetsAt);
+        if (why) throw new RpcError(why, "invalid");
     }
 
     /** What a message steering the running turn can carry: anything for API models, what an agent CLI takes mid-turn. */

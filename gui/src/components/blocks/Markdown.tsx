@@ -1,7 +1,7 @@
 import { RenderBoundary } from "../ui/ErrorBoundary";
-import { createEffect, createMemo, createRenderEffect, Index, Match, onCleanup, Switch } from "solid-js";
+import { createEffect, createMemo, createRenderEffect, Index, Match, onCleanup, Switch, useContext } from "solid-js";
 import { MarkdownRenderer } from "../../lib/markdown";
-import { createReveal } from "../../lib/reveal";
+import { createReveal, DrawnAgain } from "../../lib/reveal";
 import { paint } from "../../lib/stream-dom";
 import { openExternal } from "../../lib/platform";
 import { openInEditor } from "../../state/actions";
@@ -91,12 +91,12 @@ function MarkdownContent(p: { text: string; streaming?: boolean; class?: string;
     const r = new MarkdownRenderer();
     // While it streams, the text comes out at an even pace (see lib/reveal.ts),
     // and it reads as streaming until the last of it has.
-    const [text, behind] = createReveal(() => p.text, () => Boolean(p.streaming));
+    const [text, behind] = createReveal(() => p.text, () => Boolean(p.streaming), useContext(DrawnAgain)());
     const live = () => Boolean(p.streaming) || behind();
     let root: HTMLDivElement | undefined;
     const images = createMemo(() => {
         if (!p.sessionId) return undefined;
-        const r = replyImages(p.sessionId);
+        const r = replyImages(p.sessionId, p.find);
         onCleanup(r.dispose);
         return r.load;
     });

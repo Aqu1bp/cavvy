@@ -2284,6 +2284,9 @@ export class Engine {
                 if (action !== "pause" && action !== "resume" && action !== "run" && action !== "delete") throw new RpcError("action must be pause, resume, run or delete", "invalid");
                 return { found: this.runtime(p.id).scheduleAction(text(p.scheduleId, "scheduleId", 40), action) };
             }
+            case "session.resumeAfterLimit":
+                this.runtime(p.id).resumeAfterLimit();
+                return null;
             case "session.dequeue": {
                 const q = this.runtime(p.id).dequeue(num(p.queueId, -1));
                 if (!q) return { removed: false };

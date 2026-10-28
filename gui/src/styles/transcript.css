@@ -1062,6 +1062,15 @@
     gap: calc(5 * var(--sp));
 }
 
+/* A plan's limit: while the session waits to pick up again by itself, a line under its sentence says when. */
+.ne-resume {
+    grid-column: 2;
+    margin-top: calc(1 * var(--sp));
+    font-size: 0.893rem;
+    line-height: 1.5;
+    color: var(--fg-3);
+}
+
 /* An account switch, between turns: neither yours (right) nor the reply (left), so one centred line across the
    column, hairlines either side, like a date in a chat. What its restart stopped is a second line, amber-marked. */
 .ev {

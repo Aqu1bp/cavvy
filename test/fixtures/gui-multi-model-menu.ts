@@ -101,6 +101,8 @@ function picker(available = true, more: { groups?: any[]; providers?: any[]; lim
     const find = (predicate: (n: Node) => boolean) => adapt(all(root).find(predicate)!);
     const trigger = find((n) => n.tag === "button" && n.props["aria-haspopup"] === "dialog");
     const key = (key: string, extra: Record<string, any> = {}) => {
+        // Nodes rendered since the picker opened (a heading, the accounts list) get their DOM methods too.
+        all(root).forEach(adapt);
         const target = doc.activeElement;
         const e = { key, target, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, stopPropagation() {}, ...extra };
         listener?.(e);
@@ -112,7 +114,8 @@ function picker(available = true, more: { groups?: any[]; providers?: any[]; lim
     for (const [id, cb] of frames) { frames.delete(id); cb(); }
     return { root, doc, trigger, key, open, comparePicks, chosen, warnings, accountPicks, find,
         tabs: () => all(root).filter((n) => n.props.role === "tab").map(adapt),
-        accountButtons: () => all(root).filter((n) => n.tag === "button" && n.props["aria-pressed"] !== undefined && (n.props.class ?? "").split(" ").includes("mp-ac")).map(adapt),
+        accountButton: () => find((n) => n.tag === "button" && (n.props.class ?? "").split(" ").includes("mp-acct-btn")),
+        accountItems: () => all(root).filter((n) => n.tag === "button" && (n.props.class ?? "").split(" ").includes("mp-acct-it")).map(adapt),
         search: () => find((n) => n.props.role === "combobox"),
         toggle: () => find((n) => n.props.role === "switch"),
         options: () => all(root).filter((n) => n.props.role === "option").map(adapt),
@@ -207,7 +210,7 @@ test("provider filters show one provider's models, by name alone; search finds e
     expect(f.chosen).toEqual(["api:big"]);
 });
 
-test("a subscription's accounts are buttons in its heading: the session's one pressed, a reached plan marked", () => {
+test("a subscription's account is a button in its heading, opening its accounts: the session's one checked, a reached plan marked", () => {
     const cli = { ref: "cli:fast", id: "fast", name: "Fast", provider: "cli" };
     const accounts = [{ id: "default", name: "Work", email: "w@example.com" }, { id: "p", name: "Personal", plan: "max" }];
     const f = picker(true, {
@@ -216,13 +219,30 @@ test("a subscription's accounts are buttons in its heading: the session's one pr
         limits: { [planLimitKey("cli", "p")]: { provider: "cli", accountId: "p", windows: [{ label: "5-hour", usedPercent: 100, reached: true }], at: 0 } },
     });
     f.tabs()[2].click();
-    const buttons = f.accountButtons;
-    expect(buttons().map(text)).toEqual(["Work", "Personallimit"]);
-    expect(buttons().map((r) => r.props["aria-pressed"])).toEqual([true, false]);
-    expect(buttons()[1].props.title).toBe("Max. Limit reached");
-    // Arrows don't switch accounts: only activating one does.
-    buttons()[0].focus(); f.key("ArrowRight");
+    const button = f.accountButton();
+    expect(text(button)).toBe("Work");
+    expect(button.props["aria-expanded"]).toBe(false);
+    expect(f.accountItems()).toEqual([]);
+    // From the keyboard, it opens on the session's account.
+    button.focus(); f.key("Enter");
+    expect(button.props["aria-expanded"]).toBe(true);
+    const items = f.accountItems;
+    expect(items().map(text)).toEqual(["Work", "PersonalLimit reached", "Add account"]);
+    expect(items().map((r) => r.props["aria-checked"])).toEqual([true, false, undefined]);
+    expect(items()[1].props.title).toBe("Max. Limit reached");
+    expect(f.doc.activeElement).toBe(items()[0]);
+    // Arrows move through the list; they don't switch accounts: only activating one does.
+    f.key("ArrowDown");
+    expect(f.doc.activeElement).toBe(items()[1]);
     expect(f.accountPicks).toEqual([]);
-    buttons()[1].focus(); f.key("Enter");
+    // Escape closes the list, not the picker, back on its button.
+    f.key("Escape");
+    expect(f.accountItems()).toEqual([]);
+    expect(f.open()).toBe(true);
+    expect(f.doc.activeElement).toBe(button);
+    f.key("ArrowDown");
+    f.key("ArrowDown"); f.key("Enter");
     expect(f.accountPicks).toEqual(["cli:p"]);
+    expect(f.accountItems()).toEqual([]);
+    expect(f.doc.activeElement).toBe(button);
 });

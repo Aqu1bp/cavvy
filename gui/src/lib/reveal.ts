@@ -10,7 +10,14 @@
 // still waiting finish at the same pace. Text that isn't streaming, or that
 // changed other than by growing, shows at once.
 
-import { createComputed, createSignal, onCleanup, untrack, type Accessor } from "solid-js";
+import { createComputed, createContext, createSignal, onCleanup, untrack, type Accessor } from "solid-js";
+
+/**
+ * True while a transcript draws what it already had (a session opened, or switched back to): its text is shown as
+ * far as it has come, not let out again from the start (which grew the reply, and moved the conversation, for the
+ * moment it took). Text that starts after that comes out as it streams.
+ */
+export const DrawnAgain = createContext<() => boolean>(() => false);
 
 /** How far behind the stream the text runs at most: what has arrived is out this long after the last of it came. */
 export const LAG_MS = 180;
@@ -45,11 +52,14 @@ export function revealEnd(text: string, pos: number, n: number): number {
     return end;
 }
 
-/** The text to show, and whether some of it is still to come out (the reply reads as streaming until it has). */
-export function createReveal(text: Accessor<string>, streaming: Accessor<boolean>): [Accessor<string>, Accessor<boolean>] {
+/**
+ * The text to show, and whether some of it is still to come out (the reply reads as streaming until it has).
+ * `again`: drawn again (DrawnAgain), so what has come shows at once.
+ */
+export function createReveal(text: Accessor<string>, streaming: Accessor<boolean>, again = false): [Accessor<string>, Accessor<boolean>] {
     let target = untrack(text);
     // New while the reply streams (not a block drawn again mid-reply): from its start, as the rest of it will come.
-    const fresh = untrack(streaming) && target.length <= MAX_FRESH && typeof requestAnimationFrame !== "undefined";
+    const fresh = !again && untrack(streaming) && target.length <= MAX_FRESH && typeof requestAnimationFrame !== "undefined";
     let pos = fresh ? 0 : target.length;
     const [shown, setShown] = createSignal(target.slice(0, pos));
     const [behind, setBehind] = createSignal(false);

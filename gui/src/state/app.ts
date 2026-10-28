@@ -6,7 +6,7 @@ import { batch, createEffect, createRoot, createSignal } from "solid-js";
 import { createStore, produce, reconcile, type SetStoreFunction } from "solid-js/store";
 import { planLimitKey, type PlanLimits } from "@shared/protocol";
 import type { AppUpdateInfo, GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
-import { applyOp, fromWireState, type SessionView } from "@shared/timeline";
+import { applyOp, fromWireLimits, fromWireState, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
 import { credentials, focused, notify, isDesktop, showWindow, windowKey } from "../lib/platform";
 import { prefs, setPrefs } from "./prefs";
@@ -593,7 +593,7 @@ let watchingEditor = false;
 
 export async function refreshLimits() {
     const limits = await rpc.call("limits.get", {});
-    setApp("limits", reconcile(Object.fromEntries(limits.map((l) => [planLimitKey(l.provider, l.accountId), l]))));
+    setApp("limits", reconcile(Object.fromEntries(limits.map((l) => [planLimitKey(l.provider, l.accountId), fromWireLimits(l)]))));
 }
 
 export async function refreshUpdate() {
@@ -739,7 +739,7 @@ function onEvent(ev: ServerEvent) {
             toast(ev.message, ev.level);
             return;
         case "limits":
-            setApp("limits", planLimitKey(ev.limits.provider, ev.limits.accountId), reconcile(ev.limits));
+            setApp("limits", planLimitKey(ev.limits.provider, ev.limits.accountId), reconcile(fromWireLimits(ev.limits)));
             return;
         case "keybindings.changed":
             keybindingsChanged(ev.keybindings);

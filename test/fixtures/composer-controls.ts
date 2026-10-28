@@ -65,7 +65,7 @@ let holdCommands = false;
 let holdSend: Promise<void> | undefined;
 const commentStore = createReviewCommentStore(() => undefined);
 const noop = () => undefined;
-const components = Object.fromEntries(["ArrowUp", "CornerDownRight", "QueueTab", "GoalTab", "FileText", "Folder", "ListEnd", "Paperclip", "Pencil", "Slash", "Sparkles", "SquareTerminal", "X", "ModelPicker", "EffortPicker", "AtSign", "ModePicker", "ComposerMeter", "AttachmentChips", "InteractionTab", "Popover", "Ring", "ReviewCommentChips", "BackgroundChip", "Maximize2", "Minimize2"].map((key) => [key, noop]));
+const components = Object.fromEntries(["ArrowUp", "CornerDownRight", "QueueTab", "GoalTab", "FileText", "Folder", "ListEnd", "Paperclip", "Pencil", "Slash", "Sparkles", "SquareTerminal", "X", "ModelPicker", "EffortPicker", "ModePicker", "ComposerMeter", "AttachmentChips", "InteractionTab", "Popover", "Ring", "ReviewCommentChips", "Maximize2", "Minimize2"].map((key) => [key, noop]));
 /** What the Steps strip was given: the session it's in and that session's view (StepsTray.tsx decides when it shows). */
 const stepsTrays: { sessionId: string; view: any }[] = [];
 const StepsTray = (p: { sessionId: string; view: any }) => void stepsTrays.push(p);
@@ -94,6 +94,7 @@ const deps = { ...solid, ...components, StepsTray, expandedDown, expandedHeight,
     splitComments, takesComments, withComments, plural, setReview: noop,
     aroundOf, reviewComments: commentStore, newCommentId: () => crypto.randomUUID(),
     createLifetimeGuard: () => (fn: any) => fn, wasDeleted: () => false,
+    fitComposerBar: () => noop,
     app: appState,
     handleFor: (id?: string) => id ? ({ id, view: { state: sessionState, turns }, draft: handedBack, setDraft: setHandedBack }) : undefined,
     contextCardOpen: () => false, setContextCardOpen: noop, contextView: () => ({ ring: false }),
@@ -413,18 +414,8 @@ setActivity({ label: "Compacting", since: Date.now() - 2000, idle: true });
 assert.ok(!renderedText.includes("Compacting"), "nor an idle compaction (the transcript's live line does)");
 setActivity({ label: "Running bun test", since: Date.now() });
 setWorking(false);
-// The mention button puts an @ at the caret (after a space) and asks for files.
-input("look at");
-const mentionsBefore = calls.filter((c) => c.method === "fs.mentions").length;
-nodes.findLast((n) => n.props["aria-label"] === "Mention a file").props.onClick();
-assert.equal(ta.props.value, "look at @");
-tick();
-assert.equal(ta.selectionStart, "look at @".length);
-await Bun.sleep(80);
-assert.equal(calls.filter((c) => c.method === "fs.mentions").length, mentionsBefore + 1);
-replies.at(-1)!.resolve([]);
-await Bun.sleep(0);
-input("");
+// No mention button: typing @ opens the file menu.
+assert.ok(!nodes.some((n) => n.props["aria-label"] === "Mention a file"));
 // Exercise the actual Home submit handler through the run-sheet controller.
 const sessionSends = sends;
 setSession(undefined);

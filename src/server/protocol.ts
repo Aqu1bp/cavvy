@@ -234,6 +234,8 @@ export interface NoticeData {
     stopped?: NoticeStopped;
     /** A plan limit: reached (warn), on credits (warn, `credits`), or stopping the turn (error). */
     limit?: NoticeLimit;
+    /** The agent CLI compacted its context: a rule across the column, as Cavvy's own compaction is. */
+    compacted?: true;
 }
 
 /** A background task an account switch's restart stopped. */
@@ -1757,6 +1759,8 @@ export interface Methods {
     "session.promptImages": { params: { id: string; seg: number; index: number }; result: { images: { mediaType: string; data: string }[] } };
     /** One of the session's schedules: pause, resume, run now, or delete. `found` false: it's gone already. */
     "session.schedule": { params: { id: string; scheduleId: string; action: "pause" | "resume" | "run" | "delete" }; result: { found: boolean } };
+    /** Pick up again by itself once the usage limit that stopped the last turn resets (after "Don't continue"). Refused, with why, when it can't. */
+    "session.resumeAfterLimit": { params: { id: string }; result: null };
     /** By the message's id (queueIds). With `edit`, the message comes back to put in the input box, images and files too. */
     "session.dequeue": { params: { id: string; queueId: number; edit?: boolean }; result: { removed: boolean; text?: string; images?: { mediaType: string; data: string }[]; files?: WireFile[] } };
     /** "Send now": steer the running turn with it, or run it now if none is running. `sent` false: it had already gone. */

@@ -1,6 +1,6 @@
-import { createEffect, createMemo, createSignal, createUniqueId, For, Match, on, onCleanup, Show, Switch, type JSX } from "solid-js";
+import { createEffect, createMemo, createSignal, createUniqueId, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
 import { isMod, mod } from "../lib/platform";
-import { ArrowUp, AtSign, CornerDownRight, Database, FileText, Folder, ListEnd, Maximize2, Minimize2, Paperclip, Slash, Sparkles, SquareTerminal } from "lucide-solid";
+import { ArrowUp, CornerDownRight, Database, FileText, Folder, ListEnd, Maximize2, Minimize2, Paperclip, Slash, Sparkles, SquareTerminal } from "lucide-solid";
 import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } from "@shared/protocol";
 import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
 import { interrupt, send, setMode } from "../state/actions";
@@ -16,10 +16,10 @@ import { InteractionTab } from "./InteractionDock";
 import { ScheduleTab } from "./ScheduleTab";
 import { GoalTab } from "./GoalTab";
 import { ComposerMeter } from "./ComposerMeter";
-import { BackgroundChip } from "./BackgroundTasks";
 import { AttachmentChips } from "./AttachmentChips";
 import { ReviewCommentChips } from "./ReviewCommentChips";
 import { splitComments, takesComments, withComments } from "../lib/review-comments";
+import { fitComposerBar } from "../lib/composer-fit";
 import { plural } from "../lib/format";
 import { aroundOf, newCommentId, reviewComments } from "../state/review-comments";
 import { blockedBy, fromWire, isLongPaste, pastedText, readAttachment } from "../lib/attachments";
@@ -33,6 +33,7 @@ import { composingKey, revealMenuOption } from "../lib/composer-menu";
 import { matchSkills, skillToken } from "../lib/commands";
 import { firstSendable, FOLLOW_UP_WORDS, followUpFor, followUpLabels, otherFollowUp, restoreWaits, withDraft } from "../lib/queue";
 import { canStop } from "../lib/session-status";
+import { listedSchedules } from "../lib/notices";
 import { QueueTab } from "./QueueTab";
 import { StepsTray } from "./StepsTray";
 
@@ -52,6 +53,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     let fileInput: HTMLInputElement | undefined;
     let box: HTMLDivElement | undefined;
     let root: HTMLDivElement | undefined;
+    let bar: HTMLDivElement | undefined;
+    // Tight, the controls give way a step at a time (lib/composer-fit.ts).
+    onMount(() => onCleanup(fitComposerBar(bar!)));
     const draftKey = () => p.sessionId ?? "home";
     const draft = createComposerDraft(draftKey, wasDeleted);
     const { text, setText, attachments, setAttachments } = draft;
@@ -618,24 +622,6 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const interactions = () => st()?.interactions ?? [];
     /** A turn runs, and no request card is up: what it's doing is the turn's live line (LiveLine.tsx), not a row here. */
     const working = () => Boolean(p.sessionId && busy() && !interactions().length);
-    /** Puts an @ where the caret is (after a space), which opens the file menu. */
-    const mention = () => {
-        if (!ta) return;
-        const start = ta.selectionStart ?? text().length;
-        const end = ta.selectionEnd ?? start;
-        const before = text().slice(0, start);
-        const ins = `${before && !/\s$/.test(before) ? " " : ""}@`;
-        histIdx = -1;
-        setText(before + ins + text().slice(end));
-        setMenuDismissedFor(undefined);
-        const pos = start + ins.length;
-        ta.focus();
-        requestAnimationFrame(() => {
-            ta!.setSelectionRange(pos, pos);
-            resize();
-            updateMenu();
-        });
-    };
 
     return (
         <div
@@ -749,8 +735,12 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 <Show when={p.sessionId ? st()?.goal : undefined}>
                     {(goal) => <GoalTab sessionId={p.sessionId!} goal={goal()} />}
                 </Show>
-                <Show when={p.sessionId && st()?.schedules?.length}>
-                    <ScheduleTab sessionId={p.sessionId!} items={st()!.schedules} />
+                <Show when={p.sessionId && st()?.schedules?.length ? listedSchedules(st()!.schedules, handleFor(p.sessionId)?.view.turns.at(-1)?.blocks) : undefined}>
+                    {(items) => (
+                        <Show when={items().length}>
+                            <ScheduleTab sessionId={p.sessionId!} items={items()} />
+                        </Show>
+                    )}
                 </Show>
                 <Show when={comments().length}>
                     <ReviewCommentChips
@@ -804,7 +794,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                         aria-activedescendant={menu().length ? `${menuId}-${menuSel()}` : undefined}
                     />
                 </div>
-                <div class="composer-bar">
+                <div ref={bar} class="composer-bar">
                     <input
                         ref={fileInput}
                         type="file"
@@ -820,17 +810,11 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     <button class="cb" title="Attach files" aria-label="Attach files" onClick={() => fileInput?.click()}>
                         <Paperclip size={16} />
                     </button>
-                    <Show when={p.sessionId}>
-                        <button class="cb" title="Mention a file (@)" aria-label="Mention a file" onClick={mention}>
-                            <AtSign size={16} />
-                        </button>
-                    </Show>
                     <span class="vsep" aria-hidden="true" />
                     <ModelPicker current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare} />
                     <EffortPicker current={st()?.model} currentRef={app.settings.model} effort={st() ? st()!.effort : app.settings.effort} fast={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy && !st()?.activity?.idle} open={effortOpen()} setOpen={setEffortOpen} placement={menuSide()} />
                     <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} open={modePickerOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
                     <span class="grow" />
-                    <BackgroundChip sessionId={p.sessionId} />
                     <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} home={p.variant === "home"} />
                     <span class="send-wrap">
                     <Show when={sendHint()}>

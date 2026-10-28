@@ -92,11 +92,31 @@
     color: var(--danger);
 }
 
-.usage-plan .plan-reached {
+/* A reached plan: the card's first row, edge to edge (the card's corners are its own), tinted. Past it on credits,
+   amber: turns go on. */
+.plan-reached {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
     padding: calc(10 * var(--sp)) calc(14 * var(--sp));
+    background: color-mix(in srgb, var(--danger) 9%, transparent);
     color: var(--danger);
-    font-weight: 500;
     font-size: 0.857rem;
+    font-weight: 500;
+}
+
+.plan-reached svg {
+    flex: none;
+}
+
+.plan-reached-when {
+    font-weight: 400;
+    opacity: 0.85;
+}
+
+.plan-reached.credits {
+    background: var(--warn-bg);
+    color: var(--warn);
 }
 
 /* ---- The local dashboard ---------------------------------------------------

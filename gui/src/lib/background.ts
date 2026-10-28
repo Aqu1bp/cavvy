@@ -52,11 +52,6 @@ export function finishedOf(tasks: readonly BackgroundTaskInfo[]): BackgroundTask
     return tasks.filter((t) => t.status !== "running").sort((a, b) => (b.endedAt ?? b.startedAt) - (a.endedAt ?? a.startedAt));
 }
 
-/** How many run now. */
-export function runningCount(tasks: readonly BackgroundTaskInfo[]): number {
-    return tasks.filter((t) => t.status === "running").length;
-}
-
 /** The kind, as a word for the row and its tooltip. */
 export function kindName(t: Pick<BackgroundTaskInfo, "kind">): string {
     return t.kind === "agent" ? "Sub-agent" : t.kind === "shell" ? "Shell" : t.kind === "monitor" ? "Monitor" : t.kind === "workflow" ? "Workflow" : "Task";
