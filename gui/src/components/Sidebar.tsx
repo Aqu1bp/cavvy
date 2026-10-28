@@ -9,9 +9,9 @@ import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronsUpD
 import type { SessionSummary } from "@shared/protocol";
 import { activate, app, handleFor, isUnread, refreshSessions, reportError } from "../state/app";
 import { createUpdateAction } from "./UpdateAction";
-import { archive, archiveSessions, askToDelete, chooseProject, newSession, openProject, openWaiting, pin, rename, settle, settleSessions, toggleSidebar } from "../state/actions";
+import { archive, archiveSessions, chooseProject, deleteSessions, newSession, openProject, openWaiting, pin, rename, settle, settleSessions, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
-import { agentFocus, setDeleteRequest, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
+import { agentFocus, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
 import { frameDrag } from "../lib/drag";
 import { ago, monogram, projectColor, since } from "../lib/format";
 import { holdSidebar, projectOf, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type SidebarEntry } from "../lib/session-order";
@@ -122,8 +122,8 @@ function BulkItems(p: { plan: BulkPlan; close: () => void; clear: () => void }) 
                 <X size={14} /> Clear selection
             </button>
             <div class="menu-sep" />
-            <button role="menuitem" class="menu-item compact danger" onClick={() => (p.close(), askToDelete(plan.delete))}>
-                <Trash2 size={14} /> Delete {n(plan.delete)}…
+            <button role="menuitem" class="menu-item compact danger" onClick={() => (p.close(), void deleteSessions(plan.delete))}>
+                <Trash2 size={14} /> Delete {n(plan.delete)}
             </button>
         </>
     );
@@ -165,8 +165,8 @@ function SingleItems(p: { s: SessionSummary; close: () => void; onRename: () => 
             <button role="menuitem" class="menu-item compact" onClick={() => (close(), void archive(p.s.id, !p.s.archived))}>
                 {p.s.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />} {p.s.archived ? "Restore" : "Archive"}
             </button>
-            <button role="menuitem" class="menu-item compact danger" onClick={() => (close(), setDeleteRequest({ id: p.s.id, title: p.s.title, projectName: p.s.projectName }))}>
-                <Trash2 size={14} /> Delete…
+            <button role="menuitem" class="menu-item compact danger" onClick={() => (close(), void deleteSessions([p.s.id]))}>
+                <Trash2 size={14} /> Delete
             </button>
         </>
     );
@@ -534,7 +534,7 @@ function SelectionBar(p: { count: number; plan: BulkPlan; act: (what: "settle" |
                     <ArchiveRestore size={15} />
                 </button>
             </Show>
-            <button class="hb rail-sel-del" title={withShortcut(`Delete ${n()}…`, "sidebar:deleteSelected")} aria-label={`Delete ${n()}…`} onClick={() => p.act("delete")}>
+            <button class="hb rail-sel-del" title={withShortcut(`Delete ${n()}`, "sidebar:deleteSelected")} aria-label={`Delete ${n()}`} onClick={() => p.act("delete")}>
                 <Trash2 size={15} />
             </button>
             <span class="rail-sel-sep" aria-hidden="true" />
@@ -807,7 +807,7 @@ export function Sidebar() {
     /** Settle, archive or delete what's selected (else the focused or open row), as a key or the bar asks. */
     const act = (what: "settle" | "archive" | "delete", ids: readonly string[]) => {
         const p = plan(ids);
-        if (what === "delete") return askToDelete(p.delete);
+        if (what === "delete") return void deleteSessions(p.delete);
         if (what === "settle") {
             if (p.settle.length) void settleSessions(p.settle, true);
             else if (p.unsettle.length) void settleSessions(p.unsettle, false);

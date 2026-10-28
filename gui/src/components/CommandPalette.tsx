@@ -8,7 +8,7 @@ import { terminalOpen, setTerminalOpen, paletteOpen, setAgentFocus, setJumpTarge
 import { ago, tildify } from "../lib/format";
 import { ModeIcon, MODES } from "./ModePicker";
 import { Dialog } from "./ui/Dialog";
-import { askDelete } from "./Header";
+import { deleteOpen } from "./Header";
 import { Spinner } from "./ui/bits";
 import { searchRounds } from "../lib/search";
 import { plainSnippet } from "../lib/plain-snippet";
@@ -144,7 +144,7 @@ export function CommandPalette() {
                 { id: "compact", section: "Session", label: "Compact conversation", icon: <Shrink size={15} />, run: () => void rpc.call("session.compact", { id: id()! }).catch(reportError) },
                 { id: "export", section: "Session", label: "Copy conversation as Markdown", icon: <Share size={15} />, run: () => void exportSession(id()!) },
                 { id: "archive", section: "Session", label: "Archive session", icon: <Archive size={15} />, run: () => void archive(id()!, true) },
-                { id: "delete", section: "Session", label: "Delete session…", icon: <Trash2 size={15} />, run: () => askDelete(handleFor(id())) },
+                { id: "delete", section: "Session", label: "Delete session", icon: <Trash2 size={15} />, run: () => deleteOpen(handleFor(id())) },
             );
             for (const m of MODES) out.push({ id: `mode-${m}`, section: "Permission mode", label: `Mode: ${MODE_LABELS[m].label}`, desc: MODE_LABELS[m].description, icon: <ModeIcon mode={m} size={15} />, run: () => void setMode(m) });
         }

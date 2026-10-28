@@ -8,10 +8,10 @@ import { Archive, ChevronDown, Copy, Ellipsis, FileDiff, FolderGit2, FolderOpen,
 import type { SessionState, SessionSummary, WorkingIn } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc, toast } from "../state/app";
-import { archive, editorName, exportSession, newSession, openInEditor, openReview, openWaiting, openWorktreeReview, refreshEditors, rename, togglePanel, toggleSidebar } from "../state/actions";
+import { archive, deleteSession, editorName, exportSession, newSession, openInEditor, openReview, openWaiting, openWorktreeReview, refreshEditors, rename, togglePanel, toggleSidebar } from "../state/actions";
 import { sessionReadReady, useGitChanges } from "../state/changes";
 import { prefs } from "../state/prefs";
-import { agentFocus, terminalOpen, setTerminalOpen, setRewindOpen, setDeleteRequest, openFind, review, setReview, setSettingsTab, setTitleBarBox, settingsTab, shellLayout } from "../state/ui";
+import { agentFocus, terminalOpen, setTerminalOpen, setRewindOpen, openFind, review, setReview, setSettingsTab, setTitleBarBox, settingsTab, shellLayout } from "../state/ui";
 import { copyText, isDesktop, os } from "../lib/platform";
 import { plural, tildify } from "../lib/format";
 import { asking, inFront, needsLine, needsPlace, needsYou } from "../lib/rail";
@@ -29,11 +29,9 @@ export function sessionTitle(h?: SessionHandle): string {
     return h?.view.state.title ?? (first !== undefined ? promptPreview(first).slice(0, 80) : undefined) ?? "New session";
 }
 
-/** Open the delete dialog for a session that's open (nothing to delete before its first prompt). */
-export function askDelete(h?: SessionHandle) {
-    if (!h?.view.turns.length) return;
-    const cwd = h.view.state.cwd;
-    setDeleteRequest({ id: h.id, title: sessionTitle(h), projectName: app.sessions.concat(app.archived).find((s) => s.id === h.id)?.projectName ?? (cwd.split("/").filter(Boolean).pop() || cwd) });
+/** Delete a session that's open, at once, with Undo (nothing to delete before its first prompt). */
+export function deleteOpen(h?: SessionHandle) {
+    if (h?.view.turns.length) void deleteSession(h.id);
 }
 
 /**
@@ -369,8 +367,8 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                             <button role="menuitem" class="menu-item compact" onClick={() => (close(), void archive(s().id, true))}>
                                 <Archive size={14} /> Archive
                             </button>
-                            <button role="menuitem" class="menu-item compact danger" disabled={!p.handle?.view.turns.length} onClick={() => (close(), askDelete(p.handle))}>
-                                <Trash2 size={14} /> Delete…
+                            <button role="menuitem" class="menu-item compact danger" disabled={!p.handle?.view.turns.length} onClick={() => (close(), deleteOpen(p.handle))}>
+                                <Trash2 size={14} /> Delete
                             </button>
                         </Menu>
                     </>

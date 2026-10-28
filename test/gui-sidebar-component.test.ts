@@ -40,7 +40,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
     const [settingsTab, setSettingsTab] = solid.createSignal<string>();
     const [agentFocus, setAgentFocus] = solid.createSignal<string>();
     const [railSelection, setRailSelection] = solid.createSignal<railSelect.RailSelection>(railSelect.NO_SELECTION);
-    const bulk = { settle: mock((_ids: readonly string[], _on: boolean) => Promise.resolve([] as string[])), archive: mock((_ids: readonly string[], _on: boolean) => Promise.resolve([] as string[])), askToDelete: mock((_ids: readonly string[]) => {}) };
+    const bulk = { settle: mock((_ids: readonly string[], _on: boolean) => Promise.resolve([] as string[])), archive: mock((_ids: readonly string[], _on: boolean) => Promise.resolve([] as string[])), deleteSessions: mock((_ids: readonly string[]) => Promise.resolve([] as string[])) };
     let reduced = false;
     const app = { get sessions() { return sessions(); }, get archived() { return archived(); }, get activeId() { return activeId(); }, projects: [], models: [], limits: {}, providers: [], get conn() { return conn(); }, get sessionsLoaded() { return sessionsLoaded(); }, get sessionsError() { return sessionsError(); } };
     const prefs = { get groupBy() { return groupBy(); }, get settledOpen() { return settledOpen(); }, get motion() { return motion(); }, get collapsedProjects() { return collapsedProjects(); } };
@@ -75,7 +75,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
     const icons = Object.fromEntries(["Archive", "ArchiveRestore", "Check", "CheckCheck", "ChevronsDownUp", "ChevronsUpDown", "ChevronUp", "CircleAlert", "Download", "Folder", "FolderPlus", "Hand", "Layers", "ListFilter", "MessageSquareText", "MoreHorizontal", "PanelLeft", "Pencil", "Pin", "PinOff", "Plus", "Search", "Settings", "SquarePen", "Trash2", "Undo2", "X", "ProviderIcon", "Logo", "Spinner"].map((name) => [name, () => null]));
     const scope = { renderer, ...solid, ...order, ...format, ...rail, ...railSelect, ...icons, sessionStatus, rowMenuKey, updateView, createUpdateAction: () => ({ request() {}, pending: () => false, Confirm: () => null }), app, prefs,
         railSelection, setRailSelection, actionOf: o.actionOf ?? (() => undefined),
-        settleSessions: bulk.settle, archiveSessions: bulk.archive, askToDelete: bulk.askToDelete,
+        settleSessions: bulk.settle, archiveSessions: bulk.archive, deleteSessions: bulk.deleteSessions,
         // Count work against layout keys, rather than timing a machine-dependent render.
         holdSidebar: (...args: Parameters<typeof order.holdSidebar>) => order.holdSidebar(...args).map((entry) => ({
             ...entry, get key() { entryKeyReads++; return entry.key; },
@@ -85,7 +85,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
         handleFor: () => undefined, isUnread: () => true, activate: setActiveId, openWaiting: setActiveId, refreshSessions, reportError,
         Menu: (p: any) => { menus.push(p); return solid.createMemo(() => p.open ? p.children : null); },
         isTauri: false, isDesktop: false, isElectron: false, mod: "⌘", os: "macos", toggleSidebar() {}, setPaletteOpen() {}, setSettingsTab() {}, shortcut: () => "⌘+K", withShortcut: (label: string) => label,
-        setDeleteRequest() {}, chooseProject() {}, newSession() {}, openProject() {}, pin() {}, rename() {}, archive() {}, settle() {},
+        chooseProject() {}, newSession() {}, openProject() {}, pin() {}, rename() {}, archive() {}, settle() {},
         requestAnimationFrame: (fn: () => void) => { frames.set(++sequence, fn); return sequence; },
         cancelAnimationFrame: (id: number) => frames.delete(id),
         matchMedia: () => ({ matches: reduced }),
@@ -552,7 +552,7 @@ for (const view of ["date", "project"]) {
             expect(hitOf(f, order[2]!).props["aria-label"]).toEndWith(", selected");
             // The bar: how many, and what applies.
             expect(f.descendants(bar(f)).some((n) => n.props?.class === "rail-sel-n")).toBe(true);
-            expect(barButtons(f)).toEqual(["Archive 5 sessions", "Clear selection", "Delete 5 sessions…", "Settle 5 sessions"]);
+            expect(barButtons(f)).toEqual(["Archive 5 sessions", "Clear selection", "Delete 5 sessions", "Settle 5 sessions"]);
             click(hitOf(f, order[3]!), { metaKey: true });
             expect(f.railSelection().ids).toEqual([order[1], order[2], order[4], order[5]]);
             click(hitOf(f, order[8]!), { metaKey: true });
@@ -583,8 +583,8 @@ test("the selection bar and a selected row's menu act on the whole selection", (
         click(hitOf(f, order[0]!));
         click(hitOf(f, order[2]!), { shiftKey: true });
         const picked = order.slice(0, 3);
-        f.descendants(bar(f)).find((n) => n.props?.["aria-label"] === "Delete 3 sessions…").props.onClick();
-        expect(f.bulk.askToDelete).toHaveBeenLastCalledWith(picked);
+        f.descendants(bar(f)).find((n) => n.props?.["aria-label"] === "Delete 3 sessions").props.onClick();
+        expect(f.bulk.deleteSessions).toHaveBeenLastCalledWith(picked);
         f.descendants(bar(f)).find((n) => n.props?.["aria-label"] === "Archive 3 sessions").props.onClick();
         expect(f.bulk.archive).toHaveBeenLastCalledWith(picked, true);
         // Right-click on a selected row: the menu is about all of them.
@@ -615,7 +615,7 @@ test("archived rows offer Restore and Delete; switching lists clears the selecti
         click(hitOf(f, "0"));
         click(hitOf(f, "2"), { shiftKey: true });
         expect(f.railSelection().ids).toEqual(["0", "1", "2"]);
-        expect(barButtons(f)).toEqual(["Clear selection", "Delete 3 sessions…", "Restore 3 sessions"]);
+        expect(barButtons(f)).toEqual(["Clear selection", "Delete 3 sessions", "Restore 3 sessions"]);
         f.descendants(bar(f)).find((n) => n.props?.["aria-label"] === "Restore 3 sessions").props.onClick();
         expect(f.bulk.archive).toHaveBeenLastCalledWith(["0", "1", "2"], false);
         f.nodes.findLast((n) => n.props.class === "shelf-btn" && n.props.onClick?.toString().includes("setShowArchived")).props.onClick();
@@ -635,7 +635,7 @@ test("rail keys: select all, act on the selection (else the open row), Esc clear
         expect(f.bulk.settle).toHaveBeenLastCalledWith(f.ids, true);
         next = "sidebar:deleteSelected";
         key(f, "Backspace");
-        expect(f.bulk.askToDelete).toHaveBeenLastCalledWith(f.ids);
+        expect(f.bulk.deleteSessions).toHaveBeenLastCalledWith(f.ids);
         next = undefined;
         expect(key(f, "Escape").defaultPrevented).toBe(true);
         expect(f.railSelection().ids).toEqual([]);

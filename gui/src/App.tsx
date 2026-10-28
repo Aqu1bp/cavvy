@@ -37,7 +37,6 @@ import { TrustDialog } from "./components/TrustDialog";
 import { PlanDialogs } from "./components/PlanDialogs";
 import { ArchiveDialog } from "./components/ArchiveDialog";
 import { RunSheet } from "./components/RunSheet";
-import { DeleteSessionDialog } from "./components/DeleteSessionDialog";
 import { CommitDialog } from "./components/CommitDialog";
 import { ImageViewer } from "./components/ImageViewer";
 import { Logo, Spinner } from "./components/ui/bits";
@@ -568,7 +567,6 @@ export function App() {
             <PlanDialogs />
             <ArchiveDialog />
             <RunSheet />
-            <DeleteSessionDialog />
             <CommitDialog />
             <ImageViewer />
             <Show when={isElectron}>

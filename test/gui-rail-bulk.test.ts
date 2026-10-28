@@ -3,9 +3,8 @@
 // of them; the ones that fail are named and stay selected.
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { app, dismissToast, rpc, runToastAction, setApp, toasts } from "../gui/src/state/app";
-import { archiveSessions, askToDelete, deleteSessions, settleSessions } from "../gui/src/state/actions";
+import { archiveSessions, deleteSessions, settleSessions } from "../gui/src/state/actions";
 import { railSelection, setRailSelection } from "../gui/src/state/sidebar";
-import { deleteRequest, setDeleteRequest } from "../gui/src/state/ui";
 import { UNDO_DELETE_MS } from "../gui/src/lib/toasts";
 import { RpcError } from "../gui/src/lib/rpc";
 import type { SessionSummary } from "../src/server/protocol";
@@ -36,7 +35,6 @@ afterEach(() => {
     else Reflect.deleteProperty(globalThis, "document");
     setApp({ sessions: original.sessions, archived: original.archived, activeId: original.activeId, homeCwd: original.homeCwd });
     setRailSelection({ ids: [] });
-    setDeleteRequest(undefined);
 });
 
 const calls = (call: { mock: { calls: unknown[][] } }, method: string) => call.mock.calls.filter((c) => c[0] === method).map((c) => (c[1] as { id: string }).id).sort();
@@ -149,9 +147,16 @@ test("one session goes the single way: its own toast, and archiving asks about a
     }
 });
 
-test("the delete dialog asks about one session with its project, or several by name", () => {
-    askToDelete(["a"]);
-    expect(deleteRequest()).toEqual({ id: "a", title: "A", projectName: "p" });
-    askToDelete(["a", "b", "x"]);
-    expect(deleteRequest()).toEqual({ ids: ["a", "b", "x"], titles: ["A", "B", "X"] });
+test("deleting asks nothing first, and with nothing picked it does nothing", async () => {
+    const call = spyOn(rpc, "call").mockResolvedValue(null);
+    try {
+        expect(await deleteSessions([])).toEqual([]);
+        expect(call).not.toHaveBeenCalled();
+        expect(toasts).toHaveLength(0);
+        await deleteSessions(["a", "x"]);
+        expect(calls(call, "session.delete")).toEqual(["a", "x"]);
+        expect(toasts.map((t) => t.action?.label)).toEqual(["Undo"]);
+    } finally {
+        call.mockRestore();
+    }
 });
