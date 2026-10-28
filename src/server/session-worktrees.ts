@@ -4,7 +4,7 @@
 // the repository's config runs (see git-changes.ts).
 
 import { readFileSync, realpathSync } from "fs";
-import { basename, dirname, join, resolve } from "path";
+import { basename, dirname, join, resolve, sep } from "path";
 import { defaultBase, git } from "./git-changes";
 import type { SessionWorktreeInfo, WorktreeInfo } from "./protocol";
 import { RpcError } from "./rpc-error";
@@ -95,6 +95,21 @@ export function sameFolder(a: string | undefined, b: string): boolean {
         return join(canonical(dirname(full)), basename(full));
     };
     return a !== undefined && place(a) === place(b);
+}
+
+/**
+ * The other worktree of the repository `cwd` is in that the agent works in when it's in `folder`: the innermost one git
+ * lists that holds it (a worktree under .claude/worktrees is inside the main checkout's folder). Undefined when that's the
+ * session's own worktree, when the folder is in none of them (outside the repository) or is gone, or when git can't say.
+ */
+export function workingWorktree(cwd: string, folder: string): WorktreeInfo | undefined {
+    const at = canonical(folder);
+    const holds = (w: WorktreeInfo) => {
+        const dir = canonical(w.path);
+        return at === dir || at.startsWith(dir.endsWith(sep) ? dir : dir + sep);
+    };
+    const inner = listed(cwd).filter((w) => w.exists && w.prunable === undefined && holds(w)).sort((a, b) => canonical(b.path).length - canonical(a.path).length)[0];
+    return inner && !inner.current ? inner : undefined;
 }
 
 /** The repository's worktrees, each with how far its HEAD is ahead of the main branch and when it was committed. */

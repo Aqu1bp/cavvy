@@ -135,7 +135,9 @@ export type Line =
     /** A background task as it is now (the last line for its id wins): started, or ended. Older versions skip these lines. */
     | { t: "bgtask"; task: BackgroundTaskInfo }
     /** `model` refused a request for the images of the messages at `indexes` (see refuseImages). Older versions skip these lines. */
-    | { t: "imagesRefused"; model: string; indexes: number[] };
+    | { t: "imagesRefused"; model: string; indexes: number[] }
+    /** The other worktree of its repository the agent works in now (it entered one); null when it's back in the session's folder. Older versions skip these lines. */
+    | { t: "workdir"; path: string | null };
 
 /**
  * Where an imported session came from. It stays in the file for good, so the
@@ -266,6 +268,8 @@ export class Session {
     /** Plans presented, oldest first (the last few). */
     plans: PresentedPlan[] = [];
     planLinks: PlanLink[] = [];
+    /** The other worktree of its repository the agent works in now (setWorkdir), as last written; unset in the session's own folder. */
+    workdir?: string;
     /** Where each native thread lives (its home, and that home's history), separate from the public resume map. */
     private backendPlaces = new Map<string, AccountPlace>();
     /** Native threads set aside for their places (ParkedBackend). */
@@ -325,6 +329,8 @@ export class Session {
         if (this.model) copy.setModel(this.model);
         if (this.fastMode !== undefined) copy.setFastMode(this.fastMode);
         if (this.title) copy.setTitle(this.title);
+        // Where the conversation was: the copy goes on there (its agent CLI's forked thread does too).
+        if (this.workdir) copy.setWorkdir(this.workdir);
         if (this.summary !== undefined) copy.compact(this.summary, []);
         for (const message of this.messages) copy.push(structuredClone(message));
         if (opts.shareBackends) for (const [provider, b] of this.backends) {
@@ -512,6 +518,13 @@ export class Session {
     setTitle(title: string) {
         this.title = title;
         this.write({ t: "title", title });
+    }
+
+    /** The agent moved to another worktree (`path`), or back to the session's own folder (undefined). Written only when it changes. */
+    setWorkdir(path: string | undefined) {
+        if (this.workdir === path) return;
+        this.workdir = path;
+        this.write({ t: "workdir", path: path ?? null });
     }
 
     /** Keep a note of how the current turn ended (redacted, like everything written), with what it is (NoticeData). */
@@ -917,6 +930,7 @@ export class Session {
             else if (l.t === "model") s.model = l.model;
             else if (l.t === "fastMode" && typeof l.enabled === "boolean") s.fastMode = s.savedFastMode = l.enabled;
             else if (l.t === "title") s.title = l.title;
+            else if (l.t === "workdir") s.workdir = typeof l.path === "string" && l.path ? l.path : undefined;
             else if (l.t === "goal") s.goal = validGoal(l.goal);
             else if (l.t === "imagesRefused" && typeof l.model === "string" && Array.isArray(l.indexes)) {
                 for (const i of l.indexes) if (typeof i === "number" && s.messages[i]) markRefused(s.messages[i]!, l.model);

@@ -432,7 +432,7 @@ export function checkCreate(cwd: string): string {
 }
 
 /** Keep managed checkouts out of status and git add in every worktree, without changing tracked files. */
-function excludeManagedWorktrees(main: string, log?: Log) {
+export function excludeManagedWorktrees(main: string, log?: Log) {
     try {
         const common = runGit(main, ["rev-parse", "--git-common-dir"])?.replace(/\n$/, "");
         if (!common) throw new Error("Couldn't find the common Git directory.");

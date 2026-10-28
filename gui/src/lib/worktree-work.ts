@@ -3,7 +3,7 @@
 // src/server/worktree-agents.ts), and the reader's choice of worktree, with
 // the views each worktree has.
 
-import type { SessionSummary, WorktreeAgent } from "@shared/protocol";
+import type { SessionSummary, WorkingIn, WorktreeAgent } from "@shared/protocol";
 import { normalPath, worktreeOf } from "@shared/worktree-agents";
 import type { ReviewScope } from "../state/changes";
 
@@ -41,6 +41,9 @@ export function worktreeWork(
     return out;
 }
 
+/** The branch of the worktree the agent works in (SessionState.workingIn), as the header names it. */
+export const workingBranch = (w: WorkingIn) => w.branch || (w.head ? `Detached · ${w.head.slice(0, 7)}` : "Worktree");
+
 // ---------------------------------------------------------------------------
 // The reader's choice
 
@@ -76,6 +79,16 @@ export function pickWorktree(cur: ReviewPlace, worktree: string | undefined): Re
  */
 export function requestWorktree(cur: ReviewPlace, worktree: string): ReviewPlace {
     return { ...pickWorktree(cur, worktree), scope: "branch", base: undefined };
+}
+
+/**
+ * The agent moved (SessionState.workingIn): into another worktree, the reader goes there, on its branch; back to the
+ * session's own folder, the reader leaves the worktree it moved out of (`was`) and comes back too. Another worktree the
+ * user picked stays.
+ */
+export function followAgent(cur: ReviewPlace, now: string | undefined, was: string | undefined): ReviewPlace {
+    if (now !== undefined) return now === cur.worktree ? cur : requestWorktree(cur, now);
+    return was !== undefined && cur.worktree === was ? pickWorktree(cur, undefined) : cur;
 }
 
 /** A view picked: another worktree takes only Git's (the others are disabled there, but just in case). */

@@ -63,7 +63,8 @@ import { RpcError } from "./rpc-error";
 import { fileDiff, textOf as bufText, trimInput } from "./diffs";
 import { gitChanges } from "./git-changes";
 import { GitHandles, redactedError } from "./git-handles";
-import { sessionWorktree, sessionWorktrees } from "./session-worktrees";
+import { sessionWorktree, sessionWorktrees, workingWorktree } from "./session-worktrees";
+import { excludeManagedWorktrees, mainCheckoutOf } from "./worktrees";
 import { gitPublishInfo, gitPublish, gitPrState } from "./git-publish";
 import { COMMIT_MESSAGE_SYSTEM, gitCommit, gitCommitPrompt } from "./git-commit";
 import { AGENT_KEPT, agentFromCall, agentHead, agentStep, agentsFromTurns, cutOffPrompt, INTERRUPTED, isPrompt, runsAgent, promptKey, promptText, liveNotice, noticeBlock, readSegments, replay, resultPatch, shownStep, STEERING, toolBlockFromCall, UiLog, withoutActionsNote, type AgentHead, type ToolMeta } from "./history";
@@ -95,6 +96,7 @@ import type {
     SessionOp,
     SessionSnapshot,
     SessionState,
+    WorkingIn,
     ToolBlock,
     ToolCategoryId,
     Turn,
@@ -406,6 +408,9 @@ export class Runtime {
         if (effort && EFFORT_LEVELS.includes(effort)) this.effort = effort;
         // Secrets live as long as the session is loaded: unloading it (closed, or idle with no window on it) drops them.
         this.toolState = { cwd: ws.cwd, projectRoot: ws.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore(), wakes: new WakeQueue(), watchers: new WatcherMap(), background: new SessionBackground(session) };
+        // The worktree the agent moved to, if it's still one.
+        this.workingIn = session.workdir ? this.worktreeAt(session.workdir) : undefined;
+        this.placeAgent(parseModelRef(session.model ?? "")?.provider);
         this.toolState.background!.onChange(() => this.syncBackground());
         // The browser exists from the start, so the window hears of the first page the agent opens (it makes no process until then).
         this.toolState.browser = new BrowserSession({ root: ws.cwd, settings: () => this.settings(), refuse: (url, approved) => this.checker.urlRefusal(url, approved) });
@@ -547,6 +552,7 @@ export class Runtime {
             persisted: existsSync(this.session.path),
             trusted: this.ws.trusted,
             branch,
+            ...(this.workingIn ? { workingIn: this.workingIn } : {}),
             mode: this.mode,
             accounts: { "claude-code": this.session.accountId("claude-code"), codex: this.session.accountId("codex") },
             bypassAllowed: this.bypassAllowed(),
@@ -1445,10 +1451,20 @@ export class Runtime {
         return { title, category: (tool?.category ?? (call.name.startsWith("mcp__") ? "mcp" : undefined)) as ToolCategoryId | undefined };
     }
 
+    /**
+     * Where an agent on `provider` starts while the session is in another worktree. Claude Code keeps its folder with its
+     * session and goes back to a worktree it entered as it resumes, from where it was started: the session's folder. Any
+     * other agent works in the folder Cavvy gives it: the worktree.
+     */
+    private placeAgent(provider: string | undefined) {
+        if (this.workingIn) this.toolState.cwd = provider === "claude-code" ? this.ws.cwd : this.workingIn.path;
+    }
+
     private makeAgent() {
         if (!this.model || !this.client) return;
         // Tasks the old one delegated stop with it.
         void this.agent?.dispose();
+        this.placeAgent(this.model.provider);
         this.agent = new Agent({
             session: this.session,
             trusted: () => this.ws.trusted,
@@ -1817,6 +1833,9 @@ export class Runtime {
                 break;
             case "cli_commands":
                 this.engine.cliCommandsReported(e.provider, this.ws.cwd, e.names);
+                break;
+            case "cwd":
+                this.followCwd(e.cwd);
                 break;
             case "turn_end":
                 this.closeOpen();
@@ -2194,6 +2213,55 @@ export class Runtime {
         if (this.uiTurn) this.ui.write({ t: "turn", ...this.uiTurn, end, status });
         this.uiTurn = undefined;
         this.recordState();
+        // The turn may have switched branches, here or in the worktree it works in.
+        this.showWorkingIn(this.workingIn && this.worktreeAt(this.workingIn.path));
+    }
+
+    /** The other worktree the agent works in (SessionState.workingIn), as last shown. */
+    private workingIn?: WorkingIn;
+
+    /** The folders the session is open in: its own, and the worktree its agent works in, if it moved to one. */
+    get folders(): string[] {
+        return this.workingIn ? [this.ws.cwd, this.workingIn.path] : [this.ws.cwd];
+    }
+    /** The folder the agent last said it works in (AgentEvent cwd): Claude Code says so at each turn's start. */
+    private reportedCwd?: string;
+
+    /**
+     * The other worktree of the session's repository `folder` is in, as the header shows it; undefined for the session's own.
+     * `exclude`: one in .claude/worktrees (where Claude Code's EnterWorktree makes them) is kept out of the main checkout's
+     * changes, as Cavvy's own are; other sessions there would list it as a new file.
+     */
+    private worktreeAt(folder: string, o: { exclude?: boolean } = {}): WorkingIn | undefined {
+        if (folder === this.ws.cwd) return undefined;
+        const w = workingWorktree(this.ws.cwd, folder);
+        if (w?.managed && o.exclude) {
+            try {
+                excludeManagedWorktrees(mainCheckoutOf(this.ws.cwd));
+            } catch {
+                // Not excluded: it shows as a new folder there, as before.
+            }
+        }
+        return w && { path: w.path, ...(w.branch ? { branch: w.branch } : {}), ...(w.detached && w.head ? { head: w.head } : {}) };
+    }
+
+    /** The agent works in `cwd` now: in another worktree of the session's repository, or not. Only a change is looked into. */
+    private followCwd(cwd: string) {
+        if (cwd === this.reportedCwd) return;
+        this.reportedCwd = cwd;
+        this.showWorkingIn(this.worktreeAt(cwd, { exclude: true }));
+    }
+
+    /** The worktree the agent works in (none: the session's own folder), kept with the session, and the branches the header shows. */
+    private showWorkingIn(w: WorkingIn | undefined) {
+        if (this.closed) return;
+        this.workingIn = w;
+        this.session.setWorkdir(w?.path);
+        const patch: Partial<SessionState> = {};
+        if (JSON.stringify(w) !== JSON.stringify(this.view.state.workingIn)) patch.workingIn = w;
+        const branch = gitBranch(this.ws.cwd);
+        if (branch !== this.view.state.branch) patch.branch = branch;
+        if (Object.keys(patch).length) this.setState(patch);
     }
 
     // -----------------------------------------------------------------------

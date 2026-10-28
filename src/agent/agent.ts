@@ -76,7 +76,8 @@ import { offered } from "../tools/index";
 import { lostNote, SessionBackground, type BackgroundTaskInfo } from "./background";
 import { SECRET_INSTRUCTIONS, secretTools, secretToolTitle } from "./secret-tools";
 import { readFile } from "fs/promises";
-import { join, relative } from "path";
+import { isAbsolute, join, relative, resolve } from "path";
+import { shellWords, toolPaths } from "../server/worktree-agents";
 import { BashTool } from "../tools/bash";
 import { LspManager, DIAGNOSED_TOOLS, MAX_FILE_CHARS } from "../lsp/manager";
 import { BrowserSession } from "../browser/session";
@@ -136,6 +137,11 @@ export type AgentEvent =
     | { type: "cli_commands"; provider: string; names: string[] }
     /** The goal an agent CLI keeps itself (src/agent/goal.ts NativeGoal); null when it has none. */
     | { type: "goal"; goal: NativeGoal | null }
+    /**
+     * The folder the agent works in now, as it reports it: Claude Code's at each turn's start and as it enters or leaves
+     * a worktree (EnterWorktree, ExitWorktree), Cavvy's own after a cd or its own EnterWorktree. Not a sub-agent's.
+     */
+    | { type: "cwd"; cwd: string }
     | { type: "turn_end"; reason: TurnEndReason };
 
 export type TurnEndReason = "done" | "aborted" | "error" | "denied" | "max_turns" | "blocked";
@@ -551,7 +557,8 @@ export class Agent {
         // Edits are saved into this session's file history; sub-agents get their parent's.
         if (!o.isSubagent) {
             this.state.fileHistory = FileHistory.for(o.session);
-            this.turnSnapshots = TurnSnapshots.for(o.session, this.state.cwd);
+            // The session's own folder's, wherever its agent works now (a worktree it moved to, kept when the session was reopened).
+            this.turnSnapshots = TurnSnapshots.for(o.session, this.state.projectRoot);
             // Language servers start on the first edit they handle and outlive this Agent (a model switch makes a new one).
             const root = this.state.projectRoot;
             this.state.lsp ??= new LspManager({ root, settings: o.settings, trusted: () => userTrusts(root) });
@@ -1219,10 +1226,33 @@ export class Agent {
     }
 
     private emit(e: AgentEvent) {
+        this.noteReach(e);
         try {
             this.o.host.emit(e);
         } catch {
             // UI errors must not break the loop
+        }
+    }
+
+    /** Where the agent works now, as it last said (AgentEvent cwd): an agent CLI's can differ from the folder it started in. */
+    private workingAt?: string;
+
+    /**
+     * Where the open turn reaches, for its snapshot to tell the worktrees it worked in from ones that only changed
+     * meanwhile (TurnSnapshots.reach): the folder the agent works in, and what its tool calls name (a relative path
+     * from that folder), its sub-agents' too.
+     */
+    private noteReach(e: AgentEvent) {
+        const snapshots = this.turnSnapshots;
+        if (!snapshots) return;
+        if (e.type === "cwd") {
+            this.workingAt = e.cwd;
+            snapshots.reach([e.cwd]);
+        } else if (e.type === "tool_start") {
+            const here = this.workingAt ?? this.state.cwd;
+            if (!readsOnly(e)) snapshots.reach([here, ...reachedBy(e, here)]);
+        } else if (e.type === "subagent") {
+            snapshots.reach(reachedBy(e.event));
         }
     }
 
@@ -1299,6 +1329,7 @@ export class Agent {
     /** The session's working directory moved (Bash cd, or the user's own shell command). */
     async cwdChanged(from: string) {
         if (from === this.state.cwd) return;
+        this.emit({ type: "cwd", cwd: this.state.cwd });
         await this.hooks("CwdChanged", { old_cwd: from, new_cwd: this.state.cwd });
     }
 
@@ -3547,6 +3578,8 @@ export class Agent {
         if (def.isolation === "worktree") {
             try {
                 worktree = await createAgentWorktree({ cwd: this.state.cwd, projectRoot: this.state.projectRoot, agent: def.name });
+                // Its turn reaches the worktree its sub-agent works in (whose calls may name paths relative to it).
+                this.turnSnapshots?.reach([worktree.path]);
             } catch (e) {
                 return fail(`Couldn't create a git worktree for the ${def.name} agent (it has isolation: worktree): ${redact((e as Error).message ?? String(e))}`);
             }
@@ -3838,6 +3871,46 @@ export function readOnlyBackendMode(mode: PermissionMode, provider: string): Per
     if (mode === "plan") return "plan";
     return mode === "auto" && provider === "codex" ? "auto" : "default";
 }
+
+/** A call that only reads (Read, Grep, a read-only command, as the permission check takes them): it can't have changed a worktree it names. */
+function readsOnly(e: Extract<AgentEvent, { type: "tool_start" }>): boolean {
+    const tool = e.tool;
+    if (!tool) return false;
+    const input = (e.call.input ?? {}) as Record<string, unknown>;
+    try {
+        return tool.category === "read" || isReadOnly(tool, input) || (tool.name === "Bash" && isReadOnlyCommand(String(input.command ?? "")));
+    } catch {
+        return false;
+    }
+}
+
+/** The paths a tool call names (absolute, or relative to `here` when that's known), a sub-agent's nested ones too; none for one that only reads. */
+function reachedBy(e: AgentEvent, here?: string): string[] {
+    if (e.type === "subagent") return reachedBy(e.event);
+    if (e.type === "cwd") return [e.cwd];
+    if (e.type !== "tool_start" || readsOnly(e)) return [];
+    const input = (e.call.input ?? {}) as Record<string, unknown>;
+    const out = toolPaths({ name: e.call.name, input }, undefined, here);
+    const named = (v: unknown) => {
+        if (typeof v === "string" && v && !isAbsolute(v) && !v.startsWith("~") && here) out.push(resolve(here, v));
+    };
+    // An agent CLI's own tools name theirs as they like (OpenCode's filepath, parentDir): any absolute path is one.
+    for (const v of Object.values(input)) if (typeof v === "string" && isAbsolute(v) && !v.includes("\n")) out.push(v);
+    for (const k of ["file_path", "notebook_path", "path", "cwd", "workdir", "filePath", "filepath", "target_file"]) named(input[k]);
+    // A command's other paths too (`printf … > /a/worktree/file`, `--out=dir/file`): the files it writes, as far as its words say.
+    if (typeof input.command === "string" && SHELL_TOOL.test(e.call.name)) {
+        for (const w of shellWords(input.command)) {
+            const p = w.replace(/^(?:[A-Za-z0-9_-]*=|\d*[<>]+[&|]?|&>>?)/, "");
+            if (!p.includes("/") || /[$`]/.test(p)) continue;
+            if (isAbsolute(p)) out.push(p);
+            else named(p);
+        }
+    }
+    return out;
+}
+
+/** The tools whose `command` is a shell's (toolPaths). */
+const SHELL_TOOL = /^(Bash|Shell|shell|exec_command)$/;
 
 /** The server of an MCP tool's name (mcp__server__tool). */
 function mcpServerOf(name: string): string | undefined {

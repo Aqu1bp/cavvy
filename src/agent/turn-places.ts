@@ -16,6 +16,7 @@ import { dirname, join, relative, resolve } from "path";
 import { git, gitChanges } from "../server/git-changes";
 import type { GitChangesInfo, TurnPlace } from "../server/protocol";
 import { sameFolder } from "../server/session-worktrees";
+import { normalPath, worktreeOf } from "../server/worktree-agents";
 
 /** Worktrees fingerprinted and summed up per turn, at most: past this many, the rest go unseen. */
 export const MAX_PLACES = 16;
@@ -90,6 +91,34 @@ export function insideRoot(places: readonly Worktree[], root: string): Set<strin
         out.add(`${rel}/`);
     }
     return out;
+}
+
+/**
+ * Of the worktrees that `changed`, the ones a turn reached: each path in `reached` (where its agent worked, the files and
+ * folders its tool calls named) counts for the deepest of `folders` (the session's own and each nearby worktree) holding
+ * it, so a file of a worktree inside the main checkout's folder is that worktree's, not the checkout's. A path is matched
+ * as given, then with its links resolved.
+ */
+export function reachedPlaces<T extends { path: string }>(changed: readonly T[], folders: readonly string[], reached: Iterable<string>): T[] {
+    if (!changed.length) return [];
+    // Each folder by both its forms (as listed, links resolved), /private/tmp and /tmp alike (normalPath).
+    const byForm = new Map<string, string>();
+    for (const f of folders) for (const form of [f, canonical(f)]) {
+        const n = normalPath(form);
+        if (n && !byForm.has(n)) byForm.set(n, f);
+    }
+    const forms = [...byForm.keys()];
+    const folderOf = (p: string) => {
+        const n = normalPath(p);
+        const w = n ? worktreeOf(n, forms) : undefined;
+        return w ? byForm.get(w) : undefined;
+    };
+    const hit = new Set<string>();
+    for (const p of reached) {
+        const f = folderOf(p) ?? folderOf(canonical(p));
+        if (f) hit.add(f);
+    }
+    return changed.filter((w) => hit.has(w.path));
 }
 
 /**

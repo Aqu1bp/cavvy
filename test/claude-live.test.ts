@@ -1827,3 +1827,35 @@ describe("steering: a message sent while Claude Code works goes to it at once", 
         watch.dispose();
     });
 });
+
+describe("where the session works (AgentEvent cwd)", () => {
+    test("live: each turn's system/init says where it works, and EnterWorktree and ExitWorktree say where it moved", async () => {
+        process.env.FAKE_SCENARIO = "enter-worktree";
+        process.env.FAKE_SECOND_SCENARIO = "exit-worktree";
+        const { run, events } = await makeAgent();
+        const moves = () => events.flatMap((e) => (e.type === "cwd" ? [e.cwd] : []));
+        const here = realpathSync(cwd);
+        const wt = join(here, ".claude", "worktrees", "wt");
+        expect(await run("Make a worktree.")).toBe("done");
+        await until(() => moves().length === 2, 3000, "both reports");
+        expect(moves()).toEqual([here, wt]);
+        // The next turn begins in the worktree (Claude Code keeps it), then leaves it.
+        expect(await run("Leave the worktree.")).toBe("done");
+        await until(() => moves().length === 4, 3000, "both reports");
+        expect(moves().slice(2)).toEqual([wt, here]);
+        // One process all along: its folder moved, not the process.
+        expect(starts()).toHaveLength(1);
+    });
+
+    test("one process per turn (live sessions off): the same reports", async () => {
+        process.env.FAKE_SCENARIO = "enter-worktree";
+        const { run, events } = await makeAgent({ settings: { agentCli: { liveSessions: false } } });
+        const here = realpathSync(cwd);
+        const wt = join(here, ".claude", "worktrees", "wt");
+        expect(await run("Make a worktree.")).toBe("done");
+        expect(await run("Again.")).toBe("done");
+        // A process each (the fake starts each one in its own folder; the real one resumes into the worktree).
+        expect(starts()).toHaveLength(2);
+        expect(events.flatMap((e) => (e.type === "cwd" ? [e.cwd] : []))).toEqual([here, wt, here, wt]);
+    });
+});

@@ -9,6 +9,7 @@ import { GlobTool, GrepTool, LSTool } from "./search-tools";
 import { WebFetchTool, WebSearchTool } from "./web-tools";
 import { GitCommitTool, GitPushTool, CreatePullRequestTool, WatchPullRequestTool, UnwatchPullRequestTool } from "./git-tools";
 import { TodoWriteTool, ExitPlanModeTool, AskUserQuestionTool, RequestSecretTool, TaskTool, TaskStatusTool, ListModelsTool } from "./meta-tools";
+import { EnterWorktreeTool, ExitWorktreeTool } from "./worktree-tools";
 
 export const BUILTIN_TOOLS: Tool<any>[] = [
     TaskTool,
@@ -34,6 +35,8 @@ export const BUILTIN_TOOLS: Tool<any>[] = [
     CreatePullRequestTool,
     WatchPullRequestTool,
     UnwatchPullRequestTool,
+    EnterWorktreeTool,
+    ExitWorktreeTool,
     TodoWriteTool,
     AskUserQuestionTool,
     RequestSecretTool,
