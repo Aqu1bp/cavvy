@@ -1239,8 +1239,8 @@ export class Agent {
     private cliFolder?: string;
 
     /**
-     * The folder the agent CLI's open turn started in: its commands run there until the turn ends, wherever Cavvy's
-     * EnterWorktree has moved the session meanwhile, so what it asks about is checked there.
+     * The folder the agent CLI's latest turn started in: its commands run there until its next turn, wherever Cavvy's
+     * EnterWorktree has moved the session meanwhile (a sub-agent it left running too), so what it asks about is checked there.
      */
     private runningIn?: string;
 
@@ -2190,7 +2190,6 @@ export class Agent {
             return await this.runBackendTurn(backend, parts, signal, woken, adopt?.ref);
         } finally {
             stopWaking?.();
-            this.runningIn = undefined;
             this.delegateCalls = [];
             // Written after the backend sync cursor: a resumed CLI must see this
             // on its next prompt, including after reopening or switching models.
