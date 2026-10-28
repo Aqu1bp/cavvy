@@ -152,6 +152,17 @@ export function nativeWorktreeCall(tool: string, input: Record<string, unknown>)
     return native ? { name: native.name, input } : undefined;
 }
 
+/** The served name of a worktree tool (enter_worktree), by its own (EnterWorktree). */
+export function servedWorktreeFor(tool: string): string | undefined {
+    return WORKTREE_SERVER_TOOLS.find((t) => SERVED[t]!.name === tool);
+}
+
+/** Whether a call's arguments are only the served tool's own (name, path): a call of another tool names other things. */
+export function servedWorktreeArgs(tool: string, input: Record<string, unknown>): boolean {
+    const own = Object.keys((SERVED[tool]?.parameters as { properties?: Record<string, unknown> } | undefined)?.properties ?? {});
+    return Object.keys(input).every((k) => own.includes(k));
+}
+
 /** Whether a call (by the name its backend gave it) is of a served worktree tool, which Cavvy runs its own hooks for. */
 export function servedWorktreeTool(server: string | undefined, toolName: unknown): boolean {
     return Boolean(server) && typeof toolName === "string" && WORKTREE_SERVER_TOOLS.some((t) => toolName === `mcp__${server}__${t}`);

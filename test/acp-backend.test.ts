@@ -3,7 +3,7 @@
 // (test/fixtures/fake-acp.ts). Nothing here runs the real OpenCode.
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -262,6 +262,41 @@ describe("Cavvy's EnterWorktree, which OpenCode has none of", () => {
         expect(await a.run("hello")).toBe("done");
         expect(logLines().filter((l) => l.argv).map((l) => realpathSync(l.cwd))).toEqual([cwd, wt]);
         expect(logLines().some((l) => l.received?.method === "session/resume" && l.received.params.cwd === wt)).toBe(true);
+    });
+
+    test("what it asks about after the move, that turn, is checked where its shell still runs: the folder the turn started in", async () => {
+        const g = (...args: string[]) => Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args], { cwd });
+        g("init", "-q", "-b", "main");
+        writeFileSync(join(cwd, "readme.txt"), "hi\n");
+        g("add", "-A");
+        g("commit", "-q", "-m", "init");
+        // Untracked, so not in the worktree: from the main checkout, `creds/` is Cavvy's own folder.
+        symlinkSync(process.env.CAVVY_HOME!, join(cwd, "creds"));
+        process.env.FAKE_ACP_AFTER_MCP = "cat creds/settings.json";
+        try {
+            const a = await makeAgent({ ask: () => ({ allow: true }) });
+            expect(await a.run('[[mcp:enter_worktree {"name":"oc-wt"}]]')).toBe("done");
+            expect(a.events.filter((e) => e.type === "cwd")).toEqual([{ type: "cwd", cwd: join(cwd, ".claude", "worktrees", "oc-wt") }]);
+            // Read in the worktree, it would be a plain read-only command; where it runs, it reads Cavvy's files: asked.
+            expect(a.asked.map((r) => [r.tool.name, r.input.command])).toEqual([["EnterWorktree", undefined], ["Bash", "cat creds/settings.json"]]);
+        } finally {
+            delete process.env.FAKE_ACP_AFTER_MCP;
+        }
+    });
+
+    test("a rule naming it as served (mcp__cavvy__*) holds even in bypass: OpenCode approves Cavvy's tools, so Cavvy enforces it", async () => {
+        const a = await makeAgent({ mode: "bypassPermissions", settings: { permissions: { deny: ["mcp__cavvy__*"] } } });
+        await a.run('[[mcp:enter_worktree {"name":"oc-wt"}]]');
+        expect(logLines().find((l) => l.mcpResult)?.mcpResult).toMatchObject({ isError: true, text: expect.stringContaining("mcp__cavvy__*") });
+        expect(a.events.some((e) => e.type === "cwd")).toBe(false);
+        expect(existsSync(join(cwd, ".claude", "worktrees", "oc-wt"))).toBe(false);
+    });
+
+    test("a command or a file named like the tool is checked as what it is", async () => {
+        const a = await makeAgent({ ask: () => ({ allow: false }) });
+        await a.run("[[run:cavvy_exit_worktree]]");
+        expect(a.asked.map((r) => [r.tool.name, r.input.command])).toEqual([["Bash", "cavvy_exit_worktree"]]);
+        expect(answers()).toEqual([reject]);
     });
 });
 

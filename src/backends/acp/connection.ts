@@ -20,7 +20,7 @@ import { closeSync, constants, fstatSync, openSync, readSync } from "fs";
 import { isAbsolute, resolve } from "path";
 import type { AgentEvent, TurnEndReason } from "../../agent/agent";
 import { APP_NAME, APP_TITLE, APP_VERSION } from "../../config/paths";
-import { servedWorktreeName } from "../../tools/worktree-tools";
+import { servedWorktreeArgs, servedWorktreeName } from "../../tools/worktree-tools";
 import { stableStringify } from "../../permissions/classifier";
 import type { PermissionMode } from "../../permissions/modes";
 import type { Usage } from "../../providers/types";
@@ -257,6 +257,11 @@ export class AcpConnection implements CliConnection {
         const o = this.orchestrator();
         if (!o || !this.init.agentCapabilities?.mcpCapabilities?.http) return [];
         return [{ type: "http", name: o.name, url: o.url, headers: [{ name: "Authorization", value: o.authorization }] }];
+    }
+
+    /** Whether Cavvy's MCP server offers this tool of its own (enter_worktree) this turn. */
+    private offered(tool: string | undefined): boolean {
+        return tool !== undefined && Boolean(this.orchestrator()?.tools.includes(tool));
     }
 
     private noteSession(r: any) {
@@ -858,8 +863,8 @@ export class AcpConnection implements CliConnection {
             return { outcome: { outcome: "selected", optionId: once } };
         }
         const known = id ? turn.tools.get(id) : undefined;
-        // Cavvy's own tool (EnterWorktree): checked when it runs, as Cavvy's own call is.
-        if (once && servedCall({ title: toolCall?.title ?? known?.title, rawInput: toolCall?.rawInput ?? known?.rawInput })) {
+        // Cavvy's own tool (EnterWorktree), while its server offers it: checked when it runs, as Cavvy's own call is.
+        if (once && this.offered(servedCall({ kind: toolCall?.kind ?? known?.kind, title: toolCall?.title ?? known?.title, rawInput: toolCall?.rawInput ?? known?.rawInput })?.tool)) {
             liveDebug("acp", "ask about Cavvy's own tool: yes", { id });
             return { outcome: { outcome: "selected", optionId: once } };
         }
@@ -989,8 +994,9 @@ export class AcpConnection implements CliConnection {
         const main = call.sessionId === this.sessionId;
         const own = gate.tool(call, this.cwd);
         if (own?.refuse) return { allow: false, reason: own.refuse };
-        // Cavvy's own tool (EnterWorktree): checked when it runs, as Cavvy's own call is.
-        if (own && servedWorktreeName(own.toolName)) return { allow: true, decided: false };
+        // Cavvy's own tool (EnterWorktree), while its server offers it: checked when it runs, as Cavvy's own call is.
+        const served = own && servedWorktreeName(own.toolName);
+        if (served && servedWorktreeArgs(served, own.input) && this.offered(served)) return { allow: true, decided: false };
         const label = main ? undefined : (this.children.get(call.sessionId) ?? call.subagentType ?? `${this.def.name} subagent`);
         /** One the mode doesn't decide: unasked, and Plan doesn't refuse it, but deny rules and Cavvy's protections do. */
         const exempt = async (r: GateTool, decided: boolean, planFile?: string): Promise<GateDecision> => {
@@ -1088,12 +1094,18 @@ function pathsOf(raw: Record<string, any> | undefined, locations: { path: string
  * A call of Cavvy's own MCP tools (its worktree tools), by its MCP name: Grok's goes through its use_tool (the tool's
  * name and arguments in its input), OpenCode's is named for the tool. Cavvy checks it as it runs, as its own call.
  */
-function servedCall(t: Pick<ToolState, "title" | "rawInput">): { name: string; input: Record<string, unknown> } | undefined {
+function servedCall(t: Pick<ToolState, "kind" | "title" | "rawInput">): { tool: string; name: string; input: Record<string, unknown> } | undefined {
     const raw = t.rawInput ?? {};
     const viaUse = servedWorktreeName(raw.tool_name);
-    if (viaUse) return { name: `mcp__${APP_NAME}__${viaUse}`, input: raw.tool_input && typeof raw.tool_input === "object" && !Array.isArray(raw.tool_input) ? raw.tool_input : {} };
+    if (viaUse) {
+        const input = raw.tool_input && typeof raw.tool_input === "object" && !Array.isArray(raw.tool_input) ? raw.tool_input : {};
+        return servedWorktreeArgs(viaUse, input) ? { tool: viaUse, name: `mcp__${APP_NAME}__${viaUse}`, input } : undefined;
+    }
+    // By its name only as an MCP tool's call is (kind other) with only the tool's arguments: OpenCode names a command,
+    // a file or a search by what it runs or reads, so `cavvy_exit_worktree` can be one of those too.
+    if (t.kind !== undefined && t.kind !== "other") return undefined;
     const named = servedWorktreeName(t.title);
-    return named ? { name: `mcp__${APP_NAME}__${named}`, input: raw } : undefined;
+    return named && servedWorktreeArgs(named, raw) ? { tool: named, name: `mcp__${APP_NAME}__${named}`, input: raw } : undefined;
 }
 
 /** A call as one of Cavvy's tools, by its kind; another kind as its own name. */

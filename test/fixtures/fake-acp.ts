@@ -11,6 +11,7 @@
 // logged: each one's type, name and url). [[mcp:TOOL JSON]] calls TOOL of the first with JSON's arguments: OpenCode's
 // call is named for it (<server>_<tool>, kind other, asked about), Grok's goes through use_tool ({tool_name:
 // <server>__<tool>, tool_input}: held by the hook, then asked about); its answer's text is the tool's ({mcpResult}).
+// OpenCode's then asks about FAKE_ACP_AFTER_MCP's command, if set, in the same turn.
 //
 // session/resume or session/load of an id starting "gone" fails (-32602, session not found); session/load first
 // replays the session's history as updates. A prompt's text picks what it does by a [[directive]] in it:
@@ -224,6 +225,9 @@ async function prompt(id: number, p: any) {
             const c = mcpCall(arg);
             const title = `${c.server}_${c.tool}`;
             await tool("call_mcp", "other", title, c.args, { kind: "other", title, rawInput: c.args }, c.run);
+            // FAKE_ACP_AFTER_MCP=CMD: then, in the same turn, a command it asks about (as [[run:CMD]]).
+            const then = process.env.FAKE_ACP_AFTER_MCP;
+            if (then) await tool("call_then", "execute", "bash", { command: then, cwd }, { kind: "execute", title: then, locations: [], rawInput: { command: then } }, () => `ran ${then}`);
             break;
         }
         case "malformed":

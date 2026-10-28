@@ -72,7 +72,7 @@ import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./s
 import { WATCH_INSTRUCTIONS, watchServerTools } from "../tools/git-tools";
 import { MONITOR_INSTRUCTIONS, monitorServerTools, nativeMonitorCall, stoppedMonitorNote } from "../tools/monitor";
 import { BROWSER_INSTRUCTIONS, BrowserNavigateTool, browserServerTools, nativeBrowserCall, servedBrowserName } from "../tools/browser-tools";
-import { nativeWorktreeCall, WORKTREE_INSTRUCTIONS, worktreeServerTools } from "../tools/worktree-tools";
+import { nativeWorktreeCall, servedWorktreeFor, WORKTREE_INSTRUCTIONS, worktreeServerTools } from "../tools/worktree-tools";
 import { offered } from "../tools/index";
 import { lostNote, SessionBackground, type BackgroundTaskInfo } from "./background";
 import { SECRET_INSTRUCTIONS, secretTools, secretToolTitle } from "./secret-tools";
@@ -1238,6 +1238,12 @@ export class Agent {
     /** The folder the agent CLI's last turn here ran in (BackendTurn.cwd). */
     private cliFolder?: string;
 
+    /**
+     * The folder the agent CLI's open turn started in: its commands run there until the turn ends, wherever Cavvy's
+     * EnterWorktree has moved the session meanwhile, so what it asks about is checked there.
+     */
+    private runningIn?: string;
+
     /** Where the agent works now, as it last said (AgentEvent cwd): an agent CLI's can differ from the folder it started in. */
     private workingAt?: string;
 
@@ -2184,6 +2190,7 @@ export class Agent {
             return await this.runBackendTurn(backend, parts, signal, woken, adopt?.ref);
         } finally {
             stopWaking?.();
+            this.runningIn = undefined;
             this.delegateCalls = [];
             // Written after the backend sync cursor: a resumed CLI must see this
             // on its next prompt, including after reopening or switching models.
@@ -2485,6 +2492,7 @@ export class Agent {
             stopper.abort();
         };
         const base = this.backendTurn(AbortSignal.any([signal, stopper.signal]), session, sink);
+        this.runningIn = base.cwd;
         let stopRounds = 0;
         // The user's own message, for the skills it names: its first part, not the files and notes after it.
         // A sub-agent's task is the parent model's words, not the user's: it runs no skill the model may not.
@@ -2890,7 +2898,7 @@ export class Agent {
         // Only the main agent can be woken, so a sub-agent gets no Monitor (Cavvy's sub-agents don't either). Nor can its stop end the main turn.
         if (tool.name === "Monitor" && callId && (await this.fromBackendSubagent(callId))) return { text: "Monitor isn't available to sub-agents: only the main agent can be woken by one.", isError: true };
         // The CLI approves Cavvy's tools without asking: a rule naming the tool as served is enforced here, before the checks its own name gets.
-        const served = servedBrowserName(tool.name);
+        const served = servedBrowserName(tool.name) ?? servedWorktreeFor(tool.name);
         if (served) {
             const refused = await this.authorizeServedTool(served, tool.title(input), input, signal);
             if (refused) return refused;
@@ -2993,7 +3001,7 @@ export class Agent {
         // One of Cavvy's agents Claude Code runs: its own permissionMode, as when Cavvy runs it.
         const own = req.agentType ? this.nativeDefs.get(req.agentType) : undefined;
         const mode = childMode(this.o.mode.get(), own?.permissionMode);
-        const cwd = this.state.cwd;
+        const cwd = this.runningIn ?? this.state.cwd;
         // One the mode doesn't decide: deny rules and Cavvy's protections only, as bypass checks them.
         if (req.exempt) {
             const d = this.o.checker.check(tool, input, "bypassPermissions", cwd, { memoryDir: this.o.memoryDir });
