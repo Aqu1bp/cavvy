@@ -2,6 +2,9 @@
 // GUI's Browser pane. Six tools, to keep their definitions short (every one goes to the model with every request):
 // navigate, read (snapshot, screenshot, logs), act, evaluate. They share a session's tabs through ToolState.browser.
 
+import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "fs";
+import { join } from "path";
+import { paths } from "../config/paths";
 import { browserSettings, type Settings } from "../config/settings";
 import { cachedChrome } from "../browser/chrome";
 import { desktopHost } from "../browser/host";
@@ -322,6 +325,36 @@ Returns what changed on the page (or the new outline), including anything the us
 
 // ---------------------------------------------------------------------------
 
+/** How long a saved screenshot is kept: a reply that shows one shows it while it's this recent. */
+const SCREENSHOT_DAYS = 30;
+
+/**
+ * A screenshot as a file (in Cavvy's home), so the agent can show it in its reply: the transcript draws a local image
+ * a reply links to. Older ones go as one is saved. Undefined when it can't be written; the agent still sees it.
+ */
+function saveScreenshot(shot: { mediaType: string; data: string }): string | undefined {
+    try {
+        const dir = join(paths.home(), "screenshots");
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
+        const old = Date.now() - SCREENSHOT_DAYS * 86_400_000;
+        for (const name of readdirSync(dir)) {
+            const f = join(dir, name);
+            if (statSync(f).mtimeMs < old) rmSync(f, { force: true });
+        }
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const file = join(dir, `${stamp}-${Math.random().toString(36).slice(2, 6)}.${shot.mediaType === "image/jpeg" ? "jpg" : "png"}`);
+        writeFileSync(file, Buffer.from(shot.data, "base64"), { mode: 0o600 });
+        return file;
+    } catch {
+        return undefined;
+    }
+}
+
+/** A local image as markdown a reply can carry: a path with spaces in angle brackets. */
+function imageMarkdown(file: string): string {
+    return `![what it shows](${/\s/.test(file) ? `<${file}>` : file})`;
+}
+
 export const BrowserScreenshotTool: Tool<{ tab?: number; fullPage?: boolean; ref?: string }> = {
     name: "BrowserScreenshot",
     category: "read",
@@ -348,7 +381,9 @@ export const BrowserScreenshotTool: Tool<{ tab?: number; fullPage?: boolean; ref
                 const clip = input.ref ? await boxOf(page, input.ref, ctx.signal) : undefined;
                 const shot = await page.screenshot({ fullPage: input.fullPage, clip });
                 const what = input.ref ? `element ${input.ref}` : input.fullPage ? "the full page" : "the viewport";
-                return { content: `Screenshot of ${what} of tab [${b.idOf(page)}] (${shot.width}×${shot.height} CSS pixels) at ${displayUrl(page.url)}.`, images: [{ type: "image", mediaType: shot.mediaType, data: shot.data }], display: { summary: `${shot.width}×${shot.height}` } };
+                const file = saveScreenshot(shot);
+                const show = file ? ` Saved as ${file}: to show it to the user, put ${imageMarkdown(file)} in your last message.` : "";
+                return { content: `Screenshot of ${what} of tab [${b.idOf(page)}] (${shot.width}×${shot.height} CSS pixels) at ${displayUrl(page.url)}.${show}`, images: [{ type: "image", mediaType: shot.mediaType, data: shot.data }], display: { summary: `${shot.width}×${shot.height}` } };
             });
         }),
 };
@@ -471,4 +506,6 @@ export function servedBrowserTool(server: string | undefined, toolName: unknown)
 
 export const BROWSER_INSTRUCTIONS = `# Browser (cavvy)
 
-browser_navigate, browser_snapshot, browser_act, browser_screenshot, browser_eval and browser_logs drive a headless Chrome the user can watch in Cavvy's Browser pane. To check web UI work, start the dev server (in the background), open its address with browser_navigate, then read the page with browser_snapshot: its refs (e12) name elements for browser_act. Take a screenshot only when how the page looks matters. The user can use a tab too: when they have, the next result says so.`;
+browser_navigate, browser_snapshot, browser_act, browser_screenshot, browser_eval and browser_logs drive a headless Chrome the user can watch in Cavvy's Browser pane. To check web UI work, start the dev server (in the background), open its address with browser_navigate, then read the page with browser_snapshot: its refs (e12) name elements for browser_act. Take a screenshot only when how the page looks matters. The user can use a tab too: when they have, the next result says so.
+
+The user doesn't see your screenshots unless you show them. When how something looks is part of your answer (a UI change you made, options to choose between, a bug you found), show it: write ![what it shows](path) with the path the screenshot's result gives, and Cavvy draws the image in the chat. Any local PNG, JPEG, GIF or WebP works the same way. Put images in your last message of the turn: what you write before further tool calls folds away under "Worked for".`;

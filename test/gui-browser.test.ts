@@ -141,6 +141,8 @@ describe("the demo (bun run gui:demo)", () => {
             expect(said).toContain("I'll open the app in the browser");
             expect(said).toContain("The page loads and the button works");
             expect(said).toContain("Clicked button");
+            // The screenshot it took, saved and shown in its reply as the result said to.
+            expect(said).toMatch(/!\[The page after the click\]\([^)\s]+\/screenshots\/[^)\s]+\.png\)/);
             expect(states(me).some((e) => e.sessionId === demoId && e.state.tabs.some((t) => t.owner === "agent"))).toBe(true);
         } finally {
             process.env.CAVVY_BROWSER = saved;

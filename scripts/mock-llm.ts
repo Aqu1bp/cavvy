@@ -32,7 +32,8 @@
 //   "ship"           commits, opens a pull request and watches it (GitCommit, CreatePullRequest)
 //   (a wake)         answers a watched pull request's news: failed checks, comments, passing checks
 //   "monitor"        watches a build log with Monitor; its lines wake the agent later
-//   "browser"        opens the demo site (or the address in the prompt) in the browser, clicks its first button, and says what happened
+//   "browser"        opens the demo site (or the address in the prompt) in the browser, clicks its first button, takes a
+//                    screenshot, and shows it in its reply
 //   anything else    a short markdown answer
 //
 //   bun scripts/mock-llm.ts [--port 4010] [--delay 12]
@@ -147,7 +148,10 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
             if (!button) return { text: `I couldn't open the page: ${lastResult.split("\n")[0]}` };
             return { text: `The page is up. I'll try its "${button[1]}" button.`, calls: [{ name: "BrowserAct", args: { action: "click", ref: button[2] } }] };
         }
-        return { text: `The page loads and the button works. What I saw after clicking it:\n\n\`\`\`\n${lastResult.split("\n").slice(0, 8).join("\n")}\n\`\`\`` };
+        if (toolRounds === 2) return { text: "It works. A screenshot, to show you how it looks now.", calls: [{ name: "BrowserScreenshot", args: {} }] };
+        // Shown in the reply as the screenshot's result says to (where it couldn't be saved, said without it).
+        const saved = /Saved as (\S+): to show it/.exec(lastResult)?.[1];
+        return { text: `The page loads and the button works.${saved ? `\n\n![The page after the click](${saved})` : ""}` };
     }
     // A monitor's lines woke the agent: say what they were.
     if (/<event source="monitor"/.test(prompt)) {
@@ -549,13 +553,14 @@ export function startMockLlm(o: MockOptions = {}) {
             if (bodies.length > 50) bodies.shift();
             const messages: Json[] = body.messages ?? [];
             const system = String(messages.find((m) => m.role === "system")?.content ?? "");
-            // The prompt that started this turn and how many tool rounds have happened since.
+            // The prompt that started this turn and how many tool rounds have happened since. A tool's images come after
+            // its result as a user message of their own (Chat Completions can't carry them in it): not a prompt.
             let promptIdx = -1;
             for (let i = messages.length - 1; i >= 0; i--) {
                 const m = messages[i]!;
                 if (m.role === "user") {
                     const text = typeof m.content === "string" ? m.content : (m.content ?? []).map((c: Json) => c.text ?? "").join("");
-                    if (!text.startsWith("<system-reminder>") || i === 0) {
+                    if ((!text.startsWith("<system-reminder>") && !text.startsWith("Images returned by the tool calls above")) || i === 0) {
                         promptIdx = i;
                         break;
                     }

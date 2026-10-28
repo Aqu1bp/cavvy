@@ -2,7 +2,7 @@
 // refused (also for a page that goes somewhere by itself, and for files), what is served to Claude Code and Codex, and how a
 // screenshot reaches each kind of provider. No browser runs here (test/browser-engine.test.ts runs the tools on one).
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, symlinkSync, writeFileSync } from "fs";
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { fakeChromeProgram } from "./helpers/fake-chrome";
 import { FAKE, isolate, tempDir } from "./helpers/isolate";
@@ -385,7 +385,10 @@ describe("a screenshot as providers are sent it", () => {
     async function history(): Promise<Message[]> {
         const result = await screenshotResult();
         expect(result.isError).toBeFalsy();
-        expect(result.content).toBe("Screenshot of the viewport of tab [2] (1280×800 CSS pixels) at http://localhost:3000/.");
+        // Saved in Cavvy's home, with how to show it in the reply (the transcript draws a local image a reply links to).
+        const saved = /^Screenshot of the viewport of tab \[2\] \(1280×800 CSS pixels\) at http:\/\/localhost:3000\/\. Saved as (\S+\.png): to show it to the user, put !\[what it shows\]\(\1\) in your last message\.$/.exec(result.content);
+        expect(saved?.[1]).toStartWith(join(iso.home, "screenshots") + "/");
+        expect(readFileSync(saved![1]!).toString("base64")).toBe(PNG);
         expect(result.images).toEqual([{ type: "image", mediaType: "image/png", data: PNG }]);
         return [
             { role: "user", content: [{ type: "text", text: "check the page" }] },
