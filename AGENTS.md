@@ -4,9 +4,9 @@ Several agents work on this repository at the same time. These rules keep you ou
 
 ## Before you build
 
-- Write down what the user should see in each case, failures included, then build to that. Don't reuse an existing mechanism just because it's there.
-- Before writing a heuristic, look for an authoritative signal, such as the CLI's own records or session files.
-- Put logic in the core (`src/agent`, `src/tools`, `src/providers`, `src/permissions`, `src/mcp`). Keep the terminal and GUI front ends thin.
+- Before writing code, write down what the user will see in each case, failures included, then build to match it, even when an existing mechanism would be quicker. For example, if a steer message never reaches the model, the chat must not say "Steered in".
+- Don't guess what you can look up. To know whether a CLI read a message, check its session file rather than inferring it.
+- Put logic both apps need in the core (`src/agent`, `src/tools`, `src/providers`, `src/permissions`, `src/mcp`) so the terminal and the GUI both get it. The front ends only show it.
 
 ## UI copy
 
