@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
 import { isMod, mod } from "../lib/platform";
-import { ArrowUp, AtSign, CornerDownRight, Database, FileText, Folder, ListEnd, Maximize2, Minimize2, Paperclip, Slash, Sparkles, SquareTerminal } from "lucide-solid";
+import { ArrowUp, CornerDownRight, Database, FileText, Folder, ListEnd, Maximize2, Minimize2, Paperclip, Slash, Sparkles, SquareTerminal } from "lucide-solid";
 import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } from "@shared/protocol";
 import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
 import { interrupt, send, setMode } from "../state/actions";
@@ -622,24 +622,6 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const interactions = () => st()?.interactions ?? [];
     /** A turn runs, and no request card is up: what it's doing is the turn's live line (LiveLine.tsx), not a row here. */
     const working = () => Boolean(p.sessionId && busy() && !interactions().length);
-    /** Puts an @ where the caret is (after a space), which opens the file menu. */
-    const mention = () => {
-        if (!ta) return;
-        const start = ta.selectionStart ?? text().length;
-        const end = ta.selectionEnd ?? start;
-        const before = text().slice(0, start);
-        const ins = `${before && !/\s$/.test(before) ? " " : ""}@`;
-        histIdx = -1;
-        setText(before + ins + text().slice(end));
-        setMenuDismissedFor(undefined);
-        const pos = start + ins.length;
-        ta.focus();
-        requestAnimationFrame(() => {
-            ta!.setSelectionRange(pos, pos);
-            resize();
-            updateMenu();
-        });
-    };
 
     return (
         <div
@@ -828,11 +810,6 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     <button class="cb" title="Attach files" aria-label="Attach files" onClick={() => fileInput?.click()}>
                         <Paperclip size={16} />
                     </button>
-                    <Show when={p.sessionId}>
-                        <button class="cb" title="Mention a file (@)" aria-label="Mention a file" onClick={mention}>
-                            <AtSign size={16} />
-                        </button>
-                    </Show>
                     <span class="vsep" aria-hidden="true" />
                     <ModelPicker current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare} />
                     <EffortPicker current={st()?.model} currentRef={app.settings.model} effort={st() ? st()!.effort : app.settings.effort} fast={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy && !st()?.activity?.idle} open={effortOpen()} setOpen={setEffortOpen} placement={menuSide()} />
