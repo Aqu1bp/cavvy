@@ -358,7 +358,7 @@ body.resizing .br-host-tab {
 .br-float-title {
     flex: 0 1 auto;
     min-width: 0;
-    padding-block: 2px;
+    padding-block: calc(2 * var(--sp));
     color: var(--fg-2);
     font-weight: 500;
 }
@@ -367,7 +367,7 @@ body.resizing .br-host-tab {
 .br-float-host {
     flex: 0 100 auto;
     min-width: 0;
-    padding-block: 2px;
+    padding-block: calc(2 * var(--sp));
     color: var(--fg-4);
 }
 

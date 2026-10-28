@@ -113,6 +113,8 @@
     box-shadow: inset 0 0 0 0.5px var(--rail-sel-stroke);
     text-align: left;
     transition: box-shadow 140ms, color 140ms;
+    /* Its width decides whether the shortcut shows (below). */
+    container-type: inline-size;
 }
 
 .side-search:hover {
@@ -126,6 +128,16 @@
 .side-search > span:not(.side-kbd) {
     flex: 1;
     min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+/* A narrow sidebar at a large text size: the shortcut gives way rather than run into "Search" (it's in the tooltip). */
+@container (width < 8em) {
+    .side-kbd {
+        display: none;
+    }
 }
 
 .side-kbd {

@@ -280,7 +280,7 @@ function UpdateButton() {
  * figure: the same size in every state, the ring and figure turning amber, then
  * red, near a limit. Nothing reported yet: an empty ring and no figure (PlanGauge).
  * The mark names the plan (the tooltip and card spell it out); a plan on its
- * own adds the window. Short of room (a narrow or floating rail), the % signs
+ * own adds the window where the whole of it fits. Short of room (a narrow or floating rail), the % signs
  * go first; only then do chips fold into "+N", the plain ones first
  * (lib/rail.ts planFit). The row opens every window's detail.
  */
@@ -288,6 +288,8 @@ function PlanRow(p: { plans: RailPlan[] }) {
     const [open, setOpen] = createSignal(false);
     const [tight, setTight] = createSignal(false);
     const [folded, setFolded] = createSignal(0);
+    /** A plan on its own without its window: the whole of it didn't fit (never "resets 2:4"). */
+    const [bare, setBare] = createSignal(false);
     let row: HTMLButtonElement | undefined;
     let more: HTMLSpanElement | undefined;
     const solo = () => p.plans.length === 1;
@@ -297,8 +299,8 @@ function PlanRow(p: { plans: RailPlan[] }) {
     // (outside Solid's updates each change is in the DOM at once, so it can be read back).
     const fit = () => {
         if (!row) return;
-        batch(() => (setFolded(0), setTight(false)));
-        if (p.plans.length < 2) return;
+        batch(() => (setFolded(0), setTight(false), setBare(false)));
+        if (p.plans.length < 2) return setBare(row.scrollWidth > row.clientWidth + 0.5);
         const chips = [...row.querySelectorAll<HTMLElement>(".pl:not(.more)")];
         const widths = () => chips.map((c) => c.getBoundingClientRect().width);
         const gap = () => parseFloat(getComputedStyle(row!).columnGap) || 0;
@@ -317,7 +319,7 @@ function PlanRow(p: { plans: RailPlan[] }) {
         ro.observe(row!.parentElement ?? row!);
         onCleanup(() => ro.disconnect());
     });
-    createEffect(on(() => `${prefs.fontSize} ${p.plans.map((plan) => `${plan.provider} ${plan.pct} ${plan.tone} ${plan.reached}`).join()}`, () => queueMicrotask(fit), { defer: true }));
+    createEffect(on(() => `${prefs.fontSize} ${p.plans.map((plan) => `${plan.provider} ${plan.pct} ${plan.tone} ${plan.reached} ${plan.window} ${plan.lifts}`).join()}`, () => queueMicrotask(fit), { defer: true }));
     const label = () => `Plan usage. ${p.plans.map((plan) => `${plan.name}: ${plan.brief}`).join(". ")}`;
     return (
         <>
@@ -328,7 +330,7 @@ function PlanRow(p: { plans: RailPlan[] }) {
                         <Show when={plan.pct !== undefined}>
                             <span class="pl-v">
                                 {plan.pct}<small>%</small>
-                                <Show when={solo() && (plan.reached ? plan.lifts && `· resets ${plan.lifts}` : plan.window?.toLowerCase())}>{(w) => <span class="pl-w"> {w()}</span>}</Show>
+                                <Show when={solo() && !bare() && (plan.reached ? plan.lifts && `· resets ${plan.lifts}` : plan.window?.toLowerCase())}>{(w) => <span class="pl-w"> {w()}</span>}</Show>
                             </span>
                         </Show>
                     </span>
