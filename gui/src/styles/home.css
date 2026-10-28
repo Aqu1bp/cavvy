@@ -44,8 +44,12 @@
     animation: home-in 320ms var(--ease) both;
 }
 
-/* The cards before the first message, then the composer and its strip. */
+/* The cards before the first message, then the composer and its strip. Its animation (and the terminal
+   list's) makes each a stacking context, so the composer's menus and pickers would draw under the list after
+   it: it's raised over it. */
 .home-composer {
+    position: relative;
+    z-index: 1;
     display: flex;
     flex-direction: column;
     gap: calc(8 * var(--sp));
