@@ -963,6 +963,25 @@
     min-width: 0;
 }
 
+/* Tight, what's on the row gives way a step at a time (lib/composer-fit.ts says the steps). Out of sight,
+   still named for assistive tech; the model's name only while the provider's mark (or Compare's) is there. */
+.composer-bar[data-fit~="1"] .pick .lbl,
+.composer-bar[data-fit~="3"] .pick-acct,
+.composer-bar[data-fit~="4"] .pick.model:has(> svg:not(.chev), > .provider-mono) > .truncate {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+.composer-bar[data-fit~="1"] .ctx-limit .lbl,
+.composer-bar[data-fit~="2"] .pick .chev,
+.composer-bar[data-fit~="5"] .ctx-btn {
+    display: none;
+}
+
 /* Comparing models (Home): the chip says how many. */
 .pick.model.on {
     color: var(--accent);
@@ -2656,18 +2675,7 @@
 /* ---- A narrow conversation column: labels give way to glyphs, rows stack ----- */
 
 :where(.main[data-narrow~="600"]) {
-    /* Out of sight, still named for assistive tech. */
-    .composer .pick .lbl {
-        position: absolute;
-        width: 1px;
-        height: 1px;
-        overflow: hidden;
-        clip-path: inset(50%);
-        white-space: nowrap;
-    }
-
-    .ask .pbtn kbd,
-    .ctx-limit .lbl {
+    .ask .pbtn kbd {
         display: none;
     }
 
@@ -2720,16 +2728,6 @@
     }
 }
 
-:where(.main[data-narrow~="440"]) {
-    .composer .pick .chev {
-        display: none;
-    }
-
-    .composer .ctx-btn {
-        display: none;
-    }
-}
-
 /* ---- A short column: request cards compact ------------------------------------- */
 
 :where(.main[data-short~="560"]) {
@@ -2758,12 +2756,4 @@
     .composer textarea {
         min-height: calc(36 * var(--sp));
     }
-}
-
-/* How many tasks run in the background: opens the side panel on them. */
-.bg-chip {
-    gap: calc(4 * var(--sp));
-    font-size: 0.821rem;
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
 }

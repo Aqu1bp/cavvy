@@ -41,7 +41,7 @@ export function ModePicker(p: ComposerMenu & { mode: PermissionModeId; bypassAll
                 aria-haspopup="menu"
                 aria-expanded={p.open}
                 onClick={() => p.setOpen(!p.open)}
-                title="Permission mode (⇧Tab cycles)"
+                title={`Permission mode: ${MODE_LABELS[p.mode].label} (⇧Tab cycles)`}
             >
                 <ModeIcon mode={p.mode} size={14} />
                 <span class="lbl">{MODE_LABELS[p.mode].label}</span>

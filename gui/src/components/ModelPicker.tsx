@@ -405,7 +405,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     return (
         <>
             {/* Keep the trigger mounted when Compare changes so Menu can restore focus. */}
-            <button ref={anchor} class={`pick model ${multi() ? "on" : ""} ${p.open ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={multi() ? picks().map((r) => resolve(undefined, r)?.name ?? r).join(", ") || "Pick 2 to 4 models" : withShortcut(chipName(), "chat:modelPicker")}>
+            <button ref={anchor} class={`pick model ${multi() ? "on" : ""} ${p.open ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={multi() ? picks().map((r) => resolve(undefined, r)?.name ?? r).join(", ") || "Pick 2 to 4 models" : withShortcut(showAccounts() ? `${chipName()} · ${accountName()}` : chipName(), "chat:modelPicker")}>
                 <Show when={multi()} fallback={
                     <>
                         <Show when={currentProvider()}>{(id) => <ProviderIcon id={id()} name={providerName(id())} size={15} />}</Show>
@@ -675,7 +675,7 @@ export function EffortPicker(p: ComposerMenu & { current?: ModelSummary; current
     const label = () => (reasoning() ? (effortOf(shown())?.label ?? "Default") : fastOn() ? "Fast" : "Standard");
     return (
         <Show when={reasoning() || fastOk()}>
-            <button ref={anchor} class={`pick effort ${p.open ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={reasoning() ? `Reasoning effort${fastOn() ? ", fast mode on" : ""}` : "Speed"}>
+            <button ref={anchor} class={`pick effort ${p.open ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={reasoning() ? `Reasoning effort: ${label()}${fastOn() ? ", fast mode on" : ""}` : `Speed: ${label()}`}>
                 <Show when={fastOn()}>
                     <span class="fz" aria-hidden="true">
                         <Zap size={13} stroke-width={2} />

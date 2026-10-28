@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, createUniqueId, For, Match, on, onCleanup, Show, Switch, type JSX } from "solid-js";
+import { createEffect, createMemo, createSignal, createUniqueId, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
 import { isMod, mod } from "../lib/platform";
 import { ArrowUp, AtSign, CornerDownRight, Database, FileText, Folder, ListEnd, Maximize2, Minimize2, Paperclip, Slash, Sparkles, SquareTerminal } from "lucide-solid";
 import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } from "@shared/protocol";
@@ -16,10 +16,10 @@ import { InteractionTab } from "./InteractionDock";
 import { ScheduleTab } from "./ScheduleTab";
 import { GoalTab } from "./GoalTab";
 import { ComposerMeter } from "./ComposerMeter";
-import { BackgroundChip } from "./BackgroundTasks";
 import { AttachmentChips } from "./AttachmentChips";
 import { ReviewCommentChips } from "./ReviewCommentChips";
 import { splitComments, takesComments, withComments } from "../lib/review-comments";
+import { fitComposerBar } from "../lib/composer-fit";
 import { plural } from "../lib/format";
 import { aroundOf, newCommentId, reviewComments } from "../state/review-comments";
 import { blockedBy, fromWire, isLongPaste, pastedText, readAttachment } from "../lib/attachments";
@@ -53,6 +53,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     let fileInput: HTMLInputElement | undefined;
     let box: HTMLDivElement | undefined;
     let root: HTMLDivElement | undefined;
+    let bar: HTMLDivElement | undefined;
+    // Tight, the controls give way a step at a time (lib/composer-fit.ts).
+    onMount(() => onCleanup(fitComposerBar(bar!)));
     const draftKey = () => p.sessionId ?? "home";
     const draft = createComposerDraft(draftKey, wasDeleted);
     const { text, setText, attachments, setAttachments } = draft;
@@ -809,7 +812,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                         aria-activedescendant={menu().length ? `${menuId}-${menuSel()}` : undefined}
                     />
                 </div>
-                <div class="composer-bar">
+                <div ref={bar} class="composer-bar">
                     <input
                         ref={fileInput}
                         type="file"
@@ -835,7 +838,6 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     <EffortPicker current={st()?.model} currentRef={app.settings.model} effort={st() ? st()!.effort : app.settings.effort} fast={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy && !st()?.activity?.idle} open={effortOpen()} setOpen={setEffortOpen} placement={menuSide()} />
                     <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} open={modePickerOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
                     <span class="grow" />
-                    <BackgroundChip sessionId={p.sessionId} />
                     <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} home={p.variant === "home"} />
                     <span class="send-wrap">
                     <Show when={sendHint()}>

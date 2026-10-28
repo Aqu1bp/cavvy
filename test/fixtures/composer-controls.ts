@@ -65,7 +65,7 @@ let holdCommands = false;
 let holdSend: Promise<void> | undefined;
 const commentStore = createReviewCommentStore(() => undefined);
 const noop = () => undefined;
-const components = Object.fromEntries(["ArrowUp", "CornerDownRight", "QueueTab", "GoalTab", "FileText", "Folder", "ListEnd", "Paperclip", "Pencil", "Slash", "Sparkles", "SquareTerminal", "X", "ModelPicker", "EffortPicker", "AtSign", "ModePicker", "ComposerMeter", "AttachmentChips", "InteractionTab", "Popover", "Ring", "ReviewCommentChips", "BackgroundChip", "Maximize2", "Minimize2"].map((key) => [key, noop]));
+const components = Object.fromEntries(["ArrowUp", "CornerDownRight", "QueueTab", "GoalTab", "FileText", "Folder", "ListEnd", "Paperclip", "Pencil", "Slash", "Sparkles", "SquareTerminal", "X", "ModelPicker", "EffortPicker", "AtSign", "ModePicker", "ComposerMeter", "AttachmentChips", "InteractionTab", "Popover", "Ring", "ReviewCommentChips", "Maximize2", "Minimize2"].map((key) => [key, noop]));
 /** What the Steps strip was given: the session it's in and that session's view (StepsTray.tsx decides when it shows). */
 const stepsTrays: { sessionId: string; view: any }[] = [];
 const StepsTray = (p: { sessionId: string; view: any }) => void stepsTrays.push(p);
@@ -94,6 +94,7 @@ const deps = { ...solid, ...components, StepsTray, expandedDown, expandedHeight,
     splitComments, takesComments, withComments, plural, setReview: noop,
     aroundOf, reviewComments: commentStore, newCommentId: () => crypto.randomUUID(),
     createLifetimeGuard: () => (fn: any) => fn, wasDeleted: () => false,
+    fitComposerBar: () => noop,
     app: appState,
     handleFor: (id?: string) => id ? ({ id, view: { state: sessionState, turns }, draft: handedBack, setDraft: setHandedBack }) : undefined,
     contextCardOpen: () => false, setContextCardOpen: noop, contextView: () => ({ ring: false }),
