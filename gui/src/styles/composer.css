@@ -1806,13 +1806,6 @@
     opacity: 0.45;
 }
 
-.cbtn.quiet {
-    height: calc(24 * var(--sp));
-    background: none;
-    box-shadow: none;
-    color: var(--accent);
-}
-
 .plan-asof {
     font-size: 0.786rem;
     color: var(--fg-3);

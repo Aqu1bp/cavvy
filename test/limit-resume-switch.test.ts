@@ -68,19 +68,20 @@ async function limited() {
 
 const shown = (rt: { snapshot(): { turns: { blocks: { t: string }[] }[] } }) =>
     rt.snapshot().turns.flatMap((t) => t.blocks.filter((b) => b.t === "notice").map((b) => (b as unknown as { text: string }).text));
-const cancelledNotices = (rt: Parameters<typeof shown>[0]) => shown(rt).filter((n) => n.startsWith("The automatic resume is cancelled"));
+/** What the window is told of the resume in the transcript: nothing (the limit's card and the schedules show it). */
+const resumeNotices = (rt: Parameters<typeof shown>[0]) => shown(rt).filter((n) => /automatic resume|continues by itself/i.test(n));
 
-test("switching the account, then the model: the resume is gone, the user is told once, and it never fires", async () => {
+test("switching the account, then the model: the resume is gone without a line about it, and it never fires", async () => {
     const { engine, rt, ran } = await limited();
     const other = addAccount("claude-code", { id: "limit-other", name: "Other" });
     try {
         await rt.setAccount("claude-code", other.id);
         expect(rt.schedules.scheduler.size).toBe(0);
-        expect(cancelledNotices(rt)).toEqual(["The automatic resume is cancelled: you switched the account."]);
-        // The model: nothing waiting any more, so nothing more is said.
+        expect(rt.snapshot().state.schedules).toEqual([]);
+        expect(resumeNotices(rt)).toEqual([]);
         expect(await rt.setModel("mock:mock-opus")).toBe(true);
         expect(rt.schedules.scheduler.size).toBe(0);
-        expect(cancelledNotices(rt)).toHaveLength(1);
+        expect(resumeNotices(rt)).toEqual([]);
         // Past the reset time: the (cancelled) job doesn't start anything.
         rt.schedules.poke();
         await Bun.sleep(100);
@@ -90,12 +91,12 @@ test("switching the account, then the model: the resume is gone, the user is tol
     }
 });
 
-test("switching the model cancels the waiting resume and says so", async () => {
+test("switching the model cancels the waiting resume, without a line about it", async () => {
     const { engine, rt, ran } = await limited();
     try {
         expect(await rt.setModel("mock:mock-opus")).toBe(true);
         expect(rt.schedules.scheduler.size).toBe(0);
-        expect(cancelledNotices(rt)).toEqual(["The automatic resume is cancelled: you switched the model."]);
+        expect(resumeNotices(rt)).toEqual([]);
         rt.schedules.poke();
         await Bun.sleep(100);
         expect(ran).toEqual([]);
@@ -136,7 +137,46 @@ test("picking the account it is already on leaves the resume waiting", async () 
     try {
         await rt.setAccount("claude-code", "default");
         expect(rt.schedules.scheduler.size).toBe(1);
-        expect(cancelledNotices(rt)).toEqual([]);
+        expect(rt.snapshot().state.schedules.map((s) => s.kind)).toEqual(["resume"]);
+        expect(resumeNotices(rt)).toEqual([]);
+    } finally {
+        await engine.stop();
+    }
+});
+
+test("\"Don't continue\" is undone from the card: the resume comes back for the same reset, until a message is sent", async () => {
+    const { engine, rt, turns } = await limited();
+    try {
+        const [first] = rt.schedules.scheduler.list();
+        expect(rt.scheduleAction(first!.id, "delete")).toBe(true);
+        expect(rt.schedules.scheduler.size).toBe(0);
+        rt.resumeAfterLimit();
+        const [again] = rt.schedules.scheduler.list();
+        expect(again).toMatchObject({ kind: "resume", nextAt: first!.nextAt });
+        // Asked again while it waits: still the one.
+        rt.resumeAfterLimit();
+        expect(rt.schedules.scheduler.size).toBe(1);
+        expect(resumeNotices(rt)).toEqual([]);
+        // A message since, which goes through (the limit lifted): nothing waits on a limit any more.
+        rt.agent!.setModel(backendModel("claude-code", "x"), { ...limitedBackend(turns), runTurn: async (t: BackendTurn) => (turns.push(t), { reason: "done" as const, text: "Done.", actions: [] }) } as never);
+        await rt.send("one more");
+        await until(() => rt.idle && turns.length === 2);
+        expect(rt.schedules.scheduler.size).toBe(0);
+        expect(() => rt.resumeAfterLimit()).toThrow("No turn is waiting on a usage limit");
+        expect(rt.schedules.scheduler.size).toBe(0);
+    } finally {
+        await engine.stop();
+    }
+});
+
+test("Continue by itself is refused on another account", async () => {
+    const { engine, rt } = await limited();
+    const other = addAccount("claude-code", { id: "limit-other-2", name: "Other" });
+    try {
+        await rt.setAccount("claude-code", other.id);
+        expect(rt.schedules.scheduler.size).toBe(0);
+        expect(() => rt.resumeAfterLimit()).toThrow("The session is on another account or model now");
+        expect(rt.schedules.scheduler.size).toBe(0);
     } finally {
         await engine.stop();
     }

@@ -74,6 +74,11 @@ export interface ScheduleHostOptions {
     /** Start the prompt as a turn; `label` says it's scheduled ("every 10m"). Settles once it's over (or never started). */
     run: (prompt: string, job: ScheduledJob, label: string) => Promise<unknown> | void;
     notice: (text: string, level?: "info" | "warn") => void;
+    /**
+     * The UI shows a waiting resume itself (the GUI: on the limit's card, and with the schedules over the composer):
+     * setting one, or cancelling it, says nothing. Why one won't be set is still said.
+     */
+    resumeShown?: boolean;
     /** After any change, for the UI. */
     changed?: () => void;
     clock?: Clock;
@@ -176,7 +181,7 @@ export class SessionSchedules {
     /** The user sent something themselves: a resume waiting for the limit isn't needed any more. */
     userSent() {
         this.resumes = 0;
-        if (this.scheduler.clear("resume")) this.o.notice("The automatic resume is cancelled: you sent a message yourself.");
+        if (this.scheduler.clear("resume") && !this.o.resumeShown) this.o.notice("The automatic resume is cancelled: you sent a message yourself.");
     }
 
     /**
@@ -185,7 +190,7 @@ export class SessionSchedules {
      */
     cancelLimitResume(what: "account" | "model") {
         if (this.resumeFor !== undefined && this.o.identity && this.o.identity() === this.resumeFor) return;
-        if (this.scheduler.clear("resume")) this.o.notice(`The automatic resume is cancelled: you switched the ${what}.`);
+        if (this.scheduler.clear("resume") && !this.o.resumeShown) this.o.notice(`The automatic resume is cancelled: you switched the ${what}.`);
         this.resumeFor = undefined;
     }
 
@@ -211,14 +216,35 @@ export class SessionSchedules {
             this.o.notice(`It didn't continue by itself: it already tried ${MAX_RESUMES} times and hit the limit again each time.`, "warn");
             return;
         }
-        const at = limit.resetsAt + RESUME_DELAY_MS;
         try {
-            this.scheduler.add({ kind: "resume", prompt: RESUME_PROMPT, at });
-            this.resumeFor = this.o.identity?.();
-            this.o.notice(`It continues by itself ${resetPhrase(at, now)}. /schedules cancels that (or send something before then).`);
+            const at = this.setResume(limit.resetsAt);
+            if (!this.o.resumeShown) this.o.notice(`It continues by itself ${resetPhrase(at, now)}. /schedules cancels that (or send something before then).`);
         } catch (e) {
             this.o.notice(`It won't continue by itself: ${(e as Error).message}`, "warn");
         }
+    }
+
+    /**
+     * The user asks for the resume after all (they called it off, or have it turned off): as the turn's end would have
+     * set it, for the limit that stopped it. Why it can't be, when it can't; nothing when it's waiting (already, or now).
+     */
+    resumeAfter(resetsAt: number): string | undefined {
+        if (this.scheduler.list().some((j) => j.kind === "resume")) return undefined;
+        if (resetsAt <= this.clock.now()) return "The limit has reset: send a message to continue.";
+        try {
+            this.setResume(resetsAt);
+            return undefined;
+        } catch (e) {
+            return (e as Error).message;
+        }
+    }
+
+    /** The resume, a minute after the reset, for the account and model the session is on; when it runs. */
+    private setResume(resetsAt: number): number {
+        const at = resetsAt + RESUME_DELAY_MS;
+        this.scheduler.add({ kind: "resume", prompt: RESUME_PROMPT, at });
+        this.resumeFor = this.o.identity?.();
+        return at;
     }
 
     // -----------------------------------------------------------------------

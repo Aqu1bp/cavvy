@@ -1476,7 +1476,7 @@ export class ClaudeConnection implements CliConnection {
                 return;
             }
             case "compact_boundary":
-                this.emit({ type: "notice", level: "info", message: "Claude Code compacted its context." });
+                this.emit({ type: "notice", level: "info", message: "Claude Code compacted its context.", data: { compacted: true } });
                 return;
             case "informational":
                 if (typeof m.content === "string" && m.content.trim()) {

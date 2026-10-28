@@ -1,19 +1,49 @@
 // How a notice reads (#426): what it is decides how it's drawn (TurnView's Notice), and what it says is the least
 // that only words can say. Plain functions of the block and the time (no DOM, so they're tested from test/).
 
-import { stoppedText, switchWord, type Block, type NoticeBlock, type NoticeLimit } from "@shared/protocol";
+import { stoppedText, switchWord, type Block, type NoticeBlock, type NoticeLimit, type ScheduleInfo } from "@shared/protocol";
 import { resetLabel } from "./limits";
 
 /**
  * How a notice is drawn: a switch's line between turns, what a switch stopped on a line of its own (said after a
- * message came), an info line, a warning's pill, an error's card.
+ * message came), a CLI's compaction as a rule, an info line, a warning's pill, an error's card.
  */
-export type NoticeKind = "switch" | "stopped" | "info" | "warn" | "error";
+export type NoticeKind = "switch" | "stopped" | "compacted" | "info" | "warn" | "error";
 
 export function noticeKind(b: NoticeBlock): NoticeKind {
     if (b.account) return "switch";
     if (b.stopped) return "stopped";
+    if (b.compacted) return "compacted";
     return b.level;
+}
+
+/** A CLI's compaction, on its rule. */
+export const COMPACTED_LABEL = "Context compacted";
+
+/** The last turn's latest limit card: it's the one that says whether the session picks up again by itself (and changes that). */
+function latestLimitCard(lastTurn: Block[] | undefined): Block | undefined {
+    return lastTurn?.findLast((x) => x.t === "notice" && x.level === "error" && x.limit);
+}
+
+/** Whether this is the last turn's latest limit card (a turn since has moved on from it). */
+export function isLatestLimitCard(b: NoticeBlock, lastTurn: Block[] | undefined): boolean {
+    return Boolean(b.limit) && latestLimitCard(lastTurn)?.id === b.id;
+}
+
+/**
+ * The resume waiting to pick the session up again, if this limit's card is the one to show it: the card is the last
+ * turn's latest limit (a turn since cancels the resume, or stops on the limit with a card of its own).
+ */
+export function waitingResume(b: NoticeBlock, lastTurn: Block[] | undefined, schedules: ScheduleInfo[] | undefined): (ScheduleInfo & { nextAt: number }) | undefined {
+    if (b.level !== "error" || !b.limit) return undefined;
+    const resume = schedules?.find((s) => s.kind === "resume");
+    if (resume?.nextAt === undefined) return undefined;
+    return isLatestLimitCard(b, lastTurn) ? (resume as ScheduleInfo & { nextAt: number }) : undefined;
+}
+
+/** The schedules the composer lists: a waiting resume is the limit card's to show, when there is one. */
+export function listedSchedules(schedules: ScheduleInfo[], lastTurn: Block[] | undefined): ScheduleInfo[] {
+    return latestLimitCard(lastTurn) ? schedules.filter((s) => s.kind !== "resume") : schedules;
 }
 
 /** "3:40 PM" today, "Thu 3:40 PM" on another day. */
@@ -83,6 +113,8 @@ export function noticeReads(b: NoticeBlock, now: number): string {
             return switchLine(b);
         case "stopped":
             return stoppedText(b.stopped!.tasks);
+        case "compacted":
+            return COMPACTED_LABEL;
         case "warn": {
             const w = warnParts(b, now);
             return [plainOf(w.title), w.body ? plainOf(w.body) : undefined, ...(b.details ?? [])].filter(Boolean).join("\n");

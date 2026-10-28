@@ -1,17 +1,18 @@
 // A notice, drawn as what it is (#426): the UI explains, not words. An account switch is one centred line between
-// turns; info is one quiet line (a CLI's logo as its icon); a warning is an amber pill with its title, what the CLI
-// said folded under it; an error is a red card with one short sentence and what to do. lib/notices.ts says what each
-// reads as (find counts that), here is how it's drawn.
+// turns; a CLI's compaction is a rule across the column; info is one quiet line (a CLI's logo as its icon); a warning
+// is an amber pill with its title, what the CLI said folded under it; an error is a red card with one short sentence
+// and what to do (a plan's limit, with when it picks up again). lib/notices.ts says what each reads as (find counts
+// that), here is how it's drawn.
 
 import { createEffect, createMemo, createSignal, For, Index, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
-import { AlertCircle, AlertTriangle, Check, ChevronRight, CircleCheck, CircleStop, CircleX, Copy, ExternalLink, Goal, Info } from "lucide-solid";
+import { AlertCircle, AlertTriangle, Check, ChevronRight, CircleCheck, CircleStop, CircleX, Copy, ExternalLink, Goal, Hourglass, Info } from "lucide-solid";
 import { stoppedTasksTip, switchMeaning, switchWord, type AccountInfo, type NoticeBlock, type SessionState, type StoppedTask } from "@shared/protocol";
-import { codeRuns, errorParts, noticeKind, warnParts } from "../../lib/notices";
-import { limitAlternatives } from "../../lib/limits";
+import { codeRuns, COMPACTED_LABEL, errorParts, isLatestLimitCard, noticeKind, untilLabel, waitingResume, warnParts } from "../../lib/notices";
+import { limitAlternatives, until } from "../../lib/limits";
 import { now } from "../../lib/clock";
 import { copyText, openExternal } from "../../lib/platform";
-import { app, reportError, rpc, toast } from "../../state/app";
-import { findReveal, setContextCardOpen } from "../../state/ui";
+import { app, handleFor, reportError, rpc, toast } from "../../state/app";
+import { findReveal } from "../../state/ui";
 import { ProviderIcon } from "../ui/ProviderIcon";
 
 const CLI_NAMES: Record<string, string> = { "claude-code": "Claude Code", codex: "Codex" };
@@ -188,19 +189,35 @@ function WarnPill(p: { block: NoticeBlock }) {
     );
 }
 
-/** An error: a red card, never cut short: one short sentence, what was said with it, and what to do. */
+/**
+ * An error: a red card, never cut short: one short sentence, what was said with it, and what to do. A plan's limit
+ * has an hourglass; while the session waits to pick up again by itself, it says when, and can call that off.
+ */
 function ErrorCard(p: { block: NoticeBlock; state?: SessionState }) {
     const parts = createMemo(() => errorParts(p.block, now()));
     const limit = () => p.block.limit;
+    const lastTurn = () => (p.state ? handleFor(p.state.id)?.view.turns.at(-1)?.blocks : undefined);
+    const latest = createMemo(() => isLatestLimitCard(p.block, lastTurn()));
+    const resume = createMemo(() => (latest() && p.state?.schedules?.length ? waitingResume(p.block, lastTurn(), p.state.schedules) : undefined));
     const [copied, setCopied] = createSignal(false);
     return (
         <div class="ne" data-find={p.block.id}>
             <span class="ic">
-                <AlertCircle size={14} />
+                <Show when={limit()} fallback={<AlertCircle size={14} />}>
+                    <Hourglass size={14} />
+                </Show>
             </span>
             <div class="ne-title">
                 <Runs text={parts().title} />
             </div>
+            <Show when={resume()}>
+                {(r) => (
+                    <div class="ne-resume" data-find-skip title={`At ${untilLabel(r().nextAt, now())}`}>
+                        Continues after the limit resets
+                        <Show when={r().nextAt - now() >= 60_000}> · in {until(r().nextAt, now())}</Show>
+                    </div>
+                )}
+            </Show>
             <Show when={parts().body}>
                 {(b) => (
                     <div class="ne-body">
@@ -211,10 +228,10 @@ function ErrorCard(p: { block: NoticeBlock; state?: SessionState }) {
                     </div>
                 )}
             </Show>
-            <div class="ne-foot" data-find-skip>
-                <Show
-                    when={limit()}
-                    fallback={
+            <Show
+                when={limit()}
+                fallback={
+                    <div class="ne-foot" data-find-skip>
                         <button
                             class="cbtn"
                             title="Copy the error"
@@ -230,23 +247,26 @@ function ErrorCard(p: { block: NoticeBlock; state?: SessionState }) {
                             </Show>
                             {copied() ? "Copied" : "Copy"}
                         </button>
-                    }
-                >
-                    {(l) => <LimitActions provider={l().provider} accountId={l().accountId} resetsAt={l().resetsAt} state={p.state} />}
-                </Show>
-            </div>
+                    </div>
+                }
+            >
+                {(l) => <LimitActions provider={l().provider} accountId={l().accountId} resetsAt={l().resetsAt} state={p.state} latest={latest()} resume={resume()?.id} />}
+            </Show>
         </div>
     );
 }
 
 /**
- * What a limit's card offers: another account (the plan meter's switch: a new CLI thread with this conversation,
- * and the message sent again), and the plan meter's card. Another account only while the session is still on the
- * one that's out, and it isn't past its reset.
+ * What a limit's card offers, when there's something to do, while the session is still on the account that's out and
+ * it isn't past its reset: another account (the plan meter's switch: a new CLI thread with this conversation, and the
+ * message sent again); and, on the latest card, whether it picks up again once the limit resets: "Don't continue"
+ * while it waits to, "Continue after the limit resets" (in the same place, so a slip is undone there) once it doesn't.
+ * Nothing to do: no row.
  */
-function LimitActions(p: { provider: string; accountId: string; resetsAt?: number; state?: SessionState }) {
+function LimitActions(p: { provider: string; accountId: string; resetsAt?: number; state?: SessionState; latest: boolean; resume?: string }) {
     const [accounts, setAccounts] = createSignal<AccountInfo[]>([]);
     const [switching, setSwitching] = createSignal(false);
+    const [toggling, setToggling] = createSignal(false);
     const current = () => p.state && (p.state.accounts?.[p.provider] ?? "default") === p.accountId && p.state.model?.provider === p.provider;
     const live = () => Boolean(current()) && (p.resetsAt === undefined || p.resetsAt > now());
     // Asked when the card is drawn (as the plan meter asks once a limit is reached): only a signed-in account helps.
@@ -274,19 +294,37 @@ function LimitActions(p: { provider: string; accountId: string; resetsAt?: numbe
             setSwitching(false);
         }
     }
+    // A reset time to wait for, on the account that's out: the server checks it all again (Runtime.resumeAfterLimit).
+    const canResume = () => p.latest && !p.resume && live() && p.resetsAt !== undefined;
+    async function toggleResume() {
+        if (!p.state) return;
+        setToggling(true);
+        try {
+            if (p.resume) await rpc.call("session.schedule", { id: p.state.id, scheduleId: p.resume, action: "delete" });
+            else await rpc.call("session.resumeAfterLimit", { id: p.state.id });
+        } catch (error) {
+            reportError(error);
+        } finally {
+            setToggling(false);
+        }
+    }
     return (
-        <>
-            <For each={others()}>
-                {(a) => (
-                    <button class="cbtn" disabled={(p.state?.busy && !p.state.activity?.idle) || switching()} title="Starts a new CLI thread with this conversation; send your message again" onClick={() => void switchTo(a.id)}>
-                        Switch to {a.name}
+        <Show when={others().length || p.resume || canResume()}>
+            <div class="ne-foot" data-find-skip>
+                <For each={others()}>
+                    {(a) => (
+                        <button class="cbtn" disabled={(p.state?.busy && !p.state.activity?.idle) || switching()} title="Starts a new CLI thread with this conversation; send your message again" onClick={() => void switchTo(a.id)}>
+                            Switch to {a.name}
+                        </button>
+                    )}
+                </For>
+                <Show when={p.resume || canResume()}>
+                    <button class="cbtn" disabled={toggling()} title={p.resume ? "Wait for your next message instead" : "Pick up where it left off once the limit resets"} onClick={() => void toggleResume()}>
+                        {p.resume ? "Don't continue" : "Continue after the limit resets"}
                     </button>
-                )}
-            </For>
-            <button class="cbtn quiet" aria-label="Plan limits" onClick={() => setContextCardOpen(true)}>
-                Limits
-            </button>
-        </>
+                </Show>
+            </div>
+        </Show>
     );
 }
 
@@ -349,6 +387,19 @@ function StoppedLine(p: { provider: string; tasks: StoppedTask[]; under?: boolea
     );
 }
 
+/** A CLI compacted its context: a rule across the column with its label, as Cavvy's own compaction (no summary to show). */
+function CompactedLine(p: { block: NoticeBlock }) {
+    return (
+        <div class="compacted" data-find={p.block.id}>
+            <div class="compacted-rule" title={p.block.text}>
+                <span />
+                <span class="imported-label">{COMPACTED_LABEL}</span>
+                <span />
+            </div>
+        </div>
+    );
+}
+
 /** A notice block, drawn as what it is (lib/notices.ts noticeKind). */
 export function Notice(p: { block: NoticeBlock; state?: SessionState }) {
     const kind = () => noticeKind(p.block);
@@ -361,6 +412,9 @@ export function Notice(p: { block: NoticeBlock; state?: SessionState }) {
                 <div class="ev" data-find={p.block.id}>
                     <StoppedLine provider={p.block.stopped!.provider} tasks={p.block.stopped!.tasks} />
                 </div>
+            </Match>
+            <Match when={kind() === "compacted"}>
+                <CompactedLine block={p.block} />
             </Match>
             <Match when={kind() === "error"}>
                 <ErrorCard block={p.block} state={p.state} />

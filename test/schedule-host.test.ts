@@ -52,7 +52,7 @@ class FakeClock implements Clock {
     }
 }
 
-function host(opts: { settings?: Settings; session?: Session; busy?: boolean } = {}) {
+function host(opts: { settings?: Settings; session?: Session; busy?: boolean; resumeShown?: boolean } = {}) {
     const clock = new FakeClock(new Date(2026, 9, 20, 9, 0).getTime());
     let session = opts.session ?? Session.create(mkdtempSync(join(home, "proj-")), { persist: false });
     const runs: { prompt: string; label: string }[] = [];
@@ -67,6 +67,7 @@ function host(opts: { settings?: Settings; session?: Session; busy?: boolean } =
         idle: () => !busy,
         run: (prompt, _job, label) => void runs.push({ prompt, label }),
         notice: (t) => notices.push(t),
+        resumeShown: opts.resumeShown,
         clock,
         index: false,
     });
@@ -277,6 +278,40 @@ describe("a switched account or model and the waiting resume (#411)", () => {
         const n = notices.length;
         h.cancelLimitResume("model");
         expect(notices.length).toBe(n);
+    });
+
+    test("where the UI shows the waiting resume itself (resumeShown), setting and cancelling it say nothing; why none is set still is", () => {
+        const { h, clock, runs, notices, setIdentity } = host({ resumeShown: true });
+        h.turnEnded("error", { resetsAt: clock.t + HOUR });
+        expect(h.scheduler.list().map((j) => j.kind)).toEqual(["resume"]);
+        h.userSent();
+        expect(h.scheduler.size).toBe(0);
+        h.turnEnded("error", { resetsAt: clock.t + HOUR });
+        setIdentity("claude-code:a|acct-2");
+        h.cancelLimitResume("account");
+        expect(h.scheduler.size).toBe(0);
+        expect(notices).toEqual([]);
+        h.turnEnded("error", {});
+        expect(notices).toEqual(["It won't continue by itself: the reset time isn't known. Send a message when the limit resets."]);
+        clock.advance(3 * HOUR);
+        expect(runs).toEqual([]);
+    });
+
+    test("asked for again after it was called off (or with it turned off), the resume waits for the same reset", () => {
+        const { h, clock, runs } = host({ settings: { autoResume: false } });
+        const reset = clock.t + HOUR;
+        h.turnEnded("error", { resetsAt: reset });
+        expect(h.scheduler.size).toBe(0);
+        expect(h.resumeAfter(reset)).toBeUndefined();
+        expect(h.scheduler.list()[0]).toMatchObject({ kind: "resume", nextAt: reset + RESUME_DELAY_MS });
+        // Already waiting: nothing more.
+        expect(h.resumeAfter(reset)).toBeUndefined();
+        expect(h.scheduler.size).toBe(1);
+        clock.advance(HOUR + MIN);
+        expect(runs).toEqual([{ prompt: RESUME_PROMPT, label: "Resuming after the usage limit reset" }]);
+        // Past the reset: a message does it.
+        expect(h.resumeAfter(clock.t - MIN)).toBe("The limit has reset: send a message to continue.");
+        expect(h.scheduler.size).toBe(0);
     });
 
     test("other schedules stay when the resume is cancelled", () => {

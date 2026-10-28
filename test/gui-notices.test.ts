@@ -2,9 +2,9 @@
 // which notices sit above "Worked for", and the limit card taking the place of the turn's earlier warning.
 
 import { expect, test } from "bun:test";
-import type { Block, NoticeBlock } from "../src/server/protocol";
+import type { Block, NoticeBlock, ScheduleInfo } from "../src/server/protocol";
 
-const { codeRuns, errorParts, hasErrorCard, leadingNotices, limitTitle, noticeKind, noticeReads, plainOf, shownBlocks, switchLine, warnParts } = await import("../gui/src/lib/notices");
+const { codeRuns, errorParts, hasErrorCard, leadingNotices, limitTitle, listedSchedules, noticeKind, noticeReads, plainOf, shownBlocks, switchLine, waitingResume, warnParts } = await import("../gui/src/lib/notices");
 
 const at = (h: number, m = 0) => new Date(2026, 9, 23, h, m).getTime();
 const NOW = at(13, 35);
@@ -78,4 +78,29 @@ test("notices from before the first step sit above Worked for; later ones stay w
     expect(leadingNotices([item("notice"), item("notice"), work, item("notice"), item("text")])).toBe(2);
     expect(leadingNotices([work, item("notice")])).toBe(0);
     expect(leadingNotices([item("text"), item("notice"), work])).toBe(0);
+});
+
+test("a CLI's compaction is a rule, and find reads its label", () => {
+    const c = n({ text: "Claude Code compacted its context.", compacted: true });
+    expect(noticeKind(c)).toBe("compacted");
+    expect(noticeReads(c, NOW)).toBe("Context compacted");
+});
+
+test("the waiting resume shows on the last turn's latest limit card only, and the composer leaves it to the card", () => {
+    const resume: ScheduleInfo = { id: "r", kind: "resume", prompt: "", when: "", recurring: false, durable: false, paused: false, nextAt: at(15, 41), runs: 0, due: false };
+    const loop: ScheduleInfo = { ...resume, id: "l", kind: "loop", nextAt: at(14) };
+    const earlier = n({ id: "a", level: "error", text: "stopped", limit });
+    const card = n({ id: "b", level: "error", text: "stopped", limit });
+    const turn: Block[] = [earlier, n({ id: "x", text: "note" }), card];
+    expect(waitingResume(card, turn, [loop, resume])).toBe(resume as ScheduleInfo & { nextAt: number });
+    expect(listedSchedules([loop, resume], turn)).toEqual([loop]);
+    // With no limit card in the last turn, the composer lists it (it's the only place to see it, and call it off).
+    expect(listedSchedules([loop, resume], [n({ id: "x", text: "note" })])).toEqual([loop, resume]);
+    expect(listedSchedules([loop, resume], undefined)).toEqual([loop, resume]);
+    // An earlier card in the turn, a card of an earlier turn, no resume waiting, an error that isn't a limit: none.
+    expect(waitingResume(earlier, turn, [resume])).toBeUndefined();
+    expect(waitingResume(card, [n({ id: "c", level: "error", text: "stopped", limit })], [resume])).toBeUndefined();
+    expect(waitingResume(card, turn, [loop])).toBeUndefined();
+    expect(waitingResume(card, turn, undefined)).toBeUndefined();
+    expect(waitingResume(n({ id: "b", level: "error", text: "boom" }), turn, [resume])).toBeUndefined();
 });

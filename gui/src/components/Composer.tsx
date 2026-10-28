@@ -33,6 +33,7 @@ import { composingKey, revealMenuOption } from "../lib/composer-menu";
 import { matchSkills, skillToken } from "../lib/commands";
 import { firstSendable, FOLLOW_UP_WORDS, followUpFor, followUpLabels, otherFollowUp, restoreWaits, withDraft } from "../lib/queue";
 import { canStop } from "../lib/session-status";
+import { listedSchedules } from "../lib/notices";
 import { QueueTab } from "./QueueTab";
 import { StepsTray } from "./StepsTray";
 
@@ -749,8 +750,12 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 <Show when={p.sessionId ? st()?.goal : undefined}>
                     {(goal) => <GoalTab sessionId={p.sessionId!} goal={goal()} />}
                 </Show>
-                <Show when={p.sessionId && st()?.schedules?.length}>
-                    <ScheduleTab sessionId={p.sessionId!} items={st()!.schedules} />
+                <Show when={p.sessionId && st()?.schedules?.length ? listedSchedules(st()!.schedules, handleFor(p.sessionId)?.view.turns.at(-1)?.blocks) : undefined}>
+                    {(items) => (
+                        <Show when={items().length}>
+                            <ScheduleTab sessionId={p.sessionId!} items={items()} />
+                        </Show>
+                    )}
                 </Show>
                 <Show when={comments().length}>
                     <ReviewCommentChips

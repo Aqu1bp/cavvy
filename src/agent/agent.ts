@@ -2740,6 +2740,8 @@ export class Agent {
         };
         const sink: TurnSink = {
             emit: (e) => {
+                // The CLI saying it compacted: this compaction's own rule (compact_end) says so.
+                if (e.type === "notice" && e.data?.compacted) return;
                 if (e.type === "notice" || e.type === "retry" || e.type === "limits") this.emit(e);
             },
             drainQueued: () => [],
