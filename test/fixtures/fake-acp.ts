@@ -14,6 +14,10 @@
 // answer's text is the tool's ({mcpResult}).
 // OpenCode's then asks about FAKE_ACP_AFTER_MCP's command, if set, in the same turn.
 //
+// FAKE_ACP_FOLDERS: a file where it keeps the folder each session was made in, as OpenCode 1.19.4 does: then it has
+// session/list ({cwd}: the sessions made there), and a session resumed or loaded with another cwd goes on in its own
+// folder ({keptIn} logged).
+//
 // session/resume or session/load of an id starting "gone" fails (-32602, session not found); session/load first
 // replays the session's history as updates. A prompt's text picks what it does by a [[directive]] in it:
 //   (none)            thinks, says "Hello there", reports usage (cost from [[cost:N]], cumulative), ends end_turn
@@ -88,13 +92,15 @@
 //   [[take-late:MS]]  says "alpha"; one sent as it's said is taken into another model call, no tool between
 //                     (grok-1.0.70-steer-file.jsonl), which thinks; then MS (10 s) or session/cancel
 
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { isAbsolute, join } from "path";
 
 const log = (o: Record<string, unknown>) => process.env.FAKE_LOG && appendFileSync(process.env.FAKE_LOG, JSON.stringify(o) + "\n");
 const out = (o: Record<string, unknown>) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...o }) + "\n");
 
 const GROK = process.env.FAKE_ACP_FLAVOR === "grok";
+const FOLDERS = process.env.FAKE_ACP_FOLDERS;
+const folders = (): Record<string, string> => (FOLDERS && existsSync(FOLDERS) ? JSON.parse(readFileSync(FOLDERS, "utf-8")) : {});
 const SIGNED_OUT = process.env.FAKE_GROK_SIGNED_OUT === "1";
 if (process.argv[2] === "models") {
     if (GROK) process.stdout.write(`${SIGNED_OUT ? "You are not authenticated." : "You are logged in with grok.com."}\n\nDefault model: grok-4.7\n\nAvailable models:\n  * grok-4.7 (default)\n  - grok-4.6\n`);
@@ -320,20 +326,26 @@ function handle(msg: any) {
                     agentCapabilities: {
                         loadSession: true,
                         promptCapabilities: { image: process.env.FAKE_ACP_IMAGES !== "0", embeddedContext: true },
-                        sessionCapabilities: process.env.FAKE_ACP_RESUME === "load" ? { close: {} } : { close: {}, resume: {} },
+                        sessionCapabilities: { ...(process.env.FAKE_ACP_RESUME === "load" ? { close: {} } : { close: {}, resume: {} }), ...(FOLDERS ? { list: {} } : {}) },
                         mcpCapabilities: { http: true, sse: true },
                     },
                     agentInfo: { name: "OpenCode", version: "0.0.0-fake" },
                 },
             });
-        case "session/new":
+        case "session/new": {
             cwd = p.cwd;
             noteMcp(p);
-            return out({ id, result: { sessionId: `ses_fake${++sessions}_${process.pid}`, configOptions: configOptions() } });
+            const sid = `ses_fake${++sessions}_${process.pid}`;
+            if (FOLDERS) writeFileSync(FOLDERS, JSON.stringify({ ...folders(), [sid]: p.cwd }));
+            return out({ id, result: { sessionId: sid, configOptions: configOptions() } });
+        }
+        case "session/list":
+            return out({ id, result: { sessions: Object.entries(folders()).flatMap(([sessionId, dir]) => (dir === p.cwd ? [{ sessionId, cwd: dir }] : [])) } });
         case "session/resume":
         case "session/load":
             if (String(p.sessionId).startsWith("gone")) return out({ id, error: { code: -32602, message: `Invalid params: session not found: ${p.sessionId}` } });
-            cwd = p.cwd;
+            cwd = folders()[p.sessionId] ?? p.cwd;
+            if (cwd !== p.cwd) log({ keptIn: cwd });
             noteMcp(p);
             if (method === "session/load") {
                 update(p.sessionId, { sessionUpdate: "user_message_chunk", content: { type: "text", text: "earlier prompt" } });

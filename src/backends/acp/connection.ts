@@ -225,6 +225,7 @@ export class AcpConnection implements CliConnection {
             const can = this.init.agentCapabilities ?? {};
             let r: any;
             try {
+                if (this.agent.keepsFolder && can.sessionCapabilities?.list && !(await this.listed(o.resumeId))) throw new Error("it was made in another folder");
                 // session/resume doesn't replay the history; session/load does, as updates before its answer.
                 if (can.sessionCapabilities?.resume) r = await this.rpc.request("session/resume", { ...params, sessionId: o.resumeId });
                 else if (can.loadSession) {
@@ -250,6 +251,19 @@ export class AcpConnection implements CliConnection {
         }
         await this.apply(o.settings);
         return { sessionId: this.sessionId! };
+    }
+
+    /** Whether session/list has the session in this folder: yes too when it can't say (it fails, or lists too many). */
+    private async listed(sessionId: string): Promise<boolean> {
+        let cursor: string | undefined;
+        for (let page = 0; page < 20; page++) {
+            const r = await this.rpc.request("session/list", { cwd: this.cwd, ...(cursor ? { cursor } : {}) }).catch(() => undefined);
+            if (!Array.isArray(r?.sessions)) return true;
+            if (r.sessions.some((s: any) => s?.sessionId === sessionId)) return true;
+            if (typeof r.nextCursor !== "string" || !r.nextCursor) return false;
+            cursor = r.nextCursor;
+        }
+        return true;
     }
 
     /** Cavvy's MCP server, to an agent that takes one over HTTP (ACP's mcpCapabilities). */

@@ -54,6 +54,12 @@ export interface AcpAgent {
      * rules and mode (Grok's client PreToolUse hook). Left out: what it asks about (session/request_permission) is all.
      */
     gate?: AcpGate;
+    /**
+     * Its sessions stay in the folder they were made in: resumed with another cwd it goes on working in that one, and
+     * its asks there are never answered (OpenCode 1.19.4, resuming in a worktree). Cavvy resumes one only where its
+     * session/list says it belongs, and otherwise starts a new one with the conversation (as when a resume fails).
+     */
+    keepsFolder?: boolean;
 }
 
 /** A tool call the agent's gate holds until Cavvy answers (AcpGate). */
@@ -175,6 +181,7 @@ export function opencodeEnv(trusted: boolean): Record<string, string> {
 const OPENCODE: AcpAgent = {
     // The same in every mode: a mode change needs no restart. Cavvy decides each ask by its mode then.
     spawn: (cfg) => ({ args: ["--cwd", cfg.cwd], env: opencodeEnv(cfg.trusted) }),
+    keepsFolder: true,
     // `opencode models`: provider/model, one a line (about half a second).
     async listModels(bin, signal) {
         const r = await runCli(bin, ["models"], { signal, timeoutMs: 30_000 });

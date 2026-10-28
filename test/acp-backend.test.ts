@@ -45,6 +45,7 @@ beforeEach(() => {
     cwd = realpathSync(tempDir("acp-agent-proj-"));
     rmSync(LOG, { force: true });
     process.env.FAKE_LOG = LOG;
+    delete process.env.FAKE_ACP_FOLDERS;
     registry.saveAgentConfig("opencode", { path: fake });
     forgetClient("opencode");
 });
@@ -248,6 +249,8 @@ describe("Cavvy's EnterWorktree, which OpenCode has none of", () => {
         writeFileSync(join(cwd, "readme.txt"), "hi\n");
         g("add", "-A");
         g("commit", "-q", "-m", "init");
+        // Its sessions stay in the folder they were made in.
+        process.env.FAKE_ACP_FOLDERS = join(tempDir("acp-folders-"), "folders.json");
         const a = await makeAgent({ ask: () => ({ allow: true }) });
         expect(await a.run('[[mcp:enter_worktree {"name":"oc-wt"}]]')).toBe("done");
         const wt = join(cwd, ".claude", "worktrees", "oc-wt");
@@ -258,10 +261,14 @@ describe("Cavvy's EnterWorktree, which OpenCode has none of", () => {
         expect(a.events.filter((e) => e.type === "cwd")).toEqual([{ type: "cwd", cwd: wt }]);
         expect(a.events.find((e) => e.type === "tool_start")).toMatchObject({ call: { name: "EnterWorktree", input: { name: "oc-wt" } }, title: "EnterWorktree(oc-wt)" });
         expect(logLines().find((l) => l.mcpResult)?.mcpResult.text).toContain(`Your shell still starts in ${cwd} until this turn ends`);
-        // Its next turn: its process in the worktree, its session resumed there.
+        // Its next turn: its process in the worktree, and a new session there with the conversation, as its session
+        // resumed there would go on in the main checkout.
         expect(await a.run("hello")).toBe("done");
-        expect(logLines().filter((l) => l.argv).map((l) => realpathSync(l.cwd))).toEqual([cwd, wt]);
-        expect(logLines().some((l) => l.received?.method === "session/resume" && l.received.params.cwd === wt)).toBe(true);
+        // (The one that tried to resume it goes, as after any failed resume.)
+        expect(logLines().filter((l) => l.argv).map((l) => realpathSync(l.cwd))).toEqual([cwd, wt, wt]);
+        expect(logLines().flatMap((l) => (["session/new", "session/resume"].includes(l.received?.method) ? [[l.received.method, l.received.params.cwd]] : []))).toEqual([["session/new", cwd], ["session/new", wt]]);
+        expect(logLines().some((l) => l.keptIn)).toBe(false);
+        expect(a.events.filter((e) => e.type === "notice").map((e: any) => [e.level, e.message])).toEqual([["info", "OpenCode continues in a new session in oc-wt, with this conversation as context."]]);
     });
 
     test("what it asks about after the move, that turn, is checked where its shell still runs: the folder the turn started in", async () => {
