@@ -10,7 +10,8 @@
 // Both flavors take MCP servers over HTTP (mcpCapabilities.http), as session/new, resume or load's mcpServers ({mcp}
 // logged: each one's type, name and url). [[mcp:TOOL JSON]] calls TOOL of the first with JSON's arguments: OpenCode's
 // call is named for it (<server>_<tool>, kind other, asked about), Grok's goes through use_tool ({tool_name:
-// <server>__<tool>, tool_input}: held by the hook, then asked about); its answer's text is the tool's ({mcpResult}).
+// <server>__<tool>, tool_input}: held by the hook, which names <server>__<tool> with that input, then asked about); its
+// answer's text is the tool's ({mcpResult}).
 // OpenCode's then asks about FAKE_ACP_AFTER_MCP's command, if set, in the same turn.
 //
 // session/resume or session/load of an id starting "gone" fails (-32602, session not found); session/load first
@@ -484,14 +485,14 @@ async function grokPrompt(id: number, p: any) {
      * A tool as Grok sends it: a bare tool_call; held by the hook (when one's registered, unless `nogate`); its kind;
      * asked about (unless `unasked`); run or refused. `at`: a subagent's session (its updates, hook and asks), of `type`.
      */
-    const tool = async (callId: string, name: string, kind: string, title: string, rawInput: Record<string, unknown>, o: { unasked?: boolean; nogate?: boolean; readOnly?: boolean; cut?: boolean; hookInput?: Record<string, unknown>; refuse?: string; run: () => string | Promise<string>; options: unknown[]; at?: { sid: string; type: string } }) => {
+    const tool = async (callId: string, name: string, kind: string, title: string, rawInput: Record<string, unknown>, o: { unasked?: boolean; nogate?: boolean; readOnly?: boolean; cut?: boolean; hookName?: string; hookInput?: Record<string, unknown>; refuse?: string; run: () => string | Promise<string>; options: unknown[]; at?: { sid: string; type: string } }) => {
         const here = o.at?.sid ?? sid;
         xai("session_notification", { sessionId: here, update: { sessionUpdate: "tool_call_delta_chunk", tool_call_id: callId, name } });
         const { variant: _, ...first } = rawInput;
         const meta = { "x.ai/tool": { version: 1, name, kind: kind === "edit" ? "write" : kind, read_only: Boolean(o.readOnly) } };
         gUpdate(here, { sessionUpdate: "tool_call", toolCallId: callId, title: name, rawInput: first, _meta: meta });
         if (s.hook && !o.nogate) {
-            const params = { hookCallbackId: s.hook.id, hookEventName: "pre_tool_use", sessionId: here, cwd, workspaceRoot: cwd, permissionMode: s.auto ? "auto" : s.mode, toolName: name, toolUseId: callId, toolInput: o.hookInput ?? first, toolInputTruncated: Boolean(o.cut), ...(o.at ? { subagentType: o.at.type } : {}) };
+            const params = { hookCallbackId: s.hook.id, hookEventName: "pre_tool_use", sessionId: here, cwd, workspaceRoot: cwd, permissionMode: s.auto ? "auto" : s.mode, toolName: o.hookName ?? name, toolUseId: callId, toolInput: o.hookInput ?? first, toolInputTruncated: Boolean(o.cut), ...(o.at ? { subagentType: o.at.type } : {}) };
             const answer = await askFor("_x.ai/hooks/run", params, s.hook.timeoutS * 1000);
             if (!answer) log({ hookTimeout: callId });
             else log({ hookAnswer: answer.result ?? answer.error });
@@ -570,7 +571,8 @@ async function grokPrompt(id: number, p: any) {
         case "mcp": {
             const c = mcpCall(arg);
             const name = `${c.server}__${c.tool}`;
-            if (!(await tool("call-mcp", "use_tool", "other", name, { variant: "UseTool", tool_name: name, tool_input: c.args }, { unasked: s.auto, run: c.run, options: GROK_EDIT_OPTIONS }))) return;
+            // Its hook names the MCP tool itself, with use_tool's input around the tool's own (grok 1.0.70).
+            if (!(await tool("call-mcp", "use_tool", "other", name, { variant: "UseTool", tool_name: name, tool_input: c.args }, { unasked: s.auto, hookName: name, run: c.run, options: GROK_EDIT_OPTIONS }))) return;
             break;
         }
         case "subagent": {

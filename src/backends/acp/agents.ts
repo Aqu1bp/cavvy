@@ -424,8 +424,12 @@ function grokTool(call: GateCall, cwd: string): GateTool | undefined {
             // Its subagent's calls come through the gate too, each decided as they come.
             return { toolName: "Task", input: { description: str(i.description) ?? "subagent", prompt: typeof i.prompt === "string" ? i.prompt : "", subagent_type: str(i.subagent_type) ?? str(i.agent_type) ?? "general-purpose" } };
     }
-    // An MCP server's tool, <server>__<tool>: Cavvy's rules name it mcp__<server>__<tool>.
-    if (/^[\w-]+__[\w-]+$/.test(call.toolName) && !call.toolName.startsWith("mcp__")) return { toolName: `mcp__${call.toolName}`, input: i };
+    // An MCP server's tool, <server>__<tool>: Cavvy's rules name it mcp__<server>__<tool>. Its hook names the tool but
+    // gives use_tool's input, the tool's own inside it ({tool_name, tool_input}): checked with the tool's own.
+    if (/^[\w-]+__[\w-]+$/.test(call.toolName) && !call.toolName.startsWith("mcp__")) {
+        const own = i.tool_name === call.toolName && i.tool_input && typeof i.tool_input === "object" && !Array.isArray(i.tool_input) ? (i.tool_input as Record<string, unknown>) : i;
+        return { toolName: `mcp__${call.toolName}`, input: own };
+    }
     return undefined;
 }
 
