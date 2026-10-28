@@ -265,8 +265,11 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     };
     /** `refresh`: a menu that just opened asks the server again, which reads new skills. */
     const updateMenu = (refresh = true) => {
-        // Typing on in an open @ menu: its rows stay until the next ones come, so it doesn't blink empty at each key.
-        const typingOn = Boolean(token()) && rowsFrom === (st()?.cwd ?? app.homeCwd) && menu().some((m) => m.kind !== "command") && menuDismissedFor() !== text();
+        // Typing on in an open menu: its rows stay until the next ones come, so it doesn't blink empty at each key
+        // (and pop open again). The @ menu's come from a search; the / and $ menus' at once, below.
+        const files = Boolean(token()) && rowsFrom === (st()?.cwd ?? app.homeCwd) && menu().some((m) => m.kind !== "command");
+        const names = (/^\/\S*$/.test(text()) || Boolean(skillAtCursor())) && menu().some((m) => m.kind === "command");
+        const typingOn = (files || names) && menuDismissedFor() !== text();
         if (typingOn) staleSearch();
         else dismissMenu();
         const version = mentionVersion;
