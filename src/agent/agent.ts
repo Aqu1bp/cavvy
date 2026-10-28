@@ -3894,10 +3894,14 @@ function reachedBy(e: AgentEvent, here?: string): string[] {
     const named = (v: unknown) => {
         if (typeof v === "string" && v && !isAbsolute(v) && !v.startsWith("~") && here) out.push(resolve(here, v));
     };
-    // An agent CLI's own tools name theirs as they like (OpenCode's filepath, parentDir): any absolute path is one.
-    for (const v of Object.values(input)) if (typeof v === "string" && isAbsolute(v) && !v.includes("\n")) out.push(v);
-    for (const k of ["file_path", "notebook_path", "path", "cwd", "workdir", "filePath", "filepath", "target_file"]) named(input[k]);
-    // A command's other paths too (`printf … > /a/worktree/file`, `--out=dir/file`): the files it writes, as far as its words say.
+    // An agent CLI's own tools name theirs their own way too (ACP's filePath, filepath, target_file; OpenCode's parentDir).
+    for (const k of ["file_path", "notebook_path", "path", "cwd", "workdir", "filePath", "filepath", "target_file", "parentDir"]) {
+        const v = input[k];
+        if (typeof v === "string" && isAbsolute(v)) out.push(v);
+        else named(v);
+    }
+    // A command's other paths too (`printf … > /a/worktree/file`, `--out=dir/file`): read or written, its words don't
+    // say which, but a turn whose commands only read is left out already (readsOnly).
     if (typeof input.command === "string" && SHELL_TOOL.test(e.call.name)) {
         for (const w of shellWords(input.command)) {
             const p = w.replace(/^(?:[A-Za-z0-9_-]*=|\d*[<>]+[&|]?|&>>?)/, "");

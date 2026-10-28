@@ -340,7 +340,7 @@ describe("a turn's places", () => {
         const agent = new Agent({
             session,
             model: { provider: "test", id: "test" } as any,
-            client: { stream: async () => (++n === 1 ? toolCall("b1", "Bash", { command: `mkdir -p ${linked} && printf 'x\\n' > ${join(linked, "codex.txt")}` }) : text("done")), listModels: async () => [] } as any,
+            client: { stream: async () => (++n === 1 ? toolCall("b1", "Bash", { command: `printf 'x\\n' >${join(linked, "codex.txt")}` }) : text("done")), listModels: async () => [] } as any,
             settings: () => ({ autoCompact: false, delegation: false }) as any,
             checker: new PermissionChecker(() => ({}) as any, main),
             tools: [BashTool],
@@ -358,15 +358,15 @@ describe("a turn's places", () => {
         }
     });
 
-    test("an agent CLI's own tool that names its file its own way (OpenCode's filepath) reaches it", async () => {
-        const { main, linked } = repo("own-tool");
+    test("an agent CLI's own tool that names its file its own way (OpenCode's filepath, relative here) reaches it", async () => {
+        const { main } = repo("own-tool");
         const session = Session.create(main, { system: "S" });
-        const own = { name: "write", category: "edit", readOnly: false, description: "d", parameters: { type: "object", properties: {} }, title: () => "write", run: async (i: any) => (writeFileSync(i.filepath, "x\n"), { content: "ok" }) } as any;
+        const own = { name: "write", category: "edit", readOnly: false, description: "d", parameters: { type: "object", properties: {} }, title: () => "write", run: async (i: any) => (writeFileSync(join(main, i.filepath), "x\n"), { content: "ok" }) } as any;
         let n = 0;
         const agent = new Agent({
             session,
             model: { provider: "test", id: "test" } as any,
-            client: { stream: async () => (++n === 1 ? toolCall("w1", "write", { filepath: join(linked, "opencode.txt"), parentDir: linked }) : text("done")), listModels: async () => [] } as any,
+            client: { stream: async () => (++n === 1 ? toolCall("w1", "write", { filepath: ".claude/worktrees/ui-fixes/opencode.txt" }) : text("done")), listModels: async () => [] } as any,
             settings: () => ({ autoCompact: false, delegation: false }) as any,
             checker: new PermissionChecker(() => ({}) as any, main),
             tools: [own],
