@@ -29,7 +29,8 @@ Unit tests and reviews aren't enough to call a user-facing change done. Build th
 ## Branches
 
 - Work in your own git worktree, on a branch from the current `origin/main`. Every change reaches `main` through a pull request.
-- One change per pull request. When `main` moves, rebase and push.
+- Keep a pull request to one kind of change, such as a feature, a bug fix or UI work, not a mix. Something unrelated you find on the way gets its own pull request.
+- When `main` moves, rebase onto it and push.
 
 ## Tests
 
