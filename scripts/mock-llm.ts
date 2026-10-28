@@ -149,8 +149,9 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
             return { text: `The page is up. I'll try its "${button[1]}" button.`, calls: [{ name: "BrowserAct", args: { action: "click", ref: button[2] } }] };
         }
         if (toolRounds === 2) return { text: "It works. A screenshot, to show you how it looks now.", calls: [{ name: "BrowserScreenshot", args: {} }] };
-        // Shown in the reply as the screenshot's result says to (where it couldn't be saved, said without it).
-        const saved = /Saved as (\S+): to show it/.exec(lastResult)?.[1];
+        // Shown in the reply as the screenshot's result says to, with its path as written there (in angle brackets when it
+        // has spaces); where it couldn't be saved, said without it.
+        const saved = /put !\[[^\]]*\]\((<(?:\\.|[^\\<>\n])*>|[^\s()<>]+)\) in your last message/.exec(lastResult)?.[1];
         return { text: `The page loads and the button works.${saved ? `\n\n![The page after the click](${saved})` : ""}` };
     }
     // A monitor's lines woke the agent: say what they were.
@@ -553,24 +554,34 @@ export function startMockLlm(o: MockOptions = {}) {
             if (bodies.length > 50) bodies.shift();
             const messages: Json[] = body.messages ?? [];
             const system = String(messages.find((m) => m.role === "system")?.content ?? "");
-            // The prompt that started this turn and how many tool rounds have happened since. A tool's images come after
-            // its result as a user message of their own (Chat Completions can't carry them in it): not a prompt.
+            // The prompt that started this turn and how many tool rounds have happened since. A tool's images start the
+            // user message after its result, under a line of their own (Chat Completions can't carry them in it): they're
+            // not a prompt, though what follows them in that message (the user steering the turn) can be.
+            const own = (m: Json): Json[] => {
+                if (typeof m.content === "string") return [{ type: "text", text: m.content }];
+                const parts: Json[] = m.content ?? [];
+                if (parts[0]?.text !== "Images returned by the tool calls above:") return parts;
+                let i = 1;
+                while (parts[i]?.type === "image_url") i++;
+                return parts.slice(i);
+            };
             let promptIdx = -1;
             for (let i = messages.length - 1; i >= 0; i--) {
                 const m = messages[i]!;
                 if (m.role === "user") {
-                    const text = typeof m.content === "string" ? m.content : (m.content ?? []).map((c: Json) => c.text ?? "").join("");
-                    if ((!text.startsWith("<system-reminder>") && !text.startsWith("Images returned by the tool calls above")) || i === 0) {
+                    const parts = own(m);
+                    const text = parts.map((c: Json) => c.text ?? "").join("");
+                    if ((parts.length && !text.startsWith("<system-reminder>")) || i === 0) {
                         promptIdx = i;
                         break;
                     }
                 }
             }
-            const promptMsg = messages[promptIdx] ?? {};
+            const promptParts = promptIdx >= 0 ? own(messages[promptIdx]!) : [];
             // Cavvy's own notes ride along with prompts; only the user's words pick the script.
             // A prompt after an interrupt arrives joined to the interrupted one (one user message): only what follows counts.
-            const prompt = (typeof promptMsg.content === "string" ? promptMsg.content : (promptMsg.content ?? []).map((c: Json) => c.text ?? "").join("\n")).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").split("[Request interrupted by user]").pop()!.trim();
-            const images = Array.isArray(promptMsg.content) ? promptMsg.content.filter((c: Json) => c.type === "image_url").length : 0;
+            const prompt = promptParts.map((c: Json) => c.text ?? "").join("\n").replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").split("[Request interrupted by user]").pop()!.trim();
+            const images = promptParts.filter((c: Json) => c.type === "image_url").length;
             const after = messages.slice(promptIdx + 1);
             const toolRounds = after.filter((m) => m.role === "assistant").length;
             const lastResult = String([...after].reverse().find((m) => m.role === "tool")?.content ?? "");

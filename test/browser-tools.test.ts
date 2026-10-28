@@ -1,9 +1,11 @@
 // The browser tools as a model and the permission system see them: what is offered, what each tool takes, what asks, what is
 // refused (also for a page that goes somewhere by itself, and for files), what is served to Claude Code and Codex, and how a
-// screenshot reaches each kind of provider. No browser runs here (test/browser-engine.test.ts runs the tools on one).
+// screenshot reaches each kind of provider, and is saved for a reply to show. No browser runs here (test/browser-engine.test.ts
+// runs the tools on one).
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "fs";
 import { join } from "path";
+import { deflateSync } from "zlib";
 import { fakeChromeProgram } from "./helpers/fake-chrome";
 import { FAKE, isolate, tempDir } from "./helpers/isolate";
 
@@ -20,6 +22,8 @@ const { toOpenAIMessages } = await import("../src/providers/openai-compat");
 const { toResponsesInput } = await import("../src/providers/openai-responses");
 const { BUILTIN_PROVIDERS } = await import("../src/providers/registry");
 const { imagesFor } = await import("../src/providers/images");
+const { MAX_SHOWN_IMAGE, sniffImage } = await import("../src/util/files");
+const { MarkdownRenderer } = await import("../gui/src/lib/markdown");
 type Message = import("../src/providers/types").Message;
 
 const { BrowserNavigateTool, BrowserSnapshotTool, BrowserActTool, BrowserScreenshotTool, BrowserEvalTool, BrowserLogsTool, BROWSER_TOOLS } = tools;
@@ -375,13 +379,14 @@ describe("served to Claude Code and Codex", () => {
     });
 });
 
+/** The tool's own result for a screenshot, from a tab that returns one (`data`, a PNG). */
+async function screenshotResult(data = PNG) {
+    const page = { url: "http://localhost:3000/", exclusive: <T,>(fn: () => Promise<T>) => fn(), screenshot: async () => ({ type: "image" as const, mediaType: "image/png", data, width: 1280, height: 800 }) };
+    const browser = { run: <T,>(fn: () => Promise<T>) => fn(), page: async () => page, idOf: () => 2 };
+    return BrowserScreenshotTool.run({}, ctx({ projectRoot: root, cwd: root, browser }));
+}
+
 describe("a screenshot as providers are sent it", () => {
-    /** The tool's own result for a screenshot, from a tab that returns one. */
-    async function screenshotResult() {
-        const page = { url: "http://localhost:3000/", exclusive: <T,>(fn: () => Promise<T>) => fn(), screenshot: async () => ({ type: "image" as const, mediaType: "image/png", data: PNG, width: 1280, height: 800 }) };
-        const browser = { run: <T,>(fn: () => Promise<T>) => fn(), page: async () => page, idOf: () => 2 };
-        return BrowserScreenshotTool.run({}, ctx({ projectRoot: root, cwd: root, browser }));
-    }
     async function history(): Promise<Message[]> {
         const result = await screenshotResult();
         expect(result.isError).toBeFalsy();
@@ -439,3 +444,66 @@ describe("a screenshot as providers are sent it", () => {
         expect(JSON.stringify(toResponsesInput(blind, BUILTIN_PROVIDERS.find((p) => p.id === "openai")!, "gpt-6-sol"))).not.toContain(PNG);
     });
 });
+
+describe("a screenshot saved for a reply to show", () => {
+    const savedAs = (content: string) => /Saved as (.+?): to show it to the user/.exec(content)?.[1];
+
+    test("the markdown its result gives reads back in the chat as its path, whatever the path holds", () => {
+        /** The path the chat would show the image from: what the GUI's markdown makes of the reply. */
+        const shownFrom = (markdown: string) => {
+            const html = new MarkdownRenderer().segments(`Here it is:\n\n${markdown}`, false, () => undefined).map((s) => (s.kind === "html" ? s.html : "")).join("");
+            const attr = /<img class="md-img" data-image-file="([^"]*)"/.exec(html)?.[1];
+            return attr?.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
+        };
+        const paths = ["/Users/me/.cavvy/screenshots/a.png", "/tmp/Cavvy Demo/screenshots/a b.png", "/tmp/cavvy)/a.png", "/tmp/(cavvy/a.png", "/tmp/a%20b/a.png", "/tmp/100%/a.png", "/tmp/<a>/b.png", "/tmp/a\\b/c.png", "/tmp/a\\)b/c.png", "/tmp/a&amp;b/c.png", "/tmp/a`b`/c.png", "/tmp/a [b]/c.png", "/tmp/*a*_b_/c.png", "/tmp/\"a\"/'b'.png"];
+        for (const file of paths) expect([file, shownFrom(tools.imageMarkdown(file))]).toEqual([file, file]);
+        // As it is when it can be.
+        expect(tools.imageMarkdown("/Users/me/.cavvy/screenshots/a.png")).toBe("![what it shows](/Users/me/.cavvy/screenshots/a.png)");
+    });
+
+    test("older ones go as one is saved, each on its own: a folder or a link to nothing among them doesn't stop it", async () => {
+        const dir = join(iso.home, "screenshots");
+        const long = new Date(Date.now() - 31 * 86_400_000);
+        mkdirSync(join(dir, "old folder"), { recursive: true });
+        writeFileSync(join(dir, "old folder", "x.png"), "x");
+        for (const name of ["old.png", "new.png"]) writeFileSync(join(dir, name), "x");
+        utimesSync(join(dir, "old.png"), long, long);
+        utimesSync(join(dir, "old folder"), long, long);
+        symlinkSync(join(dir, "nowhere.png"), join(dir, "dangling.png"));
+        const file = savedAs((await screenshotResult()).content);
+        expect(file && readFileSync(file).toString("base64")).toBe(PNG);
+        expect(existsSync(join(dir, "old.png"))).toBe(false);
+        expect(existsSync(join(dir, "new.png"))).toBe(true);
+    });
+
+    test("one too big for the chat is saved as a copy that fits, and the model still gets it whole", async () => {
+        const big = noisePng(2000, 1800).toString("base64");
+        expect(Buffer.from(big, "base64").length).toBeGreaterThan(MAX_SHOWN_IMAGE);
+        const result = await screenshotResult(big);
+        const file = savedAs(result.content)!;
+        const saved = readFileSync(file);
+        expect(saved.length).toBeLessThanOrEqual(MAX_SHOWN_IMAGE);
+        expect([file.slice(-4), sniffImage(saved)]).toEqual([".jpg", "image/jpeg"]);
+        expect(result.images).toEqual([{ type: "image", mediaType: "image/png", data: big }]);
+    });
+});
+
+/** A real RGB PNG of random noise, which doesn't compress: a little over w × h × 3 bytes. */
+function noisePng(w: number, h: number): Buffer {
+    const chunk = (type: string, data: Buffer) => {
+        const head = Buffer.alloc(8);
+        head.writeUInt32BE(data.length, 0);
+        head.write(type, 4, "ascii");
+        const crc = Buffer.alloc(4);
+        crc.writeUInt32BE(Bun.hash.crc32(Buffer.concat([head.subarray(4), data])) >>> 0);
+        return Buffer.concat([head, data, crc]);
+    };
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(w, 0);
+    ihdr.writeUInt32BE(h, 4);
+    ihdr[8] = 8;
+    ihdr[9] = 2;
+    const raw = Buffer.alloc((w * 3 + 1) * h);
+    for (let y = 0; y < h; y++) crypto.getRandomValues(raw.subarray(y * (w * 3 + 1) + 1, (y + 1) * (w * 3 + 1)));
+    return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(raw, { level: 1 })), chunk("IEND", Buffer.alloc(0))]);
+}

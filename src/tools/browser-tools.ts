@@ -2,7 +2,8 @@
 // GUI's Browser pane. Six tools, to keep their definitions short (every one goes to the model with every request):
 // navigate, read (snapshot, screenshot, logs), act, evaluate. They share a session's tabs through ToolState.browser.
 
-import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "fs";
+import { randomBytes } from "crypto";
+import { lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { paths } from "../config/paths";
 import { browserSettings, type Settings } from "../config/settings";
@@ -17,6 +18,10 @@ import { BrowserSession } from "../browser/session";
 import { checkUrl, displayUrl } from "../browser/url-policy";
 import type { ServerTool, ServerToolResult } from "../mcp/server";
 import { PermissionChecker } from "../permissions/checker";
+import { fitImage } from "../providers/images";
+import type { ImagePart } from "../providers/types";
+import { MAX_SHOWN_IMAGE } from "../util/files";
+import { base64Size } from "../util/media";
 import { redact } from "../util/redact";
 import type { Tool, ToolContext, ToolResult } from "./types";
 
@@ -330,29 +335,54 @@ const SCREENSHOT_DAYS = 30;
 
 /**
  * A screenshot as a file (in Cavvy's home), so the agent can show it in its reply: the transcript draws a local image
- * a reply links to. Older ones go as one is saved. Undefined when it can't be written; the agent still sees it.
+ * a reply links to, up to MAX_SHOWN_IMAGE (a bigger one, of a long and wide page, is saved as a copy that fits). Older
+ * ones go as one is saved. Undefined when it can't be written; the agent still sees it.
  */
-function saveScreenshot(shot: { mediaType: string; data: string }): string | undefined {
+async function saveScreenshot(shot: ImagePart): Promise<string | undefined> {
+    const image = base64Size(shot.data) > MAX_SHOWN_IMAGE ? await fitImage(shot) : shot;
+    if (!image) return undefined;
+    const dir = join(paths.home(), "screenshots");
     try {
-        const dir = join(paths.home(), "screenshots");
         mkdirSync(dir, { recursive: true, mode: 0o700 });
-        const old = Date.now() - SCREENSHOT_DAYS * 86_400_000;
-        for (const name of readdirSync(dir)) {
-            const f = join(dir, name);
-            if (statSync(f).mtimeMs < old) rmSync(f, { force: true });
-        }
+        pruneScreenshots(dir);
         const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-        const file = join(dir, `${stamp}-${Math.random().toString(36).slice(2, 6)}.${shot.mediaType === "image/jpeg" ? "jpg" : "png"}`);
-        writeFileSync(file, Buffer.from(shot.data, "base64"), { mode: 0o600 });
+        const file = join(dir, `${stamp}-${randomBytes(4).toString("hex")}.${image.mediaType === "image/jpeg" ? "jpg" : image.mediaType.slice("image/".length)}`);
+        writeFileSync(file, Buffer.from(image.data, "base64"), { mode: 0o600, flag: "wx" });
         return file;
     } catch {
         return undefined;
     }
 }
 
-/** A local image as markdown a reply can carry: a path with spaces in angle brackets. */
-function imageMarkdown(file: string): string {
-    return `![what it shows](${/\s/.test(file) ? `<${file}>` : file})`;
+/**
+ * Removes screenshots older than SCREENSHOT_DAYS, each on its own: one already gone (another Cavvy sharing the home
+ * removed it first), or that can't go, is passed over, and doesn't keep the rest, or the new one, from their turn.
+ */
+function pruneScreenshots(dir: string): void {
+    const old = Date.now() - SCREENSHOT_DAYS * 86_400_000;
+    let names: string[];
+    try {
+        names = readdirSync(dir);
+    } catch {
+        return;
+    }
+    for (const name of names) {
+        try {
+            const f = join(dir, name);
+            if (lstatSync(f).mtimeMs < old) rmSync(f, { force: true });
+        } catch {
+            // gone already, or a folder
+        }
+    }
+}
+
+/**
+ * A local image as markdown a reply can carry, whatever its path holds: as it is when it can be, else in angle brackets,
+ * with what the chat's markdown would read otherwise escaped (\, < and > by a backslash, % as %25: the chat decodes it).
+ */
+export function imageMarkdown(file: string): string {
+    if (!/[\s()<>\\%]/.test(file)) return `![what it shows](${file})`;
+    return `![what it shows](<${file.replace(/%/g, "%25").replace(/[\\<>]/g, "\\$&")}>)`;
 }
 
 export const BrowserScreenshotTool: Tool<{ tab?: number; fullPage?: boolean; ref?: string }> = {
@@ -381,7 +411,7 @@ export const BrowserScreenshotTool: Tool<{ tab?: number; fullPage?: boolean; ref
                 const clip = input.ref ? await boxOf(page, input.ref, ctx.signal) : undefined;
                 const shot = await page.screenshot({ fullPage: input.fullPage, clip });
                 const what = input.ref ? `element ${input.ref}` : input.fullPage ? "the full page" : "the viewport";
-                const file = saveScreenshot(shot);
+                const file = await saveScreenshot(shot);
                 const show = file ? ` Saved as ${file}: to show it to the user, put ${imageMarkdown(file)} in your last message.` : "";
                 return { content: `Screenshot of ${what} of tab [${b.idOf(page)}] (${shot.width}×${shot.height} CSS pixels) at ${displayUrl(page.url)}.${show}`, images: [{ type: "image", mediaType: shot.mediaType, data: shot.data }], display: { summary: `${shot.width}×${shot.height}` } };
             });

@@ -50,10 +50,7 @@ import { readRegular } from "./git-changes";
 import { agentsByWorktree } from "./worktree-agents";
 import { checkPathInput, confinePath, defaultDetectEnv, opensAsProject, detectEditor, editorArgv, editorById, EDITOR_IDS, EDITORS, MAX_COL, MAX_LINE, position, takesLines, type DetectEnv } from "./editors";
 import { childEnv } from "../util/env";
-import { expandPath, isInside, sniffImage } from "../util/files";
-
-/** The largest image file shown inline in a reply. */
-const MAX_SHOWN_IMAGE = 10 * 1024 * 1024;
+import { expandPath, isInside, MAX_SHOWN_IMAGE, sniffImage } from "../util/files";
 import { maskKey, redact } from "../util/redact";
 import { searchResources } from "../mcp/mentions";
 import { cleanTitle, modelSummary, promptTitle, Runtime } from "./runtime";
