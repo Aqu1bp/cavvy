@@ -143,7 +143,7 @@ function SavePlan(p: { sessionId: string; info: PlanInfo; busy: boolean; setBusy
         }
     };
     return (
-        <Dialog open onClose={p.onClose} title="Save plan" subtitle="As a Markdown file, in this project or in the Cavvy home." width={560}>
+        <Dialog open onClose={p.onClose} title="Save plan" subtitle="As a Markdown file" width={560}>
             <form
                 class="wt-form"
                 onSubmit={(e) => {
@@ -233,7 +233,7 @@ function ImplementPlan(p: { sessionId: string; info: PlanInfo; busy: boolean; se
             }
             p.setBusy(false);
             p.onClose();
-            toast(`Implementing the plan on ${r.branch}, in ${home(r.path)}`, "success");
+            toast(`Implementing the plan on ${r.branch}`, "success");
             await activate(r.sessionId);
         } catch (e) {
             setError(errorOf(e));
@@ -243,7 +243,7 @@ function ImplementPlan(p: { sessionId: string; info: PlanInfo; busy: boolean; se
     };
 
     return (
-        <Dialog open onClose={p.onClose} title="Implement in a new worktree" subtitle="A new branch in a folder of its own, and a new session there working on the plan." width={560}>
+        <Dialog open onClose={p.onClose} title="Implement in a new worktree" subtitle="A new branch, folder and session for the plan" width={560}>
             <form
                 class="wt-form"
                 onSubmit={(e) => {
@@ -262,7 +262,7 @@ function ImplementPlan(p: { sessionId: string; info: PlanInfo; busy: boolean; se
                 <label class="wt-field">
                     <span class="wt-label">Base</span>
                     <input class="input mono" spellcheck={false} autocomplete="off" placeholder="HEAD" maxLength={200} disabled={p.busy || Boolean(made())} value={base()} onInput={(e) => setBase(e.currentTarget.value)} aria-invalid={Boolean(errorFor("base"))} />
-                    <span class="wt-hint">The worktree starts from this commit, so uncommitted changes in {home(p.info.cwd)} don't come along.</span>
+                    <span class="wt-hint">Uncommitted changes in {home(p.info.cwd)} don't come along.</span>
                     <Show when={errorFor("base")}>{(m) => <span class="wt-error">{m()}</span>}</Show>
                 </label>
                 <div class="wt-field" role="radiogroup" aria-label="Permission mode for the new session">
@@ -277,12 +277,9 @@ function ImplementPlan(p: { sessionId: string; info: PlanInfo; busy: boolean; se
                             )}
                         </For>
                     </div>
-                    <span class="wt-hint">
-                        {MODE_CHOICES[p.info.mode].label} is preselected: {p.info.modeWhy}. It gets this session's model, effort and speed, and the plan as its first message.
-                    </span>
                 </div>
                 <Show when={p.info.pending}>
-                    <p class="muted small plan-note">This session's plan card is answered without approving it: it stops here, still in plan mode, and changes nothing.</p>
+                    <p class="muted small plan-note">This session stops here, still in plan mode.</p>
                 </Show>
                 <Show when={made()?.failed}>
                     {(f) => (
@@ -293,7 +290,7 @@ function ImplementPlan(p: { sessionId: string; info: PlanInfo; busy: boolean; se
                                     Created worktree <span class="mono">{home(made()!.path)}</span> on branch <span class="mono">{made()!.branch}</span>, but {made()!.sessionId ? "its session didn't get the plan" : "the session couldn't start"}: {f().message}
                                 </div>
                                 <div>
-                                    The worktree is kept, as it's yours now. {made()!.sessionId ? "Open its session to inspect what happened and send the plan again." : "Start again to use it, or remove it from the worktree picker."} Nothing was answered in this session.
+                                    The worktree is kept. {made()!.sessionId ? "Open its session and send the plan again." : "Start again to use it, or remove it from the worktree picker."}
                                 </div>
                             </div>
                         </div>

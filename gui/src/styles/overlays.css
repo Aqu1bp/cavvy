@@ -338,16 +338,6 @@
     padding: 0 calc(18 * var(--sp)) calc(18 * var(--sp));
 }
 
-.delete-dialog {
-    display: flex;
-    flex-direction: column;
-    gap: calc(8 * var(--sp));
-}
-
-.delete-dialog p {
-    margin: 0;
-}
-
 /* The footer: Cancel and the primary action at the trailing edge (choices before them, a lone Cancel on the left). */
 .dialog-actions {
     display: flex;

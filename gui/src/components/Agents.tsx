@@ -208,7 +208,7 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                                     </div>
                                 </Show>
                                 <Show when={a().replayed && !a().blocks.length}>
-                                    <div class="agent-dropped">What it did along the way isn't kept after the session is reopened; its result is below.</div>
+                                    <div class="agent-dropped">Its steps aren't kept once the session is reopened.</div>
                                 </Show>
                                 <Show when={result()}>
                                     <Markdown text={result()!} sessionId={p.handle.id} />
@@ -234,7 +234,7 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                             </span>
                             <span class="agent-bar-text">
                                 <span class={`agent-bar-state num st-${a().status}`}>{statusLine(a())}</span>
-                                <span class="agent-bar-note truncate">Sub-agents take no messages. Reply in the parent session.</span>
+                                <span class="agent-bar-note truncate">Reply in the parent session.</span>
                             </span>
                             <span class="grow" />
                             <span class="agent-bar-model truncate" title={a().model ?? st().model?.ref}>

@@ -92,7 +92,7 @@ export function ProjectScripts(p: { cwd: string }) {
                 <Show
                     when={main()}
                     fallback={
-                        <button class="hb" title="Project scripts: commands you run with one click" aria-label="Project scripts" aria-haspopup="menu" aria-expanded={open()} onClick={() => (open() ? close() : openMenu())}>
+                        <button class="hb" title="Project scripts" aria-label="Project scripts" aria-haspopup="menu" aria-expanded={open()} onClick={() => (open() ? close() : openMenu())}>
                             <Play size={15} />
                         </button>
                     }
@@ -118,13 +118,13 @@ export function ProjectScripts(p: { cwd: string }) {
                 <Show when={list()?.setAside}>
                     {(aside) => (
                         <div class="menu-note scripts-note" title={aside().file}>
-                            {aside().count === 1 ? "1 entry" : `${aside().count} entries`} in {tildify(aside().file, app.hello?.homeDir)} can't be used as {aside().count === 1 ? "it is" : "they are"} (a duplicate, or edited by hand), so {aside().count === 1 ? "it's" : "they're"} not shown or run. Fix them in the file.
+                            {aside().count === 1 ? "1 entry" : `${aside().count} entries`} in {tildify(aside().file, app.hello?.homeDir)} can't be used. Fix {aside().count === 1 ? "it" : "them"} in the file.
                         </div>
                     )}
                 </Show>
                 <Show when={list() && !scripts().length}>
                     <div class="menu-note scripts-note">
-                        Save the commands you run here, like <code>bun run dev</code> or <code>npm test</code>, and run each with one click in a terminal tab. They run only when you click them.
+                        Run commands like <code>bun run dev</code> or <code>npm test</code> in one click.
                     </div>
                 </Show>
                 <For each={scripts()}>
@@ -225,7 +225,7 @@ function ScriptDialog(p: { cwd: string; scripts: ProjectScript[]; editing?: { sc
             onClose={p.onClose}
             width={480}
             title={p.editing?.script ? "Edit script" : "Add script"}
-            subtitle="Runs in a terminal tab in the session's folder when you click it. Shared by this repository's worktrees; stored in your Cavvy home, not the repository."
+            subtitle="Runs in the session's folder when you click it."
         >
             <label class="script-field">
                 <span class="script-field-label">Name</span>
@@ -234,7 +234,7 @@ function ScriptDialog(p: { cwd: string; scripts: ProjectScript[]; editing?: { sc
             <label class="script-field">
                 <span class="script-field-label">Command</span>
                 <input class="input mono" value={command()} maxLength={SCRIPT_LIMITS.command} placeholder="bun run dev" spellcheck={false} autocomplete="off" autocapitalize="off" onInput={(e) => setCommand(e.currentTarget.value)} onKeyDown={onKey} />
-                <span class="script-field-hint">One line, typed into the shell as if you had typed it. Join several commands with && or ;.</span>
+                <span class="script-field-hint">One line. Join commands with && or ;.</span>
             </label>
             <div class="script-field">
                 <span class="script-field-label">Icon</span>
@@ -256,7 +256,7 @@ function ScriptDialog(p: { cwd: string; scripts: ProjectScript[]; editing?: { sc
                     <span>Run when a worktree is created</span>
                 </label>
                 <span class="script-field-hint">
-                    It runs in a new terminal tab of each worktree you create from Cavvy, right after it's created; the New worktree dialog shows it first and lets you skip it. It runs only in projects you've trusted.
+                    Only in projects you trust. You can skip it when creating a worktree.
                 </span>
                 <Show when={setup() && replaced()}>
                     {(r) => <span class="script-field-hint">A project has one setup script: this replaces “{r().name}”.</span>}

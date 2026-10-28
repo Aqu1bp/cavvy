@@ -35,16 +35,10 @@ export function TrustDialog() {
                 <h2 id={titleId}>Do you trust the files in this folder?</h2>
                 <div class="mono small trust-path">{trustRequest()?.path}</div>
                 <Show when={forMcp()}>
-                    <p class="muted">Cavvy trusted this folder for this session only, because it had nothing to protect when it was opened. Its .mcp.json servers can be approved once you trust it yourself.</p>
-                    <p class="muted">Cancel keeps the current session trust, project settings and hooks as they are. It does not approve any MCP server.</p>
+                    <p class="muted">Trust it to approve its MCP servers.</p>
                 </Show>
                 <Show when={info()?.needsTrust.length}>
-                    <p class="muted">
-                        It has configuration ({info()!.needsTrust.join(", ")}). Project settings can define hooks and MCP servers that run commands on your machine, and permission rules that let the agent act without asking.
-                    </p>
-                    <Show when={!forMcp()}>
-                        <p class="muted">If you don't trust it, those files are ignored (except deny and ask rules, which only add restrictions), and so are its memory files.</p>
-                    </Show>
+                    <p class="muted">Its configuration ({info()!.needsTrust.join(", ")}) can run commands on this computer and let the agent act without asking.</p>
                 </Show>
                 <div class="trust-actions">
                     <button class="btn secondary" onClick={() => forMcp() ? cancel() : void decide(false)}>

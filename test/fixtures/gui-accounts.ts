@@ -89,7 +89,7 @@ for (const provider of ["claude-code", "codex"]) test(`${provider}: one account 
         expect(f.logins[0].slice(0, 2)).toEqual([provider, "default"]);
         expect(trigger.props["aria-expanded"]).toBe(false);
         trigger.props.onClick(); f.button("Learn more…").props.onClick();
-        expect(text(f.root)).toContain("separate sign-ins, for example personal and work");
+        expect(text(f.root)).toContain("separate sign-ins, like personal and work");
     } finally { f.dispose(); }
 });
 
@@ -273,12 +273,12 @@ test("two accounts list as rows: identity, sign in again, make default, rename a
         expect(f.input("New account name").props["aria-invalid"]).toBe(true);
         f.enter("New account name", "Work"); f.submit("Rename Personal"); await settle();
         f.button("Actions for Work").props.onClick(); f.button("Remove…").props.onClick();
-        expect(text(f.root)).toContain("Delete the Cavvy-created folder");
+        expect(text(f.root)).toContain("Deletes the folder Cavvy made");
         expect(f.calls.some((c) => c.method === "accounts.remove")).toBe(false);
         f.handle(async () => { throw new Error("Stop the account's running turn before removing it"); });
-        f.button("Confirm removal").props.onClick(); await settle();
+        f.button("Remove").props.onClick(); await settle();
         expect(f.nodes().some((n) => n.props.role === "alert" && text(n).includes("running turn"))).toBe(true);
-        f.handle(); f.button("Confirm removal").props.onClick(); await settle();
+        f.handle(); f.button("Remove").props.onClick(); await settle();
         expect(f.button("Actions for Work")).toBeUndefined();
         expect(f.calls.at(-1)).toEqual({ method: "accounts.remove", params: { provider: "claude-code", id: "personal", confirmedFolder: "/fake/personal" } });
     } finally { f.dispose(); }
@@ -305,10 +305,10 @@ for (const action of ["rename", "remove"]) test(`${action}: a refresh error afte
         f.failRefresh(new Error("Disconnected while refreshing"));
         if (action === "rename") {
             f.enter("New account name", "Work"); f.submit("Rename Personal");
-        } else f.button("Confirm removal").props.onClick();
+        } else f.button("Remove").props.onClick();
         await settle();
         expect(f.form("Rename Personal")).toBeUndefined();
-        expect(f.button("Confirm removal")).toBeUndefined();
+        expect(f.button("Remove")).toBeUndefined();
         expect(f.nodes().some((n) => n.props.role === "alert" && text(n).includes("Disconnected"))).toBe(true);
     } finally { f.dispose(); }
 });
@@ -319,7 +319,7 @@ test("external account removal describes keeping its folder and sends the exact 
     try {
         await settle();
         f.button("Actions for Personal").props.onClick(); f.button("Remove…").props.onClick();
-        expect(text(f.root)).toContain("leave its folder untouched");
+        expect(text(f.root)).toContain("Leaves its folder untouched");
         f.button("Cancel").props.onClick();
         expect(f.calls.some((c) => c.method === "accounts.remove")).toBe(false);
     } finally { f.dispose(); }
@@ -331,9 +331,9 @@ test("invalid accounts remain visible as unavailable and removal promises to lea
         expect(text(f.root)).toContain("Unavailable");
         f.button("Actions for Personal").props.onClick();
         f.button("Remove…").props.onClick();
-        expect(text(f.root)).toContain("Forget this account and leave its folder untouched");
-        expect(text(f.root)).not.toContain("Delete the Cavvy-created folder");
-        f.button("Confirm removal").props.onClick();
+        expect(text(f.root)).toContain("Leaves its folder untouched");
+        expect(text(f.root)).not.toContain("Deletes the folder Cavvy made");
+        f.button("Remove").props.onClick();
         await settle();
         expect(f.calls).toContainEqual({ method: "accounts.remove", params: { provider: "claude-code", id: "personal", confirmedFolder: "/fake/personal" } });
     } finally { f.dispose(); }

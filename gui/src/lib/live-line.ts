@@ -120,7 +120,8 @@ export function liveLine(o: LiveInput): LiveLineState | undefined {
     const pending = o.interactions[0];
     if (pending) {
         const w = waitLabel(pending);
-        return { key: `wait:${pending.id}`, kind: "wait", ...w };
+        // Timed from when it was asked, not from when the session was opened.
+        return { key: `wait:${pending.id}`, kind: "wait", ...w, since: pending.since };
     }
     const a = o.activity;
     if (a && specialActivity(a.label)) {

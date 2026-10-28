@@ -39,7 +39,7 @@ export function GoalTab(p: { sessionId: string; goal: GoalState }) {
     };
     const g = () => p.goal;
     const native = () => g().judge === "native";
-    const details = () => [g().note, g().lastReason ? `Last check: ${g().lastReason}` : undefined, g().judge === "self" ? "Checked by the working model's own report: no other model can answer one-off requests. Set a small model on another provider in Settings for an independent check." : native() ? `${g().by} keeps and checks this goal itself.` : undefined].filter(Boolean) as string[];
+    const details = () => [g().note, g().lastReason ? `Last check: ${g().lastReason}` : undefined, g().judge === "self" ? "The working model checks its own work. For an independent check, set a small model from another provider in Settings." : native() ? `${g().by} keeps and checks this goal itself.` : undefined].filter(Boolean) as string[];
     // Claude Code's goals don't pause (Stop interrupts the turn, and it carries on with the next message).
     const pausable = () => !native() || g().canPause;
     return (

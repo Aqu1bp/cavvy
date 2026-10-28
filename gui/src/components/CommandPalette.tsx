@@ -8,7 +8,7 @@ import { terminalOpen, setTerminalOpen, paletteOpen, setAgentFocus, setJumpTarge
 import { ago, tildify } from "../lib/format";
 import { ModeIcon, MODES } from "./ModePicker";
 import { Dialog } from "./ui/Dialog";
-import { askDelete } from "./Header";
+import { deleteOpen } from "./Header";
 import { Spinner } from "./ui/bits";
 import { searchRounds } from "../lib/search";
 import { plainSnippet } from "../lib/plain-snippet";
@@ -144,7 +144,7 @@ export function CommandPalette() {
                 { id: "compact", section: "Session", label: "Compact conversation", icon: <Shrink size={15} />, run: () => void rpc.call("session.compact", { id: id()! }).catch(reportError) },
                 { id: "export", section: "Session", label: "Copy conversation as Markdown", icon: <Share size={15} />, run: () => void exportSession(id()!) },
                 { id: "archive", section: "Session", label: "Archive session", icon: <Archive size={15} />, run: () => void archive(id()!, true) },
-                { id: "delete", section: "Session", label: "Delete session…", icon: <Trash2 size={15} />, run: () => askDelete(handleFor(id())) },
+                { id: "delete", section: "Session", label: "Delete session", icon: <Trash2 size={15} />, run: () => deleteOpen(handleFor(id())) },
             );
             for (const m of MODES) out.push({ id: `mode-${m}`, section: "Permission mode", label: `Mode: ${MODE_LABELS[m].label}`, desc: MODE_LABELS[m].description, icon: <ModeIcon mode={m} size={15} />, run: () => void setMode(m) });
         }
@@ -250,7 +250,7 @@ export function CommandPalette() {
                 <kbd>Esc</kbd>
             </div>
             <div class="pal-list" ref={list}>
-                <For each={results()} fallback={<div class="pal-empty">{older() === "more" ? "Searching older sessions…" : older() === "incomplete" ? "Nothing found in the sessions searched so far; older ones weren't all read." : searching() ? "Searching messages…" : "Nothing matches."}</div>}>
+                <For each={results()} fallback={<div class="pal-empty">{older() === "more" ? "Searching older sessions…" : older() === "incomplete" ? "Nothing found. Some older sessions weren't searched." : searching() ? "Searching messages…" : "Nothing matches."}</div>}>
                     {(e, i) => (
                         <>
                             <Show when={i() === 0 || results()[i() - 1]!.section !== e.section}>
@@ -281,7 +281,7 @@ export function CommandPalette() {
                     )}
                 </For>
                 <Show when={results().length && older()}>
-                    <div class="pal-note">{older() === "more" ? "Searching older sessions…" : "Older sessions weren't all read; results may be incomplete."}</div>
+                    <div class="pal-note">{older() === "more" ? "Searching older sessions…" : "Some older sessions weren't searched."}</div>
                 </Show>
             </div>
         </Dialog>

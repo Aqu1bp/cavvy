@@ -37,7 +37,6 @@ import { TrustDialog } from "./components/TrustDialog";
 import { PlanDialogs } from "./components/PlanDialogs";
 import { ArchiveDialog } from "./components/ArchiveDialog";
 import { RunSheet } from "./components/RunSheet";
-import { DeleteSessionDialog } from "./components/DeleteSessionDialog";
 import { CommitDialog } from "./components/CommitDialog";
 import { ImageViewer } from "./components/ImageViewer";
 import { Logo, Spinner } from "./components/ui/bits";
@@ -58,7 +57,7 @@ function Disconnected() {
                     <Logo size={44} />
                     <h2>Open Cavvy from your terminal</h2>
                     <p class="muted">
-                        Run <code>cavvy gui</code> and use the link it opens or prints. Links work once, so this page can't reconnect on its own.
+                        Run <code>cavvy gui</code> and use the link it opens or prints.
                     </p>
                 </Match>
                 <Match when={app.conn === "unavailable"}>
@@ -308,8 +307,8 @@ export function App() {
     const stage = () => shown()?.h;
     /** Another session is opening while the last one is held on the stage (shown). */
     const holding = () => Boolean(stage() && stage() !== active());
-    /** The opening screen: a session opening, with none held while it does (or past the moment one is). */
-    const openingScreen = () => app.opening?.id === app.activeId && !holding();
+    /** The opening screen: a session opening, with none held while it does (or past the moment one is). Not New session's. */
+    const openingScreen = () => app.opening !== undefined && app.opening.id === app.activeId && !holding();
     const blocked = () => Boolean(document.querySelector(".dialog-backdrop, .popover"));
 
     // Another session: its own view, not the last one's sub-agent or review.
@@ -568,7 +567,6 @@ export function App() {
             <PlanDialogs />
             <ArchiveDialog />
             <RunSheet />
-            <DeleteSessionDialog />
             <CommitDialog />
             <ImageViewer />
             <Show when={isElectron}>

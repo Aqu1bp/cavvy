@@ -14,7 +14,7 @@ import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { keepSentImages } from "./images";
 import { prefs, setPrefs } from "./prefs";
-import { railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setDeleteRequest, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, setReview, setRewindOpen, setSettingsTab, setTerminalMax, shellLayout } from "./ui";
+import { railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, setReview, setRewindOpen, setSettingsTab, setTerminalMax, shellLayout } from "./ui";
 import { clientAction, slashName } from "../lib/commands";
 import { forkAnchor } from "../lib/fork";
 import { backgroundOf, stopOutcome, stopTasks } from "../lib/background";
@@ -406,7 +406,7 @@ export async function settle(id: string, settled: boolean): Promise<boolean> {
     return true;
 }
 
-/** After the confirm dialog. The server moves its files to the trash; Undo puts them back. Whether it was done. */
+/** At once, without asking: the server moves its files to the trash, and the toast's Undo puts them back. Whether it was done. */
 export async function deleteSession(id: string): Promise<boolean> {
     try {
         await rpc.call("session.delete", { id });
@@ -528,8 +528,9 @@ export async function archiveSessions(ids: readonly string[], archived: boolean)
     });
 }
 
-/** After the confirm dialog: several to the trash, one Undo for all. The ids that failed. */
+/** One or several to the trash at once, one Undo for all. The ids that failed. */
 export async function deleteSessions(ids: readonly string[]): Promise<string[]> {
+    if (!ids.length) return [];
     if (ids.length === 1) return (await deleteSession(ids[0]!)) ? (unselect(ids), []) : [...ids];
     return bulk(ids, {
         verb: "delete",
@@ -538,13 +539,6 @@ export async function deleteSessions(ids: readonly string[]): Promise<string[]> 
         undo: (id) => rpc.call("session.restore", { id }),
         ms: UNDO_DELETE_MS,
     });
-}
-
-/** The delete dialog, for one session or several. */
-export function askToDelete(ids: readonly string[]) {
-    const list = ids.map(summaryOf).filter((s) => s !== undefined);
-    if (list.length === 1) setDeleteRequest({ id: list[0]!.id, title: list[0]!.title, projectName: list[0]!.projectName });
-    else if (list.length > 1) setDeleteRequest({ ids: list.map((s) => s.id), titles: list.map((s) => s.title) });
 }
 
 /** Only the commit dialog's explicit Commit click calls this. Errors stay in the dialog. */

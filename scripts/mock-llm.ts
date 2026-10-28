@@ -320,7 +320,7 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         return { text: lastResult.startsWith("The user approved") ? "Plan approved — starting on step 1." : "Understood, I'll revise the plan." };
     }
     if (/\btodo\b/.test(p)) {
-        const todos = (done: number) => ["Read the auth module", "Add the SSO strategy", "Run the tests"].map((content, i) => ({ content, status: i < done ? "completed" : i === done ? "in_progress" : "pending", activeForm: content.replace(/^(\w+)/, (w) => `${w}ing`.replace("eing", "ing")) }));
+        const todos = (done: number) => ["Read the auth module", "Add the SSO strategy", "Run the tests"].map((content, i) => ({ content, status: i < done ? "completed" : i === done ? "in_progress" : "pending", activeForm: content.replace(/^(\w+)/, (w) => ({ Run: "Running" } as Record<string, string>)[w] ?? `${w}ing`.replace("eing", "ing")) }));
         if (toolRounds < 3) return { text: toolRounds === 0 ? "I'll track this as a short list." : undefined, calls: [{ name: "TodoWrite", args: { todos: todos(toolRounds) } }] };
         return { text: "All three steps are done." };
     }

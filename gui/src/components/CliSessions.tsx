@@ -15,7 +15,7 @@ import { Dialog } from "./ui/Dialog";
 import { ProviderIcon } from "./ui/ProviderIcon";
 
 /** Using it here and in the terminal at once mixes the two: said wherever one still open shows. */
-const STILL_OPEN = "This session may still be open in a terminal; using it in both places at once mixes the two.";
+const STILL_OPEN = "Using it here and in the terminal at once mixes the two.";
 
 /** "6m ago", "just now"; an older one by its date. */
 const agoText = (at: number) => {
@@ -137,7 +137,7 @@ export function CliSessions(p: { cwd: string; rows?: number; onShown?: (rows: nu
             </Show>
             {/* Outside the section: open, it stays while the list reloads (or fails to). */}
             <Dialog open={all()} onClose={() => setAll(false)} title="Continue from your terminal" width={520} class="cli-dialog" footer={<button class="btn secondary" onClick={() => setAll(false)}>Done</button>}>
-                <p>{sourceNames()} sessions started in {basename(p.cwd)}. Importing one opens it here on the same session.</p>
+                <p>{sourceNames()} sessions started in {basename(p.cwd)}.</p>
                 <div class="cl-list">
                     <Show when={list.loading || sessions().length}>
                         <For each={fresh()}>{item}</For>

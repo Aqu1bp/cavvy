@@ -463,15 +463,6 @@
     max-height: none;
 }
 
-/* One side (a new or deleted file): one line-number column, not an empty one beside it. */
-.review .dl.one {
-    grid-template-columns: 3.4em minmax(0, 1fr);
-}
-
-.review .dl.one .ln {
-    border-right: 1px solid var(--line);
-}
-
 .rv-more {
     padding: calc(4 * var(--sp)) calc(4 * var(--sp)) calc(8 * var(--sp));
     font-size: 0.857rem;

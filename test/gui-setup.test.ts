@@ -197,14 +197,14 @@ test("setup hidden while its shell opens is closed before arming and reports rec
     }
 });
 
-test("a failed setup start explains that the worktree remains and cannot replay on restart", async () => {
+test("a failed setup start says what failed and where to run it, and cannot replay on restart", async () => {
     const p = await panel();
     p.respond((method) => method === "scripts.run" ? Promise.reject(new Error("Folder is gone")) : Promise.resolve({}));
     p.run();
     const screen = p.screen(p.tabs()[0]);
     await flush();
     expect(screen.ended()).toContain("Folder is gone");
-    expect(screen.ended()).toContain("The worktree was created");
+    expect(screen.ended()).toContain("didn't run");
     expect(screen.ended()).toContain("project scripts menu");
     screen.restart();
     await flush();
@@ -218,7 +218,7 @@ test("a full window refuses another setup tab with a recoverable warning", async
     expect(p.tabs()).toHaveLength(12);
     expect(p.notices).toHaveLength(1);
     expect(p.notices[0]!.kind).toBe("warn");
-    expect(p.notices[0]!.text).toContain("worktree was created");
+    expect(p.notices[0]!.text).toContain("didn't run");
     expect(p.notices[0]!.text).toContain("12 terminals");
     expect(p.notices[0]!.text).toContain("project scripts menu");
 });
@@ -236,7 +236,7 @@ test("disconnect before tab creation or before shell start never runs setup", as
     const screen = p.screen(p.tabs()[0]);
     await flush();
     expect(p.calls).toEqual([]);
-    expect(screen.ended()).toContain("The worktree was created");
+    expect(screen.ended()).toContain("didn't run");
     p.app.conn = "open";
     screen.restart();
     await flush();
@@ -372,7 +372,7 @@ test("a worktree that cannot be opened or lacks a terminal reports setup recover
         await d.create();
         expect(d.steps).toEqual(["created", "opened"]);
         expect(d.runs).toEqual([]);
-        expect(d.notices.some((text) => text.includes("worktree was created") && text.includes("project scripts menu"))).toBe(true);
+        expect(d.notices.some((text) => text.includes("didn't run") && text.includes("project scripts menu"))).toBe(true);
     }
 });
 

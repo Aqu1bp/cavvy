@@ -13,9 +13,6 @@ export const [settingsTab, setSettingsTab] = createSignal<SettingsTab | undefine
 /** "Add account…" in the model picker: the CLI provider whose new-account form Settings → Providers opens. */
 export const [addAccountFor, setAddAccountFor] = createSignal<string | undefined>();
 export const [rewindOpen, setRewindOpen] = createSignal(false);
-/** What the delete dialog asks about: one session (with its project), or several picked in the rail. */
-export type DeleteRequest = { id: string; title: string; projectName: string } | { ids: string[]; titles: string[] };
-export const [deleteRequest, setDeleteRequest] = createSignal<DeleteRequest | undefined>();
 /**
  * An image the viewer can show. `full`: the whole image, as a URL that's cheap
  * to set (an object URL, or a small data: URL), or as base64 it makes an object
@@ -37,7 +34,7 @@ export const [modePickerOpen, setModePickerOpen] = createSignal(false);
 /** The composer's context card (/context opens it). */
 export const [contextCardOpen, setContextCardOpen] = createSignal(false);
 /** Setup must be visible; an overlay opened during checkout leaves it for a manual run. */
-export const setupObscured = () => Boolean(settingsTab() || paletteOpen() || rewindOpen() || deleteRequest() || commitRequest() || folderPickerOpen() || mcpOpen() || modelPickerOpen() || modePickerOpen() || contextCardOpen());
+export const setupObscured = () => Boolean(settingsTab() || paletteOpen() || rewindOpen() || commitRequest() || folderPickerOpen() || mcpOpen() || modelPickerOpen() || modePickerOpen() || contextCardOpen());
 /** The side panel's tab; kept while the app runs, like the reader's layout. */
 export const [inspectorPane, setInspectorPane] = createSignal<InspectorPane>("changes");
 /** The sub-agent the main view shows (an AgentRun id); none for the session itself. */

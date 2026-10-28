@@ -639,7 +639,7 @@ function ToolRowContent(p: { tool: ToolBlock; activity?: boolean; detailsOnly?: 
                     </Show>
                     <span class="tool-meta" data-find-skip={isLive(p.tool) || undefined}>
                         <Show when={p.activity && isLive(p.tool) && p.tool.job}>
-                            {(job) => <span class="wjob num" data-find-skip title="How long ago the background command started">started {elapsed(now() - job().startedAt)} ago</span>}
+                            {(job) => <span class="wjob num" data-find-skip>started {elapsed(now() - job().startedAt)} ago</span>}
                         </Show>
                         <Show when={p.activity && isLive(p.tool) && liveTime(p.tool)}>
                             {(time) => <span class="wtime num" data-find-skip>{time()}</span>}

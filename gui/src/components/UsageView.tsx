@@ -18,7 +18,7 @@ function PlanLimitsGroup() {
     const plans = () => Object.values(app.limits).map((l) => ({ l, m: meterOf(l, now()) })).filter((x) => x.m);
     const name = (id: string) => app.providers.find((p) => p.id === id);
     return (
-        <Show when={plans().length} fallback={<p class="set-note">Claude Code and Codex report where your plan stands as they work: their limits show here after a turn on either.</p>}>
+        <Show when={plans().length} fallback={<p class="set-note">Plan limits show here after a Claude Code or Codex turn.</p>}>
             <For each={plans()}>
                 {({ l, m }) => (
                     <>
@@ -123,14 +123,14 @@ export function UsageDashboard(p: { data: UsageSummary; metric: Metric }) {
                     <span class="ut-p num">{pct(v, total())}</span>
                 </div>}
             </For>
-            <div class="ut-r ut-save"><div class="ut-l"><b>Saved by caching</b><span>Against sending the cached context uncached, at API prices</span></div><b class="ut-v num">{costFigure({ cost: p.data.totals.cacheSavings, unknown: p.data.totals.unknown })}</b></div>
+            <div class="ut-r ut-save"><div class="ut-l"><b>Saved by caching</b><span>Compared with no caching, at API prices</span></div><b class="ut-v num">{costFigure({ cost: p.data.totals.cacheSavings, unknown: p.data.totals.unknown })}</b></div>
         </div>
         <div class="set-h usage-bar"><h3>By {breakdown() === "model" ? "model" : p.data.interval === "hour" ? "hour" : "day"}</h3><span class="spacer" /><Segmented label="Usage breakdown" size="sm" value={breakdown()} onChange={setBreakdown} options={[{ value: "model", label: "Model" }, { value: "time", label: p.data.interval === "hour" ? "Hour" : "Day" }]} /></div>
         <UsageTable data={p.data} metric={m()} by={breakdown()} hl={setHl} />
         <p class="set-note u-notes">
-            Counted on this computer from Claude Code and Codex transcripts, sessions run in Cavvy included, and from Cavvy's own API sessions. Costs use API list prices; plans don't bill per token, so a plan's cost is what the same usage would cost on the API. {p.data.interval === "hour" ? "Hours" : "Days"} are UTC; the first and last are partial.
-            <Show when={p.data.totals.unknown}> Unpriced usage is excluded from cost, cost shares, and cost charts. The Tokens view includes it. Known amounts are partial; unknown does not mean free.</Show>
-            {p.data.approxDated ? ` ${p.data.approxDated} older records have approximate timestamps.` : ""}{p.data.approxPriced ? ` ${p.data.approxPriced} alias-only records lack a historical model resolution and may be unpriced.` : ""}
+            Only this computer's usage. Costs are at API list prices, not what a plan bills.
+            <Show when={p.data.totals.unknown}> Costs leave out unpriced usage; the Tokens view includes it.</Show>
+            {p.data.approxDated ? ` Times are approximate for ${plural(p.data.approxDated, "older record")}.` : ""}{p.data.approxPriced ? ` ${plural(p.data.approxPriced, "record")} may be unpriced.` : ""}
         </p>
     </section>;
 }
@@ -274,10 +274,10 @@ export function UsageView() {
         </div>
         <Show when={error()}><div class="set-group u-state" role="alert"><b>Couldn't read usage</b><p>{error()}</p><button class="btn secondary sm" onClick={() => void load()}>Try again</button></div></Show>
         <Show when={view() === "limits"} fallback={<>
-            <Show when={loading() && !data()}><p class="set-note" role="status">Reading local usage transcripts…</p></Show>
+            <Show when={loading() && !data()}><p class="set-note" role="status">Loading usage…</p></Show>
             <Show when={!error() && data()}>{d => <div class={`usage-body ${stale() ? "busy" : ""}`}>
                 <Show when={d().truncated}><div class="u-partial" role="status"><Info size={14} /><span>Only part of this range is counted: {d().truncated} A shorter range counts everything.</span></div></Show>
-                <Show when={d().rows.length} fallback={<div class="set-group u-state"><b>{emptyText(d())}</b><Show when={!d().truncated}><p>Claude Code, Codex and API key sessions show up here after their first reply.</p></Show><Show when={!d().truncated && d().days < 90}><button class="btn secondary sm" onClick={() => setDays(90)}>Show the last 90 days</button></Show></div>}>
+                <Show when={d().rows.length} fallback={<div class="set-group u-state"><b>{emptyText(d())}</b><Show when={!d().truncated}><p>Sessions show up here after their first reply.</p></Show><Show when={!d().truncated && d().days < 90}><button class="btn secondary sm" onClick={() => setDays(90)}>Show the last 90 days</button></Show></div>}>
                     <UsageDashboard data={d()} metric={view() === "tokens" ? "tokens" : "cost"} />
                 </Show>
             </div>}</Show>

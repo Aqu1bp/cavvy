@@ -93,10 +93,10 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
     // A click on a project script: its own tab, shown, with the command typed into its shell.
     const runScript = (cwd: string, script: { id: string; name: string }, setup?: SetupRun) => {
         // A new worktree's setup run that can't start: the worktree is there, and the script can be run by hand.
-        const cant = (why: string, plain: string) => (setup ? toast(`The worktree was created, but its setup script “${script.name}” didn't run: ${why} You can run it from the project scripts menu.`, "warn") : toast(plain, "error"));
+        const cant = (why: string, plain: string) => (setup ? toast(`Setup script “${script.name}” didn't run: ${why} Run it from the project scripts menu.`, "warn") : toast(plain, "error"));
         if (!restored()) return cant("terminal tabs are reconnecting.", "Terminal tabs are reconnecting. Try again in a moment.");
         if (app.conn !== "open") return cant("not connected to Cavvy server.", `Not connected to Cavvy server, so “${script.name}” can't start.`);
-        if (full()) return cant(`${MAX_TABS} terminals are open in this window.`, `${MAX_TABS} terminals are open in this window, some maybe in other projects. Close one to run “${script.name}”.`);
+        if (full()) return cant(`${MAX_TABS} terminals are open in this window.`, `${MAX_TABS} terminals are open, counting other projects. Close one to run “${script.name}”.`);
         const id = crypto.randomUUID();
         const tab = { id, terminal: id, cwd, number: next++, script: { id: script.id, name: script.name, ...(setup ? { setup: { label: setup.label, command: setup.command } } : {}) } };
         if (setup) setupTickets.set(tab.id, setup.ticket);
@@ -177,7 +177,7 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
             </div>
             <Show when={!currentTabs().length}>
                 <div class="terminal-message">
-                    <span>{full() ? `${MAX_TABS} terminals are open in this window, some in other projects. Close one to open a terminal here.` : app.conn !== "open" ? "Not connected to Cavvy server." : "No terminal in this project."}</span>
+                    <span>{full() ? `${MAX_TABS} terminals are open in other projects. Close one to open a terminal here.` : app.conn !== "open" ? "Not connected to Cavvy server." : "No terminal in this project."}</span>
                     <Show when={!full()}><button class="btn secondary sm" disabled={!restored() || app.conn !== "open"} onClick={add}><Plus size={12} /> New terminal</button></Show>
                 </div>
             </Show>
@@ -324,7 +324,7 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
                 return;
             }
             attach = false;
-            setEnded(e instanceof RpcError && e.code === "terminal_not_open" ? "This shell is no longer running: it was stopped while the window was away, or Cavvy server restarted." : (e as Error).message);
+            setEnded(e instanceof RpcError && e.code === "terminal_not_open" ? "This shell has stopped." : (e as Error).message);
         } finally { if (attempt === attachment) attaching = false; }
     };
     const start = async () => {
@@ -333,7 +333,7 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
         script = undefined;
         const ticket = setupTickets.get(p.tab.id);
         setupTickets.delete(p.tab.id);
-        const failed = (why: string) => (run?.setup ? `The setup script “${run!.name}” didn't run. ${why.charAt(0).toUpperCase()}${why.slice(1).replace(/\.?$/, ".")} The worktree was created; you can run the script from the project scripts menu.` : `Couldn't run “${run!.name}”: ${why}`);
+        const failed = (why: string) => (run?.setup ? `Setup script “${run!.name}” didn't run. ${why.charAt(0).toUpperCase()}${why.slice(1).replace(/\.?$/, ".")} Run it from the project scripts menu.` : `Couldn't run “${run!.name}”: ${why}`);
         // A restored/remounted setup tab must never fall back to an ordinary script click.
         if (run?.setup && !ticket) {
             setEnded(failed("this setup run is no longer available."));
@@ -437,7 +437,7 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
                 setAway(false);
                 early.take();
                 forgetDrawn();
-                setEnded("This terminal is now shown in another window (a copy of this one). Use the restart button to start a new process here.");
+                setEnded("This terminal moved to another window. Restart to start a new one here.");
             }
         });
         const stateOff = rpc.onState((state) => {
@@ -472,7 +472,7 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
     return <div class="terminal-screen" style={{ display: p.visible ? "flex" : "none" }}>
         <div class="terminal-emulator" ref={container} />
         <Show when={loginOutputLost()}><div class="terminal-message">
-            <span>Login output is not saved or replayed. Restart login if you need a new sign-in prompt.</span>
+            <span>Login output isn't kept. Restart login for a new sign-in prompt.</span>
             <Show when={!away() && !ended()}><button class="btn secondary sm" disabled={app.conn !== "open" || restarting()} onClick={restart}><RotateCw size={12} /> Restart login</button></Show>
         </div></Show>
         <Show when={away() || ended()}><div class="terminal-message">

@@ -56,16 +56,16 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                     <Show when={view()}>
                         <p>Push <strong class="mono">{view()?.branch}</strong> to <strong class="mono">{view()?.remote}/{view()?.target}</strong></p>
                         <p class="mono small publish-destination">{view()?.destination}</p>
-                        <p class="muted small">{view()?.ahead ?? "Unknown"} ahead · {view()?.behind ?? "Unknown"} behind (local tracking refs). {view()?.hasUpstream ? "" : "This sets the upstream."}</p>
+                        <p class="muted small">{view()?.ahead ?? "Unknown"} ahead · {view()?.behind ?? "Unknown"} behind</p>
                         <Show when={view()?.protected || view()?.defaultUnknown}>
-                            <label class="commit-warning"><input type="checkbox" checked={confirmed()} disabled={busy()} onChange={(e) => setConfirmed(e.currentTarget.checked)} /> I explicitly confirm pushing this protected branch{view()?.defaultUnknown ? " (remote default is unknown)" : ""}.</label>
+                            <label class="commit-warning"><input type="checkbox" checked={confirmed()} disabled={busy()} onChange={(e) => setConfirmed(e.currentTarget.checked)} /> I confirm pushing to this protected branch{view()?.defaultUnknown ? " (remote default is unknown)" : ""}.</label>
                         </Show>
                         <Show when={view()?.prError}><p class="commit-warning">PR state unavailable: {view()?.prError}</p></Show>
                         <Show when={view()?.pr}>
                             <button class="link-btn" onClick={() => void openExternal(view()!.pr!.url)}>#{view()?.pr?.number} {view()?.pr?.title} · {view()?.pr?.state}</button>
                         </Show>
                         <Show when={view()?.gh} fallback={<>
-                            <p class="muted small">To create a pull request here, install GitHub CLI and run gh auth login. GitHub.com remotes also offer a compare link.</p>
+                            <p class="muted small">To open pull requests here, install GitHub CLI and run gh auth login.</p>
                             <Show when={view()?.compareUrl}><button class="link-btn" onClick={() => void openExternal(view()!.compareUrl!)}>Compare on GitHub</button></Show>
                         </>}>
                             <label class="commit-message-label" for="pr-base">Base branch</label>
@@ -76,7 +76,6 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                             <textarea id="pr-body" class="input" rows={6} maxlength={16000} value={body()} disabled={busy()} onInput={(e) => setBody(e.currentTarget.value)} />
                             <label><input type="checkbox" checked={draft()} disabled={busy()} onChange={(e) => setDraft(e.currentTarget.checked)} /> Draft</label>
                         </Show>
-                        <p class="muted small">Confirm publishing to {view()?.remote}/{view()?.target}{view()?.gh ? `, with pull request base ${base() || "(choose a branch)"}` : ""}. These buttons change the remote repository.</p>
                     </Show>
                 </Show>
                 <Show when={blocked()}><p class="commit-warning">{blocked()}</p></Show>

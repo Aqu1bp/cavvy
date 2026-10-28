@@ -2284,6 +2284,7 @@ export class Runtime {
     // Interactions
 
     private interact(interaction: Interaction): Promise<InteractionResponse | undefined> {
+        interaction.since ??= Date.now();
         return new Promise((resolve) => {
             this.pending.set(interaction.id, { interaction, resolve });
             this.setState({ interactions: [...this.pendingList()] });

@@ -58,3 +58,44 @@ export function matchSkills<T extends { name: string; skill?: boolean }>(command
         .sort((a, b) => Number(!a.name.startsWith(q)) - Number(!b.name.startsWith(q)) || a.name.localeCompare(b.name))
         .slice(0, limit);
 }
+
+/** What the /command a message is takes ("[pr|focus]"), shown after it until something's typed there. */
+export function argsHint(text: string, commands: readonly { name: string; args?: string }[]): string | undefined {
+    const m = text.match(/^\s*\/\S+( *)$/);
+    const name = m ? slashName(text) : undefined;
+    const args = name ? commands.find((c) => c.name === name)?.args : undefined;
+    return args ? `${m![1] ? "" : " "}${args}` : undefined;
+}
+
+/** A run of the composer's text: plain, or a command or skill that will run. */
+export type TextPiece = { text: string; kind?: "command" | "skill" };
+
+/**
+ * The text cut where it names what will run: the /command it starts with and each $skill it mentions, when there's
+ * one by that name. Read as the server reads them (slashName above; mentionNames in src/agent/skills.ts), so a path,
+ * a price or $HOME stays plain.
+ */
+export function textPieces(text: string, commands: readonly { name: string; skill?: boolean }[]): TextPiece[] {
+    if (!commands.length || !/[/$]/.test(text)) return [{ text }];
+    const marks: { start: number; end: number; kind: "command" | "skill" }[] = [];
+    const lead = text.match(/^\s*(\/\S+)/);
+    const name = slashName(text);
+    if (lead && name && commands.some((c) => c.name === name)) marks.push({ start: lead[0].length - lead[1]!.length, end: lead[0].length, kind: "command" });
+    const skills = new Set(commands.filter((c) => c.skill).map((c) => c.name));
+    for (const m of text.matchAll(/(^|[\s(])\$([a-zA-Z0-9][a-zA-Z0-9:_-]*)(?=[\s.,;:!?)]|$)/g)) {
+        const raw = m[2]!.replace(/:+$/, "");
+        if (!/[a-z]/.test(raw) || !skills.has(raw.toLowerCase())) continue;
+        const start = m.index! + m[1]!.length;
+        marks.push({ start, end: start + 1 + raw.length, kind: "skill" });
+    }
+    if (!marks.length) return [{ text }];
+    const out: TextPiece[] = [];
+    let at = 0;
+    for (const mk of marks.sort((a, b) => a.start - b.start)) {
+        if (mk.start > at) out.push({ text: text.slice(at, mk.start) });
+        out.push({ text: text.slice(mk.start, mk.end), kind: mk.kind });
+        at = mk.end;
+    }
+    if (at < text.length) out.push({ text: text.slice(at) });
+    return out;
+}

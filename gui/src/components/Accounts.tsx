@@ -209,7 +209,7 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
                 <details class="account-advanced" open={advanced()} onToggle={(e) => setAdvanced(e.currentTarget.open)}>
                     <summary>Use an existing folder</summary>
                     <input id={`${uid}-folder`} class="input mono" aria-label="Account folder" aria-invalid={error()?.field === "folder"} aria-describedby={`${uid}-folder-help${error()?.field === "folder" ? ` ${uid}-folder-error` : ""}`} value={folder()} maxLength={1024} disabled={busy()} onInput={(e) => { setFolder(e.currentTarget.value); setError(undefined); }} placeholder="/path/to/cli-home" />
-                    <span id={`${uid}-folder-help`} class="account-hint">Leave blank and Cavvy makes a folder that shares Default's settings and history. An existing folder is used as it is.</span>
+                    <span id={`${uid}-folder-help`} class="account-hint">Used as it is, without Default's settings and history.</span>
                     <Show when={error()?.field === "folder"}><span id={`${uid}-folder-error`} class="account-error" role="alert">{error()?.message}</span></Show>
                 </details>
                 <Show when={error()?.field === "form"}><span class="account-error" role="alert">{error()?.message}</span></Show>
@@ -221,19 +221,19 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
         </Show>
         <Show when={actionError()}><span class="account-error account-note" role="alert">{actionError()}</span></Show>
         <Dialog open={help()} onClose={() => setHelp(false)} title={`${p.provider.name} accounts`} width={420}>
-            <p>Add an account to keep separate sign-ins, for example personal and work. Each one signs in on its own in the CLI terminal.</p>
+            <p>Keep separate sign-ins, like personal and work.</p>
             <p>{p.provider.id === "claude-code"
-                ? "A folder Cavvy makes links Default's settings, CLAUDE.md, rules, skills, agents, commands, plugins and history, so only the sign-in differs; settings.json isn't shared while it sets a sign-in (an API key, apiKeyHelper or cloud provider). MCP servers added for your user are kept with each sign-in and are not shared. Claude Console sign-in without an API key is stored outside this folder and is not isolated per account."
-                : "A folder Cavvy makes links everything in Default's Codex home, including config.toml, MCP servers, skills and history, except the sign-in (auth.json and secrets), the model list and .env."}</p>
-            <p>An existing folder you choose is used as it is, with nothing linked.</p>
+                ? "A new account shares Default's settings and history, but not your user MCP servers. Claude Console sign-ins without an API key aren't kept separate."
+                : "A new account shares Default's settings and history; only the sign-in differs."}</p>
+            <p>A folder you choose is used as it is, with nothing shared.</p>
         </Dialog>
         <Show when={removing()}>{(a) => <Dialog open onClose={() => { if (!busy()) setRemoving(undefined); }} title={`Remove ${a().name}?`} width={460}>
-            <p>{a().managed && !a().invalid ? "Delete the Cavvy-created folder" : "Forget this account and leave its folder untouched"}: <code class="account-path">{a().folder}</code>?</p>
-            <p>Removing an account does not revoke its sign-in. To sign out first, run <code>{p.provider.id === "codex" ? "codex logout" : "claude auth logout"}</code> with this account's folder.</p>
+            <p>{a().managed && !a().invalid ? "Deletes the folder Cavvy made" : "Leaves its folder untouched"}: <code class="account-path">{a().folder}</code></p>
+            <p>This doesn't sign it out: run <code>{p.provider.id === "codex" ? "codex logout" : "claude auth logout"}</code> with its folder first.</p>
             <Show when={removeError()}><p class="account-error" role="alert">{removeError()}</p></Show>
             <div class="dialog-actions">
                 <button class="btn ghost" autofocus disabled={busy()} onClick={() => setRemoving(undefined)}>Cancel</button>
-                <button class="btn danger" disabled={busy()} aria-busy={busy()} onClick={() => void work(async () => { await rpc.call("accounts.remove", { provider: p.provider.id, id: a().id, confirmedFolder: a().folder }); setRemoving(undefined); await refreshProviders().catch((e) => setActionError(message(e))); }, setRemoveError)}>{busy() ? "Removing…" : "Confirm removal"}</button>
+                <button class="btn danger" disabled={busy()} aria-busy={busy()} onClick={() => void work(async () => { await rpc.call("accounts.remove", { provider: p.provider.id, id: a().id, confirmedFolder: a().folder }); setRemoving(undefined); await refreshProviders().catch((e) => setActionError(message(e))); }, setRemoveError)}>{busy() ? "Removing…" : "Remove"}</button>
             </div>
         </Dialog>}</Show>
     </section>;

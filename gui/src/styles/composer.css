@@ -851,6 +851,54 @@
     color: var(--fg-3);
 }
 
+/* The text, and while it has a /command or a $skill, the same lines drawn behind it with those in color (Composer.tsx):
+   laid out alike, so the textarea's caret and selection fall on them while its own letters are clear. */
+.composer-field {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+}
+
+.composer-field textarea {
+    position: relative;
+}
+
+.composer-field.marked textarea {
+    color: transparent;
+    caret-color: var(--fg);
+}
+
+/* See-through, so the letters behind show in it. */
+.composer-field.marked textarea::selection {
+    color: transparent;
+    background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.composer-mirror {
+    position: absolute;
+    top: 0;
+    left: 0;
+    overflow: hidden;
+    padding: calc(2 * var(--sp)) 0 0;
+    font-size: 1.036rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    color: var(--fg);
+    pointer-events: none;
+    user-select: none;
+}
+
+/* Only the color: a weight or a box would move the letters off the caret. */
+.ctok {
+    color: var(--accent-text);
+}
+
+/* What the command takes, until something's typed there. */
+.ctok-hint {
+    color: var(--fg-3);
+}
+
 /* The card shows focus; the field inside doesn't need its own ring. */
 .composer textarea:focus-visible {
     outline: none;
@@ -874,7 +922,8 @@
     padding-right: calc(30 * var(--sp));
 }
 
-.composer.expandable .composer-input:first-child textarea {
+.composer.expandable .composer-input:first-child textarea,
+.composer.expandable .composer-input:first-child .composer-mirror {
     padding-right: calc(30 * var(--sp));
 }
 

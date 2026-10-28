@@ -30,7 +30,7 @@ import { motionMs } from "./LiveLine";
 
 import { composerStorage } from "../lib/drafts";
 import { composingKey, revealMenuOption } from "../lib/composer-menu";
-import { matchSkills, skillToken } from "../lib/commands";
+import { argsHint, matchSkills, skillToken, textPieces } from "../lib/commands";
 import { firstSendable, FOLLOW_UP_WORDS, followUpFor, followUpLabels, otherFollowUp, restoreWaits, withDraft } from "../lib/queue";
 import { canStop } from "../lib/session-status";
 import { listedSchedules } from "../lib/notices";
@@ -74,6 +74,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const [menuStatus, setMenuStatus] = createSignal<"loading" | "empty" | "error" | "no-skills">();
     const menuOpen = () => menu().length > 0 || !!menuStatus();
     let commands: CommandInfo[] = [];
+    /** The same list, for what's drawn from it: the commands and skills marked in the text. */
+    const [known, setKnown] = createSignal<CommandInfo[]>([]);
     /** The list came back (not still loading, not failed), so an empty one means there are none. */
     let commandsLoaded = false;
     /** Asks for the commands again (a skill added since): set while the composer has a project. */
@@ -116,6 +118,29 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         ta.style.height = `${ta.scrollHeight}px`;
         setOverflows(ta.scrollHeight > ta.clientHeight + 1);
     };
+    // What will run, in color: while the text has a /command or a $skill, a layer behind it draws the same lines with
+    // them in the accent and what the command takes after it, and the textarea's own letters go clear. The caret,
+    // selection, typing and spellcheck stay the textarea's.
+    let mirror: HTMLDivElement | undefined;
+    const marked = createMemo(() => {
+        if (shell()) return undefined;
+        const pieces = textPieces(text(), known());
+        return pieces.some((piece) => piece.kind) ? { pieces, hint: argsHint(text(), known()) } : undefined;
+    });
+    /** The layer as wide as the text's lines (a scrollbar takes from them), as tall as the field, and scrolled with it. */
+    const syncMirror = () => {
+        if (!mirror || !ta) return;
+        mirror.style.width = `${ta.clientWidth}px`;
+        mirror.style.height = `${ta.clientHeight}px`;
+        mirror.scrollTop = ta.scrollTop;
+    };
+    createEffect(on(marked, () => syncMirror()));
+    onMount(() => {
+        if (!ta || typeof ResizeObserver === "undefined") return;
+        const observer = new ResizeObserver(() => syncMirror());
+        observer.observe(ta);
+        onCleanup(() => observer.disconnect());
+    });
     /** Opens the large size or closes it: laid out at once, drawn growing from where it was (lib/composer-size), the conversation gliding with it. */
     const toggleExpanded = (open = !expanded()) => {
         if (!ta || !box || open === expanded()) return;
@@ -221,12 +246,14 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 let current = true;
                 onCleanup(() => { current = false; });
                 commands = [];
+                setKnown([]);
                 commandsLoaded = false;
                 // A reply from the previous project or provider must not replace this menu.
                 const fetch = () => {
                     if (cwd) void rpc.call("commands.list", { cwd, provider }).then((c) => {
                         if (!current) return;
                         commands = c;
+                        setKnown(c);
                         commandsLoaded = true;
                         // Typed while it loaded: the open menu shows the new list.
                         if (menuOpen() || /^\/\S*$/.test(text()) || skillAtCursor()) updateMenu(false);
@@ -265,8 +292,11 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     };
     /** `refresh`: a menu that just opened asks the server again, which reads new skills. */
     const updateMenu = (refresh = true) => {
-        // Typing on in an open @ menu: its rows stay until the next ones come, so it doesn't blink empty at each key.
-        const typingOn = Boolean(token()) && rowsFrom === (st()?.cwd ?? app.homeCwd) && menu().some((m) => m.kind !== "command") && menuDismissedFor() !== text();
+        // Typing on in an open menu: its rows stay until the next ones come, so it doesn't blink empty at each key
+        // (and pop open again). The @ menu's come from a search; the / and $ menus' at once, below.
+        const files = Boolean(token()) && rowsFrom === (st()?.cwd ?? app.homeCwd) && menu().some((m) => m.kind !== "command");
+        const names = (/^\/\S*$/.test(text()) || Boolean(skillAtCursor())) && menu().some((m) => m.kind === "command");
+        const typingOn = (files || names) && menuDismissedFor() !== text();
         if (typingOn) staleSearch();
         else dismissMenu();
         const version = mentionVersion;
@@ -378,7 +408,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         const t = text();
         if (!canSend() || sending()) return;
         const picks = runPicks();
-        if (picks && (picks.length < 2 || !app.homeCwd)) return toast(picks.length < 2 ? "Pick 2 to 4 models, or turn off Compare in the model picker." : "Choose a project folder first.", "warn");
+        if (picks && (picks.length < 2 || !app.homeCwd)) return toast(picks.length < 2 ? "Pick 2–4 models, or turn off Compare" : "Choose a project folder first.", "warn");
         setSending(true);
         const submitted = draft.capture();
         const { attachments: atts } = submitted.draft;
@@ -745,7 +775,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 <Show when={comments().length}>
                     <ReviewCommentChips
                         items={comments()}
-                        held={holdsComments() ? "Review comments wait for your next message: commands and shell lines don't take them" : undefined}
+                        held={holdsComments() ? "Review comments wait: commands and shell lines don't take them" : undefined}
                         onOpen={(c) => setReview({ path: c.path })}
                         onRemove={(c) => reviewComments.remove(p.sessionId!, [c.id])}
                         onClear={() => reviewComments.remove(p.sessionId!, comments().map((c) => c.id))}
@@ -760,39 +790,52 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                             <SquareTerminal size={14} />
                         </span>
                     </Show>
-                    <textarea
-                        ref={ta}
-                        rows={1}
-                        style={{ "--column-h": columnHeight() }}
-                        value={text()}
-                        placeholder={placeholder()}
-                        spellcheck={!shell()}
-                        onInput={(e) => {
-                            histIdx = -1;
-                            setText(e.currentTarget.value);
-                            setMenuDismissedFor(undefined);
-                            resize();
-                            updateMenu();
-                        }}
-                        onKeyDown={(e) => {
-                            setFlipped(isMod(e) && e.shiftKey);
-                            onKeyDown(e);
-                        }}
-                        onKeyUp={(e) => {
-                            setFlipped(isMod(e) && e.shiftKey);
-                            if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key) && !composingKey(e)) updateMenu();
-                        }}
-                        onBlur={() => setFlipped(false)}
-                        onPaste={onPaste}
-                        onClick={() => updateMenu()}
-                        aria-label="Message"
-                        role="combobox"
-                        aria-autocomplete="list"
-                        aria-haspopup="listbox"
-                        aria-expanded={menuOpen()}
-                        aria-controls={menuOpen() ? menuId : undefined}
-                        aria-activedescendant={menu().length ? `${menuId}-${menuSel()}` : undefined}
-                    />
+                    <div class="composer-field" classList={{ marked: Boolean(marked()) }}>
+                        <Show when={marked()}>
+                            {(m) => (
+                                <div ref={mirror} class="composer-mirror" aria-hidden="true">
+                                    <For each={m().pieces}>{(piece) => (piece.kind ? <span class={`ctok ${piece.kind}`}>{piece.text}</span> : piece.text)}</For>
+                                    <Show when={m().hint}>{(hint) => <span class="ctok-hint">{hint()}</span>}</Show>
+                                    {/* A last line that's empty is a line in the textarea too. */}
+                                    {"\u200b"}
+                                </div>
+                            )}
+                        </Show>
+                        <textarea
+                            ref={ta}
+                            rows={1}
+                            style={{ "--column-h": columnHeight() }}
+                            value={text()}
+                            placeholder={placeholder()}
+                            spellcheck={!shell()}
+                            onInput={(e) => {
+                                histIdx = -1;
+                                setText(e.currentTarget.value);
+                                setMenuDismissedFor(undefined);
+                                resize();
+                                updateMenu();
+                            }}
+                            onKeyDown={(e) => {
+                                setFlipped(isMod(e) && e.shiftKey);
+                                onKeyDown(e);
+                            }}
+                            onKeyUp={(e) => {
+                                setFlipped(isMod(e) && e.shiftKey);
+                                if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key) && !composingKey(e)) updateMenu();
+                            }}
+                            onBlur={() => setFlipped(false)}
+                            onPaste={onPaste}
+                            onClick={() => updateMenu()}
+                            onScroll={syncMirror}
+                            aria-label="Message"
+                            role="combobox"
+                            aria-autocomplete="list"
+                            aria-haspopup="listbox"
+                            aria-expanded={menuOpen()}
+                            aria-controls={menuOpen() ? menuId : undefined}
+                            aria-activedescendant={menu().length ? `${menuId}-${menuSel()}` : undefined}
+                        />
+                    </div>
                 </div>
                 <div ref={bar} class="composer-bar">
                     <input

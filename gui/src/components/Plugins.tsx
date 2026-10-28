@@ -25,8 +25,8 @@ type Confirm = { title: string; body: string; label: string; run: () => Promise<
 
 const SCOPES: { value: PluginScope; label: string; title: (project?: string) => string }[] = [
     { value: "user", label: "For me", title: () => "On in every project, just for you" },
-    { value: "project", label: "This project", title: (p) => `Shared with everyone in ${p ?? "the project"} (.cavvy/settings.json)` },
-    { value: "local", label: "Just me, here", title: (p) => `Only you, only in ${p ?? "this project"} (.cavvy/settings.local.json)` },
+    { value: "project", label: "This project", title: (p) => `Shared with everyone in ${p ?? "the project"}` },
+    { value: "local", label: "Just me, here", title: (p) => `Only you, only in ${p ?? "this project"}` },
 ];
 const SCOPE_DONE: Record<PluginScope, string> = { user: "for you", project: "for this project", local: "for you, here" };
 
@@ -224,7 +224,7 @@ export function Plugins() {
                         </div>
                         <Show
                             when={markets().length}
-                            fallback={empty(Store, "No marketplaces yet", "Paste a GitHub repo, a git URL or a folder above, or start with Anthropic's official catalog.", () => (
+                            fallback={empty(Store, "No marketplaces yet", "Add one above, or start with Anthropic's official catalog.", () => (
                                 <button class="btn secondary sm" disabled={Boolean(busy())} onClick={() => addMarketplace(SUGGESTED)}>
                                     {busy() === "market:add" ? <Spinner size={12} /> : `Add ${SUGGESTED}`}
                                 </button>
@@ -234,13 +234,12 @@ export function Plugins() {
                             <div class="pg-list">
                                 <For each={markets()}>{(m) => <MarketRow m={m} busy={busy()} act={act} installed={installed()} confirm={setConfirm} />}</For>
                             </div>
-                            <p class="set-note">Claude Code plugins and marketplaces work as they are, and the ones you added in Claude Code show up here.</p>
                         </Show>
                     </Match>
                     <Match when={view() === "discover"}>
                         <Show
                             when={markets().length}
-                            fallback={empty(Store, "No marketplaces yet", "A marketplace is a catalog of plugins. Anthropic's official one is a good place to start.", () => (
+                            fallback={empty(Store, "No marketplaces yet", "A marketplace is a catalog of plugins.", () => (
                                 <>
                                     <button class="btn primary sm" disabled={Boolean(busy())} onClick={() => addMarketplace(SUGGESTED)}>
                                         {busy() === "market:add" ? <Spinner size={12} /> : "Add Anthropic's marketplace"}
@@ -251,7 +250,7 @@ export function Plugins() {
                                 </>
                             ))}
                         >
-                            <Show when={available().length} fallback={empty(Puzzle, "Everything is installed", "Every plugin your marketplaces offer is installed.")}>
+                            <Show when={available().length} fallback={empty(Puzzle, "Everything is installed")}>
                                 <Show when={categories().length > 1}>
                                     <div class="pg-cats" role="group" aria-label="Category">
                                         <button class={!category() ? "on" : ""} aria-pressed={!category()} onClick={() => setCategory(undefined)}>
@@ -270,7 +269,7 @@ export function Plugins() {
                                 </Show>
                                 <Show
                                     when={discovered().length}
-                                    fallback={empty(Search, query().trim() ? `No plugins match “${query().trim()}”` : `Nothing in ${category()}`, category() ? `Nothing in ${category()}. Try all categories.` : "Try a shorter word, or a category.", category() ? () => (
+                                    fallback={empty(Search, query().trim() ? `No plugins match “${query().trim()}”` : `Nothing in ${category()}`, category() ? undefined : "Try a shorter word, or a category.", category() ? () => (
                                         <button class="btn ghost sm" onClick={() => setCategory(undefined)}>
                                             Search all categories
                                         </button>
@@ -280,18 +279,18 @@ export function Plugins() {
                                         <For each={discovered()}>{(pl) => <PluginCard plugin={pl} markets={markets()} busy={busy()} open={() => setDetails({ pl })} install={() => void install(pl)} />}</For>
                                     </div>
                                 </Show>
-                                <p class="set-note pg-note">Plugins can add commands, agents, skills, hooks and MCP servers. Hooks and MCP servers run commands on this computer, so install from people you trust.</p>
+                                <p class="set-note pg-note">Plugins can run commands on this computer, so install only from people you trust.</p>
                             </Show>
                         </Show>
                     </Match>
                     <Match when={!installed().length}>
                         {available().length
-                            ? empty(Puzzle, "No plugins installed", `${plural(available().length, "plugin")} ${available().length === 1 ? "is" : "are"} ready to install in Discover.`, () => (
+                            ? empty(Puzzle, "No plugins installed", `${plural(available().length, "plugin")} ready to install.`, () => (
                                   <button class="btn primary sm" onClick={() => show("discover")}>
                                       Browse plugins
                                   </button>
                               ))
-                            : empty(Puzzle, "No plugins installed", "Add a marketplace to find plugins to install.", () => (
+                            : empty(Puzzle, "No plugins installed", undefined, () => (
                                   <button class="btn primary sm" onClick={() => show("marketplaces")}>
                                       Add a marketplace
                                   </button>
@@ -304,7 +303,7 @@ export function Plugins() {
                             <Show when={info()?.cwd} fallback={<span>Open a project to turn plugins on for just that project.</span>}>
                                 <span>
                                     On and off apply to <b>{project()}</b>
-                                    <Show when={!info()?.trusted}> (not trusted yet, so only your own settings count there)</Show>.
+                                    <Show when={!info()?.trusted}> (not trusted yet)</Show>.
                                 </span>
                             </Show>
                         </p>
@@ -351,7 +350,7 @@ function PluginCard(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; b
                 <button
                     class="btn ghost sm pg-install"
                     disabled={Boolean(p.busy)}
-                    title="Install for you, in every project. Hooks and MCP servers in a plugin run commands on this computer."
+                    title="Install for you, in every project"
                     aria-label={`Install ${pl().name}`}
                     onClick={() => p.install()}
                 >
@@ -428,11 +427,11 @@ function PluginDetails(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]
                 </For>
             </div>
             <Show when={!p.projectScopes}>
-                <p class="pg-sub">{p.project ? `${p.project} isn't trusted yet, so plugins install for you only.` : "Open a project to install a plugin for just that project."}</p>
+                <p class="pg-sub">{p.project ? `Trust ${p.project} to install for just that project.` : "Open a project to install for just that project."}</p>
             </Show>
             <p class="pg-warn">
                 <Info size={13} />
-                Its hooks and MCP servers can run commands on this computer.
+                It can run commands on this computer.
             </p>
             <div class="dialog-actions">
                 <span class="grow" />
@@ -533,7 +532,7 @@ function PluginRow(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; bu
                         choose(() =>
                             p.confirm({
                                 title: `Uninstall ${pl().name}?`,
-                                body: `${pl().name} from ${pl().marketplace} is removed from every scope in this project and your own settings. Its commands, agents, hooks and MCP servers stop loading.`,
+                                body: "It's removed from this project and from your own settings.",
                                 label: "Uninstall",
                                 run: () => p.act(key("uninstall"), { action: "uninstall", id: pl().id }),
                             }),

@@ -43,13 +43,15 @@ const source = readFileSync(new URL("../../gui/src/App.tsx", import.meta.url), "
 const builtins = new Set(["Show", "For", "Index", "Switch", "Match", "Dynamic", "Portal", "ErrorBoundary", "Suspense", "RenderBoundary"]);
 const widgets = [...new Set([...source.matchAll(/<([A-Z][A-Za-z0-9]*)[\s/>]/g)].map((m) => m[1]!))].filter((tag) => !builtins.has(tag));
 const App = component(source.slice(source.indexOf("export function App")), "App", {
-    ...appModule, RenderBoundary: boundary(), prefs: { sidebar: true }, isTauri: false, isDesktop: false, isElectron: false, setEnterSends() {}, actionOf: () => undefined, skipCovered() {},
+    ...appModule, RenderBoundary: boundary(), prefs: { sidebar: true, panel: true }, isTauri: false, isDesktop: false, isElectron: false, setEnterSends() {}, actionOf: () => undefined, skipCovered() {},
     railDrag: () => undefined, columnSteps, COLUMN_NARROW, COLUMN_SHORT, shellLayout: () => ({ railMode: "dock", railShown: true, sheet: { w: 1100, h: 860 }, column: { w: 1100, h: 860 }, inspector: { open: false, mode: "dock", width: 360, short: false, bottom: 8 }, terminal: { shown: false, height: 0, maximized: false, most: 560 } }), settingsTab: () => undefined, agentFocus: () => undefined, review: () => undefined,
     attentionCount: () => 0, setAgentFocus() {}, setReview() {}, onMount() {},
     ...Object.fromEntries(widgets.map((tag) => [tag, () => node(tag)])),
 });
 const root = node("root");
 const dispose = renderer.render(App, root);
+/** The inspector's column (the side panel's): "on" when it takes room beside the conversation. */
+const panelColumn = () => all(root).find((n) => /^app /.test(n.props.class ?? ""))?.props["data-insp"];
 try {
     const a = activate("a");
     assert.equal(app.activeId, "a", "sidebar selection changes synchronously");
@@ -113,6 +115,7 @@ try {
     assert.equal(app.opening?.visible, true);
     assert.ok(text(root).includes("Opening session"));
     assert.ok(all(root).some((n) => n.tag === "Sidebar"));
+    assert.equal(panelColumn(), "on", "the side panel's column stays open while the session it's for opens");
     requests.find((r) => r.id === "slow")!.answer();
     await settle();
     assert.ok(text(root).includes("Opening session"), "cached handle must not bypass minimum visible time");
@@ -180,4 +183,6 @@ try {
     assert.equal(app.homeCwd, "/chosen-project");
     assert.equal(app.opening, undefined);
     assert.ok(all(root).some((n) => n.tag === "Home"));
+    // New session: nothing opening, so nothing for the panel to show (as a new window opens, with it left open).
+    assert.equal(panelColumn(), "off", "no empty side panel beside New session");
 } finally { dispose(); rpc.close(); }
