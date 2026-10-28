@@ -1475,8 +1475,7 @@ describe("Codex backend", () => {
         session.setBackendSession("codex", "gone-9", session.messages.length);
         expect(await run("three")).toBe("done");
         const methods = received().map((m) => m.method).filter((m) => m?.startsWith("thread/") && !m.startsWith("thread/goal/"));
-        // Tried again without Cavvy's server (a Codex that won't take its config still gets its thread), then a new one.
-        expect(methods).toEqual(["thread/resume", "thread/resume", "thread/start"]);
+        expect(methods).toEqual(["thread/resume", "thread/start"]);
     }, 20_000);
 
     test("acceptEdits: workspace-write with the extra directories, but commands still ask", async () => {
@@ -2467,8 +2466,7 @@ describe("forked sessions", () => {
             expect(resumes()).toEqual(["gone-source (fork)", "new"]);
             expect(userTexts().at(-1)).toContain("User: first");
         } else {
-            // Tried again without Cavvy's server (a Codex that won't take its config still gets its thread), then a new one.
-            expect(received().filter((m) => m.method?.startsWith("thread/") && !m.method.startsWith("thread/goal/")).map((m) => m.method)).toEqual(["thread/fork", "thread/fork", "thread/start"]);
+            expect(received().filter((m) => m.method?.startsWith("thread/") && !m.method.startsWith("thread/goal/")).map((m) => m.method)).toEqual(["thread/fork", "thread/start"]);
             expect(JSON.stringify(received().find((m) => m.method === "turn/start")?.params.input)).toContain("User: first");
         }
         expect(fork.session.backends.get(provider)?.fork).toBeUndefined();

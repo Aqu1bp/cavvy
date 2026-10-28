@@ -905,7 +905,7 @@ export class CodexTurn {
                 try {
                     return await this.rpc.request(method, params);
                 } catch (e) {
-                    if (this.aborted || !o) throw e;
+                    if (this.aborted || !o || threadGone(e)) throw e;
                     const kept = this.nativeHooks && this.hookServer ? { ...off, mcp_servers: { ...off?.mcp_servers, ...hookServerConfig(this.hookServer) } } : off;
                     const r = await this.rpc.request(method, { ...params, config: kept, developerInstructions: baseInstructions });
                     this.sink.emit({ type: "notice", level: "warn", message: `Codex didn't accept ${APP_TITLE}'s tools (${redact((e as Error).message).replace(/^Codex:\s*/, "")}); this turn runs without them, preserving MCP restrictions.` });
@@ -2387,6 +2387,9 @@ export interface Origin {
     turnId?: string;
     sub?: SubAgent;
 }
+
+/** Codex has no such thread (gone, or another account's): taking Cavvy's server out of the config won't change that. */
+export const threadGone = (e: unknown): boolean => /no rollout found|thread not found/i.test(e instanceof Error ? e.message : String(e));
 
 /**
  * Cavvy's MCP server as Codex config for the thread (sent over the
