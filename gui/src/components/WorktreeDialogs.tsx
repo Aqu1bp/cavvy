@@ -102,7 +102,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
 
     /** In the new worktree, now open: a tab of its own, with the command typed once its shell is reading. */
     const startSetup = (made: CreateWorktreeResult, setup: NonNullable<CreateWorktreeResult["setup"]>) => {
-        const didnt = (why: string) => toast(`The worktree was created, but its setup script “${setup.script.name}” didn't run: ${why} You can run it from the project scripts menu.`, "warn");
+        const didnt = (why: string) => toast(`Setup script “${setup.script.name}” didn't run: ${why} Run it from the project scripts menu.`, "warn");
         // A tab outside the project on screen would run where nobody sees it.
         if (app.homeCwd !== made.path) return didnt("the new worktree couldn't be opened.");
         if (setupObscured() || trustRequest()) return didnt("Settings or another dialog is covering the new worktree.");
@@ -135,7 +135,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
             const made = await rpc.call("projects.createWorktree", { path: r.cwd, branch: b, base: base().trim() || undefined, ...(parent() ? { location: target() } : { folder: name() }), ...(setup ? { setup: true, setupScript: setup } : {}) });
             setBusy(false);
             p.onClose();
-            if (made.setupError) toast(`Created worktree ${made.branch}. ${made.setupError} You can run it from the project scripts menu.`, "warn");
+            if (made.setupError) toast(`Created worktree ${made.branch}. ${made.setupError} Run it from the project scripts menu.`, "warn");
             else toast(`Created worktree ${made.branch}`, "success");
             await openProject(made.path);
             requestComposerFocus();
@@ -217,7 +217,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                     {(n) => (
                         <div class="wt-setup">
                             <span>
-                                Once it's created, the setup script <strong>{n().script.name}</strong> runs in a new terminal tab there:
+                                The setup script <strong>{n().script.name}</strong> runs once it's created:
                             </span>
                             <pre class="wt-setup-command mono">{n().script.command}</pre>
                             <label class="check-row">
@@ -234,7 +234,7 @@ export function NewWorktreeDialog(p: { request: NewWorktreeRequest; onClose: () 
                                 The setup script <strong>{n().script.name}</strong> won't run: you haven't trusted this repository.
                             </span>
                             <pre class="wt-setup-command mono">{n().script.command}</pre>
-                            <span class="wt-hint">Trusting it also turns on the repository's own Cavvy configuration (its .cavvy settings, hooks and MCP servers).</span>
+                            <span class="wt-hint">Trusting it also turns on its .cavvy settings, hooks and MCP servers.</span>
                             <div>
                                 <button type="button" class="btn secondary sm" disabled={busy() || trusting()} onClick={() => void trustRepository(n().main)}>
                                     {trusting() ? <Spinner size={12} /> : "Trust this repository"}
@@ -329,16 +329,15 @@ export function RemoveWorktreeDialog(p: { request: RemoveWorktreeRequest; onClos
         }
     };
     return (
-        <Dialog open onClose={close} title="Remove worktree" width={500}>
+        <Dialog open onClose={close} title="Remove this worktree?" subtitle={<span class="mono">{tildify(w.path, app.hello?.homeDir)}</span>} width={500}>
             <p class="wt-confirm">
-                Remove worktree <span class="mono">{tildify(w.path, app.hello?.homeDir)}</span>?{" "}
                 <Show when={w.branch} fallback="Its commit stays in the repository.">
                     Branch <span class="mono">{w.branch}</span> is kept.
                 </Show>
             </p>
             <p class="muted small">
-                <Show when={w.exists} fallback="Its folder is already gone; this clears Git's record of it (and only its).">
-                    Git refuses if it has uncommitted or untracked changes. Ignored files (an .env, node_modules) are listed for you before anything is deleted.
+                <Show when={w.exists} fallback="Its folder is already gone.">
+                    Uncommitted changes stop the removal. Ignored files, like .env, are listed before they're deleted.
                 </Show>
             </p>
             <Show when={ignored()}>{(i) => <IgnoredFiles names={i().names} total={i().total} />}</Show>

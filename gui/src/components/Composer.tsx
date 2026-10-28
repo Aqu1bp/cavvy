@@ -381,7 +381,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         const t = text();
         if (!canSend() || sending()) return;
         const picks = runPicks();
-        if (picks && (picks.length < 2 || !app.homeCwd)) return toast(picks.length < 2 ? "Pick 2 to 4 models, or turn off Compare in the model picker." : "Choose a project folder first.", "warn");
+        if (picks && (picks.length < 2 || !app.homeCwd)) return toast(picks.length < 2 ? "Pick 2–4 models, or turn off Compare" : "Choose a project folder first.", "warn");
         setSending(true);
         const submitted = draft.capture();
         const { attachments: atts } = submitted.draft;
@@ -748,7 +748,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 <Show when={comments().length}>
                     <ReviewCommentChips
                         items={comments()}
-                        held={holdsComments() ? "Review comments wait for your next message: commands and shell lines don't take them" : undefined}
+                        held={holdsComments() ? "Review comments wait: commands and shell lines don't take them" : undefined}
                         onOpen={(c) => setReview({ path: c.path })}
                         onRemove={(c) => reviewComments.remove(p.sessionId!, [c.id])}
                         onClear={() => reviewComments.remove(p.sessionId!, comments().map((c) => c.id))}

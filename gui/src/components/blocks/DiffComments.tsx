@@ -106,7 +106,7 @@ export function CommentCard(p: { id: string; label: string; text: string; edits:
                     <div class="dc-meta">
                         <span class="dc-label">{p.label[0]!.toUpperCase() + p.label.slice(1)}</span>
                         <Show when={p.outdated}>
-                            <span class="dc-tag" title="These lines changed after you commented. The agent still gets the lines as you saw them.">Outdated</span>
+                            <span class="dc-tag" title="Changed since you commented. The agent gets the lines you saw.">Outdated</span>
                         </Show>
                     </div>
                     <p class="dc-text">{p.text}</p>

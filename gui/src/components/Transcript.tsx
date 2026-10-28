@@ -695,7 +695,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         untrack(() => {
             setJumpTarget(undefined);
             const turn = turnAt(turns(), j.seg, j.index);
-            if (!turn) return toast("That message isn't in this session any more.");
+            if (!turn) return toast("That message isn't here any more.");
             show(turn.id);
             setAnchor({ turnId: turn.id, role: j.role });
             setFindQuery(j.query);
@@ -775,7 +775,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                     {/* Started from another session's plan (in a new worktree): that session, a click away. */}
                     <For each={(p.handle.view.state.planLinks ?? []).filter((l) => l.role === "from")}>
                         {(l) => (
-                            <button class="forked-from" title={`Implementing a plan from another session, on ${l.branch}. Open that session.`} onClick={() => void activate(l.session)}>
+                            <button class="forked-from" title="Open the planning session" onClick={() => void activate(l.session)}>
                                 <ArrowUpLeft size={13} /> Plan from <span class="truncate">“{app.sessions.find((s) => s.id === l.session)?.title ?? app.archived.find((s) => s.id === l.session)?.title ?? l.title ?? "another session"}”</span>
                             </button>
                         )}

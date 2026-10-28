@@ -73,7 +73,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
             await rpc.call("session.setAccount", { id: p.sessionId, provider: selectedProvider, accountId: id });
             close();
             // On credits the turn didn't stop: there's nothing to send again.
-            toast(meter()?.usingCredits ? "Account switched. Your next message uses it." : "Account switched. Send your message again to continue.", "info");
+            toast(meter()?.usingCredits ? "Account switched. Your next message uses it." : "Account switched. Send your message again.", "info");
         } catch (error) { reportError(error); }
         finally { setSwitching(false); }
     }
@@ -178,7 +178,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
                                 <Show when={p.sessionId}>
                                     <div class="cx-switches">
                                         <Show when={checking()}><span class="plan-account-hint" role="status">Checking accounts…</span></Show>
-                                        <For each={alternatives()}>{(a) => <button class="cbtn" disabled={busy() || switching()} onClick={() => void switchTo(a.id)} title="Starts a new CLI thread with this conversation; send your message again">Switch to {a.name}</button>}</For>
+                                        <For each={alternatives()}>{(a) => <button class="cbtn" disabled={busy() || switching()} onClick={() => void switchTo(a.id)} title="Send your message again after switching">Switch to {a.name}</button>}</For>
                                     </div>
                                 </Show>
                             </div>
@@ -205,7 +205,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
                             <Show when={state()} fallback="No session yet">
                                 {tokens(state()?.tokensIn ?? 0)} in, {tokens(state()?.tokensOut ?? 0)} out
                                 <Show when={(state()?.cost ?? 0) > 0 || state()?.costUnknown}>
-                                    <span title={state()?.costUnknown ? "No price is known for some of the models used, so their usage isn't counted" : undefined}>, {cost(state()?.cost ?? 0, state()?.costUnknown)}</span>
+                                    <span title={state()?.costUnknown ? "Leaves out models with no known price" : undefined}>, {cost(state()?.cost ?? 0, state()?.costUnknown)}</span>
                                 </Show>
                             </Show>
                         </span>

@@ -22,9 +22,7 @@ test("MCP trust Cancel dismisses without declining configuration or continuing a
     const buttons = elements(d.tree, "button");
     expect(buttons.map((button) => button.children.join(""))).toEqual(["Cancel", "Trust this folder"]);
     const text = JSON.stringify(d.tree);
-    expect(text).toContain("Cancel keeps the current session trust, project settings and hooks as they are.");
-    expect(text).toContain("It does not approve any MCP server.");
-    expect(text).not.toContain("those files are ignored");
+    expect(text).toContain("Trust it to approve its MCP servers.");
     await buttons[0]!.props.onClick();
     expect(d.request()).toBeUndefined();
     expect(d.decisions).toEqual([]);
@@ -41,7 +39,8 @@ test("MCP trust still grants explicit trust, and opening a folder still offers I
     const opening = dialog();
     const ignore = elements(opening.tree, "button")[0]!;
     expect(ignore.children.join("")).toBe("Ignore its configuration");
-    expect(JSON.stringify(opening.tree)).toContain("those files are ignored");
+    expect(JSON.stringify(opening.tree)).toContain("can run commands on this computer");
+    expect(JSON.stringify(opening.tree)).not.toContain("Trust it to approve its MCP servers.");
     await ignore.props.onClick();
     expect(opening.decisions).toEqual([["/project", false]]);
     expect(opening.continued()).toBe(1);

@@ -190,7 +190,7 @@ function General() {
                 <Row title="Small model" desc="For session titles and page summaries.">
                     <ModelSelect label="Small model" value={s().smallModel} empty="Provider's small default" onChange={(v) => void update({ smallModel: v })} />
                 </Row>
-                <Row title="Auto-mode reviewer" desc="Checks actions in Auto before they run, on API models. Claude Code and Codex use their own.">
+                <Row title="Auto-mode reviewer" desc="Checks API models' actions in Auto before they run.">
                     <ModelSelect apiOnly label="Auto-mode reviewer" value={s().reviewModel} empty="Sonnet 5.5, or the session's model" onChange={(v) => void update({ reviewModel: v })} />
                 </Row>
                 <Row title="Permission mode" desc="Shift-Tab cycles it in the composer.">
@@ -201,7 +201,7 @@ function General() {
                     </SelectButton>
                 </Row>
                 {/* The composer's effort bars, smaller. Every level: it's where new sessions start, whatever their model. */}
-                <Row title="Reasoning effort" desc="Where new sessions start.">
+                <Row title="Reasoning effort">
                     <span class="set-effort">
                         <span class="set-effort-l">{effortOf(s().effort)?.label ?? "Provider's default"}</span>
                         <EffortBars size="sm" levels={effortLevels(undefined)} value={s().effort} onChange={(v) => void update({ effort: v })} />
@@ -219,10 +219,10 @@ function General() {
                         }}
                     />
                 </Row>
-                <Row title="Compact automatically" desc="Summarize the conversation when the context window is nearly full.">
+                <Row title="Compact automatically" desc="Summarize when the context window is nearly full.">
                     <Toggle label="Compact automatically" checked={s().autoCompact !== false} onChange={(v) => void update({ autoCompact: v })} />
                 </Row>
-                <Row title="Messages sent while working" desc={`Steer joins the running turn at its next step; queue waits for it to end. Neither one interrupts. ${mod}+Shift+Enter does the other for one message. A model that can't take messages mid-turn always queues.`}>
+                <Row title="Messages sent while working" desc={`${mod}+Shift+Enter does the other for one message.`}>
                     <SelectButton>
                         <select class="select" aria-label="Messages sent while working" value={s().followUpBehavior ?? "steer"} onChange={(e) => void update({ followUpBehavior: e.currentTarget.value as FollowUpMode })}>
                             <option value="steer">Steer the current turn</option>
@@ -232,7 +232,7 @@ function General() {
                 </Row>
                 <Row
                     title="Compact while idle"
-                    desc="Summarize a long conversation (200K tokens or more) just before its prompt cache expires, so coming back costs less and answers sooner. Sending a message cancels it."
+                    desc="Summarize long conversations while you're away, so coming back costs less."
                     // Unset arrives as null over the wire: only a real choice shows Reset.
                     changed={s().idleCompaction === false || s().idleCompaction === "always"}
                     reset={() => void update({ idleCompaction: true })}
@@ -267,7 +267,7 @@ function General() {
                         </select>
                     </SelectButton>
                 </Row>
-                <Row title="Browser" desc="Let agents open pages in a headless Chrome, which you can watch and use too in the side panel.">
+                <Row title="Browser" desc="Let agents use a browser you can watch in the side panel.">
                     <Toggle label="Browser" checked={s().browser !== false} onChange={(v) => void update({ browser: v })} />
                 </Row>
                 <Row title="Expand tool activity" desc="Show every tool call instead of a one-line summary.">
@@ -278,7 +278,7 @@ function General() {
                 </Row>
             </Section>
             <Section title="This computer">
-                <Row title="Open files with" desc="For file links in replies, changed files and tool rows. It opens on the computer running Cavvy.">
+                <Row title="Open files with" desc="For file links in replies, changed files and tool rows.">
                     {/* Each option says whether it's the one chosen: the list arrives after the
                         saved choice, and a select's value set before its options matches nothing. */}
                     <SelectButton>
@@ -312,7 +312,7 @@ function General() {
                 busy={enablingBypass()}
                 onConfirm={enableBypass}
             >
-                Lets sessions run tools without asking for permission. Enable only in a sandbox or container.
+                Sessions will run everything without asking: use it only in a sandbox or container.
             </ConfirmDialog>
         </>
     );
@@ -599,7 +599,7 @@ function ProviderRow(p: { pr: ProviderInfo }) {
                 busy={removingProviders().has(p.pr.id)}
                 onConfirm={remove}
             >
-                {p.pr.agentCli ? `Stops using ${p.pr.name} in Cavvy. It stays signed in.` : `Removes the stored ${p.pr.name} key from Cavvy. You'll need to add it again to use this provider.`}
+                {p.pr.agentCli ? `${p.pr.name} stays signed in.` : `You'll need to add it again to use ${p.pr.name}.`}
             </ConfirmDialog>
             {/* Claude Code and Codex: their row, accounts and menus are in Accounts. */}
             <Show
@@ -726,7 +726,7 @@ function Providers() {
         <>
             <div class="set-group">
                 <div class="keyin">
-                    <input class="input mono" type="password" aria-label="API key" placeholder="Paste any API key; the provider is detected from its format" value={key()} onInput={(e) => setKey(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && void quickAdd()} />
+                    <input class="input mono" type="password" aria-label="API key" placeholder="Paste an API key from any provider" value={key()} onInput={(e) => setKey(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && void quickAdd()} />
                     <button class="btn primary sm" disabled={!key().trim() || busy()} onClick={() => void quickAdd()}>
                         {busy() ? <Spinner size={12} /> : "Add"}
                     </button>
@@ -739,9 +739,9 @@ function Providers() {
                     </Section>
                 )}
             </For>
-            <div class="set-note">Keys are checked with one cheap request, then stored in your OS keychain (or a private file when there's none). They're only ever sent to their own provider and are masked everywhere else.</div>
+            <div class="set-note">Keys stay on this computer and go only to their own provider.</div>
             <div class="set-note">
-                Claude Code and Codex use your own Claude subscription or ChatGPT plan through the CLI installed on this computer; it stays signed in on its own and nothing secret is stored here. Gemini on Google Cloud (Vertex AI) is set up from the terminal with <code>cavvy auth add vertex</code>. Custom OpenAI-compatible endpoints: <code>/login custom</code> in the terminal app.
+                Gemini on Vertex AI: run <code>cavvy auth add vertex</code> in a terminal. Custom OpenAI-compatible endpoints: <code>/login custom</code> in the terminal app.
             </div>
         </>
     );
@@ -787,7 +787,7 @@ function Shortcuts() {
         setCreating(true);
         try {
             const r = await rpc.call("keybindings.create", {});
-            if (r.created) toast(`Created ${r.path}. Edit it in any editor; changes apply when you save.`, "success");
+            if (r.created) toast(`Created ${r.path}`, "success");
         } catch (e) {
             reportError(e);
         } finally {
@@ -807,7 +807,7 @@ function Shortcuts() {
                         <>
                             <span class="mono">{path()}</span>
                             <br />
-                            Same format as Claude Code's <code>keybindings.json</code>, shared with the terminal app. Saved changes apply at once.{" "}
+                            Shared with the terminal app. Saved changes apply at once.{" "}
                             <a href={KEYBINDINGS_DOCS} onClick={(e) => { e.preventDefault(); void openExternal(KEYBINDINGS_DOCS); }}>Format</a>
                         </>
                     }

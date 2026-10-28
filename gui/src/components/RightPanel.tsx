@@ -288,7 +288,7 @@ function AgentsPane(p: { handle: SessionHandle; rows: WorkRow[] }) {
                 <div class="blank">
                     <Bot size={22} class="ic" />
                     <b>No agents yet</b>
-                    Sub-agents, and tasks given to other models, show up here while they run, with what each is doing.
+                    Sub-agents and tasks given to other models show up here.
                 </div>
             }
         >
@@ -308,7 +308,7 @@ function CommandsPane(p: { handle: SessionHandle; rows: WorkRow[] }) {
                 <div class="blank">
                     <Terminal size={22} class="ic" />
                     <b>No background commands</b>
-                    Shells and monitors the agent leaves running show up here, with how long each has run.
+                    Shells and monitors the agent leaves running show up here.
                 </div>
             }
         >

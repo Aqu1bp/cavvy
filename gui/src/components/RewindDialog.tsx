@@ -109,8 +109,7 @@ export function RewindDialog() {
             const r = await rpc.call("session.rewind", { id: sid, index: p.index, planId: p.planId, code, conversation });
             if (conversation && !r.failed.length) handleFor(sid)?.setDraft({ text: r.text, images: r.images, files: r.files });
             for (const f of r.failed) toast(`Couldn't restore ${f.path}: ${f.error}`, "error");
-            const did = code && r.restored.length ? `Restored ${plural(r.restored.length, "file")}${conversation ? " and the conversation" : ""}` : "Rewound the conversation; the prompt is back in the input box";
-            toast(p.backends?.length ? `${did}. What ${names(p.backends)} changed in ${code && r.restored.length ? "other files" : "files"} was left as it is.` : did, "success");
+            toast(code && r.restored.length ? `Restored ${plural(r.restored.length, "file")}${conversation ? " and the conversation" : ""}` : "Rewound the conversation", "success");
             close();
         } catch (e) {
             reportError(e);
@@ -122,9 +121,9 @@ export function RewindDialog() {
     const busySession = () => Boolean(handleFor(id())?.view.state.busy && !handleFor(id())?.view.state.activity?.idle);
     return (
         <Dialog open={rewindOpen()} onClose={close} title="Rewind" subtitle="Go back to before one of your prompts" width={620}>
-            <Show when={!busySession()} fallback={<div class="panel-empty">Wait for the current response to finish (or interrupt it) before rewinding.</div>}>
+            <Show when={!busySession()} fallback={<div class="panel-empty">Wait for the response to finish, or stop it.</div>}>
                 <Show when={targets()} fallback={<Spinner />}>
-                    <Show when={targets()!.length} fallback={<div class="panel-empty">Nothing to rewind to yet. (Prompts from before a compaction can't be rewound to.)</div>}>
+                    <Show when={targets()!.length} fallback={<div class="panel-empty">Nothing to rewind to yet.</div>}>
                         <div class="rw-list">
                             <For each={targets()}>
                                 {(t) => (
@@ -141,19 +140,18 @@ export function RewindDialog() {
                                 <Show when={plan()!.forked}>
                                     <div class="rw-file warn">
                                         <AlertTriangle size={13} />
-                                        <span class="small">This prompt is from before the fork. Files changed before the fork can only be restored from the original session.</span>
+                                        <span class="small">Files changed before the fork can only be restored in the original session.</span>
                                     </div>
                                 </Show>
                                 <Show when={plan()!.backends?.length}>
                                     <div class="rw-file warn">
                                         <AlertTriangle size={13} />
                                         <span class="small">
-                                            {names(plan()!.backends!)} answered since then. Cavvy doesn't track what {plan()!.backends!.length === 1 ? "it changes" : "they change"} in files with {plan()!.backends!.length === 1 ? "its" : "their"} own tools, so rewinding doesn't undo it
-                                            {plan()!.restore.length ? ", except in the files listed below, which go back to how they were then" : ""}. Use git to review or undo the rest (git status, git diff).
+                                            What {names(plan()!.backends!)} changed in files isn't undone{plan()!.restore.length ? ", except in the files below" : ""}. Use git for that.
                                         </span>
                                     </div>
                                 </Show>
-                                <Show when={plan()!.restore.length} fallback={<div class="muted small">{plan()!.forked ? "Cavvy has no tracked file changes to undo since the fork; only the conversation can be restored." : plan()!.tracked ? (plan()!.backends?.length ? "Cavvy itself made no file changes to undo since then." : "No file changes to undo since then.") : "File changes from then weren't tracked; only the conversation can be restored."}</div>}>
+                                <Show when={plan()!.restore.length} fallback={<div class="muted small">{plan()!.forked ? "No file changes to undo since the fork." : plan()!.tracked ? (plan()!.backends?.length ? "Cavvy made no file changes to undo since then." : "No file changes to undo since then.") : "File changes from then can't be undone."}</div>}>
                                     <div class="small">Cavvy changed {plural(plan()!.restore.length, "file")} {plan()!.forked ? "in this session since the fork" : "since then"}:</div>
                                     <For each={plan()!.restore}>
                                         {(r) => (
@@ -177,11 +175,11 @@ export function RewindDialog() {
                                         </div>
                                     )}
                                 </For>
-                                <div class="muted small">Changes made by shell commands aren't tracked and won't be undone.</div>
+                                <div class="muted small">Changes made by shell commands aren't undone.</div>
                                 <Show when={confirming()}>
                                     <div class="rw-confirm">
                                         <AlertTriangle size={14} />
-                                        <span>Files marked “changed outside” were edited after Cavvy last wrote them (by you, another program, or a shell command). Restoring them loses those changes.</span>
+                                        <span>Restoring files marked “changed outside” loses the edits made to them since.</span>
                                         <button class="btn danger sm" onClick={() => void go(confirming()!.code, confirming()!.conversation)}>
                                             Restore anyway
                                         </button>

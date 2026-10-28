@@ -80,7 +80,7 @@ export interface CompareOption {
 }
 
 const MAX_COMPARE = 4;
-const COMPARE_ON = "Each model works in a new worktree from HEAD. Uncommitted changes here aren't carried over.";
+const COMPARE_ON = "Each model gets a new worktree. Uncommitted changes aren't carried over.";
 const COMPARE_OFF = "Send one prompt to 2–4 models, each in a worktree of its own";
 
 export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentRef?: string; compare?: CompareOption }) {
@@ -306,7 +306,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
         const providers = { label: "Set up providers", run: () => (p.setOpen(false), setSettingsTab("providers")) };
         if (app.modelsLoading && !app.models.length) return { text: "Loading models…", icon: "loading" };
         if (q()) return { text: `No models match “${q()}”.`, icon: "search" };
-        if (!groups().length) return { text: "No providers yet. Add an API key or sign in to a CLI.", action: providers };
+        if (!groups().length) return { text: "No providers yet.", action: providers };
         if (filter() === FAVORITES) return { text: "Star a model to keep it here.", icon: "star" };
         if (group()?.status === "error") return { text: group()?.error ?? "Couldn't list this provider's models.", icon: "error", action: { label: "Try again", run: () => void refreshModels(true) } };
         return { text: "No models." };
@@ -695,7 +695,7 @@ export function EffortBars(p: { levels: Effort[]; value?: EffortLevel; onChange:
     );
 }
 
-const FAST_TIP = "Faster service at higher usage/cost. Same model and reasoning effort; account eligibility applies.";
+const FAST_TIP = "Faster replies from the same model, at higher usage or cost.";
 const FAST_BUSY = "Change speed after this response finishes";
 
 /**

@@ -204,7 +204,6 @@ function Compacted(p: { block: CompactBlock }) {
                 <button
                     class="link-btn"
                     aria-expanded={open()}
-                    title={p.block.idle ? "Summarized before the prompt cache expired, so the next message doesn't re-read the whole conversation" : undefined}
                     onClick={() => setOpen(!open())}
                 >
                     {p.block.idle ? "Compacted while idle" : "Conversation compacted"} · {open() ? "hide summary" : "view summary"}

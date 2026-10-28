@@ -39,7 +39,7 @@ export function RunSheet() {
                     <Match when={phase()?.kind === "starting"}>
                         <div class="run-wait">
                             <Spinner size={14} />
-                            <span class="muted">Creating a worktree for each model, one at a time. A big repository takes a while…</span>
+                            <span class="muted">Creating a worktree for each model…</span>
                         </div>
                     </Match>
                     <Match when={phase()?.kind === "confirm"}>
@@ -62,7 +62,7 @@ export function RunSheet() {
                                     <ShieldAlert size={14} />
                                     <span>{t().message}</span>
                                 </div>
-                                <p class="muted small">Nothing has been created yet. Your answer covers every model in this run.</p>
+                                <p class="muted small">Nothing has been created yet.</p>
                                 <div class="dialog-actions">
                                     <span class="grow" />
                                     <button class="btn ghost" onClick={close}>
@@ -127,7 +127,7 @@ export function RunSheet() {
                                         )}
                                     </For>
                                 </ul>
-                                <p class="muted small">Each worktree starts from {basename(s()!.req.path)}'s last commit: uncommitted changes there weren't carried over. Worktrees are kept until you remove them.</p>
+                                <p class="muted small">Each worktree starts from {basename(s()!.req.path)}'s last commit, without its uncommitted changes.</p>
                                 <div class="dialog-actions">
                                     <span class="grow" />
                                     <button class="btn primary" autofocus onClick={close}>

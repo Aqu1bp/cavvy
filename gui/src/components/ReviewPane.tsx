@@ -846,10 +846,10 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     const empty = () => {
         const v = view();
         if (!v) return undefined;
-        if (shownScope() === "cavvy") return v.tracked === false ? "This session isn't saved yet." : "No file changes yet. Edits Cavvy's tools make show up here as a reviewable diff.";
+        if (shownScope() === "cavvy") return v.tracked === false ? "This session isn't saved yet." : "No file changes yet.";
         if (shownScope() === "branch") return `Nothing has changed since ${branchLabel()} left ${git()?.base?.ref ?? "its base"}.`;
         if (shownScope() === "turn" || shownScope() === "last-turn") return git()?.incomplete ? "This turn’s snapshot is incomplete." : "No file changes in this turn.";
-        return "Nothing to commit: the working tree matches the last commit.";
+        return "Nothing to commit.";
     };
     const menu = createMemo(() => viewMenu({ place: place(), turnId: turnId(), repo: !noRepo(), reason: git()?.reason, turns: git()?.turns, busy: p.handle.view.state.busy, branch: git()?.head ? branchLabel() : undefined, base: git()?.base?.ref ?? baseLabel() ?? git()?.defaultBase }));
     /** The branch of the worktree looked at, for the chip and the notice. */
@@ -1019,7 +1019,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                     <div class="rv-slim away selectable" role="status">
                         <FolderGit2 size={14} />
                         <span class="grow">
-                            Reading <b>{awayBranch()}</b>. Comments, Commit and Push stay with this session's folder.
+                            Viewing <b>{awayBranch()}</b>, read-only.
                         </span>
                         <button class="link-btn" onClick={() => chooseWorktree(undefined)}>
                             Back to this session

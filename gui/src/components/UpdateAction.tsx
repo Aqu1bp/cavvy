@@ -30,7 +30,7 @@ export function createUpdateAction() {
     };
     const Confirm = () => (
         <ConfirmDialog open={asking() > 0} title="Update Cavvy now?" confirmLabel="Update" onClose={() => setAsking(0)} onConfirm={start}>
-            {asking() === 1 ? "A session is" : `${asking()} sessions are`} working. Cavvy restarts once the update is built, which stops whatever is still running then.
+            {asking() === 1 ? "A session is" : `${asking()} sessions are`} working, and the restart stops whatever is still running.
         </ConfirmDialog>
     );
     return { request, pending, Confirm };

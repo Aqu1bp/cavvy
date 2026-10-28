@@ -63,9 +63,9 @@ function ArchiveWorktree(p: { id: string; title: string; offer: NonNullable<Retu
     };
 
     return (
-        <Dialog open onClose={close} title="Archive session" width={520}>
+        <Dialog open onClose={close} title="Archive this session?" subtitle={`“${p.title}”`} width={520}>
             <p class="wt-confirm">
-                Archive “{p.title}”? It works in worktree <span class="mono">{tildify(w.path, app.hello?.homeDir)}</span>
+                It works in worktree <span class="mono">{tildify(w.path, app.hello?.homeDir)}</span>
                 <Show when={w.branch}>
                     {" "}on branch <span class="mono">{w.branch}</span>
                 </Show>
@@ -78,8 +78,8 @@ function ArchiveWorktree(p: { id: string; title: string; offer: NonNullable<Retu
                 </div>
             </Show>
             <p class="muted small">
-                The branch is always kept. Undo brings the session back, but not a removed worktree.
-                <Show when={p.offer.removable}> Git refuses removal if the worktree has uncommitted or untracked changes; then it's kept, and the session is still archived.</Show>
+                The branch is kept.
+                <Show when={p.offer.removable}> Removing the worktree can't be undone; one with uncommitted changes is kept.</Show>
             </p>
             <Show when={ignored()}>{(i) => <IgnoredFiles names={i().names} total={i().total} />}</Show>
             <Show when={error()}>

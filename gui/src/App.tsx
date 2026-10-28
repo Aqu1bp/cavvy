@@ -58,7 +58,7 @@ function Disconnected() {
                     <Logo size={44} />
                     <h2>Open Cavvy from your terminal</h2>
                     <p class="muted">
-                        Run <code>cavvy gui</code> and use the link it opens or prints. Links work once, so this page can't reconnect on its own.
+                        Run <code>cavvy gui</code> and use the link it opens or prints.
                     </p>
                 </Match>
                 <Match when={app.conn === "unavailable"}>

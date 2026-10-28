@@ -61,7 +61,7 @@ const tick = () => Bun.sleep(0);
 test("dashboard: the total, its split by source, a stacked chart, token types and an accessible table", async () => {
     const f = mount();
     try {
-        expect(f.text()).toContain("Reading local usage transcripts");
+        expect(f.text()).toContain("Loading usage…");
         await tick();
         expect(f.text()).toContain("at API prices");
         for (const part of ["In the last", "7 days", "across", "1 session"]) expect(f.text()).toContain(part);
@@ -147,9 +147,9 @@ test("empty state differs from partial/unknown usage; limits displays windows an
         await tick(); expect(g.text()).toContain("—");
         expect(g.text()).toContain("No price is known for");
         expect(g.text()).toContain("No price");
-        expect(g.text()).toContain("Unpriced usage is excluded from cost, cost shares, and cost charts. The Tokens view includes it.");
+        expect(g.text()).toContain("Costs leave out unpriced usage; the Tokens view includes it.");
         g.segment("Usage view").onChange("tokens"); await tick();
-        expect(g.text()).toContain("The Tokens view includes it.");
+        expect(g.text()).toContain("the Tokens view includes it.");
         expect(g.text()).toContain("430 tokens");
     }
     finally { g.dispose(); }

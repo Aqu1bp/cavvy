@@ -67,7 +67,7 @@ test("Home lists the three newest sessions not yet in Cavvy, each with its mark,
     const [first, second] = r.rows();
     expect(text(byClass(first, "span", "cli-meta"))).toBe("Claude Code · 5+ messages · Opus 5.5 · Still open in a terminal");
     // Still open: the warning keeps saying why, in its tooltip.
-    expect(byClass(first, "span", "cli-live")[0]!.props.title).toBe("This session may still be open in a terminal; using it in both places at once mixes the two.");
+    expect(byClass(first, "span", "cli-live")[0]!.props.title).toBe("Using it here and in the terminal at once mixes the two.");
     expect(text(byClass(second, "span", "cli-meta"))).toBe("Codex · 1 message · GPT-6");
     expect(text(byClass(first, "span", "cli-ago"))).toBe("6m ago");
     expect(text(byClass(first, "span", "cli-go"))).toBe("Import");
@@ -149,7 +149,7 @@ test("Show all lists every one to import, then those already in Cavvy (Open), an
     const dialog = elements(r.tree, "Dialog")[0]!;
     expect(dialog.props.title).toBe("Continue from your terminal");
     const body = text(dialog.children);
-    expect(body).toStartWith("Claude Code and Codex sessions started in cavvy. Importing one opens it here on the same session.");
+    expect(body).toStartWith("Claude Code and Codex sessions started in cavvy.");
     const items = byClass(dialog, "button", "cl-item");
     expect(items.map((i) => text(byClass(i, "span", "cl-act")))).toEqual(["Import", "Import", "Open"]);
     expect(text(items[0]!)).toContain("Session b");
@@ -290,7 +290,7 @@ test("with no model the connect card offers the user's own plan and a key, and t
     expect(h.composer.props.placeholder).toBe("Connect a model to start");
     const card = byClass(h.tree, "div", "connect")[0]!;
     expect(text(byClass(card, "span", "ask-title"))).toBe("Connect a model to start");
-    expect(text(elements(card, "p"))).toStartWith("Use the Claude subscription you already have through Claude Code, or add an API key");
+    expect(text(elements(card, "p"))).toStartWith("Use the Claude subscription you already have through Claude Code, add an API key");
     const [key, plan] = elements(card, "button");
     expect(text(key)).toBe("Add an API key");
     expect(text(plan)).toBe("Use my Claude subscription");

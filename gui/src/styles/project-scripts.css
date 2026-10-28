@@ -52,6 +52,7 @@
 
 .scripts-note {
     white-space: normal;
+    text-wrap: balance;
     line-height: 1.45;
     padding: calc(4 * var(--sp)) calc(8 * var(--sp)) calc(8 * var(--sp));
 }

@@ -149,7 +149,7 @@ export function McpDialog() {
             return () => {
                 setList(r.list);
                 setFull(undefined);
-                if (!r.approved) toast(`What ${s.label} runs changed since it was shown. Nothing was approved: look at it again.`, "warn");
+                if (!r.approved) toast(`Not approved: ${s.label} changed. Review it again.`, "warn");
             };
         });
     const change = (method: "session.mcpReject" | "session.mcpRevoke" | "session.mcpReconnect" | "session.mcpSignOut", s: McpServerInfo) =>
@@ -176,7 +176,7 @@ export function McpDialog() {
                 }
                 return () => {
                     setSignInLink({ name: s.name, url });
-                    toast(`Finish signing in to ${s.label} in your browser.`);
+                    toast(`Sign in to ${s.label} in your browser.`);
                 };
             } catch (e) {
                 win?.close();
@@ -202,14 +202,14 @@ export function McpDialog() {
                 <Show when={!list()!.trusted}>
                     <div class="mcp-note">
                         <AlertTriangle size={13} />
-                        <span>This folder isn't trusted, so its .mcp.json isn't read: none of its servers start or can be approved.</span>
+                        <span>This folder isn't trusted, so its .mcp.json servers are off.</span>
                     </div>
                 </Show>
                 <Show
                     when={servers().length}
                     fallback={
                         <div class="panel-empty">
-                            No MCP servers for this folder. Add one with <code>cavvy mcp add</code>, or in a project <code>.mcp.json</code>.
+                            No MCP servers. Add one with <code>cavvy mcp add</code> or in <code>.mcp.json</code>.
                         </div>
                     }
                 >
@@ -269,9 +269,9 @@ function Detail(p: DetailProps) {
                         <ShieldAlert size={18} class="tone-warn" />
                         <b class="truncate">Allow {p.s.label} to run?</b>
                     </div>
-                    <div class="small">MCP servers run with your user permissions. Only approve servers you trust.</div>
+                    <div class="small">MCP servers run with your permissions: approve only ones you trust.</div>
                     <Show when={p.s.approval?.state === "rejected"}>
-                        <div class="muted small">You rejected this server. Approving it starts it.</div>
+                        <div class="muted small">You rejected this server.</div>
                     </Show>
                     <Show when={p.s.why}>
                         <div class="mcp-note warn">
@@ -280,20 +280,17 @@ function Detail(p: DetailProps) {
                         </div>
                     </Show>
                     <Facts s={p.s} />
-                    <div class="muted small">
-                        The approval is for this folder, saved in its local settings (<span class="mono">{tildify(p.list.savedIn, app.hello?.homeDir)}</span>). If what it runs changes, it asks again.
-                    </div>
                     <Notes s={p.s} />
                     <div class="muted small">{p.list.meaning}</div>
                     <Show when={p.s.disabledInFile}>
                         <div class="mcp-note">
-                            <span>It's turned off in .mcp.json ("disabled": true), so it can't be approved from here.</span>
+                            <span>It's turned off in .mcp.json.</span>
                         </div>
                     </Show>
                     <Show when={p.list.trusted && !p.list.userTrusted}>
                         <div class="mcp-note warn">
                             <AlertTriangle size={13} />
-                            <span>You haven't trusted this folder yourself: Cavvy trusted it for this session only, because it had nothing to protect when it was opened. Trust it to approve its servers.</span>
+                            <span>Trust this folder to approve its servers.</span>
                         </div>
                     </Show>
                     <div class="dialog-actions">
@@ -334,7 +331,7 @@ function Info(p: DetailProps) {
             <Show when={needsAuth()}>
                 <div class="mcp-note warn" role="status">
                     <KeyRound size={13} />
-                    <span>This server needs you to sign in. Sign in opens its sign-in page in your browser; it connects once you're done.</span>
+                    <span>This server needs you to sign in.</span>
                 </div>
                 <Show when={p.signInLink}>
                     <div class="muted small">
@@ -349,16 +346,16 @@ function Info(p: DetailProps) {
                 <div class="mcp-error mono small">{p.s.error}</div>
             </Show>
             <Show when={p.s.approval?.viaAll}>
-                <div class="muted small">Approved for every .mcp.json server by enableAllProjectMcpServers in your settings, including changes to what they run.</div>
+                <div class="muted small">Your settings approve every .mcp.json server, whatever it runs.</div>
             </Show>
             <Show when={p.s.disabledInFile}>
-                <div class="muted small">Turned off in .mcp.json ("disabled": true).</div>
+                <div class="muted small">Turned off in .mcp.json.</div>
             </Show>
             <Notes s={p.s} />
             <Show when={approved() || reconnectable() || needsAuth() || p.s.signedIn}>
                 <div class="dialog-actions">
                     <Show when={p.s.signedIn}>
-                        <button class="btn ghost" disabled={p.busy} title="Forgets the stored sign-in; it asks you to sign in again" onClick={() => p.signOut(p.s)}>
+                        <button class="btn ghost" disabled={p.busy} onClick={() => p.signOut(p.s)}>
                             Sign out
                         </button>
                     </Show>

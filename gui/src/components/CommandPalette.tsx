@@ -250,7 +250,7 @@ export function CommandPalette() {
                 <kbd>Esc</kbd>
             </div>
             <div class="pal-list" ref={list}>
-                <For each={results()} fallback={<div class="pal-empty">{older() === "more" ? "Searching older sessions…" : older() === "incomplete" ? "Nothing found in the sessions searched so far; older ones weren't all read." : searching() ? "Searching messages…" : "Nothing matches."}</div>}>
+                <For each={results()} fallback={<div class="pal-empty">{older() === "more" ? "Searching older sessions…" : older() === "incomplete" ? "Nothing found. Some older sessions weren't searched." : searching() ? "Searching messages…" : "Nothing matches."}</div>}>
                     {(e, i) => (
                         <>
                             <Show when={i() === 0 || results()[i() - 1]!.section !== e.section}>
@@ -281,7 +281,7 @@ export function CommandPalette() {
                     )}
                 </For>
                 <Show when={results().length && older()}>
-                    <div class="pal-note">{older() === "more" ? "Searching older sessions…" : "Older sessions weren't all read; results may be incomplete."}</div>
+                    <div class="pal-note">{older() === "more" ? "Searching older sessions…" : "Some older sessions weren't searched."}</div>
                 </Show>
             </div>
         </Dialog>

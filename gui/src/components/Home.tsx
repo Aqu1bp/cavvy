@@ -197,7 +197,7 @@ export function Home() {
                             <p>
                                 <b>{basename(app.homeCwd ?? "")}</b> has settings (
                                 <For each={needsTrust()}>{(f, i) => <>{i() ? ", " : ""}<code>{f}</code></>}</For>
-                                ) that can add hooks, MCP servers and permission rules: they can run commands on this computer. Until you trust it, Cavvy ignores them.
+                                ) that can run commands on this computer.
                             </p>
                             <div class="ask-row">
                                 <button class="pbtn" onClick={async () => { await trustAndContinue(app.homeCwd!, false); void refetch(); }}>
@@ -218,11 +218,11 @@ export function Home() {
                             </div>
                             <p>
                                 {clis().length === 1
-                                    ? `Use the ${clis()[0]!.agentCli!.plan} you already have through ${clis()[0]!.name}, or add`
+                                    ? `Use the ${clis()[0]!.agentCli!.plan} you already have through ${clis()[0]!.name}, add`
                                     : clis().length
-                                      ? `Use a plan you already have through ${clis().map((pr) => pr.name).join(" or ")}, or add`
+                                      ? `Use a plan you already have through ${clis().map((pr) => pr.name).join(" or ")}, add`
                                       : "Add"}{" "}
-                                an API key from Anthropic, OpenAI, OpenRouter and others, or start Ollama or LM Studio on this computer. Keys stay in your keychain and go only to their own provider.
+                                an API key, or start Ollama or LM Studio on this computer.
                             </p>
                             <div class="ask-row">
                                 <button class={`pbtn ${clis().length ? "" : "primary"}`} onClick={() => setSettingsTab("providers")}>
@@ -250,7 +250,7 @@ export function Home() {
                         autofocus
                         strip={strip}
                         onText={(t) => setTyped(Boolean(t))}
-                        compare={info()?.git ? { available: true } : { available: false, why: app.homeCwd ? "Comparing models needs a Git repository: each model works in a worktree of its own." : "Choose a project folder first." }}
+                        compare={info()?.git ? { available: true } : { available: false, why: app.homeCwd ? "Comparing models needs a Git repository." : "Choose a project folder first." }}
                         placeholder={!app.homeCwd ? "Choose a project folder to start" : noModel() ? "Connect a model to start" : "Describe a task or ask a question"}
                     />
                 </div>

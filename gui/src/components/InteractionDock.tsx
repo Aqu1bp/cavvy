@@ -513,7 +513,7 @@ function PlanCard(p: { sessionId: string; it: PlanInteraction }) {
                 <button
                     class="pbtn quiet"
                     disabled={!info()?.git}
-                    title={info()?.notGit ?? "Build it in a new Git worktree, in a new session; this one stops, still in plan mode"}
+                    title={info()?.notGit ?? "Implement in a new worktree; this session stops, still in plan mode"}
                     onClick={worktree}
                 >
                     <FolderGit2 size={13} /> New worktree… <kbd>5</kbd>
