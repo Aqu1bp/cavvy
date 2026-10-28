@@ -62,12 +62,21 @@ export async function checkModelPicker(root: HTMLElement) {
     const row = (name: string) => rows().find((r) => r.querySelector(".mr-name")?.textContent === name)!;
     // A filter by its name, after its mark (a provider without one has a monogram: "MO" for Mock).
     const filter = (name: string) => inPanel(".mp-filters [role='tab']").find((t) => t.lastElementChild?.textContent === name)!;
-    // A subscription's accounts in the heading, each by its name (and a plan near its limit); + adds one.
-    const pills = () => inPanel<HTMLButtonElement>(".mp-h .mp-acs .mp-ac");
+    // A subscription's account in the heading: one button naming the session's, which opens a short list of them (each
+    // by its name, and a plan near its limit), then "Add account".
+    const acctButton = () => panel()?.querySelector<HTMLButtonElement>(".mp-h .mp-acct-btn");
+    const list = () => panel()?.querySelector<HTMLElement>(".mp-h .mp-acct-menu");
     const named = (b: Element) => b.querySelector(".truncate")?.textContent;
-    const pill = (name: string) => pills().find((b) => named(b) === name)!;
-    const pressed = () => pills().filter((b) => b.getAttribute("aria-pressed") === "true").map(named).join();
-    const add = () => panel()?.querySelector<HTMLButtonElement>(".mp-h .mp-ac.add");
+    const items = () => inPanel<HTMLButtonElement>(".mp-acct-menu [role='menuitemradio']");
+    const item = (name: string) => items().find((b) => named(b) === name)!;
+    const checked = () => items().filter((b) => b.getAttribute("aria-checked") === "true").map(named).join();
+    const add = () => panel()?.querySelector<HTMLButtonElement>(".mp-acct-menu [role='menuitem']");
+    /** Opens the list from its button, as Enter on it does (a click from the keyboard: focus goes into the list). */
+    const openList = async () => {
+        if (!list()) acctButton()!.click();
+        await settle();
+        check(list(), "the list of accounts opens from its button");
+    };
     const key = (key: string, target: Element = document.activeElement!, init: KeyboardEventInit = {}) => target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init }));
     const bg = (el: Element) => getComputedStyle(el).backgroundColor;
     /** Closes the picker, lets its closing copy go, and opens it again, as a click on the model button does. */
@@ -144,39 +153,59 @@ export async function checkModelPicker(root: HTMLElement) {
         filterCurrent.click();
         await settle();
 
-        // Several accounts: pills in the provider's heading, the session's one pressed and filled, the others a click away.
-        check(pills().map(named).join() === "Personal,Work,Lab" && pill("Work").closest("[role='group']")?.getAttribute("aria-label") === "Claude Code account", `the heading has the accounts (${pills().map(named).join()})`);
-        check(pressed() === "Work" && pill("Work").classList.contains("on") && bg(pill("Work")) !== bg(pill("Lab")), `the session's account is pressed and filled (${pressed()})`);
-        check(pill("Personal").title.includes("me@example.test") && pill("Lab").title.includes("Not signed in"), `accounts say who they are and what's wrong (${pill("Personal").title}; ${pill("Lab").title})`);
+        // Several accounts: the heading names the session's; its list has them all, that one checked, then Add account.
+        check(named(acctButton()!) === "Work" && acctButton()!.getAttribute("aria-haspopup") === "menu" && acctButton()!.getAttribute("aria-expanded") === "false" && !list(), `the heading names the session's account, its list closed (${acctButton()?.textContent})`);
+        await openList();
+        check(items().map(named).join() === "Personal,Work,Lab" && list()!.getAttribute("aria-label") === "Claude Code account", `the list has the accounts (${items().map(named).join()})`);
+        check(checked() === "Work" && item("Work").querySelector(".mp-acct-ck svg") && !item("Lab").querySelector(".mp-acct-ck svg"), `the session's account is checked (${checked()})`);
+        check(acctButton()!.getAttribute("aria-expanded") === "true" && named(add()!) === "Add account", `Add account comes last (${add()?.textContent})`);
+        check(item("Personal").title.includes("me@example.test") && item("Lab").title.includes("Not signed in"), `accounts say who they are and what's wrong (${item("Personal").title}; ${item("Lab").title})`);
 
-        // Switching calls setAccount (on Home: the provider's default), and the heading follows.
-        pill("Personal").click();
-        await until(() => pressed() === "Personal", "the switched account pressed in the heading");
+        // Keys: opened from the keyboard, the list starts on the session's account; ↓, ↑, Home and End move through it, and
+        // Escape closes the list (not the picker), back on its button, where ↓ opens it again.
+        check(document.activeElement === item("Work"), `the list starts on the session's account (focus: ${document.activeElement?.outerHTML.slice(0, 80)})`);
+        key("ArrowDown");
+        check(document.activeElement === item("Lab"), "↓ moves down the list");
+        key("ArrowDown");
+        check(document.activeElement === add(), "and on to Add account");
+        key("Home");
+        check(document.activeElement === item("Personal"), "Home goes to the first account");
+        key("End");
+        check(document.activeElement === add(), "End to Add account");
+        key("Escape");
+        await settle();
+        check(!list() && document.activeElement === acctButton() && panel() && open(), `Escape closes the list, not the picker, and focus is back on its button (focus: ${document.activeElement?.outerHTML.slice(0, 80)})`);
+        key("ArrowDown");
+        check(list() && document.activeElement === item("Work"), "↓ on the button opens the list again");
+
+        // Picking one switches the account (on Home: the provider's default): the list closes, and the heading follows.
+        item("Personal").click();
+        await until(() => named(acctButton()!) === "Personal" && !list(), "the switched account in the heading");
         check(calls.some(([m, p]) => m === "accounts.setDefault" && p.provider === "claude-code" && p.id === "default"), "switching sets the account");
         check(panel() && open(), "the picker stays open after switching");
 
-        // A removed account: the picker opens on the accounts, none pressed, and a note asks for another.
+        // A removed account: the picker opens on the list of accounts, none checked, and a note asks for another.
         preferred = "gone";
         setApp("providers", providers());
         await reopen("on the accounts");
-        check(document.activeElement === pill("Personal"), `the picker opens on the accounts (focus: ${document.activeElement?.outerHTML.slice(0, 80)})`);
+        check(list() && document.activeElement === item("Personal"), `the picker opens on the list of accounts (focus: ${document.activeElement?.outerHTML.slice(0, 80)})`);
         check(panel()!.querySelector(".mp-acct-note")?.textContent?.includes("removed"), "the note explains");
-        check(pressed() === "", "no account is pressed");
+        check(checked() === "" && named(acctButton()!) === "Choose account" && acctButton()!.classList.contains("missing"), `no account is checked, and the heading asks for one (${checked()}; ${acctButton()?.textContent})`);
         check(trigger.textContent?.includes("Removed account"), "the model button says the account was removed");
         calls.length = 0;
-        pill("Work").click();
+        item("Work").click();
         await until(() => calls.some(([m, p]) => m === "accounts.setDefault" && p.id === "work"), "choosing another account");
         // The switch refreshes the providers; let that land before changing them here.
-        await until(() => pressed() === "Work" && !panel()!.querySelector(".mp-acct-note"), "the chosen account in the heading");
+        await until(() => named(acctButton()!) === "Work" && !panel()!.querySelector(".mp-acct-note"), "the chosen account in the heading");
 
-        // One account: shown by its name, with + beside it.
+        // One account: the heading names it, and its list is it and Add account.
         accounts = [account("default", "Default", { email: "me@example.test" })];
         preferred = "default";
         setApp("providers", providers());
         await settle();
-        const lone = panel()!.querySelector<HTMLElement>(".mp-h .mp-acct1");
-        check(lone?.textContent === "Default" && lone.title.includes("me@example.test") && !pills().length, "a lone account goes by its name");
-        check(add()?.getAttribute("aria-label") === "Add a Claude Code account", "with + beside it");
+        check(named(acctButton()!) === "Default" && acctButton()!.title.includes("me@example.test"), `a lone account goes by its name (${acctButton()?.textContent}; ${acctButton()?.title})`);
+        await openList();
+        check(items().map(named).join() === "Default" && checked() === "Default" && add(), `its list is it and Add account (${list()?.textContent})`);
 
         // Add account: to Settings → Providers, with that provider's new-account form asked for.
         add()!.click();
@@ -192,8 +221,8 @@ export async function checkModelPicker(root: HTMLElement) {
         setSettingsTab(undefined);
         setAddAccountFor(undefined);
 
-        // Many accounts (the server allows 20): the pills stay inside the picker, which clips what overflows their row.
-        // Every account can be scrolled to and clicked, + is always in view, and the keys scroll.
+        // Many accounts (the server allows 20): the list stays inside the picker and scrolls. It opens on the session's
+        // account, the last, in view; every account can be scrolled to and clicked, and so can Add account.
         const inside = (el: Element, box: DOMRect) => {
             const r = el.getBoundingClientRect();
             return r.top >= box.top - 0.5 && r.bottom <= box.bottom + 0.5 && r.left >= box.left - 0.5 && r.right <= box.right + 0.5;
@@ -202,41 +231,38 @@ export async function checkModelPicker(root: HTMLElement) {
             const r = el.getBoundingClientRect();
             return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.closest("button") === el;
         };
-        // The accounts' row, and the part of it in view.
-        const strip = () => panel()?.querySelector<HTMLElement>(".mp-acs");
-        const shown = () => strip()!.getBoundingClientRect();
+        // The part of the list in view.
+        const shown = () => list()!.getBoundingClientRect();
         for (const n of [8, 20]) {
             accounts = Array.from({ length: n }, (_, i) => account(i ? `a${i}` : "default", `Account ${i + 1}`, { email: `person${i + 1}@example.test`, plan: "max" }));
             preferred = `a${n - 1}`;
             setApp("providers", providers());
             await reopen(`with ${n} accounts`);
+            await openList();
             const box = panel()!.getBoundingClientRect();
-            check(pills().length === n && inside(strip()!, box), `the ${n} accounts stay inside the picker (${JSON.stringify(shown())} in ${JSON.stringify(box)})`);
-            check(inside(add()!, box) && hit(add()!), `+ is in view and clickable with ${n} accounts`);
-            for (const b of pills()) {
+            check(items().length === n && inside(list()!, box), `the list of ${n} stays inside the picker (${JSON.stringify(shown())} in ${JSON.stringify(box)})`);
+            const last = item(`Account ${n}`);
+            check(document.activeElement === last && inside(last, shown()) && hit(last), `the list opens on the session's account, the last of ${n}, in view (${JSON.stringify(last.getBoundingClientRect())} in ${JSON.stringify(shown())})`);
+            for (const b of [...items(), add()!]) {
                 b.scrollIntoView({ block: "nearest", inline: "nearest" });
                 check(inside(b, shown()) && hit(b), `${named(b)} can be scrolled to and clicked (of ${n})`);
             }
-            check(inside(add()!, box) && hit(add()!), `+ stays put while the accounts scroll (${n})`);
-            // Keys: Tab onto the first account brings it into view; Shift+Tab from + reaches the last, and Tab goes back.
-            filter("Mock").focus();
-            key("Tab");
-            check(document.activeElement === pill("Account 1") && inside(pill("Account 1"), shown()) && hit(pill("Account 1")), `Tab scrolls to the first of ${n}`);
-            add()!.focus();
-            key("Tab", undefined, { shiftKey: true });
-            check(document.activeElement === pill(`Account ${n}`) && inside(pill(`Account ${n}`), shown()) && hit(pill(`Account ${n}`)), `Shift+Tab from + scrolls to the last of ${n}`);
-            key("Tab");
-            check(document.activeElement === add() && hit(add()!), `Tab reaches + (${n})`);
+            // Keys scroll it too: Home to the first account, End to Add account.
+            last.focus();
+            key("Home");
+            check(document.activeElement === item("Account 1") && inside(item("Account 1"), shown()) && hit(item("Account 1")), `Home scrolls to the first of ${n}`);
+            key("End");
+            check(document.activeElement === add() && inside(add()!, shown()) && hit(add()!), `End scrolls to Add account (${n})`);
         }
-        // Opening on many: the session's account, the last of 20, is the one in view.
+        // A search takes the heading's account away (and closes its list); clearing it brings it back, naming the session's.
         await reopen("with 20 accounts again");
-        check(pressed() === "Account 20" && inside(pill("Account 20"), shown()) && hit(pill("Account 20")), `the picker opens with the session's account, the last of 20, in view (row ${JSON.stringify(shown())}, account ${JSON.stringify(pill("Account 20").getBoundingClientRect())}, scrolled ${strip()!.scrollLeft} of ${strip()!.scrollWidth - strip()!.clientWidth})`);
-        // A search takes the heading away, and clearing it builds the row of accounts again: the session's is still in view.
+        await openList();
         type("haiku");
         await settle();
+        check(!acctButton() && !list(), "a search takes the heading's account away");
         type("");
         await settle();
-        check(inside(pill("Account 20"), shown()) && hit(pill("Account 20")), `a cleared search leaves the session's account, the last of 20, in view (scrolled ${strip()!.scrollLeft} of ${strip()!.scrollWidth - strip()!.clientWidth})`);
+        check(named(acctButton()!) === "Account 20" && !list(), `a cleared search brings it back, naming the session's account, its list closed (${acctButton()?.textContent})`);
     } finally {
         if (motion === undefined) delete document.documentElement.dataset.motion;
         else document.documentElement.dataset.motion = motion;
