@@ -1,22 +1,17 @@
 // Local transcript history and the existing per-account plan limit reports.
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js";
-import { Info, KeyRound, RotateCcw } from "lucide-solid";
+import { Hourglass, Info, KeyRound, RotateCcw } from "lucide-solid";
 import { planLimitKey, type UsageBucket, type UsageDays, type UsageSource, type UsageSummary, type UsageTotals } from "@shared/protocol";
 import { app, refreshLimits, rpc } from "../state/app";
 import { now } from "../lib/clock";
 import { plural, tokens } from "../lib/format";
-import { costText, emptyText, meterOf, rangeLabel, usd } from "../lib/limits";
+import { costText, emptyText, liftsAt, meterOf, rangeLabel, usd, windowCaption } from "../lib/limits";
 import { axisTicks, byAccount, niceTop, pct, periodLabel, periodName, processed, share, sourceOf, SOURCES, type AccountTotal } from "../lib/usage";
 import { Segmented, Spinner } from "./ui/bits";
 import { ProviderIcon } from "./ui/ProviderIcon";
 const RANGES = [1, 7, 30, 90].map(v => ({ value: String(v), label: v === 1 ? "24h" : `${v}d` }));
 const VIEWS = [{ value: "cost", label: "Cost" }, { value: "tokens", label: "Tokens" }, { value: "limits", label: "Limits" }];
 const [days, setDays] = createSignal<UsageDays>(7);
-
-/** "40%, resets 4:40 PM": the bar's caption (the window's name is beside it). */
-function windowCaption(w: { pct?: number; reached: boolean; resets?: string }): string {
-    return [w.pct !== undefined ? `${w.pct}%` : "Not reported", w.reached ? "reached" : undefined].filter(Boolean).join(" ") + (w.resets ? `, resets ${w.resets}` : "");
-}
 
 /** Each plan as a heading (its mark, plan and account), then a bar per limit window. */
 function PlanLimitsGroup() {
@@ -37,7 +32,11 @@ function PlanLimitsGroup() {
                         </h3>
                         <div class={`set-group usage-plan ${m!.reached ? "reached" : ""}`}>
                             <Show when={m!.reached}>
-                                <div class="plan-reached">{m!.usingCredits ? "Limit reached · using credits" : "Limit reached"}{m!.resets ? `. Resets ${m!.resets}.` : "."}</div>
+                                <div class={`plan-reached ${m!.usingCredits ? "credits" : ""}`}>
+                                    <Hourglass size={14} aria-hidden="true" />
+                                    <span>{m!.usingCredits ? "Limit reached · using credits" : "Limit reached"}</span>
+                                    <Show when={liftsAt(m!)}>{(at) => <span class="plan-reached-when">· resets {at()}</span>}</Show>
+                                </div>
                             </Show>
                             <For each={m!.windows}>
                                 {(w) => (

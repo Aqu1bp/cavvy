@@ -3,7 +3,7 @@
 
 import { expect, test } from "bun:test";
 import { fromWireLimits, wireReplacer } from "../src/server/timeline";
-import { meterOf, windowLine } from "../gui/src/lib/limits";
+import { liftsAt, meterOf, windowCaption, windowLine } from "../gui/src/lib/limits";
 import type { PlanLimits } from "../src/server/protocol";
 
 const now = Date.UTC(2026, 9, 28, 9, 0);
@@ -30,4 +30,23 @@ test("a window with no reset time isn't taken for one that has reset (which read
     const meter = meterOf(fromWireLimits(overWire(limits)), now)!;
     expect(meter.asOf).toBeUndefined();
     expect(windowLine(meter.windows[0]!)).toBe("5-hour 40%");
+});
+
+test("Usage's caption for a window: its percentage, or Reached when it's reached and wasn't given one", () => {
+    expect(windowCaption({ pct: 100, reached: true, resets: "3:40 PM, in 1h 6m" })).toBe("100% reached, resets 3:40 PM, in 1h 6m");
+    expect(windowCaption({ pct: 38, reached: false, resets: "Fri" })).toBe("38%, resets Fri");
+    expect(windowCaption({ reached: true, resets: "3:40 PM, in 1h 6m" })).toBe("Reached, resets 3:40 PM, in 1h 6m");
+    expect(windowCaption({ reached: false })).toBe("Not reported");
+});
+
+test("a reached plan's summary says when it lifts, unless its one reached window already does", () => {
+    const at = "3:40 PM, in 1h 6m";
+    const fiveHour = { label: "5-hour", pct: 100, reached: true, resets: at };
+    const weekly = { label: "Weekly", pct: 38, reached: false, resets: "Fri" };
+    expect(liftsAt({ resets: at, windows: [fiveHour, weekly] })).toBeUndefined();
+    // Two reached: the plan lifts with the later one, which the summary says.
+    expect(liftsAt({ resets: "Fri 9:00 AM, in 2d", windows: [fiveHour, { ...weekly, pct: 100, reached: true, resets: "Fri 9:00 AM, in 2d" }] })).toBe("Fri 9:00 AM, in 2d");
+    // Reached with no window to show it (credits, say).
+    expect(liftsAt({ resets: at, windows: [weekly] })).toBe(at);
+    expect(liftsAt({ resets: undefined, windows: [fiveHour] })).toBeUndefined();
 });

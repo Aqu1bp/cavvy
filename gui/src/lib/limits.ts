@@ -85,6 +85,19 @@ export function windowLine(w: MeterWindow): string {
     return [w.label, w.pct !== undefined ? `${w.pct}%` : undefined, w.reached ? "reached" : undefined].filter(Boolean).join(" ") + (w.resets ? ` · resets ${w.resets}` : "");
 }
 
+/** "40%, resets 4:40 PM": a window's bar caption in Usage (its name is beside it). Reached with no percentage: "Reached". */
+export function windowCaption(w: Pick<MeterWindow, "pct" | "reached" | "resets">): string {
+    const head = w.pct !== undefined ? `${w.pct}%${w.reached ? " reached" : ""}` : w.reached ? "Reached" : "Not reported";
+    return head + (w.resets ? `, resets ${w.resets}` : "");
+}
+
+/** When a reached plan lifts, for its summary: not when the one window that's reached says it already. */
+export function liftsAt(m: Pick<Meter, "resets" | "windows">): string | undefined {
+    if (!m.resets) return undefined;
+    const reached = m.windows.filter((w) => w.reached);
+    return reached.length === 1 && reached[0]!.resets === m.resets ? undefined : m.resets;
+}
+
 /** Only a fresh CLI status can offer a usable alternative; no identity enters the transcript. */
 export function limitAlternatives(accounts: AccountInfo[], accountId: string): AccountInfo[] {
     return accounts.filter((a) => a.id !== accountId && a.signedIn === true);

@@ -1830,21 +1830,6 @@
     color: var(--fg-3);
 }
 
-.plan-reached {
-    margin: calc(4 * var(--sp)) 0 calc(6 * var(--sp));
-    padding: calc(6 * var(--sp)) calc(9 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    background: color-mix(in srgb, var(--danger) 11%, transparent);
-    font-size: 0.857rem;
-    font-weight: 500;
-    color: var(--danger);
-}
-
-.plan-reached.credits {
-    background: var(--warn-bg);
-    color: var(--warn);
-}
-
 .plan-account-hint {
     font-size: 0.786rem;
     color: var(--fg-3);
@@ -2125,12 +2110,14 @@
     box-shadow: 0 0 0 1.5px var(--ctl-strong);
 }
 
-/* A list's heading: the provider, a note on its list, and a subscription's accounts. */
+/* A list's heading: the provider, a note on its list, and a subscription's accounts. Where the accounts don't fit
+   beside the name, whole, they go on a line of their own (rather than cutting the name, or the first of them). */
 .mp-h {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     flex: none;
-    gap: calc(7 * var(--sp));
+    gap: calc(6 * var(--sp)) calc(7 * var(--sp));
     min-width: 0;
     min-height: calc(32 * var(--sp));
     padding: calc(6 * var(--sp)) calc(10 * var(--sp)) calc(2 * var(--sp)) calc(15 * var(--sp));
