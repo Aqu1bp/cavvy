@@ -82,6 +82,22 @@ try {
     await cached;
     await activate("b");
 
+    // A session not open here yet: until it comes (or "Opening session…" would show), the last one stays, inert,
+    // rather than an empty stage for the moment it takes.
+    const before = all(root).find((n) => n.tag === "SessionView")!;
+    const inert = () => all(root).some((n) => n.props.class === "keep" && n.props.inert);
+    const held = activate("held");
+    await settle();
+    assert.equal(app.activeId, "held", "the sidebar selection still changes at once");
+    assert.equal(all(root).find((n) => n.tag === "SessionView"), before, "the last session stays on the stage while the next opens");
+    assert.ok(!text(root).includes("Opening session"));
+    assert.ok(inert(), "held, it can't be typed into or clicked");
+    requests.find((r) => r.id === "held")!.answer();
+    await held;
+    assert.notEqual(all(root).find((n) => n.tag === "SessionView"), before, "the session that came takes its place");
+    assert.ok(!inert());
+    await activate("b");
+
     const old = activate("old");
     await settle();
     await activate("b");

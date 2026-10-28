@@ -222,7 +222,8 @@ function ChangesChip(p: { handle: SessionHandle }) {
     );
 }
 
-export function Header(p: { handle?: SessionHandle }) {
+/** `title`: no session yet (one opening), what to call it. */
+export function Header(p: { handle?: SessionHandle; title?: string }) {
     const [editing, setEditing] = createSignal(false);
     const [menuOpen, setMenuOpen] = createSignal(false);
     let moreBtn: HTMLButtonElement | undefined;
@@ -265,7 +266,7 @@ export function Header(p: { handle?: SessionHandle }) {
                 </>
             }
         >
-            <Show when={st()} fallback={<h1 class="ttl-h">New session</h1>}>
+            <Show when={st()} fallback={<h1 class="ttl-h">{p.title ?? "New session"}</h1>}>
                 {(s) => (
                     <>
                         {/* With the rail hidden, the project goes before the title (and starts a session in it). */}
