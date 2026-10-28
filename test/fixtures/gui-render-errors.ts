@@ -10,6 +10,7 @@ import * as liveLine from "../../gui/src/lib/live-line";
 import * as notices from "../../gui/src/lib/notices";
 import { createReveal, DrawnAgain } from "../../gui/src/lib/reveal";
 import * as diffWindow from "../../gui/src/lib/diff-window";
+import { oneSided } from "../../gui/src/lib/review-stack";
 import { registerSecret, unregisterSecret } from "../../src/util/redact";
 import { columnSteps, COLUMN_NARROW, COLUMN_SHORT } from "../../gui/src/lib/layout";
 
@@ -84,7 +85,7 @@ for (const kind of ["Markdown", "CodeBlock", "DiffView", "ToolRow", "ToolDetails
             MarkdownRenderer: class { segments() { throw Error("bad markdown"); } },
             ...format, ...toolWords, ...liveLine, ...notices, now: () => 0, prefs: {}, findReveal: () => undefined, motionMs: () => 0,
             ...Object.fromEntries(["Wrench", "Bot", "FileText", "ChevronRight", "CopyButton"].map((name) => [name, () => node(name)])),
-            onMount() {}, highlight: async () => undefined, createReveal, DrawnAgain, paint() {},
+            onMount() {}, highlight: async () => undefined, createReveal, DrawnAgain, paint() {}, oneSided,
             groupBlocks: () => { throw Error("bad turn"); },
         });
         const View = component('export function View() { return <><Widget {...props} /><button>still usable</button></>; }', "View", { Widget, props: props[kind] });
@@ -112,7 +113,7 @@ for (const kind of ["CodeBlock", "DiffView"]) {
         const Widget = component(source(`blocks/${kind}`), kind, {
             RenderBoundary: boundary(undefined, (error) => errors.push(error)),
             highlight, highlightLines: highlight, highlightLineStream: streamOf(highlight), langOf: () => "ts", escapeHtml: (s: string) => s,
-            ...diffWindow, plural: format.plural,
+            ...diffWindow, oneSided, plural: format.plural,
             CopyButton: () => node("copy"),
             IntersectionObserver: class {
                 constructor(private callback: Function) {}
@@ -238,7 +239,7 @@ for (const kind of ["CodeBlock", "DiffView"]) {
         const Widget = component(source(`blocks/${kind}`), kind, {
             RenderBoundary: boundary(undefined, (error) => errors.push(error)),
             ...highlighting, langOf: () => "typescript", escapeHtml: (s: string) => s,
-            ...diffWindow, plural: format.plural,
+            ...diffWindow, oneSided, plural: format.plural,
             CopyButton: () => node("copy"),
             IntersectionObserver: class {
                 constructor(private callback: Function) {}

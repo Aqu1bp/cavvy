@@ -7,7 +7,7 @@ import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { createComposerDraft } from "../../gui/src/lib/composer-draft";
 import { composerStorage, createComposerStorage } from "../../gui/src/lib/drafts";
 import { composingKey, revealMenuOption } from "../../gui/src/lib/composer-menu";
-import { matchSkills, skillToken } from "../../gui/src/lib/commands";
+import { argsHint, matchSkills, skillToken, textPieces } from "../../gui/src/lib/commands";
 import { createRunSheet, type RunRequest } from "../../gui/src/lib/run-sheet";
 import { firstSendable, FOLLOW_UP_WORDS, followUpFor, followUpLabels, otherFollowUp, restoreWaits, withDraft } from "../../gui/src/lib/queue";
 import { canStop } from "../../gui/src/lib/session-status";
@@ -89,7 +89,7 @@ const [homeCwd, setHomeCwd] = solid.createSignal("/workspace");
 const appState = { conn: "open", get homeCwd() { return homeCwd(); }, settings: {} as { followUpBehavior?: string }, models: [] };
 /** The composer opening or closing its large size told the conversation to glide with it. */
 let dockGlides = 0;
-const deps = { ...solid, ...components, StepsTray, expandedDown, expandedHeight, grow, GROW_MS, motionMs: () => 0, glideDock: () => void dockGlides++, shellLayout: () => ({ column: { h: 800 } }), renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken, firstSendable, FOLLOW_UP_WORDS, followUpFor, followUpLabels, otherFollowUp, restoreWaits, withDraft, canStop, now: () => Date.now(), turnDuration: (ms: number) => `${Math.round(ms / 1000)}s`, keymap, matchKey, withShortcut, shortcut, shortcutHint, eventStrokes,
+const deps = { ...solid, ...components, StepsTray, expandedDown, expandedHeight, grow, GROW_MS, motionMs: () => 0, glideDock: () => void dockGlides++, shellLayout: () => ({ column: { h: 800 } }), renderer, createComposerDraft, composerStorage, composingKey, revealMenuOption, matchSkills, skillToken, textPieces, argsHint, firstSendable, FOLLOW_UP_WORDS, followUpFor, followUpLabels, otherFollowUp, restoreWaits, withDraft, canStop, now: () => Date.now(), turnDuration: (ms: number) => `${Math.round(ms / 1000)}s`, keymap, matchKey, withShortcut, shortcut, shortcutHint, eventStrokes,
     comparePicks, setComparePicks, startRun: runSheet.startRun,
     splitComments, takesComments, withComments, plural, setReview: noop,
     aroundOf, reviewComments: commentStore, newCommentId: () => crypto.randomUUID(),

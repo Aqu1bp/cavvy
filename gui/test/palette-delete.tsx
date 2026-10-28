@@ -84,7 +84,7 @@ export async function checkPaletteDelete(root: HTMLElement) {
     try {
         connection("open", 0);
         await until(() => app.modelsLoaded);
-        await until(() => rows().some((r) => r.textContent?.includes("Delete session…")));
+        await until(() => rows().some((r) => r.textContent?.includes("Delete session")));
         check(rows().some((r) => r.textContent?.includes("Review changes")), "review and delete actions coexist");
         type("palettequokka");
         await until(() => messageRows().length === 3);
