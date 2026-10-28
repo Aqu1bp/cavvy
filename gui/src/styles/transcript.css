@@ -1508,6 +1508,17 @@
     opacity: 0;
 }
 
+/* A row without one keeps its place, so every row's result ends at the same edge. */
+.tool-head:not(:has(> .row-open))::after {
+    content: "";
+    flex: none;
+    width: calc(24 * var(--sp));
+}
+
+.steps .tool-head:not(:has(> .row-open))::after {
+    margin-left: calc(2 * var(--sp));
+}
+
 .tool-head:hover > .row-open,
 .frow-line:hover > .row-open,
 .diff-head:hover > .row-open,
@@ -2651,13 +2662,16 @@
 .diff-rows {
     min-width: max-content;
     font-family: var(--font-mono);
-    line-height: 1.6;
+    --diff-lh: 1.6;
+    line-height: var(--diff-lh);
 }
 
 .dl {
     display: grid;
     grid-template-columns: 3.4em 3.4em minmax(0, 1fr);
     min-width: 100%;
+    /* A line's height in whole pixels, an empty one too: rows between pixels leave a hairline in the sticky gutter. */
+    min-height: round(up, calc(var(--diff-lh, 1.6) * 1em), 1px);
 }
 
 .dl .ln {
@@ -2677,6 +2691,15 @@
 .dl .ln + .ln {
     /* The grid's em uses the row font; these cells use a smaller font. */
     left: calc(3.4em / 0.92);
+    border-right: 1px solid var(--line);
+}
+
+/* One side (a new or deleted file): one line-number column, not an empty one beside it. */
+.dl.one {
+    grid-template-columns: 3.4em minmax(0, 1fr);
+}
+
+.dl.one .ln {
     border-right: 1px solid var(--line);
 }
 
@@ -2853,7 +2876,7 @@
 .diff.inline .diff-rows {
     min-width: 0;
     padding: calc(6 * var(--sp)) 0;
-    line-height: 1.7;
+    --diff-lh: 1.7;
 }
 
 .diff.inline .dl {

@@ -474,7 +474,10 @@ export interface SecretInteraction {
     purpose: string;
 }
 
-export type Interaction = PermissionInteraction | QuestionInteraction | PlanInteraction | SecretInteraction;
+export type Interaction = (PermissionInteraction | QuestionInteraction | PlanInteraction | SecretInteraction) & {
+    /** When it was asked (ms since the epoch): how long it's been waiting, whenever the session is opened. */
+    since?: number;
+};
 
 export type InteractionResponse =
     | { kind: "permission"; choice: PermissionOption["id"]; feedback?: string }

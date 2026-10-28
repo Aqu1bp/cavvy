@@ -14,6 +14,8 @@ test("a request waiting on the user comes first, in its own words", () => {
     expect(line({ interactions: [{ kind: "permission", id: "a", title: "Bash", command: "rm -rf build\necho done" } as any] })).toMatchObject({ label: "Waiting for approval", detail: "rm -rf build", mono: true });
     expect(line({ interactions: [{ kind: "permission", id: "a", title: "Fetch example.com" } as any] })).toMatchObject({ detail: "Fetch example.com", mono: false });
     expect(line({ interactions: [{ kind: "secret", id: "s", name: "GITHUB_TOKEN" } as any] })).toMatchObject({ label: "Waiting for a secret", detail: "GITHUB_TOKEN" });
+    // Timed from when it was asked: a session opened 20 minutes into the wait says so, not "0s".
+    expect(line({ interactions: [{ kind: "question", id: "q", since: 1234 } as any] })).toMatchObject({ since: 1234 });
 });
 
 test("special states (a retry, a compaction, a wait on background work) say themselves over the step under way", () => {

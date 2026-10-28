@@ -134,7 +134,8 @@ function RowMenu(p: { s: SessionSummary; pick: RailPick; open: boolean; setOpen:
     // Taken as the menu opens, so it doesn't change under the pointer.
     const group = createMemo(() => (p.open ? untrack(() => p.pick.group(p.s.id)) : undefined));
     return (
-        <Menu label={group() ? "Selected sessions actions" : "Session actions"} returnFocus={p.returnFocus} point={p.point} open={p.open} anchor={p.anchor} onClose={close} align="end" width={220}>
+        // From the row's "…", as wide as the row: what's behind doesn't peek out at its edge. At the pointer when right-clicked.
+        <Menu label={group() ? "Selected sessions actions" : "Session actions"} returnFocus={p.returnFocus} point={p.point} open={p.open} anchor={p.anchor} span={p.point ? undefined : () => p.anchor()?.closest<HTMLElement>(".card, .slim") ?? undefined} onClose={close} align="end" width={220}>
             <Show when={group()} fallback={<SingleItems s={p.s} close={close} onRename={p.onRename} />}>
                 {(ids) => <BulkItems plan={p.pick.plan(ids())} close={close} clear={p.pick.clear} />}
             </Show>
@@ -157,7 +158,7 @@ function SingleItems(p: { s: SessionSummary; close: () => void; onRename: () => 
                     {p.s.settled ? <Undo2 size={14} /> : <CheckCheck size={14} />} {p.s.settled ? "Back in play" : "Settle"}
                 </button>
             </Show>
-            <button role="menuitem" class="menu-item compact" onClick={() => (close(), newSession(p.s.cwd))}>
+            <button role="menuitem" class="menu-item compact" title={`New session in ${p.s.projectName}`} onClick={() => (close(), newSession(p.s.cwd))}>
                 <Plus size={14} /> <span class="truncate">New session in {p.s.projectName}</span>
             </button>
             <div class="menu-sep" />

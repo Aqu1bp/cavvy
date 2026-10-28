@@ -8,6 +8,7 @@ import { escapeHtml } from "../../lib/markdown";
 import { AROUND, buildComment, linesPhrase, lineRef, locate, type ReviewComment } from "../../lib/review-comments";
 import { Heights, joinRanges, rowsIn, widest, wrappedLines } from "../../lib/diff-window";
 import { CommentBox, CommentCard, type CommentEdits } from "./DiffComments";
+import { oneSided } from "../../lib/review-stack";
 
 /** `h`: which hunk the line is in. A comment's lines stay inside one, where the numbers run on. */
 type Row = { kind: "line"; line: DiffLine; old?: number; new?: number; idx: number; h: number } | { kind: "sep"; text: string };
@@ -89,7 +90,8 @@ type DiffProps = { diff: FileDiff; maxLines?: number; header?: boolean; headerAc
 
 /**
  * `headerAction`: a control at the end of the header (e.g. "Open in editor"). `oneSide`: a new or deleted
- * file (lib/review-stack.ts oneSided), drawn unified with one line-number column rather than an empty one.
+ * file (lib/review-stack.ts oneSided), drawn unified with one line-number column rather than an empty one; worked
+ * out from the diff when it isn't given.
  * `windowed`: draw only the rows near the view (the review pane's diffs, which take comments, always are).
  */
 export function DiffView(p: DiffProps) {
@@ -97,6 +99,8 @@ export function DiffView(p: DiffProps) {
 }
 
 function DiffViewContent(p: DiffProps) {
+    // A new or deleted file has numbers on one side only: one column for them, not an empty one beside it.
+    const oneSide = createMemo(() => p.oneSide ?? (!p.split && oneSided(p.diff)));
     const [expanded, setExpanded] = createSignal(false);
     const [visible, setVisible] = createSignal(false);
     /** Each side's lines highlighted, filled in a part at a time; `hlVersion` says when a part landed. */
@@ -954,15 +958,15 @@ function DiffViewContent(p: DiffProps) {
                                 "gap" in r ? (
                                     <Spacer gap={r} />
                                 ) : r.kind === "sep" ? (
-                                    <div class={p.oneSide ? "dl sep one" : "dl sep"} data-u={windowed ? unitIndex().get(r) : undefined}>
+                                    <div class={oneSide() ? "dl sep one" : "dl sep"} data-u={windowed ? unitIndex().get(r) : undefined}>
                                         <span class="ln" />
-                                        {p.oneSide ? undefined : <span class="ln" />}
+                                        {oneSide() ? undefined : <span class="ln" />}
                                         <span class="txt">{r.text}</span>
                                     </div>
                                 ) : r.kind === "line" ? (
                                     <>
-                                        <div class={`dl ${r.line.t}${p.oneSide ? " one" : ""}`} data-i={r.idx} data-u={windowed ? unitIndex().get(r) : undefined}>
-                                            {p.oneSide ? (
+                                        <div class={`dl ${r.line.t}${oneSide() ? " one" : ""}`} data-i={r.idx} data-u={windowed ? unitIndex().get(r) : undefined}>
+                                            {oneSide() ? (
                                                 <span class="ln" data-g={r.idx}>{r.line.b ?? r.line.a ?? ""}</span>
                                             ) : (
                                                 <>
@@ -978,9 +982,9 @@ function DiffViewContent(p: DiffProps) {
                             }
                         </For>
                         <Show when={widestText()}>
-                            <div class={p.oneSide ? "dl dv-sizer one" : "dl dv-sizer"} aria-hidden="true" data-find-skip>
+                            <div class={oneSide() ? "dl dv-sizer one" : "dl dv-sizer"} aria-hidden="true" data-find-skip>
                                 <span class="ln" />
-                                {p.oneSide ? undefined : <span class="ln" />}
+                                {oneSide() ? undefined : <span class="ln" />}
                                 <span class="txt">{widestText()}</span>
                             </div>
                         </Show>
