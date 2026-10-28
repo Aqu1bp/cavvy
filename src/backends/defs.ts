@@ -331,7 +331,8 @@ const ANTIGRAVITY: AgentCliDef = {
         signOut: "agy, then /logout",
     },
     protocol: "agy-stream-json",
-    // No projectConfig: it loads a project's .agents/ (hooks among them) by its own rules, not Cavvy's folder trust.
+    // It runs a project's .agents/hooks.json whatever Cavvy's folder trust says: it runs only where the folder is trusted.
+    projectConfig: (cwd, has) => (has(join(cwd, ".agents", "hooks.json")) ? [".agents/hooks.json"] : []),
     preferredModels: [/^gemini-4-carbon/, /^gemini-4-argon-high$/, /^gemini-4-argon/],
     caps: {
         // A message sent while a turn runs joins it at its next model call, through the gate's PreInvocation hook

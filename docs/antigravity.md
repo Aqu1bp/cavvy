@@ -41,7 +41,7 @@ macOS and Linux only for now: the permission hook is a shell script that needs `
 
 ### Not covered
 
-- `agy` runs a project's own `.agents/hooks.json` by its own rules, whether or not you've told Cavvy you trust the folder. Its hooks can't let a call through that Cavvy refuses: a single deny refuses it.
+- A project's own `.agents/hooks.json` runs on `agy`'s rules, and nothing turns it off. So in a folder that has one, `agy` runs only once you trust the folder. Its hooks can't let a call through that Cavvy refuses: a single deny refuses it.
 - Your own `agy` settings still apply on top of Cavvy's answers: a deny rule there refuses a call Cavvy allowed.
 
 ## The agent's credentials

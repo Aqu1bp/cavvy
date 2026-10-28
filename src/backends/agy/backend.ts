@@ -5,6 +5,7 @@
 // (childEnv) has Cavvy's provider keys removed, so it signs in its own way.
 
 import { randomUUID } from "crypto";
+import { existsSync } from "fs";
 import { homedir } from "os";
 import type { ProviderDef } from "../../providers/registry";
 import { ProviderError, type AssistantMessage, type ChatRequest, type ModelInfo } from "../../providers/types";
@@ -134,6 +135,8 @@ export class AgyBackend implements AgentBackendClient {
         if (t.adopt) return { reason: "error", text: "", actions: [], error: `${name} doesn't start turns of its own.` };
         // A fork would share the conversation it came from: it starts one of its own with the conversation so far.
         if (t.forkSession && t.resumeId) return { reason: "error", text: "", actions: [], error: `${RESUME_FAILED} ${name} conversation: ${name} conversations can't be forked`, resumeFailed: true, refused: true };
+        // It would run the folder's own hooks, which nothing can turn off.
+        if (!t.trusted && this.cli.projectConfig?.(t.cwd, existsSync).length) return { reason: "error", text: "", actions: [], error: `${name} runs this folder's .agents/hooks.json itself, so it runs here only once you trust the folder.`, refused: true };
         const key = t.sessionKey;
         let live = this.pool.session(key, this.def.id);
         // Another conversation than the one running (rewound, or a fresh start): the old process goes.

@@ -353,13 +353,13 @@ export class AgyConnection implements CliConnection {
     }
 
     /** Messages injected that it never said it took (the turn ended first): they go with the next turn. */
-    private handBack(turn: Turn) {
+    private handBack(turn: Turn, source = this.steering()) {
         const back = turn.injected.splice(0).flat();
         if (!back.length) return;
         liveDebug("agy", "steer not taken: handed back", { n: back.length });
         const plain = back.filter((m) => !m.settle);
         for (const m of back) void m.settle?.(false);
-        if (plain.length) this.steering()?.undelivered(plain);
+        if (plain.length) source?.undelivered(plain);
     }
 
     /** Whether a message can still join the turn. */
@@ -389,14 +389,15 @@ export class AgyConnection implements CliConnection {
             } catch (e) {
                 this.emit({ type: "notice", level: "warn", message: `Couldn't hand the attachments to ${this.def.name}: ${e instanceof Error ? e.message : String(e)}` });
                 if (m.settle) void m.settle(false);
-                else this.steering()?.undelivered([m]);
+                else source.undelivered([m]);
             }
         }
         if (!sent.length) return {};
         // Stopped while they were taken: they go with the next turn.
         if (!this.steerable(turn)) {
             turn.injected.push(sent);
-            this.handBack(turn);
+            // The turn that took them may have let go of its source by now: they go back to it.
+            this.handBack(turn, source);
             return {};
         }
         turn.injected.push(sent);

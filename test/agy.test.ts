@@ -2,7 +2,7 @@
 // (test/fixtures/fake-agy.ts) that runs the gate's hook as agy does. Nothing here runs the real agy.
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -56,12 +56,12 @@ afterEach(async () => {
     await (c as any).shutdown?.();
 });
 
-async function makeAgent(o: { mode?: PermissionMode; settings?: any; ask?: (r: PermissionRequest) => PermissionResponse | Promise<PermissionResponse>; queued?: string[] } = {}) {
+async function makeAgent(o: { untrusted?: boolean; mode?: PermissionMode; settings?: any; ask?: (r: PermissionRequest) => PermissionResponse | Promise<PermissionResponse>; queued?: string[] } = {}) {
     const settings = o.settings ?? {};
     const events: AgentEvent[] = [];
     const asked: PermissionRequest[] = [];
     let mode: PermissionMode = o.mode ?? "default";
-    trust.trustForSession(cwd);
+    if (!o.untrusted) trust.trustForSession(cwd);
     const client = await clientFor("antigravity");
     const session = Session.create(cwd, { persist: false });
     const agent = new Agent({
@@ -93,6 +93,19 @@ const ends = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "tool_e
 const said = (events: AgentEvent[]) => events.flatMap((e) => (e.type === "assistant" ? [e.message.content.map((c: any) => c.text).join("")] : []));
 
 describe("the gate, by Cavvy's mode", () => {
+    test("a folder with hooks of its own: it runs only once the folder is trusted", async () => {
+        mkdirSync(join(cwd, ".agents"));
+        writeFileSync(join(cwd, ".agents", "hooks.json"), "{}");
+        expect(trust.projectConfigSummary(cwd)).toContain(".agents/hooks.json");
+        const a = await makeAgent({ untrusted: true });
+        expect(await a.run("hi")).not.toBe("done");
+        expect(JSON.stringify(a.events)).toContain("runs here only once you trust the folder");
+        expect(spawns()).toEqual([]);
+        trust.trustFolder(cwd);
+        expect(await (await makeAgent()).run("hi")).toBe("done");
+        expect(spawns()).toHaveLength(1);
+    });
+
     test("Manual: a write asks, with its content; a yes runs it, and its row shows what it wrote", async () => {
         const a = await makeAgent({ ask: () => ({ allow: true }) });
         expect(await a.run("[[write:a.txt]]")).toBe("done");

@@ -37,7 +37,10 @@ const SCRIPT = `#!/bin/sh
 # ${APP_TITLE}'s permission gate for Antigravity: ${APP_TITLE} decides each tool call. Written by ${APP_TITLE}.
 deny() { if [ "$1" = pre ]; then printf '%s\\n' '{"decision":"deny","reason":"${APP_TITLE} did not answer, so this call was refused."}'; else printf '{}\\n'; fi; }
 [ -n "$${GATE_URL_ENV}" ] && [ -n "$${GATE_TOKEN_ENV}" ] || { deny "$1"; exit 0; }
-curl -sS --fail --max-time ${HOOK_TIMEOUT_S + 60} -H "Authorization: Bearer $${GATE_TOKEN_ENV}" -H "X-Cavvy-Event: $1" -H "Content-Type: application/json" --data-binary @- "$${GATE_URL_ENV}" || deny "$1"
+# The token goes to curl on fd 3, not on its command line (which other users can list); never through a proxy.
+curl -sS --fail --noproxy '*' --max-time ${HOOK_TIMEOUT_S + 60} -K /dev/fd/3 -H "X-Cavvy-Event: $1" -H "Content-Type: application/json" --data-binary @- "$${GATE_URL_ENV}" 3<<EOF || deny "$1"
+header = "Authorization: Bearer $${GATE_TOKEN_ENV}"
+EOF
 `;
 
 const hooks = (script: string) =>
@@ -66,15 +69,18 @@ export function gateDir(): string {
     const uid = process.getuid?.() ?? 0;
     const dir = join(gateRoot.dir(), `zz-cavvy-antigravity-${uid}`);
     mkdirSync(join(dir, ".agents"), { recursive: true, mode: 0o700 });
-    for (const d of [dir, join(dir, ".agents")]) {
-        const st = lstatSync(d);
-        if (!st.isDirectory() || (process.getuid && st.uid !== uid)) throw new Error(`${d} isn't ${APP_TITLE}'s folder, so the Antigravity permission gate can't go there.`);
-        if (st.mode & 0o077) chmodSync(d, 0o700);
-    }
+    for (const d of [dir, join(dir, ".agents")]) ours(d);
     const script = join(dir, "gate.sh");
     keep(script, SCRIPT, 0o700);
     keep(join(dir, ".agents", "hooks.json"), hooks(script), 0o600);
     return dir;
+}
+
+/** A folder of this user's only, or it throws (someone else's folder by that name). */
+function ours(d: string) {
+    const st = lstatSync(d);
+    if (!st.isDirectory() || (process.getuid && st.uid !== process.getuid())) throw new Error(`${d} isn't ${APP_TITLE}'s folder, so the Antigravity permission gate can't go there.`);
+    if (st.mode & 0o077) chmodSync(d, 0o700);
 }
 
 /** Writes the file unless it already says exactly this. */
@@ -91,7 +97,10 @@ function keep(path: string, content: string, mode: number) {
 
 /** Where a session's attachments are written for it to read: beside the gate folder, not a workspace of its own. */
 export function filesDir(token: string): string {
-    return join(`${gateDir()}-files`, token);
+    const parent = `${gateDir()}-files`;
+    mkdirSync(parent, { recursive: true, mode: 0o700 });
+    ours(parent);
+    return join(parent, token);
 }
 
 /** What the model is told when its conversation starts: which folder is its own. */
@@ -132,6 +141,8 @@ export function gateUrl(): string {
             return Response.json(await handler(req.headers.get("x-cavvy-event") ?? "", input));
         },
     });
+    // It doesn't keep a process alive that's otherwise done.
+    server.unref();
     return `http://127.0.0.1:${server.port}/`;
 }
 
