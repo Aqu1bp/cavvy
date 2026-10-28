@@ -450,7 +450,7 @@ async function agentLogin(app: App, providerId: string) {
     // How it's asked: its own status command, or (an ACP agent) whether it answers initialize.
     // An ACP agent with a status of its own (Grok: `grok models`) is asked that instead.
     const acpHow = agent.protocol === "acp" ? (acpAgent(providerId).status ? `${cli.command} models` : `${cli.command} ${(agent.acpArgs ?? []).join(" ")} · initialize`) : undefined;
-    const how = acpHow ?? (providerId === "codex" ? "codex app-server · account/read" : "claude auth status");
+    const how = acpHow ?? (agent.protocol === "agy-stream-json" ? `${cli.command} models` : providerId === "codex" ? "codex app-server · account/read" : "claude auth status");
     let st: AgentCliStatus | undefined;
     try {
         st = await withProgress(app, [theme.permission(bold(`Checking ${def.name}…`)), theme.muted(how)], (signal) => checkAgentCli(providerId, signal));

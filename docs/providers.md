@@ -7,7 +7,7 @@ Run `cavvy` and type `/login`, then paste a key. The provider is recognized from
 - in the OS keychain (macOS Keychain, libsecret, Windows Credential Manager) via `Bun.secrets`, or
 - in `~/.cavvy/credentials.json` with mode 600 when no keychain is available.
 
-Supported: Anthropic, OpenAI, Google Gemini, Google Vertex AI (through gcloud, below), your Claude or ChatGPT subscription (through your own Claude Code or Codex: see [Claude and ChatGPT subscriptions](subscriptions.md)), your own OpenCode or Grok Build (see [Other coding agents](acp-agents.md)), OpenRouter, Groq, DeepSeek, xAI, Mistral, Together, Fireworks, Cerebras, plus Brave and Tavily for web search. Ollama and LM Studio are picked up automatically when they're running. `/login custom` adds any OpenAI-compatible (or Anthropic- or Responses-compatible) endpoint.
+Supported: Anthropic, OpenAI, Google Gemini, Google Vertex AI (through gcloud, below), your Claude or ChatGPT subscription (through your own Claude Code or Codex: see [Claude and ChatGPT subscriptions](subscriptions.md)), your own OpenCode or Grok Build (see [Other coding agents](acp-agents.md)), your Antigravity plan (through your own `agy`: see [Antigravity](antigravity.md)), OpenRouter, Groq, DeepSeek, xAI, Mistral, Together, Fireworks, Cerebras, plus Brave and Tavily for web search. Ollama and LM Studio are picked up automatically when they're running. `/login custom` adds any OpenAI-compatible (or Anthropic- or Responses-compatible) endpoint.
 
 From a shell: `cavvy auth add [provider]` (hidden prompt, or pipe the key on stdin), `cavvy auth list`, `cavvy auth remove <provider>`. Environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, …) also work and take precedence.
 

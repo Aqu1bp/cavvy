@@ -342,6 +342,7 @@ describe("cavvy and git config edits", () => {
         join(W, "opencode.json"),
         join(W, "pkg", "opencode.jsonc"),
         join(W, ".grok", "config.toml"),
+        join(W, ".agents", "hooks.json"),
         paths.userSettings(),
         join(paths.userCommands(), "x.md"),
     ];
@@ -366,7 +367,7 @@ describe("cavvy and git config edits", () => {
             delete process.env.XDG_CONFIG_HOME;
             const home = homedir();
             const atHome = new PermissionChecker(() => settings, home);
-            for (const p of [join(home, ".config", "opencode", "plugins", "x.ts"), join(home, ".config", "opencode", "opencode.json"), join(home, ".grok", "config.toml")]) {
+            for (const p of [join(home, ".config", "opencode", "plugins", "x.ts"), join(home, ".config", "opencode", "opencode.json"), join(home, ".grok", "config.toml"), join(home, ".gemini", "config", "hooks.json"), join(home, ".gemini", "antigravity-cli", "settings.json")]) {
                 const d = atHome.check(T("Write"), write(p), mode, home);
                 expect([p, d.behavior]).toEqual([p, "ask"]);
                 expect(d.reason).toMatch(/configures Cavvy or git/);
@@ -841,6 +842,7 @@ describe("Bash", () => {
             "cp x opencode.json",
             "echo {} > opencode.jsonc",
             "cp x .grok/config.toml",
+            "cp x .agents/hooks.json",
             "cp x ~/.claude/settings.json",
             "cp x .claude/worktrees/feature/.claude/settings.json",
             "cp x .claude/worktrees/feature/../../settings.json",

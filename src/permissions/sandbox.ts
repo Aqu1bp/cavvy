@@ -1,7 +1,8 @@
 // Shell sandbox for auto mode. A sandboxed command can write only inside the
 // workspace and the temp directories (never git hooks or git config, the
 // Cavvy's own config, or the agent CLIs' .claude/, .codex/, .opencode/ (and
-// opencode.json, and its global config) and .grok/, except for
+// opencode.json, and its global config), .grok/ and .agents/ (and Antigravity's
+// global config), except for
 // Claude Code's worktrees in .claude/worktrees/), can't read credential files,
 // has no network beyond localhost, can't signal processes outside the
 // sandbox, and can't reach the usual ways out of one: opening apps, Apple
@@ -18,7 +19,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "path";
 import { ANALYSIS_LIMIT, commandsWithDirs, gitSubcommand, programNames, readSmallFile, runs, withoutMessages } from "./bash-safety";
 import { CASE_INSENSITIVE_FS, canonical, spellings } from "../util/files";
 import { accountProtectedPaths } from "../providers/accounts";
-import { opencodeConfigDir, paths } from "../config/paths";
+import { antigravityConfigDirs, opencodeConfigDir, paths } from "../config/paths";
 import { homeAliases, LEGACY } from "../config/legacy";
 
 export type SandboxKind = "seatbelt" | "bwrap";
@@ -140,9 +141,9 @@ const UNREADABLE_IN_HOME = [
 
 /** A project's own config: Cavvy's, and the agent CLIs' (hooks, skills, MCP servers, permissions). */
 const PROJECT_CONFIG = [".cavvy", LEGACY.dir, ".mcp.json", "opencode.json", "opencode.jsonc"];
-const CLI_CONFIG = [".claude", ".codex", ".opencode", ".grok"];
+const CLI_CONFIG = [".claude", ".codex", ".opencode", ".grok", ".agents"];
 /** Names checker.ts doesn't take for a worktree (see withoutWorktrees there). */
-const CONFIG_NAMES = new Set([".cavvy", LEGACY.dir, ".claude", ".codex", ".opencode", ".grok", ".git", ".mcp.json", "opencode.json", "opencode.jsonc"]);
+const CONFIG_NAMES = new Set([".cavvy", LEGACY.dir, ".claude", ".codex", ".opencode", ".grok", ".agents", ".git", ".mcp.json", "opencode.json", "opencode.jsonc"]);
 
 /** A path as written and, if a symlink leads elsewhere, where it leads: a rule on one alone can be sidestepped through the other. */
 function bothForms(p: string): string[] {
@@ -198,11 +199,11 @@ export function sandboxPolicy(roots: string[], opts: { home?: string; cavvyHome:
     const secrets = homes.flatMap((h) => [basename(paths.credentialsFile()), basename(paths.mcpOAuth()), basename(paths.providers()), "accounts"].flatMap((f) => bothForms(join(h, f))));
     // Seatbelt matches where a path leads: a settings.json symlinked out of the home is covered where it points.
     const settings = homes.flatMap((h) => linkedFile(join(h, basename(paths.userSettings()))));
-    const globalConfig = bothForms(opencodeConfigDir(home));
+    const globalConfig = [opencodeConfigDir(home), ...antigravityConfigDirs(home)].flatMap(bothForms);
     return {
         writable: [...new Set([...ws, ...git.filter((g) => !ws.some((w) => isWithin(g, w))), ...temp])],
         // A worktree's own config and its .git pointer stay read-only, as in the project around it.
-        // OpenCode's global config too, as Cavvy's homes are (its plugins run when it starts).
+        // OpenCode's and Antigravity's global config too, as Cavvy's homes are (their plugins and hooks run when they start).
         readOnly: [...new Set([...ws.flatMap((w) => PROJECT_CONFIG.flatMap((c) => bothForms(join(w, c)))), ...worktrees.flatMap((t) => [...PROJECT_CONFIG, ...CLI_CONFIG, ".git"].flatMap((c) => bothForms(join(t, c)))), ...homes, ...accounts, ...globalConfig])],
         cliConfig: [...new Set(ws.flatMap((w) => CLI_CONFIG.flatMap((c) => bothForms(join(w, c)))))],
         worktrees,
