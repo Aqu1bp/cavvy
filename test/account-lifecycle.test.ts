@@ -604,6 +604,10 @@ for (const provider of ["claude-code", "codex"] as const) test(`${provider}: an 
     // Turns with a prompt: the switch's notices make an entry of their own.
     const turns = () => rt.snapshot().turns.filter((t) => t.prompt).length;
     const running = () => rt.agent?.backgroundTasks().filter((t) => t.provider === provider && t.status === "running") ?? [];
+    // The session's own processes, newest last: those started in its folder. Not the last launch of all: the
+    // title's one-off (started beside the first turn) and the model checks run in the home folder, and may
+    // start, or log their start, after the session's process (#21).
+    const own = () => (launches() as unknown as { pid: number; cwd: string; claudeConfigDir?: string; codexHome?: string }[]).filter((l) => l.cwd === cwd);
     const send = async (text: string) => {
         const before = turns();
         await engine.handle(client, "session.send", { id: rt.id, text });
@@ -612,8 +616,7 @@ for (const provider of ["claude-code", "codex"] as const) test(`${provider}: an 
     try {
         await send("start the background work");
         expect(running()).toHaveLength(1);
-        // The session's process: the last started (the status and model checks before it have ended).
-        const first = (launches() as unknown as { pid: number }[]).at(-1);
+        const first = own().at(-1);
         expect(alive(first!.pid)).toBe(true);
         const id = rt.session.backends.get(provider)!.id;
         await engine.handle(client, "session.setAccount", { id: rt.session.meta.id, provider, accountId: shared.id });
@@ -631,7 +634,8 @@ for (const provider of ["claude-code", "codex"] as const) test(`${provider}: an 
         await Bun.sleep(3500)
         expect(turns()).toBe(1);
         await send("on the shared account");
-        const last = launches().at(-1) as unknown as { argv: string[]; claudeConfigDir?: string; codexHome?: string };
+        const last = own().at(-1)!;
+        expect(last.pid).not.toBe(first!.pid);
         expect(realpathSync((provider === "codex" ? last.codexHome : last.claudeConfigDir)!)).toBe(realpathSync(shared.folder));
         expect(rt.session.backends.get(provider)?.id).toBe(id);
     } finally {

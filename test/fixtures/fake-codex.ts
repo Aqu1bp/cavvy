@@ -11,7 +11,7 @@
 // and loads .codex/config.toml (its model), unless -c projects=… marks the
 // folder untrusted.
 //
-// FAKE_LOG            each line: what it was started with, and what it received (threadMcp: a new thread's mcp_servers)
+// FAKE_LOG            each line: what it was started with (and in which folder), and what it received (threadMcp: a new thread's mcp_servers)
 // FAKE_ACCOUNT        chatgpt (default) | apikey | none
 // FAKE_DECLINE=1      offer "decline" among the command's availableDecisions
 // FAKE_REVIEW_DENY=1  with approvalsReviewer auto_review, the command leaves the sandbox and Codex's
@@ -130,7 +130,7 @@ const log = (o: unknown) => {
 };
 const argv = process.argv.slice(2);
 const cwd = process.cwd();
-log({ argv, pid: process.pid, sawOpenAiKey: Boolean(process.env.OPENAI_API_KEY), sawApiKey: Boolean(process.env.ANTHROPIC_API_KEY), claudeConfigDir: process.env.CLAUDE_CONFIG_DIR, codexHome: process.env.CODEX_HOME, sawOauthToken: Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN) });
+log({ argv, pid: process.pid, cwd, sawOpenAiKey: Boolean(process.env.OPENAI_API_KEY), sawApiKey: Boolean(process.env.ANTHROPIC_API_KEY), claudeConfigDir: process.env.CLAUDE_CONFIG_DIR, codexHome: process.env.CODEX_HOME, sawOauthToken: Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN) });
 if (argv[0] === "login") process.exit(0);
 if (argv[0] !== "app-server") {
     console.error("fake codex: only app-server");

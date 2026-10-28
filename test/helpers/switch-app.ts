@@ -92,10 +92,11 @@ export async function switchKit(iso: { home: string; cleanup: () => void }) {
         let rt = await engine.createSession(cwd, { mode: "bypassPermissions" });
         await rt.ready;
         const lines = (): any[] => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
-        // fake-claude's start line has its cwd; fake-codex's doesn't. Not sign-in checks, nor one-offs (Claude Code's
-        // without a session; Codex's are ephemeral threads, left out below).
+        // Told apart by what they were started as: Codex's processes are app-servers (its sign-in is `login`), Claude
+        // Code's are the rest but its sign-in checks (`auth`). Not one-offs either (Claude Code's without a session; Codex's
+        // are ephemeral threads, left out below). Both fakes log their cwd, so that doesn't tell them apart.
         const isStart = (l: any, cli: Cli) =>
-            Array.isArray(l.argv) && Boolean(l.pid) && (cli === "codex" ? !("cwd" in l) && l.argv[0] === "app-server" : "cwd" in l && l.argv[0] !== "auth" && !l.argv.includes("--no-session-persistence"));
+            Array.isArray(l.argv) && Boolean(l.pid) && (cli === "codex" ? l.argv[0] === "app-server" : !["app-server", "login", "auth"].includes(l.argv[0]) && !l.argv.includes("--no-session-persistence"));
         /** Each CLI process started for the session's turns, in order: its pid, argv and homes. */
         const starts = (cli: Cli = provider) => lines().filter((l) => isStart(l, cli));
         const received = () => lines().flatMap((l) => (l.received ? [l.received] : []));
