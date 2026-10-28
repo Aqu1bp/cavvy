@@ -4,10 +4,16 @@
 // AgentEvent cwd). The worktree is made as the New worktree dialog makes one (src/server/worktrees.ts), with the
 // project's WorktreeCreate hooks when it has any. Leaving one keeps it: removing a worktree is the user's, in Cavvy's
 // own removal (which asks about ignored files it would delete).
+//
+// Codex and the ACP agents (OpenCode, Grok) have no such tool: they get these through Cavvy's MCP server
+// (worktreeServerTools). Their process can't move mid-turn: the folder a turn starts them in is the session's
+// (Codex's turn/start cwd; an ACP agent's process is started again there), so they're there from their next turn.
 
 import { randomBytes } from "crypto";
 import { resolve } from "path";
-import type { Tool, ToolContext } from "./types";
+import type { Tool, ToolContext, ToolState } from "./types";
+import type { ServerTool, ServerToolResult } from "../mcp/server";
+import { APP_NAME } from "../config/name";
 import { checkFolder, createWorktreeWithHooks } from "../server/worktrees";
 import { sessionWorktree, workingWorktree } from "../server/session-worktrees";
 import { redact } from "../util/redact";
@@ -106,3 +112,61 @@ Use it only when the user asks to leave the worktree.`,
         return { content: `Back in ${root}. The worktree ${w.path}${w.branch ? ` and its branch ${w.branch}` : ""} are kept.` };
     },
 };
+
+/** The worktree tools' names on Cavvy's MCP server, as EnterWorktree and ExitWorktree. */
+export const WORKTREE_SERVER_TOOLS = ["enter_worktree", "exit_worktree"];
+
+export const WORKTREE_INSTRUCTIONS = `# Worktrees (cavvy)
+
+To work in a git worktree ("get into a new worktree", "do this in a worktree"), call enter_worktree rather than running git worktree add yourself: Cavvy moves the session into it, so the user's view of the session (its branch, its changes) follows you there, and your next turns start in it. exit_worktree moves the session back to the main checkout.`;
+const SERVED: Record<string, Tool<any>> = { enter_worktree: EnterWorktreeTool, exit_worktree: ExitWorktreeTool };
+
+/**
+ * The worktree tools for an agent CLI with none of its own (Codex, OpenCode, Grok). `run` takes a call through Cavvy's
+ * checks (rules, mode, hooks, the user), as the same tool called by a model Cavvy runs. Its shell can't follow before
+ * its next turn: a move says so, and how to work in the new folder until then.
+ */
+export function worktreeServerTools(run: (tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal, callId?: string) => Promise<ServerToolResult>, state: () => ToolState): ServerTool[] {
+    return WORKTREE_SERVER_TOOLS.map((name) => {
+        const tool = SERVED[name]!;
+        return {
+            name,
+            title: name === "enter_worktree" ? "Move into a git worktree" : "Leave the git worktree",
+            description: tool.description,
+            inputSchema: tool.parameters,
+            annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+            call: async (args, { signal, meta }) => {
+                const from = state().cwd;
+                const r = await run(tool, args, signal, typeof meta.callId === "string" ? meta.callId : undefined);
+                const to = state().cwd;
+                if (r.isError || to === from) return r;
+                return { ...r, text: `${r.text}\n\nYour shell still starts in ${from} until this turn ends: for the rest of it, run each command in ${to} (\`cd ${to} && ...\`) and give files by their full path there. From your next turn on, you start in ${to}.` };
+            },
+        };
+    });
+}
+
+/** A call of a served worktree tool (mcp__cavvy__enter_worktree) as the Cavvy tool it is (EnterWorktree), for the transcript. */
+export function nativeWorktreeCall(tool: string, input: Record<string, unknown>): { name: string; input: Record<string, unknown> } | undefined {
+    const native = SERVED[tool];
+    return native ? { name: native.name, input } : undefined;
+}
+
+/** Whether a call (by the name its backend gave it) is of a served worktree tool, which Cavvy runs its own hooks for. */
+export function servedWorktreeTool(server: string | undefined, toolName: unknown): boolean {
+    return Boolean(server) && typeof toolName === "string" && WORKTREE_SERVER_TOOLS.some((t) => toolName === `mcp__${server}__${t}`);
+}
+
+/**
+ * The served worktree tool a call is of, by the name its agent CLI gives Cavvy's MCP server tools: Codex's
+ * mcp__cavvy__enter_worktree, Grok's cavvy__enter_worktree, OpenCode's cavvy_enter_worktree.
+ */
+export function servedWorktreeName(name: unknown): string | undefined {
+    if (typeof name !== "string") return undefined;
+    for (const prefix of [`mcp__${APP_NAME}__`, `${APP_NAME}__`, `${APP_NAME}_`]) {
+        if (!name.startsWith(prefix)) continue;
+        const tool = name.slice(prefix.length);
+        if (WORKTREE_SERVER_TOOLS.includes(tool)) return tool;
+    }
+    return undefined;
+}

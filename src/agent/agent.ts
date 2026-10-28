@@ -72,11 +72,12 @@ import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./s
 import { WATCH_INSTRUCTIONS, watchServerTools } from "../tools/git-tools";
 import { MONITOR_INSTRUCTIONS, monitorServerTools, nativeMonitorCall, stoppedMonitorNote } from "../tools/monitor";
 import { BROWSER_INSTRUCTIONS, BrowserNavigateTool, browserServerTools, nativeBrowserCall, servedBrowserName } from "../tools/browser-tools";
+import { nativeWorktreeCall, WORKTREE_INSTRUCTIONS, worktreeServerTools } from "../tools/worktree-tools";
 import { offered } from "../tools/index";
 import { lostNote, SessionBackground, type BackgroundTaskInfo } from "./background";
 import { SECRET_INSTRUCTIONS, secretTools, secretToolTitle } from "./secret-tools";
 import { readFile } from "fs/promises";
-import { isAbsolute, join, relative, resolve } from "path";
+import { basename, isAbsolute, join, relative, resolve } from "path";
 import { shellWords, toolPaths } from "../server/worktree-agents";
 import { BashTool } from "../tools/bash";
 import { LspManager, DIAGNOSED_TOOLS, MAX_FILE_CHARS } from "../lsp/manager";
@@ -1234,6 +1235,9 @@ export class Agent {
         }
     }
 
+    /** The folder the agent CLI's last turn here ran in (BackendTurn.cwd). */
+    private cliFolder?: string;
+
     /** Where the agent works now, as it last said (AgentEvent cwd): an agent CLI's can differ from the folder it started in. */
     private workingAt?: string;
 
@@ -1660,17 +1664,21 @@ export class Agent {
     private orchestrator(): OrchestratorServer | undefined {
         if (this.o.isSubagent || this.disposed) return undefined;
         const caller = this.model.provider;
-        const delegating = this.o.settings().delegation !== false && delegationAvailable(caller, this.listings());
-        const store = this.state.secrets;
+        // An ACP agent (OpenCode, Grok) gets the worktree tools only: Cavvy's others aren't offered to it.
+        const acp = agentCli(caller)?.protocol === "acp";
+        const delegating = !acp && this.o.settings().delegation !== false && delegationAvailable(caller, this.listings());
+        const store = acp ? undefined : this.state.secrets;
         const ask = this.o.host.ui.requestSecret?.bind(this.o.host.ui);
-        const scheduling = Boolean(this.state.scheduler);
+        const scheduling = !acp && Boolean(this.state.scheduler);
         // A watch wakes the session later: only one that stays open (not -p) has somewhere to wake.
-        const watching = Boolean(this.state.wakes && this.state.watchers) && !this.oneShot;
+        const watching = !acp && Boolean(this.state.wakes && this.state.watchers) && !this.oneShot;
         // Claude Code has a Monitor of its own; Codex gets Cavvy's.
         const monitoring = watching && caller === "codex";
         // Neither has a browser to show Cavvy's pane: its tools go to both.
-        const browsing = offered(BrowserNavigateTool, this.o.settings());
-        if (!delegating && !(store && ask) && !scheduling && !watching && !browsing) return undefined;
+        const browsing = !acp && offered(BrowserNavigateTool, this.o.settings());
+        // Claude Code has EnterWorktree and ExitWorktree of its own; the others get Cavvy's.
+        const worktrees = caller === "codex" || acp;
+        if (!delegating && !(store && ask) && !scheduling && !watching && !browsing && !worktrees) return undefined;
         const tools: ServerTool[] = [];
         const instructions: string[] = [];
         if (delegating) {
@@ -1706,6 +1714,10 @@ export class Agent {
         if (browsing) {
             tools.push(...browserServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId)));
             instructions.push(BROWSER_INSTRUCTIONS);
+        }
+        if (worktrees) {
+            tools.push(...worktreeServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), () => this.state));
+            instructions.push(WORKTREE_INSTRUCTIONS);
         }
         this.serverTools = tools;
         this.serverInstructions = instructions.join("\n\n");
@@ -2531,12 +2543,19 @@ export class Agent {
                     const why = redact(result.error ?? `Couldn't continue the earlier ${name} session`);
                     // The pill says what happened; what the CLI said folds under it.
                     const said = why.replace(/^Couldn't resume the [^:]+ session:\s*/, "");
-                    const title = /no conversation found/i.test(said) ? "Session not found · started a new one" : "Couldn't resume · started a new one";
-                    this.emit({ type: "notice", level: "warn", message: `${why}. Starting a new one with this conversation as context.`, data: { source: provider, title, text: said === why ? `${why}.` : `\`${said}\`` } });
+                    // The session moved (into a worktree, or back): an agent whose sessions belong to their folder (Grok) can't take its own along.
+                    const moved = this.cliFolder !== undefined && this.cliFolder !== base.cwd;
+                    // An info notice shows its message, on one line (a title and folded text are a warning's).
+                    if (moved) this.emit({ type: "notice", level: "info", message: `${name} continues in a new session in ${basename(base.cwd)}, with this conversation as context.`, data: { source: provider } });
+                    else {
+                        const title = /no conversation found/i.test(said) ? "Session not found · started a new one" : "Couldn't resume · started a new one";
+                        this.emit({ type: "notice", level: "warn", message: `${why}. Starting a new one with this conversation as context.`, data: { source: provider, title, text: said === why ? `${why}.` : `\`${said}\`` } });
+                    }
                     const fresh = toSend();
                     syncedBefore = undefined;
                     result = await backend.runTurn({ ...base, approvedMcpServers: this.freshApprovals(base), fastMode: this.fastMode(), ...fresh, ...this.preamble(fresh.prompt, prompt), synthetic: woken, ...(prompt === text ? asked : {}), ...this.withResentMedia(promptImages, promptDocuments, promptIndex), resumeId: undefined });
                 }
+                this.cliFolder = base.cwd;
                 if (result.refused && !adopting) this.refusedBackendTurn(provider, syncedBefore);
             } catch (e) {
                 if (isAbort(e, signal)) return this.interrupted(false);
@@ -2750,7 +2769,8 @@ export class Agent {
         // Cavvy's own tools it served (Monitor for Codex) show as those tools.
         if ((e.type === "tool_start" || e.type === "tool_end") && e.call.name.startsWith(`mcp__${MCP_SERVER_NAME}__`)) {
             const served = e.call.name.slice(`mcp__${MCP_SERVER_NAME}__`.length);
-            const native = nativeMonitorCall(served, (e.call.input ?? {}) as Record<string, unknown>) ?? nativeBrowserCall(served, (e.call.input ?? {}) as Record<string, unknown>);
+            const input = (e.call.input ?? {}) as Record<string, unknown>;
+            const native = nativeMonitorCall(served, input) ?? nativeBrowserCall(served, input) ?? nativeWorktreeCall(served, input);
             const tool = native && this.findTool(native.name);
             if (native && tool) {
                 const call = { ...e.call, ...native };

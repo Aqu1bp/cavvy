@@ -74,11 +74,16 @@ export async function listWorktrees(root: string, deadline: number): Promise<Wor
 
 const within = (path: string, dir: string) => path.startsWith(dir.endsWith("/") ? dir : `${dir}/`);
 
-/** The worktrees beside the session's own folder: the main checkout and the others inside its folder. */
+/**
+ * The worktrees beside the session's own folder: the main checkout and the others inside its folder first, then those
+ * elsewhere (one an agent made beside the checkout). A turn gets one only if it reached it (reachedPlaces).
+ */
 export function nearby(all: readonly Worktree[], own: string): Worktree[] {
     const main = all.find((w) => w.main);
     if (!main) return [];
-    return all.filter((w) => w.path !== own && (w.main || within(w.path, main.path))).slice(0, MAX_PLACES);
+    const others = all.filter((w) => w.path !== own);
+    const inside = (w: Worktree) => w.main || within(w.path, main.path);
+    return [...others.filter(inside), ...others.filter((w) => !inside(w))].slice(0, MAX_PLACES);
 }
 
 /** The repository-relative folders of `places` inside `root`, as the snapshot's file list names them (with and without the slash). */

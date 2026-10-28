@@ -39,7 +39,7 @@ function acpDef(id: string): AgentCliDef {
 /** How a session's process is started, and spoken to: one per Cavvy session. */
 class AcpAdapter implements AgentCliAdapter {
     /** The turn under way, or the last one (set before each). */
-    current?: Pick<BackendTurn, "cwd">;
+    current?: Pick<BackendTurn, "cwd" | "orchestrator" | "readOnly">;
     /** Where the turn under way takes messages to steer it with. */
     steering?: SteerSource;
     conn?: AcpConnection;
@@ -57,7 +57,7 @@ class AcpAdapter implements AgentCliAdapter {
     }
 
     async connect(proc: JsonLinesProcess, events: CliEventSink, host: SessionHost): Promise<CliConnection> {
-        const conn = new AcpConnection(proc, events, host, this.def, this.agent, this.current?.cwd ?? homedir(), () => this.steering);
+        const conn = new AcpConnection(proc, events, host, this.def, this.agent, this.current?.cwd ?? homedir(), () => this.steering, () => (this.current?.readOnly ? undefined : this.current?.orchestrator));
         this.conn = conn;
         liveDebug("acp", "spawned", { agent: this.def.id, pid: proc.pid });
         try {

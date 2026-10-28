@@ -122,14 +122,30 @@ test("a path counts for the deepest worktree holding it: a file in .claude/workt
     expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places?.map((p) => p.branch)).toEqual(["agent/home"]);
 });
 
-test("a worktree outside the folder isn't looked at", async () => {
+test("a worktree outside the folder counts once the turn reached it, and only then", async () => {
     const { base, cwd, snapshots } = setup();
     const outside = join(base, "elsewhere");
     git(cwd, ["worktree", "add", "-q", "-b", "agent/outside", outside]);
-    await snapshots.begin(1, "elsewhere");
+    await snapshots.begin(1, "elsewhere, unreached");
     work(outside, "outside");
     await snapshots.end();
     expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places).toBeUndefined();
+    await snapshots.begin(2, "elsewhere");
+    work(outside, "outside again");
+    snapshots.reach([join(outside, "outside again.txt")]);
+    await snapshots.end();
+    expect((await snapshots.changes({ scope: "turn", turnId: 2 })).places?.map((p) => p.branch)).toEqual(["agent/outside"]);
+});
+
+test("a worktree an agent made outside the folder during the turn counts", async () => {
+    const { base, cwd, snapshots } = setup();
+    const outside = join(base, "made-meanwhile");
+    await snapshots.begin(1, "make one beside the checkout");
+    git(cwd, ["worktree", "add", "-q", "-b", "agent/beside", outside]);
+    work(outside, "beside");
+    snapshots.reach([outside]);
+    await snapshots.end();
+    expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places?.map((p) => p.branch)).toEqual(["agent/beside"]);
 });
 
 test("a turn in a linked worktree records edits in the main checkout", async () => {

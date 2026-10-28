@@ -241,6 +241,30 @@ describe("OpenCode's asks, by Cavvy's mode", () => {
     });
 });
 
+describe("Cavvy's EnterWorktree, which OpenCode has none of", () => {
+    test("goes to OpenCode on Cavvy's MCP server; the user is asked once, as it runs; OpenCode's next turn runs in the worktree", async () => {
+        const g = (...args: string[]) => Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args], { cwd });
+        g("init", "-q", "-b", "main");
+        writeFileSync(join(cwd, "readme.txt"), "hi\n");
+        g("add", "-A");
+        g("commit", "-q", "-m", "init");
+        const a = await makeAgent({ ask: () => ({ allow: true }) });
+        expect(await a.run('[[mcp:enter_worktree {"name":"oc-wt"}]]')).toBe("done");
+        const wt = join(cwd, ".claude", "worktrees", "oc-wt");
+        expect(logLines().find((l) => l.mcp)?.mcp).toEqual([{ type: "http", name: "cavvy", url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/) }]);
+        // OpenCode's own ask is answered yes; the user is asked once, by Cavvy, as the tool runs.
+        expect(answers()).toEqual([once]);
+        expect(a.asked.map((r) => r.tool.name)).toEqual(["EnterWorktree"]);
+        expect(a.events.filter((e) => e.type === "cwd")).toEqual([{ type: "cwd", cwd: wt }]);
+        expect(a.events.find((e) => e.type === "tool_start")).toMatchObject({ call: { name: "EnterWorktree", input: { name: "oc-wt" } }, title: "EnterWorktree(oc-wt)" });
+        expect(logLines().find((l) => l.mcpResult)?.mcpResult.text).toContain(`Your shell still starts in ${cwd} until this turn ends`);
+        // Its next turn: its process in the worktree, its session resumed there.
+        expect(await a.run("hello")).toBe("done");
+        expect(logLines().filter((l) => l.argv).map((l) => realpathSync(l.cwd))).toEqual([cwd, wt]);
+        expect(logLines().some((l) => l.received?.method === "session/resume" && l.received.params.cwd === wt)).toBe(true);
+    });
+});
+
 describe("the server's lists", () => {
     test("providers.list, accounts.list and the plan checks don't throw with OpenCode on", async () => {
         const { Engine } = await import("../src/server/engine");

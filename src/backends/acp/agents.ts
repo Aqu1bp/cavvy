@@ -414,6 +414,12 @@ function grokTool(call: GateCall, cwd: string): GateTool | undefined {
         case "enter_plan_mode":
         case "exit_plan_mode":
             return { toolName: call.toolName, input: i, free: true };
+        case "use_tool": {
+            // An MCP server's tool it found with search_tool: checked as that tool (below).
+            const inner = str(i.tool_name);
+            const args = i.tool_input && typeof i.tool_input === "object" && !Array.isArray(i.tool_input) ? (i.tool_input as Record<string, unknown>) : {};
+            return inner && /^[\w-]+__[\w-]+$/.test(inner) && !inner.startsWith("mcp__") ? { toolName: `mcp__${inner}`, input: args } : undefined;
+        }
         case "spawn_subagent":
             // Its subagent's calls come through the gate too, each decided as they come.
             return { toolName: "Task", input: { description: str(i.description) ?? "subagent", prompt: typeof i.prompt === "string" ? i.prompt : "", subagent_type: str(i.subagent_type) ?? str(i.agent_type) ?? "general-purpose" } };

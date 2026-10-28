@@ -180,6 +180,14 @@ describe("Cavvy's EnterWorktree and ExitWorktree", () => {
         expect(a.results[3]!.content).toContain("ExitWorktree");
         expect(existsSync(join(main, ".claude", "worktrees", "two"))).toBe(false);
     });
+
+    test("checked as a command is: Manual and Accept edits ask, Plan refuses (saying why), Bypass runs it", async () => {
+        const c = new PermissionChecker(() => ({}) as any, "/w");
+        const decide = (tool: typeof EnterWorktreeTool | typeof ExitWorktreeTool) => (["default", "acceptEdits", "plan", "bypassPermissions"] as const).map((m) => c.check(tool, {}, m, "/w").behavior);
+        expect(decide(EnterWorktreeTool)).toEqual(["ask", "ask", "deny", "allow"]);
+        expect(decide(ExitWorktreeTool)).toEqual(["ask", "ask", "deny", "allow"]);
+        expect(c.check(EnterWorktreeTool, { name: "x" }, "plan", "/w").reason).toBe("Plan mode is active: the session stays where it is, in no new worktree. Call ExitPlanMode with your plan first.");
+    });
 });
 
 // ---------------------------------------------------------------------------
