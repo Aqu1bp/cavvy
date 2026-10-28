@@ -22,8 +22,6 @@ const resize = (target?: Node) => observers.forEach((targets, fn) => { if (!targ
 const cache = positionCache();
 let reduced = false;
 const prefs = { motion: "smooth" };
-let scrollBehavior: string | undefined;
-let scrollTarget = 0;
 /** The column's MutationObserver: mutate() is its content changing, now. */
 const mutations = new Set<() => void>();
 const mutate = () => mutations.forEach((fn) => fn());
@@ -35,7 +33,6 @@ let root = node("root");
 let top = 0;
 let scrollWrites = 0;
 let viewportHeight = 500;
-let deferSmooth = false;
 let partShift = 30;
 const turnHeights = new Map<string, number>();
 /** A far turn (data-far) keeps the size it was skipped at, if one is set here, whatever it would be drawn at now. */
@@ -86,7 +83,8 @@ const decorate = (n: Node): any => Object.assign(n, {
     getBoundingClientRect: () => has(n, "transcript") ? { top: 0, bottom: viewportHeight, height: viewportHeight } : (n.props["data-turn"] && turnRects++, { top: absolute(n) - top + drawn(n), bottom: absolute(n) - top + drawn(n) + height(n), height: height(n) }),
     querySelectorAll: (selector: string) => all(n).slice(1).filter((child) => matches(child, selector)),
     querySelector: (selector: string) => (selector.startsWith("[data-turn") && turnSearches++, all(n).slice(1).find((child) => matches(child, selector))),
-    scrollTo: (options: any) => { scrollBehavior = options.behavior; scrollTarget = Math.max(0, Math.min(options.top, height(n) - viewportHeight)); if (!deferSmooth || options.behavior !== "smooth") (n as any).scrollTop = options.top; },
+    // Jumps are ours, a step a frame: the browser's smooth scroll isn't asked for.
+    scrollTo: (options: any) => { assert.notEqual(options.behavior, "smooth"); (n as any).scrollTop = options.top; },
     classList: { add() {}, remove() {}, contains: (cls: string) => has(n, cls) },
     contains: (other: Node) => { for (let x: Node | undefined = other; x; x = x.parent) if (x === n) return true; return false; },
     hasAttribute: (name: string) => n.props[name] !== undefined,
@@ -242,43 +240,43 @@ try {
     partShift += 12; resize(scroller());
     assert.equal(turn("turn-10").children[0].getBoundingClientRect().top, anchorPartTop, "scroller resize restores the reading block after reflow");
     partShift -= 12; viewportHeight = 500; resize(scroller());
-    deferSmooth = true;
+    // "Latest": a jump down of ours, a step a frame toward wherever the end is then.
+    const jumpEnd = () => height(scroller()) - viewportHeight;
+    const jumpFrom = top;
     button("jump").props.onClick();
-    assert.equal(scrollBehavior, "smooth");
+    assert.equal(top, jumpFrom, "nothing moves until the next frame");
+    flush(); scroller().props.onScroll();
+    assert.ok(top > jumpFrom && top < jumpEnd(), "a step a frame, not all at once");
     const pendingWrites = scrollWrites;
     viewportHeight = 240; resize(scroller());
-    assert.equal(scrollBehavior, "smooth", "resizing before the first scroll event keeps the jump smooth");
-    assert.equal(scrollWrites, pendingWrites);
-    scroll(1600); // A browser scroll event midway through the smooth jump.
-    const smoothWrites = scrollWrites;
-    viewportHeight = 180; resize(scroller());
-    assert.equal(scrollWrites, smoothWrites, "scroller resize must not cancel an in-flight smooth jump");
-    assert.equal(scrollTarget, 8370, "a jump retargets the new bottom when the scroller shrinks mid-flight");
-    scroll(scrollTarget - 30);
-    const nearBottomWrites = scrollWrites;
-    resize(scroller());
-    assert.equal(scrollBehavior, "smooth", "entering the following threshold must not snap the jump to its end");
-    assert.equal(scrollWrites, nearBottomWrites);
-    scroll(scrollTarget); resize(scroller());
+    assert.equal(scrollWrites, pendingWrites, "a change of size on the way writes nothing of its own: the jump goes on");
+    flush(); scroller().props.onScroll();
+    // What's below growing on the way (a turn skipped while far, drawn at its size): the motion goes on, from where
+    // it is, toward the new end. The browser's smooth scroll, asked again, started over from standing still.
+    const lastStep = (() => { const at = top; flush(); scroller().props.onScroll(); return top - at; })();
+    turnHeights.set("turn-44", 900); resize(scroller());
+    const grownAt = top;
+    flush(); scroller().props.onScroll();
+    assert.ok(top - grownAt > lastStep / 2, "growth below doesn't stall it: it keeps its pace, not starting over from still");
+    settle(); scroller().props.onScroll();
+    assert.equal(top, jumpEnd(), "it arrives at the end, wherever that went");
     assert.equal(button("jump"), undefined, "reaching the bottom resumes following");
-    deferSmooth = false;
-    viewportHeight = 500; resize(scroller());
-    assert.equal(scrollBehavior, "instant", "ordinary following resumes after the jump completes");
+    turnHeights.delete("turn-44"); viewportHeight = 500; resize(scroller());
+    assert.equal(top, jumpEnd(), "ordinary following resumes after the jump completes, at once");
     for (const input of ["onWheel", "onTouchStart", "onPointerDown", "onKeyDown"]) {
-        scroll(1200); deferSmooth = true;
+        scroll(1200);
         button("jump").props.onClick();
         // A wheel or keys toward the end interrupt the jump too; up is a scroll away (checked with the glide below).
         scroller().props[input](input === "onWheel" ? { deltaY: 3 } : input === "onKeyDown" ? { key: "ArrowDown" } : undefined);
         const pendingInterruptedWrites = scrollWrites;
-        viewportHeight = 240; resize(scroller());
-        assert.equal(scrollWrites, pendingInterruptedWrites, `${input} cancels following before the first scroll event`);
+        flush(); viewportHeight = 240; resize(scroller());
+        assert.equal(scrollWrites, pendingInterruptedWrites, `${input} stops the jump before its next step`);
         scroll(1000);
         const interruptedWrites = scrollWrites;
         viewportHeight = 240; resize(scroller());
         assert.equal(scrollWrites, interruptedWrites, `${input} interrupts the jump without resize pulling the reader back down`);
         assert.ok(button("jump"));
         viewportHeight = 500; resize(scroller());
-        deferSmooth = false;
     }
     scroll(0);
     resize(scroller());
@@ -307,25 +305,23 @@ try {
     dispose = mount(a);
     assert.equal(turn("turn-5").getBoundingClientRect().top, before, "background turns cannot page out the reading anchor");
     button("jump").props.onClick();
-    assert.equal(scrollBehavior, "smooth");
-    scroller().props.onScroll();
+    settle(); scroller().props.onScroll();
     dispose(); setATurns(turns(130)); dispose = mount(a);
     assert.equal(top, 8050, "a session left at bottom follows new turns on return");
     assert.equal(all(root).filter((n) => n.tag === "article").length, 40, "showing its last page again, not all 120 it had shown");
     scroll(0); reduced = true;
     button("jump").props.onClick();
-    assert.equal(scrollBehavior, "instant", "OS reduced motion prevents smooth jumps");
+    assert.equal(top, height(scroller()) - viewportHeight, "OS reduced motion: the jump lands at once");
     scroll(0); reduced = false; prefs.motion = "instant";
     button("jump").props.onClick();
-    assert.equal(scrollBehavior, "instant", "app motion preference prevents smooth jumps");
+    assert.equal(top, height(scroller()) - viewportHeight, "app motion preference: the jump lands at once");
     scroll(0);
-    prefs.motion = "smooth"; deferSmooth = true;
+    prefs.motion = "smooth";
     button("jump").props.onClick();
     setJump({ sessionId: "a", index: 2, seg: 0, query: "prompt", role: "user" });
     flush(); resize(); scroller().props.onScroll();
     assert.equal(turn("turn-2").getBoundingClientRect().top, 48, "explicit search navigation wins over saved position");
-    deferSmooth = false;
-    resize();
+    flush(); resize();
     assert.equal(turn("turn-2").getBoundingClientRect().top, 48);
     scroll(0); setATurns(turns(131));
     assert.ok(frames.size > 0, "sending schedules a bottom jump");
@@ -333,8 +329,32 @@ try {
     assert.equal(frames.size, 0, "disposing cancels stale frame work");
     assert.equal(observers.size, 0);
     dispose = mount(a, false);
-    setATurns(turns(132)); flush(); scroll(0);
+    setATurns(turns(132)); flush(); settle(); scroll(0);
     assert.ok(button("jump"), "a send before initial restoration still enables scroll tracking");
+    dispose();
+    // Left partway up and come back: the turn above the one read gets taller between frames (an image in it getting
+    // its size), after the place was put back and before anything says so. The next batch going in, or our write's
+    // scroll event, mustn't take where that pushed the view for the place read: it would climb every time.
+    dispose = mount(a);
+    scroll(4000);
+    const firstInView = () => all(root).find((n) => n.tag === "article" && n.getBoundingClientRect().bottom > 0) as any;
+    const placeRead = [firstInView().props["data-turn"], firstInView().getBoundingClientRect().top];
+    const aboveRead = `turn-${Number(placeRead[0].slice(5)) - 1}`;
+    for (const via of ["the next batch", "a scroll event", "the next batch again"]) {
+        dispose(); dispose = mount(b); dispose();
+        turnHeights.set(aboveRead, 200);
+        dispose = mount(a, false);
+        flush(); // The first frame: the place read put back.
+        // Batches go in (below the place read first, then above it), each time the place put back, until the turn above
+        // has gone in.
+        for (let i = 0; i < 20 && !turn(aboveRead); i++) { flush(); tasks.splice(0).forEach((fn) => fn()); }
+        assert.ok(turn(aboveRead) && frames.size + tasks.length > 0, "the turn above went in, with batches still to come");
+        turnHeights.set(aboveRead, 525);
+        if (via === "a scroll event") scroller().props.onScroll();
+        settle(); resize();
+        assert.deepEqual([firstInView().props["data-turn"], firstInView().getBoundingClientRect().top], placeRead, `back again, growth above caught by ${via}: the same place`);
+    }
+    turnHeights.delete(aboveRead);
     dispose();
     // While a turn runs, growth at the end is written once, in the next frame, and the column glides in from where it was.
     const live = { id: "live", view: { state: {}, turns: turns(45).map((t, i) => ({ ...t, status: i === 44 ? "running" : "done" })) } };
@@ -609,10 +629,8 @@ try {
     // each growth restarts the scroll every time, and never arrives while the reply streams.
     viewportHeight = 500; live.view.turns[44]!.status = "running"; turnHeights.set("turn-44", 1200); resize(); flush();
     scroller().props.onWheel({ deltaY: -100 }); scroll(bottom() - 1500);
-    deferSmooth = true;
     button("jump").props.onClick();
-    assert.equal(scrollBehavior, "smooth");
-    scroll(bottom() - 120); // The smooth scroll, most of the way there.
+    scroll(bottom() - 120); // The jump, most of the way there.
     const beforeHandoff = glides.length;
     turnHeights.set("turn-44", 1240); resize(); flush();
     assert.equal(top, bottom(), "the rest of the way at once, in the next frame");
@@ -620,7 +638,7 @@ try {
     assert.ok(glides.length > beforeHandoff);
     turnHeights.set("turn-44", 1280); resize(); flush();
     assert.equal(top, bottom(), "and growth after it glides as it does when following");
-    deferSmooth = false; glides.forEach((g) => g.anim.cancel()); live.view.turns[44]!.status = "done";
+    glides.forEach((g) => g.anim.cancel()); live.view.turns[44]!.status = "done";
     turnHeights.clear(); dispose();
     // A short conversation, all of it in view, still running: a row opened makes it overflow (the end isn't
     // followed while it's read); folded again, it all fits, and no scroll event can come to say the end is in

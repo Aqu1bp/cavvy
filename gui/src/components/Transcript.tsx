@@ -27,6 +27,8 @@ const MUTATION_MS = 40;
 /** A third scroll up within this of two taken for the engine's is the reader's (a scrollbar dragged). */
 const REPIN_MS = 300;
 const GLIDE_EASE = "cubic-bezier(0.2, 0.8, 0.2, 1)";
+/** How much of what's left a jump down covers each frame: a few thousand pixels in about half a second. */
+const JUMP_STEP = 0.2;
 
 /**
  * An observer's callback that can be let go of. WebKit keeps an IntersectionObserver with a root alive after
@@ -121,15 +123,43 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     /** Turns above the page, for "Show earlier" (not those still going in at first: grow, in onMount). */
     const hidden = () => Math.max(0, turns().length - Math.max(shown(), target));
 
+    /**
+     * A jump down ("Latest", a send from further up) is ours, a step a frame toward wherever the end is in that frame,
+     * a fifth of the way left each time. What's below often grows on the way (turns skipped while far, drawn at their
+     * size as they come near): the motion goes on to the new end. The browser's smooth scroll, asked again for the new
+     * end, starts over from standing still each time, stalling and setting off again.
+     */
+    let jumpFrame = 0;
+    const jumpStep = () => {
+        jumpFrame = 0;
+        if (!scroller || !smoothScroll) return;
+        const end = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+        const left = end - scroller.scrollTop;
+        if (left <= 1) {
+            smoothScroll = false;
+            if (left !== 0) scroller.scrollTop = end;
+        } else {
+            scroller.scrollTop += Math.max(left * JUMP_STEP, Math.min(left, 2));
+            jumpFrame = requestAnimationFrame(jumpStep);
+        }
+        wrote();
+    };
     const toBottom = (smooth = false) => {
         if (!scroller) return;
         const height = scroller.scrollHeight;
         // ResizeObserver can report both content and viewport without any new
-        // scroll range. Avoid redundant writes (and restarting a smooth jump).
+        // scroll range. Avoid redundant writes.
         if (Math.abs(Math.max(0, height - scroller.clientHeight) - scroller.scrollTop) <= 0.5) return;
         smoothScroll = smooth && prefs.motion !== "instant" && !matchMedia("(prefers-reduced-motion: reduce)").matches;
-        scroller.scrollTo({ top: height, behavior: smoothScroll ? "smooth" : "instant" });
-        if (!smoothScroll) wrote();
+        // One in flight goes on toward the new end.
+        if (smoothScroll) {
+            if (!jumpFrame) jumpFrame = requestAnimationFrame(jumpStep);
+            return;
+        }
+        cancelAnimationFrame(jumpFrame);
+        jumpFrame = 0;
+        scroller.scrollTo({ top: height, behavior: "instant" });
+        wrote();
     };
 
     // Pinned to the end while a turn runs, new content glides in rather than jumping: one scrollTop write a
@@ -413,7 +443,12 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         const grow = () => {
             growing = 0;
             if (gone || !pending()) return;
-            if (!stick()) reading = capture();
+            // Between frames, what went in last may have grown since it was put back (an image getting its size): the
+            // place read is put back before it's read again, or the reader would be held where that pushed them.
+            if (!stick()) {
+                restore();
+                reading = capture();
+            }
             // Below the place read first, then above it.
             if (trimmed() > 0) setTrimmed((n) => Math.max(0, n - MORE_TURNS));
             else setShown((n) => (n >= target ? n : Math.min(target, n + MORE_TURNS)));
@@ -432,6 +467,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     });
     onCleanup(() => {
         cancelAnimationFrame(frame);
+        cancelAnimationFrame(jumpFrame);
         stopGlide();
         // A running log can finish while this keyed view is unmounted.
         if (!stick()) for (const turn of visible()) if (turn.status === "running") openWork.add(turn.id);
@@ -550,11 +586,17 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         }
         if (up) setStick(false);
         else if (trimmed() === 0 && atBottom(top, scroller.scrollHeight, scroller.clientHeight) && (gap <= 1 || top > lastTop + 0.5)) setStick(true);
+        const moved = Math.abs(top - lastTop) > 0.5;
         lastTop = top;
         lastGap = gap;
         measureEnd();
-        // Following the end, nothing is anchored (every way out of it takes its own reading).
-        if (!stick()) reading = capture();
+        // Following the end, nothing is anchored (every way out of it takes its own reading). Read further up, a scroll
+        // that moved is the reader going somewhere else. One that didn't is our own write's, a frame later: what's above
+        // may have grown since (an image getting its size), so the place read is put back before it's read again.
+        if (!stick()) {
+            if (!moved) restore();
+            reading = capture();
+        }
         // Scroll events come before the frame's glide: growth above seen here lands here, before it's drawn.
         else if (grewAbove() && !smoothScroll) toBottom();
     };
