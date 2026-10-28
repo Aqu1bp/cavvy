@@ -13,7 +13,7 @@ import { backgroundOf } from "../../gui/src/lib/background";
 import * as turnPlaces from "../../gui/src/lib/turn-places";
 import * as agentMarks from "../../gui/src/lib/agent-marks";
 import { MarkdownRenderer } from "../../gui/src/lib/markdown";
-import { createReveal } from "../../gui/src/lib/reveal";
+import { createReveal, DrawnAgain } from "../../gui/src/lib/reveal";
 import { applyOp } from "../../src/server/timeline";
 
 const source = (file: string) => readFileSync(new URL(`../../gui/src/components/${file}.tsx`, import.meta.url), "utf8").replace(/^import [\s\S]*?;\n/gm, "");
@@ -223,7 +223,7 @@ test("streaming Markdown retains code host, highlights finished lines at a bound
     // The DOM side (lib/stream-dom.ts) is a browser's: here a block just records what it was given.
     const painted: { html: string; live: boolean; caret: boolean }[] = [];
     const Markdown = component(source("blocks/Markdown"), "Markdown", {
-        RenderBoundary: boundary(), MarkdownRenderer, createReveal,
+        RenderBoundary: boundary(), MarkdownRenderer, createReveal, DrawnAgain,
         paint: (el: Node, html: string, live: boolean, caret: boolean) => { el.props.innerHTML = html; painted.push({ html, live, caret }); },
         CodeBlock: (p: any) => { mounts++; return Code(p); },
     });
@@ -258,6 +258,35 @@ test("streaming Markdown retains code host, highlights finished lines at a bound
         expect(all(root).find((n) => has(n, "code"))).toBe(code);
         expect(text(root)).not.toContain("Couldn't render");
     } finally { dispose(); }
+});
+
+test("a streaming reply drawn again (its session switched back to) shows what has come at once, not from its start", () => {
+    const g = globalThis as any;
+    const had = { raf: g.requestAnimationFrame, caf: g.cancelAnimationFrame, doc: g.document };
+    g.requestAnimationFrame = () => 1;
+    g.cancelAnimationFrame = () => {};
+    g.document ??= { hidden: false };
+    try {
+        const first = (again: boolean) => solid.createRoot((dispose) => {
+            const [shown, behind] = createReveal(() => "Sessions keep running when the window closes.", () => true, again);
+            const out = { text: shown(), behind: behind() };
+            dispose();
+            return out;
+        });
+        // New while the reply streams: from its start, let out as the rest comes.
+        expect(first(false)).toEqual({ text: "", behind: true });
+        // Drawn again: as far as it has come.
+        expect(first(true)).toEqual({ text: "Sessions keep running when the window closes.", behind: false });
+    } finally {
+        g.requestAnimationFrame = had.raf;
+        g.cancelAnimationFrame = had.caf;
+        g.document = had.doc;
+    }
+    // The transcript says so for what it draws before its first frame; Markdown passes it on.
+    const transcript = source("Transcript");
+    expect(transcript).toContain("<DrawnAgain.Provider value={() => settling}>");
+    expect(transcript).toMatch(/requestAnimationFrame\(\(\) => \{\s*settling = false;\s*finishEntrances\(content!\);/);
+    expect(source("blocks/Markdown")).toContain("createReveal(() => p.text, () => Boolean(p.streaming), useContext(DrawnAgain)())");
 });
 
 

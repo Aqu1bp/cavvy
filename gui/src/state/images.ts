@@ -62,28 +62,70 @@ export async function keepSentImages(sessionId: string, images: readonly ImageAt
     if (key) void prompts.get(promptKey(sessionId, key), () => Promise.all(images.map(async (i) => ({ mediaType: i.mediaType, data: i.data, thumb: await previewOf(i) }))));
 }
 
+/** A reply's image kept past the reply (replyImages): its URL, and how many replies shown hold it. */
+type Kept = { url: Promise<string>; users: number };
+/** By session, reply and path, the most recent last. */
+const kept = new Map<string, Kept>();
+/** Kept that no reply shows: the most recent ones. */
+const KEEP_REPLY_IMAGES = 16;
+
+/** Lets go of the least recent past the limit that no reply shows (revoked once the viewer doesn't show them either). */
+function trimKept() {
+    for (const [key, k] of kept) {
+        if (kept.size <= KEEP_REPLY_IMAGES) return;
+        if (k.users) continue;
+        kept.delete(key);
+        void k.url.then((url) => replyUrls.drop(url), () => undefined);
+    }
+}
+
 /**
  * One reply's file images, as object URLs: the bytes it was shown with stay
- * while it streams; a later reply reads the file again. `dispose` revokes
- * them when the reply is no longer shown, or once the viewer showing one
- * closes.
+ * while it streams; a later reply reads the file again. With `replyId`, they're
+ * kept past the reply for a while: drawn again (its session switched back to),
+ * it shows them at once, the same images still decoded, rather than reading
+ * them again and laying out around a placeholder until they come. `dispose`
+ * lets go of them when the reply is no longer shown (revoked once the viewer
+ * showing one closes).
  */
-export function replyImages(sessionId: string): { load: (path: string) => Promise<string>; dispose: () => void } {
+export function replyImages(sessionId: string, replyId?: string): { load: (path: string) => Promise<string>; dispose: () => void } {
     const files = new ImageCache(16);
     const urls = new Set<string>();
+    const using = new Set<Kept>();
     let disposed = false;
-    const made = (r: { mediaType: string; data: string }) => {
-        const url = objectUrl(r);
+    const read = (path: string) => rpc.call("fs.image", { sessionId, path }).then(objectUrl);
+    const own = (url: string) => {
         if (disposed) replyUrls.drop(url);
         else urls.add(url);
         return [url];
     };
+    const keep = (path: string) => {
+        const key = `${sessionId}\0${replyId}\0${path}`;
+        let k = kept.get(key);
+        if (k) kept.delete(key);
+        else {
+            const made: Kept = { url: read(path), users: 0 };
+            // A failed read isn't kept: asked again next time.
+            made.url.catch(() => kept.get(key) === made && kept.delete(key));
+            k = made;
+        }
+        kept.set(key, k);
+        if (!disposed && !using.has(k)) {
+            using.add(k);
+            k.users++;
+        }
+        trimKept();
+        return k.url;
+    };
     return {
-        load: (path) => files.get(path, () => rpc.call("fs.image", { sessionId, path }).then(made)).then((u) => u[0]!),
+        load: (path) => (replyId ? keep(path) : files.get(path, () => read(path).then(own)).then((u) => u[0]!)),
         dispose: () => {
             disposed = true;
             for (const url of urls) replyUrls.drop(url);
             urls.clear();
+            for (const k of using) k.users--;
+            using.clear();
+            trimKept();
         },
     };
 }

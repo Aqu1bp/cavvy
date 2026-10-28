@@ -9,7 +9,7 @@ import { prefs } from "../state/prefs";
 import { anchoredTop, atBottom, FAR, firstBelow, firstWindow, MORE_TURNS, restoredShown, turnHeight, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
 import { turnAt } from "../lib/find";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
-import { revealing } from "../lib/reveal";
+import { DrawnAgain, revealing } from "../lib/reveal";
 import { observeWorkRendering } from "../lib/work-rendering";
 import { TurnView } from "./TurnView";
 import { LiveLine, motionMs } from "./LiveLine";
@@ -35,6 +35,16 @@ const GLIDE_EASE = "cubic-bezier(0.2, 0.8, 0.2, 1)";
  */
 function relay(to: { fn?: IntersectionObserverCallback }): IntersectionObserverCallback {
     return (entries, observer) => to.fn?.(entries, observer);
+}
+
+/**
+ * The entrances rows play as they first come in (a step rising into the work, "Worked for" fading in), over at once:
+ * a conversation drawn again (a session switched back to) shows them where they are rather than bringing all of them
+ * in a second time. Endless ones (a spinner, the writing dot) go on.
+ */
+function finishEntrances(el: HTMLElement) {
+    if (typeof el.getAnimations !== "function") return;
+    for (const a of el.getAnimations({ subtree: true })) if (a.effect?.getComputedTiming().iterations !== Infinity) a.finish();
 }
 
 /** `dock`: the composer dock's height (undefined until it's measured). */
@@ -64,6 +74,8 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     const [trimmed, setTrimmed] = createSignal(first.trimmed);
     let reading = saved?.anchor;
     let ready = false;
+    /** Until its first frame: drawing what the session already had (DrawnAgain), so nothing of it comes in again. */
+    let settling = true;
     let smoothScroll = false;
     let frame = 0;
     /** Where the last scroll event left the conversation (onScroll). */
@@ -357,6 +369,12 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             if (stick()) toBottom();
             else { scroller!.scrollTop = saved?.top ?? 0; restore(); }
         });
+        // Its first frame shows the conversation as it is: what was drawn for it lands, rather than coming in again.
+        const settle = requestAnimationFrame(() => {
+            settling = false;
+            finishEntrances(content!);
+        });
+        onCleanup(() => cancelAnimationFrame(settle));
         // The rest of the turns this view shows, a few at a time once the first screen is painted: each batch goes in
         // above, between frames. Followed at the end, the end stays in view; read further up, the place read stays put.
         let growing = 0;
@@ -693,10 +711,12 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                             Show {Math.min(PAGE, hidden())} earlier {hidden() === 1 ? "turn" : "turns"}
                         </button>
                     </Show>
+                    <DrawnAgain.Provider value={() => settling}>
                     <CardFoldsProvider sessionId={id}>
                         <For each={visible()}>{(t) => <TurnView turn={t} state={p.handle.view.state} agents={p.handle.view.agents} last={t === turns()[turns().length - 1]} onRewind={rewind} onFork={() => forkFrom(t)}
                             workOpen={openWork.has(t.id)} keepWorkOpen={() => !stick()} onWorkOpen={(open) => open ? openWork.add(t.id) : openWork.delete(t.id)} onToggleWork={toggleWork} held={held().has(t.id)} onElement={track} onFold={fold} />}</For>
                     </CardFoldsProvider>
+                    </DrawnAgain.Provider>
                     {/* Work that isn't a turn (a compaction, one while idle): it shows at the end, as a turn's would. */}
                     <Show when={p.handle.view.state.busy && specialActivity(p.handle.view.state.activity?.label) && !turns().some((t) => t.status === "running")}>
                         <div class="turn">
