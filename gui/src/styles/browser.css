@@ -305,6 +305,36 @@ body.resizing .br-host-tab {
     right: calc(16 * var(--sp));
     z-index: 20;
     width: min(calc(400 * var(--sp)), calc(100% - 32 * var(--sp)));
+    transform-origin: top right;
+    animation: br-float-in calc(var(--dur-panel) * 1.25) var(--ease-out);
+}
+
+/* Going: it fades, shrinking a little toward its corner, and the page with it (.br-host-tab.leaving, the same
+   origin). Not to be caught on the way out. */
+.br-float.leaving {
+    pointer-events: none;
+    animation: br-float-out calc(var(--dur-panel) * 1.25) var(--ease-in-out) forwards;
+}
+
+.br-host-tab.shown.fit.entering {
+    animation: br-float-in calc(var(--dur-panel) * 1.25) var(--ease-out);
+}
+
+.br-host-tab.shown.fit.leaving {
+    animation: br-float-out calc(var(--dur-panel) * 1.25) var(--ease-in-out) forwards;
+}
+
+@keyframes br-float-in {
+    from {
+        opacity: 0;
+    }
+}
+
+@keyframes br-float-out {
+    to {
+        opacity: 0;
+        transform: scale(0.94);
+    }
 }
 
 .br-float-card {

@@ -49,6 +49,17 @@ export function keyWidth(width: number, key: string, step = 40): number | undefi
     return undefined;
 }
 
+/**
+ * Whether it shows. Not when the agent has no tab of its own, it was closed, or the page shows elsewhere (the side
+ * panel, Settings over the conversation). Then, once the person has used it (`kept`), until they close it; otherwise
+ * while the agent's turn runs, a moment after (`lingering`) and while the pointer is on it, if the agent used the
+ * browser in this turn.
+ */
+export function floatShown(o: { agentTab: boolean; closed: boolean; elsewhere: boolean; kept: boolean; busy: boolean; lingering: boolean; hovered: boolean; usedThisTurn: boolean }): boolean {
+    if (!o.agentTab || o.closed || o.elsewhere) return false;
+    return o.kept || ((o.busy || o.lingering || o.hovered) && o.usedThisTurn);
+}
+
 /** Its host, shown after the page's title (not when the title is the host). */
 export function floatHost(url: string, title: string): string | undefined {
     try {

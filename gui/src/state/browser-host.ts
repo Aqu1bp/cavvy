@@ -30,6 +30,12 @@ export interface Shown {
     box: Box;
     by: "pane" | "float";
     fit?: boolean;
+    /**
+     * The floating view coming or going: the page fades in with it, or out and shrinking toward `origin` (its card's
+     * top right, from the box's top left) as its card does (browser.css .br-float).
+     */
+    motion?: "enter" | "leave";
+    origin?: { x: number; y: number };
 }
 
 export const [shownBrowser, setShownBrowser] = createSignal<Shown | undefined>();

@@ -64,6 +64,9 @@ function HostedWebview(p: { tab: HostedTab }) {
             const scale = box && shown.fit ? Math.min(box.width / size.width, box.height / size.height) : 1;
             wrap.classList.toggle("shown", box !== undefined);
             wrap.classList.toggle("fit", shown?.fit === true);
+            wrap.classList.toggle("entering", shown?.motion === "enter");
+            wrap.classList.toggle("leaving", shown?.motion === "leave");
+            wrap.style.transformOrigin = shown?.origin ? `${shown.origin.x}px ${shown.origin.y}px` : "";
             Object.assign(wrap.style, box ? { left: `${box.x}px`, top: `${box.y}px`, width: `${box.width}px`, height: `${box.height}px` } : { left: "0px", top: "0px", width: "1px", height: "1px" });
             Object.assign(view.style, { width: `${size.width}px`, height: `${size.height}px`, transform: scale === 1 ? "" : `scale(${scale})` });
             const key = `${size.width}x${size.height}`;
