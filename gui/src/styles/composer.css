@@ -2110,14 +2110,15 @@
     box-shadow: 0 0 0 1.5px var(--ctl-strong);
 }
 
-/* A list's heading: the provider, a note on its list, and a subscription's accounts. Where the accounts don't fit
-   beside the name, whole, they go on a line of their own (rather than cutting the name, or the first of them). */
+/* A list's heading: the provider, a note on its list, and a subscription's account. It sits above the list, so the
+   accounts list it opens covers the rows. */
 .mp-h {
+    position: relative;
+    z-index: 2;
     display: flex;
-    flex-wrap: wrap;
     align-items: center;
     flex: none;
-    gap: calc(6 * var(--sp)) calc(7 * var(--sp));
+    gap: calc(7 * var(--sp));
     min-width: 0;
     min-height: calc(32 * var(--sp));
     padding: calc(6 * var(--sp)) calc(10 * var(--sp)) calc(2 * var(--sp)) calc(15 * var(--sp));
@@ -2153,37 +2154,24 @@
     color: var(--fg-3);
 }
 
-/* A subscription's accounts: pills, the session's one filled; one alone, its name. */
-.mp-accts {
+/* A subscription's account: a quiet button with its name (and a plan near its limit), opening the list of them. */
+.mp-acct {
+    position: relative;
     display: inline-flex;
-    align-items: center;
     flex: 0 1 auto;
-    gap: calc(4 * var(--sp));
     min-width: 0;
-    margin: calc(-3 * var(--sp)) 0;
+    max-width: 60%;
+    margin: calc(-3 * var(--sp)) calc(-4 * var(--sp)) calc(-3 * var(--sp)) 0;
 }
 
-.mp-acs {
+.mp-acct-btn {
     display: inline-flex;
     align-items: center;
-    gap: calc(2 * var(--sp));
-    min-width: 0;
-    padding: calc(2 * var(--sp));
-    border-radius: var(--pill);
-    background: var(--hover);
-    overflow-x: auto;
-    scrollbar-width: none;
-}
-
-.mp-ac {
-    display: inline-flex;
-    align-items: center;
-    flex: none;
     gap: calc(5 * var(--sp));
-    max-width: calc(120 * var(--sp));
-    height: calc(22 * var(--sp));
-    padding: 0 calc(9 * var(--sp));
-    border-radius: var(--pill);
+    min-width: 0;
+    height: calc(24 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(9 * var(--sp));
+    border-radius: calc(7 * var(--sp));
     font-size: 0.821rem;
     font-weight: 500;
     white-space: nowrap;
@@ -2191,22 +2179,28 @@
     transition: background var(--dur-fast), color var(--dur-fast);
 }
 
-.mp-ac:hover:not(.on) {
+.mp-acct-btn:hover,
+.mp-acct-btn.open {
+    background: var(--hover);
     color: var(--fg);
 }
 
-.mp-ac.on {
-    background: var(--seg-on);
-    color: var(--fg);
-    box-shadow: 0 0 0 0.5px var(--line), 0 1px 2px rgba(0, 0, 0, 0.1);
+.mp-acct-btn .chev {
+    flex: none;
+    color: var(--fg-3);
+    transition: transform var(--dur-fast);
 }
 
-.mp-ac:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
+.mp-acct-btn.open .chev {
+    transform: rotate(180deg);
 }
 
-.mp-ac-lv {
+/* The session's account was removed: the button asks for another. */
+.mp-acct-btn.missing {
+    color: var(--warn);
+}
+
+.mp-acct-lv {
     flex: none;
     font-size: 0.75rem;
     font-weight: 600;
@@ -2214,25 +2208,81 @@
     color: var(--warn);
 }
 
-.mp-ac.full .mp-ac-lv {
+.mp-acct-lv.full {
     color: var(--danger);
 }
 
-.mp-ac.add {
-    width: calc(22 * var(--sp));
-    padding: 0;
-    justify-content: center;
-    background: var(--hover);
-    color: var(--fg-3);
+/* On the button, a small badge, so it doesn't read on from the name ("Work limit"). */
+.mp-acct-btn .mp-acct-lv {
+    padding: calc(2 * var(--sp)) calc(5 * var(--sp));
+    border-radius: calc(4 * var(--sp));
+    font-size: 0.714rem;
+    line-height: 1;
+    background: color-mix(in srgb, currentColor 14%, transparent);
 }
 
-.mp-ac.add:hover {
+.mp-acct-menu {
+    position: absolute;
+    top: calc(100% + 4 * var(--sp));
+    right: 0;
+    display: flex;
+    flex-direction: column;
+    width: max-content;
+    min-width: calc(180 * var(--sp));
+    max-width: calc(260 * var(--sp));
+    max-height: calc(220 * var(--sp));
+    padding: calc(4 * var(--sp));
+    overflow-y: auto;
+    border-radius: calc(9 * var(--sp));
+    background: var(--sheet);
+    box-shadow: var(--pop-shadow);
+    animation: pop var(--dur-panel) var(--ease-out);
+    transform-origin: top right;
+}
+
+.mp-acct-it {
+    display: flex;
+    align-items: center;
+    flex: none;
+    gap: calc(6 * var(--sp));
+    min-width: 0;
+    height: calc(28 * var(--sp));
+    padding: 0 calc(10 * var(--sp)) 0 calc(6 * var(--sp));
+    border-radius: calc(6 * var(--sp));
+    font-size: 0.857rem;
+    text-align: left;
+    white-space: nowrap;
     color: var(--fg);
 }
 
-.mp-acct1 {
-    font-size: 0.821rem;
+.mp-acct-it:hover,
+.mp-acct-it:focus-visible {
+    background: var(--hover);
+    outline: none;
+}
+
+.mp-acct-it .truncate {
+    flex: 1;
+}
+
+.mp-acct-it .mp-acct-lv {
+    margin-left: calc(10 * var(--sp));
+    font-weight: 500;
+}
+
+.mp-acct-ck {
+    display: inline-flex;
+    justify-content: center;
+    flex: none;
+    width: calc(16 * var(--sp));
     color: var(--fg-2);
+}
+
+.mp-acct-sep {
+    flex: none;
+    height: 1px;
+    margin: calc(4 * var(--sp)) calc(6 * var(--sp));
+    background: var(--line);
 }
 
 .mp-acct-note {

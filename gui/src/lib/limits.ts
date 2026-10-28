@@ -85,10 +85,13 @@ export function windowLine(w: MeterWindow): string {
     return [w.label, w.pct !== undefined ? `${w.pct}%` : undefined, w.reached ? "reached" : undefined].filter(Boolean).join(" ") + (w.resets ? ` · resets ${w.resets}` : "");
 }
 
-/** "40%, resets 4:40 PM": a window's bar caption in Usage (its name is beside it). Reached with no percentage: "Reached". */
+/**
+ * "40%, resets 4:40 PM": a window's bar caption in Usage (its name is beside it). A reached one isn't called reached
+ * again (the plan's banner says so), only when it resets; "Reached" only when it's all there is to say.
+ */
 export function windowCaption(w: Pick<MeterWindow, "pct" | "reached" | "resets">): string {
-    const head = w.pct !== undefined ? `${w.pct}%${w.reached ? " reached" : ""}` : w.reached ? "Reached" : "Not reported";
-    return head + (w.resets ? `, resets ${w.resets}` : "");
+    if (w.pct === undefined && w.reached) return w.resets ? `Resets ${w.resets}` : "Reached";
+    return (w.pct !== undefined ? `${w.pct}%` : "Not reported") + (w.resets ? `, resets ${w.resets}` : "");
 }
 
 /** When a reached plan lifts, for its summary: not when the one window that's reached says it already. */

@@ -32,10 +32,11 @@ test("a window with no reset time isn't taken for one that has reset (which read
     expect(windowLine(meter.windows[0]!)).toBe("5-hour 40%");
 });
 
-test("Usage's caption for a window: its percentage, or Reached when it's reached and wasn't given one", () => {
-    expect(windowCaption({ pct: 100, reached: true, resets: "3:40 PM, in 1h 6m" })).toBe("100% reached, resets 3:40 PM, in 1h 6m");
+test("Usage's caption for a window: its percentage and reset, never 'reached' again under the plan's banner", () => {
+    expect(windowCaption({ pct: 100, reached: true, resets: "3:40 PM, in 1h 6m" })).toBe("100%, resets 3:40 PM, in 1h 6m");
     expect(windowCaption({ pct: 38, reached: false, resets: "Fri" })).toBe("38%, resets Fri");
-    expect(windowCaption({ reached: true, resets: "3:40 PM, in 1h 6m" })).toBe("Reached, resets 3:40 PM, in 1h 6m");
+    expect(windowCaption({ reached: true, resets: "3:40 PM, in 1h 6m" })).toBe("Resets 3:40 PM, in 1h 6m");
+    expect(windowCaption({ reached: true })).toBe("Reached");
     expect(windowCaption({ reached: false })).toBe("Not reported");
 });
 

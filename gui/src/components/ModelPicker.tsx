@@ -96,6 +96,8 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     const [filter, setFilter] = createSignal<string>(FAVORITES);
     /** The provider filters' fades: "more-l", "more-r", where more pills are scrolled out of sight. */
     const [edges, setEdges] = createSignal("");
+    /** The heading's list of accounts is open. */
+    const [acctOpen, setAcctOpen] = createSignal(false);
     const currentRef = () => p.current?.ref ?? p.currentRef;
     const isCurrent = (ref: string) => ref === currentRef();
     const currentModel = createMemo(() => resolve(p.current, currentRef()));
@@ -187,13 +189,12 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
         if (!f) return;
         setEdges(`${f.scrollLeft > 2 ? "more-l" : ""} ${f.scrollLeft + f.clientWidth < f.scrollWidth - 2 ? "more-r" : ""}`);
     };
-    /**
-     * The heading's row of accounts, its session's account scrolled into view: with more than fit, it may be past
-     * the end. The row is new each time it shows (the picker opens, its provider is picked, a search is cleared).
-     */
-    const accountsRow = (el: HTMLElement) => {
-        acctEl = el;
-        requestAnimationFrame(() => el.querySelector(".mp-ac.on")?.scrollIntoView({ block: "nearest", inline: "nearest" }));
+    /** Opens or closes the heading's list of accounts; from the keyboard, focus goes into it (to the session's one) or back to its button. */
+    const openAccounts = (open: boolean, focus: boolean) => {
+        setAcctOpen(open);
+        if (!focus) return;
+        const to = open ? (acctEl?.querySelector(".mp-acct-it.on") ?? acctEl?.querySelector(".mp-acct-it")) : acctEl?.querySelector(".mp-acct-btn");
+        (to as HTMLElement | null | undefined)?.focus();
     };
     /** The chosen filter, scrolled into the row's view. */
     const revealFilter = () =>
@@ -206,6 +207,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
         on(
             () => p.open,
             (open) => {
+                setAcctOpen(false);
                 if (!open) return;
                 setQ("");
                 // Start where the current model lives.
@@ -231,6 +233,8 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
         revealFilter();
     };
     const filterIds = () => [FAVORITES, ...groups().map((g) => g.provider)];
+    // Another list's heading starts with its accounts closed.
+    createEffect(on(acctProvider, () => setAcctOpen(false), { defer: true }));
 
     const choose = (m: ModelSummary) => {
         if (multi()) return togglePick(m.ref);
@@ -253,6 +257,19 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
             const next = tabs[menuIndex(tabs.length, tabs.indexOf(tab as HTMLButtonElement), key)];
             next?.focus();
             next?.click();
+            return;
+        }
+        // The accounts list: ↑ and ↓ move through it, and open it from its button.
+        const moves = ["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key);
+        if (moves && target.closest(".mp-acct-menu")) {
+            e.preventDefault();
+            const items = [...(acctEl?.querySelectorAll<HTMLElement>(".mp-acct-it") ?? [])];
+            items[menuIndex(items.length, items.indexOf(target), e.key)]?.focus();
+            return;
+        }
+        if ((e.key === "ArrowDown" || e.key === "ArrowUp") && target.closest(".mp-acct-btn")) {
+            e.preventDefault();
+            openAccounts(true, true);
             return;
         }
         // ← and → in an empty search box move through the provider filters.
@@ -345,37 +362,68 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
         );
     };
 
-    /** A subscription's accounts, in its heading: the session's one filled; one alone goes by its name. */
-    const accounts = (provider: string) => (
-        <span class="mp-accts" ref={accountsRow}>
-            <Show
-                when={accountChoices(provider).length > 1 || missingAccount(provider)}
-                fallback={
-                    <span class="mp-acct1 truncate" title={accountTip(provider, accountChoices(provider)[0]!)}>
-                        {accountName(provider)}
-                    </span>
-                }
-            >
-                {/* Buttons, not radios: picking one switches the session's account (and restarts its CLI), so it waits for a click or Enter. */}
-                <span class="mp-acs" role="group" aria-label={`${providerName(provider)} account`}>
-                    <For each={accountChoices(provider)}>
-                        {(a) => {
-                            const lim = () => accountLimit(provider, a.id);
-                            return (
-                                <button class={`mp-ac ${a.id === selectedAccount(provider) ? "on" : ""} ${lim() ? (lim()!.pct >= 100 ? "full" : "hot") : ""}`} aria-pressed={a.id === selectedAccount(provider)} title={accountTip(provider, a)} onClick={() => pickAccount(provider, a)}>
-                                    <span class="truncate">{a.name}</span>
-                                    <Show when={lim()}>{(l) => <span class="mp-ac-lv">{l().pct >= 100 ? "limit" : `${l().pct}%`}</span>}</Show>
-                                </button>
-                            );
-                        }}
-                    </For>
-                </span>
-            </Show>
-            <button class="mp-ac add" title={`Add a ${providerName(provider)} account`} aria-label={`Add a ${providerName(provider)} account`} onClick={() => addAccount(provider)}>
-                <Plus size={12} stroke-width={2.25} />
-            </button>
-        </span>
-    );
+    /**
+     * A subscription's account, in its heading: the session's one, opening a short list of them to switch to or add
+     * one. Items, not radios: picking one switches the session's account (and restarts its CLI), so it waits for a
+     * click or Enter.
+     */
+    const accounts = (provider: string) => {
+        const label = `${providerName(provider)} account`;
+        const current = () => accountChoices(provider).find((a) => a.id === selectedAccount(provider));
+        const level = (pct: number, long: boolean) => <span class={`mp-acct-lv ${pct >= 100 ? "full" : ""}`}>{pct >= 100 ? (long ? "Limit reached" : "limit") : `${pct}%${long ? " used" : ""}`}</span>;
+        return (
+            <span class="mp-acct" ref={(el) => (acctEl = el)} onFocusOut={(e) => !e.currentTarget.contains(e.relatedTarget as Node | null) && setAcctOpen(false)}>
+                <button
+                    class={`mp-acct-btn ${current() ? "" : "missing"} ${acctOpen() ? "open" : ""}`}
+                    aria-haspopup="menu"
+                    aria-expanded={acctOpen()}
+                    aria-label={`${label}: ${current()?.name ?? "removed"}`}
+                    title={current() && accountTip(provider, current()!)}
+                    onClick={(e) => openAccounts(!acctOpen(), e.detail === 0)}
+                >
+                    <span class="truncate">{current()?.name ?? "Choose account"}</span>
+                    <Show when={current() && accountLimit(provider, current()!.id)}>{(l) => level(l().pct, false)}</Show>
+                    <ChevronDown size={12} class="chev" />
+                </button>
+                <Show when={acctOpen()}>
+                    <div class="mp-acct-menu" role="menu" aria-label={label}>
+                        <For each={accountChoices(provider)}>
+                            {(a) => {
+                                const on = () => a.id === selectedAccount(provider);
+                                return (
+                                    <button
+                                        class={`mp-acct-it ${on() ? "on" : ""}`}
+                                        role="menuitemradio"
+                                        aria-checked={on()}
+                                        title={accountTip(provider, a)}
+                                        onClick={() => {
+                                            pickAccount(provider, a);
+                                            openAccounts(false, true);
+                                        }}
+                                    >
+                                        <span class="mp-acct-ck">
+                                            <Show when={on()}>
+                                                <Check size={13} />
+                                            </Show>
+                                        </span>
+                                        <span class="truncate">{a.name}</span>
+                                        <Show when={accountLimit(provider, a.id)}>{(l) => level(l().pct, true)}</Show>
+                                    </button>
+                                );
+                            }}
+                        </For>
+                        <div class="mp-acct-sep" role="separator" />
+                        <button class="mp-acct-it" role="menuitem" onClick={() => addAccount(provider)}>
+                            <span class="mp-acct-ck">
+                                <Plus size={13} />
+                            </span>
+                            <span class="truncate">Add account</span>
+                        </button>
+                    </div>
+                </Show>
+            </span>
+        );
+    };
 
     /** A list's heading: the provider's mark and name, a note on its list, and its accounts. */
     const heading = (s: Section, searching: boolean) => {
@@ -426,10 +474,13 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                 initialFocus={() => {
                     // The session's account was removed (#410): it opens on that CLI's accounts, to pick another.
                     const provider = currentProvider();
-                    if (!provider || acctProvider() !== provider || !missingAccount(provider)) return input;
-                    return acctEl?.querySelector<HTMLElement>(".mp-ac:not(.add)") ?? input;
+                    if (!provider || acctProvider() !== provider || !missingAccount(provider) || !acctEl) return input;
+                    openAccounts(true, false);
+                    return acctEl.querySelector<HTMLElement>(".mp-acct-it") ?? input;
                 }}
                 onKeyDown={onKey}
+                // Escape closes the accounts list first, back to its button.
+                onEscape={() => acctOpen() && (openAccounts(false, true), true)}
                 open={p.open}
                 anchor={() => anchor}
                 onClose={() => p.setOpen(false)}
@@ -440,7 +491,8 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                 class="mp"
                 exit
             >
-                <div class="mp-wrap">
+                {/* A click anywhere else in the picker closes the accounts list. */}
+                <div class="mp-wrap" onPointerDown={(e) => acctOpen() && !acctEl?.contains(e.target as Node) && setAcctOpen(false)}>
                     <div class="mp-search">
                         <Search size={14} />
                         <input ref={input} role="combobox" aria-expanded="true" aria-controls={listId} aria-autocomplete="list" aria-activedescendant={rows()[sel()] ? `${listId}-${sel()}` : undefined} value={q()} onInput={(e) => (setQ(e.currentTarget.value), setSel(0))} placeholder="Search models…" aria-label="Search models" spellcheck={false} />
@@ -484,7 +536,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                             )}
                         </For>
                     </div>
-                    {/* Rebuilt only when the list changes, so focus on an account pill survives an update. */}
+                    {/* Rebuilt only when the list changes, so the accounts list (and focus in it) survives an update. */}
                     <Show when={!q() && sections()[0]?.key} keyed>
                         {(key) => heading({ key, name: key === FAVORITES ? "Favorites" : providerName(key), provider: key === FAVORITES ? undefined : key, rows: [] }, false)}
                     </Show>
