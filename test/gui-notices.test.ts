@@ -2,6 +2,7 @@
 // which notices sit above "Worked for", and the limit card taking the place of the turn's earlier warning.
 
 import { expect, test } from "bun:test";
+import { readFileSync } from "fs";
 import type { Block, NoticeBlock, ScheduleInfo } from "../src/server/protocol";
 
 const { codeRuns, errorParts, hasErrorCard, leadingNotices, limitTitle, listedSchedules, noticeKind, noticeReads, plainOf, shownBlocks, switchLine, waitingResume, warnParts } = await import("../gui/src/lib/notices");
@@ -103,4 +104,13 @@ test("the waiting resume shows on the last turn's latest limit card only, and th
     expect(waitingResume(card, turn, [loop])).toBeUndefined();
     expect(waitingResume(card, turn, undefined)).toBeUndefined();
     expect(waitingResume(n({ id: "b", level: "error", text: "boom" }), turn, [resume])).toBeUndefined();
+});
+
+test("only the latest limit card offers another account or the resume: earlier ones from the same stretch offer nothing", () => {
+    const src = readFileSync(new URL("../gui/src/components/blocks/Notices.tsx", import.meta.url), "utf8");
+    // `live` gates both, and the account list is only asked for while it holds.
+    expect(src).toContain("const live = () => p.latest && Boolean(current()) && (p.resetsAt === undefined || p.resetsAt > now());");
+    expect(src).toContain("const others = () => (live() ? limitAlternatives(accounts(), p.accountId) : []);");
+    expect(src).toContain("const canResume = () => !p.resume && live() && p.resetsAt !== undefined;");
+    expect(src).toContain("on(live, (on) => {");
 });

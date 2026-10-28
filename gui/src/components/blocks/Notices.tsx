@@ -257,18 +257,18 @@ function ErrorCard(p: { block: NoticeBlock; state?: SessionState }) {
 }
 
 /**
- * What a limit's card offers, when there's something to do, while the session is still on the account that's out and
- * it isn't past its reset: another account (the plan meter's switch: a new CLI thread with this conversation, and the
- * message sent again); and, on the latest card, whether it picks up again once the limit resets: "Don't continue"
- * while it waits to, "Continue after the limit resets" (in the same place, so a slip is undone there) once it doesn't.
- * Nothing to do: no row.
+ * What the latest limit's card offers, when there's something to do, while the session is still on the account that's
+ * out and it isn't past its reset: another account (the plan meter's switch: a new CLI thread with this conversation,
+ * and the message sent again); and whether it picks up again once the limit resets: "Don't continue" while it waits
+ * to, "Continue after the limit resets" (in the same place, so a slip is undone there) once it doesn't. Earlier cards
+ * from the same stretch on the limit offer nothing: the latest one says it. Nothing to do: no row.
  */
 function LimitActions(p: { provider: string; accountId: string; resetsAt?: number; state?: SessionState; latest: boolean; resume?: string }) {
     const [accounts, setAccounts] = createSignal<AccountInfo[]>([]);
     const [switching, setSwitching] = createSignal(false);
     const [toggling, setToggling] = createSignal(false);
     const current = () => p.state && (p.state.accounts?.[p.provider] ?? "default") === p.accountId && p.state.model?.provider === p.provider;
-    const live = () => Boolean(current()) && (p.resetsAt === undefined || p.resetsAt > now());
+    const live = () => p.latest && Boolean(current()) && (p.resetsAt === undefined || p.resetsAt > now());
     // Asked when the card is drawn (as the plan meter asks once a limit is reached): only a signed-in account helps.
     createEffect(
         on(live, (on) => {
@@ -295,7 +295,7 @@ function LimitActions(p: { provider: string; accountId: string; resetsAt?: numbe
         }
     }
     // A reset time to wait for, on the account that's out: the server checks it all again (Runtime.resumeAfterLimit).
-    const canResume = () => p.latest && !p.resume && live() && p.resetsAt !== undefined;
+    const canResume = () => !p.resume && live() && p.resetsAt !== undefined;
     async function toggleResume() {
         if (!p.state) return;
         setToggling(true);
