@@ -100,6 +100,9 @@ export function imageMediaType(path: string): string | undefined {
     return IMAGE_TYPES[ext];
 }
 
+/** The largest image file shown inline in a reply. */
+export const MAX_SHOWN_IMAGE = 10 * 1024 * 1024;
+
 /** An image's media type from its first bytes (PNG, JPEG, GIF or WebP), whatever its name says. */
 export function sniffImage(b: Uint8Array): string | undefined {
     const at = (i: number, ...bytes: number[]) => bytes.every((x, j) => b[i + j] === x);
