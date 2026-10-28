@@ -1188,7 +1188,8 @@ describe("Codex as the main agent", () => {
         expect(thread.developerInstructions).toContain("For OpenAI models, keep using your own sub-agents.");
         // Given once: not again as the server's instructions.
         const conn = logLines().find((l) => l.mcpConnected);
-        expect(conn).toMatchObject({ mcpConnected: "cavvy", tools: TOOLS, approvalMode: "approve" });
+        // And Cavvy's worktree tools, which Codex has none of.
+        expect(conn).toMatchObject({ mcpConnected: "cavvy", tools: [...TOOLS, "enter_worktree", "exit_worktree"], approvalMode: "approve" });
         expect(conn.instructions).toBeUndefined();
 
         const [models, delegated] = mcpResults();
@@ -1360,7 +1361,7 @@ describe("Codex as the main agent", () => {
         expect(resumes[1].developerInstructions).not.toContain("delegate");
         expect(resumes[1].threadId).toBe("thr-new");
         expect(received().some((m) => m.method === "thread/start")).toBe(false);
-        expect(notices(events)).toContain("warn: Codex didn't accept Cavvy's delegation tools (invalid config: unknown field `default_tools_approval_mode`); this session runs without them, preserving MCP restrictions.");
+        expect(notices(events)).toContain("warn: Codex didn't accept Cavvy's tools (invalid config: unknown field `default_tools_approval_mode`); this session runs without them, preserving MCP restrictions.");
         expect(notices(events).join("\n")).not.toContain("Starting a new one");
 
         const fresh = await makeAgent({ provider: "codex" });
@@ -1401,12 +1402,13 @@ describe("Codex as the main agent", () => {
         expect(notices(events).join("\n")).toContain("avoid merging server configurations");
     });
 
-    test("no server with nobody to delegate to", async () => {
+    test("no delegation with nobody to delegate to: the server has the worktree tools only", async () => {
         listings = [listing("codex", ["gpt-test"]), listing("openai", ["gpt-x"]), listing("openrouter", ["openai/gpt-y"])];
         const { run } = await makeAgent({ provider: "codex" });
         expect(await run("go")).toBe("done");
         const thread = received().find((m) => m.method === "thread/start")!.params;
-        expect(thread.config).toBeUndefined();
+        expect(Object.keys(thread.config.mcp_servers)).toEqual(["cavvy"]);
+        expect(logLines().find((l) => l.mcpConnected)?.tools).toEqual(["enter_worktree", "exit_worktree"]);
         expect(thread.developerInstructions).not.toContain("delegate");
     });
 });
@@ -2645,6 +2647,41 @@ describe("the background list across sessions, and the delegate tool's own tasks
             expect(bg.sync({ delegated: tasks.list() }).map((t) => t.status)).toEqual(["done"]);
         } finally {
             DELEGATION_LIMITS.defaultWaitMs = saved;
+        }
+    });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("EnterWorktree for Codex (it has none of its own)", () => {
+    test("Codex gets Cavvy's worktree tools; a call is asked about as EnterWorktree and moves the session; Codex's next turn starts in the worktree", async () => {
+        const g = (...args: string[]) => Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args], { cwd });
+        g("init", "-q", "-b", "main");
+        writeFileSync(join(cwd, "readme.txt"), "hi\n");
+        g("add", "-A");
+        g("commit", "-q", "-m", "init");
+        process.env.FAKE_CODEX_SCENARIOS = "mcp,cmd";
+        calls([{ tool: "enter_worktree", args: { name: "cx-wt" } }]);
+        const { run, agent, asked, events } = await makeAgent({ provider: "codex" });
+        try {
+            expect(await run("work in a new worktree")).toBe("done");
+            const wt = join(cwd, ".claude", "worktrees", "cx-wt");
+            expect((logLines().find((l) => l.mcpConnected)?.tools ?? []) as string[]).toEqual(expect.arrayContaining(["enter_worktree", "exit_worktree"]));
+            // Told to use them rather than its shell's git worktree add, which the session wouldn't follow.
+            expect(received().find((m) => m.method === "thread/start")!.params.developerInstructions).toContain("call enter_worktree rather than running git worktree add");
+            // Codex approves Cavvy's tools without asking: Cavvy asks, once, as for its own EnterWorktree.
+            expect(asked.map((r) => r.tool.name)).toEqual(["EnterWorktree"]);
+            expect(asked[0]!.callId).toMatch(/^mcp-/);
+            expect(mcpResults()[0]).toMatchObject({ tool: "enter_worktree", isError: false });
+            expect(mcpResults()[0].text).toContain(`Your shell still starts in ${cwd} until this turn ends`);
+            expect(events.flatMap((e) => (e.type === "tool_start" ? [e.call.name] : []))).toEqual(["EnterWorktree"]);
+            expect(events.filter((e) => e.type === "cwd")).toEqual([{ type: "cwd", cwd: wt }]);
+            expect(agent.state.cwd).toBe(wt);
+            // Its next turn starts there.
+            expect(await run("go on")).toBe("done");
+            expect(received().filter((m) => m.method === "turn/start").map((m) => m.params.cwd)).toEqual([cwd, wt]);
+        } finally {
+            delete process.env.FAKE_CODEX_SCENARIOS;
         }
     });
 });

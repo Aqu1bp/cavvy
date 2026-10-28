@@ -6,7 +6,7 @@ import { describe, expect, test } from "bun:test";
 import { fileURLToPath } from "url";
 import type { AgentRun, Block } from "../src/server/protocol";
 import { agentsByWorktree, agentWorktree, commandPaths, normalPath, shellWords, toolPaths, worktreeOf } from "../src/server/worktree-agents";
-import { keepWorktree, ownOnScreen, pickScope, pickWorktree, worktreeWork, type ReviewPlace } from "../gui/src/lib/worktree-work";
+import { followAgent, keepWorktree, ownOnScreen, pickScope, pickWorktree, workingBranch, worktreeWork, type ReviewPlace } from "../gui/src/lib/worktree-work";
 import { viewMenu } from "../gui/src/lib/review-stack";
 
 const HOME = "/Users/me";
@@ -210,6 +210,28 @@ describe("the reader's choice of worktree", () => {
         const home = pickWorktree(pickScope(there, "uncommitted"), undefined);
         expect(home).toEqual({ scope: "turn", base: "origin/main" });
         expect(menu(home, 1).turns[0]!.on).toBe(true);
+    });
+
+    test("follows the agent: into the worktree it moved to, on its branch; back home when it leaves that one, not from one the user picked", () => {
+        const there = followAgent(own, TMP, undefined);
+        expect(there).toEqual({ worktree: TMP, scope: "branch", own: { scope: "last-turn", base: "origin/main" } });
+        // Already there (the reader opened on it): unchanged, whatever view the user moved to.
+        const uncommitted = pickScope(there, "uncommitted");
+        expect(followAgent(uncommitted, TMP, undefined)).toBe(uncommitted);
+        // Moving on to another: that one.
+        expect(followAgent(there, NESTED, TMP).worktree).toBe(NESTED);
+        // Leaving it: home, with the session's own view.
+        expect(followAgent(there, undefined, TMP)).toEqual({ scope: "last-turn", base: "origin/main" });
+        // The user looks at another worktree than the one the agent left: it stays.
+        const picked = pickWorktree(own, NESTED);
+        expect(followAgent(picked, undefined, TMP)).toBe(picked);
+        expect(followAgent(own, undefined, undefined)).toBe(own);
+    });
+
+    test("the header's name for where the agent works: its branch, else its commit", () => {
+        expect(workingBranch({ path: TMP, branch: "worktree-ui-fixes" })).toBe("worktree-ui-fixes");
+        expect(workingBranch({ path: TMP, head: "0123456789abcdef" })).toBe("Detached · 0123456");
+        expect(workingBranch({ path: TMP })).toBe("Worktree");
     });
 
     test("the session's own actions wait for the session's own answer: back from another worktree, its diff stays on screen until the session's comes", () => {

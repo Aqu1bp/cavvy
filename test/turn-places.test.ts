@@ -49,6 +49,8 @@ function work(path: string, tag: string) {
 test("a turn that works in a worktree inside the folder lists it as a place: its branch against main, committed or not", async () => {
     const { wt, snapshots } = setup(["home", "idle"]);
     await snapshots.begin(1, "port the home screen");
+    // As a tool call names a file there.
+    snapshots.reach([join(wt("home"), "a.txt")]);
     work(wt("home"), "home");
     await snapshots.end();
     const info = await snapshots.changes({ scope: "turn", turnId: 1 });
@@ -67,6 +69,7 @@ test("only what the turn worked in: an untouched worktree isn't listed, one made
     const { cwd, wt, snapshots } = setup(["idle", "busy"]);
     write(wt("idle"), "before.txt", "dirty before the turn\n");
     await snapshots.begin(1, "fan out");
+    snapshots.reach([wt("busy"), wt("fresh")]);
     work(wt("busy"), "busy");
     git(cwd, ["worktree", "add", "-q", "-b", "agent/fresh", wt("fresh")]);
     work(wt("fresh"), "fresh");
@@ -83,6 +86,7 @@ test("a file edited again in a worktree that was already dirty still counts as w
     const { wt, snapshots } = setup(["dirty"]);
     write(wt("dirty"), "a.txt", "one\ntwo\nthree\n");
     await snapshots.begin(1, "keep going");
+    snapshots.reach([join(wt("dirty"), "a.txt")]);
     await Bun.sleep(5);
     write(wt("dirty"), "a.txt", "one\ntwo\nthree\nfour\n");
     await snapshots.end();
@@ -90,20 +94,65 @@ test("a file edited again in a worktree that was already dirty still counts as w
     expect(info.places?.map((p) => [p.branch, p.files, p.added])).toEqual([["agent/dirty", 1, 2]]);
 });
 
-test("a worktree outside the folder isn't looked at", async () => {
+test("a worktree that changed while the turn ran, but that it never reached, isn't its place: another session works there", async () => {
+    const { wt, snapshots } = setup(["ours", "theirs"]);
+    await snapshots.begin(1, "trim the copy");
+    snapshots.reach([join(wt("ours"), "a.txt")]);
+    work(wt("ours"), "ours");
+    // Another session, or the user, at work in the other one meanwhile.
+    work(wt("theirs"), "theirs");
+    await snapshots.end();
+    expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places?.map((p) => p.branch)).toEqual(["agent/ours"]);
+    // Nothing reached: nothing listed, whatever changed.
+    await snapshots.begin(2, "just talk");
+    work(wt("theirs"), "more");
+    await snapshots.end();
+    expect((await snapshots.changes({ scope: "turn", turnId: 2 })).places).toBeUndefined();
+});
+
+test("a path counts for the deepest worktree holding it: a file in .claude/worktrees is that worktree's, not the main checkout's", async () => {
+    const { cwd, dir, wt } = setup(["task", "home"]);
+    const snapshots = new TurnSnapshots(dir, wt("task"));
+    await snapshots.begin(1, "work in home");
+    snapshots.reach([join(wt("home"), "a.txt"), join(wt("task"), "a.txt")]);
+    work(wt("home"), "home");
+    // The main checkout changed too, but nothing the turn named is in it.
+    write(cwd, "a.txt", "one\ntwo\nsomeone else\n");
+    await snapshots.end();
+    expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places?.map((p) => p.branch)).toEqual(["agent/home"]);
+});
+
+test("a worktree outside the folder counts once the turn reached it, and only then", async () => {
     const { base, cwd, snapshots } = setup();
     const outside = join(base, "elsewhere");
     git(cwd, ["worktree", "add", "-q", "-b", "agent/outside", outside]);
-    await snapshots.begin(1, "elsewhere");
+    await snapshots.begin(1, "elsewhere, unreached");
     work(outside, "outside");
     await snapshots.end();
     expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places).toBeUndefined();
+    await snapshots.begin(2, "elsewhere");
+    work(outside, "outside again");
+    snapshots.reach([join(outside, "outside again.txt")]);
+    await snapshots.end();
+    expect((await snapshots.changes({ scope: "turn", turnId: 2 })).places?.map((p) => p.branch)).toEqual(["agent/outside"]);
+});
+
+test("a worktree an agent made outside the folder during the turn counts", async () => {
+    const { base, cwd, snapshots } = setup();
+    const outside = join(base, "made-meanwhile");
+    await snapshots.begin(1, "make one beside the checkout");
+    git(cwd, ["worktree", "add", "-q", "-b", "agent/beside", outside]);
+    work(outside, "beside");
+    snapshots.reach([outside]);
+    await snapshots.end();
+    expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places?.map((p) => p.branch)).toEqual(["agent/beside"]);
 });
 
 test("a turn in a linked worktree records edits in the main checkout", async () => {
     const { cwd, wt, dir } = setup(["task"]);
     const snapshots = new TurnSnapshots(dir, wt("task"));
     await snapshots.begin(1, "edit the main checkout too");
+    snapshots.reach([join(cwd, "a.txt")]);
     write(cwd, "a.txt", "one\ntwo\nmain edit\n");
     await snapshots.end();
     const info = await snapshots.changes({ scope: "turn", turnId: 1 });
@@ -128,6 +177,7 @@ test("reading the worktrees inherits no git tracing: no trace file, and the plac
     process.env.GIT_TRACE = trace;
     try {
         await snapshots.begin(1, "a traced parent process");
+        snapshots.reach([wt("home")]);
         work(wt("home"), "home");
         await snapshots.end();
     } finally {
@@ -141,9 +191,11 @@ test("reading the worktrees inherits no git tracing: no trace file, and the plac
 test("at a steering boundary, what the next turn does in a worktree isn't the turn before's", async () => {
     const { wt, snapshots } = setup(["home"]);
     await snapshots.begin(1, "first");
+    snapshots.reach([wt("home")]);
     work(wt("home"), "home");
     // The boundary is captured when the steered prompt goes; the turn before is finished only later.
     const boundary = await snapshots.prepare();
+    snapshots.reach([wt("home")]);
     write(wt("home"), "next.txt", "the next turn's\n");
     await snapshots.beginWith(2, "steered", boundary);
     await snapshots.end();
@@ -178,6 +230,7 @@ test("a file swapped in by rename, the same size and time, still counts (its ino
     write(wt("swap"), "a.txt", "one\nTWO\n");
     const { mtime } = statSync(join(wt("swap"), "a.txt"));
     await snapshots.begin(1, "save as an editor does");
+    snapshots.reach([join(wt("swap"), "a.txt")]);
     write(wt("swap"), "a.tmp", "one\nTW0\n");
     utimesSync(join(wt("swap"), "a.tmp"), mtime, mtime);
     renameSync(join(wt("swap"), "a.tmp"), join(wt("swap"), "a.txt"));
@@ -225,6 +278,7 @@ test("reading a worktree runs none of the repository's programs: a clean filter 
     git(cwd, ["config", "filter.mark.process", `sh -c 'touch "${marker}"'`]);
     write(wt("filtered"), ".gitattributes", "*.txt filter=mark\n");
     await snapshots.begin(1, "edit a filtered file");
+    snapshots.reach([wt("filtered")]);
     write(wt("filtered"), "a.txt", "one\ntwo\nthree\n");
     write(wt("filtered"), "b.txt", "new\n");
     await snapshots.end();
@@ -254,6 +308,7 @@ test("a worktree's folder swapped for a link to another repository isn't read", 
 test("a file untracked but kept (git rm --cached) isn't counted twice: the place is counted as the diff reader shows it", async () => {
     const { wt, snapshots } = setup(["untracked"]);
     await snapshots.begin(1, "stop tracking a file");
+    snapshots.reach([wt("untracked")]);
     git(wt("untracked"), ["rm", "-q", "--cached", "a.txt"]);
     write(wt("untracked"), "a.txt", "one\ntwo\nthree\n");
     await snapshots.end();
@@ -267,6 +322,7 @@ test("a file untracked but kept (git rm --cached) isn't counted twice: the place
 test("a turn's places are kept: reopened, the session shows them as they were", async () => {
     const { cwd, dir, wt, snapshots } = setup(["home"]);
     await snapshots.begin(1, "port the home screen");
+    snapshots.reach([wt("home")]);
     work(wt("home"), "home");
     await snapshots.end();
     // Later work on the branch doesn't change what the turn recorded.

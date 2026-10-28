@@ -23,7 +23,7 @@
 
 import { createHash, randomUUID } from "crypto";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readlinkSync, readSync, realpathSync, writeFileSync, type Stats } from "fs";
-import { basename, dirname, join } from "path";
+import { basename, dirname, isAbsolute, join } from "path";
 import type { HookConfig } from "../config/settings";
 import { cavvyHome } from "../config/paths";
 import { backendMatcher, claudeCodeHookOutput, type HookEvent } from "../agent/hooks";
@@ -61,6 +61,7 @@ import {
     claudeConfigDir,
     claudeGoal,
     claudeVersionAtLeast,
+    claudeWorktreeMove,
     describeBackground,
     endedBadly,
     handedBack,
@@ -1015,6 +1016,9 @@ export class ClaudeConnection implements CliConnection {
     /** A turn begins: a prompt of ours (or a carrier), or one Claude Code starts by itself. */
     private onInit(m: Record<string, any>) {
         this.startTurn(m);
+        // Where it works this turn: a worktree it entered stays its folder, across turns and when resumed. The session's
+        // to know whatever the turn is (one of its own, hidden here, too).
+        if (typeof m.cwd === "string" && isAbsolute(m.cwd)) this.events({ t: "cwd", cwd: m.cwd });
         // It runs these itself when one is the prompt (/context, a skill): they aren't mistyped commands.
         // Not Cavvy's own skills (cavvy:name): the menus have those already.
         const names = cliCommandNames(m.slash_commands)?.filter((n) => !n.startsWith(CLAUDE_PREFIX));
@@ -1680,6 +1684,8 @@ export class ClaudeConnection implements CliConnection {
             }
             const structured = blocks.length === 1 && !b.is_error ? resultDisplay(p, m.tool_use_result, this.cfg.cwd) : undefined;
             this.endTool(b.tool_use_id, p, content, Boolean(b.is_error), structured);
+            const moved = blocks.length === 1 && !b.is_error ? claudeWorktreeMove(p.name, m.tool_use_result) : undefined;
+            if (moved) this.events({ t: "cwd", cwd: moved });
         }
     }
 
@@ -2295,6 +2301,7 @@ export class ClaudeLive {
             if (e.t === "task") host.emitSession?.({ type: "background_task", task: e.task, accountId: live.account });
             else if (e.t === "turn_event") host.emitSession?.({ type: "event", event: e.event });
             else if (e.t === "limits") host.limits?.(e.limits, e.partial);
+            else if (e.t === "cwd") host.emitSession?.({ type: "event", event: { type: "cwd", cwd: e.cwd } });
         });
     }
 

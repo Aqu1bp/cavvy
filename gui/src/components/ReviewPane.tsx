@@ -31,7 +31,7 @@ import { newCommentId, reviewComments } from "../state/review-comments";
 import { PublishStatus } from "./PublishStatus";
 import { BasePicker } from "./BasePicker";
 import { facts, rankedWorktrees, ReviewWorktreePicker, usable, workNamed, worktreeLabel } from "./ReviewWorktreePicker";
-import { keepWorktree, ownOnScreen, pickScope, pickWorktree, requestWorktree, worktreeWork, type ReviewPlace, type WorktreeWork } from "../lib/worktree-work";
+import { followAgent, keepWorktree, ownOnScreen, pickScope, pickWorktree, requestWorktree, worktreeWork, type ReviewPlace, type WorktreeWork } from "../lib/worktree-work";
 import { Spinner } from "./ui/bits";
 import { Menu } from "./ui/Menu";
 
@@ -628,7 +628,12 @@ export function ReviewPane(p: { handle: SessionHandle }) {
         return r?.scope ? pickScope(here, r.scope) : here;
     };
     // Which folder, view and base: the session's own, or another worktree's (lib/worktree-work.ts); kept per session while the app runs.
-    const [place, setPlace] = createSignal<ReviewPlace>(opened({ worktree: saved?.worktree, scope: saved?.scope ?? "uncommitted", base: saved?.base, own: saved?.own }, review()));
+    // First opened while the agent works in another worktree: that one.
+    const agentIn = () => p.handle.view.state.workingIn?.path;
+    const start: ReviewPlace = saved ? { worktree: saved.worktree, scope: saved.scope ?? "uncommitted", base: saved.base, own: saved.own } : followAgent({ scope: "uncommitted" }, agentIn(), undefined);
+    const [place, setPlace] = createSignal<ReviewPlace>(opened(start, review()));
+    // The agent moving while the reader is open: it follows.
+    createEffect(on(agentIn, (now, was) => setPlace((c) => followAgent(c, now, was)), { defer: true }));
     const scope = () => place().scope;
     const base = () => place().base;
     /** Another worktree being looked at; undefined for the session's own folder. */

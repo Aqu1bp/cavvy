@@ -453,6 +453,9 @@ export class PermissionChecker {
             if (isBrowserTool(tool.name) && tool.category === "execute" && !isReadOnly(tool, input)) {
                 return { behavior: "deny", reason: "Plan mode is active: the browser can be opened and read (snapshots, screenshots, logs), but not clicked, typed into or scripted. Call ExitPlanMode with your plan first." };
             }
+            if (tool.name === "EnterWorktree" || tool.name === "ExitWorktree") {
+                return { behavior: "deny", reason: "Plan mode is active: the session stays where it is, in no new worktree. Call ExitPlanMode with your plan first." };
+            }
             // Commit, push, open a pull request.
             if (tool.category === "execute" && !isShellTool(tool.name) && !isReadOnly(tool, input)) {
                 return { behavior: "deny", reason: "Plan mode is active: nothing can be committed or pushed. Call ExitPlanMode with your plan first." };

@@ -17,8 +17,11 @@ import { gitArgv } from "../util/git";
 import { coalesce, type Slot } from "../server/coalesce";
 import { MAX_DIFF_INPUT } from "../server/diffs";
 import type { GitChangesInfo, GitScope, TurnPlace } from "../server/protocol";
-import { eachLimited, fingerprint, insideRoot, listWorktrees, nearby, summarize, UNKNOWN, WorktreeChecks, type Checked, type Worktree } from "./turn-places";
+import { eachLimited, fingerprint, insideRoot, listWorktrees, nearby, reachedPlaces, summarize, UNKNOWN, WorktreeChecks, type Checked, type Worktree } from "./turn-places";
 import { redact } from "../util/redact";
+
+/** Paths a turn reached that are kept (TurnSnapshots.reach): past this many, the rest go unseen. */
+const MAX_REACHED = 20_000;
 
 export interface TurnCapture {
     tree?: string;
@@ -125,6 +128,8 @@ export class TurnSnapshots {
     private worktreesListed = false;
     /** Which listed worktree folders really are them (turn-places.ts), kept while each folder stays the same one. */
     private checks = new WorktreeChecks();
+    /** Where the open turn worked (reach): only a worktree it reached can be one it worked in. */
+    private reached = new Set<string>();
     private readonly storage: string;
     private readonly journal: string;
 
@@ -223,11 +228,29 @@ export class TurnSnapshots {
         return git(this.root ?? this.cwd, ["-c", "core.hooksPath=/dev/null", "-c", "core.splitIndex=false", "-c", "core.sharedRepository=0600", ...args], { privateEnv: this.env(), input, deadline });
     }
 
+    /**
+     * The open turn worked at `paths` (absolute): the folder its agent works in, the files and folders its tool calls
+     * name. A nearby worktree that changed while it ran is one it worked in only if it reached it: another session, or
+     * the user, can be working there meanwhile. Taken as the turn ends, when it's asked to (end, begin), whatever
+     * capture is still queued then.
+     */
+    reach(paths: Iterable<string>) {
+        for (const p of paths) if (isAbsolute(p) && this.reached.size < MAX_REACHED) this.reached.add(p);
+    }
+
+    /** What the open turn reached, from now on the next one's. */
+    private takeReached(): Set<string> {
+        const was = this.reached;
+        this.reached = new Set();
+        return was;
+    }
+
     /** A steering boundary is both the preceding turn's end and the next one's start. */
     begin(id: number, prompt: string): Promise<void> {
+        const reached = this.takeReached();
         return this.record(async () => {
             if (this.stopped) return;
-            await this.open(id, prompt, await this.marks(await this.capture()));
+            await this.open(id, prompt, await this.marks(await this.capture(), reached));
         });
     }
 
@@ -237,13 +260,16 @@ export class TurnSnapshots {
      */
     prepare(): Promise<TurnCapture | undefined> {
         let captured: TurnCapture | undefined;
+        // The open turn goes on if the prompt doesn't: what it reached stays its own.
+        const reached = new Set(this.reached);
         return this.record(async () => {
-            if (!this.stopped) captured = await this.marks(await this.capture());
+            if (!this.stopped) captured = await this.marks(await this.capture(), reached);
         }).then(() => captured);
     }
 
     /** As `begin`, from what `prepare` captured. */
     beginWith(id: number, prompt: string, captured: TurnCapture | undefined): Promise<void> {
+        this.takeReached();
         return this.record(() => this.open(id, prompt, captured));
     }
 
@@ -258,9 +284,10 @@ export class TurnSnapshots {
     }
 
     end(): Promise<void> {
+        const reached = this.takeReached();
         return this.record(async () => {
             if (!this.active || this.stopped) return;
-            const captured = await this.marks(await this.capture());
+            const captured = await this.marks(await this.capture(), reached);
             if (this.stopped) return;
             await this.finish(captured ?? { incomplete: true, notes: ["The repository is no longer available."], skipped: pathMap(), durationMs: 0 });
         });
@@ -299,10 +326,11 @@ export class TurnSnapshots {
 
     /**
      * Each nearby worktree's fingerprint (turn-places.ts); and, at the end of a turn that's open, the ones it worked
-     * in (changed, or new, since it began), summed up now: at a steering boundary the next turn may already be under
-     * way by the time this one is finished, and what it does isn't this one's. Not when either end went unmarked.
+     * in (changed, or new, since it began, and `reached`), summed up now: at a steering boundary the next turn may
+     * already be under way by the time this one is finished, and what it does isn't this one's. Not when either end
+     * went unmarked.
      */
-    private async marks(captured: TurnCapture | undefined): Promise<TurnCapture | undefined> {
+    private async marks(captured: TurnCapture | undefined, reached: ReadonlySet<string> = new Set()): Promise<TurnCapture | undefined> {
         if (!captured?.root || this.stopped || !this.worktreesListed) return captured;
         const deadline = Date.now() + 1500;
         // Only folders that really are those worktrees are read (one swapped for a link isn't); the rest go unmarked.
@@ -313,7 +341,8 @@ export class TurnSnapshots {
         captured.places = after;
         const before = this.active?.start.places;
         if (before && !this.stopped) {
-            const worked = checked.filter((w) => after[w.path] !== UNKNOWN && before[w.path] !== UNKNOWN && after[w.path] !== before[w.path]);
+            const changed = checked.filter((w) => after[w.path] !== UNKNOWN && before[w.path] !== UNKNOWN && after[w.path] !== before[w.path]);
+            const worked = reachedPlaces(changed, [root, ...checked.map((w) => w.path)], reached);
             if (worked.length) {
                 const until = Date.now() + 3000;
                 captured.worked = await eachLimited(worked, 4, (w) => summarize(w, until));

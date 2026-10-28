@@ -19,7 +19,8 @@ import { randomUUID } from "crypto";
 import { closeSync, constants, fstatSync, openSync, readSync } from "fs";
 import { isAbsolute, resolve } from "path";
 import type { AgentEvent, TurnEndReason } from "../../agent/agent";
-import { APP_TITLE, APP_VERSION } from "../../config/paths";
+import { APP_NAME, APP_TITLE, APP_VERSION } from "../../config/paths";
+import { servedWorktreeArgs, servedWorktreeName } from "../../tools/worktree-tools";
 import { stableStringify } from "../../permissions/classifier";
 import type { PermissionMode } from "../../permissions/modes";
 import type { Usage } from "../../providers/types";
@@ -30,7 +31,7 @@ import type { AgentCliDef, CliCapabilities } from "../defs";
 import { liveDebug } from "../live/debug";
 import { PromptRefused } from "../live/session";
 import type { CliConnection, CliEventSink, LiveSettings, TurnInput } from "../live/types";
-import type { BackendPermission, PermissionAnswer, SessionHost, SteerMessage } from "../types";
+import type { BackendPermission, OrchestratorServer, PermissionAnswer, SessionHost, SteerMessage } from "../types";
 import { gateDeadlineMs, type AcpAgent, type GateCall, type GateTool } from "./agents";
 import { AcpError, AcpGone, AcpRpc, METHOD_NOT_FOUND } from "./rpc";
 
@@ -194,6 +195,8 @@ export class AcpConnection implements CliConnection {
         private cwd: string,
         /** The turn running's, set by the backend with each. */
         private steering: () => SteerSource | undefined = () => undefined,
+        /** Cavvy's MCP server for the session's turns (its worktree tools), if it has one. */
+        private orchestrator: () => OrchestratorServer | undefined = () => undefined,
     ) {
         this.caps = { ...def.caps };
         this.rpc = new AcpRpc(proc, (m, p) => this.onNotification(m, p), (m, p) => this.onRequest(m, p));
@@ -216,12 +219,13 @@ export class AcpConnection implements CliConnection {
     async open(o: { resumeId?: string; fork?: boolean; settings: LiveSettings }): Promise<{ sessionId: string }> {
         if (o.fork) throw new Error(`${this.def.name} sessions can't be forked here`);
         const meta = this.agent.sessionMeta?.(o.settings.mode);
-        const params = { cwd: this.cwd, mcpServers: [], ...(meta ? { _meta: meta } : {}) };
+        const params = { cwd: this.cwd, mcpServers: this.mcpServers(), ...(meta ? { _meta: meta } : {}) };
         this.opened = JSON.stringify(meta ?? null);
         if (o.resumeId) {
             const can = this.init.agentCapabilities ?? {};
             let r: any;
             try {
+                if (this.agent.keepsFolder && can.sessionCapabilities?.list && !(await this.listed(o.resumeId))) throw new Error("it was made in another folder");
                 // session/resume doesn't replay the history; session/load does, as updates before its answer.
                 if (can.sessionCapabilities?.resume) r = await this.rpc.request("session/resume", { ...params, sessionId: o.resumeId });
                 else if (can.loadSession) {
@@ -247,6 +251,31 @@ export class AcpConnection implements CliConnection {
         }
         await this.apply(o.settings);
         return { sessionId: this.sessionId! };
+    }
+
+    /** Whether session/list has the session in this folder: yes too when it can't say (it fails, or lists too many). */
+    private async listed(sessionId: string): Promise<boolean> {
+        let cursor: string | undefined;
+        for (let page = 0; page < 20; page++) {
+            const r = await this.rpc.request("session/list", { cwd: this.cwd, ...(cursor ? { cursor } : {}) }).catch(() => undefined);
+            if (!Array.isArray(r?.sessions)) return true;
+            if (r.sessions.some((s: any) => s?.sessionId === sessionId)) return true;
+            if (typeof r.nextCursor !== "string" || !r.nextCursor) return false;
+            cursor = r.nextCursor;
+        }
+        return true;
+    }
+
+    /** Cavvy's MCP server, to an agent that takes one over HTTP (ACP's mcpCapabilities). */
+    private mcpServers(): unknown[] {
+        const o = this.orchestrator();
+        if (!o || !this.init.agentCapabilities?.mcpCapabilities?.http) return [];
+        return [{ type: "http", name: o.name, url: o.url, headers: [{ name: "Authorization", value: o.authorization }] }];
+    }
+
+    /** Whether Cavvy's MCP server offers this tool of its own (enter_worktree) this turn. */
+    private offered(tool: string | undefined): boolean {
+        return tool !== undefined && Boolean(this.orchestrator()?.tools.includes(tool));
     }
 
     private noteSession(r: any) {
@@ -848,6 +877,11 @@ export class AcpConnection implements CliConnection {
             return { outcome: { outcome: "selected", optionId: once } };
         }
         const known = id ? turn.tools.get(id) : undefined;
+        // Cavvy's own tool (EnterWorktree), while its server offers it: checked when it runs, as Cavvy's own call is.
+        if (once && this.offered(servedCall({ kind: toolCall?.kind ?? known?.kind, title: toolCall?.title ?? known?.title, rawInput: toolCall?.rawInput ?? known?.rawInput })?.tool)) {
+            liveDebug("acp", "ask about Cavvy's own tool: yes", { id });
+            return { outcome: { outcome: "selected", optionId: once } };
+        }
         if (id && !known?.call) {
             // Asked about before any update said what it is: its row starts from the ask.
             const t = known ?? { id };
@@ -974,6 +1008,9 @@ export class AcpConnection implements CliConnection {
         const main = call.sessionId === this.sessionId;
         const own = gate.tool(call, this.cwd);
         if (own?.refuse) return { allow: false, reason: own.refuse };
+        // Cavvy's own tool (EnterWorktree), while its server offers it: checked when it runs, as Cavvy's own call is.
+        const served = own && servedWorktreeName(own.toolName);
+        if (served && servedWorktreeArgs(served, own.input) && this.offered(served)) return { allow: true, decided: false };
         const label = main ? undefined : (this.children.get(call.sessionId) ?? call.subagentType ?? `${this.def.name} subagent`);
         /** One the mode doesn't decide: unasked, and Plan doesn't refuse it, but deny rules and Cavvy's protections do. */
         const exempt = async (r: GateTool, decided: boolean, planFile?: string): Promise<GateDecision> => {
@@ -1067,9 +1104,29 @@ function pathsOf(raw: Record<string, any> | undefined, locations: { path: string
     return [...new Set(out.map((p) => abs(p, cwd)))];
 }
 
+/**
+ * A call of Cavvy's own MCP tools (its worktree tools), by its MCP name: Grok's goes through its use_tool (the tool's
+ * name and arguments in its input), OpenCode's is named for the tool. Cavvy checks it as it runs, as its own call.
+ */
+function servedCall(t: Pick<ToolState, "kind" | "title" | "rawInput">): { tool: string; name: string; input: Record<string, unknown> } | undefined {
+    const raw = t.rawInput ?? {};
+    const viaUse = servedWorktreeName(raw.tool_name);
+    if (viaUse) {
+        const input = raw.tool_input && typeof raw.tool_input === "object" && !Array.isArray(raw.tool_input) ? raw.tool_input : {};
+        return servedWorktreeArgs(viaUse, input) ? { tool: viaUse, name: `mcp__${APP_NAME}__${viaUse}`, input } : undefined;
+    }
+    // By its name only as an MCP tool's call is (kind other) with only the tool's arguments: OpenCode names a command,
+    // a file or a search by what it runs or reads, so `cavvy_exit_worktree` can be one of those too.
+    if (t.kind !== undefined && t.kind !== "other") return undefined;
+    const named = servedWorktreeName(t.title);
+    return named && servedWorktreeArgs(named, raw) ? { tool: named, name: `mcp__${APP_NAME}__${named}`, input: raw } : undefined;
+}
+
 /** A call as one of Cavvy's tools, by its kind; another kind as its own name. */
 function cavvyTool(t: ToolState, cwd: string): { name: string; input: Record<string, unknown> } {
     const raw = t.rawInput ?? {};
+    const served = servedCall(t);
+    if (served) return served;
     const path = pathsOf(raw, t.locations, cwd)[0];
     switch (t.kind) {
         case "execute":

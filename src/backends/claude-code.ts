@@ -30,7 +30,7 @@
 import type { HookConfig } from "../config/settings";
 import { backendMatcher, claudeCodeHookOutput, type HookEvent } from "../agent/hooks";
 import { homedir } from "os";
-import { basename, join } from "path";
+import { basename, isAbsolute, join } from "path";
 import type { AssistantMessage, ChatRequest, ImagePart, ModelInfo, PdfPart, Usage } from "../providers/types";
 import { ONE_OFF_TIMEOUT_MS, oneOffAnswer, oneOffPrompt, oneOffRefusal } from "./one-off";
 import { ProviderError } from "../providers/types";
@@ -1552,6 +1552,8 @@ class ClaudeTurn {
                 // No API key behind it: the turn runs on the user's plan, not per-token billing.
                 this.billedToPlan = m.apiKeySource === "none";
                 if (typeof m.model === "string") this.resolvedModel = m.model;
+                // Where it works this turn: a worktree it entered stays its folder, across turns and when resumed.
+                if (typeof m.cwd === "string" && isAbsolute(m.cwd)) this.sink.emit({ type: "cwd", cwd: m.cwd });
                 // It runs these itself when one is the prompt (/context, a skill): they aren't mistyped commands.
                 // Not Cavvy's own skills (cavvy:name): the menus have those already.
                 const names = cliCommandNames(m.slash_commands)?.filter((n) => !n.startsWith(CLAUDE_PREFIX));
@@ -1796,6 +1798,8 @@ class ClaudeTurn {
             // The structured result (for diffs) describes the message's one tool result.
             const structured = blocks.length === 1 && !b.is_error ? resultDisplay(p, m.tool_use_result, this.t.cwd) : undefined;
             this.endTool(b.tool_use_id, p, content, Boolean(b.is_error), structured);
+            const moved = blocks.length === 1 && !b.is_error ? claudeWorktreeMove(p.name, m.tool_use_result) : undefined;
+            if (moved) this.sink.emit({ type: "cwd", cwd: moved });
         }
     }
 
@@ -2257,6 +2261,18 @@ export function resultText(content: unknown): string {
 
 function rel(path: string, cwd: string): string {
     return path.startsWith(cwd + "/") ? path.slice(cwd.length + 1) : path;
+}
+
+/**
+ * Where Claude Code's session works after a call of its own worktree tools, from the call's structured result: the worktree
+ * EnterWorktree switched it into, or the folder ExitWorktree took it back to. Undefined for any other call, or one that
+ * changed nothing (ExitWorktree with no worktree entered).
+ */
+export function claudeWorktreeMove(tool: string, r: unknown): string | undefined {
+    if (!r || typeof r !== "object") return undefined;
+    const x = r as Record<string, unknown>;
+    const path = tool === "EnterWorktree" ? x.worktreePath : tool === "ExitWorktree" ? x.restoredCwd : undefined;
+    return typeof path === "string" && isAbsolute(path) ? path : undefined;
 }
 
 /** Diffs for Claude Code's file edits, from the structured result it reports. */

@@ -16,6 +16,7 @@ import { dirname, join, relative, resolve } from "path";
 import { git, gitChanges } from "../server/git-changes";
 import type { GitChangesInfo, TurnPlace } from "../server/protocol";
 import { sameFolder } from "../server/session-worktrees";
+import { normalPath, worktreeOf } from "../server/worktree-agents";
 
 /** Worktrees fingerprinted and summed up per turn, at most: past this many, the rest go unseen. */
 export const MAX_PLACES = 16;
@@ -73,11 +74,16 @@ export async function listWorktrees(root: string, deadline: number): Promise<Wor
 
 const within = (path: string, dir: string) => path.startsWith(dir.endsWith("/") ? dir : `${dir}/`);
 
-/** The worktrees beside the session's own folder: the main checkout and the others inside its folder. */
+/**
+ * The worktrees beside the session's own folder: the main checkout and the others inside its folder first, then those
+ * elsewhere (one an agent made beside the checkout). A turn gets one only if it reached it (reachedPlaces).
+ */
 export function nearby(all: readonly Worktree[], own: string): Worktree[] {
     const main = all.find((w) => w.main);
     if (!main) return [];
-    return all.filter((w) => w.path !== own && (w.main || within(w.path, main.path))).slice(0, MAX_PLACES);
+    const others = all.filter((w) => w.path !== own);
+    const inside = (w: Worktree) => w.main || within(w.path, main.path);
+    return [...others.filter(inside), ...others.filter((w) => !inside(w))].slice(0, MAX_PLACES);
 }
 
 /** The repository-relative folders of `places` inside `root`, as the snapshot's file list names them (with and without the slash). */
@@ -90,6 +96,34 @@ export function insideRoot(places: readonly Worktree[], root: string): Set<strin
         out.add(`${rel}/`);
     }
     return out;
+}
+
+/**
+ * Of the worktrees that `changed`, the ones a turn reached: each path in `reached` (where its agent worked, the files and
+ * folders its tool calls named) counts for the deepest of `folders` (the session's own and each nearby worktree) holding
+ * it, so a file of a worktree inside the main checkout's folder is that worktree's, not the checkout's. A path is matched
+ * as given, then with its links resolved.
+ */
+export function reachedPlaces<T extends { path: string }>(changed: readonly T[], folders: readonly string[], reached: Iterable<string>): T[] {
+    if (!changed.length) return [];
+    // Each folder by both its forms (as listed, links resolved), /private/tmp and /tmp alike (normalPath).
+    const byForm = new Map<string, string>();
+    for (const f of folders) for (const form of [f, canonical(f)]) {
+        const n = normalPath(form);
+        if (n && !byForm.has(n)) byForm.set(n, f);
+    }
+    const forms = [...byForm.keys()];
+    const folderOf = (p: string) => {
+        const n = normalPath(p);
+        const w = n ? worktreeOf(n, forms) : undefined;
+        return w ? byForm.get(w) : undefined;
+    };
+    const hit = new Set<string>();
+    for (const p of reached) {
+        const f = folderOf(p) ?? folderOf(canonical(p));
+        if (f) hit.add(f);
+    }
+    return changed.filter((w) => hit.has(w.path));
 }
 
 /**

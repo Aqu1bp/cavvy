@@ -2685,6 +2685,12 @@ describe("Claude Code MCP approval boundary", () => {
 
 
 describe("Codex project MCP boundary", () => {
+    /** A thread's config without Cavvy's own server (its worktree tools, which every Codex thread gets). */
+    const projectConfig = (config: any) => {
+        const { cavvy: _, ...servers } = config?.mcp_servers ?? {};
+        const { mcp_servers: __, ...rest } = config ?? {};
+        return Object.keys(servers).length ? { ...rest, mcp_servers: servers } : rest;
+    };
     test("trusted threads disable project servers, including project modifications to user servers", async () => {
         process.env.FAKE_USER_MCP = JSON.stringify({ personal: { command: "personal" }, shared: { command: "original" } });
         process.env.FAKE_PROJECT_MCP = JSON.stringify({ project: { command: "hostile" }, shared: { env: { OVERRIDE: "hostile" } }, "dotted.name": { command: "hostile" } });
@@ -2692,7 +2698,7 @@ describe("Codex project MCP boundary", () => {
         await run("hello");
         expect(received().find((m) => m.method === "config/read").params).toEqual({ cwd, includeLayers: true });
         const config = received().find((m) => m.method === "thread/start").params.config;
-        expect(config).toEqual({ mcp_servers: { project: { enabled: false }, shared: { enabled: false }, "dotted.name": { enabled: false } } });
+        expect(projectConfig(config)).toEqual({ mcp_servers: { project: { enabled: false }, shared: { enabled: false }, "dotted.name": { enabled: false } } });
         await newAppServer();
         await run("resume");
         expect(received().find((m) => m.method === "thread/resume").params.config).toEqual(config);
@@ -2705,7 +2711,7 @@ describe("Codex project MCP boundary", () => {
         await run("hello");
         await newAppServer();
         await run("resume");
-        for (const method of ["thread/start", "thread/resume"]) expect(received().find((m) => m.method === method).params.config).toEqual({ plugins: { "theirs@local": { enabled: false } } });
+        for (const method of ["thread/start", "thread/resume"]) expect(projectConfig(received().find((m) => m.method === method).params.config)).toEqual({ plugins: { "theirs@local": { enabled: false } } });
     });
 
     for (const layers of [
@@ -2720,7 +2726,7 @@ describe("Codex project MCP boundary", () => {
         await newAppServer();
         expect(await run("resume")).toBe("done");
         for (const method of ["thread/start", "thread/resume"]) {
-            expect(received().find((m) => m.method === method).params.config).toEqual({ mcp_servers: { personal: { enabled: false } } });
+            expect(projectConfig(received().find((m) => m.method === method).params.config)).toEqual({ mcp_servers: { personal: { enabled: false } } });
         }
         expect(notices(events).join("\n")).toContain("all configured MCP servers are disabled");
     });
@@ -2730,7 +2736,7 @@ describe("Codex project MCP boundary", () => {
         process.env.FAKE_NO_CONFIG_LAYERS = "1";
         const { run, events } = await makeAgent({ provider: "codex", trusted: true });
         await run("hello");
-        expect(received().find((m) => m.method === "thread/start").params.config).toEqual({ mcp_servers: { personal: { enabled: false } } });
+        expect(projectConfig(received().find((m) => m.method === "thread/start").params.config)).toEqual({ mcp_servers: { personal: { enabled: false } } });
         expect(notices(events).join("\n")).toContain("all configured MCP servers are disabled");
         rmSync(LOG, { force: true });
         process.env.FAKE_NO_CONFIG_READ = "1";

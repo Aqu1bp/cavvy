@@ -4,11 +4,11 @@
 // the terminal, the side panel and the session's menu.
 
 import { createEffect, createMemo, createResource, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
-import { Archive, ChevronDown, Copy, Ellipsis, FileDiff, FolderOpen, GitBranch, Hand, History, PanelBottom, PanelLeft, PanelRight, Pencil, Search, Share, ShieldAlert, Shrink, SquareArrowOutUpRight, SquarePen, SquareTerminal, Trash2 } from "lucide-solid";
-import type { SessionSummary } from "@shared/protocol";
+import { Archive, ChevronDown, Copy, Ellipsis, FileDiff, FolderGit2, FolderOpen, GitBranch, Hand, History, PanelBottom, PanelLeft, PanelRight, Pencil, Search, Share, ShieldAlert, Shrink, SquareArrowOutUpRight, SquarePen, SquareTerminal, Trash2 } from "lucide-solid";
+import type { SessionState, SessionSummary, WorkingIn } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc, toast } from "../state/app";
-import { archive, editorName, exportSession, newSession, openInEditor, openReview, openWaiting, refreshEditors, rename, togglePanel, toggleSidebar } from "../state/actions";
+import { archive, editorName, exportSession, newSession, openInEditor, openReview, openWaiting, openWorktreeReview, refreshEditors, rename, togglePanel, toggleSidebar } from "../state/actions";
 import { sessionReadReady, useGitChanges } from "../state/changes";
 import { prefs } from "../state/prefs";
 import { agentFocus, terminalOpen, setTerminalOpen, setRewindOpen, setDeleteRequest, openFind, review, setReview, setSettingsTab, setTitleBarBox, settingsTab, shellLayout } from "../state/ui";
@@ -20,6 +20,7 @@ import { RunSwitcher } from "./RunSwitcher";
 import { ProjectScripts } from "./ProjectScripts";
 import { shortcut, withShortcut } from "../state/keybindings";
 import { promptPreview } from "../lib/review-comments";
+import { workingBranch } from "../lib/worktree-work";
 
 type MenuEntry = { icon: typeof Pencil; label: string; disabled?: boolean; kbd?: string; run: () => void };
 
@@ -165,12 +166,21 @@ export const CrumbSep = () => (
     </span>
 );
 
+/** Where the agent works, for the branch's hover. */
+function workingTitle(w: WorkingIn, s: SessionState): string {
+    const where = tildify(w.path, app.hello?.homeDir);
+    const own = s.branch ? ` The session's folder is on ${s.branch}.` : "";
+    return `Working in the worktree ${where}${w.branch ? `, on ${w.branch}` : ""}.${own}`;
+}
+
 /**
- * What changed in the session's folder: git's count, or Cavvy's own record of
- * its edits outside a repository. Opens (and closes) the diff reader.
+ * What changed where the agent works: in the session's folder, git's count (or Cavvy's own record of its edits
+ * outside a repository); in another worktree it moved to, its branch against the main branch, committed or not,
+ * as the diff reader shows it. Opens (and closes) the diff reader there.
  */
 function ChangesChip(p: { handle: SessionHandle }) {
-    const [git] = useGitChanges(() => p.handle);
+    const workingIn = () => p.handle.view.state.workingIn?.path;
+    const [git] = useGitChanges(() => p.handle, () => (workingIn() ? "branch" : "uncommitted"), () => undefined, () => undefined, workingIn);
     // Only asked for outside a repository, where git has nothing to say.
     // On a yes or no, not on git's reply itself: each new reply would otherwise ask again for the same change.
     const notRepo = createMemo(() => git()?.repo === false);
@@ -191,10 +201,15 @@ function ChangesChip(p: { handle: SessionHandle }) {
                 <>
                     <button
                         class={`hb diffchip ${review() ? "on" : ""}`}
-                        title={`${review() ? "Close the changes" : "Review changes"}: ${plural(c().files, "changed file")}${c().atLeast ? " or more" : ""}`}
+                        title={`${review() ? "Close the changes" : "Review changes"}${workingIn() ? " in the worktree the agent works in" : ""}: ${plural(c().files, "changed file")}${c().atLeast ? " or more" : ""}`}
                         aria-label={`Changes: ${plural(c().files, "file")}, ${c().added} added, ${c().removed} removed`}
                         aria-pressed={!!review()}
-                        onClick={() => (review() ? setReview(undefined) : openReview())}
+                        onClick={() => {
+                            const w = workingIn();
+                            if (review()) setReview(undefined);
+                            else if (w) openWorktreeReview(w);
+                            else openReview();
+                        }}
                     >
                         <FileDiff size={15} />
                         <span class="a">+{c().added}</span>
@@ -284,11 +299,23 @@ export function Header(p: { handle?: SessionHandle }) {
                                 {sessionTitle(p.handle)}
                             </h1>
                         </Show>
-                        <Show when={s().branch}>
-                            <span class="br" title="Git branch">
-                                <GitBranch size={13} />
-                                <span class="truncate">{s().branch}</span>
-                            </span>
+                        <Show
+                            when={s().workingIn}
+                            fallback={
+                                <Show when={s().branch}>
+                                    <span class="br" title="Git branch">
+                                        <GitBranch size={13} />
+                                        <span class="truncate">{s().branch}</span>
+                                    </span>
+                                </Show>
+                            }
+                        >
+                            {(w) => (
+                                <span class="br" title={workingTitle(w(), s())}>
+                                    <FolderGit2 size={13} />
+                                    <span class="truncate">{workingBranch(w())}</span>
+                                </span>
+                            )}
                         </Show>
                         <Show when={!s().trusted}>
                             <span class="pill warn" title="This folder's own configuration (hooks, MCP servers, permission rules) is ignored">
@@ -324,7 +351,7 @@ export function Header(p: { handle?: SessionHandle }) {
                             <button role="menuitem" class="menu-item compact" onClick={() => void copy(`cavvy --resume ${s().id}`, "Copied a command that resumes this session in the terminal")}>
                                 <SquareTerminal size={14} /> Copy resume command
                             </button>
-                            <Show when={s().branch}>
+                            <Show when={s().workingIn ? s().workingIn!.branch : s().branch}>
                                 {(branch) => (
                                     <button role="menuitem" class="menu-item compact" onClick={() => void copy(branch(), `Copied ${branch()}`)}>
                                         <Copy size={14} /> Copy branch name

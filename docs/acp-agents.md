@@ -35,7 +35,7 @@ Cavvy never reads, copies or stores OpenCode's sign-in. It starts your installed
 ### What isn't available
 
 - Several accounts, or plan limits: OpenCode runs with its own default sign-in.
-- Cavvy's MCP tools (delegation, secrets, schedules, watches, the browser) and Cavvy's hooks on the agent's tool calls.
+- Cavvy's MCP tools (delegation, secrets, schedules, watches, the browser) and Cavvy's hooks on the agent's tool calls. Only EnterWorktree and ExitWorktree are offered, on Cavvy's MCP server (see [An agent working in another worktree](git.md#an-agent-working-in-another-worktree)): Cavvy checks each call as it runs, so the agent's own ask about it is answered yes, and Grok's gate lets it go.
 - `/compact` (OpenCode keeps its own context, and Cavvy doesn't auto-compact it), forking its session (a fork starts its own with the conversation), importing OpenCode's sessions, and its usage logs.
 - OpenCode's own slash commands, an ACP agent registry, and running another ACP command of your choice.
 - One-off requests (titles, goal checks, summaries): set `smallModel` to another provider's model.
@@ -86,7 +86,7 @@ Cavvy never reads, copies or stores Grok's sign-in (`~/.grok/auth.json`). It sta
 ### What isn't available
 
 - Several accounts, or plan limits: Grok runs with its own default sign-in.
-- Cavvy's MCP tools (delegation, secrets, schedules, watches, the browser) and Cavvy's hooks on the agent's tool calls.
+- Cavvy's MCP tools (delegation, secrets, schedules, watches, the browser) and Cavvy's hooks on the agent's tool calls. Only EnterWorktree and ExitWorktree are offered, on Cavvy's MCP server (see [An agent working in another worktree](git.md#an-agent-working-in-another-worktree)): Cavvy checks each call as it runs, so the agent's own ask about it is answered yes, and Grok's gate lets it go.
 - `/compact` (Grok keeps its own context, and Cavvy doesn't auto-compact it), forking its session (a fork starts its own with the conversation), importing Grok's sessions, and its usage logs.
 - Grok's own slash commands, an ACP agent registry, and running another ACP command of your choice.
 - One-off requests (titles, goal checks, summaries): set `smallModel` to another provider's model.

@@ -619,6 +619,18 @@ export interface GoalState {
     canPause?: boolean;
 }
 
+/**
+ * Another worktree of the session's repository, which the agent moved into: Claude Code's EnterWorktree (or a turn it
+ * began there), Cavvy's own EnterWorktree, a cd. The header shows its branch, and the diff reader opens on it.
+ */
+export interface WorkingIn {
+    /** As `git worktree list` gives it. */
+    path: string;
+    branch?: string;
+    /** Its commit, when it's on none (detached HEAD). */
+    head?: string;
+}
+
 export interface SessionState {
     accounts?: Record<string, string>;
     /**
@@ -634,7 +646,10 @@ export interface SessionState {
     /** Saved to disk (after the first message). */
     persisted: boolean;
     trusted: boolean;
+    /** The branch of the session's own folder. */
     branch?: string;
+    /** The other worktree of the session's repository the agent works in now; unset while it works in the session's own folder. */
+    workingIn?: WorkingIn;
     model?: ModelSummary;
     mode: PermissionModeId;
     bypassAllowed: boolean;

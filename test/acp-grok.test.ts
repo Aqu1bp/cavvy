@@ -280,6 +280,9 @@ describe("Grok's hooks", () => {
         expect(g.readOnly!({ kind: "read", _meta: { "x.ai/tool": { read_only: true } } })).toBe(true);
         // A write whose content Grok cut is still a Write (Write rules cover it), checked by its path.
         expect(g.gate!.tool({ sessionId: "s", toolUseId: "c", toolName: "write", input: { file_path: "a.txt", content: "x... [truncated]" }, truncated: true }, "/w")).toEqual({ toolName: "Write", input: { file_path: "/w/a.txt" }, reason: "Its new content is too long to show here." });
+        // An MCP server's tool, called through use_tool (found with search_tool): checked as that tool.
+        expect(g.gate!.tool({ sessionId: "s", toolUseId: "c", toolName: "use_tool", input: { tool_name: "github__create_issue", tool_input: { title: "x" } }, truncated: false }, "/w")).toEqual({ toolName: "mcp__github__create_issue", input: { title: "x" } });
+        expect(g.gate!.tool({ sessionId: "s", toolUseId: "c", toolName: "use_tool", input: { tool_name: "not an mcp tool" }, truncated: false }, "/w")).toBeUndefined();
         expect(g.readOnly!({ kind: "execute", rawInput: { command: "git status" }, _meta: { "x.ai/tool": { read_only: false } } })).toBe(true);
         expect(g.readOnly!({ kind: "execute", rawInput: { command: "git push origin main" }, _meta: { "x.ai/tool": { read_only: false } } })).toBe(false);
         // Its plan file: the session's, under its home (GROK_HOME, ~/.grok by default), as spelled and where it leads.
@@ -1146,5 +1149,35 @@ describe("Grok through the Agent loop and Cavvy's rules", () => {
         expect(notices(a.events)).toEqual([]);
         expect(await a.run("[[nogate:y.txt]]")).toBe("error");
         expect(JSON.stringify(a.events)).toMatch(/Grok Build ran `Write\(.*y\.txt\)` without asking Cavvy, so the turn was stopped/);
+    });
+
+    test("Cavvy's EnterWorktree (Grok has none): its gate and its own ask let it go, the user is asked once as it runs; its next turn is a new session in the worktree", async () => {
+        const g = (...args: string[]) => Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args], { cwd });
+        g("init", "-q", "-b", "main");
+        writeFileSync(join(cwd, "readme.txt"), "hi\n");
+        g("add", "-A");
+        g("commit", "-q", "-m", "init");
+        // Its sessions kept by folder: not found from the worktree.
+        process.env.GROK_HOME = realpathSync(tempDir("grok-wt-home-"));
+        try {
+            const a = await makeAgent({ ask: () => ({ allow: true }) });
+            expect(await a.run('[[mcp:enter_worktree {"name":"grok-wt"}]]')).toBe("done");
+            const wt = join(cwd, ".claude", "worktrees", "grok-wt");
+            expect(hookAnswers()).toEqual([{}]);
+            expect(answers().map((x) => x.outcome?.optionId)).toEqual(["allow-once"]);
+            expect(a.asked.map((r) => r.tool.name)).toEqual(["EnterWorktree"]);
+            expect(a.events.filter((e) => e.type === "cwd")).toEqual([{ type: "cwd", cwd: wt }]);
+            expect(a.events.find((e) => e.type === "tool_start")).toMatchObject({ call: { name: "EnterWorktree", input: { name: "grok-wt" } } });
+            expect(logLines().find((l) => l.mcpResult)?.mcpResult).toMatchObject({ isError: false, text: expect.stringContaining(`This session works there now`) });
+            // Its next turn: in the worktree, where its session isn't found, so a new one, said as a move (not a failure).
+            expect(await a.run("hello")).toBe("done");
+            const [first, ...later] = logLines().filter((l) => l.argv).map((l) => realpathSync(l.cwd));
+            expect([first, [...new Set(later)]]).toEqual([cwd, [wt]]);
+            expect(logLines().filter((l) => l.received?.method === "session/new").map((l) => l.received.params.cwd)).toEqual([cwd, wt]);
+            // Its message is what shows: no text in its place (an info notice shows `text` instead of it), not Grok's "Path not found."
+            expect(a.events.filter((e) => e.type === "notice").map((e) => e.type === "notice" && [e.level, e.message, e.data?.text])).toEqual([["info", "Grok Build continues in a new session in grok-wt, with this conversation as context.", undefined]]);
+        } finally {
+            delete process.env.GROK_HOME;
+        }
     });
 });

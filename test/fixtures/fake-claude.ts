@@ -99,6 +99,8 @@
 // FAKE_SCENARIO=rate-limit  the turn ends on the plan's limit (an assistant error "rate_limit", an error result; no usage)
 // FAKE_SCENARIO=auth-failed  the turn ends signed out (an assistant error "authentication_failed", an error result; no usage)
 // FAKE_SCENARIO=steer-live  messages written mid-turn, taken as 2.1.310 takes them, plain or "now" (see steerLive)
+// FAKE_SCENARIO=enter-worktree / exit-worktree  the session moves into .claude/worktrees/wt (EnterWorktree) or back
+//                    (ExitWorktree), with the structured results 2.1.311 gives; each turn's system/init has its cwd
 // FAKE_SCENARIO=chat  (or any name not listed) the turn says something and answers, with nothing done
 // Reliability cases: steering / steering-many fold stdin input between tool rounds (dropping its document blocks,
 // as Claude Code 2.1.304 does: images reach the model mid-turn, PDFs don't);
@@ -145,6 +147,8 @@ function pluginSkills(): string[] {
     });
 }
 const cwd = process.cwd();
+/** Where its session works: cwd, until EnterWorktree moves it (system/init says, as Claude Code's does). */
+let here = cwd;
 log({ pid: process.pid, argv, cwd, sawApiKey: Boolean(process.env.ANTHROPIC_API_KEY), sawOpenAiKey: Boolean(process.env.OPENAI_API_KEY), claudeConfigDir: process.env.CLAUDE_CONFIG_DIR, codexHome: process.env.CODEX_HOME, sawOauthToken: Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN) });
 if (process.env.FAKE_LOG_ENV === "1") log({ env: process.env });
 // What --agents gave it (a file under -p), read at start as Claude Code does.
@@ -830,7 +834,7 @@ async function turn(content: any[], uuid?: string) {
     if (process.env.FAKE_INIT_DELAY_MS) await Bun.sleep(Number(process.env.FAKE_INIT_DELAY_MS));
     log({ init: prompts });
     // slash_commands: its built-ins and skills, named as 2.1.301 names them (a plugin's skills as plugin:skill, as --plugin-dir's are).
-    out({ ...(process.env.FAKE_FAST_MODE_END ? { fast_mode_state: "on" } : {}), ...(uuid && process.env.FAKE_OLD_RESULTS !== "1" ? { user_message_uuids: [uuid] } : {}), capabilities: CAPABILITIES, type: "system", subtype: "init", session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode, slash_commands: [...(process.env.FAKE_SLASH_COMMANDS ? JSON.parse(process.env.FAKE_SLASH_COMMANDS) : ["code-review", "simplify", "compact", "context", "design:ux-copy"]), ...pluginSkills()] });
+    out({ ...(process.env.FAKE_FAST_MODE_END ? { fast_mode_state: "on" } : {}), ...(uuid && process.env.FAKE_OLD_RESULTS !== "1" ? { user_message_uuids: [uuid] } : {}), capabilities: CAPABILITIES, type: "system", subtype: "init", cwd: here, session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode, slash_commands: [...(process.env.FAKE_SLASH_COMMANDS ? JSON.parse(process.env.FAKE_SLASH_COMMANDS) : ["code-review", "simplify", "compact", "context", "design:ux-copy"]), ...pluginSkills()] });
     // Commands it answers itself: a synthetic message, no model call, nothing spent.
     const said = String(content.find((c) => c?.type === "text")?.text ?? "");
     if (/^\/(effort|cost)\s*$/.test(said)) {
@@ -1162,6 +1166,21 @@ async function turn(content: any[], uuid?: string) {
             queueWake(`The sub-agent's command was ${r.behavior === "allow" ? "allowed" : "denied"}.`);
         }, 100);
         return;
+    }
+    if (scenario === "enter-worktree" || scenario === "exit-worktree") {
+        const id = `toolu_wt${prompts}`;
+        const worktreePath = join(cwd, ".claude", "worktrees", "wt");
+        if (scenario === "enter-worktree") {
+            toolUse(id, "EnterWorktree", { name: "wt" });
+            here = worktreePath;
+            toolResult(id, `Created worktree at “${worktreePath}” on branch “worktree-wt”. The session is now working in the worktree.`, false, { worktreePath, worktreeBranch: "worktree-wt", message: "Created worktree." });
+        } else {
+            toolUse(id, "ExitWorktree", { action: "keep" });
+            here = cwd;
+            toolResult(id, `Exited worktree. Session is now back in “${cwd}”.`, false, { action: "keep", originalCwd: cwd, worktreePath, worktreeBranch: "worktree-wt", restoredCwd: cwd, originalCwdMissing: false });
+        }
+        text("done");
+        return result("success");
     }
     if (scenario === "write") go = await use("toolu_1", "Write", { file_path: join(cwd, "out.txt"), content: "hi\n" });
     else if (scenario === "write-config") go = await use("toolu_c", "Write", { file_path: join(cwd, ".claude", "settings.json"), content: "{}" });

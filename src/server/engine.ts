@@ -353,7 +353,7 @@ export class Engine {
     /** Sessions being unloaded (their SessionEnd hooks running): opened again once that's done. */
     private closing = new Map<string, Promise<void>>();
     /** Their folders, meanwhile: hooks may still be running there. */
-    private closingIn = new Map<string, string>();
+    private closingIn = new Map<string, string[]>();
     /** Worktrees being removed (real paths): no session opens in them meanwhile. */
     private removing = new Set<string>();
     /** File names of folders Home's @ searches before a session opens there (the last few, newest last). */
@@ -725,7 +725,7 @@ export class Engine {
      * their paths still resolve) close after.
      */
     private async removeWorktree(path: string, worktree: string, deleteIgnored?: string, check?: (plan: Removal) => Promise<void>): Promise<RemoveWorktreeResult> {
-        const open = () => [...[...this.runtimes.values()].map((rt) => rt.ws.cwd), ...this.closingIn.values(), ...heldSessionFolders()];
+        const open = () => [...[...this.runtimes.values()].flatMap((rt) => rt.folders), ...[...this.closingIn.values()].flat(), ...heldSessionFolders()];
         // A terminal's `cavvy -w` is marked present there from its start, before it has a lock.
         const inUse = (dir: string) => othersPresent(dir) || open().some(within(dir));
         const plan = planRemoval({ path, worktree, inUse });
@@ -1091,7 +1091,7 @@ export class Engine {
                 }
             });
         this.closing.set(id, done);
-        this.closingIn.set(id, rt.ws.cwd);
+        this.closingIn.set(id, rt.folders);
         return done;
     }
 
@@ -1182,7 +1182,7 @@ export class Engine {
             });
         this.closing.set(id, done);
         // As for one being unloaded: its SessionEnd hooks may run in its folder meanwhile.
-        if (rt) this.closingIn.set(id, rt.ws.cwd);
+        if (rt) this.closingIn.set(id, rt.folders);
         try {
             await work;
         } catch (e) {
@@ -1422,7 +1422,7 @@ export class Engine {
             if (keep) return done(false, keep.reason, keep.code);
             const rt = this.runtimes.get(id);
             // As removal will see it, but with this session not counting yet: it's still open, and only closed once nothing needs asking.
-            const others = [...[...this.runtimes.values()].filter((r) => r !== rt).map((r) => r.ws.cwd), ...this.closingIn.values(), ...heldSessionFolders()];
+            const others = [...[...this.runtimes.values()].filter((r) => r !== rt).flatMap((r) => r.folders), ...[...this.closingIn.values()].flat(), ...heldSessionFolders()];
             let plan: Removal;
             try {
                 plan = planRemoval({ path: cwd, worktree: wt, inUse: (dir) => others.some(within(dir)) });

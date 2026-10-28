@@ -55,6 +55,8 @@ const COPIED: Record<Line["t"], boolean> = {
     imagesRefused: false,
     // When the original worked: the fork works from when it's made.
     worked: false,
+    // The worktree the conversation had moved to by the cut: the fork goes on there (an agent CLI's next turn says where it is).
+    workdir: true,
 };
 
 const REMINDERS = /<system-reminder>[\s\S]*?<\/system-reminder>/g;

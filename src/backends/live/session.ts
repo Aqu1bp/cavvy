@@ -643,6 +643,7 @@ export class LiveCliSession {
             case "limits":
             case "goal":
             case "commands":
+            case "cwd":
                 return this.emitSession(e);
         }
         const user = this.turn;

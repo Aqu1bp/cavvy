@@ -88,7 +88,9 @@ export type CliEvent =
     | { t: "session_id"; id: string }
     | { t: "limits"; limits: PlanLimits; partial: boolean }
     | { t: "goal"; goal: NativeGoal | null }
-    | { t: "commands"; names: string[] };
+    | { t: "commands"; names: string[] }
+    /** The folder the CLI's session works in now (Claude Code's: it entered or left a worktree, or a turn began there). */
+    | { t: "cwd"; cwd: string };
 
 export type CliEventSink = (e: CliEvent) => void;
 

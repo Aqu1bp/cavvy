@@ -7,6 +7,17 @@
 // FAKE_ACP_IMAGES=0: says it takes no images. FAKE_ACP_RESUME=load: no session/resume, only session/load.
 // FAKE_ACP_IGNORE_CANCEL=1: session/cancel does nothing (Grok's flavor too).
 //
+// Both flavors take MCP servers over HTTP (mcpCapabilities.http), as session/new, resume or load's mcpServers ({mcp}
+// logged: each one's type, name and url). [[mcp:TOOL JSON]] calls TOOL of the first with JSON's arguments: OpenCode's
+// call is named for it (<server>_<tool>, kind other, asked about), Grok's goes through use_tool ({tool_name:
+// <server>__<tool>, tool_input}: held by the hook, which names <server>__<tool> with that input, then asked about); its
+// answer's text is the tool's ({mcpResult}).
+// OpenCode's then asks about FAKE_ACP_AFTER_MCP's command, if set, in the same turn.
+//
+// FAKE_ACP_FOLDERS: a file where it keeps the folder each session was made in, as OpenCode 1.19.4 does: then it has
+// session/list ({cwd}: the sessions made there), and a session resumed or loaded with another cwd goes on in its own
+// folder ({keptIn} logged).
+//
 // session/resume or session/load of an id starting "gone" fails (-32602, session not found); session/load first
 // replays the session's history as updates. A prompt's text picks what it does by a [[directive]] in it:
 //   (none)            thinks, says "Hello there", reports usage (cost from [[cost:N]], cumulative), ends end_turn
@@ -69,6 +80,8 @@
 // _x.ai/interject with nothing running runs as a prompt of its own (grok-1.0.70-steer-params.jsonl): its
 // queue/changed names it running, it says "Fallback: TEXT", and its turn_completed carries its tokens.
 // FAKE_GROK_INTERJECT_MS: an interjection is taken (and answered) that long after it comes.
+// With GROK_HOME set, a session resumed (or loaded) in another folder than its own isn't found there: -32603 Path not
+// found (FS_NOT_FOUND), as Grok 1.0.70 answers, its sessions being kept by folder.
 // With GROK_HOME set, its record of each session (grok-1.0.70-steer-file.jsonl, -steer-marker.jsonl):
 // <GROK_HOME>/sessions/<cwd, encoded>/<id>/updates.jsonl, made by session/new: each prompt, each interjection taken
 // (user_message_chunk, _meta.interjection), and FAKE_GROK_RECORD_MS after its answer its turn_completed (not with
@@ -79,13 +92,15 @@
 //   [[take-late:MS]]  says "alpha"; one sent as it's said is taken into another model call, no tool between
 //                     (grok-1.0.70-steer-file.jsonl), which thinks; then MS (10 s) or session/cancel
 
-import { appendFileSync, mkdirSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { isAbsolute, join } from "path";
 
 const log = (o: Record<string, unknown>) => process.env.FAKE_LOG && appendFileSync(process.env.FAKE_LOG, JSON.stringify(o) + "\n");
 const out = (o: Record<string, unknown>) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...o }) + "\n");
 
 const GROK = process.env.FAKE_ACP_FLAVOR === "grok";
+const FOLDERS = process.env.FAKE_ACP_FOLDERS;
+const folders = (): Record<string, string> => (FOLDERS && existsSync(FOLDERS) ? JSON.parse(readFileSync(FOLDERS, "utf-8")) : {});
 const SIGNED_OUT = process.env.FAKE_GROK_SIGNED_OUT === "1";
 if (process.argv[2] === "models") {
     if (GROK) process.stdout.write(`${SIGNED_OUT ? "You are not authenticated." : "You are logged in with grok.com."}\n\nDefault model: grok-4.7\n\nAvailable models:\n  * grok-4.7 (default)\n  - grok-4.6\n`);
@@ -123,6 +138,30 @@ function configOptions() {
 }
 
 const update = (sessionId: string, u: Record<string, unknown>) => out({ method: "session/update", params: { sessionId, update: u } });
+/** The client's MCP servers, as the session was last opened with. */
+let mcpServers: any[] = [];
+function noteMcp(p: any) {
+    mcpServers = Array.isArray(p?.mcpServers) ? p.mcpServers : [];
+    log({ mcp: mcpServers.map((m) => ({ type: m.type, name: m.name, url: m.url })) });
+}
+/** `[[mcp:TOOL JSON]]`: TOOL of the first server, called (tools/call) with its headers; the text it answers. */
+function mcpCall(arg: string): { server?: string; tool: string; args: Record<string, unknown>; run: () => Promise<string> } {
+    const at = arg.indexOf(" ");
+    const tool = at < 0 ? arg : arg.slice(0, at);
+    const args = at < 0 ? {} : JSON.parse(arg.slice(at + 1));
+    const m = mcpServers[0];
+    const run = async () => {
+        if (!m) return "No MCP server.";
+        const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
+        for (const h of m.headers ?? []) headers[h.name] = h.value;
+        const r = await fetch(m.url, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool, arguments: args } }) });
+        const body: any = await r.json().catch(() => ({}));
+        const text = (body.result?.content ?? []).map((c: any) => c.text ?? "").join("") || body.error?.message || `HTTP ${r.status}`;
+        log({ mcpResult: { tool, text, isError: Boolean(body.result?.isError || body.error) } });
+        return text;
+    };
+    return { server: m?.name, tool, args, run };
+}
 /** A request of ours to the client: its answer. */
 function ask(method: string, params: unknown): Promise<any> {
     const id = seq++;
@@ -154,14 +193,14 @@ async function prompt(id: number, p: any) {
         running = undefined;
         for (const i of ids) out({ id: i, result: { stopReason, usage: { inputTokens: 100, outputTokens: 7, totalTokens: 1107, cachedReadTokens: 1000 } } });
     };
-    const tool = async (callId: string, kind: string, title: string, rawInput: Record<string, unknown>, request: Record<string, unknown>, run: () => string) => {
+    const tool = async (callId: string, kind: string, title: string, rawInput: Record<string, unknown>, request: Record<string, unknown>, run: () => string | Promise<string>) => {
         update(sid, { sessionUpdate: "tool_call", toolCallId: callId, title, kind, status: "pending", locations: [], rawInput: {} });
         update(sid, { sessionUpdate: "tool_call_update", toolCallId: callId, status: "in_progress", kind, title, rawInput });
         const answer = await ask("session/request_permission", { sessionId: sid, toolCall: { toolCallId: callId, status: "pending", ...request }, options: OPTIONS });
         log({ permissionAnswer: answer.result ?? answer.error });
         const chosen = answer.result?.outcome?.optionId;
         if (chosen === "once" || chosen === "always") {
-            const said = run();
+            const said = await run();
             update(sid, { sessionUpdate: "tool_call_update", toolCallId: callId, status: "completed", content: [{ type: "content", content: { type: "text", text: said } }] });
         } else update(sid, { sessionUpdate: "tool_call_update", toolCallId: callId, status: "failed", content: [{ type: "content", content: { type: "text", text: "The user rejected permission to use this specific tool call." } }] });
     };
@@ -189,6 +228,15 @@ async function prompt(id: number, p: any) {
         case "other":
             await tool("call_other", "other", "task", { prompt: "x" }, { kind: "other", title: "task", rawInput: { prompt: "x" } }, () => "done");
             break;
+        case "mcp": {
+            const c = mcpCall(arg);
+            const title = `${c.server}_${c.tool}`;
+            await tool("call_mcp", "other", title, c.args, { kind: "other", title, rawInput: c.args }, c.run);
+            // FAKE_ACP_AFTER_MCP=CMD: then, in the same turn, a command it asks about (as [[run:CMD]]).
+            const then = process.env.FAKE_ACP_AFTER_MCP;
+            if (then) await tool("call_then", "execute", "bash", { command: then, cwd }, { kind: "execute", title: then, locations: [], rawInput: { command: then } }, () => `ran ${then}`);
+            break;
+        }
         case "malformed":
             await tool("call_bad", "edit", "write", {}, { kind: "edit", title: "write", rawInput: {} }, () => "wrote");
             break;
@@ -278,18 +326,27 @@ function handle(msg: any) {
                     agentCapabilities: {
                         loadSession: true,
                         promptCapabilities: { image: process.env.FAKE_ACP_IMAGES !== "0", embeddedContext: true },
-                        sessionCapabilities: process.env.FAKE_ACP_RESUME === "load" ? { close: {} } : { close: {}, resume: {} },
+                        sessionCapabilities: { ...(process.env.FAKE_ACP_RESUME === "load" ? { close: {} } : { close: {}, resume: {} }), ...(FOLDERS ? { list: {} } : {}) },
+                        mcpCapabilities: { http: true, sse: true },
                     },
                     agentInfo: { name: "OpenCode", version: "0.0.0-fake" },
                 },
             });
-        case "session/new":
+        case "session/new": {
             cwd = p.cwd;
-            return out({ id, result: { sessionId: `ses_fake${++sessions}_${process.pid}`, configOptions: configOptions() } });
+            noteMcp(p);
+            const sid = `ses_fake${++sessions}_${process.pid}`;
+            if (FOLDERS) writeFileSync(FOLDERS, JSON.stringify({ ...folders(), [sid]: p.cwd }));
+            return out({ id, result: { sessionId: sid, configOptions: configOptions() } });
+        }
+        case "session/list":
+            return out({ id, result: { sessions: Object.entries(folders()).flatMap(([sessionId, dir]) => (dir === p.cwd ? [{ sessionId, cwd: dir }] : [])) } });
         case "session/resume":
         case "session/load":
             if (String(p.sessionId).startsWith("gone")) return out({ id, error: { code: -32602, message: `Invalid params: session not found: ${p.sessionId}` } });
-            cwd = p.cwd;
+            cwd = folders()[p.sessionId] ?? p.cwd;
+            if (cwd !== p.cwd) log({ keptIn: cwd });
+            noteMcp(p);
             if (method === "session/load") {
                 update(p.sessionId, { sessionUpdate: "user_message_chunk", content: { type: "text", text: "earlier prompt" } });
                 update(p.sessionId, { sessionUpdate: "agent_message_chunk", messageId: "old", content: { type: "text", text: "earlier answer" } });
@@ -440,14 +497,14 @@ async function grokPrompt(id: number, p: any) {
      * A tool as Grok sends it: a bare tool_call; held by the hook (when one's registered, unless `nogate`); its kind;
      * asked about (unless `unasked`); run or refused. `at`: a subagent's session (its updates, hook and asks), of `type`.
      */
-    const tool = async (callId: string, name: string, kind: string, title: string, rawInput: Record<string, unknown>, o: { unasked?: boolean; nogate?: boolean; readOnly?: boolean; cut?: boolean; hookInput?: Record<string, unknown>; refuse?: string; run: () => string | Promise<string>; options: unknown[]; at?: { sid: string; type: string } }) => {
+    const tool = async (callId: string, name: string, kind: string, title: string, rawInput: Record<string, unknown>, o: { unasked?: boolean; nogate?: boolean; readOnly?: boolean; cut?: boolean; hookName?: string; hookInput?: Record<string, unknown>; refuse?: string; run: () => string | Promise<string>; options: unknown[]; at?: { sid: string; type: string } }) => {
         const here = o.at?.sid ?? sid;
         xai("session_notification", { sessionId: here, update: { sessionUpdate: "tool_call_delta_chunk", tool_call_id: callId, name } });
         const { variant: _, ...first } = rawInput;
         const meta = { "x.ai/tool": { version: 1, name, kind: kind === "edit" ? "write" : kind, read_only: Boolean(o.readOnly) } };
         gUpdate(here, { sessionUpdate: "tool_call", toolCallId: callId, title: name, rawInput: first, _meta: meta });
         if (s.hook && !o.nogate) {
-            const params = { hookCallbackId: s.hook.id, hookEventName: "pre_tool_use", sessionId: here, cwd, workspaceRoot: cwd, permissionMode: s.auto ? "auto" : s.mode, toolName: name, toolUseId: callId, toolInput: o.hookInput ?? first, toolInputTruncated: Boolean(o.cut), ...(o.at ? { subagentType: o.at.type } : {}) };
+            const params = { hookCallbackId: s.hook.id, hookEventName: "pre_tool_use", sessionId: here, cwd, workspaceRoot: cwd, permissionMode: s.auto ? "auto" : s.mode, toolName: o.hookName ?? name, toolUseId: callId, toolInput: o.hookInput ?? first, toolInputTruncated: Boolean(o.cut), ...(o.at ? { subagentType: o.at.type } : {}) };
             const answer = await askFor("_x.ai/hooks/run", params, s.hook.timeoutS * 1000);
             if (!answer) log({ hookTimeout: callId });
             else log({ hookAnswer: answer.result ?? answer.error });
@@ -523,6 +580,13 @@ async function grokPrompt(id: number, p: any) {
         case "todo":
             await tool("call-todo", "todo_write", "other", "Update to-dos", { todos: [{ content: "x", status: "pending" }] }, { unasked: true, run: () => "Updated", options: [] });
             break;
+        case "mcp": {
+            const c = mcpCall(arg);
+            const name = `${c.server}__${c.tool}`;
+            // Its hook names the MCP tool itself, with use_tool's input around the tool's own (grok 1.0.70).
+            if (!(await tool("call-mcp", "use_tool", "other", name, { variant: "UseTool", tool_name: name, tool_input: c.args }, { unasked: s.auto, hookName: name, run: c.run, options: GROK_EDIT_OPTIONS }))) return;
+            break;
+        }
         case "subagent": {
             const file = path(arg);
             const child = `child-${++grokEvent}-${process.pid}`;
@@ -621,7 +685,7 @@ function grokHandle(msg: any) {
                 id,
                 result: {
                     protocolVersion: 1,
-                    agentCapabilities: { loadSession: true, promptCapabilities: { image: true, audio: false, embeddedContext: true }, sessionCapabilities: { list: {}, resume: {}, close: {} } },
+                    agentCapabilities: { loadSession: true, promptCapabilities: { image: true, audio: false, embeddedContext: true }, mcpCapabilities: { http: true, sse: true }, sessionCapabilities: { list: {}, resume: {}, close: {} } },
                     authMethods: SIGNED_OUT ? [{ id: "grok.com", name: "Grok" }] : [{ id: "cached_token", name: "Cached" }, { id: "grok.com", name: "Grok" }],
                     agentInfo: { name: "grok", title: "Grok Build", version: "0.0.0-fake" },
                 },
@@ -630,6 +694,7 @@ function grokHandle(msg: any) {
             if (SIGNED_OUT) return out({ id, error: { code: -32000, message: "Authentication required", data: "no auth method id provided" } });
             if (!isAbsolute(p.cwd)) return out({ id, error: { code: -32602, message: "Invalid params", data: `Path is not absolute: ${p.cwd}` } });
             cwd = p.cwd;
+            noteMcp(p);
             const sid = `0000000${++sessions}-fake-${process.pid}`;
             if (process.env.GROK_HOME) mkdirSync(recordDir(sid), { recursive: true });
             grokSessions.set(sid, { auto: p._meta?.autoMode === true, mode: "default", hook: grokHook(p._meta) });
@@ -641,6 +706,9 @@ function grokHandle(msg: any) {
         case "session/load": {
             if (String(p.sessionId).startsWith("gone")) return out({ id, error: { code: -32603, message: "Internal error", data: { code: "FS_NOT_FOUND", message: "Path not found." } } });
             cwd = p.cwd;
+            // Kept by folder: not found from another (grok 1.0.70, probed resuming in a worktree).
+            if (process.env.GROK_HOME && !existsSync(recordDir(p.sessionId))) return out({ id, error: { code: -32603, message: "Path not found.", data: { detail: "No such file or directory (os error 2)", code: "FS_NOT_FOUND" } } });
+            noteMcp(p);
             // Its mode was kept with the session; auto only as this open says.
             const was = grokSessions.get(p.sessionId);
             grokSessions.set(p.sessionId, { auto: p._meta?.autoMode === true, mode: was?.mode ?? (process.env.FAKE_GROK_RESUMED_MODE ?? "default"), hook: grokHook(p._meta) });

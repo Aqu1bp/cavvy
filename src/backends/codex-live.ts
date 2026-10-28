@@ -55,6 +55,7 @@ import {
     modeNote,
     modeSwitched,
     orchestratorConfig,
+    threadGone,
     parseAccount,
     untrustedArgs,
     withTimeout,
@@ -401,17 +402,17 @@ export class CodexLiveConnection extends CodexTurn {
         const fastTier = o.settings.fastMode && t.model.supportsFastMode ? t.model.fastModeTier : undefined;
         this.threadMode = startMode;
         const threadParams = { cwd: t.cwd, model, ...(fastTier ? { serviceTier: fastTier } : {}), approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox, approvalsReviewer: policy.approvalsReviewer, developerInstructions, ...(config ? { config } : {}) };
-        // A Codex that won't take the delegation server's config still gets its thread, without it.
+        // A Codex that won't take the config of Cavvy's server still gets its thread, without it.
         this.threadParams = threadParams;
         const thread = async (method: string, params: Record<string, unknown>) => {
             try {
                 return await this.rpc.request(method, params);
             } catch (e) {
-                if (!orch) throw e;
+                if (!orch || threadGone(e)) throw e;
                 const kept = this.nativeHooks && this.hookServer ? { ...off, mcp_servers: { ...off?.mcp_servers, ...hookServerConfig(this.hookServer) } } : off;
                 this.threadParams = { ...threadParams, config: kept, developerInstructions: baseInstructions };
                 const r = await this.rpc.request(method, { ...params, config: kept, developerInstructions: baseInstructions });
-                this.sink.emit({ type: "notice", level: "warn", message: `Codex didn't accept ${APP_TITLE}'s delegation tools (${redact((e as Error).message).replace(/^Codex:\s*/, "")}); this session runs without them, preserving MCP restrictions.` });
+                this.sink.emit({ type: "notice", level: "warn", message: `Codex didn't accept ${APP_TITLE}'s tools (${redact((e as Error).message).replace(/^Codex:\s*/, "")}); this session runs without them, preserving MCP restrictions.` });
                 return r;
             }
         };

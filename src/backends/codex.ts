@@ -33,6 +33,7 @@ import { CODEX_HOOK_EVENTS, CODEX_HOOK_SERVER, type CodexHookEvent, codexHookArg
 import { registerTools, type Registration, type ServerTool } from "../mcp/server";
 import { MONITOR_SERVER_TOOLS } from "../tools/monitor";
 import { servedBrowserTool } from "../tools/browser-tools";
+import { servedWorktreeTool } from "../tools/worktree-tools";
 import { codexInput, codexSkills, pastedPrompt, skillFolder, type CodexSkill } from "./native-skills";
 import { accountEnv, defaultAccount } from "../providers/accounts";
 import { signInAdvice } from "./account-login";
@@ -899,15 +900,15 @@ export class CodexTurn {
             let tierNow: string | null | undefined;
             this.threadMode = startMode;
             const threadParams = { cwd: t.cwd, model, ...(fastTier ? { serviceTier: fastTier } : {}), approvalPolicy: policy.approvalPolicy, sandbox: policy.sandbox, approvalsReviewer: policy.approvalsReviewer, developerInstructions, ...(config ? { config } : {}) };
-            // A Codex that won't take the delegation server's config still gets its thread, without it.
+            // A Codex that won't take the config of Cavvy's server still gets its thread, without it.
             const thread = async (method: string, params: Record<string, unknown>) => {
                 try {
                     return await this.rpc.request(method, params);
                 } catch (e) {
-                    if (this.aborted || !o) throw e;
+                    if (this.aborted || !o || threadGone(e)) throw e;
                     const kept = this.nativeHooks && this.hookServer ? { ...off, mcp_servers: { ...off?.mcp_servers, ...hookServerConfig(this.hookServer) } } : off;
                     const r = await this.rpc.request(method, { ...params, config: kept, developerInstructions: baseInstructions });
-                    this.sink.emit({ type: "notice", level: "warn", message: `Codex didn't accept ${APP_TITLE}'s delegation tools (${redact((e as Error).message).replace(/^Codex:\s*/, "")}); this turn runs without them, preserving MCP restrictions.` });
+                    this.sink.emit({ type: "notice", level: "warn", message: `Codex didn't accept ${APP_TITLE}'s tools (${redact((e as Error).message).replace(/^Codex:\s*/, "")}); this turn runs without them, preserving MCP restrictions.` });
                     return r;
                 }
             };
@@ -2008,10 +2009,10 @@ export class CodexTurn {
         return this.cliSession.permission({ ...req, hookDecision, hooksOnly: (this.turnMode ?? this.cliSession.mode()) === "bypassPermissions" });
     }
 
-    /** Cavvy's Monitor and browser tools run the hooks themselves, as Monitor, BashOutput, KillShell or BrowserAct: Codex's run would be a second one. */
+    /** Cavvy's Monitor, browser and worktree tools run the hooks themselves, as Monitor, BashOutput, KillShell, BrowserAct or EnterWorktree: Codex's run would be a second one. */
     protected hooksItself(toolName: string): boolean {
         const server = this.t?.orchestrator?.name;
-        return (Boolean(server) && MONITOR_SERVER_TOOLS.some((t) => toolName === `mcp__${server}__${t}`)) || servedBrowserTool(server, toolName);
+        return (Boolean(server) && MONITOR_SERVER_TOOLS.some((t) => toolName === `mcp__${server}__${t}`)) || servedBrowserTool(server, toolName) || servedWorktreeTool(server, toolName);
     }
 
     /** PostToolUse or PostToolUseFailure for a main-thread item that ran; what they say reaches Codex while it works. */
@@ -2386,6 +2387,9 @@ export interface Origin {
     turnId?: string;
     sub?: SubAgent;
 }
+
+/** Codex has no such thread (gone, or another account's): taking Cavvy's server out of the config won't change that. */
+export const threadGone = (e: unknown): boolean => /no rollout found|thread not found/i.test(e instanceof Error ? e.message : String(e));
 
 /**
  * Cavvy's MCP server as Codex config for the thread (sent over the

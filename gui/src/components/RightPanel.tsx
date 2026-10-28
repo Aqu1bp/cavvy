@@ -18,6 +18,7 @@ import { needsAttention, shownName, statusLabel } from "../lib/mcp";
 import { commitUnavailable, sessionReadReady, useGitChanges } from "../state/changes";
 import { canReveal, copyText, openExternal, revealPath } from "../lib/platform";
 import { tildify } from "../lib/format";
+import { workingBranch } from "../lib/worktree-work";
 import { agentRows, backgroundOf, commandRows, rowLive, type WorkRow } from "../lib/background";
 import { CHANGE, dirOf, fitTabs, nameOf, tabName, type Change, type TabFit } from "../lib/inspector";
 import { Menu } from "./ui/Menu";
@@ -46,6 +47,14 @@ function WorkspaceButton(p: { handle: SessionHandle }) {
                             <GitBranch size={12} />
                             <span class="truncate">{st().branch}</span>
                         </span>
+                    </Show>
+                    <Show when={st().workingIn}>
+                        {(w) => (
+                            <span class="insp-ws-br truncate" title={`The agent works in the worktree ${tildify(w().path, app.hello?.homeDir)}`}>
+                                <FolderGit2 size={12} />
+                                <span class="truncate">{workingBranch(w())}</span>
+                            </span>
+                        )}
                     </Show>
                 </div>
                 <Show when={canReveal}>

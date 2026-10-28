@@ -54,6 +54,12 @@ export interface AcpAgent {
      * rules and mode (Grok's client PreToolUse hook). Left out: what it asks about (session/request_permission) is all.
      */
     gate?: AcpGate;
+    /**
+     * Its sessions stay in the folder they were made in: resumed with another cwd it goes on working in that one, and
+     * its asks there are never answered (OpenCode 1.19.4, resuming in a worktree). Cavvy resumes one only where its
+     * session/list says it belongs, and otherwise starts a new one with the conversation (as when a resume fails).
+     */
+    keepsFolder?: boolean;
 }
 
 /** A tool call the agent's gate holds until Cavvy answers (AcpGate). */
@@ -175,6 +181,7 @@ export function opencodeEnv(trusted: boolean): Record<string, string> {
 const OPENCODE: AcpAgent = {
     // The same in every mode: a mode change needs no restart. Cavvy decides each ask by its mode then.
     spawn: (cfg) => ({ args: ["--cwd", cfg.cwd], env: opencodeEnv(cfg.trusted) }),
+    keepsFolder: true,
     // `opencode models`: provider/model, one a line (about half a second).
     async listModels(bin, signal) {
         const r = await runCli(bin, ["models"], { signal, timeoutMs: 30_000 });
@@ -414,12 +421,22 @@ function grokTool(call: GateCall, cwd: string): GateTool | undefined {
         case "enter_plan_mode":
         case "exit_plan_mode":
             return { toolName: call.toolName, input: i, free: true };
+        case "use_tool": {
+            // An MCP server's tool it found with search_tool: checked as that tool (below).
+            const inner = str(i.tool_name);
+            const args = i.tool_input && typeof i.tool_input === "object" && !Array.isArray(i.tool_input) ? (i.tool_input as Record<string, unknown>) : {};
+            return inner && /^[\w-]+__[\w-]+$/.test(inner) && !inner.startsWith("mcp__") ? { toolName: `mcp__${inner}`, input: args } : undefined;
+        }
         case "spawn_subagent":
             // Its subagent's calls come through the gate too, each decided as they come.
             return { toolName: "Task", input: { description: str(i.description) ?? "subagent", prompt: typeof i.prompt === "string" ? i.prompt : "", subagent_type: str(i.subagent_type) ?? str(i.agent_type) ?? "general-purpose" } };
     }
-    // An MCP server's tool, <server>__<tool>: Cavvy's rules name it mcp__<server>__<tool>.
-    if (/^[\w-]+__[\w-]+$/.test(call.toolName) && !call.toolName.startsWith("mcp__")) return { toolName: `mcp__${call.toolName}`, input: i };
+    // An MCP server's tool, <server>__<tool>: Cavvy's rules name it mcp__<server>__<tool>. Its hook names the tool but
+    // gives use_tool's input, the tool's own inside it ({tool_name, tool_input}): checked with the tool's own.
+    if (/^[\w-]+__[\w-]+$/.test(call.toolName) && !call.toolName.startsWith("mcp__")) {
+        const own = i.tool_name === call.toolName && i.tool_input && typeof i.tool_input === "object" && !Array.isArray(i.tool_input) ? (i.tool_input as Record<string, unknown>) : i;
+        return { toolName: `mcp__${call.toolName}`, input: own };
+    }
     return undefined;
 }
 

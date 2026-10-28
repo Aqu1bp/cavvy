@@ -104,13 +104,13 @@ const CD_OPTIONS = /^-[LPe@]+$/;
  * job's own shell) doesn't move what follows, `popd` goes back to where `pushd` left, and after a
  * `cd` the words don't say the end of (a variable, `cd -`), the folder is unknown. `home` expands `~`.
  */
-export function commandPaths(cmd: string, home?: string): string[] {
+export function commandPaths(cmd: string, home?: string, from?: string): string[] {
     const words = shellWords(cmd);
     const out: string[] = [];
     type Place = { dir: string | undefined; pushed: (string | undefined)[] };
     const copy = (p: Place): Place => ({ dir: p.dir, pushed: [...p.pushed] });
-    /** The folder the shell is in, when the command says (undefined once it can't be told), and pushd's stack. */
-    let cur: Place = { dir: undefined, pushed: [] };
+    /** The folder the shell is in (`from`, the one it starts in, when that's known), undefined once it can't be told; and pushd's stack. */
+    let cur: Place = { dir: from && normalPath(from, home), pushed: [] };
     /** Where the shell was when the current list (what a trailing & sends off) and pipeline began, and whether that pipeline has a | yet. */
     let list = copy(cur);
     let pipe = copy(cur);
@@ -210,8 +210,11 @@ export function commandPaths(cmd: string, home?: string): string[] {
     return out;
 }
 
-/** The absolute paths a tool call names, in order: its folder, its command's (a shell's), then the file it reads or edits. */
-export function toolPaths(b: Pick<ToolBlock, "name" | "input">, home?: string): string[] {
+/**
+ * The absolute paths a tool call names, in order: its folder, its command's (a shell's), then the file it reads or edits.
+ * `from`: the folder its shell starts in, when that's known, for the command's relative paths.
+ */
+export function toolPaths(b: Pick<ToolBlock, "name" | "input">, home?: string, from?: string): string[] {
     const i = b.input ?? {};
     const out: string[] = [];
     const add = (v: unknown) => {
@@ -220,7 +223,7 @@ export function toolPaths(b: Pick<ToolBlock, "name" | "input">, home?: string): 
     };
     add(i.cwd);
     add(i.workdir);
-    if (typeof i.command === "string" && /^(Bash|Shell|shell|exec_command)$/.test(b.name)) out.push(...commandPaths(i.command, home));
+    if (typeof i.command === "string" && /^(Bash|Shell|shell|exec_command)$/.test(b.name)) out.push(...commandPaths(i.command, home, from));
     add(i.file_path);
     add(i.notebook_path);
     add(i.path);
