@@ -261,9 +261,11 @@ func frameArrived() {
 
 /// Waits until the screen has been still for `quiet` seconds (an animation ended, a page loaded), at most `timeout`.
 func settle(quiet: Double, timeout: Double) -> Bool {
-    let end = Date().addingTimeInterval(timeout)
+    // Still from now on: what was just done may not have reached the screen yet.
+    let start = Date()
+    let end = start.addingTimeInterval(timeout)
     while Date() < end {
-        let still = screenQueue.sync { Date().timeIntervalSince(lastDamage) }
+        let still = screenQueue.sync { Date().timeIntervalSince(max(lastDamage, start)) }
         if still >= quiet { return true }
         usleep(40_000)
     }
