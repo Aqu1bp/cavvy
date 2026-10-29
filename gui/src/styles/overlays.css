@@ -2193,3 +2193,62 @@
 .iv-step:disabled {
     opacity: 0.35;
 }
+
+/* Recently deleted: one row per trashed session, its title over where and when, Restore at the end. */
+.deleted-dialog .dialog-body {
+    max-height: min(calc(420 * var(--sp)), 70vh);
+    padding-top: calc(8 * var(--sp));
+}
+
+.deleted-list {
+    display: flex;
+    flex-direction: column;
+    margin: 0 calc(-8 * var(--sp));
+    padding: 0;
+    list-style: none;
+}
+
+.deleted-row {
+    display: flex;
+    align-items: center;
+    gap: calc(12 * var(--sp));
+    padding: calc(8 * var(--sp));
+    border-radius: var(--radius-sm);
+}
+
+.deleted-row:hover {
+    background: var(--hover);
+}
+
+.deleted-text {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: calc(2 * var(--sp));
+    min-width: 0;
+}
+
+.deleted-title {
+    font-weight: 550;
+}
+
+.deleted-meta {
+    font-size: 0.857rem;
+    color: var(--fg-3);
+}
+
+.deleted-row.back .deleted-meta {
+    color: var(--ok);
+}
+
+.deleted-row .btn {
+    flex: none;
+    gap: calc(6 * var(--sp));
+}
+
+.deleted-empty {
+    display: grid;
+    place-items: center;
+    min-height: calc(96 * var(--sp));
+    color: var(--fg-3);
+}

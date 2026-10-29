@@ -62,6 +62,15 @@ export type PermissionModeId = "default" | "acceptEdits" | "plan" | "auto" | "by
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 export type ToolCategoryId = "read" | "edit" | "execute" | "network" | "meta" | "mcp";
 
+/** A deleted session that session.restore can still put back. */
+export interface TrashedSessionSummary {
+    id: string;
+    title: string;
+    cwd?: string;
+    projectName?: string;
+    deletedAt: number;
+}
+
 export const MODE_LABELS: Record<PermissionModeId, { label: string; description: string }> = {
     default: { label: "Manual", description: "Ask before edits and commands" },
     acceptEdits: { label: "Accept edits", description: "Edit workspace files without asking" },
@@ -1744,6 +1753,8 @@ export interface Methods {
     /** Moves its files to the trash (sessions.remove follows); session.restore puts them back for a week. */
     "session.delete": { params: { id: string }; result: null };
     "session.restore": { params: { id: string }; result: null };
+    /** The sessions in the trash (deleted in the past week), the most recently deleted first. */
+    "sessions.trash": { params: Record<string, never>; result: TrashedSessionSummary[] };
     "session.killShell": { params: { id: string; shellId: string }; result: null };
     /** Stop background tasks (SessionState.backgroundTasks) by id, or every one running: how each went. */
     "session.stopBackground": { params: { id: string; ids?: string[] }; result: { results: Record<string, BackgroundStopResult> } };

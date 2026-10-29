@@ -28,6 +28,8 @@ export const [commitRequest, setCommitRequest] = createSignal<{ id: string; path
 export const [folderPickerOpen, setFolderPickerOpen] = createSignal<{ then: (path: string | undefined) => void; title?: string; action?: string; start?: string } | undefined>();
 /** The MCP servers dialog, and the server to show first. */
 export const [mcpOpen, setMcpOpen] = createSignal<{ focus?: string } | undefined>();
+/** Recently deleted: the trashed sessions, with Restore. */
+export const [deletedOpen, setDeletedOpen] = createSignal(false);
 /** Opened from the keyboard or a slash command; the composer's pickers watch these. */
 export const [modelPickerOpen, setModelPickerOpen] = createSignal(false);
 export const [modePickerOpen, setModePickerOpen] = createSignal(false);

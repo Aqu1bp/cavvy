@@ -35,6 +35,7 @@ import { FolderPicker } from "./components/FolderPicker";
 import { TrustDialog } from "./components/TrustDialog";
 import { PlanDialogs } from "./components/PlanDialogs";
 import { ArchiveDialog } from "./components/ArchiveDialog";
+import { RecentlyDeleted } from "./components/RecentlyDeleted";
 import { RunSheet } from "./components/RunSheet";
 import { CommitDialog } from "./components/CommitDialog";
 import { ImageViewer } from "./components/ImageViewer";
@@ -565,6 +566,7 @@ export function App() {
             <TrustDialog />
             <PlanDialogs />
             <ArchiveDialog />
+            <RecentlyDeleted />
             <RunSheet />
             <CommitDialog />
             <ImageViewer />

@@ -3,7 +3,7 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
-import { dirname, join } from "path";
+import { basename, dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
@@ -12,7 +12,7 @@ const { findSessionAnywhere } = await import("../src/agent/session");
 const { purgeTrash, trashDir } = await import("../src/server/session-delete");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
-import type { ServerEvent, SessionSearchResult, SessionSnapshot, SessionSummary } from "../src/server/protocol";
+import type { ServerEvent, SessionSearchResult, SessionSnapshot, SessionSummary, TrashedSessionSummary } from "../src/server/protocol";
 
 const mock = startMockLlm({ delayMs: 0 });
 mkdirSync(iso.home, { recursive: true });
@@ -240,6 +240,34 @@ describe("session.delete", () => {
             await engine.stop();
         }
     });
+
+    test("sessions.trash lists what's deleted, newest first, with its project; a restored one leaves it, and a linked transcript isn't read", async () => {
+        const a = await setup();
+        const b = await setup();
+        try {
+            const trash = async () => ((await a.engine.handle(a.c, "sessions.trash", {})) as TrashedSessionSummary[]).filter((s) => s.id === a.id || s.id === b.id);
+            await a.engine.handle(a.c, "session.delete", { id: a.id });
+            await Bun.sleep(5);
+            await b.engine.handle(b.c, "session.delete", { id: b.id });
+            const listed = await trash();
+            expect(listed.map((s) => s.id)).toEqual([b.id, a.id]);
+            expect(listed[1]).toMatchObject({ projectName: basename(a.cwd), cwd: a.cwd });
+            expect(listed[1]!.title.length).toBeGreaterThan(0);
+            expect(listed[0]!.deletedAt).toBeGreaterThanOrEqual(listed[1]!.deletedAt);
+            await a.engine.handle(a.c, "session.restore", { id: a.id });
+            expect((await trash()).map((s) => s.id)).toEqual([b.id]);
+            // A transcript swapped for a link out of the Cavvy home: the entry isn't listed (and the outside file isn't read).
+            const outside = join(tempDir("cavvy-del-outside-"), "transcript.jsonl");
+            renameSync(join(trashDir(), b.id, "transcript.jsonl"), outside);
+            symlinkSync(outside, join(trashDir(), b.id, "transcript.jsonl"));
+            expect(await trash()).toEqual([]);
+            unlinkSync(join(trashDir(), b.id, "transcript.jsonl"));
+            renameSync(outside, join(trashDir(), b.id, "transcript.jsonl"));
+        } finally {
+            await a.engine.stop();
+            await b.engine.stop();
+        }
+    }, 30_000);
 
     test("restore takes nothing from a trash folder that links out of the Cavvy home", async () => {
         const { engine, c, id, f } = await setup();

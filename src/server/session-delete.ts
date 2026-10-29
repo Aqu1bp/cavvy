@@ -9,7 +9,7 @@
 import { lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "fs";
 import { basename, dirname, join } from "path";
 import { cavvyHome, paths } from "../config/paths";
-import { findSessionAnywhere, holdSession, releaseSession, sessionFolder, SessionInUseError } from "../agent/session";
+import { findSessionAnywhere, holdSession, releaseSession, sessionFolder, sessionLabel, SessionInUseError } from "../agent/session";
 import { forgetFileHistory } from "../agent/checkpoints";
 import { isInside } from "../util/files";
 import { RpcError } from "./rpc-error";
@@ -247,6 +247,43 @@ export function restoreSession(id: string, beforeRestore?: (cwd: string | undefi
     } finally {
         release();
     }
+}
+
+/** A session in the trash: what Recently deleted lists. */
+export interface TrashedSession {
+    id: string;
+    title: string;
+    cwd?: string;
+    deletedAt: number;
+}
+
+/** The sessions in the trash, the most recently deleted first; entries that can't be read are left out. */
+export function listTrash(limit = 200): TrashedSession[] {
+    let names: string[];
+    try {
+        if (!lstatSync(trashDir()).isDirectory()) return [];
+        names = readdirSync(trashDir());
+    } catch {
+        return [];
+    }
+    const out: TrashedSession[] = [];
+    for (const name of names) {
+        if (!ID.test(name)) continue;
+        const entry = join(trashDir(), name);
+        try {
+            if (!lstatSync(entry).isDirectory()) continue;
+            const meta = readEntry(entry);
+            if (meta.id !== name || typeof meta.deletedAt !== "number") continue;
+            // The transcript is read only as a regular file in the entry, never through a link.
+            const transcript = join(entry, "transcript.jsonl");
+            if (!lstatSync(transcript).isFile()) continue;
+            const { title, cwd } = sessionLabel(transcript);
+            out.push({ id: name, title, cwd, deletedAt: meta.deletedAt });
+        } catch {
+            // damaged or vanished: not listed
+        }
+    }
+    return out.sort((a, b) => b.deletedAt - a.deletedAt).slice(0, limit);
 }
 
 /** Remove trash entries deleted more than a week ago. Best effort, a bounded number per run. */

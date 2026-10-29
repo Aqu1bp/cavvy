@@ -58,7 +58,7 @@ import { forkUiLog } from "./history";
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
 import { cavvyLinks, importModel, linkKey, writeImportedSession, type CavvyLinks } from "./cli-import";
 import { CODEX_CLIENT_NAME } from "../backends/codex";
-import { checkId, claimForDelete, locateSession, purgeTrash, restoreSession, trashSession, type SessionFlags } from "./session-delete";
+import { checkId, claimForDelete, listTrash, locateSession, purgeTrash, restoreSession, trashSession, type SessionFlags } from "./session-delete";
 import { searchSessions } from "./search";
 import { usageDays, usageSummary } from "./usage";
 import type {
@@ -2085,6 +2085,8 @@ export class Engine {
             }
             case "sessions.list":
                 return this.listSessions(num(p.limit, 200), Boolean(p.archived));
+            case "sessions.trash":
+                return listTrash().map((s) => ({ ...s, title: redact(s.title), ...(s.cwd ? { projectName: basename(s.cwd) || s.cwd } : {}) }));
             case "sessions.search":
                 // Awaited: it can reject before its first await (see providers.setKey below).
                 return await this.searchSessions(client, str(p.query, "query"), num(p.limit, 50), typeof p.archived === "boolean" ? p.archived : undefined);
