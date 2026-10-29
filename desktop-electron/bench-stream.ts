@@ -77,6 +77,17 @@ function rss(roles: [number, string][]): Record<string, number> {
     return out;
 }
 
+/** macOS's footprint (MB, Activity Monitor's Memory) by role: dirty and compressed memory, not shared or purgeable pages. */
+function footprint(roles: [number, string][]): Record<string, number> {
+    const want = roles.filter(([, role]) => role !== "WindowServer" && !role.startsWith("utility:tracing"));
+    const r = Bun.spawnSync(["footprint", "-f", "bytes", ...want.flatMap(([p]) => ["-p", String(p)])]);
+    const bytes = new Map<number, number>();
+    for (const m of r.stdout.toString().matchAll(/\[(\d+)\]:.*?Footprint: (\d+) B/g)) bytes.set(Number(m[1]), Number(m[2]));
+    const out: Record<string, number> = {};
+    for (const [pid, role] of want) out[role] = (out[role] ?? 0) + Math.round((bytes.get(pid) ?? 0) / 1048576);
+    return out;
+}
+
 /** A trace's main-thread work in the UI page, by event (total ms of top-level-ish events), and frames drawn. */
 function summarizeTrace(events: any[], uiPid: number, seconds: number) {
     const threads = new Map<string, string>();
@@ -135,7 +146,7 @@ try {
     for (let i = 0; ; i++) { if (await fetch(`http://127.0.0.1:${DEMO_PORT}/healthz`).then((r) => r.ok, () => false)) break; if (i > 120) throw new Error("demo didn't start"); await sleep(500); }
 
     // ---- The app (development build), its main process's Node inspector on 9345.
-    app = Bun.spawn([join(repo, "desktop-electron/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"), "--inspect=9345", join(repo, "desktop-electron")], {
+    app = Bun.spawn([join(repo, "desktop-electron/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"), "--inspect=9345", "--disable-backgrounding-occluded-windows", join(repo, "desktop-electron")], {
         cwd: repo,
         env: { ...process.env, CAVVY_HOME: join(dir, "home"), CAVVY_NO_KEYCHAIN: "1", CAVVY_ELECTRON_TEST_PORT: "9346", CAVVY_ELECTRON_USER_DATA: join(dir, "electron-data"), CAVVY_ELECTRON_CWD: project, CAVVY_ELECTRON_METRICS: metricsFile },
         stdout: "ignore",
@@ -211,6 +222,7 @@ try {
     for (const id of [long, short, ...others]) await seed.call("session.stopBackground", { id });
     for (const id of [long, short, ...others]) await seed.call("session.pin", { id, pinned: true });
     report.memoryAfterSeedMB = rss([...(await pids())]);
+    report.footprintAfterSeedMB = footprint([...(await pids())]);
     report.seedSeconds = Math.round((performance.now() - seedAt) / 1000);
 
     const row = (id: string) => `document.querySelector('[data-session-row="${id}"] .slim-hit, [data-session-row="${id}"] .card-hit, [data-session-id="${id}"] .slim-hit')`;
@@ -236,6 +248,8 @@ try {
     const phase = async (name: string, seconds: number, opts: { perSecond?: string } = {}) => {
         if (only && !only.includes(name)) return;
         const roles = await pids();
+        await js(`(() => { window.__hiddenAt = []; window.__onVis = () => document.visibilityState !== 'visible' && __hiddenAt.push(performance.now()); document.addEventListener('visibilitychange', __onVis); })()`);
+        const visibleAtStart = await js(`document.visibilityState`);
         measuring = true;
         const t0 = performance.now();
         const c0 = cpuTimes([...roles.keys()]);
@@ -260,11 +274,17 @@ try {
         for (const [pid, role] of roles) cpu[role] = (cpu[role] ?? 0) + ((c1.get(pid) ?? 0) - (c0.get(pid) ?? 0));
         for (const k of Object.keys(cpu)) cpu[k] = Math.round((cpu[k]! / wall) * 1000) / 10;
         const memoryMB = rss([...roles]);
+        const footprintMB = footprint([...roles]);
         measuring = false;
         const heap = await js(`(() => { const m = performance.memory; return m ? { usedMB: Math.round(m.usedJSHeapSize / 1048576), totalMB: Math.round(m.totalJSHeapSize / 1048576) } : null; })()`);
         // What's animating: by animation (CSS name, or a script's), its element and its state.
         const dom = await js(`(() => { const by = {}; for (const a of document.getAnimations()) { const t = a.effect && a.effect.target; const k = (a.animationName || a.constructor.name) + ' ' + (t ? t.tagName.toLowerCase() + '.' + String(t.getAttribute('class') || '').trim().split(/\\s+/).slice(0, 2).join('.') : '') + ' ' + a.playState; by[k] = (by[k] || 0) + 1; } return { nodes: document.getElementsByTagName('*').length, animations: document.getAnimations().length, fresh: document.querySelectorAll('.md-fresh').length, byAnimation: Object.fromEntries(Object.entries(by).sort((x, y) => y[1] - x[1]).slice(0, 12)) }; })()`);
         const wsKB = Math.round((wsBytes - b0) / 1024 / wall), wsN = Math.round((wsFrames - f0) / wall);
+        // With --shot <dir>: what the window showed, to check a change looks the same.
+        if (arg("--shot")) {
+            const shot = await page.cdp("Page.captureScreenshot", { format: "png" });
+            if (shot.result?.data) await Bun.write(join(arg("--shot")!, `${label}-${name}.png`), Buffer.from(shot.result.data, "base64"));
+        }
         // Where the time goes.
         await page.cdp("Profiler.enable");
         await page.cdp("Profiler.setSamplingInterval", { interval: 250 });
@@ -280,13 +300,16 @@ try {
         const uiProfile = (await page.cdp("Profiler.stop")).result?.profile;
         const mainProfile = main ? (await main.cdp("Profiler.stop")).result?.profile : undefined;
         const uiPid = [...roles].find(([, r]) => r === "ui")?.[0] ?? 0;
+        const hidden = await js(`(() => { document.removeEventListener('visibilitychange', __onVis); return __hiddenAt.length; })()`);
         report.phases[name] = {
             cpuPercent: cpu,
             appTotal: Math.round(((cpu.ui ?? 0) + (cpu.gpu ?? 0) + (cpu.main ?? 0) + (cpu.server ?? 0)) * 10) / 10,
             memoryMB,
+            footprintMB,
             heap,
             dom,
             wsKBPerSecond: wsKB,
+            ...(visibleAtStart !== "visible" || hidden ? { invalid: `window not visible (${visibleAtStart}, hidden ${hidden}x)` } : {}),
             wsFramesPerSecond: wsN,
             trace: summarizeTrace(events, uiPid, 3),
             ...(series.length ? { series } : {}),
@@ -294,7 +317,7 @@ try {
             main: topSelf(mainProfile, 8),
         };
         const r = report.phases[name];
-        console.error(`${name}: app ${r.appTotal}% ${JSON.stringify(cpu)} mem ${JSON.stringify(memoryMB)} frames/s ${r.trace.framesPerSecond} main frames/s ${r.trace.mainFramesPerSecond} ws ${wsKB} KB/s ${wsN}/s`);
+        console.error(`${name}${r.invalid ? " [INVALID: " + r.invalid + "]" : ""}: app ${r.appTotal}% ${JSON.stringify(cpu)} footprint ${JSON.stringify(footprintMB)} frames/s ${r.trace.framesPerSecond} main frames/s ${r.trace.mainFramesPerSecond} ws ${wsKB} KB/s ${wsN}/s`);
     };
 
     /** A turn started in each session, running through `run`, then stopped. */
@@ -345,6 +368,11 @@ try {
     // Memory once it's all over and settled.
     await sleep(5000);
     report.memoryAfterMB = rss([...(await pids())]);
+    report.footprintAfterMB = footprint([...(await pids())]);
+    // And once the page has collected its garbage.
+    await page.cdp("HeapProfiler.collectGarbage");
+    await sleep(3000);
+    report.footprintAfterGcMB = footprint([...(await pids())]);
     clearInterval(approver);
     seed.ws.close();
 } catch (e) {
