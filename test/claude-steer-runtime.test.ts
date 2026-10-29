@@ -79,6 +79,18 @@ describe("steering a running Claude Code turn from the app", () => {
             const turns = shown(rt);
             expect(turns.map((t) => [t.prompt, t.steered])).toEqual([["start", false], ["use the other file", true]]);
             expect(turns[1]!.text).toContain("Adjusted: use the other file");
+            // Reopened, it still shows as steered in.
+            await engine.stop();
+            const { Engine } = await import("../src/server/engine");
+            const reopened = new Engine();
+            const next = { subs: new Set<string>(), send() {} };
+            reopened.clients.add(next);
+            try {
+                const view = (await reopened.handle(next, "session.open", { id })) as SessionSnapshot;
+                expect(view.turns.map((t) => [t.prompt?.text, Boolean(t.prompt?.steered)])).toEqual([["start", false], ["use the other file", true]]);
+            } finally {
+                await reopened.stop();
+            }
         } finally {
             await cleanup(engine);
         }
