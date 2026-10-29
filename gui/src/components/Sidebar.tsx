@@ -11,7 +11,7 @@ import { activate, app, handleFor, isUnread, refreshSessions, reportError } from
 import { createUpdateAction } from "./UpdateAction";
 import { archive, archiveSessions, chooseProject, deleteSessions, newSession, openProject, openWaiting, pin, rename, settle, settleSessions, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
-import { agentFocus, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
+import { agentFocus, setDeletedOpen, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
 import { frameDrag } from "../lib/drag";
 import { ago, monogram, projectColor, since } from "../lib/format";
 import { holdSidebar, projectOf, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type SidebarEntry } from "../lib/session-order";
@@ -904,6 +904,9 @@ export function Sidebar() {
                     <div class="menu-sep" />
                     <button role="menuitem" class="menu-item compact" onClick={() => (setShowArchived(!showArchived()), setViewOpen(false))}>
                         <Archive size={14} /> {showArchived() ? "Show active sessions" : `Show archived (${app.archived.length})`}
+                    </button>
+                    <button role="menuitem" class="menu-item compact" onClick={() => (setViewOpen(false), setDeletedOpen(true))}>
+                        <Trash2 size={14} /> Recently deleted
                     </button>
                 </Menu>
             </div>

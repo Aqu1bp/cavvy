@@ -3,7 +3,7 @@
 // the right one glass capsule of tools: the changes, the project's scripts,
 // the terminal, the side panel and the session's menu.
 
-import { createEffect, createMemo, createResource, createSignal, For, on, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { createEffect, createMemo, createResource, createSignal, For, on, Show, type JSX } from "solid-js";
 import { Archive, ChevronDown, Copy, Ellipsis, FileDiff, FolderGit2, FolderOpen, GitBranch, Hand, History, PanelBottom, PanelLeft, PanelRight, Pencil, Search, Share, ShieldAlert, Shrink, SquareArrowOutUpRight, SquarePen, SquareTerminal, Trash2 } from "lucide-solid";
 import type { SessionState, SessionSummary, WorkingIn } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
@@ -11,7 +11,7 @@ import { app, reportError, rpc, toast } from "../state/app";
 import { archive, deleteSession, editorName, exportSession, newSession, openInEditor, openReview, openWaiting, openWorktreeReview, refreshEditors, rename, togglePanel, toggleSidebar } from "../state/actions";
 import { sessionReadReady, useGitChanges } from "../state/changes";
 import { prefs } from "../state/prefs";
-import { agentFocus, terminalOpen, setTerminalOpen, setRewindOpen, openFind, review, setReview, setSettingsTab, setTitleBarBox, settingsTab, shellLayout } from "../state/ui";
+import { agentFocus, terminalOpen, setTerminalOpen, setRewindOpen, openFind, review, setReview, setSettingsTab, settingsTab, shellLayout } from "../state/ui";
 import { copyText, isDesktop, os } from "../lib/platform";
 import { plural, tildify } from "../lib/format";
 import { asking, inFront, needsLine, needsPlace, needsYou } from "../lib/rail";
@@ -32,25 +32,6 @@ export function sessionTitle(h?: SessionHandle): string {
 /** Delete a session that's open, at once, with Undo (nothing to delete before its first prompt). */
 export function deleteOpen(h?: SessionHandle) {
     if (h?.view.turns.length) void deleteSession(h.id);
-}
-
-/**
- * Where the title starts and the tools end (from the window's left and right edges): the toasts
- * drop into this row, over the title and clear of the capsule, wherever the shell puts it. Kept
- * for the toasts alone: custom properties on the root would restyle the whole window each time
- * the title bar resizes (on every frame of dragging the rail, say).
- */
-function placeToasts(header: HTMLElement) {
-    if (!header.isConnected) return;
-    const title = header.querySelector<HTMLElement>(".crumbs")?.getBoundingClientRect();
-    const tools = header.querySelector<HTMLElement>(".bar-end")?.getBoundingClientRect();
-    const box = header.getBoundingClientRect();
-    if (!box.width) return;
-    setTitleBarBox({
-        start: Math.round(title?.left ?? box.left),
-        end: Math.round(window.innerWidth - (tools?.width ? tools.left : box.right)),
-        top: Math.round(box.top),
-    });
 }
 
 /**
@@ -112,19 +93,8 @@ export function NeedsYou(p: { waiting: SessionSummary[] }) {
 export function TitleBar(p: { children: JSX.Element; end?: JSX.Element }) {
     // Shown by the rail when it's there (by Settings over both); the session in front of you shows its own request.
     const waiting = createMemo(() => (needsPlace({ railShown: shellLayout().railShown, settings: Boolean(settingsTab()) }) === "title" ? needsYou([...app.sessions, ...app.archived], inFront({ activeId: app.activeId, settings: false, agentFocus: agentFocus() })) : []));
-    let el: HTMLElement | undefined;
-    onMount(() => {
-        const place = () => el && placeToasts(el);
-        // Its first report comes after this frame's layout, before it's painted: placing them now
-        // would lay out the whole view a second time (a session opening, say) only to read the bar.
-        const ro = new ResizeObserver(place);
-        ro.observe(el!);
-        for (const part of el!.querySelectorAll(".crumbs, .bar-end")) ro.observe(part);
-        window.addEventListener("resize", place);
-        onCleanup(() => (ro.disconnect(), window.removeEventListener("resize", place)));
-    });
     return (
-        <header ref={el} class={`header ${isDesktop && os === "macos" ? "traffic" : ""} ${prefs.sidebar ? "" : "rail-off"}`}>
+        <header class={`header ${isDesktop && os === "macos" ? "traffic" : ""} ${prefs.sidebar ? "" : "rail-off"}`}>
             <div class="bar-rail">
                 <button class={`hb ${waiting().length ? "has-wait" : ""}`} title={withShortcut(waiting().length ? "Show sidebar: a session needs you" : "Show sidebar", "app:toggleSidebar")} aria-label={waiting().length ? "Show sidebar, a session needs you" : "Show sidebar"} onClick={toggleSidebar}>
                     <PanelLeft size={16} />
@@ -137,7 +107,6 @@ export function TitleBar(p: { children: JSX.Element; end?: JSX.Element }) {
                 {p.children}
             </nav>
             <span class="grow" />
-            {/* Always there (empty, it's 0 wide), so the toasts' place follows Needs you coming and going in any view. */}
             <div class="bar-end">
                 <Show when={waiting().length}>
                     <NeedsYou waiting={waiting()} />

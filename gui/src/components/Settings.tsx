@@ -22,7 +22,7 @@ import { createUpdateAction } from "./UpdateAction";
 import { MessageText } from "./ErrorCards";
 import { commandIn } from "../lib/error-text";
 import { ModeIcon, MODES } from "./ModePicker";
-import { EffortBars } from "./ModelPicker";
+import { EffortSlider } from "./ModelPicker";
 import { effortLevels, effortOf } from "../lib/effort";
 import { SidebarFrame } from "./Sidebar";
 import { NeedsYou } from "./Header";
@@ -204,7 +204,7 @@ function General() {
                 <Row title="Reasoning effort">
                     <span class="set-effort">
                         <span class="set-effort-l">{effortOf(s().effort)?.label ?? "Provider's default"}</span>
-                        <EffortBars size="sm" levels={effortLevels(undefined)} value={s().effort} onChange={(v) => void update({ effort: v })} />
+                        <EffortSlider size="sm" levels={effortLevels(undefined)} value={s().effort} onChange={(v) => void update({ effort: v })} />
                     </span>
                 </Row>
             </Section>
@@ -979,7 +979,11 @@ export function SettingsPage() {
             <div class="set-in">
                 {/* The header stays while the page scrolls (on the window's top strip, which moves the window). */}
                 <div class="set-top">
-                    <h2>{label()}</h2>
+                    {/* With the sections as pills under it (no sidebar), the pill names the section: the header says Settings. */}
+                    <h2>
+                        <span class="set-t-tab">{label()}</span>
+                        <span class="set-t-all">Settings</span>
+                    </h2>
                     {/* Settings covers the rail and the title bar, where Needs you would be: it's here instead. */}
                     <Show when={waiting().length}>
                         <NeedsYou waiting={waiting()} />

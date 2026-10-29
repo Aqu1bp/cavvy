@@ -1,5 +1,5 @@
-// The effort bars: which levels a model takes, how keys and the pointer move
-// along them (lib/effort.ts), and the EffortBars control itself
+// The effort slider: which levels a model takes, how keys and the pointer move
+// along them (lib/effort.ts), and the EffortSlider control itself
 // (fixtures/gui-effort-bars.ts, real Solid reactivity in an in-memory DOM).
 import { expect, test } from "bun:test";
 import { EFFORTS, effortAt, effortKey, effortLevels, effortOf, takesEffort } from "../gui/src/lib/effort";
@@ -42,16 +42,24 @@ test("keys: arrows step and stop at the ends, Home/End jump, 1-n pick, anything 
     expect(effortKey(key("ArrowRight"), 0, 0)).toBeUndefined();
 });
 
-test("the pointer: the bar under it, clamped to the row", () => {
+test("the pointer: the nearest stop, clamped to the track", () => {
+    // Four stops at 0, 33⅓, 66⅔ and 100.
     expect(effortAt(0, 0, 100, 4)).toBe(0);
-    expect(effortAt(24.9, 0, 100, 4)).toBe(0);
-    expect(effortAt(25, 0, 100, 4)).toBe(1);
-    expect(effortAt(99, 0, 100, 4)).toBe(3);
+    expect(effortAt(16.6, 0, 100, 4)).toBe(0);
+    expect(effortAt(16.7, 0, 100, 4)).toBe(1);
+    expect(effortAt(60, 0, 100, 4)).toBe(2);
     expect(effortAt(100, 0, 100, 4)).toBe(3);
     expect(effortAt(-40, 0, 100, 4)).toBe(0);
     expect(effortAt(500, 0, 100, 4)).toBe(3);
     expect(effortAt(150, 100, 100, 5)).toBe(2);
+    // Stops from 20 in at either end (the thumb's middle can't go nearer): 20, 40, 60, 80.
+    expect(effortAt(5, 0, 100, 4, 20)).toBe(0);
+    expect(effortAt(31, 0, 100, 4, 20)).toBe(1);
+    expect(effortAt(95, 0, 100, 4, 20)).toBe(3);
+    // No room, or one stop: the first.
     expect(effortAt(10, 0, 0, 4)).toBe(0);
+    expect(effortAt(10, 0, 40, 4, 20)).toBe(0);
+    expect(effortAt(90, 0, 100, 1)).toBe(0);
 });
 
 // Each runs its namesake in fixtures/gui-effort-bars.ts, in a browser-conditions
@@ -65,6 +73,6 @@ const fixture = (name: string) =>
         expect(output).toContain(" 1 pass");
     });
 
-fixture("EffortBars: fills to the value, previews on hover, applies on click, drag and keys");
-fixture("EffortBars: a secondary or middle press changes nothing and starts no drag");
+fixture("EffortSlider: the knob at the value, a dot per level, hover grows the one a click would pick, applies on click, drag and keys");
+fixture("EffortSlider: a secondary or middle press changes nothing and starts no drag");
 fixture("EffortPicker: a change the server refuses goes back to the level in force, and picking it again sends again (in a session and on Home)");

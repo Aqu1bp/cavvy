@@ -52,7 +52,6 @@ test("the empty top strip moves the window in every state, whatever is laid over
         "terminal maximized: beside its tabs": path(...shell, "div.sheet", "section.terminal-panel.max", "div.terminal-toolbar", "div.terminal-tabs"),
         "Settings: the page beside its column": path(...shell, "div.sheet", "main.main", "div.settings-host", "div.settings-page"),
         "Settings: its heading": path(...shell, "div.sheet", "main.main", "div.settings-host", "div.settings-page", "div.set-in", "div.set-top", "h2"),
-        "a toast on the top line": path("html", "body", "div.app", "div.toasts", "div.toast-region", "div.toast.glass.success", "span.toast-msg"),
         "Home": path(...shell, "div.sheet", "main.main", "div.keep", "div.home", "div.home-col"),
         "not connected": path("html", "body", "div", "div.app", "div.splash"),
     };

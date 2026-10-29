@@ -1884,10 +1884,10 @@
     color: var(--fg-3);
 }
 
-/* ---- Effort: the popover and the bars ------------------------------------------ */
+/* ---- Effort: the popover and the slider ---------------------------------------- */
 
 .popover.effort-pop {
-    padding: calc(10 * var(--sp)) calc(12 * var(--sp)) calc(12 * var(--sp));
+    padding: calc(14 * var(--sp)) calc(14 * var(--sp)) calc(13 * var(--sp));
     border-radius: calc(16 * var(--sp));
     overflow: visible;
 }
@@ -1897,28 +1897,37 @@
     align-items: center;
     justify-content: space-between;
     gap: calc(8 * var(--sp));
-    height: calc(22 * var(--sp));
-    margin-bottom: calc(10 * var(--sp));
+    min-height: calc(24 * var(--sp));
+    margin-bottom: calc(8 * var(--sp));
+    font-size: 1.071rem;
 }
 
-.ep-lv {
-    font-size: 0.929rem;
-    font-weight: 600;
+.ep-h b {
+    font-weight: 650;
     color: var(--fg);
 }
 
+.ep-ends {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: calc(6 * var(--sp));
+    font-size: 0.857rem;
+    color: var(--fg-3);
+}
+
+/* Fast mode, beside the level: a pill that turns the accent when on, its bolt filling with a pop. */
 .ep-fast {
     display: inline-flex;
     align-items: center;
     gap: calc(3 * var(--sp));
-    height: calc(22 * var(--sp));
-    padding: 0 calc(8 * var(--sp)) 0 calc(6 * var(--sp));
+    height: calc(24 * var(--sp));
+    padding: 0 calc(9 * var(--sp)) 0 calc(7 * var(--sp));
     border-radius: var(--pill);
-    font-size: 0.821rem;
+    font-size: 0.857rem;
     font-weight: 600;
-    color: var(--fg-3);
-    box-shadow: inset 0 0 0 0.5px var(--line);
-    transition: background 140ms, color 140ms;
+    color: var(--fg-2);
+    box-shadow: inset 0 0 0 0.5px var(--line-strong);
+    transition: background 140ms, color 140ms, box-shadow 140ms;
 }
 
 .ep-fast:hover:not(:disabled) {
@@ -1928,72 +1937,141 @@
 
 .ep-fast.on {
     color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 13%, transparent);
-    box-shadow: none;
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
+    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
 .ep-fast.on svg {
     fill: currentColor;
+    animation: ep-bolt 260ms var(--ease-out);
+}
+
+@keyframes ep-bolt {
+    40% {
+        transform: scale(1.35) rotate(-8deg);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .ep-fast.on svg {
+        animation: none;
+    }
+}
+
+[data-motion="instant"] .ep-fast.on svg {
+    animation: none;
 }
 
 .ep-fast:disabled {
     opacity: 0.45;
 }
 
-/* One bar per level the model takes, rising; the chosen level and below fill with the accent. */
+
+/* Effort as a slider, from Quick at the left to Thorough at the right: a knob that stops at a dot per
+   level, the track behind it filled with an accent that deepens toward Thorough. It moves quickly, and
+   while it's dragged the knob follows the pointer without easing behind it. --p is where the knob is
+   (0 to 1); --pad is the track's padding around the knob, --t the knob's size. */
 .es {
-    display: flex;
-    align-items: flex-end;
-    gap: calc(4 * var(--sp));
-    height: calc(28 * var(--sp));
-    border-radius: calc(8 * var(--sp));
+    --pad: calc(3 * var(--sp));
+    --t: calc(28 * var(--sp));
+    --move: 150ms var(--ease-out);
+    position: relative;
+    height: calc(34 * var(--sp));
+    border-radius: var(--pill);
+    background: color-mix(in srgb, var(--fg) 6%, transparent);
+    box-shadow: inset 0 0 0 0.5px var(--line);
     cursor: pointer;
     touch-action: none;
     outline: none;
 }
 
-.es:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
-}
-
 .es.sm {
-    height: calc(22 * var(--sp));
-    gap: calc(3 * var(--sp));
+    --t: calc(18 * var(--sp));
+    height: calc(24 * var(--sp));
 }
 
-.eb {
+.es.drag {
+    --move: 60ms linear;
+    cursor: grabbing;
+}
+
+[data-motion="instant"] .es {
+    --move: 0ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .es {
+        --move: 0ms;
+    }
+}
+
+.es-fill {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: calc(2 * var(--pad) + var(--t) + (100% - 2 * var(--pad) - var(--t)) * var(--p));
+    border-radius: inherit;
+    background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 30%, transparent), color-mix(in srgb, var(--accent) 85%, transparent));
+    transition: width var(--move);
+}
+
+/* Across the knob's travel, from its middle at the first stop to its middle at the last. */
+.es-stops {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: calc(var(--pad) + var(--t) / 2);
+    right: calc(var(--pad) + var(--t) / 2);
     display: flex;
-    align-items: flex-end;
-    flex: 1;
-    height: 100%;
+    align-items: center;
+    justify-content: space-between;
 }
 
-.eb i {
-    display: block;
-    width: 100%;
-    height: calc(22% + var(--h) * 78%);
-    border-radius: calc(3.5 * var(--sp));
-    background: color-mix(in srgb, var(--fg) 11%, transparent);
-    transform-origin: bottom;
-    transition: background 160ms, transform 220ms var(--spring);
+.es-stops i {
+    width: calc(4 * var(--sp));
+    height: calc(4 * var(--sp));
+    margin: 0 calc(-2 * var(--sp));
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--fg) 30%, transparent);
+    transition: transform 120ms var(--ease-out), background 120ms;
 }
 
-.es.hov .eb.pre i {
-    background: color-mix(in srgb, var(--accent) 30%, transparent);
+.es-stops i.on {
+    background: rgba(255, 255, 255, 0.55);
 }
 
-.eb.on i,
-.es.hov .eb.on.pre i {
-    background: var(--accent);
+.es-stops i.hov {
+    transform: scale(1.75);
+    background: color-mix(in srgb, var(--fg) 60%, transparent);
 }
 
-.es.hov .eb.on:not(.pre) i {
-    background: color-mix(in srgb, var(--accent) 55%, transparent);
+.es-thumb {
+    position: absolute;
+    top: var(--pad);
+    left: calc(var(--pad) + (100% - 2 * var(--pad) - var(--t)) * var(--p));
+    width: var(--t);
+    height: var(--t);
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+    pointer-events: none;
+    transition: left var(--move), transform 120ms var(--ease-out);
 }
 
-.eb:hover i {
-    transform: scaleY(1.06);
+.es.drag .es-thumb {
+    transform: scale(1.08);
+}
+
+/* No level chosen (the model's default): an empty track, the knob at the start. */
+.es.unset .es-fill {
+    opacity: 0;
+}
+
+
+.es:focus-visible .es-thumb {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
 }
 
 /* ---- Model picker: provider filters, then one provider's models ------------ */
@@ -2664,9 +2742,16 @@
     color: var(--fg-2);
 }
 
+/* The icon and the check (each in a .menu-ico a line tall) sit on the label's line, not in the middle of the label and the description under it. */
 .mode-menu .menu-item {
+    align-items: flex-start;
     padding: calc(7 * var(--sp)) calc(10 * var(--sp));
     border-radius: calc(10 * var(--sp));
+}
+
+.mode-menu .menu-ico {
+    height: 1lh;
+    margin-top: 0;
 }
 
 .mode-menu .menu-head kbd {
