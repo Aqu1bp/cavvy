@@ -63,6 +63,28 @@ export async function boxOf(page: Page, ref: string, signal?: AbortSignal): Prom
     }
 }
 
+/** The first element a CSS selector matches, scrolled into view, and its box on the screen (CSS pixels of the viewport). */
+export async function boxOfSelector(page: Page, selector: string, signal?: AbortSignal): Promise<{ x: number; y: number; width: number; height: number }> {
+    page.actable(signal);
+    const expression = `(() => {
+        let el;
+        try { el = document.querySelector(${JSON.stringify(selector)}); } catch { return "invalid"; }
+        if (!el) return "none";
+        el.scrollIntoView({ block: "nearest", inline: "nearest" });
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 ? { x: r.x, y: r.y, width: r.width, height: r.height } : "empty";
+    })()`;
+    const { result } = await page.send<{ result: { value?: unknown } }>("Runtime.evaluate", { expression, returnByValue: true });
+    const v = result.value;
+    if (v === "invalid") throw new BrowserError(`${JSON.stringify(selector)} isn't a valid CSS selector.`);
+    if (v === "none") throw new BrowserError(`Nothing on the page matches ${JSON.stringify(selector)}.`);
+    if (typeof v !== "object" || v === null) throw new BrowserError(`What ${JSON.stringify(selector)} matches isn't visible: it has no size on the page.`);
+    const r = v as { x: number; y: number; width: number; height: number };
+    const x = Math.max(r.x, 0);
+    const y = Math.max(r.y, 0);
+    return { x, y, width: Math.max(r.x + r.width - x, 1), height: Math.max(r.y + r.height - y, 1) };
+}
+
 /** Resolves after the page has drawn two frames (or a tenth of a second: a page that draws none, one that's hidden). */
 const FRAMES = "new Promise((resolve) => { requestAnimationFrame(() => requestAnimationFrame(resolve)); setTimeout(resolve, 100); })";
 

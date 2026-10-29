@@ -133,7 +133,9 @@ describe("the tools", () => {
         expect(check(BrowserActTool, { action: "wait" })).toBeUndefined();
         expect(check(BrowserActTool, { action: "scroll" })).toBeUndefined();
 
-        expect(check(BrowserScreenshotTool, { fullPage: true, ref: "e1" })).toBe("Pass fullPage or ref, not both");
+        expect(check(BrowserScreenshotTool, { fullPage: true, ref: "e1" })).toBe("Pass one of fullPage, ref or selector");
+        expect(check(BrowserScreenshotTool, { ref: "e1", selector: "#a" })).toBe("Pass one of fullPage, ref or selector");
+        expect(check(BrowserScreenshotTool, { selector: "#a" })).toBeUndefined();
         expect(check(BrowserScreenshotTool, { fullPage: true })).toBeUndefined();
         expect(check(BrowserEvalTool, { expression: " " })).toBe("expression is empty");
         expect(check(BrowserEvalTool, { expression: "1" })).toBeUndefined();
@@ -149,6 +151,7 @@ describe("the tools", () => {
         expect(BrowserActTool.title({ action: "wait", text: "Saved" })).toBe("BrowserAct(wait Saved)");
         expect(BrowserEvalTool.title({ expression: `document.querySelectorAll("li")\n.length ${"+ 1".repeat(60)}` }).length).toBeLessThan(90);
         expect(BrowserScreenshotTool.title({ fullPage: true })).toBe("BrowserScreenshot(full page)");
+        expect(BrowserScreenshotTool.title({ selector: ".composer" })).toBe("BrowserScreenshot(.composer)");
         expect(BrowserLogsTool.title({})).toBe("BrowserLogs(all)");
         expect(BrowserSnapshotTool.title({ screenshot: true })).toBe("BrowserSnapshot(current tab, screenshot)");
     });
@@ -391,7 +394,7 @@ describe("a screenshot as providers are sent it", () => {
         const result = await screenshotResult();
         expect(result.isError).toBeFalsy();
         // Saved in Cavvy's home, with how to show it in the reply (the transcript draws a local image a reply links to).
-        const saved = /^Screenshot of the viewport of tab \[2\] \(1280×800 CSS pixels\) at http:\/\/localhost:3000\/\. Saved as (\S+\.png): to show it to the user, put !\[what it shows\]\(\1\) in your last message\.$/.exec(result.content);
+        const saved = /^Screenshot of the viewport of tab \[2\] \(1280×800 CSS pixels\) at http:\/\/localhost:3000\/\. Saved as (\S+\.png): to show it to the user, put !\[what it shows\]\(\1\) in your last message\. The chat draws a whole window at about half size: to show the user a change, screenshot just it \(ref or selector\), which it draws sharp at its own size\.$/.exec(result.content);
         expect(saved?.[1]).toStartWith(join(iso.home, "screenshots") + "/");
         expect(readFileSync(saved![1]!).toString("base64")).toBe(PNG);
         expect(result.images).toEqual([{ type: "image", mediaType: "image/png", data: PNG }]);
