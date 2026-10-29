@@ -176,6 +176,7 @@ export class PermissionChecker {
         else if (READ_TOOLS.has(tool.name)) t.path = cwd;
         if (tool.name === "WebFetch" || tool.name === "BrowserNavigate") t.url = String(input?.url ?? "");
         if (tool.name === "Task") t.agentType = String(input?.subagent_type ?? "general-purpose");
+        if (tool.name === "SimulatorControl") t.action = String(input?.action ?? "");
         return t;
     }
 
@@ -300,6 +301,7 @@ export class PermissionChecker {
         const rules = d.suggestions ?? [];
         if (!rules.length) return undefined;
         if (tool.name === "WebFetch" || tool.name === "BrowserNavigate") return { label: rules[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1"), rules };
+        if (tool.name === "SimulatorControl") return { label: rules[0]!, rules };
         return { label: tool.name, rules };
     }
 
@@ -569,10 +571,12 @@ export class PermissionChecker {
                 // What a page does is the page's: clicking and typing run its scripts and can submit its forms. Hovering,
                 // scrolling and waiting change nothing, so they go unasked; the rest asks once, then "don't ask again" allows the tool.
                 if (isBrowserTool(tool.name) && (isReadOnly(tool, input) || isQuietBrowserCall(tool.name, input))) return { behavior: "allow" };
-                // Listing the simulators and waiting on one change nothing; starting, installing, tapping and typing ask once, then "don't ask again" allows the tool.
+                // Listing the simulators and waiting on one change nothing; tapping and typing ask once, then "don't ask
+                // again" allows the tool. Starting, installing or shutting down asks per action: allowing launches
+                // doesn't allow shutting the device down.
                 if (isSimulatorTool(tool.name) && isReadOnly(tool, input)) return { behavior: "allow" };
                 // GitCommit, GitPush, CreatePullRequest: "don't ask again" allows the tool in this project.
-                const suggestions = [tool.name];
+                const suggestions = [tool.name === "SimulatorControl" ? `SimulatorControl(${t.action})` : tool.name];
                 // Publishing reaches other people and can't be taken back: auto mode's reviewer doesn't decide it, the user does.
                 if (tool.name === "GitPush" || tool.name === "CreatePullRequest") return { behavior: "ask", suggestions, ...(mode === "auto" ? { reason: "Pushing to the remote always asks in auto mode." } : {}) };
                 return mode === "auto" ? { behavior: "ask", needsClassifier: true, suggestions } : { behavior: "ask", suggestions };

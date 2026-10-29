@@ -1,7 +1,7 @@
 // The simulator's screen as text (src/simulator/outline.ts): roles, labels and values, refs standing for the center
 // of what's on screen, what's left out, and the text read from the picture that the tree hasn't got.
 import { describe, expect, test } from "bun:test";
-import { MAX_OUTLINE, outline, type AxNode, type SeenLine } from "../src/simulator/outline";
+import { agrees, MAX_OUTLINE, outline, type AxNode, type SeenLine } from "../src/simulator/outline";
 
 const SCREEN = { width: 402, height: 874 };
 
@@ -40,6 +40,14 @@ test("the text on the screen is the labels and values shown: not ids, roles or w
     expect(outline(tree, SCREEN).texts).toEqual(["Settings", "General", "Airplane Mode", "0", "Search", "Cut"]);
     const below: AxNode = { role: "AXGroup", label: "Done", frame: [0, 900, 402, 100], children: [{ role: "AXButton", label: "Back", frame: [16, 800, 100, 44] }] };
     expect(outline({ role: "AXApplication", children: [below] }, SCREEN).texts).toEqual(["Back"]);
+});
+
+test("what's chosen says so, and a field's value shows whole, so what was typed can be checked", () => {
+    const long = "x".repeat(150);
+    const o = outline({ role: "AXApplication", children: [{ role: "AXButton", label: "Dark", selected: true, frame: [16, 200, 370, 44] }, { role: "AXTextField", value: long, frame: [16, 300, 370, 40] }, { role: "AXStaticText", label: "y".repeat(150), frame: [16, 400, 370, 40] }] }, SCREEN);
+    expect(o.text).toContain('- button "Dark" (selected) [e1]');
+    expect(o.text).toContain(`value="${long}"`);
+    expect(o.text).toContain(`"${"y".repeat(120)}…"`);
 });
 
 test("a ref stands for the center of the part of the element that's on screen", () => {
@@ -106,8 +114,65 @@ describe("text read from the picture", () => {
         expect(outline(safari, SCREEN, [line("Back to top", [20, 400, 90, 18])]).text).toContain('- seen "Back to top"');
     });
 
+    test("the status bar, icons read as a letter or two, and a field read with its icon are left out", () => {
+        const search: AxNode = {
+            role: "AXApplication",
+            children: [
+                { role: "AXSearchField", value: "café — naïve", placeholder: "Search", frame: [16, 120, 370, 36] },
+                // Empty: its placeholder shows.
+                { role: "AXSearchField", placeholder: "Search", frame: [16, 166, 370, 36] },
+            ],
+        };
+        const o = outline(search, SCREEN, [
+            line("• Safari", [20, 38, 60, 16]),
+            line("→ 100", [340, 20, 40, 14]),
+            line("C", [20, 400, 12, 14]),
+            line("| X", [60, 400, 20, 14]),
+            line("Q cafe E# v - naive", [16, 125, 300, 24]),
+            line("Q Search", [16, 170, 100, 24]),
+        ]);
+        expect(o.text).not.toContain("seen");
+        // The empty field's placeholder is on the screen still, as the tree's.
+        expect(o.texts).toContain("Search");
+        // Below the status bar, two letters are a word ("OK"), and the same on an iPad starts lower than a phone's bar.
+        expect(outline(search, SCREEN, [line("OK", [20, 400, 30, 16])]).text).toContain('- seen "OK"');
+        expect(outline(search, { width: 820, height: 1180 }, [line("Sign in", [20, 40, 60, 16])]).text).toContain('- seen "Sign in"');
+    });
+
+    test("a phrase that wraps onto the next line is found", () => {
+        const o = outline(safari, SCREEN, [line("This domain is for use in documentation", [20, 300, 300, 18]), line("examples without needing permission.", [20, 320, 300, 18])]);
+        expect(o.texts.some((t) => t.includes("documentation examples"))).toBe(true);
+    });
+
     test("a screen whose tree is empty can still be read from its picture", () => {
         const o = outline({ role: "AXApplication" }, SCREEN, [line("Loading your feed", [100, 400, 200, 20])]);
         expect(o.text).toBe('Screen\n- seen "Loading your feed" [e1]');
+    });
+});
+
+describe("whether the tree is the screen's", () => {
+    // Settings' rows, and the same screen as the picture shows it.
+    const rows = ["General", "Accessibility", "Camera", "Home Screen", "Privacy & Security"];
+    const settings: AxNode = { role: "AXApplication", label: "Settings", children: rows.map((label, i) => ({ role: "AXButton", label, frame: [16, 200 + i * 52, 370, 44] })) };
+    const read = (labels: string[]): SeenLine[] => labels.map((text, i) => ({ text, confidence: 1, frame: [60, 210 + i * 52, 150, 22] }));
+
+    test("the picture showing most of the rows' text where they are: it is", () => {
+        expect(agrees(outline(settings, SCREEN, read(rows)))).toBe(true);
+        // A row Vision misread or missed doesn't change that.
+        expect(agrees(outline(settings, SCREEN, read(["General", "Accessibiity", "", "Home Screen", "Privacy Security"])))).toBe(true);
+    });
+
+    test("a black screen, or another app's text: it isn't", () => {
+        expect(agrees(outline(settings, SCREEN, []))).toBe(false);
+        expect(agrees(outline(settings, SCREEN, read(["Calendar", "Photos", "Maps", "Clock", "Weather"])))).toBe(false);
+        // The same words elsewhere on the screen aren't the rows.
+        const moved = read(rows).map((l) => ({ ...l, frame: [60, 700, 150, 22] }));
+        expect(agrees(outline(settings, SCREEN, moved))).toBe(false);
+    });
+
+    test("too little to tell: icons, whose labels aren't text to see, and a web page's few native views", () => {
+        const icons: AxNode = { role: "AXApplication", children: ["Back", "Share", "Tabs", "Bookmarks", "Reload"].map((label, i) => ({ role: "AXButton", label, frame: [20 + i * 60, 792, 48, 48] })) };
+        expect(agrees(outline(icons, SCREEN, []))).toBeUndefined();
+        expect(agrees(outline({ role: "AXApplication", children: settings.children!.slice(0, 3) }, SCREEN, []))).toBeUndefined();
     });
 });

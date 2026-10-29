@@ -7,7 +7,7 @@ import { dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 isolate();
-const { SIMULATOR_TOOLS, SimulatorActTool, SimulatorControlTool, SimulatorSnapshotTool, nativeSimulatorCall, servedSimulatorName, servedSimulatorTool, simulatorAvailable } = await import("../src/tools/simulator-tools");
+const { SIMULATOR_TOOLS, SimulatorActTool, SimulatorControlTool, SimulatorSnapshotTool, nativeSimulatorCall, servedSimulatorName, servedSimulatorTool, simulatorAvailable, simulatorServerTools } = await import("../src/tools/simulator-tools");
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { SimulatorSession, resetSimulators } = await import("../src/simulator/session");
 const simctl = await import("../src/simulator/simctl");
@@ -78,14 +78,23 @@ describe("permissions", () => {
     const checker = new PermissionChecker(() => ({}), W);
     const check = (tool: any, input: any, mode: any = "default") => checker.check(tool, input, mode, W);
 
-    test("reading and listing never ask; starting, installing and acting ask, and can be allowed for the tool", () => {
+    test("reading and listing never ask; acting asks and can be allowed for the tool, managing per action", () => {
         expect(check(SimulatorSnapshotTool, {}).behavior).toBe("allow");
         expect(check(SimulatorControlTool, { action: "list" }).behavior).toBe("allow");
         expect(check(SimulatorActTool, { action: "wait" }).behavior).toBe("allow");
-        expect(check(SimulatorControlTool, { action: "boot" })).toMatchObject({ behavior: "ask", suggestions: ["SimulatorControl"] });
+        const boot = check(SimulatorControlTool, { action: "boot" });
+        expect(boot).toMatchObject({ behavior: "ask", suggestions: ["SimulatorControl(boot)"] });
+        expect(checker.withGrant(SimulatorControlTool, { action: "boot" }, boot, W).grant).toEqual({ label: "SimulatorControl(boot)", rules: ["SimulatorControl(boot)"] });
         expect(check(SimulatorActTool, { action: "tap", ref: "e1" })).toMatchObject({ behavior: "ask", suggestions: ["SimulatorAct"] });
         expect(check(SimulatorActTool, { action: "tap", ref: "e1" }, "auto")).toMatchObject({ behavior: "ask", needsClassifier: true });
         expect(check(SimulatorActTool, { action: "tap", ref: "e1" }, "bypassPermissions").behavior).toBe("allow");
+    });
+
+    test("allowing launches doesn't allow shutting the device down", () => {
+        const allowing = new PermissionChecker(() => ({ permissions: { allow: ["SimulatorControl(launch)"] } }), W);
+        expect(allowing.check(SimulatorControlTool, { action: "launch", bundleId: "com.example.app" }, "default", W).behavior).toBe("allow");
+        expect(allowing.check(SimulatorControlTool, { action: "shutdown" }, "default", W).behavior).toBe("ask");
+        expect(allowing.check(SimulatorControlTool, { action: "terminate", bundleId: "com.example.app" }, "default", W).behavior).toBe("ask");
     });
 
     test("plan mode reads the simulator but doesn't start or touch it", () => {
@@ -112,7 +121,7 @@ describe("the session's simulator", () => {
         const s = new SimulatorSession({ settings: () => ({}) });
         const r = await SimulatorSnapshotTool.run({}, { ...ctx, state: { ...ctx.state, simulator: s } });
         expect(r).toMatchObject({ isError: true });
-        expect(r.content).toBe("No simulator is running. Start one with SimulatorControl action=boot (iPhone 17 is shut down).");
+        expect(r.content).toBe("iPhone 17 is shut down. Start it with SimulatorControl action=boot.");
         expect(ran.some((a) => a.includes("bootstatus"))).toBe(false);
         s.dispose();
     });
@@ -141,6 +150,8 @@ describe("the session's simulator", () => {
 
 test("Claude Code and Codex call them as simulator_*, shown as the tools they are", () => {
     expect(SIMULATOR_TOOLS.map((t) => servedSimulatorName(t.name))).toEqual(["simulator_control", "simulator_snapshot", "simulator_act", "simulator_screenshot"]);
+    // Control shuts devices down and ends apps; the rest don't.
+    expect(simulatorServerTools(async () => ({ content: [] }) as any).map((t) => t.annotations?.destructiveHint)).toEqual([true, false, false, false]);
     expect(servedSimulatorName("BrowserAct")).toBeUndefined();
     expect(nativeSimulatorCall("simulator_act", { action: "tap" })).toEqual({ name: "SimulatorAct", input: { action: "tap" } });
     expect(servedSimulatorTool("cavvy", "mcp__cavvy__simulator_act")).toBe(true);

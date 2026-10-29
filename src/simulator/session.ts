@@ -8,7 +8,7 @@ import type { SimulatorDevice, SimulatorInput, SimulatorState } from "../server/
 import { FrameFeed } from "../browser/feed";
 import { helperBinary, SimHelper, type ScreenSize } from "./helper";
 import { isModifier, strokesForPress, strokesForText, usageOfCode, type KeyStroke } from "./keys";
-import { outline, type AxNode, type Outline, type RefTarget, type SeenLine } from "./outline";
+import { agrees, outline, type AxNode, type Outline, type RefTarget, type SeenLine } from "./outline";
 import * as simctl from "./simctl";
 import { SimulatorError } from "./simctl";
 
@@ -40,6 +40,13 @@ const SUBMIT_PAUSE_MS = 1000;
 
 /** How long a helper nothing uses (no pane showing its device, no agent call) keeps running. */
 const IDLE_MS = 60_000;
+
+/** The text Vision read from the screen's picture; `loading` while its model loads, `error` when it couldn't read. */
+interface TextRead {
+    lines: SeenLine[];
+    loading?: boolean;
+    error?: string;
+}
 
 // ---------------------------------------------------------------------------
 // The devices, and a helper for each one in use (shared by the sessions on it)
@@ -438,7 +445,12 @@ export class SimulatorSession {
         if (!available.ok) throw new SimulatorError(available.error);
         await refreshDevices();
         const d = this.device();
-        if (!d || d.state !== "booted") throw new SimulatorError(`No simulator is running. Start one with SimulatorControl action=boot${d ? ` (${d.name} is ${d.state === "shutdown" ? "shut down" : d.state.replace("_", " ")})` : ""}.`);
+        if (!d) throw new SimulatorError("No simulator is running. Start one with SimulatorControl action=boot.");
+        if (d.state !== "booted") {
+            const other = devices.find((x) => x.state === "booted");
+            const state = d.state === "shutdown" ? "shut down" : d.state === "booting" ? "starting" : "shutting down";
+            throw new SimulatorError(`${d.name} is ${state}. Start it with SimulatorControl action=boot${other ? `, or use ${other.name}, which is running (action=boot device="${other.name}")` : ""}.`);
+        }
         return this.adopt(d.udid);
     }
 
@@ -517,28 +529,35 @@ export class SimulatorSession {
     }
 
     /**
-     * Starts an app and waits (at most 10 seconds) until it's in front with something to read, or for 3 seconds
-     * in front with nothing (a game's tree is empty).
+     * Starts an app, or brings it to the front as it is when it's running (`running`). With `args`, which only a start
+     * can take, a running one is ended first. Waits (at most 10 seconds) until it's in front with something to read,
+     * or for 3 seconds in front with nothing (a game's tree is empty). An app that ends as it starts (a crash) is an error.
      */
-    async launch(bundleId: string, args: string[], signal?: AbortSignal): Promise<number | undefined> {
+    async launch(bundleId: string, args: string[], signal?: AbortSignal): Promise<{ pid?: number; running: boolean; front: boolean }> {
         const helper = await this.running();
         this.agentActs();
-        const pid = await simctl.launch(this.udid!, bundleId, args, signal);
+        const asked = Date.now();
+        const pid = await simctl.launch(this.udid!, bundleId, args, { restart: args.length > 0, signal });
+        // An app older than the call was running before it (ps counts whole seconds): it came to the front as it was.
+        const age = pid && !args.length ? await simctl.runningFor(pid) : undefined;
+        const running = age !== undefined && age >= (Date.now() - asked) / 1000 + 2;
+        if (!pid) return { running, front: false };
         // simctl answers when the app has started, a second or more before it's in front: until then the screen is
         // the one before, and still.
         let inFront: number | undefined;
-        if (pid)
-            await this.untilFront(
-                helper,
-                (r) => {
-                    if (r.pid !== pid) return false;
-                    inFront ??= Date.now();
-                    return !!(r.tree as AxNode | undefined)?.children?.length || Date.now() - inFront >= 3000;
-                },
-                10_000,
-                signal,
-            );
-        return pid;
+        const front = await this.untilFront(
+            helper,
+            (r) => {
+                if (!alive(pid!)) return true;
+                if (r.pid !== pid) return false;
+                inFront ??= Date.now();
+                return !!(r.tree as AxNode | undefined)?.children?.length || Date.now() - inFront >= 3000;
+            },
+            10_000,
+            signal,
+        );
+        if (!alive(pid)) throw new SimulatorError(`${bundleId} quit as it started (process ${pid}): it may have crashed. Crash reports are in ~/Library/Logs/DiagnosticReports.`);
+        return { pid, running, front: front && inFront !== undefined };
     }
 
     async terminate(bundleId: string, signal?: AbortSignal): Promise<void> {
@@ -563,15 +582,16 @@ export class SimulatorSession {
         await this.untilFront(helper, (r) => r.pid !== before.pid || (!home && Number(r.changes) > changes && Number(r.stillMs) >= 300), home ? 6000 : 3000, signal);
     }
 
-    /** Reads which app is in front until `done` says so, at most `timeoutMs`. */
-    private async untilFront(helper: SimHelper, done: (r: Record<string, unknown>) => boolean, timeoutMs: number, signal?: AbortSignal): Promise<void> {
+    /** Reads which app is in front until `done` says so (true), at most `timeoutMs` (false). */
+    private async untilFront(helper: SimHelper, done: (r: Record<string, unknown>) => boolean, timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
         const end = Date.now() + timeoutMs;
         while (Date.now() < end) {
             if (signal?.aborted) throw new SimulatorError("Interrupted by user.");
             const r = await helper.call({ op: "describe" }, Math.max(end - Date.now(), 1)).catch(() => undefined);
-            if (r && done(r)) return;
+            if (r && done(r)) return true;
             await sleep(250);
         }
+        return false;
     }
 
     /** The screen's size in points, which the agent's coordinates are in. */
@@ -580,11 +600,14 @@ export class SimulatorSession {
         return { width: Math.round(s.width / s.scale), height: Math.round(s.height / s.scale) };
     }
 
-    /** Waits for the screen to be still (an animation over), at most `timeoutMs`. */
-    async settle(timeoutMs = 3000, signal?: AbortSignal): Promise<boolean> {
+    /**
+     * Waits for the screen to be still (an animation over), at most `timeoutMs`. `leastMs`: and at least that long, for
+     * what an action does to show (an app can take half a second to start sliding a page in, still until then).
+     */
+    async settle(timeoutMs = 3000, signal?: AbortSignal, leastMs = 0): Promise<boolean> {
         const helper = await this.running();
         if (signal?.aborted) throw new SimulatorError("Interrupted by user.");
-        const r = await helper.call({ op: "settle", quietMs: 300, timeoutMs }, timeoutMs + 5000);
+        const r = await helper.call({ op: "settle", quietMs: 300, leastMs: Math.min(leastMs, timeoutMs), timeoutMs }, timeoutMs + 5000);
         return r.settled === true;
     }
 
@@ -592,24 +615,52 @@ export class SimulatorSession {
     async snapshot(): Promise<string> {
         const helper = await this.running();
         const screen = this.points(helper);
-        const [r, read] = await Promise.all([this.describe(helper), this.readText(helper)]);
-        const o = outline((r.tree ?? {}) as AxNode, screen, read.lines);
+        const { o, read, stale } = await this.look(helper);
         this.refs = o.refs;
         const d = this.device();
         const head = `${d?.name ?? "Simulator"} (${d?.runtime ?? "iOS"}), ${screen.width}×${screen.height} points.`;
         const note = this.touched ? "\nThe user used the simulator since you last looked: the screen may not be where you left it." : "";
         this.touched = false;
-        const loading = read.loading ? "\n(Text in the picture isn't read yet: a screenshot shows a web page's.)" : "";
-        return `${head}${note}\n${o.text}${loading}`;
+        const out = stale ? "\nMost of this outline's text isn't in the screen's picture: the screen is changing, or the outline is behind it. A screenshot shows what's there." : "";
+        // Only where the tree has little to say: a screen of native views has its text in the tree.
+        const loading = read.loading && o.texts.length < 10 ? "\n(Text in the picture isn't read yet: a screenshot shows a web page's.)" : "";
+        const failed = read.error ? `\n(Text in the picture couldn't be read: ${read.error})` : "";
+        return `${head}${note}${out}\n${o.text}${loading}${failed}`;
     }
 
-    /** The text Vision reads from the screen's picture; none when it can't, and `loading` while its model loads. */
-    private async readText(helper: SimHelper): Promise<{ lines: SeenLine[]; loading?: boolean }> {
+    /**
+     * The screen as the outline has it: its tree and the text in its picture, read together. Read as the screen moved
+     * (a page sliding in, the one before still in the tree), they're read again until it's still or the tree reads the
+     * same twice (a spinner's doesn't change), for at most 1.5 seconds. When the picture doesn't show what the tree has
+     * (the tree is behind: the front app changes a second or more after the picture does), they're read again for at
+     * most `waitMs`; `stale` if they never agreed.
+     */
+    private async look(helper: SimHelper, waitMs = 2500): Promise<{ o: Outline; read: TextRead; stale: boolean }> {
+        const start = Date.now();
+        const screen = this.points(helper);
+        let before: string | undefined;
+        while (true) {
+            const [r, read] = await Promise.all([this.describe(helper), this.readText(helper)]);
+            const tree = JSON.stringify(r.tree ?? {});
+            const moving = Number(r.stillMs) < 150 && tree !== before && Date.now() - start < 1500;
+            before = tree;
+            if (moving) {
+                await sleep(150);
+                continue;
+            }
+            const o = outline((r.tree ?? {}) as AxNode, screen, read.lines);
+            const stale = !read.loading && !read.error && agrees(o) === false;
+            if (!stale || Date.now() - start >= waitMs) return { o, read, stale };
+            await sleep(300);
+        }
+    }
+
+    private async readText(helper: SimHelper): Promise<TextRead> {
         try {
             const r = await helper.call({ op: "text" }, 5000);
             return { lines: Array.isArray(r.lines) ? (r.lines as SeenLine[]) : [], loading: r.loading === true };
-        } catch {
-            return { lines: [] };
+        } catch (e) {
+            return { lines: [], error: sentence((e as Error).message) };
         }
     }
 
@@ -727,9 +778,12 @@ export class SimulatorSession {
         return `${pasted ? "Pasted" : "Typed"} ${JSON.stringify(text.length > 60 ? `${text.slice(0, 60)}…` : text)}${o.submit ? " and pressed Enter" : ""}.`;
     }
 
-    /** Types text key by key (`gapMs` apart), or pastes it when a US keyboard can't type it. Returns whether it was pasted. */
+    /**
+     * Types text key by key (`gapMs` apart), or pastes it when a U.S. keyboard can't type it, or the device's keyboard
+     * has another layout (keys are where they are: German's would type "Lazy" as "Layz"). Returns whether it was pasted.
+     */
     private async typeText(helper: SimHelper, text: string, gapMs = 0): Promise<boolean> {
-        const strokes = strokesForText(text);
+        const strokes = simctl.typesAsUS(await simctl.keyboardOf(this.udid!)) ? strokesForText(text) : undefined;
         if (strokes) {
             // In batches, so a long text doesn't hold the helper's queue for its whole length.
             for (let i = 0; i < strokes.length; i += 64) await helper.call({ op: "keys", keys: strokes.slice(i, i + 64), ...(gapMs ? { gapMs } : {}) });
@@ -753,10 +807,13 @@ export class SimulatorSession {
         return `Pressed ${[...modifiers, key].join("+")}.`;
     }
 
-    async button(name: "home" | "lock"): Promise<string> {
+    async button(name: "home" | "lock", signal?: AbortSignal): Promise<string> {
         const helper = await this.running();
         this.agentActs();
+        const before = name === "home" ? await helper.call({ op: "describe" }).catch(() => undefined) : undefined;
         await helper.call({ op: "button", name });
+        // The home screen shows a second or more before the tree's app is SpringBoard: until then it reads as the app.
+        if (typeof before?.pid === "number" && before.process !== "SpringBoard") await this.untilFront(helper, (r) => r.pid !== before.pid, 4000, signal);
         return `Pressed the ${name === "home" ? "Home" : "side (lock)"} button.`;
     }
 
@@ -772,14 +829,14 @@ export class SimulatorSession {
         const has = (o: Outline) => o.texts.some((t) => t.toLowerCase().includes(want));
         while (true) {
             if (signal?.aborted) throw new SimulatorError("Interrupted by user.");
-            const r = await this.describe(helper);
-            const tree = (r.tree ?? {}) as AxNode;
-            // The tree first; the picture's text (a web page's) only when the tree hasn't got it.
-            if (has(outline(tree, this.points(helper)))) return `${JSON.stringify(text)} is on the screen.`;
-            const read = await this.readText(helper);
-            if (read.lines.length && has(outline(tree, this.points(helper), read.lines))) return `${JSON.stringify(text)} is on the screen.`;
-            if (Date.now() >= end) throw new SimulatorError(`${JSON.stringify(text)} didn't show within ${Math.round(timeoutMs / 1000)} seconds.`);
-            await sleep(400);
+            // A tree the picture doesn't show yet (the app before, still) doesn't count.
+            const { o, read, stale } = await this.look(helper, 0);
+            if (!stale && has(o)) return `${JSON.stringify(text)} is on the screen.`;
+            if (Date.now() >= end) {
+                const unread = read.loading ? " (Text in the picture isn't read yet, so a web page's can't be found: a screenshot shows it.)" : "";
+                throw new SimulatorError(`${JSON.stringify(text)} didn't show within ${Math.round(timeoutMs / 1000)} seconds.${unread}`);
+            }
+            await sleep(300);
         }
     }
 
@@ -795,6 +852,17 @@ export class SimulatorSession {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Whether a process (an app's, which runs on this Mac) is still running. */
+const alive = (pid: number) => {
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (e) {
+        return (e as NodeJS.ErrnoException).code === "EPERM";
+    }
+};
+/** A message as a sentence, ending in a full stop. */
+export const sentence = (m: string) => (/[.!?]$/.test(m.trim()) ? m.trim() : `${m.trim()}.`);
 const clamp = (v: number) => Math.min(Math.max(v, 0.02), 0.98);
 
 /** Tests: forget the devices and helpers. */

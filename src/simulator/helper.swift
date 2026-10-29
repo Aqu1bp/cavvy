@@ -276,14 +276,16 @@ func frameArrived() {
     }
 }
 
-/// Waits until the screen has been still for `quiet` seconds (an animation ended, a page loaded), at most `timeout`.
-func settle(quiet: Double, timeout: Double) -> Bool {
-    // Still from now on: what was just done may not have reached the screen yet.
+/// Waits until the screen has been still for `quiet` seconds (an animation ended, a page loaded), and `least` seconds
+/// have passed, at most `timeout`.
+func settle(quiet: Double, least: Double, timeout: Double) -> Bool {
+    // Still from now on: what was just done may not have reached the screen yet (an app can take half a second to
+    // start showing a page, and be still until then).
     let start = Date()
     let end = start.addingTimeInterval(timeout)
     while Date() < end {
         let still = screenQueue.sync { Date().timeIntervalSince(max(lastDamage, start)) }
-        if still >= quiet { return true }
+        if still >= quiet && Date().timeIntervalSince(start) >= least { return true }
         usleep(40_000)
     }
     return false
@@ -418,10 +420,19 @@ func describe(_ element: NSObject, depth: Int, budget: inout Int) -> [String: An
         let (enabledOf, _) = imp(element, "isAccessibilityEnabled", as: BoolFn.self)
         if !enabledOf(element, enabledSel) { node["disabled"] = true }
     }
-    var children: [[String: Any]] = []
-    if let kids = element.perform(NSSelectorFromString("accessibilityChildren"))?.takeUnretainedValue() as? [NSObject] {
-        for kid in kids { if let c = describe(kid, depth: depth + 1, budget: &budget) { children.append(c) } }
+    // Which option is chosen (a checkmarked row, a tab): asked only of what can be chosen, as each question is a trip to the device.
+    let selectedSel = NSSelectorFromString("isAccessibilitySelected")
+    if ["AXButton", "AXCell", "AXRadioButton", "AXRow", "AXStaticText"].contains(node["role"] as? String ?? ""), element.responds(to: selectedSel) {
+        let (selectedOf, _) = imp(element, "isAccessibilitySelected", as: BoolFn.self)
+        if selectedOf(element, selectedSel) { node["selected"] = true }
     }
+    var children: [[String: Any]] = []
+    var kids = element.perform(NSSelectorFromString("accessibilityChildren"))?.takeUnretainedValue() as? [NSObject] ?? []
+    // A list that gives none of its rows (iPad Settings' sidebar) may still give the chosen one.
+    if kids.isEmpty, ["AXGroup", "AXList", "AXOutline", "AXTable"].contains(node["role"] as? String ?? "") {
+        kids = element.perform(NSSelectorFromString("accessibilitySelectedChildren"))?.takeUnretainedValue() as? [NSObject] ?? []
+    }
+    for kid in kids { if let c = describe(kid, depth: depth + 1, budget: &budget) { children.append(c) } }
     if !children.isEmpty { node["children"] = children }
     return node
 }
@@ -430,7 +441,7 @@ func describeScreen() throws -> [String: Any] {
     guard let translator else { throw HelperError("Accessibility isn't available in this macOS") }
     typealias Frontmost = @convention(c) (AnyObject, Selector, UInt32, NSString) -> AnyObject?
     let (frontmost, sel) = imp(translator, "frontmostApplicationWithDisplayId:bridgeDelegateToken:", as: Frontmost.self)
-    guard let app = frontmost(translator, sel, 0, token) as? NSObject else { throw HelperError("Nothing on the screen to read yet") }
+    guard let app = frontmost(translator, sel, 0, token) as? NSObject else { throw HelperError("Nothing on the screen to read yet.") }
     app.setValue(token, forKey: "bridgeDelegateToken")
     typealias Element = @convention(c) (AnyObject, Selector, AnyObject) -> AnyObject?
     let (elementOf, elSel) = imp(translator, "macPlatformElementFromTranslation:", as: Element.self)
@@ -463,14 +474,46 @@ func recognize(_ s: IOSurface) throws -> [[String: Any]] {
     let request = VNRecognizeTextRequest()
     request.recognitionLevel = .accurate
     request.usesLanguageCorrection = true
+    // Any script Vision reads (Arabic, Chinese, …), not only English's: a list of languages reads only the first's.
+    request.automaticallyDetectsLanguage = true
     try VNImageRequestHandler(ciImage: CIImage(ioSurface: s), options: [:]).perform([request])
     let w = Double(s.width) / scale, h = Double(s.height) / scale
-    return (request.results ?? []).compactMap { o in
-        guard let c = o.topCandidates(1).first else { return nil }
-        // Vision's box is a fraction of the picture from its bottom left; the tree's frames are points from the top left.
-        let b = o.boundingBox
-        return ["text": c.string, "confidence": Double(c.confidence), "frame": [b.minX * w, (1 - b.maxY) * h, b.width * w, b.height * h].map { ($0 * 10).rounded() / 10 }]
+    return (request.results ?? []).flatMap { o -> [[String: Any]] in
+        guard let c = o.topCandidates(1).first else { return [] }
+        return pieces(c, o.boundingBox, w, h).map { text, b in
+            // Vision's box is a fraction of the picture from its bottom left; the tree's frames are points from the top left.
+            ["text": text, "confidence": Double(c.confidence), "frame": [b.minX * w, (1 - b.maxY) * h, b.width * w, b.height * h].map { ($0 * 10).rounded() / 10 }]
+        }
     }
+}
+
+/// A line's text in pieces where a gap wider than the line is tall parts it: links side by side ("Domains Protocols
+/// Numbers") read as one line, and a ref for each should land on it. Gaps are between what spaces separate, so a "&"
+/// between words is no gap. Boxes are fractions of a picture `w`×`h` points.
+func pieces(_ c: VNRecognizedText, _ box: CGRect, _ w: Double, _ h: Double) -> [(String, CGRect)] {
+    let text = c.string
+    let tokens = text.split(whereSeparator: { $0.isWhitespace })
+    var boxes: [CGRect] = []
+    for t in tokens {
+        guard let b = try? c.boundingBox(for: t.startIndex..<t.endIndex)?.boundingBox else { return [(text, box)] }
+        boxes.append(b)
+    }
+    guard tokens.count > 1 else { return [(text, box)] }
+    var out: [(String, CGRect)] = []
+    var first = 0
+    for i in 1...tokens.count {
+        if i < tokens.count {
+            let a = boxes[i - 1], b = boxes[i]
+            // Apart either way: Arabic's words go right to left.
+            let gap = (max(a.minX, b.minX) - min(a.maxX, b.maxX)) * w
+            if gap <= box.height * h * 1.2 { continue }
+        }
+        let part = String(text[tokens[first].startIndex..<tokens[i - 1].endIndex])
+        let frame = boxes[first...(i - 1)].reduce(boxes[first]) { $0.union($1) }
+        out.append((part, CGRect(x: frame.minX, y: box.minY, width: frame.width, height: box.height)))
+        first = i
+    }
+    return out
 }
 
 func warmText() {
@@ -488,8 +531,9 @@ struct HelperError: Error {
 }
 
 /// Reading the screen (its tree, a screenshot, waiting for it to be still) runs on its own queue: it can take seconds.
+/// Reading its text runs on another (textQueue), beside the tree: a snapshot asks for both at once. Input runs on its own.
 let readQueue = DispatchQueue(label: "cavvy-sim.read")
-let readOps: Set<String> = ["describe", "settle", "screenshot"]
+let queues: [String: DispatchQueue] = ["describe": readQueue, "settle": readQueue, "screenshot": readQueue, "text": textQueue]
 
 func number(_ c: [String: Any], _ key: String) throws -> Double {
     guard let n = c[key] as? NSNumber else { throw HelperError("\(key) is missing") }
@@ -534,7 +578,7 @@ func handle(_ c: [String: Any]) throws -> [String: Any] {
         guard let s = surface() else { throw HelperError("Can't read the screen") }
         return ["lines": try recognize(s)]
     case "settle":
-        let still = settle(quiet: ((c["quietMs"] as? NSNumber)?.doubleValue ?? 300) / 1000, timeout: ((c["timeoutMs"] as? NSNumber)?.doubleValue ?? 3000) / 1000)
+        let still = settle(quiet: ((c["quietMs"] as? NSNumber)?.doubleValue ?? 300) / 1000, least: ((c["leastMs"] as? NSNumber)?.doubleValue ?? 0) / 1000, timeout: ((c["timeoutMs"] as? NSNumber)?.doubleValue ?? 3000) / 1000)
         return ["settled": still]
     case "size":
         guard let s = surface() else { throw HelperError("Can't read the screen") }
@@ -553,9 +597,7 @@ warmText()
 DispatchQueue.global().async {
     while let line = readLine(strippingNewline: true) {
         guard let data = line.data(using: .utf8), let c = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { continue }
-        // Reading text runs beside reading the tree: a snapshot asks for both at once.
-        let op = c["op"] as? String ?? ""
-        (op == "text" ? textQueue : readOps.contains(op) ? readQueue : inputQueue).async {
+        (queues[c["op"] as? String ?? ""] ?? inputQueue).async {
             var reply: [String: Any]
             do {
                 reply = try handle(c)

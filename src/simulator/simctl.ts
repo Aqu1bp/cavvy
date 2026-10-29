@@ -3,6 +3,8 @@
 
 import { spawn } from "child_process";
 import { existsSync } from "fs";
+import { homedir } from "os";
+import { join } from "path";
 import type { SimulatorDevice } from "../server/protocol";
 
 export class SimulatorError extends Error {}
@@ -64,11 +66,17 @@ async function simctl(args: string[], o?: { timeoutMs?: number; signal?: AbortSi
     return r.stdout;
 }
 
-/** simctl's complaint without its boilerplate: the line that says what went wrong. */
+/** simctl's complaint without its boilerplate: what went wrong, and why when it says ("… failed to install the application. Missing bundle ID."). */
 export function simctlError(text: string): string {
     const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
-    const said = lines.find((l) => /^An error was encountered/.test(l)) ? lines.find((l) => !/^An error was encountered|^Underlying error|^Domain=|^Error Domain=/.test(l)) : lines[0];
-    return (said ?? "").replace(/^error:\s*/i, "").slice(0, 300);
+    const start = lines.findIndex((l) => /^An error was encountered/.test(l));
+    let said = lines[0] ?? "";
+    if (start >= 0) {
+        // What follows the heading, up to the underlying error (which says it again, in more words).
+        const end = lines.findIndex((l, i) => i > start && /^Underlying error/.test(l));
+        said = lines.slice(start + 1, end < 0 ? undefined : end).filter((l) => !/^(Error )?Domain=/.test(l)).join(" ");
+    }
+    return said.replace(/^error:\s*/i, "").slice(0, 300);
 }
 
 // ---------------------------------------------------------------------------
@@ -201,11 +209,23 @@ export async function install(udid: string, app: string, signal?: AbortSignal): 
     await simctl(["install", udid, app], { signal, timeoutMs: BOOT_MS });
 }
 
-/** Launches an app (ending a running copy first), with arguments for it. Returns its process id. */
-export async function launch(udid: string, bundleId: string, args: string[] = [], signal?: AbortSignal): Promise<number | undefined> {
-    const said = await simctl(["launch", "--terminate-running-process", udid, bundleId, ...args], { signal });
+/**
+ * Launches an app, with arguments for it. One that's running comes to the front as it is (the same process), unless
+ * `restart`, which ends it first. Returns its process id.
+ */
+export async function launch(udid: string, bundleId: string, args: string[] = [], o: { restart?: boolean; signal?: AbortSignal } = {}): Promise<number | undefined> {
+    const said = await simctl(["launch", ...(o.restart ? ["--terminate-running-process"] : []), udid, bundleId, ...args], { signal: o.signal });
     const pid = /:\s*(\d+)\s*$/.exec(said.trim());
     return pid ? Number(pid[1]) : undefined;
+}
+
+/** How long a process has run, in seconds (an app's runs on this Mac); undefined when it isn't running. */
+export async function runningFor(pid: number): Promise<number | undefined> {
+    const r = await runner(["ps", "-o", "etime=", "-p", String(pid)], { timeoutMs: 10_000 }).catch(() => undefined);
+    // [[dd-]hh:]mm:ss
+    const m = r?.code === 0 ? /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(r.stdout.trim()) : null;
+    if (!m) return undefined;
+    return Number(m[1] ?? 0) * 86400 + Number(m[2] ?? 0) * 3600 + Number(m[3]) * 60 + Number(m[4]);
 }
 
 export async function terminate(udid: string, bundleId: string, signal?: AbortSignal): Promise<void> {
@@ -234,6 +254,34 @@ export async function pasteboard(udid: string, text: string, signal?: AbortSigna
     // pbcopy reads its input in the locale's encoding: without a UTF-8 one (an app opened from Finder has no LANG,
     // and an inherited LC_ALL=C overrides LANG), "café" arrives as "caf√©".
     await simctl(["pbcopy", udid], { signal, input: text, env: { LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" } });
+}
+
+/**
+ * The keyboard the device types with now, as iOS names it ("en_US@sw=QWERTY;hw=Automatic": English, with the U.S.
+ * layout on a hardware keyboard). Read from its preferences file, which is quick; undefined when there's none.
+ */
+export async function keyboardOf(udid: string): Promise<string | undefined> {
+    const prefs = join(homedir(), "Library/Developer/CoreSimulator/Devices", udid, "data/Library/Preferences");
+    for (const [file, key] of [
+        ["com.apple.keyboard.preferences.plist", "KeyboardsCurrentAndNext.0"],
+        [".GlobalPreferences.plist", "AppleKeyboards.0"],
+    ] as const) {
+        const r = await runner(["plutil", "-extract", key, "raw", "-o", "-", join(prefs, file)], { timeoutMs: 10_000 }).catch(() => undefined);
+        if (r?.code === 0 && r.stdout.trim()) return r.stdout.trim();
+    }
+    return undefined;
+}
+
+/**
+ * Whether keys typed as a U.S. keyboard's come out as meant: the keyboard's hardware layout is U.S. (or ABC, its
+ * equal), named or chosen by "Automatic" for U.S. English. Others move letters (German swaps Y and Z) or type
+ * another script (Arabic). Unknown (no preferences yet: a new device) counts as U.S., iOS's default.
+ */
+export function typesAsUS(keyboard: string | undefined): boolean {
+    if (!keyboard) return true;
+    const hw = /[@;]hw=([^;]+)/.exec(keyboard)?.[1];
+    if (hw === "U.S." || hw === "US" || hw === "ABC") return true;
+    return (hw === undefined || hw === "Automatic") && /^en_US(@|$)/.test(keyboard);
 }
 
 /** The bundle identifier in a built .app's Info.plist. */

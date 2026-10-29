@@ -7,6 +7,7 @@
 //   WebFetch(domain:example.com)
 //   mcp__github   mcp__github__create_issue   mcp__github__*
 //   Task(explore)
+//   SimulatorControl(launch)  one of its actions
 
 import { isAbsolute, join } from "path";
 import { homedir } from "os";
@@ -224,6 +225,8 @@ export interface RuleTarget {
     path?: string;
     url?: string;
     agentType?: string;
+    /** SimulatorControl's action (launch, shutdown, …). */
+    action?: string;
 }
 
 /**
@@ -270,6 +273,7 @@ export function ruleMatches(rule: ParsedRule, t: RuleTarget, root: string, mode:
         }
     }
     if (t.toolName === "Task") return rule.spec === t.agentType;
+    if (t.toolName === "SimulatorControl") return rule.spec === t.action;
     return false;
 }
 

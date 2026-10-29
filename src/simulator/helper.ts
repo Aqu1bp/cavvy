@@ -1,10 +1,12 @@
 // The helper that drives a booted simulator (helper.swift): built on first use with the swiftc of the user's own
-// Xcode (simulators need Xcode, so it's there), kept in Cavvy's home per Xcode, and run once per device in use.
+// Xcode (simulators need Xcode, so it's there), kept in Cavvy's home per Xcode, and run once per device in use. Each
+// build is named and signed cavvy-sim, in a folder of its own: macOS keeps Vision's text model ready for a program by
+// its name and signature, so a new build doesn't load it again (half a minute or more).
 
 import { createHash, randomBytes } from "crypto";
 import { spawn, type ChildProcessByStdio } from "child_process";
 import { chmodSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "fs";
-import { join } from "path";
+import { basename, dirname, join } from "path";
 import type { Readable, Writable } from "stream";
 import { paths } from "../config/paths";
 import SOURCE from "./helper.swift" with { type: "text" };
@@ -18,7 +20,7 @@ let building = new Map<string, Promise<string>>();
 export function helperBinary(developerDir: string): Promise<string> {
     const hash = createHash("sha256").update(SOURCE).update("\0").update(developerDir).digest("hex").slice(0, 16);
     const dir = join(paths.home(), "simulator");
-    const bin = join(dir, `cavvy-sim-${hash}`);
+    const bin = join(dir, hash, "cavvy-sim");
     if (existsSync(bin)) return Promise.resolve(bin);
     let pending = building.get(bin);
     if (!pending) {
@@ -29,10 +31,13 @@ export function helperBinary(developerDir: string): Promise<string> {
 }
 
 async function build(dir: string, bin: string, developerDir: string): Promise<string> {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    mkdirSync(dirname(bin), { recursive: true, mode: 0o700 });
     const tag = randomBytes(4).toString("hex");
     const src = join(dir, `helper-${tag}.swift`);
-    const tmp = `${bin}.${tag}`;
+    // Linked under its own name, which its signature takes.
+    const tmpDir = join(dirname(bin), `.build-${tag}`);
+    const tmp = join(tmpDir, basename(bin));
+    mkdirSync(tmpDir, { mode: 0o700 });
     writeFileSync(src, SOURCE, { mode: 0o600 });
     try {
         const r = await run(["xcrun", "swiftc", "-O", "-swift-version", "5", "-suppress-warnings", "-o", tmp, src], { timeoutMs: BUILD_MS, env: { DEVELOPER_DIR: developerDir } });
@@ -40,12 +45,13 @@ async function build(dir: string, bin: string, developerDir: string): Promise<st
         chmodSync(tmp, 0o700);
         // Another Cavvy may have built it meanwhile: either copy will do.
         renameSync(tmp, bin);
-        // Builds for an earlier Cavvy or Xcode go (one still running keeps its copy until it ends).
-        for (const name of readdirSync(dir)) if (/^cavvy-sim-[0-9a-f]{16}$/.test(name) && join(dir, name) !== bin) rmSync(join(dir, name), { force: true });
+        // Builds for an earlier Cavvy or Xcode go (one still running keeps its copy until it ends), and so do those
+        // named by their hash, from before.
+        for (const name of readdirSync(dir)) if (/^(cavvy-sim-)?[0-9a-f]{16}$/.test(name) && join(dir, name) !== dirname(bin)) rmSync(join(dir, name), { recursive: true, force: true });
         return bin;
     } finally {
         rmSync(src, { force: true });
-        rmSync(tmp, { force: true });
+        rmSync(tmpDir, { recursive: true, force: true });
     }
 }
 

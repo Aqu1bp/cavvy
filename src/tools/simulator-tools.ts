@@ -8,7 +8,7 @@ import { isAbsolute, resolve } from "path";
 import { simulatorEnabled, type Settings } from "../config/settings";
 import type { ServerTool, ServerToolResult } from "../mcp/server";
 import { simulatorsLikely } from "../simulator/simctl";
-import { SimulatorError, SimulatorSession } from "../simulator/session";
+import { sentence, SimulatorError, SimulatorSession } from "../simulator/session";
 import { redact } from "../util/redact";
 import { imageMarkdown, saveScreenshot } from "./browser-tools";
 import type { Tool, ToolContext, ToolResult } from "./types";
@@ -37,11 +37,14 @@ async function guarded(ctx: ToolContext, fn: (s: SimulatorSession) => Promise<To
     }
 }
 
-/** What the screen shows once it's still (at most a few seconds after an action), as the result's tail. */
+/**
+ * What the screen shows once it's still (at most a few seconds after an action, and not before 0.6: what an action
+ * does can take half a second to start showing), as the result's tail.
+ */
 async function after(s: SimulatorSession, done: string, ctx: ToolContext, waitMs = 2500): Promise<ToolResult> {
-    await s.settle(waitMs, ctx.signal).catch(() => undefined);
+    await s.settle(waitMs, ctx.signal, 600).catch(() => undefined);
     // What was done is done: a screen that can't be read now says so, and the action still stands.
-    const screen = await s.snapshot().catch((e) => `The screen couldn't be read: ${(e as Error).message} Try SimulatorSnapshot again.`);
+    const screen = await s.snapshot().catch((e) => `The screen couldn't be read: ${sentence((e as Error).message)} Try SimulatorSnapshot again.`);
     return { content: `${done}\n\n${screen}`, display: { summary: done } };
 }
 
@@ -75,7 +78,7 @@ export const SimulatorControlTool: Tool<ControlInput> = {
 - boot: start a device (by name like "iPhone 17", or UDID; the session's when left out) and use it; returns its screen.
 - shutdown: stop it.
 - install: a built .app (path to the .app folder, e.g. from xcodebuild's build/Build/Products/Debug-iphonesimulator); returns its bundle id.
-- launch: start an app by bundle id (args: launch arguments), ending a running copy first; returns its screen.
+- launch: start an app by bundle id, or bring it to the front as it is if it's running; with args (launch arguments) it starts afresh. Returns its screen.
 - terminate: end an app. open_url: open a URL or deep link.
 To build an app for it: xcodebuild -scheme <scheme> -destination 'platform=iOS Simulator,id=<UDID>' -derivedDataPath build build.`,
     parameters: {
@@ -124,7 +127,7 @@ To build an app for it: xcodebuild -scheme <scheme> -destination 'platform=iOS S
                     const { device: d, started } = await s.boot(input.device, ctx.signal);
                     const done = `${d.name} (${d.runtime}) is running.`;
                     if (!started) return after(s, done, ctx);
-                    const screen = await s.steadySnapshot(15_000, ctx.signal).catch((e) => `The screen couldn't be read: ${(e as Error).message} Try SimulatorSnapshot again.`);
+                    const screen = await s.steadySnapshot(15_000, ctx.signal).catch((e) => `The screen couldn't be read: ${sentence((e as Error).message)} Try SimulatorSnapshot again.`);
                     return { content: `${done}\n\n${screen}`, display: { summary: done } };
                 }
                 case "shutdown": {
@@ -138,8 +141,15 @@ To build an app for it: xcodebuild -scheme <scheme> -destination 'platform=iOS S
                     return { content: done, display: { summary: done } };
                 }
                 case "launch": {
-                    const pid = await s.launch(input.bundleId!, input.args ?? [], ctx.signal);
-                    return after(s, `Launched ${input.bundleId}${pid ? ` (process ${pid})` : ""}.`, ctx, 5000);
+                    const args = input.args ?? [];
+                    const { pid, running, front } = await s.launch(input.bundleId!, args, ctx.signal);
+                    const p = pid ? ` (process ${pid})` : "";
+                    const done = running
+                        ? `${input.bundleId} was running: brought it to the front as it was${p}. To start it afresh, terminate it first.`
+                        : args.length
+                          ? `Started ${input.bundleId} afresh with the arguments${p}.`
+                          : `Launched ${input.bundleId}${p}.`;
+                    return after(s, `${done}${pid && !front ? " It isn't in front yet." : ""}`, ctx, 5000);
                 }
                 case "terminate":
                     await s.terminate(input.bundleId!, ctx.signal);
@@ -274,7 +284,7 @@ Returns the screen once it's still, as a new outline; it says when the user used
                 case "press":
                     return after(s, await s.press(input.key!, input.modifiers ?? []), ctx);
                 case "button":
-                    return after(s, await s.button(input.button!), ctx);
+                    return after(s, await s.button(input.button!, ctx.signal), ctx);
                 case "wait": {
                     const done = await s.waitFor(input.text, input.timeoutMs, ctx.signal);
                     return { content: `${done}\n\n${await s.snapshot()}`, display: { summary: done } };
@@ -336,7 +346,8 @@ export function simulatorServerTools(run: (tool: Tool<any>, input: Record<string
             title: SERVED_TITLES[i],
             description: tool.description,
             inputSchema: tool.parameters,
-            annotations: { readOnlyHint: reads, destructiveHint: false, openWorldHint: false },
+            // Control shuts devices down and ends apps.
+            annotations: { readOnlyHint: reads, destructiveHint: name === "simulator_control", openWorldHint: false },
             call: (args, { signal, meta }) => run(tool, args, signal, typeof meta.callId === "string" ? meta.callId : undefined),
         };
     });
