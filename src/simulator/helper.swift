@@ -576,7 +576,9 @@ func handle(_ c: [String: Any]) throws -> [String: Any] {
     case "text":
         guard textLock.withLock({ textReady }) else { return ["lines": [], "loading": true] }
         guard let s = surface() else { throw HelperError("Can't read the screen") }
-        return ["lines": try recognize(s)]
+        // Vision's own errors name its internals (e5rtError…), which say nothing to Cavvy's user.
+        guard let lines = try? recognize(s) else { throw HelperError("Vision couldn't read the picture") }
+        return ["lines": lines]
     case "settle":
         let still = settle(quiet: ((c["quietMs"] as? NSNumber)?.doubleValue ?? 300) / 1000, least: ((c["leastMs"] as? NSNumber)?.doubleValue ?? 0) / 1000, timeout: ((c["timeoutMs"] as? NSNumber)?.doubleValue ?? 3000) / 1000)
         return ["settled": still]
@@ -592,6 +594,16 @@ func handle(_ c: [String: Any]) throws -> [String: Any] {
 registerScreen()
 if let s = surface() { noteSize(s) }
 warmText()
+
+// A device that shuts down (elsewhere, or to restart) takes its screen and input with it, and they don't come back
+// when it starts again: the helper ends with it, and Cavvy starts another for the device's next start.
+let shutdownStates: Set<Int> = [1, 4]  // SimDeviceState: shut down, shutting down
+let stateWatch = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+stateWatch.schedule(deadline: .now() + 1, repeating: 1)
+stateWatch.setEventHandler {
+    if let state = (device.value(forKey: "state") as? NSNumber)?.intValue, shutdownStates.contains(state) { exit(0) }
+}
+stateWatch.resume()
 
 // Input runs in order on its queue, reading on its own; stdin ends when Cavvy goes, and so does the helper.
 DispatchQueue.global().async {
