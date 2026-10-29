@@ -184,6 +184,18 @@ export const BUILTIN_PROVIDERS: ProviderDef[] = [
         sorted: true,
     },
     {
+        // The user's own installed Antigravity CLI (agy), headless (src/backends/agy), signed in its own way.
+        id: "antigravity",
+        name: "Antigravity",
+        kind: "agent",
+        baseUrl: "",
+        envKeys: [],
+        keyUrl: "https://antigravity.google/docs/cli",
+        requiresKey: true,
+        auth: "cli",
+        sorted: true,
+    },
+    {
         id: "openrouter",
         // png, jpeg, webp, gif: openrouter.ai/docs, image understanding (2026-10-22).
         imageTypes: ["image/png", "image/jpeg", "image/gif", "image/webp"],

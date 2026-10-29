@@ -10,7 +10,7 @@
 import { homedir } from "os";
 import type { PermissionMode } from "../../permissions/modes";
 import type { ProviderDef } from "../../providers/registry";
-import { ProviderError, type AssistantMessage, type ChatRequest, type ModelInfo } from "../../providers/types";
+import { type AssistantMessage, type ChatRequest, type ModelInfo } from "../../providers/types";
 import { TurnRecord } from "../claude-live";
 import { JsonLinesProcess, cliMessage, extraArgs, findCli, requireCli } from "../cli";
 import { STRICTNESS, modeSwitched } from "../codex";
@@ -20,7 +20,7 @@ import { liveDebug } from "../live/debug";
 import { LiveCliPool, type PoolOptions } from "../live/pool";
 import { EXIT_DRAIN_MS, spawnFingerprint, type LiveCliSession, type LiveTurnResult } from "../live/session";
 import type { AgentCliAdapter, CliConnection, CliEventSink, SpawnConfig, SpawnSpec } from "../live/types";
-import { oneOffRefusal } from "../one-off";
+import { WholeTurnsOnly, oneOffRefusal } from "../one-off";
 import { backendModel, type AgentBackendClient, type BackendResult, type BackendTurn, type SessionHost } from "../types";
 import { acpAgent, type AcpAgent } from "./agents";
 import { AcpConnection, RESUME_FAILED, type SteerSource } from "./connection";
@@ -172,7 +172,7 @@ export class AcpBackend implements AgentBackendClient {
 
     /** It runs whole turns only: no one-off requests (set smallModel to another provider's model for those). */
     async stream(req: ChatRequest): Promise<AssistantMessage> {
-        throw oneOffRefusal(this.cli.name, req) ?? new ProviderError(`${this.cli.name} runs whole turns only, so it can't answer a one-off request. Set smallModel to another provider's model for those.`);
+        throw oneOffRefusal(this.cli.name, req) ?? new WholeTurnsOnly(this.cli.name);
     }
 
     listModels(signal?: AbortSignal): Promise<ModelInfo[]> {
@@ -183,7 +183,7 @@ export class AcpBackend implements AgentBackendClient {
         const name = this.cli.name;
         if (t.adopt) return { reason: "error", text: "", actions: [], error: `${name} doesn't start turns of its own.` };
         // A fork shares the session it came from: it can't be copied, so the fork starts one of its own with the conversation.
-        if (t.forkSession && t.resumeId) return { reason: "error", text: "", actions: [], error: `${RESUME_FAILED} ${name} session: ${name} sessions can't be forked`, resumeFailed: true, refused: true };
+        if (t.forkSession && t.resumeId) return { reason: "error", text: "", actions: [], error: `${RESUME_FAILED} ${name} session: ${name} sessions can't be forked`, resumeFailed: true, forkUnsupported: true, refused: true };
         const key = t.sessionKey;
         // The mode now, not t.mode: a Stop hook's continuation reuses the turn it went on from, readied before a switch.
         const run: AcpRun = { t, mode: t.session.mode(), part: new AbortController() };

@@ -525,10 +525,13 @@ export async function restoreActiveSession() {
 }
 
 // Trust prompts are shown by the App component; this hands them over.
-/** MCP approval upgrades existing session trust; declining it must not change that session. */
-export const [trustRequest, setTrustRequest] = createSignal<{ path: string; then: () => void; purpose?: "mcp-approval" } | undefined>();
-export function requestTrust(path: string, then: () => void, purpose?: "mcp-approval") {
-    setTrustRequest({ path, then, purpose });
+/**
+ * MCP approval upgrades existing session trust, and an agent CLI that runs the folder's own hooks (`reason` says so)
+ * needs it: declining either must not change that session.
+ */
+export const [trustRequest, setTrustRequest] = createSignal<{ path: string; then: () => void; purpose?: "mcp-approval" | "agent"; reason?: string } | undefined>();
+export function requestTrust(path: string, then: () => void, purpose?: "mcp-approval" | "agent", reason?: string) {
+    setTrustRequest({ path, then, purpose, reason });
 }
 
 // ---------------------------------------------------------------------------

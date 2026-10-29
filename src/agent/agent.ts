@@ -1670,6 +1670,8 @@ export class Agent {
     private orchestrator(): OrchestratorServer | undefined {
         if (this.o.isSubagent || this.disposed) return undefined;
         const caller = this.model.provider;
+        // Antigravity's CLI takes no MCP server from Cavvy (its own come from its settings).
+        if (agentCli(caller)?.protocol === "agy-stream-json") return undefined;
         // An ACP agent (OpenCode, Grok) gets the worktree tools only: Cavvy's others aren't offered to it.
         const acp = agentCli(caller)?.protocol === "acp";
         const delegating = !acp && this.o.settings().delegation !== false && delegationAvailable(caller, this.listings());
@@ -2554,6 +2556,8 @@ export class Agent {
                     const moved = this.cliFolder !== undefined && this.cliFolder !== base.cwd;
                     // An info notice shows its message, on one line (a title and folded text are a warning's).
                     if (moved) this.emit({ type: "notice", level: "info", message: `${name} continues in a new session in ${basename(base.cwd)}, with this conversation as context.`, data: { source: provider } });
+                    // A fork it can't make (OpenCode, Grok, Antigravity): a new session is the fork, so nothing went wrong.
+                    else if (result.forkUnsupported) this.emit({ type: "notice", level: "info", message: `${name} continues this fork in a new session, with the conversation so far as context.`, data: { source: provider } });
                     else {
                         const title = /no conversation found/i.test(said) ? "Session not found · started a new one" : "Couldn't resume · started a new one";
                         this.emit({ type: "notice", level: "warn", message: `${why}. Starting a new one with this conversation as context.`, data: { source: provider, title, text: said === why ? `${why}.` : `\`${said}\`` } });

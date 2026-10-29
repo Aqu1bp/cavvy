@@ -450,7 +450,7 @@ async function agentLogin(app: App, providerId: string) {
     // How it's asked: its own status command, or (an ACP agent) whether it answers initialize.
     // An ACP agent with a status of its own (Grok: `grok models`) is asked that instead.
     const acpHow = agent.protocol === "acp" ? (acpAgent(providerId).status ? `${cli.command} models` : `${cli.command} ${(agent.acpArgs ?? []).join(" ")} · initialize`) : undefined;
-    const how = acpHow ?? (providerId === "codex" ? "codex app-server · account/read" : "claude auth status");
+    const how = acpHow ?? (agent.protocol === "agy-stream-json" ? `${cli.command} models` : providerId === "codex" ? "codex app-server · account/read" : "claude auth status");
     let st: AgentCliStatus | undefined;
     try {
         st = await withProgress(app, [theme.permission(bold(`Checking ${def.name}…`)), theme.muted(how)], (signal) => checkAgentCli(providerId, signal));
@@ -461,6 +461,10 @@ async function agentLogin(app: App, providerId: string) {
     if (!st) return;
     if (!st.installed) {
         app.notice(`${def.name} isn't installed (no \`${cli.command}\` on your PATH). ${st.installHint}, sign in with \`${st.signIn}\`, then /login ${providerId} again.`, "warn");
+        return;
+    }
+    if (st.problem) {
+        app.notice(st.problem, "warn");
         return;
     }
     if (!st.signedIn) {
@@ -485,6 +489,8 @@ async function agentLogin(app: App, providerId: string) {
     // It loads this folder's own configuration (hooks, skills, MCP servers) only if you trust the folder.
     const projectConfig = [...agentProjectConfig(app.cwd, providerId), ...(providerId === "claude-code" && existsSync(paths.projectMcp(app.cwd)) ? [".mcp.json"] : [])];
     if (projectConfig.length && !trustedByUser(app.cwd)) {
+        // Antigravity can't be started without them: it doesn't run here until the folder is trusted.
+        const always = agent.projectConfigAlways;
         const trust = await confirm(
             app,
             `Trust this folder's ${def.name} configuration?`,
@@ -493,10 +499,10 @@ async function agentLogin(app: App, providerId: string) {
                 "",
                 `${def.name} would load ${projectConfig.join(", ")} from this folder.`,
                 theme.muted("Hooks, MCP servers and skills there can run commands on your machine; permission rules there can approve actions."),
-                theme.muted(`Until you trust the folder, ${def.name} runs without them.`),
+                theme.muted(always ? `Until you trust the folder, ${def.name} doesn't run here.` : `Until you trust the folder, ${def.name} runs without them.`),
             ],
             "Yes, trust this folder",
-            "No, run without them",
+            always ? "Not now" : "No, run without them",
         );
         if (trust) {
             try {
@@ -535,7 +541,7 @@ async function signInCliAccount(app: App, provider: string, id: string) {
         release();
     }
     const status = await withProgress(app, [theme.muted("Checking sign-in…")], (signal) => checkAgentCli(provider, signal, selected.id));
-    if (status) app.notice(`${getProvider(provider)!.name} · ${selected.name}: ${status.signedIn ? status.description : "not signed in"}`);
+    if (status) app.notice(`${getProvider(provider)!.name} · ${selected.name}: ${status.signedIn ? status.description : (status.problem ?? "not signed in")}`);
     await app.refreshListings();
 }
 

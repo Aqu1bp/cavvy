@@ -21,7 +21,7 @@ test("CLAUDE_CLI and CODEX_CLI are the defs' CLI info", () => {
 
 test("every def is an agent provider; those with accounts are the account providers", () => {
     expect(AGENT_CLIS.filter((d) => d.account).map((d) => d.id)).toEqual([...ACCOUNT_PROVIDERS]);
-    expect(AGENT_CLIS.map((d) => d.id)).toEqual(["claude-code", "codex", "opencode", "grok"]);
+    expect(AGENT_CLIS.map((d) => d.id)).toEqual(["claude-code", "codex", "opencode", "grok", "antigravity"]);
     for (const d of AGENT_CLIS) {
         const p = BUILTIN_PROVIDERS.find((p) => p.id === d.id);
         expect(p).toMatchObject({ kind: "agent", auth: "cli", name: d.name });
@@ -33,6 +33,13 @@ test("every def is an agent provider; those with accounts are the account provid
         expect(d.caps.steersAttachments).toEqual(d.id === "opencode" ? ["image", "text"] : ["text"]);
         expect(d.caps).toMatchObject({ steering: "between-tool-rounds", backgroundTasks: false, fork: false, compact: "none", planLimits: "none", hooks: "none", mcpAttach: "none", skills: "paste", importSessions: false, usageLogs: false });
     }
+});
+
+test("Antigravity's CLI: steered between tool rounds, attachments as files, nothing of Cavvy's attached", () => {
+    const d = agentCli("antigravity")!;
+    expect(d.protocol).toBe("agy-stream-json");
+    expect(d.cli.command).toBe("agy");
+    expect(d.caps).toMatchObject({ steering: "between-tool-rounds", steersAttachments: ["image", "text", "pdf"], images: true, pdfs: true, backgroundTasks: false, fork: false, compact: "none", hooks: "none", mcpAttach: "none", skills: "paste", importSessions: false, usageLogs: false });
 });
 
 test("the defs' capabilities agree with the branches they will replace", () => {

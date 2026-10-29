@@ -1,0 +1,21 @@
+{"t":4,"dir":"note","frame":{"text":"spawn agy --input-format stream-json --output-format stream-json --model gemini-3.8-flash-low --add-dir /tmp/agy-zz-gate -p=","cwd":"/tmp/agy-ws"}}
+{"t":6646,"dir":"in","frame":{"event":"init","conversation_id":"<conversation-1>","init":{"model":"gemini-3.8-flash-low","cwd":"/tmp/agy-ws","tools":["ask_custom_permission","ask_permission","ask_question","...[57 more items]"],"permission_mode":"request-review"}}}
+{"t":6647,"dir":"out","frame":{"event":"user","message":{"role":"user","content":"Run the shell command `sleep 30` and wait for it to finish, then say done."}}}
+{"t":6686,"dir":"in","frame":{"event":"step_update","step_update":{"conversation_id":"<conversation-1>","step_index":0,"state":"DONE","step_type":"user_input"}}}
+{"t":6722,"dir":"note","frame":{"hook":"session","input":{"artifactDirectoryPath":"~/.gemini/antigravity-cli/brain/<conversation-1>","conversationId":"<conversation-1>","lastUserInput":"Run the shell command `sleep 30` and wait for it to finish, then say done.","modelName":"gemini-3.8-flash-low","transcriptPath":"~/.gemini/antigravity-cli/brain/<conversation-1>/.system_generated/logs/transcript_full.jsonl","workspacePaths":["/tmp/agy-ws","/tmp/agy-zz-gate"]}}}
+{"t":6722,"dir":"note","frame":{"hookAnswer":"session","out":{}}}
+{"t":13237,"dir":"note","frame":{"hook":"pre","input":{"artifactDirectoryPath":"~/.gemini/antigravity-cli/brain/<conversation-1>","conversationId":"<conversation-1>","lastUserInput":"Run the shell command `sleep 30` and wait for it to finish, then say done.","modelName":"gemini-3.8-flash-low","stepIdx":2,"toolCall":{"args":{"CommandLine":"sleep 30","IsDaemon":false,"WaitMsBeforeAsync":1000,"toolSummary":"Sleep for 30 seconds"},"name":"run_command"},"transcriptPath":"~/.gemini/antigravity-cli/brain/<conversation-1>/.system_generated/logs/transcript_full.jsonl","workspacePaths":["/tmp/agy-ws","/tmp/agy-zz-gate"]}}}
+{"t":13237,"dir":"note","frame":{"hookAnswer":"pre","out":{"decision":"auto_approve"}}}
+{"t":13240,"dir":"in","frame":{"event":"step_update","step_update":{"conversation_id":"<conversation-1>","step_index":1,"state":"DONE","step_type":"agent_response","duration_seconds":6.49772,"usage":{"input_tokens":6818,"output_tokens":486,"thinking_tokens":440,"cache_read_tokens":0,"total_tokens":7304}}}}
+{"t":13240,"dir":"in","frame":{"event":"step_update","step_update":{"conversation_id":"<conversation-1>","step_index":2,"state":"ACTIVE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"sleep 30"}}}}}
+{"t":15241,"dir":"out","frame":{"event":"interrupt"}}
+{"t":15241,"dir":"out","frame":{"event":"cancel"}}
+{"t":15242,"dir":"out","frame":{"event":"control_request"}}
+{"t":17086,"dir":"note","frame":{"hook":"stop","input":{"artifactDirectoryPath":"~/.gemini/antigravity-cli/brain/<conversation-1>","conversationId":"<conversation-1>","error":"","executionNum":0,"fullyIdle":false,"lastUserInput":"Run the shell command `sleep 30` and wait for it to finish, then say done.","modelName":"gemini-3.8-flash-low","terminationReason":"NO_TOOL_CALL","transcriptPath":"~/.gemini/antigravity-cli/brain/<conversation-1>/.system_generated/logs/transcript_full.jsonl","workspacePaths":["/tmp/agy-ws","/tmp/agy-zz-gate"]}}}
+{"t":17086,"dir":"note","frame":{"hookAnswer":"stop","out":{}}}
+{"t":17243,"dir":"note","frame":"SIGINT"}
+{"t":17266,"dir":"err","frame":"error: interrupted\n"}
+{"t":17266,"dir":"in","frame":{"event":"result","result":{"conversation_id":"<conversation-1>","status":"ERROR","response":"","error":"interrupted","duration_seconds":10.410982,"num_turns":1,"usage":{"input_tokens":14342,"output_tokens":530,"thinking_tokens":465,"cache_read_tokens":0,"total_tokens":14872}}}}
+{"t":17266,"dir":"note","frame":{"text":"after SIGINT","result":true,"alive":true}}
+{"t":17266,"dir":"out","frame":{"event":"user","message":{"role":"user","content":"Reply with just the word pear. Use no tools."}}}
+{"t":17461,"dir":"note","frame":"process exited with code 1"}

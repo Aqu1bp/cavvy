@@ -79,6 +79,9 @@ export const MODE_LABELS: Record<PermissionModeId, { label: string; description:
     bypassPermissions: { label: "Bypass", description: "Run everything without asking (sandboxes only)" },
 };
 
+/** Auto mode on an agent CLI it has no reviewer for (Antigravity): what it does there. */
+export const AUTO_WITHOUT_REVIEWER = "No reviewer for this model: commands ask";
+
 // ---------------------------------------------------------------------------
 // Diffs
 
@@ -1094,6 +1097,8 @@ export interface ProviderInfo {
         multiAccount?: boolean;
         /** It reports plan limits (false: there's no plan row to show). */
         planLimits?: boolean;
+        /** Auto mode has no reviewer for it: commands ask (AUTO_WITHOUT_REVIEWER). */
+        autoAsks?: boolean;
     };
 }
 

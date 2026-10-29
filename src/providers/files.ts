@@ -24,7 +24,7 @@ import { formatBytes } from "../util/files";
  * document item.
  */
 export function providerReadsPdf(def: Pick<ProviderDef, "id" | "kind">): boolean {
-    if (def.kind === "agent") return def.id === "claude-code";
+    if (def.kind === "agent") return def.id === "claude-code" || def.id === "antigravity";
     return def.kind === "anthropic" || def.kind === "responses" || def.id === "openrouter";
 }
 
