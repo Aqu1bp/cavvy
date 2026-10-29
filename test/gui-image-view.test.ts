@@ -4,7 +4,7 @@
 // and an image's size read from its header.
 
 import { describe, expect, test } from "bun:test";
-import { canZoom, fitScale, fitSize, flipFrom, imageSize, stepKey, viewBox, zoomScroll } from "../gui/src/lib/image-view";
+import { canZoom, fitScale, fitSize, flipFrom, imageSize, pathScale, stepKey, viewBox, zoomScroll } from "../gui/src/lib/image-view";
 
 const box = { width: 1000, height: 800 };
 
@@ -150,5 +150,11 @@ describe("stepping keys", () => {
     test("other keys don't step", () => {
         expect(stepKey("ArrowUp", false, true)).toBe(0);
         expect(stepKey("Enter", false, true)).toBe(0);
+    });
+});
+
+describe("a file's pixels per CSS pixel, from its name", () => {
+    test("@2x and @1.5x as Cavvy's screenshots are named; 1 otherwise, or for a number that can't be", () => {
+        expect(["/Users/me/.cavvy/screenshots/a-1f2e3d4c@2x.png", "/tmp/b@1.5x.jpg", "/tmp/c.png", "/tmp/@2x/c.png", "/tmp/d@0.5x.png", "/tmp/e@9x.png", "/tmp/f@2x.PNG"].map(pathScale)).toEqual([2, 1.5, 1, 1, 1, 1, 2]);
     });
 });

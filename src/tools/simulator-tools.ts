@@ -307,7 +307,8 @@ export const SimulatorScreenshotTool: Tool<Record<string, never>> = {
         guarded(ctx, async (s) => {
             const shot = await s.screenshot();
             const image = { type: "image" as const, mediaType: "image/png", data: Buffer.from(shot.png).toString("base64") };
-            const file = await saveScreenshot(image);
+            // At the screen's size in points: drawn as it is.
+            const file = await saveScreenshot({ ...image, width: shot.width });
             const show = file ? ` Saved as ${file}: to show it to the user, put ${imageMarkdown(file)} in your last message.` : "";
             return {
                 content: `Screenshot of the simulator, ${shot.width}×${shot.height}: a pixel in it is a point, as SimulatorAct's x and y are.${show}`,

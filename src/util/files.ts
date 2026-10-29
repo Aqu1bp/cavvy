@@ -113,6 +113,21 @@ export function sniffImage(b: Uint8Array): string | undefined {
     return undefined;
 }
 
+/** A PNG's or JPEG's width in pixels, from its header; undefined for other images or one that can't be read. */
+export function imageWidth(b: Uint8Array): number | undefined {
+    const type = sniffImage(b);
+    if (type === "image/png") return b.length >= 24 ? ((b[16]! << 24) | (b[17]! << 16) | (b[18]! << 8) | b[19]!) >>> 0 : undefined;
+    if (type !== "image/jpeg") return undefined;
+    // Markers from the start: the frame header (SOF0–SOF15, not DHT, JPG or DAC) has the width.
+    for (let i = 2; i + 9 < b.length; ) {
+        if (b[i] !== 0xff) return undefined;
+        const marker = b[i + 1]!;
+        if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) return (b[i + 7]! << 8) | b[i + 8]!;
+        i += 2 + ((b[i + 2]! << 8) | b[i + 3]!);
+    }
+    return undefined;
+}
+
 export function looksBinary(buf: Uint8Array): boolean {
     const n = Math.min(buf.length, 8000);
     let suspicious = 0;
