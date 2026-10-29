@@ -1,0 +1,110 @@
+/* ---- The Simulator pane (SimulatorPane), a tab of the side panel ----
+   A bar with the device menu, Home and Shut down over the device's screen: a canvas the server's pictures are
+   drawn on, centered with room around it and rounded as the device is. The pane reuses the Browser pane's body,
+   notes and keyboard target (browser.css). */
+
+.simulator-pane {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+}
+
+.sim-bar {
+    display: flex;
+    align-items: center;
+    gap: calc(2 * var(--sp));
+    padding: 0 calc(10 * var(--sp)) calc(6 * var(--sp)) calc(6 * var(--sp));
+    flex: none;
+    min-width: 0;
+}
+
+.sim-bar .hb {
+    border-radius: var(--pill);
+}
+
+.sim-bar .br-who {
+    padding-right: calc(4 * var(--sp));
+}
+
+.sim-device {
+    flex: 0 1 auto;
+}
+
+.sim-device svg:first-child {
+    flex: none;
+    color: var(--fg-2);
+}
+
+.sim-device:disabled {
+    opacity: 0.5;
+}
+
+.sim-runtime {
+    flex: none;
+    color: var(--fg-3);
+    font-weight: 400;
+}
+
+/* Where the screen sits: the pane's own ground, so the device reads as an object on it. */
+.sim-view {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    background: var(--sheet-2);
+    border-top: 0.5px solid var(--line);
+    overflow: hidden;
+}
+
+.sim-screen {
+    position: absolute;
+    display: block;
+    background: #000;
+    box-shadow:
+        0 0 0 calc(5 * var(--sp)) #101012,
+        0 0 0 calc(6 * var(--sp)) rgb(255 255 255 / 0.08),
+        0 calc(12 * var(--sp)) calc(32 * var(--sp)) rgb(0 0 0 / 0.28);
+    cursor: default;
+    outline: none;
+    touch-action: none;
+    opacity: 0;
+    transition: opacity 160ms;
+}
+
+.sim-screen.shown {
+    opacity: 1;
+}
+
+.sim-screen:focus-visible {
+    box-shadow:
+        0 0 0 calc(5 * var(--sp)) #101012,
+        0 0 0 calc(7 * var(--sp)) var(--accent),
+        0 calc(12 * var(--sp)) calc(32 * var(--sp)) rgb(0 0 0 / 0.28);
+}
+
+/* The view's focus ring is the screen's own, not the pane's. */
+.sim-view:focus-within {
+    outline: none;
+}
+
+.sim-view:has(.br-keyboard:focus) .sim-screen.shown {
+    box-shadow:
+        0 0 0 calc(5 * var(--sp)) #101012,
+        0 0 0 calc(7 * var(--sp)) var(--accent),
+        0 calc(12 * var(--sp)) calc(32 * var(--sp)) rgb(0 0 0 / 0.28);
+}
+
+.sim-start {
+    margin-top: calc(10 * var(--sp));
+}
+
+.sim-pick .menu-check {
+    align-self: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .sim-screen {
+        transition: none;
+    }
+}

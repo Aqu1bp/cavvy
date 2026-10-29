@@ -18,6 +18,12 @@
 //   errors            no browser: CAVVY_BROWSER=/nope bun run gui:demo; a failed page: enter localhost:1 in the address bar;
 //                     a crash: kill the "Chrome" process the demo started; a dialog: the page's "Send test" button
 
+//
+// The Simulator pane (side panel, phone tab) needs a Mac with Xcode, and shows the session's iOS simulator:
+//   off               open the tab with no simulator running: Start boots the one shown
+//   agent driving     send "open settings in the simulator" (starting it and tapping ask for approval)
+//   you using it      click to tap, drag or scroll to swipe, type; the device menu switches or starts another
+
 import { mkdirSync, mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";

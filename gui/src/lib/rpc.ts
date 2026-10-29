@@ -3,7 +3,7 @@
 // restarted desktop sidecar with a new port and token is picked up).
 
 import type { Method, ParamsOf, ResultOf, ServerEvent, ServerMessage } from "@shared/protocol";
-import { decodeBrowserFrame, type BrowserImageFrame } from "../../../src/server/browser-wire";
+import { decodeBrowserFrame, decodeSimulatorFrame, type BrowserImageFrame, type SimulatorImageFrame } from "../../../src/server/browser-wire";
 import { RequestAges } from "./request-age";
 
 export interface Credentials {
@@ -33,6 +33,7 @@ interface Pending {
 export class Rpc {
     private ws?: WebSocket;
     private frameListeners = new Set<(frame: BrowserImageFrame) => void>();
+    private simulatorFrameListeners = new Set<(frame: SimulatorImageFrame) => void>();
     private next = 1;
     private pending = new Map<number, Pending>();
     private listeners = new Set<(e: ServerEvent) => void>();
@@ -68,8 +69,13 @@ export class Rpc {
         return () => this.frameListeners.delete(fn);
     }
 
+    onSimulatorFrame(fn: (frame: SimulatorImageFrame) => void): () => void {
+        this.simulatorFrameListeners.add(fn);
+        return () => this.simulatorFrameListeners.delete(fn);
+    }
+
     /** Ephemeral input is never replayed after a disconnect. */
-    notify(method: "browser.input" | "browser.ack", params: ParamsOf<typeof method>): void {
+    notify<M extends "browser.input" | "browser.ack" | "simulator.input" | "simulator.ack">(method: M, params: ParamsOf<M>): void {
         if (this.closed || this.ws?.readyState !== WebSocket.OPEN) return;
         try { this.ws.send(JSON.stringify({ method, params })); } catch { /* The transport closed; never replay input. */ }
     }
@@ -144,6 +150,11 @@ export class Rpc {
         ws.onmessage = (m) => {
             if (this.ws !== ws || this.closed) return;
             if (m.data instanceof ArrayBuffer) {
+                const picture = decodeSimulatorFrame(m.data);
+                if (picture) {
+                    for (const fn of this.simulatorFrameListeners) fn(picture);
+                    return;
+                }
                 const frame = decodeBrowserFrame(m.data);
                 if (frame) for (const fn of this.frameListeners) fn(frame);
             } else this.receive(String(m.data));
