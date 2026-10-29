@@ -326,6 +326,8 @@ describe("CwdChanged and FileChanged", () => {
         await until(() => lines(outA).length >= 1 && lines(outB).length >= 1);
         // Both groups ran for .envrc (the one without a matcher takes every watched file).
         for (const out of [outA, outB]) expect(lines(out).map((l) => [l.hook_event_name, l.file_path, l.event])).toEqual([["FileChanged", join(proj, ".envrc"), "add"]]);
+        // The hook's watchPaths are taken once it has exited, after its line was written: a file made before is no add.
+        await until(() => (agent as any).fileWatch?.watched.includes(extra));
         writeFileSync(extra, "x");
         await until(() => lines(outB).length >= 2);
         expect(lines(outB).slice(1).map((l) => [l.file_path, l.event])).toEqual([[extra, "add"]]);
