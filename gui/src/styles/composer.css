@@ -2742,9 +2742,16 @@
     color: var(--fg-2);
 }
 
+/* The icon and the check (each in a .menu-ico a line tall) sit on the label's line, not in the middle of the label and the description under it. */
 .mode-menu .menu-item {
+    align-items: flex-start;
     padding: calc(7 * var(--sp)) calc(10 * var(--sp));
     border-radius: calc(10 * var(--sp));
+}
+
+.mode-menu .menu-ico {
+    height: 1lh;
+    margin-top: 0;
 }
 
 .mode-menu .menu-head kbd {

@@ -1,5 +1,5 @@
 import { For, Show } from "solid-js";
-import { Check, ChevronDown, FilePen, Hand, Map as MapIcon, ShieldAlert, Zap } from "lucide-solid";
+import { Check, ChevronDown, FilePen, Hand, Map as MapIcon, ShieldAlert, ShieldCheck } from "lucide-solid";
 import { MODE_LABELS, type PermissionModeId } from "@shared/protocol";
 import { setMode } from "../state/actions";
 import { Menu } from "./ui/Menu";
@@ -13,7 +13,7 @@ export function ModeIcon(p: { mode: PermissionModeId; size?: number }) {
         <Show when={p.mode !== "default"} fallback={<Hand size={s} />}>
             <Show when={p.mode !== "acceptEdits"} fallback={<FilePen size={s} />}>
                 <Show when={p.mode !== "plan"} fallback={<MapIcon size={s} />}>
-                    <Show when={p.mode !== "auto"} fallback={<Zap size={s} />}>
+                    <Show when={p.mode !== "auto"} fallback={<ShieldCheck size={s} />}>
                         <ShieldAlert size={s} />
                     </Show>
                 </Show>
@@ -79,7 +79,9 @@ export function ModePicker(p: ComposerMenu & { mode: PermissionModeId; bypassAll
                                         </Show>
                                     </span>
                                     <Show when={p.mode === m}>
-                                        <Check size={15} stroke-width={2} class="menu-check" />
+                                        <span class="menu-ico">
+                                            <Check size={15} stroke-width={2} class="menu-check" />
+                                        </span>
                                     </Show>
                                 </button>
                             );

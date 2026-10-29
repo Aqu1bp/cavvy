@@ -63,10 +63,10 @@ export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 export type ToolCategoryId = "read" | "edit" | "execute" | "network" | "meta" | "mcp";
 
 export const MODE_LABELS: Record<PermissionModeId, { label: string; description: string }> = {
-    default: { label: "Manual", description: "Ask before edits, commands and other side effects" },
-    acceptEdits: { label: "Accept edits", description: "Edit files in the workspace without asking" },
-    plan: { label: "Plan", description: "Research and propose a plan; change nothing until approved" },
-    auto: { label: "Auto", description: "A reviewer model approves routine actions; risky ones ask" },
+    default: { label: "Manual", description: "Ask before edits and commands" },
+    acceptEdits: { label: "Accept edits", description: "Edit workspace files without asking" },
+    plan: { label: "Plan", description: "Plan first; change nothing until approved" },
+    auto: { label: "Auto", description: "A reviewer model approves routine actions" },
     bypassPermissions: { label: "Bypass", description: "Run everything without asking (sandboxes only)" },
 };
 
