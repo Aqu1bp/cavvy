@@ -20,7 +20,7 @@ import type { ServerTool, ServerToolResult } from "../mcp/server";
 import { PermissionChecker } from "../permissions/checker";
 import { fitImage } from "../providers/images";
 import type { ImagePart } from "../providers/types";
-import { MAX_SHOWN_IMAGE } from "../util/files";
+import { imageWidth, MAX_SHOWN_IMAGE } from "../util/files";
 import { base64Size } from "../util/media";
 import { redact } from "../util/redact";
 import type { Tool, ToolContext, ToolResult } from "./types";
@@ -337,21 +337,30 @@ const SCREENSHOT_DAYS = 30;
  * A screenshot as a file (in Cavvy's home), so the agent can show it in its reply: the transcript draws a local image
  * a reply links to, up to MAX_SHOWN_IMAGE (a bigger one, of a long and wide page, is saved as a copy that fits). Older
  * ones go as one is saved. Undefined when it can't be written; the agent still sees it.
+ * Pixels finer than the page's (a Retina display's) are in its name, as `@2x`: the chat draws it at the page's size.
  */
-async function saveScreenshot(shot: ImagePart): Promise<string | undefined> {
+async function saveScreenshot(shot: ImagePart & { width: number }): Promise<string | undefined> {
     const image = base64Size(shot.data) > MAX_SHOWN_IMAGE ? await fitImage(shot) : shot;
     if (!image) return undefined;
     const dir = join(paths.home(), "screenshots");
     try {
         mkdirSync(dir, { recursive: true, mode: 0o700 });
         pruneScreenshots(dir);
+        const bytes = Buffer.from(image.data, "base64");
         const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-        const file = join(dir, `${stamp}-${randomBytes(4).toString("hex")}.${image.mediaType === "image/jpeg" ? "jpg" : image.mediaType.slice("image/".length)}`);
-        writeFileSync(file, Buffer.from(image.data, "base64"), { mode: 0o600, flag: "wx" });
+        const file = join(dir, `${stamp}-${randomBytes(4).toString("hex")}${densitySuffix(imageWidth(bytes), shot.width)}.${image.mediaType === "image/jpeg" ? "jpg" : image.mediaType.slice("image/".length)}`);
+        writeFileSync(file, bytes, { mode: 0o600, flag: "wx" });
         return file;
     } catch {
         return undefined;
     }
+}
+
+/** `@2x` (or `@1.5x`) when an image `pixels` wide shows a page `css` wide; nothing at 1×, or when either isn't known. */
+export function densitySuffix(pixels: number | undefined, css: number): string {
+    if (!pixels || !(css > 0)) return "";
+    const scale = Math.round((pixels / css) * 100) / 100;
+    return scale > 1.05 ? `@${scale}x` : "";
 }
 
 /**
@@ -538,4 +547,4 @@ export const BROWSER_INSTRUCTIONS = `# Browser (cavvy)
 
 browser_navigate, browser_snapshot, browser_act, browser_screenshot, browser_eval and browser_logs drive a headless Chrome the user can watch in Cavvy's Browser pane. To check web UI work, start the dev server (in the background), open its address with browser_navigate, then read the page with browser_snapshot: its refs (e12) name elements for browser_act. Take a screenshot only when how the page looks matters. The user can use a tab too: when they have, the next result says so.
 
-The user doesn't see your screenshots unless you show them. When how something looks is part of your answer (a UI change you made, options to choose between, a bug you found), show it: write ![what it shows](path) with the path the screenshot's result gives, and Cavvy draws the image in the chat. Any local PNG, JPEG, GIF or WebP works the same way. Put images in your last message of the turn: what you write before further tool calls folds away under "Worked for".`;
+The user doesn't see your screenshots unless you show them. When how something looks is part of your answer (a UI change you made, options to choose between, a bug you found), show it: write ![what it shows](path) with the path the screenshot's result gives, and Cavvy draws the image in the chat. The chat draws a whole page small: to show a detail, screenshot its element (ref). Any local PNG, JPEG, GIF or WebP works the same way. Put images in your last message of the turn: what you write before further tool calls folds away under "Worked for".`;

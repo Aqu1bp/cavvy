@@ -8,6 +8,13 @@
 export type Size = { width: number; height: number };
 export type Rect = Size & { left: number; top: number };
 
+/** The pixels per CSS pixel a file's name says it has (`shot@2x.png`, as Cavvy's screenshots of a Retina page are named); 1 if none. */
+export function pathScale(path: string): number {
+    const m = path.match(/@(\d+(?:\.\d+)?)x\.[a-z]+$/i);
+    const scale = m ? Number(m[1]) : 1;
+    return scale >= 1 && scale <= 4 ? scale : 1;
+}
+
 /** The share of the window an image may fill. */
 const SHARE = { width: 0.92, height: 0.88 };
 

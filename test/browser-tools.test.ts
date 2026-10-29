@@ -22,7 +22,7 @@ const { toOpenAIMessages } = await import("../src/providers/openai-compat");
 const { toResponsesInput } = await import("../src/providers/openai-responses");
 const { BUILTIN_PROVIDERS } = await import("../src/providers/registry");
 const { imagesFor } = await import("../src/providers/images");
-const { MAX_SHOWN_IMAGE, sniffImage } = await import("../src/util/files");
+const { imageWidth, MAX_SHOWN_IMAGE, sniffImage } = await import("../src/util/files");
 const { MarkdownRenderer } = await import("../gui/src/lib/markdown");
 type Message = import("../src/providers/types").Message;
 
@@ -379,9 +379,9 @@ describe("served to Claude Code and Codex", () => {
     });
 });
 
-/** The tool's own result for a screenshot, from a tab that returns one (`data`, a PNG). */
-async function screenshotResult(data = PNG) {
-    const page = { url: "http://localhost:3000/", exclusive: <T,>(fn: () => Promise<T>) => fn(), screenshot: async () => ({ type: "image" as const, mediaType: "image/png", data, width: 1280, height: 800 }) };
+/** The tool's own result for a screenshot, from a tab that returns one (`data`, a PNG, of a page `width` CSS pixels wide). */
+async function screenshotResult(data = PNG, width = 1280) {
+    const page = { url: "http://localhost:3000/", exclusive: <T,>(fn: () => Promise<T>) => fn(), screenshot: async () => ({ type: "image" as const, mediaType: "image/png", data, width, height: 800 }) };
     const browser = { run: <T,>(fn: () => Promise<T>) => fn(), page: async () => page, idOf: () => 2 };
     return BrowserScreenshotTool.run({}, ctx({ projectRoot: root, cwd: root, browser }));
 }
@@ -485,6 +485,18 @@ describe("a screenshot saved for a reply to show", () => {
         expect(saved.length).toBeLessThanOrEqual(MAX_SHOWN_IMAGE);
         expect([file.slice(-4), sniffImage(saved)]).toEqual([".jpg", "image/jpeg"]);
         expect(result.images).toEqual([{ type: "image", mediaType: "image/png", data: big }]);
+        // Its name has the copy's own pixels per CSS pixel, read from the JPEG's header.
+        expect(file).toEndWith(`${tools.densitySuffix(imageWidth(saved), 1280)}.jpg`);
+        expect(imageWidth(saved)).toBeLessThanOrEqual(2000);
+    });
+
+    test("one with finer pixels than the page (a Retina display's) says how much in its name, so the chat draws it at the page's size", async () => {
+        expect(savedAs((await screenshotResult(noisePng(64, 4).toString("base64"), 32)).content)).toEndWith("@2x.png");
+        expect(savedAs((await screenshotResult(noisePng(48, 4).toString("base64"), 32)).content)).toEndWith("@1.5x.png");
+        expect(savedAs((await screenshotResult(noisePng(32, 4).toString("base64"), 32)).content)).not.toContain("@");
+        expect(imageWidth(noisePng(37, 2))).toBe(37);
+        expect([tools.densitySuffix(2560, 1280), tools.densitySuffix(1290, 1280), tools.densitySuffix(undefined, 1280), tools.densitySuffix(2560, 0)]).toEqual(["@2x", "", "", ""]);
+        expect(imageWidth(Buffer.from("not an image"))).toBeUndefined();
     });
 });
 
