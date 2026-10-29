@@ -419,6 +419,14 @@ export function SimulatorPane(p: { handle: SessionHandle }) {
                         {connected() ? "Connecting…" : "Reconnecting…"}
                     </div>
                 </Show>
+                <Show when={running() && state()?.inputTaken}>
+                    <div class="sim-taken" role="status">
+                        <span class="truncate">Another app has this device's input</span>
+                        <button class="btn sm" disabled={busy()} onClick={() => command("restart")}>
+                            Restart
+                        </button>
+                    </div>
+                </Show>
                 <Show when={note()}>
                     {(n) => (
                         <div class="br-blank">

@@ -2010,7 +2010,7 @@ export class Engine {
             }
             case "simulator.command": {
                 const command = str(p.command, "command");
-                if (command !== "select" && command !== "boot" && command !== "shutdown") throw new RpcError("Unknown simulator command");
+                if (command !== "select" && command !== "boot" && command !== "shutdown" && command !== "restart") throw new RpcError("Unknown simulator command");
                 return await simulatorCall(() => this.runtime(p.id).simulator.command(command, typeof p.udid === "string" ? p.udid : undefined));
             }
             case "browser.state":

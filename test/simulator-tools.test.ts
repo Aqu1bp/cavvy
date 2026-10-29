@@ -2,9 +2,11 @@
 // them, the session's states with simctl faked, the names Claude Code and Codex call them by, the pane's input as
 // the server checks it, and the setting.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, realpathSync, writeFileSync } from "fs";
+import { createHash } from "crypto";
+import { chmodSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
+import HELPER_SOURCE from "../src/simulator/helper.swift" with { type: "text" };
 
 isolate();
 const { SIMULATOR_TOOLS, SimulatorActTool, SimulatorControlTool, SimulatorSnapshotTool, nativeSimulatorCall, servedSimulatorName, servedSimulatorTool, simulatorAvailable, simulatorServerTools } = await import("../src/tools/simulator-tools");
@@ -145,6 +147,71 @@ describe("the session's simulator", () => {
         expect(off.state()).toMatchObject({ status: "unavailable", error: expect.stringMatching(/turned off/) });
         s.dispose();
         off.dispose();
+    });
+});
+
+describe("a device another tool has taken the input of", () => {
+    // A stand-in for the helper, where the built one would be: a screen, input answered, and the input taken (as
+    // the device's state says) once TAKEN exists.
+    const DEV = "/Applications/Xcode.app/Contents/Developer";
+    const TAKEN = join(W, "taken");
+    const ran2: string[][] = [];
+    beforeEach(() => {
+        const hash = createHash("sha256").update(HELPER_SOURCE).update("\0").update(DEV).digest("hex").slice(0, 16);
+        const bin = join(paths.home(), "simulator", hash, "cavvy-sim");
+        mkdirSync(dirname(bin), { recursive: true });
+        writeFileSync(
+            bin,
+            `#!${process.execPath}
+const { existsSync } = require("fs");
+const out = (o) => { const p = Buffer.from(JSON.stringify(o)); const h = Buffer.alloc(5); h[0] = 74; h.writeUInt32BE(p.length, 1); process.stdout.write(Buffer.concat([h, p])); };
+const taken = () => existsSync(${JSON.stringify(TAKEN)});
+out({ event: "ready", width: 1206, height: 2622, scale: 3 });
+if (taken()) out({ event: "input", taken: true });
+for await (const line of console) {
+    const c = JSON.parse(line);
+    if (c.op === "describe") out({ id: c.id, tree: { role: "AXApplication" }, pid: 1, process: "SpringBoard", stillMs: 1000 });
+    else out({ id: c.id, ok: true, ...(["touch", "button", "keys"].includes(c.op) && taken() ? { taken: true } : {}) });
+}
+`,
+        );
+        chmodSync(bin, 0o755);
+        rmSync(TAKEN, { force: true });
+        ran2.length = 0;
+        simctl.setRunner(async (args) => {
+            ran2.push(args);
+            if (args.join(" ") === "xcrun simctl list devices -j") return { code: 0, stdout: DEVICES.replace('"Shutdown"', '"Booted"'), stderr: "" };
+            return { code: 0, stdout: "", stderr: "" };
+        });
+    });
+
+    test("keys are an error that says to restart it; touches and buttons go, and their results say so", async () => {
+        const s = new SimulatorSession({ settings: () => ({}) });
+        expect(await s.tap({ x: 100, y: 200 })).toBe("Tapped 100,200.");
+        expect(await s.type("hi")).toBe('Typed "hi".');
+        expect(s.state().inputTaken).toBeUndefined();
+        writeFileSync(TAKEN, "");
+        expect(await s.tap({ x: 100, y: 200 })).toMatch(/^Tapped 100,200\. Another tool has taken iPhone 17's input \(one using Xcode's device input service, such as Claude's desktop app\).*if nothing changed, restart it with SimulatorControl action=shutdown, then action=boot\.$/);
+        expect(await s.button("home")).toMatch(/^Pressed the Home button\. Another tool has taken/);
+        await expect(s.type("hi")).rejects.toThrow(/^Keys can't reach iPhone 17: another tool has taken its input .* Restart it with SimulatorControl action=shutdown, then action=boot\.$/);
+        await expect(s.press("Enter")).rejects.toThrow(/^Keys can't reach iPhone 17/);
+        // The pane shows it.
+        expect(s.state()).toMatchObject({ status: "ready", inputTaken: true });
+        s.dispose();
+    });
+
+    test("the pane's restart shuts it down and starts it again, with a helper that has its input", async () => {
+        writeFileSync(TAKEN, "");
+        const s = new SimulatorSession({ settings: () => ({}) });
+        await s.command("boot");
+        await Bun.sleep(50);
+        expect(s.state().inputTaken).toBe(true);
+        rmSync(TAKEN);
+        expect(await s.command("restart")).not.toHaveProperty("inputTaken");
+        const steps = ran2.map((a) => a.slice(0, 3).join(" ")).filter((a) => /shutdown|bootstatus/.test(a));
+        expect(steps).toEqual(["xcrun simctl shutdown", "xcrun simctl bootstatus"]);
+        expect(await s.tap({ x: 10, y: 10 })).toBe("Tapped 10,10.");
+        s.dispose();
     });
 });
 

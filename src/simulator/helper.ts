@@ -72,6 +72,8 @@ export interface ScreenSize {
 export interface HelperEvents {
     frame(jpeg: Uint8Array, size: ScreenSize): void;
     size(size: ScreenSize): void;
+    /** Another tool has taken the device's input (see helper.swift): it doesn't come back until the device restarts. */
+    taken(): void;
     exit(error: string | undefined): void;
 }
 
@@ -96,6 +98,8 @@ export class SimHelper {
     private exited = false;
     private lastError?: string;
     size?: ScreenSize;
+    /** Another tool has the device's input: what's sent to it goes nowhere. */
+    inputTaken = false;
     readonly ready: Promise<ScreenSize>;
 
     private constructor(
@@ -161,6 +165,8 @@ export class SimHelper {
                     this.size = { width: Number(msg.width), height: Number(msg.height), scale: Number(msg.scale) || 1 };
                     if (msg.event === "ready") ready(this.size);
                     else this.events.size?.(this.size);
+                } else if (msg.event === "input") {
+                    if (msg.taken === true) this.taken();
                 } else if (msg.event === "error") {
                     this.lastError = String(msg.message ?? "The simulator helper failed.");
                 } else if (typeof msg.id === "number") this.settle(msg.id, msg);
@@ -173,8 +179,15 @@ export class SimHelper {
         if (!p) return;
         this.pending.delete(id);
         clearTimeout(p.timer);
+        if (reply.taken === true) this.taken();
         if (typeof reply.error === "string") p.reject(new SimulatorError(reply.error));
         else p.resolve(reply);
+    }
+
+    private taken() {
+        if (this.inputTaken) return;
+        this.inputTaken = true;
+        this.events.taken?.();
     }
 
     /** Sends a command and waits for its answer. */

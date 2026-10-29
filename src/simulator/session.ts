@@ -4,7 +4,7 @@
 // as the tools do. A device is shared: sessions that use the same one share its helper, which runs while any does.
 
 import { simulatorEnabled, type Settings } from "../config/settings";
-import type { SimulatorDevice, SimulatorInput, SimulatorState } from "../server/protocol";
+import type { SimulatorCommand, SimulatorDevice, SimulatorInput, SimulatorState } from "../server/protocol";
 import { FrameFeed } from "../browser/feed";
 import { helperBinary, SimHelper, type ScreenSize } from "./helper";
 import { isModifier, strokesForPress, strokesForText, usageOfCode, type KeyStroke } from "./keys";
@@ -40,6 +40,13 @@ const SUBMIT_PAUSE_MS = 1000;
 
 /** How long a helper nothing uses (no pane showing its device, no agent call) keeps running. */
 const IDLE_MS = 60_000;
+
+/**
+ * Another tool has taken the device's input (helper.swift says how). Keys then go nowhere, so sending them is an
+ * error. Touches and buttons are taken only once the tool attaches, so they're still sent, and this is said after.
+ */
+const TAKEN = "(one using Xcode's device input service, such as Claude's desktop app), and the simulator doesn't give it back until the device restarts";
+const RESTART = "SimulatorControl action=shutdown, then action=boot";
 
 /** The text Vision read from the screen's picture; `loading` while its model loads, `error` when it couldn't read. */
 interface TextRead {
@@ -120,6 +127,7 @@ async function helperFor(udid: string, session: SimulatorSession): Promise<SimHe
                     for (const s of entry.sessions) s.frame({ data, width: size.width, height: size.height });
                 },
                 size: () => announceAll(),
+                taken: () => announceAll(),
                 exit: (error) => {
                     if (entry.helper === helper) entry.helper = undefined;
                     if (error) entry.error = error;
@@ -247,7 +255,8 @@ export class SimulatorSession {
         const a = attached.get(device.udid);
         if (a?.error && !a.helper?.running && !a.starting) return { status: "error", error: a.error, ...base };
         // Running: its screen's size comes once Cavvy is attached to it (a moment after it's watched or used).
-        return { status: "ready", ...(a?.helper?.running && a.helper.size ? { screen: a.helper.size } : {}), ...base };
+        const helper = a?.helper?.running ? a.helper : undefined;
+        return { status: "ready", ...(helper?.size ? { screen: helper.size } : {}), ...(helper?.inputTaken ? { inputTaken: true } : {}), ...base };
     }
 
     /** The session's device: the one it chose, else a booted one, else the first that can start (the pane offers it). */
@@ -377,8 +386,8 @@ export class SimulatorSession {
         }
     }
 
-    /** The device menu: use a device, start the session's, or shut it down. */
-    async command(command: "select" | "boot" | "shutdown", udid?: string): Promise<SimulatorState> {
+    /** The device menu: use a device, start the session's, shut it down, or restart it (to take its input back). */
+    async command(command: SimulatorCommand, udid?: string): Promise<SimulatorState> {
         if (!this.enabled) throw new SimulatorError(TURNED_OFF);
         await refreshDevices(true);
         if (udid !== undefined) this.select(udid);
@@ -388,7 +397,10 @@ export class SimulatorSession {
             this.select(d.udid);
             await this.bootDevice(d);
         } else if (command === "shutdown" && d) await this.shutdownDevice(d);
-        else if (command === "select" && d?.state === "booted" && this.watched) void this.adopt(d.udid).catch(() => undefined);
+        else if (command === "restart" && d) {
+            if (d.state === "booted") await this.shutdownDevice(d);
+            await this.bootDevice({ ...d, state: "shutdown" });
+        } else if (command === "select" && d?.state === "booted" && this.watched) void this.adopt(d.udid).catch(() => undefined);
         return this.state();
     }
 
@@ -723,7 +735,7 @@ export class SimulatorSession {
             await helper.call({ op: "touch", phase: "up", x: p.x, y: p.y });
             if (i + 1 < (o.count ?? 1)) await sleep(90);
         }
-        return `${o.holdMs ? "Long-pressed" : o.count === 2 ? "Double-tapped" : "Tapped"} ${p.name}.`;
+        return `${o.holdMs ? "Long-pressed" : o.count === 2 ? "Double-tapped" : "Tapped"} ${p.name}.${this.takenNote(helper)}`;
     }
 
     /**
@@ -758,7 +770,7 @@ export class SimulatorSession {
         }
         await helper.call({ op: "touch", phase: "up", x: end.x, y: end.y });
         const pt = (p: { x: number; y: number }) => `${Math.round(p.x * screen.width)},${Math.round(p.y * screen.height)}`;
-        return `Swiped from ${pt(start)} to ${pt(end)}.`;
+        return `Swiped from ${pt(start)} to ${pt(end)}.${this.takenNote(helper)}`;
     }
 
     async type(text: string, o: { ref?: string; submit?: boolean } = {}): Promise<string> {
@@ -773,7 +785,7 @@ export class SimulatorSession {
             // Enter right behind the text overtakes what the app hasn't taken yet (Safari searched for "examp" for
             // "example.com"). The screen being still says nothing here (a field's cursor blinks): a pause does.
             await sleep(SUBMIT_PAUSE_MS);
-            await helper.call({ op: "keys", keys: strokesForPress("Enter") });
+            await this.keys(helper, strokesForPress("Enter"));
         }
         return `${pasted ? "Pasted" : "Typed"} ${JSON.stringify(text.length > 60 ? `${text.slice(0, 60)}…` : text)}${o.submit ? " and pressed Enter" : ""}.`;
     }
@@ -786,12 +798,23 @@ export class SimulatorSession {
         const strokes = simctl.typesAsUS(await simctl.keyboardOf(this.udid!)) ? strokesForText(text) : undefined;
         if (strokes) {
             // In batches, so a long text doesn't hold the helper's queue for its whole length.
-            for (let i = 0; i < strokes.length; i += 64) await helper.call({ op: "keys", keys: strokes.slice(i, i + 64), ...(gapMs ? { gapMs } : {}) });
+            for (let i = 0; i < strokes.length; i += 64) await this.keys(helper, strokes.slice(i, i + 64), gapMs);
             return false;
         }
         await simctl.pasteboard(this.udid!, text);
-        await helper.call({ op: "keys", keys: strokesForPress("Meta+V") });
+        await this.keys(helper, strokesForPress("Meta+V"));
         return true;
+    }
+
+    /** Sends keys (`gapMs` apart). When another tool has the device's input they went nowhere: that's an error. */
+    private async keys(helper: SimHelper, keys: KeyStroke[], gapMs = 0): Promise<void> {
+        const r = await helper.call({ op: "keys", keys, ...(gapMs ? { gapMs } : {}) });
+        if (r.taken === true) throw new SimulatorError(`Keys can't reach ${this.device()?.name ?? "the simulator"}: another tool has taken its input ${TAKEN}. Restart it with ${RESTART}.`);
+    }
+
+    /** What the agent is told after a touch or a button when another tool has the device's input. */
+    private takenNote(helper: SimHelper): string {
+        return helper.inputTaken ? ` Another tool has taken ${this.device()?.name ?? "the simulator"}'s input ${TAKEN}: if nothing changed, restart it with ${RESTART}.` : "";
     }
 
     async press(key: string, modifiers: string[] = []): Promise<string> {
@@ -803,7 +826,7 @@ export class SimulatorSession {
             throw new SimulatorError((e as Error).message);
         }
         this.agentActs();
-        await helper.call({ op: "keys", keys: strokes });
+        await this.keys(helper, strokes);
         return `Pressed ${[...modifiers, key].join("+")}.`;
     }
 
@@ -814,7 +837,7 @@ export class SimulatorSession {
         await helper.call({ op: "button", name });
         // The home screen shows a second or more before the tree's app is SpringBoard: until then it reads as the app.
         if (typeof before?.pid === "number" && before.process !== "SpringBoard") await this.untilFront(helper, (r) => r.pid !== before.pid, 4000, signal);
-        return `Pressed the ${name === "home" ? "Home" : "side (lock)"} button.`;
+        return `Pressed the ${name === "home" ? "Home" : "side (lock)"} button.${this.takenNote(helper)}`;
     }
 
     /** Waits until text shows in the outline (a label or value containing it), or for the screen to be still. */

@@ -8,7 +8,8 @@
 // Commands arrive on stdin, one JSON object per line, each with an "id". Messages go out on stdout, each a type byte
 // ("J" JSON, "F" a JPEG frame of the stream, "S" a PNG screenshot answering a command), a 4-byte big-endian length,
 // then the payload. Every command is answered with {"id", "ok"} or {"id", "error"} ("S" carries its id in the JSON
-// before it). Events: {"event":"ready"|"size", "width", "height", "scale"} in device pixels; {"event":"error"}.
+// before it); input, with "taken" when another tool has the device's input. Events: {"event":"ready"|"size", "width",
+// "height", "scale"} in device pixels; {"event":"input", "taken": true}; {"event":"error"}.
 
 import AppKit
 import CoreImage
@@ -180,6 +181,31 @@ func keys(_ list: [[Any]], gap: Double = 0) throws {
         try send(keyMessage(usage, down ? 1 : 2))
         if gap > 0 && !down { usleep(UInt32(gap * 1_000_000)) }
     }
+}
+
+// Xcode's device input service in the simulator (dtuhidd) takes the device's input for a tool that uses it, as
+// Claude's desktop app does: the simulator drops its hardware keyboard when the service starts, and its touch screen
+// and buttons when the tool attaches. They don't come back until the device restarts, and input sent to them still
+// goes, without an error. The service says it has them in a notification state, which CoreSimulator reads.
+typealias GetStateFn = @convention(c) (AnyObject, Selector, UnsafeMutablePointer<UInt64>, NSString, UnsafeMutablePointer<NSError?>?) -> Bool
+let getState: (GetStateFn, Selector)? = device.responds(to: NSSelectorFromString("darwinNotificationGetState:name:error:")) ? imp(device, "darwinNotificationGetState:name:error:", as: GetStateFn.self) : nil
+let takenLock = NSLock()
+var taken = false
+
+/// Whether another tool has taken the device's input since the helper started (once taken, it stays so).
+func inputTaken() -> Bool {
+    takenLock.withLock {
+        if !taken, let (fn, sel) = getState {
+            var value: UInt64 = 0
+            taken = fn(device, sel, &value, "com.apple.coredevice.dtuhidd.active" as NSString, nil) && value != 0
+        }
+        return taken
+    }
+}
+
+/// An input command's answer, which says when the input went nowhere.
+func inputAnswer() -> [String: Any] {
+    inputTaken() ? ["ok": true, "taken": true] : ["ok": true]
 }
 
 // MARK: - Screen
@@ -545,10 +571,13 @@ func handle(_ c: [String: Any]) throws -> [String: Any] {
     case "touch":
         let phase: UInt = switch c["phase"] as? String { case "down": touchDown; case "up": touchUp; default: touchMove }
         try touch(phase, try number(c, "x"), try number(c, "y"))
+        return inputAnswer()
     case "button":
         try button(c["name"] as? String ?? "", c["phase"] as? String)
+        return inputAnswer()
     case "keys":
         try keys(c["keys"] as? [[Any]] ?? [], gap: ((c["gapMs"] as? NSNumber)?.doubleValue ?? 0) / 1000)
+        return inputAnswer()
     case "stream":
         let on = c["on"] as? Bool ?? false
         screenQueue.sync {
@@ -596,12 +625,18 @@ if let s = surface() { noteSize(s) }
 warmText()
 
 // A device that shuts down (elsewhere, or to restart) takes its screen and input with it, and they don't come back
-// when it starts again: the helper ends with it, and Cavvy starts another for the device's next start.
+// when it starts again: the helper ends with it, and Cavvy starts another for the device's next start. Its input
+// taken by another tool is said once, as it happens.
 let shutdownStates: Set<Int> = [1, 4]  // SimDeviceState: shut down, shutting down
 let stateWatch = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+var takenSaid = false
 stateWatch.schedule(deadline: .now() + 1, repeating: 1)
 stateWatch.setEventHandler {
     if let state = (device.value(forKey: "state") as? NSNumber)?.intValue, shutdownStates.contains(state) { exit(0) }
+    if !takenSaid && inputTaken() {
+        takenSaid = true
+        emitJSON(["event": "input", "taken": true])
+    }
 }
 stateWatch.resume()
 
