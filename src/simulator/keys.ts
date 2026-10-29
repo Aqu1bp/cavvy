@@ -53,6 +53,11 @@ export function usageOfCode(code: string): number | undefined {
     return CODES[code];
 }
 
+/** Control, Shift, Option or Command, left or right: alone, it types nothing. */
+export function isModifier(usage: number): boolean {
+    return usage >= 0xe0 && usage <= 0xe7;
+}
+
 /** Characters and the key that types them, unshifted then shifted, as on a US keyboard. */
 const UNSHIFTED = "`1234567890-=[]\\;',./";
 const SHIFTED = "~!@#$%^&*()_+{}|:\"<>?";

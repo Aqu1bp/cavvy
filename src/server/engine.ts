@@ -2760,7 +2760,7 @@ export function parseSimulatorInput(v: unknown): SimulatorInput | undefined {
         case "key":
             return typeof i.code === "string" && i.code.length <= 32 && typeof i.down === "boolean" ? { kind: "key", code: i.code, down: i.down } : undefined;
         case "button":
-            return i.name === "home" || i.name === "lock" || i.name === "siri" ? { kind: "button", name: i.name } : undefined;
+            return i.name === "home" || i.name === "lock" ? { kind: "button", name: i.name } : undefined;
         case "text":
             return typeof i.text === "string" && i.text.length > 0 && i.text.length <= 10_000 ? { kind: "text", text: i.text } : undefined;
         default:

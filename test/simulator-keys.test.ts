@@ -1,7 +1,7 @@
 // Keys for the simulator's hardware keyboard (src/simulator/keys.ts): text typed key by key, presses with modifiers,
 // and the GUI's keys by KeyboardEvent.code.
 import { describe, expect, test } from "bun:test";
-import { keyOfChar, strokesForPress, strokesForText, usageOfCode } from "../src/simulator/keys";
+import { isModifier, keyOfChar, strokesForPress, strokesForText, usageOfCode } from "../src/simulator/keys";
 
 const SHIFT = 0xe1;
 
@@ -46,5 +46,10 @@ describe("pressing a key", () => {
         expect(usageOfCode("ShiftLeft")).toBe(SHIFT);
         expect(usageOfCode("F12")).toBe(0x45);
         expect(usageOfCode("MediaPlayPause")).toBeUndefined();
+    });
+
+    test("Control, Shift, Option and Command, left and right, are modifiers; other keys aren't", () => {
+        for (const code of ["ControlLeft", "ShiftLeft", "AltLeft", "MetaLeft", "ControlRight", "ShiftRight", "AltRight", "MetaRight"]) expect(isModifier(usageOfCode(code)!)).toBe(true);
+        for (const code of ["KeyA", "Enter", "CapsLock", "Tab", "F12"]) expect(isModifier(usageOfCode(code)!)).toBe(false);
     });
 });

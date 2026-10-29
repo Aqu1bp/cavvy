@@ -1566,7 +1566,7 @@ export interface SimulatorState {
 export type SimulatorInput =
     | { kind: "touch"; phase: "down" | "move" | "up"; x: number; y: number }
     | { kind: "key"; code: string; down: boolean }
-    | { kind: "button"; name: "home" | "lock" | "siri" }
+    | { kind: "button"; name: "home" | "lock" }
     /** Text as it is (a paste, an input method's result), not keys. */
     | { kind: "text"; text: string };
 

@@ -2,6 +2,7 @@
 // user's own Xcode, which simulators need anyway). It talks to the simulator through Xcode's frameworks, as Xcode's
 // Simulator app does, so no Simulator window has to be open: touches and keys go in as the device's own HID events,
 // the screen comes out of its framebuffer, and the accessibility tree out of the device's accessibility server.
+// Text the tree doesn't have (a web page's, which lives in another process) is read from the screen with Vision.
 //
 // Usage: cavvy-sim <developer dir> <device UDID>
 // Commands arrive on stdin, one JSON object per line, each with an "id". Messages go out on stdout, each a type byte
@@ -14,6 +15,7 @@ import CoreImage
 import Foundation
 import IOSurface
 import ObjectiveC
+import Vision
 
 // MARK: - Output
 
@@ -161,7 +163,8 @@ func scheduleMove() {
     }
 }
 
-let buttons: [String: UInt32] = ["home": 0x0, "lock": 0x1, "side": 0xbb8, "siri": 0x400002, "apple_pay": 0x1f4]
+// Siri's (0x400002) is left out: on Xcode 27 pressing it ends SpringBoard.
+let buttons: [String: UInt32] = ["home": 0x0, "lock": 0x1]
 
 func button(_ name: String, _ phase: String?) throws {
     guard let source = buttons[name] else { throw HelperError("Unknown button \(name)") }
@@ -170,11 +173,12 @@ func button(_ name: String, _ phase: String?) throws {
     if phase != "down" { try send(buttonMessage(source, 2, buttonTarget)) }
 }
 
-/// HID keyboard usages, each pressed (down) or released, in order.
-func keys(_ list: [[Any]]) throws {
+/// HID keyboard usages, each pressed (down) or released, in order, with `gap` seconds after each release.
+func keys(_ list: [[Any]], gap: Double = 0) throws {
     for k in list {
         guard k.count == 2, let usage = (k[0] as? NSNumber)?.uint32Value, let down = k[1] as? Bool else { throw HelperError("Bad key") }
         try send(keyMessage(usage, down ? 1 : 2))
+        if gap > 0 && !down { usleep(UInt32(gap * 1_000_000)) }
     }
 }
 
@@ -210,23 +214,29 @@ func surface() -> IOSurface? {
     screen.perform(NSSelectorFromString("framebufferSurface"))?.takeUnretainedValue() as? IOSurface
 }
 
-/// The screen as an image, scaled so its longer side is at most `maxSide` pixels (0: as it is).
-func image(_ s: IOSurface, maxSide: Int) -> CIImage {
-    var img = CIImage(ioSurface: s)
+/// The screen as an image, scaled so its longer side is at most `maxSide` pixels (0: as it is). `sharp`: scaled with
+/// Lanczos, which keeps small text crisp, rather than the quicker linear scaling pictures of a moving screen get.
+func image(_ s: IOSurface, maxSide: Int, sharp: Bool = false) -> CIImage {
+    let img = CIImage(ioSurface: s)
     let longest = max(s.width, s.height)
-    if maxSide > 0 && longest > maxSide {
-        let f = Double(maxSide) / Double(longest)
-        img = img.transformed(by: CGAffineTransform(scaleX: f, y: f))
+    guard maxSide > 0 && longest > maxSide else { return img }
+    let f = Double(maxSide) / Double(longest)
+    let size = CGRect(x: 0, y: 0, width: (Double(s.width) * f).rounded(.down), height: (Double(s.height) * f).rounded(.down))
+    if sharp, let lanczos = CIFilter(name: "CILanczosScaleTransform") {
+        lanczos.setValue(img, forKey: kCIInputImageKey)
+        lanczos.setValue(f, forKey: kCIInputScaleKey)
+        lanczos.setValue(1.0, forKey: kCIInputAspectRatioKey)
+        if let scaled = lanczos.outputImage { return scaled.cropped(to: size) }
     }
-    return img
+    return img.transformed(by: CGAffineTransform(scaleX: f, y: f)).cropped(to: size)
 }
 
-func jpeg(_ s: IOSurface, quality: Double, maxSide: Int) -> Data? {
-    ciContext.jpegRepresentation(of: image(s, maxSide: maxSide), colorSpace: sRGB, options: [CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): quality])
+func jpeg(_ s: IOSurface, quality: Double, maxSide: Int, sharp: Bool = false) -> Data? {
+    ciContext.jpegRepresentation(of: image(s, maxSide: maxSide, sharp: sharp), colorSpace: sRGB, options: [CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): quality])
 }
 
 func png(_ s: IOSurface, maxSide: Int) -> Data? {
-    ciContext.pngRepresentation(of: image(s, maxSide: maxSide), format: .RGBA8, colorSpace: sRGB)
+    ciContext.pngRepresentation(of: image(s, maxSide: maxSide, sharp: true), format: .RGBA8, colorSpace: sRGB)
 }
 
 var lastSize = (0, 0)
@@ -240,20 +250,27 @@ func noteSize(_ s: IOSurface) {
     emitJSON(["event": first ? "ready" : "size", "width": size.0, "height": size.1, "scale": scale])
 }
 
-// The stream: a frame when the screen changes, at most `fps` a second, only the newest when Cavvy reads slower.
+// The stream: a frame when the screen changes, at most `fps` a second, only the newest when Cavvy reads slower. A
+// change after `sharpAfter` without one (a cursor's blink, a tap) goes sharp; changes closer together (scrolling, an
+// animation) go quick, and once they stop for `sharpAfter` the screen goes once more, sharp: quick pictures while
+// it moves, crisp ones to read, and no picture going soft then sharp for a lone change.
 var streaming = false
 var fps = 30.0
 var quality = 0.7
+var sharpQuality = 0.92
+let sharpAfter = 0.15
 var maxSide = 1600
 var dirty = false
 var encoding = false
 var lastFrame = Date.distantPast
-/// When the screen last changed, for "settle".
+/// When the screen last changed, for "settle", and how many times: a sharp picture is for the screen it was made of.
 var lastDamage = Date()
+var damage = 0
 
 func frameArrived() {
     screenQueue.async {
         lastDamage = Date()
+        damage += 1
         dirty = true
         pump()
     }
@@ -287,10 +304,28 @@ func pump() {
     guard let s = surface() else { return }
     dirty = false
     encoding = true
+    let sharp = Date().timeIntervalSince(lastFrame) >= sharpAfter
     lastFrame = Date()
     noteSize(s)
-    let data = jpeg(s, quality: quality, maxSide: maxSide)
+    let data = jpeg(s, quality: sharp ? sharpQuality : quality, maxSide: maxSide, sharp: sharp)
+    let shown = damage
     DispatchQueue.global(qos: .userInteractive).async {
+        if let data { emit(UInt8(ascii: "F"), data) }
+        screenQueue.async {
+            encoding = false
+            pump()
+            if !sharp { screenQueue.asyncAfter(deadline: .now() + sharpAfter) { sharpen(shown) } }
+        }
+    }
+}
+
+/// On screenQueue: the still screen's picture again, sharp, unless it has changed since picture `shown` was made.
+func sharpen(_ shown: Int) {
+    guard streaming, damage == shown, !dirty, !encoding, let s = surface() else { return }
+    encoding = true
+    let data = jpeg(s, quality: sharpQuality, maxSide: maxSide, sharp: true)
+    DispatchQueue.global(qos: .userInitiated).async {
+        // A change while it was made shows next, and gets its own sharp picture.
         if let data { emit(UInt8(ascii: "F"), data) }
         screenQueue.async {
             encoding = false
@@ -401,7 +436,48 @@ func describeScreen() throws -> [String: Any] {
     let (elementOf, elSel) = imp(translator, "macPlatformElementFromTranslation:", as: Element.self)
     guard let root = elementOf(translator, elSel, app) as? NSObject else { throw HelperError("Can't read the screen") }
     var budget = 3000
-    return describe(root, depth: 0, budget: &budget) ?? [:]
+    var reply: [String: Any] = ["tree": describe(root, depth: 0, budget: &budget) ?? [:]]
+    // How often the screen has changed, and how long it has been still: whether what was done has shown yet.
+    let (changes, still) = screenQueue.sync { (damage, Date().timeIntervalSince(lastDamage)) }
+    reply["changes"] = changes
+    reply["stillMs"] = Int(still * 1000)
+    // Which app is in front (SpringBoard on the home screen): its process runs on this Mac, so its pid is the one
+    // `simctl launch` gives.
+    if let pid = (app.value(forKey: "pid") as? NSNumber)?.int32Value, pid > 0 {
+        reply["pid"] = pid
+        var path = [CChar](repeating: 0, count: 4096)
+        if proc_pidpath(pid, &path, UInt32(path.count)) > 0 { reply["process"] = URL(fileURLWithPath: String(cString: path)).lastPathComponent }
+    }
+    return reply
+}
+
+// MARK: - Text in the picture
+
+/// Vision's text recognition loads its model the first time (seconds, up to half a minute on a Mac that has never
+/// used it), so it's loaded in the background at the start; until then, reading the screen's text says so at once.
+let textQueue = DispatchQueue(label: "cavvy-sim.text", qos: .userInitiated)
+let textLock = NSLock()
+var textReady = false
+
+func recognize(_ s: IOSurface) throws -> [[String: Any]] {
+    let request = VNRecognizeTextRequest()
+    request.recognitionLevel = .accurate
+    request.usesLanguageCorrection = true
+    try VNImageRequestHandler(ciImage: CIImage(ioSurface: s), options: [:]).perform([request])
+    let w = Double(s.width) / scale, h = Double(s.height) / scale
+    return (request.results ?? []).compactMap { o in
+        guard let c = o.topCandidates(1).first else { return nil }
+        // Vision's box is a fraction of the picture from its bottom left; the tree's frames are points from the top left.
+        let b = o.boundingBox
+        return ["text": c.string, "confidence": Double(c.confidence), "frame": [b.minX * w, (1 - b.maxY) * h, b.width * w, b.height * h].map { ($0 * 10).rounded() / 10 }]
+    }
+}
+
+func warmText() {
+    DispatchQueue.global(qos: .utility).async {
+        if let s = surface() { _ = try? recognize(s) }
+        textLock.withLock { textReady = true }
+    }
 }
 
 // MARK: - Commands
@@ -428,7 +504,7 @@ func handle(_ c: [String: Any]) throws -> [String: Any] {
     case "button":
         try button(c["name"] as? String ?? "", c["phase"] as? String)
     case "keys":
-        try keys(c["keys"] as? [[Any]] ?? [])
+        try keys(c["keys"] as? [[Any]] ?? [], gap: ((c["gapMs"] as? NSNumber)?.doubleValue ?? 0) / 1000)
     case "stream":
         let on = c["on"] as? Bool ?? false
         screenQueue.sync {
@@ -452,8 +528,11 @@ func handle(_ c: [String: Any]) throws -> [String: Any] {
         emit(UInt8(ascii: "S"), Data(bytes: &length, count: 4) + header + data)
         return [:]
     case "describe":
-        let tree = try describeScreen()
-        return ["tree": tree]
+        return try describeScreen()
+    case "text":
+        guard textLock.withLock({ textReady }) else { return ["lines": [], "loading": true] }
+        guard let s = surface() else { throw HelperError("Can't read the screen") }
+        return ["lines": try recognize(s)]
     case "settle":
         let still = settle(quiet: ((c["quietMs"] as? NSNumber)?.doubleValue ?? 300) / 1000, timeout: ((c["timeoutMs"] as? NSNumber)?.doubleValue ?? 3000) / 1000)
         return ["settled": still]
@@ -468,12 +547,15 @@ func handle(_ c: [String: Any]) throws -> [String: Any] {
 
 registerScreen()
 if let s = surface() { noteSize(s) }
+warmText()
 
 // Input runs in order on its queue, reading on its own; stdin ends when Cavvy goes, and so does the helper.
 DispatchQueue.global().async {
     while let line = readLine(strippingNewline: true) {
         guard let data = line.data(using: .utf8), let c = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { continue }
-        (readOps.contains(c["op"] as? String ?? "") ? readQueue : inputQueue).async {
+        // Reading text runs beside reading the tree: a snapshot asks for both at once.
+        let op = c["op"] as? String ?? ""
+        (op == "text" ? textQueue : readOps.contains(op) ? readQueue : inputQueue).async {
             var reply: [String: Any]
             do {
                 reply = try handle(c)

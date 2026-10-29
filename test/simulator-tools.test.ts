@@ -69,7 +69,7 @@ describe("what the tools accept", () => {
         expect(v({ action: "swipe", direction: "sideways" })).toMatch(/Unknown direction/);
         expect(v({ action: "swipe", toX: 5, toY: 6 })).toBeUndefined();
         expect(v({ action: "type" })).toMatch(/needs text/);
-        expect(v({ action: "button", button: "volume" })).toMatch(/home, lock or siri/);
+        expect(v({ action: "button", button: "volume" })).toMatch(/home or lock/);
         expect(v({ action: "wait" })).toBeUndefined();
     });
 });

@@ -1,7 +1,10 @@
 // What simctl says (src/simulator/simctl.ts): the devices that can run, in the order the pane and the agent list them,
 // and its errors without their boilerplate.
 import { expect, test } from "bun:test";
-import { parseDevices, runtimeName, simctlError } from "../src/simulator/simctl";
+import { afterEach } from "bun:test";
+import { parseDevices, pasteboard, runtimeName, setRunner, simctlError } from "../src/simulator/simctl";
+
+afterEach(() => setRunner(undefined));
 
 test("runtimes are named as iOS versions; other platforms aren't offered", () => {
     expect(runtimeName("com.apple.CoreSimulator.SimRuntime.iOS-27-0")).toBe("iOS 27.0");
@@ -31,4 +34,14 @@ test("booted devices come first, then the newest iOS, iPhones before iPads; unav
 test("an error is the line that says what went wrong", () => {
     expect(simctlError("An error was encountered processing the command (domain=com.apple.CoreSimulator.SimError, code=405):\nUnable to shutdown device in current state: Shutdown\n")).toBe("Unable to shutdown device in current state: Shutdown");
     expect(simctlError("error: Invalid device: nope\n")).toBe("Invalid device: nope");
+});
+
+test("text goes on the pasteboard in a UTF-8 locale, whatever the app's own (pbcopy reads by the locale)", async () => {
+    const calls: { args: string[]; input?: string; env?: Record<string, string> }[] = [];
+    setRunner(async (args, o) => {
+        calls.push({ args, input: o?.input, env: o?.env });
+        return { code: 0, stdout: "", stderr: "" };
+    });
+    await pasteboard("UDID", "café 日本 ✓");
+    expect(calls).toEqual([{ args: ["xcrun", "simctl", "pbcopy", "UDID"], input: "café 日本 ✓", env: { LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" } }]);
 });

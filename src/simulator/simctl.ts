@@ -58,7 +58,7 @@ export function setRunner(r: Runner | undefined) {
     availability = undefined;
 }
 
-async function simctl(args: string[], o?: { timeoutMs?: number; signal?: AbortSignal; input?: string }): Promise<string> {
+async function simctl(args: string[], o?: { timeoutMs?: number; signal?: AbortSignal; input?: string; env?: Record<string, string> }): Promise<string> {
     const r = await runner(["xcrun", "simctl", ...args], o);
     if (r.code !== 0) throw new SimulatorError(simctlError(r.stderr || r.stdout) || `simctl ${args[0]} failed`);
     return r.stdout;
@@ -231,7 +231,9 @@ export async function restartBridge(udid: string): Promise<void> {
 
 /** Puts text on the device's pasteboard (to paste what the keyboard can't type). */
 export async function pasteboard(udid: string, text: string, signal?: AbortSignal): Promise<void> {
-    await simctl(["pbcopy", udid], { signal, input: text });
+    // pbcopy reads its input in the locale's encoding: without a UTF-8 one (an app opened from Finder has no LANG,
+    // and an inherited LC_ALL=C overrides LANG), "café" arrives as "caf√©".
+    await simctl(["pbcopy", udid], { signal, input: text, env: { LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" } });
 }
 
 /** The bundle identifier in a built .app's Info.plist. */

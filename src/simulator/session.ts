@@ -7,8 +7,8 @@ import { simulatorEnabled, type Settings } from "../config/settings";
 import type { SimulatorDevice, SimulatorInput, SimulatorState } from "../server/protocol";
 import { FrameFeed } from "../browser/feed";
 import { helperBinary, SimHelper, type ScreenSize } from "./helper";
-import { strokesForPress, strokesForText, usageOfCode, type KeyStroke } from "./keys";
-import { outline, type AxNode, type RefTarget } from "./outline";
+import { isModifier, strokesForPress, strokesForText, usageOfCode, type KeyStroke } from "./keys";
+import { outline, type AxNode, type Outline, type RefTarget, type SeenLine } from "./outline";
 import * as simctl from "./simctl";
 import { SimulatorError } from "./simctl";
 
@@ -30,6 +30,13 @@ const TURNED_OFF = "The simulator is turned off: simulator.enabled is false in t
  */
 const STREAM = { fps: 60, quality: 0.72 };
 const SIDE = { min: 320, max: 2000, unknown: 1400 };
+
+/**
+ * Typing to submit: keys at about the pace iOS takes them (one every 10 ms), so none still wait when Enter comes, and
+ * then a pause for the app to catch up (Safari's suggestions for what was typed can take most of a second).
+ */
+const KEY_GAP_MS = 12;
+const SUBMIT_PAUSE_MS = 1000;
 
 /** How long a helper nothing uses (no pane showing its device, no agent call) keeps running. */
 const IDLE_MS = 60_000;
@@ -331,12 +338,12 @@ export class SimulatorSession {
         if (this.watched) this.feed.push(f);
     }
 
-    /** What the person did in the pane. */
+    /** What the person did in the pane. What changes the device counts as their use of it (`touched`). */
     async input(input: SimulatorInput): Promise<void> {
         const helper = await this.running();
-        this.touched = true;
         switch (input.kind) {
             case "touch":
+                this.touched = true;
                 this.finger = input.phase === "up" ? undefined : { x: input.x, y: input.y };
                 // A move goes unanswered so the next follows at once; a touch going down or up is waited for, in order.
                 if (input.phase === "move") helper.send({ op: "touch", phase: "move", x: input.x, y: input.y });
@@ -345,15 +352,19 @@ export class SimulatorSession {
             case "key": {
                 const usage = usageOfCode(input.code);
                 if (usage === undefined) break;
+                // A modifier alone (⌘ on the way to ⌘Tab, with the pane focused) or a key let go changes nothing.
+                if (input.down && !isModifier(usage)) this.touched = true;
                 if (input.down) this.keysHeld.add(usage);
                 else this.keysHeld.delete(usage);
                 await helper.call({ op: "keys", keys: [[usage, input.down]] });
                 break;
             }
             case "button":
+                this.touched = true;
                 await helper.call({ op: "button", name: input.name });
                 break;
             case "text":
+                this.touched = true;
                 await this.typeText(helper, input.text);
                 break;
         }
@@ -505,10 +516,29 @@ export class SimulatorSession {
         return simctl.bundleIdOf(app);
     }
 
+    /**
+     * Starts an app and waits (at most 10 seconds) until it's in front with something to read, or for 3 seconds
+     * in front with nothing (a game's tree is empty).
+     */
     async launch(bundleId: string, args: string[], signal?: AbortSignal): Promise<number | undefined> {
-        await this.running();
+        const helper = await this.running();
         this.agentActs();
-        return simctl.launch(this.udid!, bundleId, args, signal);
+        const pid = await simctl.launch(this.udid!, bundleId, args, signal);
+        // simctl answers when the app has started, a second or more before it's in front: until then the screen is
+        // the one before, and still.
+        let inFront: number | undefined;
+        if (pid)
+            await this.untilFront(
+                helper,
+                (r) => {
+                    if (r.pid !== pid) return false;
+                    inFront ??= Date.now();
+                    return !!(r.tree as AxNode | undefined)?.children?.length || Date.now() - inFront >= 3000;
+                },
+                10_000,
+                signal,
+            );
+        return pid;
     }
 
     async terminate(bundleId: string, signal?: AbortSignal): Promise<void> {
@@ -517,10 +547,31 @@ export class SimulatorSession {
         await simctl.terminate(this.udid!, bundleId, signal);
     }
 
+    /**
+     * Opens a URL and waits for what it opens. Which app that is isn't known: the wait ends when another app is in
+     * front, or, from an app (which may open the URL itself), when its screen has changed and is still. From the
+     * home screen nothing changes until the app comes, so only another app ends it.
+     */
     async openUrl(url: string, signal?: AbortSignal): Promise<void> {
-        await this.running();
+        const helper = await this.running();
         this.agentActs();
+        const before = await helper.call({ op: "describe" }).catch(() => undefined);
         await simctl.openUrl(this.udid!, url, signal);
+        if (typeof before?.pid !== "number") return;
+        const home = before.process === "SpringBoard";
+        const changes = Number(before.changes);
+        await this.untilFront(helper, (r) => r.pid !== before.pid || (!home && Number(r.changes) > changes && Number(r.stillMs) >= 300), home ? 6000 : 3000, signal);
+    }
+
+    /** Reads which app is in front until `done` says so, at most `timeoutMs`. */
+    private async untilFront(helper: SimHelper, done: (r: Record<string, unknown>) => boolean, timeoutMs: number, signal?: AbortSignal): Promise<void> {
+        const end = Date.now() + timeoutMs;
+        while (Date.now() < end) {
+            if (signal?.aborted) throw new SimulatorError("Interrupted by user.");
+            const r = await helper.call({ op: "describe" }, Math.max(end - Date.now(), 1)).catch(() => undefined);
+            if (r && done(r)) return;
+            await sleep(250);
+        }
     }
 
     /** The screen's size in points, which the agent's coordinates are in. */
@@ -541,14 +592,25 @@ export class SimulatorSession {
     async snapshot(): Promise<string> {
         const helper = await this.running();
         const screen = this.points(helper);
-        const r = await this.describe(helper);
-        const o = outline((r.tree ?? {}) as AxNode, screen);
+        const [r, read] = await Promise.all([this.describe(helper), this.readText(helper)]);
+        const o = outline((r.tree ?? {}) as AxNode, screen, read.lines);
         this.refs = o.refs;
         const d = this.device();
         const head = `${d?.name ?? "Simulator"} (${d?.runtime ?? "iOS"}), ${screen.width}×${screen.height} points.`;
         const note = this.touched ? "\nThe user used the simulator since you last looked: the screen may not be where you left it." : "";
         this.touched = false;
-        return `${head}${note}\n${o.text}`;
+        const loading = read.loading ? "\n(Text in the picture isn't read yet: a screenshot shows a web page's.)" : "";
+        return `${head}${note}\n${o.text}${loading}`;
+    }
+
+    /** The text Vision reads from the screen's picture; none when it can't, and `loading` while its model loads. */
+    private async readText(helper: SimHelper): Promise<{ lines: SeenLine[]; loading?: boolean }> {
+        try {
+            const r = await helper.call({ op: "text" }, 5000);
+            return { lines: Array.isArray(r.lines) ? (r.lines as SeenLine[]) : [], loading: r.loading === true };
+        } catch {
+            return { lines: [] };
+        }
     }
 
     /**
@@ -655,17 +717,22 @@ export class SimulatorSession {
             await sleep(350);
         }
         this.agentActs();
-        const pasted = await this.typeText(helper, text);
-        if (o.submit) await helper.call({ op: "keys", keys: strokesForPress("Enter") });
+        const pasted = await this.typeText(helper, text, o.submit ? KEY_GAP_MS : 0);
+        if (o.submit) {
+            // Enter right behind the text overtakes what the app hasn't taken yet (Safari searched for "examp" for
+            // "example.com"). The screen being still says nothing here (a field's cursor blinks): a pause does.
+            await sleep(SUBMIT_PAUSE_MS);
+            await helper.call({ op: "keys", keys: strokesForPress("Enter") });
+        }
         return `${pasted ? "Pasted" : "Typed"} ${JSON.stringify(text.length > 60 ? `${text.slice(0, 60)}…` : text)}${o.submit ? " and pressed Enter" : ""}.`;
     }
 
-    /** Types text key by key, or pastes it when a US keyboard can't type it. Returns whether it was pasted. */
-    private async typeText(helper: SimHelper, text: string): Promise<boolean> {
+    /** Types text key by key (`gapMs` apart), or pastes it when a US keyboard can't type it. Returns whether it was pasted. */
+    private async typeText(helper: SimHelper, text: string, gapMs = 0): Promise<boolean> {
         const strokes = strokesForText(text);
         if (strokes) {
             // In batches, so a long text doesn't hold the helper's queue for its whole length.
-            for (let i = 0; i < strokes.length; i += 64) await helper.call({ op: "keys", keys: strokes.slice(i, i + 64) });
+            for (let i = 0; i < strokes.length; i += 64) await helper.call({ op: "keys", keys: strokes.slice(i, i + 64), ...(gapMs ? { gapMs } : {}) });
             return false;
         }
         await simctl.pasteboard(this.udid!, text);
@@ -686,11 +753,11 @@ export class SimulatorSession {
         return `Pressed ${[...modifiers, key].join("+")}.`;
     }
 
-    async button(name: "home" | "lock" | "siri"): Promise<string> {
+    async button(name: "home" | "lock"): Promise<string> {
         const helper = await this.running();
         this.agentActs();
         await helper.call({ op: "button", name });
-        return `Pressed the ${name === "home" ? "Home" : name === "lock" ? "side (lock)" : "Siri"} button.`;
+        return `Pressed the ${name === "home" ? "Home" : "side (lock)"} button.`;
     }
 
     /** Waits until text shows in the outline (a label or value containing it), or for the screen to be still. */
@@ -702,10 +769,15 @@ export class SimulatorSession {
         }
         const helper = await this.running();
         const want = text.replace(/\s+/g, " ").trim().toLowerCase();
+        const has = (o: Outline) => o.texts.some((t) => t.toLowerCase().includes(want));
         while (true) {
             if (signal?.aborted) throw new SimulatorError("Interrupted by user.");
             const r = await this.describe(helper);
-            if (outline((r.tree ?? {}) as AxNode, this.points(helper)).texts.some((t) => t.toLowerCase().includes(want))) return `${JSON.stringify(text)} is on the screen.`;
+            const tree = (r.tree ?? {}) as AxNode;
+            // The tree first; the picture's text (a web page's) only when the tree hasn't got it.
+            if (has(outline(tree, this.points(helper)))) return `${JSON.stringify(text)} is on the screen.`;
+            const read = await this.readText(helper);
+            if (read.lines.length && has(outline(tree, this.points(helper), read.lines))) return `${JSON.stringify(text)} is on the screen.`;
             if (Date.now() >= end) throw new SimulatorError(`${JSON.stringify(text)} didn't show within ${Math.round(timeoutMs / 1000)} seconds.`);
             await sleep(400);
         }
