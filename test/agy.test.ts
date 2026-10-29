@@ -277,7 +277,7 @@ describe("turns and the conversation", () => {
         expect(s[1]).toContain(id!);
     });
 
-    test("an image and a PDF go as files of Cavvy's it reads, without asking; they're gone with its process", async () => {
+    test("an image and a PDF go as files of Cavvy's it reads, without asking; they're kept across its processes, and go with the session", async () => {
         const a = await makeAgent({ ask: () => ({ allow: false, feedback: "no" }) });
         const png = Buffer.from("iVBORw0KGgo=", "base64");
         const r = await a.agent.run(
@@ -304,6 +304,18 @@ describe("turns and the conversation", () => {
         // Another file outside the folder is asked about as any read is.
         await a.run(`[Image attached: ${join(tempDir("agy-other-"), "x.png")}. Read it]`);
         expect(a.asked).toHaveLength(1);
+        // Esc ends its process; the conversation goes on in a new one, which can still read them, unasked.
+        const gated = decisions().length;
+        const ac = new AbortController();
+        const run = a.run("[[hang]]", ac.signal);
+        while (decisions().length === gated) await Bun.sleep(10);
+        ac.abort();
+        expect(await run).toBe("aborted");
+        expect(files.every((f) => existsSync(f))).toBe(true);
+        await a.run(`[Image attached: ${files[0]}. Read it]`);
+        expect(spawns()).toHaveLength(2);
+        expect(a.asked).toHaveLength(1);
+        expect(ends(a.events).at(-1)!.call.input.file_path).toBe("image-1.png");
         const c = await clientFor("antigravity");
         await (c as any).shutdown();
         expect(files.some((f) => existsSync(f))).toBe(false);

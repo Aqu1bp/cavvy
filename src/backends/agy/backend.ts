@@ -5,6 +5,7 @@
 // (childEnv) has Cavvy's provider keys removed, so it signs in its own way.
 
 import { randomUUID } from "crypto";
+import { rmSync } from "fs";
 import { homedir } from "os";
 import { agentNeedsTrust } from "../../config/trust";
 import type { ProviderDef } from "../../providers/registry";
@@ -21,7 +22,7 @@ import { spawnFingerprint, type LiveTurnResult } from "../live/session";
 import type { AgentCliAdapter, CliConnection, CliEventSink, SpawnConfig, SpawnSpec } from "../live/types";
 import { WholeTurnsOnly, oneOffRefusal } from "../one-off";
 import { backendModel, type AgentBackendClient, type BackendResult, type BackendTurn, type SessionHost } from "../types";
-import { AgyConnection, SIGN_IN_NEEDED } from "./connection";
+import { AgyConnection, SIGN_IN_NEEDED, type Attachments } from "./connection";
 import { GATE_TOKEN_ENV, GATE_URL_ENV, filesDir, gateDir, gateUnavailable, gateUrl } from "./gate";
 
 function agyDef(id: string): AgentCliDef {
@@ -44,6 +45,8 @@ class AgyAdapter implements AgentCliAdapter {
     steering?: SteerSource;
     /** The session's token for the gate: the hook calls back with it, so its calls reach this session only. */
     private token = randomUUID();
+    /** Its attachments: kept while the session is, so a conversation resumed in a new process can still read them. */
+    private attached: Attachments = { names: new Map(), count: 0 };
 
     constructor(readonly def: AgentCliDef) {}
 
@@ -61,7 +64,14 @@ class AgyAdapter implements AgentCliAdapter {
 
     async connect(proc: JsonLinesProcess, events: CliEventSink, host: SessionHost): Promise<CliConnection> {
         liveDebug("agy", "spawned", { pid: proc.pid });
-        return new AgyConnection(proc, events, host, this.def, this.current?.cwd ?? homedir(), { dir: gateDir(), token: this.token, files: filesDir(this.token) }, () => this.steering);
+        return new AgyConnection(proc, events, host, this.def, this.current?.cwd ?? homedir(), { dir: gateDir(), token: this.token, files: filesDir(this.token), attached: this.attached }, () => this.steering);
+    }
+
+    /** The session is over: its attachments go. */
+    dispose() {
+        if (!this.attached.count) return;
+        rmSync(filesDir(this.token), { recursive: true, force: true });
+        this.attached = { names: new Map(), count: 0 };
     }
 
     status(_accountId: string | undefined, signal?: AbortSignal) {
@@ -208,10 +218,14 @@ export class AgyBackend implements AgentBackendClient {
     }
 
     async release(key: string): Promise<void> {
+        const adapter = this.pool.get(key, this.def.id)?.adapter as AgyAdapter | undefined;
         await this.pool.release(key, this.def.id);
+        adapter?.dispose();
     }
 
     async shutdown(): Promise<void> {
+        const adapters = this.pool.list().map((s) => s.adapter as AgyAdapter);
         await this.pool.shutdownAll();
+        for (const a of adapters) a.dispose();
     }
 }

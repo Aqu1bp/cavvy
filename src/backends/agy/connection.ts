@@ -16,7 +16,7 @@
 //     in the message.
 
 import { randomUUID } from "crypto";
-import { mkdirSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, writeFileSync } from "fs";
 import { join, relative } from "path";
 import type { AgentEvent, TurnEndReason } from "../../agent/agent";
 import { APP_TITLE } from "../../config/paths";
@@ -76,6 +76,12 @@ interface Turn {
     ended?: boolean;
 }
 
+/** Attachments written for it to read: each file by the name it was attached as, and how many there have been. */
+export interface Attachments {
+    names: Map<string, string>;
+    count: number;
+}
+
 type Decision = { allow: true } | { allow: false; reason: string; stop?: boolean; late?: boolean };
 
 export class AgyConnection implements CliConnection {
@@ -91,9 +97,6 @@ export class AgyConnection implements CliConnection {
     private readyReject!: (e: Error) => void;
     private unroute: () => void;
     private model?: string;
-    /** Attachments written for it to read, and where. */
-    private files = new Map<string, string>();
-    private fileCount = 0;
 
     constructor(
         readonly proc: JsonLinesProcess,
@@ -101,8 +104,11 @@ export class AgyConnection implements CliConnection {
         private host: SessionHost,
         private def: AgentCliDef,
         private cwd: string,
-        /** The gate folder, the token the hook calls back with, and the folder its attachments are written to. */
-        private gate: { dir: string; token: string; files: string },
+        /**
+         * The gate folder, the token the hook calls back with, the folder its attachments are written to, and those
+         * written so far (the session's: its conversation names them after a restart too).
+         */
+        private gate: { dir: string; token: string; files: string; attached: Attachments },
         /** The turn running's, set by the backend with each: the messages queued to steer it. */
         private steering: () => SteerSource | undefined = () => undefined,
     ) {
@@ -274,7 +280,7 @@ export class AgyConnection implements CliConnection {
         if (had) return had;
         this.flushText(turn);
         const tool = mapped && !mapped.refuse ? mapped : { toolName: OWN_TOOL + name, input: { tool: name, ...args }, title: name, own: true };
-        const attachment = tool.toolName === "Read" ? this.files.get(String(tool.input.file_path)) : undefined;
+        const attachment = tool.toolName === "Read" ? this.gate.attached.names.get(String(tool.input.file_path)) : undefined;
         // An attachment shows by its own name, not the file of Cavvy's it went as.
         const shown = attachment ? { file_path: attachment } : tool.toolName === "Write" || tool.toolName === "Edit" ? { file_path: tool.input.file_path } : tool.input;
         const row: Row = {
@@ -348,7 +354,6 @@ export class AgyConnection implements CliConnection {
         this.gone = true;
         this.unroute();
         this.readyReject(new Error(`${this.def.name} stopped: ${cliMessage(this.proc.stderr()) || "it closed its output"}`));
-        rmSync(this.gate.files, { recursive: true, force: true });
         const turn = this.turn;
         if (!turn || turn.ended) return;
         for (const w of [...turn.waiting]) w("Turn stopped");
@@ -419,9 +424,9 @@ export class AgyConnection implements CliConnection {
         mkdirSync(this.gate.files, { recursive: true, mode: 0o700 });
         const lines: string[] = [];
         const write = (name: string, data: string, shown = name) => {
-            const path = join(this.gate.files, `${++this.fileCount}-${name}`);
+            const path = join(this.gate.files, `${++this.gate.attached.count}-${name}`);
             writeFileSync(path, Buffer.from(data, "base64"), { mode: 0o600 });
-            this.files.set(path, shown);
+            this.gate.attached.names.set(path, shown);
             return path;
         };
         images.forEach((img, i) => {
@@ -492,7 +497,7 @@ export class AgyConnection implements CliConnection {
         if (own?.refuse) return { allow: false, reason: own.refuse };
         const label = main ? undefined : `${this.def.name} subagent`;
         // Its own bookkeeping, and a read of an attachment Cavvy gave it, go unless a deny rule names them.
-        if (own?.free || (own?.toolName === "Read" && this.files.has(String(own.input.file_path)))) {
+        if (own?.free || (own?.toolName === "Read" && this.gate.attached.names.has(String(own.input.file_path)))) {
             const a = await this.host.permission({ toolName: own.toolName, input: own.input, asksAlways: true, exempt: true, ...(label ? { agentLabel: label } : {}), signal });
             return a.allow ? { allow: true } : { allow: false, reason: a.message || "Denied.", stop: a.stop };
         }
