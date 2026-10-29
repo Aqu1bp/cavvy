@@ -5,8 +5,8 @@
 // (childEnv) has Cavvy's provider keys removed, so it signs in its own way.
 
 import { randomUUID } from "crypto";
-import { existsSync } from "fs";
 import { homedir } from "os";
+import { agentNeedsTrust } from "../../config/trust";
 import type { ProviderDef } from "../../providers/registry";
 import { ProviderError, type AssistantMessage, type ChatRequest, type ModelInfo } from "../../providers/types";
 import { RESUME_FAILED, type SteerSource } from "../acp/connection";
@@ -14,14 +14,15 @@ import { TurnRecord } from "../claude-live";
 import { JsonLinesProcess, cliMessage, extraArgs, findCli, requireCli, runCli } from "../cli";
 import { agentCli, type AgentCliDef } from "../defs";
 import type { AgentCliStatus } from "../index";
+import { expandPath } from "../../util/files";
 import { liveDebug } from "../live/debug";
 import { LiveCliPool, type PoolOptions } from "../live/pool";
 import { spawnFingerprint, type LiveTurnResult } from "../live/session";
 import type { AgentCliAdapter, CliConnection, CliEventSink, SpawnConfig, SpawnSpec } from "../live/types";
-import { oneOffRefusal } from "../one-off";
+import { WholeTurnsOnly, oneOffRefusal } from "../one-off";
 import { backendModel, type AgentBackendClient, type BackendResult, type BackendTurn, type SessionHost } from "../types";
 import { AgyConnection, SIGN_IN_NEEDED } from "./connection";
-import { GATE_TOKEN_ENV, GATE_URL_ENV, filesDir, gateDir, gateUrl } from "./gate";
+import { GATE_TOKEN_ENV, GATE_URL_ENV, filesDir, gateDir, gateUnavailable, gateUrl } from "./gate";
 
 function agyDef(id: string): AgentCliDef {
     const def = agentCli(id);
@@ -30,8 +31,9 @@ function agyDef(id: string): AgentCliDef {
 }
 
 /** The arguments a process starts with, but the conversation it resumes (not part of its fingerprint). */
-function agyArgs(id: string, cfg: Pick<SpawnConfig, "model">, gate: string): string[] {
-    return [...extraArgs(id), "--input-format", "stream-json", "--output-format", "stream-json", "--model", cfg.model.id, "--add-dir", gate];
+function agyArgs(id: string, cfg: Pick<SpawnConfig, "model" | "cwd" | "additionalDirectories">, gate: string): string[] {
+    const dirs = [...new Set((cfg.additionalDirectories ?? []).map((d) => expandPath(d, cfg.cwd)))];
+    return [...extraArgs(id), "--input-format", "stream-json", "--output-format", "stream-json", "--model", cfg.model.id, ...dirs.flatMap((d) => ["--add-dir", d]), "--add-dir", gate];
 }
 
 /** How a session's process is started, and spoken to: one per Cavvy session. */
@@ -47,6 +49,8 @@ class AgyAdapter implements AgentCliAdapter {
 
     spawn(cfg: SpawnConfig): SpawnSpec {
         const bin = requireCli(this.def.id, this.def.cli);
+        const cant = gateUnavailable();
+        if (cant) throw new Error(cant);
         const gate = gateDir();
         const args = agyArgs(this.def.id, cfg, gate);
         const env = { [GATE_URL_ENV]: gateUrl(), [GATE_TOKEN_ENV]: this.token };
@@ -69,12 +73,17 @@ class AgyAdapter implements AgentCliAdapter {
     }
 }
 
+/** How long `agy models` may take. */
+const LIST_TIMEOUT_MS = 30_000;
+
 /** `agy models`: its models (id, a tab, its name), one a line. Signed out, it says so and lists none. */
 async function listed(bin: string, signal?: AbortSignal): Promise<{ models: { id: string; name: string }[]; signedIn: boolean; said: string }> {
-    const r = await runCli(bin, ["models"], { signal, timeoutMs: 30_000 });
+    const started = Date.now();
+    const r = await runCli(bin, ["models"], { signal, timeoutMs: LIST_TIMEOUT_MS });
     const out = `${r.stdout}\n${r.stderr}`;
     if (SIGN_IN_NEEDED.test(out)) return { models: [], signedIn: false, said: cliMessage(out) };
-    if (r.code !== 0) throw new Error(cliMessage(r.stderr) || cliMessage(r.stdout) || `exit code ${r.code}`);
+    // Stopped when it took too long, it says nothing.
+    if (r.code !== 0) throw new Error(cliMessage(r.stderr) || cliMessage(r.stdout) || (Date.now() - started >= LIST_TIMEOUT_MS ? `no answer in ${LIST_TIMEOUT_MS / 1000} seconds` : `exit code ${r.code}`));
     const models = r.stdout
         .split("\n")
         .map((l) => /^([\w.-]+)\t(.+)$/.exec(l.trim()))
@@ -89,13 +98,16 @@ export async function agyStatus(providerId: string, signal?: AbortSignal): Promi
     const base = { signIn: def.cli.signIn, signOut: def.cli.signOut, installHint: def.cli.install };
     const path = findCli(providerId, def.cli);
     if (!path) return { ...base, installed: false, signedIn: false, description: "not installed" };
+    const cant = gateUnavailable();
+    if (cant) return { ...base, installed: true, path, signedIn: false, description: "can't run here", problem: cant };
     try {
         const l = await listed(path, signal);
         if (!l.signedIn) return { ...base, installed: true, path, signedIn: false, description: "not signed in" };
         return { ...base, installed: true, path, signedIn: true, description: `signed in, ${l.models.length} model${l.models.length === 1 ? "" : "s"}` };
     } catch (e) {
         if (signal?.aborted) throw new Error("aborted");
-        return { ...base, installed: true, path, signedIn: false, description: `${def.name} didn't answer: ${cliMessage((e as Error).message) || "no answer"}` };
+        const said = cliMessage((e as Error).message) || "no answer";
+        return { ...base, installed: true, path, signedIn: false, description: "didn't answer", problem: `${def.name} didn't answer: ${said}. Try again in a moment.` };
     }
 }
 
@@ -123,7 +135,7 @@ export class AgyBackend implements AgentBackendClient {
 
     /** It runs whole turns only: no one-off requests (set smallModel to another provider's model for those). */
     async stream(req: ChatRequest): Promise<AssistantMessage> {
-        throw oneOffRefusal(this.cli.name, req) ?? new ProviderError(`${this.cli.name} runs whole turns only, so it can't answer a one-off request. Set smallModel to another provider's model for those.`);
+        throw oneOffRefusal(this.cli.name, req) ?? new WholeTurnsOnly(this.cli.name);
     }
 
     listModels(signal?: AbortSignal): Promise<ModelInfo[]> {
@@ -134,9 +146,10 @@ export class AgyBackend implements AgentBackendClient {
         const name = this.cli.name;
         if (t.adopt) return { reason: "error", text: "", actions: [], error: `${name} doesn't start turns of its own.` };
         // A fork would share the conversation it came from: it starts one of its own with the conversation so far.
-        if (t.forkSession && t.resumeId) return { reason: "error", text: "", actions: [], error: `${RESUME_FAILED} ${name} conversation: ${name} conversations can't be forked`, resumeFailed: true, refused: true };
-        // It would run the folder's own hooks, which nothing can turn off.
-        if (!t.trusted && this.cli.projectConfig?.(t.cwd, existsSync).length) return { reason: "error", text: "", actions: [], error: `${name} runs this folder's .agents/hooks.json itself, so it runs here only once you trust the folder.`, refused: true };
+        if (t.forkSession && t.resumeId) return { reason: "error", text: "", actions: [], error: `${RESUME_FAILED} ${name} conversation: ${name} conversations can't be forked`, resumeFailed: true, forkUnsupported: true, refused: true };
+        // It would run a folder's own hooks, which nothing can turn off (the GUI asks before sending: needs_trust).
+        const untrusted = agentNeedsTrust(this.def.id, t.cwd, t.trusted, t.additionalDirectories);
+        if (untrusted) return { reason: "error", text: "", actions: [], error: untrusted.message, refused: true };
         const key = t.sessionKey;
         let live = this.pool.session(key, this.def.id);
         // Another conversation than the one running (rewound, or a fresh start): the old process goes.

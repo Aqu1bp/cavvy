@@ -15,7 +15,7 @@ import { join, resolve } from "path";
 import { readJson, readJsonForUpdate, writeJson } from "./settings";
 import { cavvyHome, paths } from "./paths";
 import { LEGACY } from "./legacy";
-import { isInside } from "../util/files";
+import { expandPath, isInside } from "../util/files";
 import { readAgentConfig } from "../providers/registry";
 import { AGENT_CLIS, agentCli } from "../backends/defs";
 import { externalImports } from "../agent/memory";
@@ -95,6 +95,28 @@ export function trustForSession(dir: string) {
  */
 export function agentProjectConfig(cwd: string, provider: string, has: (path: string) => boolean = existsSync): string[] {
     return agentCli(provider)?.projectConfig?.(cwd, has) ?? [];
+}
+
+/**
+ * A folder of the turn's (its own, then its additional directories) whose configuration the agent CLI would load
+ * though the user hasn't trusted it, because nothing turns that off (Antigravity's .agents/hooks.json): the CLI
+ * doesn't run until they trust it, and `message` says so. `trusted`: the user's trust in the session's own folder.
+ */
+export function agentNeedsTrust(provider: string, cwd: string, trusted: boolean, additional: string[] = [], has: (path: string) => boolean = existsSync): { folder: string; files: string[]; message: string } | undefined {
+    const def = agentCli(provider);
+    if (!def?.projectConfigAlways) return undefined;
+    const here = resolve(cwd);
+    for (const [folder, ok] of [[here, trusted] as const, ...additional.map((d) => expandPath(d, cwd)).map((d) => [d, trustedByUser(d)] as const)]) {
+        if (ok) continue;
+        const files = agentProjectConfig(folder, provider, has);
+        if (!files.length) continue;
+        const message =
+            folder === here
+                ? `${def.name} runs this folder's ${files.join(", ")}, so it runs here only once you trust the folder (/trust).`
+                : `${def.name} would run the ${files.join(", ")} of ${folder}, one of your additional directories. Trust that folder, or remove it from additionalDirectories.`;
+        return { folder, files, message };
+    }
+    return undefined;
 }
 
 /** Whether the folder has anything that trust would unlock. `has` says whether a path exists (a commit's tree, for a checkout yet to be made). */

@@ -41,8 +41,9 @@ ${bold("Usage")}
   ${APP_NAME} -p [options] "prompt"       run one prompt and print the result
   ${APP_NAME} auth add [provider]          add an API key (read from stdin or a hidden prompt)
   ${APP_NAME} auth add vertex --project <id> [--location global] [--account <email>]
-  ${APP_NAME} auth add claude-code|codex     use your Claude / ChatGPT plan through your installed CLI
                                          use Gemini on Google Cloud through gcloud (no key)
+  ${APP_NAME} auth add claude-code|codex|opencode|grok|antigravity
+                                         use a plan you have through its installed CLI
   ${APP_NAME} auth list                    show which providers have keys (values never shown)
   ${APP_NAME} auth remove <provider>       delete a stored key
   ${APP_NAME} models [--refresh] [--json]  list every model you can use, across providers
@@ -317,7 +318,7 @@ async function readHidden(prompt: string): Promise<string> {
 }
 
 /**
- * `auth add claude-code|codex`: turn on the user's own agent CLI after
+ * `auth add claude-code|codex|opencode|grok|antigravity`: turn on the user's own agent CLI after
  * checking it's installed and signed in (by asking the CLI). Signing in is
  * the CLI's own business; nothing secret is saved.
  */
@@ -334,6 +335,10 @@ async function addAgentCli(providerId: string): Promise<number> {
     if (!st.installed) {
         process.stderr.write(theme.error("not installed\n"));
         die(`${st.installHint}, sign in with \`${st.signIn}\`, then run this again.`);
+    }
+    if (st.problem) {
+        process.stderr.write(theme.error(`${st.description}\n`));
+        die(st.problem);
     }
     if (!st.signedIn) {
         process.stderr.write(theme.error("not signed in\n"));

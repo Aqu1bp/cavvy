@@ -30,7 +30,7 @@ import { liveDebug } from "../live/debug";
 import { EXIT_DRAIN_MS, PromptRefused } from "../live/session";
 import type { CliConnection, CliEventSink, LiveSettings, TurnInput } from "../live/types";
 import type { BackendPermission, PermissionAnswer, SessionHost, SteerMessage } from "../types";
-import { GATE_DEADLINE_MS, agyTool, onGate, sessionStartAnswer, type AgyTool } from "./gate";
+import { GATE_DEADLINE_MS, OWN_TOOL, agyTool, onGate, sessionStartAnswer, type AgyTool } from "./gate";
 
 /** How long to wait for it to say it's ready (it takes 5 to 8 seconds), and how often to look for a sign-in prompt meanwhile. */
 const INIT_TIMEOUT_MS = 90_000;
@@ -248,17 +248,21 @@ export class AgyConnection implements CliConnection {
         if (s.step_type !== "tool" || step < 0) return;
         const name = typeof s.tool_name === "string" ? s.tool_name : String(s.tool_info?.name ?? "tool");
         const args = s.tool_info?.parameters && typeof s.tool_info.parameters === "object" ? s.tool_info.parameters : {};
-        if (s.state === "ACTIVE") return void this.startRow(turn, step, agyTool(name, args, this.cwd, this.gate.dir), name, args);
-        if (s.state !== "DONE" && s.state !== "ERROR") return;
         const mapped = agyTool(name, args, this.cwd, this.gate.dir);
-        const row = this.startRow(turn, step, mapped, name, args);
+        // A call into the gate's folder (it took that for its own): refused, and the model goes on in the session's
+        // folder. Nothing ran, so it has no row.
+        const hidden = Boolean(mapped?.refuse);
+        if (s.state === "ACTIVE") return void (hidden || this.startRow(turn, step, mapped, name, args));
+        if (s.state !== "DONE" && s.state !== "ERROR") return;
+        const row = hidden ? undefined : this.startRow(turn, step, mapped, name, args);
         // The tripwire: a change that ran without the gate seeing it got past Cavvy (the hook wasn't loaded).
-        const changes = !mapped || mapped.toolName === "Bash" || mapped.toolName === "Write" || mapped.toolName === "Edit" || mapped.toolName === "Antigravity";
+        const changes = !mapped || hidden || mapped.toolName === "Bash" || mapped.toolName === "Write" || mapped.toolName === "Edit" || Boolean(mapped.own);
         if (s.state === "DONE" && changes && !turn.gated.has(`${this.conversationId}:${step}`) && !turn.cancelling && !turn.tripped && this.host.mode() !== "bypassPermissions") {
-            turn.tripped = `${this.def.name} ran \`${row.title}\` without ${APP_TITLE}'s permission check, so the turn was stopped.`;
+            turn.tripped = `${this.def.name} ran \`${row?.title ?? name}\` without ${APP_TITLE}'s permission check, so the turn was stopped.`;
             liveDebug("agy", "tripwire", { step, name });
             this.events({ t: "stop", ref: turn.ref, error: turn.tripped });
         }
+        if (!row) return;
         const failed = s.state === "ERROR";
         const output = failed ? String(s.tool_info?.error?.message ?? "Failed") : typeof s.tool_info?.output === "string" && s.tool_info.output ? s.tool_info.output : "Done";
         this.endRow(turn, step, output, failed);
@@ -269,15 +273,16 @@ export class AgyConnection implements CliConnection {
         const had = turn.rows.get(step);
         if (had) return had;
         this.flushText(turn);
-        const tool = mapped && !mapped.refuse ? mapped : { toolName: this.def.name, input: { tool: name, ...args }, title: `${this.def.name}: ${name}` };
+        const tool = mapped && !mapped.refuse ? mapped : { toolName: OWN_TOOL + name, input: { tool: name, ...args }, title: name, own: true };
         const attachment = tool.toolName === "Read" ? this.files.get(String(tool.input.file_path)) : undefined;
         // An attachment shows by its own name, not the file of Cavvy's it went as.
         const shown = attachment ? { file_path: attachment } : tool.toolName === "Write" || tool.toolName === "Edit" ? { file_path: tool.input.file_path } : tool.input;
         const row: Row = {
             id: `${this.conversationId}:${step}`,
-            name: tool.toolName,
+            // One of its own shows as the agent's, with what it does.
+            name: tool.own ? this.def.name : tool.toolName,
             input: shown,
-            title: CAVVY_TOOLS.has(tool.toolName) ? titleFor(tool.toolName, shown) : (tool.title ?? tool.toolName),
+            title: CAVVY_TOOLS.has(tool.toolName) ? titleFor(tool.toolName, shown) : tool.own ? `${this.def.name}(${tool.title ?? name})` : (tool.title ?? tool.toolName),
             started: Date.now(),
         };
         const path = typeof tool.input.file_path === "string" ? tool.input.file_path : undefined;
@@ -491,8 +496,8 @@ export class AgyConnection implements CliConnection {
             const a = await this.host.permission({ toolName: own.toolName, input: own.input, asksAlways: true, exempt: true, ...(label ? { agentLabel: label } : {}), signal });
             return a.allow ? { allow: true } : { allow: false, reason: a.message || "Denied.", stop: a.stop };
         }
-        // One of its tools Cavvy has none for: checked by the agent's name, with all it says.
-        const req: AgyTool = own ?? { toolName: this.def.name, input: { tool: name, ...args }, title: `${this.def.name} asks to use ${name}` };
+        // One Cavvy can't read what it acts on (a write without a path): checked by its own name, with all it says.
+        const req: AgyTool = own ?? { toolName: OWN_TOOL + name, input: { tool: name, ...args }, ask: `${this.def.name} asks to use ${name}` };
         // Its row, from the gate (an ask makes it wait). The stream may have started it first, without what it writes.
         const row = main ? this.startRow(turn, step, own, name, args) : undefined;
         const path = typeof req.input.file_path === "string" ? req.input.file_path : undefined;
@@ -501,7 +506,7 @@ export class AgyConnection implements CliConnection {
         const asked: BackendPermission = {
             toolName: req.toolName,
             input: req.input,
-            ...(req.title ? { title: req.title } : {}),
+            ...(req.ask ? { title: req.ask } : {}),
             ...(req.reason ? { reason: req.reason } : {}),
             asksAlways: true,
             ...(bypass ? { hooksOnly: true } : req.elsewhere ? { hookDecision: "ask" as const } : {}),

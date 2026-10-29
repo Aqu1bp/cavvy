@@ -1598,6 +1598,7 @@ export class Engine {
                         plan: def.planLabel,
                         multiAccount: Boolean(def.account),
                         planLimits: def.caps.planLimits !== "none",
+                        ...(def.autoAsks ? { autoAsks: true } : {}),
                     },
                 });
                 continue;
@@ -1648,6 +1649,7 @@ export class Engine {
         if (def?.auth !== "cli") throw new RpcError(`${providerId} isn't used through a CLI`);
         const { status: st, limits } = await checkAgentPlan(def.id);
         if (!st.installed) throw new RpcError(`${def.name} isn't installed. ${st.installHint}, sign in with \`${st.signIn}\`, then try again.`, "not_installed");
+        if (st.problem) throw new RpcError(st.problem, "cli_failed");
         if (!st.signedIn) throw new RpcError(`${def.name} isn't signed in. Run \`${st.signIn}\` in a terminal (${vendorOf(def.id)}'s own sign-in), then try again.`, "not_signed_in");
         saveAgentConfig(def.id);
         forgetClient(def.id);

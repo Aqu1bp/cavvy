@@ -30,6 +30,11 @@ const HINTS = [
  * Types `text` into the composer under `root` where its caret is, as typing would: its draft, undo
  * and autosize follow, and so do its / and @ menus. An @ goes after a space, as the composer's own does.
  */
+/** "A, B or C". */
+function orList(names: string[]): string {
+    return names.length > 1 ? `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}` : (names[0] ?? "");
+}
+
 function typeInComposer(root: HTMLElement | undefined, text: string) {
     const ta = root?.querySelector("textarea");
     if (!ta) return;
@@ -220,7 +225,7 @@ export function Home() {
                                 {clis().length === 1
                                     ? `Use the ${clis()[0]!.agentCli!.plan} you already have through ${clis()[0]!.name}, add`
                                     : clis().length
-                                      ? `Use a plan you already have through ${clis().map((pr) => pr.name).join(" or ")}, add`
+                                      ? `Use a plan you already have through ${orList(clis().map((pr) => pr.name))}, add`
                                       : "Add"}{" "}
                                 an API key, or start Ollama or LM Studio on this computer.
                             </p>

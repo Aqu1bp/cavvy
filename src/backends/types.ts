@@ -366,6 +366,8 @@ export interface BackendResult {
     backgroundStopped?: string[];
     /** The session in resumeId couldn't be resumed (gone, or another folder's). */
     resumeFailed?: boolean;
+    /** With resumeFailed: it was a fork, which the CLI can't make (its fork starts a new session, as it should). */
+    forkUnsupported?: boolean;
     /**
      * Known not to have reached the CLI's session: an error before the prompt went (its process didn't start or
      * exited first, it isn't signed in where that's checked before the prompt goes), the CLI's own no (Codex answering

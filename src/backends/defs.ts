@@ -102,6 +102,10 @@ export interface AgentCliDef {
     };
     /** The project's own configuration for it, which it loads only in a trusted folder (src/config/trust.ts). */
     projectConfig?: (cwd: string, has: (path: string) => boolean) => string[];
+    /** Nothing turns its projectConfig off: where the folder isn't trusted, it doesn't run (agentNeedsTrust). */
+    projectConfigAlways?: boolean;
+    /** Auto mode has no reviewer for it: Cavvy asks before each command (the mode menu says so). */
+    autoAsks?: boolean;
     /** Its models to prefer, best first (src/providers/models.ts PREFERRED). */
     preferredModels?: RegExp[];
     /** What it runs with its own sub-agents, so those providers' models aren't offered to it (src/agent/delegation.ts). */
@@ -333,6 +337,8 @@ const ANTIGRAVITY: AgentCliDef = {
     protocol: "agy-stream-json",
     // It runs a project's .agents/hooks.json whatever Cavvy's folder trust says: it runs only where the folder is trusted.
     projectConfig: (cwd, has) => (has(join(cwd, ".agents", "hooks.json")) ? [".agents/hooks.json"] : []),
+    projectConfigAlways: true,
+    autoAsks: true,
     preferredModels: [/^gemini-4-carbon/, /^gemini-4-argon-high$/, /^gemini-4-argon/],
     caps: {
         // A message sent while a turn runs joins it at its next model call, through the gate's PreInvocation hook

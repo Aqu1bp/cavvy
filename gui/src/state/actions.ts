@@ -273,10 +273,20 @@ export async function send(text: string, attachments: Attachment[] = [], opts: {
         return true;
     } catch (e) {
         if (e instanceof RpcError && e.code === "unknown_command") return unknown(slashName(text) ?? text);
+        // Its model (Antigravity) would run the folder's own hooks: the message stays in the box until it's trusted.
+        if (e instanceof RpcError && e.code === "needs_trust" && e.folder) {
+            requestTrust(e.folder, requestComposerFocus, "agent", agentTrustReason(e.message));
+            return false;
+        }
         if (opts.throwErrors) throw e;
         reportError(e);
         return false;
     }
+}
+
+/** What the trust dialog says of it: the server's reason without the terminal's /trust. */
+function agentTrustReason(message: string): string {
+    return message.replace(/\s*\(\/trust\)/, "");
 }
 
 async function createIn(cwd: string) {
@@ -660,7 +670,9 @@ export async function connectCli(pr: ProviderInfo, failed: (e: unknown) => void 
         failed(e);
         return false;
     }
-    toast(`Using your ${pr.agentCli?.plan ?? pr.name} through ${pr.name} (${r.description})`, "success");
+    const plan = pr.agentCli?.plan ?? pr.name;
+    // "Antigravity plan", not "Antigravity plan through Antigravity".
+    toast(`Using your ${plan}${plan.startsWith(pr.name) ? "" : ` through ${pr.name}`} (${r.description})`, "success");
     if (r.warning) toast(r.warning, "warn");
     await Promise.all([refreshProviders(), refreshModels(), refreshSettings()]).catch(reportError);
     return true;

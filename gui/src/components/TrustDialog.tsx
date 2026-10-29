@@ -16,6 +16,8 @@ export function TrustDialog() {
     );
     const titleId = createUniqueId();
     const forMcp = () => trustRequest()?.purpose === "mcp-approval";
+    // Trusting it is the only way on: declining changes nothing.
+    const upgrade = () => forMcp() || trustRequest()?.purpose === "agent";
     const cancel = () => setTrustRequest(undefined);
     const decide = async (trust: boolean) => {
         const req = trustRequest();
@@ -37,12 +39,13 @@ export function TrustDialog() {
                 <Show when={forMcp()}>
                     <p class="muted">Trust it to approve its MCP servers.</p>
                 </Show>
-                <Show when={info()?.needsTrust.length}>
+                <Show when={trustRequest()?.purpose === "agent" && trustRequest()?.reason}>{(reason) => <p class="muted">{reason()}</p>}</Show>
+                <Show when={!upgrade() && info()?.needsTrust.length}>
                     <p class="muted">Its configuration ({info()!.needsTrust.join(", ")}) can run commands on this computer and let the agent act without asking.</p>
                 </Show>
                 <div class="trust-actions">
-                    <button class="btn secondary" onClick={() => forMcp() ? cancel() : void decide(false)}>
-                        {forMcp() ? "Cancel" : "Ignore its configuration"}
+                    <button class="btn secondary" onClick={() => upgrade() ? cancel() : void decide(false)}>
+                        {upgrade() ? "Cancel" : "Ignore its configuration"}
                     </button>
                     <button class="btn primary" onClick={() => void decide(true)}>
                         Trust this folder

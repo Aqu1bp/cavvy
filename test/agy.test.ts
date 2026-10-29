@@ -16,6 +16,7 @@ const { BUILTIN_TOOLS } = await import("../src/tools/index");
 const trust = await import("../src/config/trust");
 const gate = await import("../src/backends/agy/gate");
 const { agyStatus, agyModels } = await import("../src/backends/agy/backend");
+const { WholeTurnsOnly } = await import("../src/backends/one-off");
 type AgentEvent = import("../src/agent/agent").AgentEvent;
 type PermissionRequest = import("../src/agent/agent").PermissionRequest;
 type PermissionResponse = import("../src/agent/agent").PermissionResponse;
@@ -48,6 +49,7 @@ beforeEach(() => {
     rmSync(LOG, { force: true });
     process.env.FAKE_LOG = LOG;
     delete process.env.FAKE_AGY_SIGNED_OUT;
+    delete process.env.FAKE_AGY_MODELS_FAIL;
     registry.saveAgentConfig("antigravity", { path: fake });
     forgetClient("antigravity");
 });
@@ -104,6 +106,32 @@ describe("the gate, by Cavvy's mode", () => {
         trust.trustFolder(cwd);
         expect(await (await makeAgent()).run("hi")).toBe("done");
         expect(spawns()).toHaveLength(1);
+    });
+
+    test("an additional directory with hooks of its own: it runs once that's trusted, with the directory as a workspace", async () => {
+        const extra = realpathSync(tempDir("agy-extra-"));
+        mkdirSync(join(extra, ".agents"));
+        writeFileSync(join(extra, ".agents", "hooks.json"), "{}");
+        const settings = { permissions: { additionalDirectories: [extra] } };
+        const a = await makeAgent({ settings });
+        expect(await a.run("hi")).not.toBe("done");
+        expect(JSON.stringify(a.events)).toContain("one of your additional directories");
+        expect(spawns()).toEqual([]);
+        trust.trustFolder(extra);
+        expect(await (await makeAgent({ settings })).run("hi")).toBe("done");
+        // Before the gate's folder, so the gate's comes last.
+        const argv = spawns()[0]!;
+        expect(argv.slice(argv.indexOf(extra) - 1, argv.indexOf(extra) + 3)).toEqual(["--add-dir", extra, "--add-dir", gate.gateDir()]);
+    });
+
+    test("only a CLI that can't leave a folder's configuration out needs the folder trusted", () => {
+        mkdirSync(join(cwd, ".agents"));
+        writeFileSync(join(cwd, ".agents", "hooks.json"), "{}");
+        expect(trust.agentNeedsTrust("antigravity", cwd, false)).toMatchObject({ folder: cwd, files: [".agents/hooks.json"], message: expect.stringContaining("(/trust)") });
+        expect(trust.agentNeedsTrust("antigravity", cwd, true)).toBeUndefined();
+        mkdirSync(join(cwd, ".claude"));
+        writeFileSync(join(cwd, ".claude", "settings.json"), "{}");
+        expect(trust.agentNeedsTrust("claude-code", cwd, false)).toBeUndefined();
     });
 
     test("Manual: a write asks, with its content; a yes runs it, and its row shows what it wrote", async () => {
@@ -164,19 +192,39 @@ describe("the gate, by Cavvy's mode", () => {
         expect(decisions()).toEqual(["deny", "auto_approve", "deny"]);
     });
 
-    test("a tool of its own Cavvy has none for is asked about as Antigravity's", async () => {
-        const a = await makeAgent({ ask: () => ({ allow: true }) });
+    test("a tool of its own Cavvy has none for is asked about by its name; a yes for the session covers that tool only", async () => {
+        const a = await makeAgent({ ask: (r) => ({ allow: true, grant: Boolean(r.decision.grant) }) });
         await a.run("[[tool:generate_image]]");
-        expect(a.asked[0]).toMatchObject({ tool: { name: "Antigravity" } });
-        expect(decisions()).toEqual(["auto_approve"]);
+        expect(a.asked[0]).toMatchObject({ tool: { name: "Antigravity_generate_image" }, title: "Antigravity asks to generate an image", decision: { grant: { rules: ["Antigravity_generate_image"] } } });
+        // Its row is the agent's, saying what it did.
+        expect(ends(a.events)[0]).toMatchObject({ call: { name: "Antigravity" } });
+        expect(a.events.find((e) => e.type === "tool_start")).toMatchObject({ title: "Antigravity(Generate an image)" });
+        await a.run("[[tool:generate_image]]");
+        await a.run("[[tool:open_browser_url]]");
+        expect(a.asked.map((r) => r.tool.name)).toEqual(["Antigravity_generate_image", "Antigravity_open_browser_url"]);
+        expect(decisions()).toEqual(["auto_approve", "auto_approve", "auto_approve"]);
     });
 
-    test("a write into the gate's own folder is refused without asking", async () => {
+    test("its subagents' messages to each other go without asking, in Plan too", async () => {
+        const a = await makeAgent({ mode: "plan", ask: () => ({ allow: true }) });
+        await a.run("[[tool:send_message]]");
+        await a.run("[[tool:manage_inbox]]");
+        expect(a.asked).toEqual([]);
+        expect(decisions()).toEqual(["auto_approve", "auto_approve"]);
+        // A deny rule still names one.
+        const b = await makeAgent({ settings: { permissions: { deny: ["Antigravity_send_message"] } }, ask: () => ({ allow: true }) });
+        await b.run("[[tool:send_message]]");
+        expect(decisions().at(-1)).toBe("deny");
+    });
+
+    test("a write into the gate's own folder is refused without asking, and shows nothing", async () => {
         const a = await makeAgent({ ask: () => ({ allow: true }) });
         await a.run(`[[write:${join(gate.gateDir(), "x.txt")}]]`);
         expect(a.asked).toEqual([]);
         expect(decisions()).toEqual(["deny"]);
         expect(existsSync(join(gate.gateDir(), "x.txt"))).toBe(false);
+        expect(a.events.filter((e) => e.type === "tool_start" || e.type === "tool_end")).toEqual([]);
+        expect(notices(a.events)).toEqual([]);
     });
 
     test("a new conversation is told its folder; the hook gets the gate's address only through agy's environment", async () => {
@@ -292,6 +340,30 @@ describe("its sign-in and models, from `agy models`", () => {
         expect(await a.run("hello")).toBe("error");
         expect(notices(a.events).join("\n")).toContain("isn't signed in. Run `agy`");
     });
+
+    test("when it can't list them, it says what happened, not that it's signed out", async () => {
+        process.env.FAKE_AGY_MODELS_FAIL = "1";
+        expect(await agyStatus("antigravity")).toMatchObject({ installed: true, signedIn: false, problem: "Antigravity didn't answer: Error: the model service is unavailable. Try again in a moment." });
+    });
+
+    test("without curl for the hook, setup says it can't run, and a turn doesn't start", async () => {
+        const path = process.env.PATH;
+        process.env.PATH = tempDir("agy-no-curl-");
+        try {
+            expect(await agyStatus("antigravity")).toMatchObject({ installed: true, signedIn: false, problem: expect.stringContaining("needs curl") });
+            const a = await makeAgent();
+            expect(await a.run("hello")).toBe("error");
+            expect(JSON.stringify(a.events)).toContain("needs curl");
+        } finally {
+            process.env.PATH = path;
+        }
+        expect(spawns()).toEqual([]);
+    });
+
+    test("a one-off request (a title) is refused as one it can never answer", async () => {
+        const c = await clientFor("antigravity");
+        expect(c.stream({ messages: [{ role: "user", content: [{ type: "text", text: "name this" }] }] } as any)).rejects.toBeInstanceOf(WholeTurnsOnly);
+    });
 });
 
 describe("the gate folder", () => {
@@ -326,7 +398,9 @@ describe("agyTool", () => {
         expect(t("call_mcp_tool", { ServerName: "gh", ToolName: "issue", Arguments: { n: 1 } })).toEqual({ toolName: "mcp__gh__issue", input: { n: 1 } });
         expect(t("command_status", {})).toMatchObject({ free: true });
         expect(t("write_file", { Path: "/g/x" })).toMatchObject({ refuse: expect.stringContaining("permission hook") });
-        expect(t("generate_image", {})).toBeUndefined();
+        expect(t("generate_image", {})).toMatchObject({ toolName: "Antigravity_generate_image", input: { tool: "generate_image" }, own: true });
+        expect(t("send_message", { Message: "done" })).toMatchObject({ toolName: "Antigravity_send_message", free: true });
+        expect(t("open_browser_url", { Url: "https://x.test" })).toMatchObject({ ask: "Antigravity asks to open https://x.test in its browser" });
         expect(t("write_file", {})).toBeUndefined();
     });
 });
@@ -336,4 +410,54 @@ test("agyTool: a real path inside a symlinked folder is spelled as the session s
     const link = join(tempDir("agy-link-"), "proj");
     symlinkSync(real, link);
     expect(gate.agyTool("write_file", { Path: join(real, "a.txt"), Content: "x" }, link)).toMatchObject({ input: { file_path: join(link, "a.txt") } });
+});
+
+describe("in the app's server", () => {
+    /** `declined`: opened with "Open without them". */
+    async function engineIn(dir: string, o: { declined?: boolean } = {}) {
+        const { Engine } = await import("../src/server/engine");
+        const engine = new Engine({});
+        const c = { subs: new Set<string>(), send() {} };
+        engine.clients.add(c);
+        if (o.declined) await engine.handle(c, "projects.trust", { path: dir, trust: false });
+        const snap: any = await engine.handle(c, "session.create", { cwd: dir });
+        const rt = engine.runtimes.get(snap.state.id)!;
+        rt.model = { provider: "antigravity", id: "gemini-4-argon-high" } as any;
+        return { engine, c, id: snap.state.id as string, rt };
+    }
+    const idle = async (rt: { idle: boolean }) => {
+        for (let i = 0; i < 200 && !rt.idle; i++) await Bun.sleep(50);
+    };
+
+    test("opened without its hooks, a message is refused before it's sent, naming the folder to trust; once trusted it goes", async () => {
+        mkdirSync(join(cwd, ".agents"));
+        writeFileSync(join(cwd, ".agents", "hooks.json"), "{}");
+        const { engine, c, id, rt } = await engineIn(cwd, { declined: true });
+        try {
+            await expect(engine.handle(c, "session.send", { id, text: "hi" })).rejects.toMatchObject({ code: "needs_trust", folder: cwd, message: expect.stringContaining(".agents/hooks.json") });
+            expect(rt.session.messages.filter((m) => m.role === "user")).toEqual([]);
+            expect(spawns()).toEqual([]);
+            await engine.handle(c, "projects.trust", { path: cwd, trust: true });
+            await engine.handle(c, "session.send", { id, text: "hi" });
+            await idle(rt);
+            expect(spawns()).toHaveLength(1);
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("with nothing to answer a one-off, the first prompt names the session at once", async () => {
+        const { engine, c, id, rt } = await engineIn(cwd);
+        const logged: string[] = [];
+        (engine as any).log = (m: string) => logged.push(m);
+        try {
+            await engine.handle(c, "session.send", { id, text: "explain the layout of this project" });
+            await idle(rt);
+            for (let i = 0; i < 100 && !rt.session.title; i++) await Bun.sleep(20);
+            expect(rt.session.title).toBe("Explain the layout of this project");
+            expect(logged.filter((l) => l.includes("no title"))).toEqual([]);
+        } finally {
+            await engine.stop();
+        }
+    });
 });

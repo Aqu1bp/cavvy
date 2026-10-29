@@ -25,6 +25,16 @@ export const HOOK_TIMEOUT_S = 3600;
 /** When Cavvy gives up waiting on the user and refuses the call: before agy would fail the hook. */
 export const GATE_DEADLINE_MS = (HOOK_TIMEOUT_S - 30) * 1000;
 
+/**
+ * Why the hook can't run here, if it can't: it's a shell script that posts with curl. Without it, every call agy
+ * makes would be refused.
+ */
+export function gateUnavailable(): string | undefined {
+    if (process.platform === "win32") return `${APP_TITLE} can't check Antigravity's tool calls on Windows yet, so it can't run Antigravity there.`;
+    if (!Bun.which("curl", { PATH: process.env.PATH ?? "" })) return `Antigravity needs curl for ${APP_TITLE}'s permission check. Install curl, then try again.`;
+    return undefined;
+}
+
 /** The environment variables that tell the hook where Cavvy's gate is, and the session's token. */
 export const GATE_URL_ENV = "CAVVY_AGY_GATE";
 export const GATE_TOKEN_ENV = "CAVVY_AGY_TOKEN";
@@ -67,7 +77,7 @@ export const gateRoot = { dir: () => realpathSync(tmpdir()) };
  */
 export function gateDir(): string {
     const uid = process.getuid?.() ?? 0;
-    const dir = join(gateRoot.dir(), `zz-cavvy-antigravity-${uid}`);
+    const dir = join(gateRoot.dir(), `zz-cavvy-permission-hook-${uid}`);
     mkdirSync(join(dir, ".agents"), { recursive: true, mode: 0o700 });
     for (const d of [dir, join(dir, ".agents")]) ours(d);
     const script = join(dir, "gate.sh");
@@ -108,7 +118,7 @@ export function sessionStartAnswer(cwd: string, gate: string): Record<string, un
     return {
         injectSteps: [
             {
-                ephemeralMessage: `Your working folder is ${cwd}: work there unless the user names another folder. ${gate} only holds ${APP_TITLE}'s permission hook. Leave it alone.`,
+                ephemeralMessage: `Your working folder is ${cwd}: work there unless the user names another folder, and take relative paths as relative to it. ${gate} isn't a workspace: it only holds ${APP_TITLE}'s permission hook, so never read or write files there.`,
             },
         ],
     };
@@ -167,7 +177,10 @@ export function stopGateServer() {
 export interface AgyTool {
     toolName: string;
     input: Record<string, unknown>;
+    /** What its row says it does, for a tool Cavvy has none of its own for. */
     title?: string;
+    /** What its permission prompt asks, for a tool Cavvy has none of its own for. */
+    ask?: string;
     reason?: string;
     /** Refused with this, without asking. */
     refuse?: string;
@@ -175,20 +188,52 @@ export interface AgyTool {
     elsewhere?: boolean;
     /** One of agy's own that only reads or keeps its own state: let go (deny rules still apply). */
     free?: boolean;
+    /** One of agy's own tools, checked by its own name (OWN_TOOL + its name): a yes for the session covers that tool only. */
+    own?: boolean;
     /** What its row shows for an edit or a write: before and after. */
     diff?: { before: string; after: string };
 }
 
 const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
 
-/** agy's own bookkeeping: waiting, a look at a command it started, its task list, its permissions, a question for the user. */
-const FREE = new Set(["command_status", "wait", "wait_5_seconds", "finish", "manage_task", "list_permissions", "list_resources", "read_resource", "ask_question", "list_browser_pages", "list_plugin_accounts"]);
+/** How agy's own tools are named in Cavvy's rules: Antigravity_generate_image, Antigravity_send_message. */
+export const OWN_TOOL = "Antigravity_";
+
+/**
+ * agy's bookkeeping: waiting, a look at a command it started, its task list, its permissions, a question for the
+ * user, and its subagents' messages to each other.
+ */
+const FREE = new Set(["command_status", "wait", "wait_5_seconds", "finish", "manage_task", "list_permissions", "list_resources", "read_resource", "ask_question", "list_browser_pages", "list_plugin_accounts", "send_message", "manage_inbox"]);
+
+/** What its other tools do, as its permission prompts ask it (agy 1.4.10's tool list). */
+const DOES: Record<string, string> = {
+    generate_image: "generate an image",
+    schedule: "schedule a task",
+    run_workflow: "run a workflow",
+    notebook_execution: "run a notebook",
+    search_marketplace: "search its plugin marketplace",
+    delete_knowledge: "delete something it remembered",
+    ask_permission: "get your permission",
+    ask_custom_permission: "get your permission",
+    send_command_input: "type into a command it started",
+    execute_browser_javascript: "run a script in its browser",
+    capture_browser_screenshot: "take a screenshot in its browser",
+    capture_browser_console_logs: "read its browser's console",
+    read_browser_page: "read a page in its browser",
+};
+
+/** One of agy's own tools, by its own name: what its row and its prompt say. */
+function ownTool(name: string, args: Record<string, any>, free = false): AgyTool {
+    const url = str(args.Url) ?? str(args.url) ?? str(args.URL);
+    const does = name === "open_browser_url" && url ? `open ${url} in its browser` : (DOES[name] ?? (/browser/.test(name) ? "use its browser" : undefined));
+    return { toolName: OWN_TOOL + name, input: { tool: name, ...args }, title: does ? does[0]!.toUpperCase() + does.slice(1) : name, ask: `Antigravity asks to ${does ?? `use ${name}`}`, own: true, ...(free ? { free } : {}) };
+}
 
 /**
  * A call as Cavvy checks it (names from agy 1.4.9's hooks: read_file, edit_file, write_file, run_command, search_web;
  * the others are from its init's tool list, which names some differently). Paths are made absolute against the folder
- * it runs in. Its other tools (the browser, image generation, schedules, subagents) are checked as a tool named
- * Antigravity: asked about in Manual, refused in Plan.
+ * it runs in. Its other tools (the browser, image generation, schedules) are checked by their own names
+ * (Antigravity_generate_image): asked about in Manual, refused in Plan.
  */
 export function agyTool(name: string, args: Record<string, any>, cwd: string, gate?: string): AgyTool | undefined {
     // It names files by their real path (/private/tmp/... for /tmp/...): inside the folder, as the session spells it.
@@ -207,7 +252,7 @@ export function agyTool(name: string, args: Record<string, any>, cwd: string, ga
         const elsewhere = Boolean(dir && canonical(at(dir)) !== canonical(cwd));
         return { toolName: "Bash", input: { command, ...(str(args.toolSummary) ? { description: args.toolSummary } : {}) }, ...(elsewhere ? { elsewhere, reason: `It runs in ${dir}.` } : {}) };
     }
-    if (name === "send_command_input") return { toolName: "Antigravity", input: args, title: "Antigravity asks to type into a command it started" };
+    if (name === "send_command_input") return ownTool(name, args);
     if (/^(write_file|write_to_file)$/.test(name)) {
         const file = path("Path", "TargetFile", "AbsolutePath", "FilePath");
         if (!file) return undefined;
@@ -262,10 +307,15 @@ export function agyTool(name: string, args: Record<string, any>, cwd: string, ga
         const input = args.Arguments && typeof args.Arguments === "object" ? args.Arguments : typeof args.Arguments === "string" ? safeJson(args.Arguments) : {};
         return { toolName: `mcp__${server}__${tool}`, input };
     }
-    if (FREE.has(name)) return { toolName: "Antigravity", input: { tool: name, ...args }, title: `Antigravity: ${name}`, free: true };
-    if (/subagent/.test(name)) return { toolName: "Task", input: { description: str(args.TaskDescription) ?? str(args.Task) ?? str(args.Description) ?? name, ...args } };
+    if (FREE.has(name)) return ownTool(name, args, true);
+    if (/subagent/.test(name)) return { toolName: "Task", input: { description: str(args.TaskDescription) ?? str(args.Task) ?? str(args.Description) ?? str(args.Role) ?? name, ...args } };
+    // Not one Cavvy has a tool for, or one it knows without what it acts on (a write with no path): by its own name.
+    if (!KNOWN.test(name)) return ownTool(name, args);
     return undefined;
 }
+
+/** Its tools Cavvy checks as its own (Bash, Write, Edit, ...): without what they act on, they're undecidable. */
+const KNOWN = /^(run_command|write_file|write_to_file|edit_file|replace_file_content|multi_replace_file_content|sed_file|notebook_edit|read_file|view_file|view_file_outline|view_code_item|list_dir|grep_search|codebase_search|find_by_name|search_web|read_url_content|call_mcp_tool)$/;
 
 function safeJson(s: string): Record<string, unknown> {
     try {

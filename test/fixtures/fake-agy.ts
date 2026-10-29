@@ -11,7 +11,8 @@
 //   anything else      replies "hi"
 // Before each model call it runs the PreInvocation hooks; a userMessage they inject is a user_input step, and the reply
 // says what it heard.
-// `agy models` lists two models; FAKE_AGY_SIGNED_OUT=1 says to sign in instead (and so does a run). FAKE_LOG: what it
+// `agy models` lists two models; FAKE_AGY_SIGNED_OUT=1 says to sign in instead (and so does a run), and
+// FAKE_AGY_MODELS_FAIL=1 fails with an error. FAKE_LOG: what it
 // did, as JSON lines.
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "fs";
 import { isAbsolute, join, resolve } from "path";
@@ -23,6 +24,10 @@ log({ argv, gateEnv: Boolean(process.env.CAVVY_AGY_GATE && process.env.CAVVY_AGY
 
 if (argv[0] === "models") {
     console.log("Fetching available models...");
+    if (process.env.FAKE_AGY_MODELS_FAIL) {
+        console.error("Error: the model service is unavailable");
+        process.exit(2);
+    }
     if (process.env.FAKE_AGY_SIGNED_OUT) {
         console.error("Error: Please sign in to view available models. Launch the CLI without arguments to sign in.");
         process.exit(1);

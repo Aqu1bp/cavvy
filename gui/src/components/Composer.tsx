@@ -574,6 +574,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     };
     /** The model this message goes to: the session's, or (Home) the one a new session starts with. */
     const model = () => st()?.model ?? app.models.flatMap((g) => g.models).find((m) => m.ref === app.settings.model);
+    /** Its CLI has no reviewer for auto mode (Antigravity): the mode menu says what auto does there. */
+    const autoAsks = () => Boolean(app.providers.find((pr) => pr.id === model()?.provider)?.agentCli?.autoAsks);
     // Run members are validated separately by the server; the default model is irrelevant.
     const readsPdf = () => Boolean(runPicks()) || model()?.supportsPdf !== false;
     // Unknown isn't text-only: only a model known to take no images is refused them.
@@ -856,7 +858,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     <span class="vsep" aria-hidden="true" />
                     <ModelPicker current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare} />
                     <EffortPicker current={st()?.model} currentRef={app.settings.model} effort={st() ? st()!.effort : app.settings.effort} fast={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy && !st()?.activity?.idle} open={effortOpen()} setOpen={setEffortOpen} placement={menuSide()} />
-                    <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} open={modePickerOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
+                    <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} autoAsks={autoAsks()} open={modePickerOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
                     <span class="grow" />
                     <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} home={p.variant === "home"} />
                     <span class="send-wrap">

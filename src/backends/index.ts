@@ -35,6 +35,8 @@ export interface AgentCliStatus {
     description: string;
     /** Signed in with an API key: usage is billed to that, not a plan. */
     apiKey?: boolean;
+    /** Why it can't be used, when that isn't its sign-in (it didn't answer, or it can't run here): what to tell the user. */
+    problem?: string;
     /** CLI-reported identity and plan, for the settings UI only. */
     email?: string;
     plan?: string;
