@@ -5,7 +5,9 @@
 // block's DOM is brought in line with the new HTML, keeping every node that
 // didn't change; text added at the end of a run and elements added at the
 // end of a list of children are marked `md-fresh`, which fades them in.
-// When the reply is finished the marks are taken out again.
+// Each mark is taken out once its fade has run (a long reply would otherwise
+// pile up thousands of wrappers, every one restyled on every frame), and any
+// left when the reply is finished.
 
 const FRESH = "md-fresh";
 /** Inline elements a caret goes after rather than inside. */
@@ -23,6 +25,10 @@ const carets = new WeakMap<Element, HTMLElement>();
  * block's last text.
  */
 export function paint(el: HTMLElement, html: string, live: boolean, caret: boolean) {
+    if (live && !fading.has(el)) {
+        fading.add(el);
+        el.addEventListener("animationend", faded);
+    }
     carets.get(el)?.remove();
     carets.delete(el);
     const before = painted.get(el);
@@ -38,18 +44,33 @@ export function paint(el: HTMLElement, html: string, live: boolean, caret: boole
     if (caret) placeCaret(el);
 }
 
+/** Blocks listening for their marks' fades to end. */
+const fading = new WeakSet<Element>();
+
+/** One mark taken out: wrapped text goes back to plain text. */
+function unmark(m: HTMLElement) {
+    if (m.dataset.fresh !== undefined) m.replaceWith(...m.childNodes);
+    else {
+        m.classList.remove(FRESH);
+        if (!m.classList.length) m.removeAttribute("class");
+    }
+}
+
+/** A mark whose fade has run is taken out, its text joined to the text beside it. */
+function faded(e: AnimationEvent) {
+    const m = e.target as HTMLElement;
+    if (e.animationName !== "md-fresh" || !m.classList.contains(FRESH)) return;
+    const parent = m.parentNode;
+    unmark(m);
+    parent?.normalize();
+}
+
 /** Takes out the fade-in marks: wrapped text goes back to plain text. */
 export function settleFresh(el: HTMLElement) {
     el.classList.remove(FRESH);
     const marked = el.querySelectorAll<HTMLElement>(`.${FRESH}`);
     if (!marked.length) return;
-    for (const m of marked) {
-        if (m.dataset.fresh !== undefined) m.replaceWith(...m.childNodes);
-        else {
-            m.classList.remove(FRESH);
-            if (!m.classList.length) m.removeAttribute("class");
-        }
-    }
+    for (const m of marked) unmark(m);
     el.normalize();
 }
 
