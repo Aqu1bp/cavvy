@@ -8,6 +8,7 @@ import { openInEditor } from "../../state/actions";
 import { linksVersion, paths } from "../../state/filelinks";
 import { imagesReady, replyImages, transient } from "../../state/images";
 import { setViewedImage } from "../../state/ui";
+import { pathScale } from "../../lib/image-view";
 import { CodeBlock } from "./CodeBlock";
 
 function openFile(a: HTMLElement) {
@@ -47,6 +48,9 @@ function loadImages(root: HTMLElement, load: (path: string) => Promise<string>) 
     for (const img of root.querySelectorAll<HTMLImageElement>("img.md-img[data-image-file]:not([src]):not([data-loading])")) {
         const path = img.dataset.imageFile!;
         img.dataset.loading = "1";
+        // A 2× screenshot, drawn as wide as the page it shows rather than at twice that, and so stretched.
+        const scale = pathScale(path);
+        if (scale > 1) img.addEventListener("load", () => { img.style.maxWidth = `min(100%, ${img.naturalWidth / scale}px)`; }, { once: true });
         load(path).then(
             (src) => {
                 img.src = src;

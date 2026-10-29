@@ -225,6 +225,15 @@ describe.skipIf(!chromePath)("the browser tools, with Chrome", () => {
         const small = imageSize(Buffer.from(el.images[0].data, "base64"))!;
         expect(small.width).toBeLessThan(200);
         expect(small.height).toBeLessThan(60);
+        expect(el.content).not.toContain("about half size");
+        // by a CSS selector, for an element without a ref: the same box
+        const bySelector = await run(BrowserScreenshotTool, { selector: "#count" });
+        expect(imageSize(Buffer.from(bySelector.images[0].data, "base64"))).toEqual(small);
+        expect(bySelector.content).toContain('Screenshot of "#count"');
+        expect(bySelector.content).not.toContain("about half size");
+        expect(shot.content).toContain("about half size");
+        expect((await run(BrowserScreenshotTool, { selector: "#nothing-here" })).content).toContain('Nothing on the page matches "#nothing-here"');
+        expect((await run(BrowserScreenshotTool, { selector: "[[" })).content).toContain("isn't a valid CSS selector");
         const snap = await run(BrowserSnapshotTool, { screenshot: true });
         expect(snap.images).toHaveLength(1);
         expect((await run(BrowserSnapshotTool, {})).images).toBeUndefined();
