@@ -79,8 +79,9 @@ describe("a background flood", () => {
     test("leaves the server its turns, and BashOutput (filtered or not) answers while it runs", async () => {
         const { ctx, dir } = setup();
         // A flood for a set time as well as a set size: a fast machine prints 20 MB in under 50 ms, over before the
-        // reads below, and a slow one still sends 5 MB, five times what the ring keeps.
-        const flood = "const chunk = 'GET /a 200\\nPOST /b 500\\n'.repeat(1000); const end = Date.now() + 400; let sent = 0; while (Date.now() < end || sent < 5e6) { await write(chunk); sent += chunk.length; } await write('FINAL_MARKER\\n');";
+        // reads below, and a slow one still sends 5 MB, five times what the ring keeps. Its end waits for the reads
+        // to be done: they share BashOutput's cursor, so one that ran past the end would take the marker from the last.
+        const flood = "const chunk = 'GET /a 200\\nPOST /b 500\\n'.repeat(1000); const end = Date.now() + 400; let sent = 0; while (Date.now() < end || sent < 5e6 || !fs.existsSync('reads-done')) { await write(chunk); sent += chunk.length; } await write('FINAL_MARKER\\n');";
         const { id, shell } = await background(ctx, script(dir, flood));
         // Once it has started (its runtime takes a moment to), so the reads below begin while it runs.
         for (let i = 0; i < 1000 && !shell.output.includes("POST /b 500"); i++) await Bun.sleep(5);
@@ -90,6 +91,7 @@ describe("a background flood", () => {
                 await Bun.sleep(20);
                 reads.push((await BashOutputTool.run({ bash_id: id, ...(i % 2 ? { filter: "POST" } : {}) }, ctx)).content);
             }
+            writeFileSync(join(dir, "reads-done"), "");
             await exited(shell);
         });
         // Old: Bun's pipe read kept the event loop for the whole flood, so no timer ran until it ended.
