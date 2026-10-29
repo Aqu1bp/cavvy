@@ -1,4 +1,4 @@
-// Reasoning effort as a row of bars: which levels a model takes, and how the
+// Reasoning effort as a slider with a stop per level: which levels a model takes, and how the
 // keyboard and the pointer move along them. Shared by the composer's effort
 // popover and Settings → General.
 
@@ -47,8 +47,12 @@ export function effortKey(e: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" |
     return undefined;
 }
 
-/** The bar under a pointer at `x` on a row of `n` bars spanning `left` to `left + width`. */
-export function effortAt(x: number, left: number, width: number, n: number): number {
-    if (n <= 0 || width <= 0) return 0;
-    return Math.max(0, Math.min(n - 1, Math.floor(((x - left) / width) * n)));
+/**
+ * The stop nearest a pointer at `x` on a track spanning `left` to `left + width`, with `n` stops
+ * spread evenly from `inset` in from one end to `inset` in from the other (where the thumb's middle can go).
+ */
+export function effortAt(x: number, left: number, width: number, n: number, inset = 0): number {
+    const span = width - 2 * inset;
+    if (n <= 1 || span <= 0) return 0;
+    return Math.max(0, Math.min(n - 1, Math.round(((x - left - inset) / span) * (n - 1))));
 }

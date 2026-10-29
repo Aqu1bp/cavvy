@@ -22,7 +22,7 @@ import { createUpdateAction } from "./UpdateAction";
 import { MessageText } from "./ErrorCards";
 import { commandIn } from "../lib/error-text";
 import { ModeIcon, MODES } from "./ModePicker";
-import { EffortBars } from "./ModelPicker";
+import { EffortSlider } from "./ModelPicker";
 import { effortLevels, effortOf } from "../lib/effort";
 import { SidebarFrame } from "./Sidebar";
 import { NeedsYou } from "./Header";
@@ -204,7 +204,7 @@ function General() {
                 <Row title="Reasoning effort">
                     <span class="set-effort">
                         <span class="set-effort-l">{effortOf(s().effort)?.label ?? "Provider's default"}</span>
-                        <EffortBars size="sm" levels={effortLevels(undefined)} value={s().effort} onChange={(v) => void update({ effort: v })} />
+                        <EffortSlider size="sm" levels={effortLevels(undefined)} value={s().effort} onChange={(v) => void update({ effort: v })} />
                     </span>
                 </Row>
             </Section>
