@@ -979,7 +979,11 @@ export function SettingsPage() {
             <div class="set-in">
                 {/* The header stays while the page scrolls (on the window's top strip, which moves the window). */}
                 <div class="set-top">
-                    <h2>{label()}</h2>
+                    {/* With the sections as pills under it (no sidebar), the pill names the section: the header says Settings. */}
+                    <h2>
+                        <span class="set-t-tab">{label()}</span>
+                        <span class="set-t-all">Settings</span>
+                    </h2>
                     {/* Settings covers the rail and the title bar, where Needs you would be: it's here instead. */}
                     <Show when={waiting().length}>
                         <NeedsYou waiting={waiting()} />

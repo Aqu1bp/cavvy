@@ -116,7 +116,7 @@
     gap: calc(10 * var(--sp));
     height: calc(58 * var(--sp));
     padding-top: calc(12 * var(--sp));
-    margin-bottom: calc(18 * var(--sp));
+    margin-bottom: calc(10 * var(--sp));
     background: var(--sheet);
     box-shadow: 0 10px 12px -12px var(--sheet);
 }
@@ -131,6 +131,10 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+.set-t-all {
+    display: none;
 }
 
 .set-close {
@@ -187,24 +191,40 @@
 }
 
 /* No sidebar (hidden, or a drawer below 900px): the header drops below the
-   window controls, and the sections show as pills under it. */
+   window controls, says Settings, and the sections show as pills under it. */
 .settings-page.rail-off .set-top {
-    height: calc(96 * var(--sp));
-    padding-top: calc(50 * var(--sp));
+    height: calc(88 * var(--sp));
+    padding-top: calc(44 * var(--sp));
 }
 
 .settings-page.rail-off .set-pills {
     display: flex;
 }
 
+.settings-page.rail-off .set-t-tab {
+    display: none;
+}
+
+.settings-page.rail-off .set-t-all {
+    display: inline;
+}
+
 @media (max-width: 899px) {
     .settings-page .set-top {
-        height: calc(96 * var(--sp));
-        padding-top: calc(50 * var(--sp));
+        height: calc(88 * var(--sp));
+        padding-top: calc(44 * var(--sp));
     }
 
     .settings-page .set-pills {
         display: flex;
+    }
+
+    .settings-page .set-t-tab {
+        display: none;
+    }
+
+    .settings-page .set-t-all {
+        display: inline;
     }
 }
 
@@ -212,7 +232,7 @@
     display: flex;
     align-items: center;
     gap: calc(6 * var(--sp));
-    margin: calc(22 * var(--sp)) calc(4 * var(--sp)) calc(8 * var(--sp));
+    margin: calc(20 * var(--sp)) calc(4 * var(--sp)) calc(7 * var(--sp));
     font-size: 0.857rem;
     font-weight: 600;
     color: var(--fg-3);
@@ -239,8 +259,13 @@
     display: flex;
     align-items: center;
     gap: calc(16 * var(--sp));
-    min-height: calc(52 * var(--sp));
-    padding: calc(12 * var(--sp)) calc(14 * var(--sp));
+    min-height: calc(46 * var(--sp));
+    padding: calc(9 * var(--sp)) calc(14 * var(--sp));
+}
+
+/* A row with no description under its title (About's details, say) needs less height. */
+.set-row:not(:has(.set-desc)) {
+    min-height: calc(40 * var(--sp));
 }
 
 .set-row + .set-row {
