@@ -1,7 +1,6 @@
 import { RenderBoundary } from "./components/ui/ErrorBoundary";
 import { batch, createEffect, createMemo, createSignal, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
 import { PlugZap } from "lucide-solid";
-import { Toasts } from "./components/Toasts";
 import { ErrorCards } from "./components/ErrorCards";
 import { activate, app, attentionCount, handleFor, restoreActiveSession, rpc, type SessionHandle } from "./state/app";
 import { cycleSession, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
@@ -572,7 +571,6 @@ export function App() {
             <Show when={isElectron}>
                 <BrowserHostLayer />
             </Show>
-            <Toasts />
             {/* Errors' last resort: shows only when none of the places above is on screen (ErrorCards.tsx). */}
             <ErrorCards place="window" />
         </div>

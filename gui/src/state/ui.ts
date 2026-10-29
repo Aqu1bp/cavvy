@@ -115,12 +115,6 @@ export const [inspectorDrag, setInspectorDrag] = createSignal<number>();
 export const [reviewDrag, setReviewDrag] = createSignal<number>();
 export const [terminalDrag, setTerminalDrag] = createSignal<number>();
 
-/** Where the title bar's title starts and its tools end (from the window's left and right edges), and its top: the toasts drop into that row. */
-export interface TitleBarBox { start: number; end: number; top: number }
-export const [titleBarBox, setTitleBarBox] = createSignal<TitleBarBox | undefined>(undefined, {
-    equals: (a, b) => a === b || (!!a && !!b && a.start === b.start && a.end === b.end && a.top === b.top),
-});
-
 /** The window's layout, kept by the shell (App.tsx) from lib/layout.ts's rules. */
 export const [shellLayout, setShellLayout] = createSignal<WindowLayout>({
     railMode: "dock",

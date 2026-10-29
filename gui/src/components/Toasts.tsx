@@ -1,13 +1,11 @@
-// Toasts: small glass pills that drop into the title bar's row, over the title
-// for a moment and clear of the tool capsule, rather than over the content.
-// At most two show (state/app.ts queues the rest); pointing at one, or focusing
-// it, holds its timer, so an Undo can't slip away under the cursor.
-// Errors never show here: they're cards by the composer (ErrorCards.tsx).
+// A toast: a small glass pill for a confirmation or an Undo, shown with the error
+// cards right above the composer (ErrorCards.tsx), and gone on its own. At most
+// two show (state/app.ts queues the rest); pointing at one, or focusing it, holds
+// its timer, so an Undo can't slip away under the cursor. Errors are cards instead.
 
 import { For, Match, onCleanup, Show, Switch } from "solid-js";
 import { CircleCheck, Info, TriangleAlert, X } from "lucide-solid";
-import { dismissToast, pauseToast, runToastChoice, toasts, type Toast } from "../state/app";
-import { titleBarBox } from "../state/ui";
+import { dismissToast, pauseToast, runToastChoice, type Toast } from "../state/app";
 
 export function ToastItem(p: { toast: Toast }) {
     const t = () => p.toast;
@@ -50,18 +48,6 @@ export function ToastItem(p: { toast: Toast }) {
             <button class="icon-btn" onClick={() => dismissToast(t().id)} aria-label="Dismiss">
                 <X size={13} />
             </button>
-        </div>
-    );
-}
-
-export function Toasts() {
-    // The title bar's row (Header.tsx keeps it), here rather than on the root: see toasts.css.
-    const px = (v: number | undefined) => (v === undefined ? undefined : `${v}px`);
-    return (
-        <div class="toasts" style={{ "--bar-start": px(titleBarBox()?.start), "--bar-end": px(titleBarBox()?.end), "--bar-top": px(titleBarBox()?.top) }}>
-            <div class="toast-region" role="status" aria-live="polite" aria-relevant="additions text">
-                <For each={toasts.filter((t) => t.level !== "error")}>{(t) => <ToastItem toast={t} />}</For>
-            </div>
         </div>
     );
 }

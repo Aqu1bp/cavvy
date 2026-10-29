@@ -1,4 +1,4 @@
-// Render the real error cards, title-bar toasts and provider rows with Solid reactivity; the store and services are adapters.
+// Render the real error cards, the toasts over them and provider rows with Solid reactivity; the store and services are adapters.
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
@@ -44,7 +44,8 @@ const roomy = {
 
 /** ErrorCards.tsx loaded once: its places share which of them shows. */
 function cardsModule(s: ReturnType<typeof store>, settings: () => string | undefined = () => undefined, shellLayout: () => WindowLayout = () => windowLayout(roomy)) {
-    const ErrorCards = component(strip(read("ErrorCards")), "ErrorCards", { ...s.deps, ...errorText, settingsTab: settings, shellLayout, coversComposer, CircleAlert: icon, Copy: icon, X: icon });
+    const ToastItem = component(strip(read("Toasts")), "ToastItem", { ...s.deps, CircleCheck: icon, Info: icon, TriangleAlert: icon, X: icon });
+    const ErrorCards = component(strip(read("ErrorCards")), "ErrorCards", { ...s.deps, ...errorText, settingsTab: settings, shellLayout, coversComposer, ToastItem, CircleAlert: icon, Copy: icon, X: icon });
     return (place: string) => mountWith(ErrorCards, place);
 }
 
@@ -58,29 +59,26 @@ function mountWith(ErrorCards: (p: { place: string }) => any, place: string) {
     return { root, dispose, cards: () => byClass(root, "error-card"), region: () => byClass(root, "error-cards")[0]! };
 }
 
-test("errors show as cards with the whole message, and never in the title bar's row", () => {
+test("errors show as cards with the whole message, and confirmations as pills over them, in the same place", () => {
     const s = store();
     s.add("Session settled", "success");
     s.add("Codex isn't signed in. Run `codex login` in a terminal (OpenAI's own sign-in), then try again.");
     const cards = mount("composer", s);
-    const Toasts = component(strip(read("Toasts")), "Toasts", { ...s.deps, titleBarBox: () => undefined, CircleCheck: icon, Info: icon, TriangleAlert: icon, X: icon });
-    const bar = node("bar");
-    const disposeBar = renderer.render(() => Toasts(), bar);
     try {
-        // The title bar: only the confirmation, in a polite region; no alert region there any more.
-        expect(text(bar)).toContain("Session settled");
-        expect(text(bar)).not.toContain("signed in");
-        expect(all(bar).some((n) => n.props.role === "alert")).toBe(false);
+        // The pills: only the confirmation, in a polite region of its own.
+        const pills = byClass(cards.root, "toast-region")[0]!;
+        expect(pills.props).toMatchObject({ role: "status", "aria-live": "polite" });
+        expect(text(pills)).toContain("Session settled");
+        expect(text(pills)).not.toContain("signed in");
         // The card: an assertive alert region, the title and its fix, the command as code.
         expect(cards.region().props).toMatchObject({ role: "alert", "aria-live": "assertive" });
         expect(cards.cards()).toHaveLength(1);
         expect(text(byClass(cards.root, "error-card-title")[0]!)).toBe("Codex isn't signed in");
         expect(text(byClass(cards.root, "error-card-detail")[0]!)).toBe("Run codex login in a terminal (OpenAI's own sign-in), then try again.");
         expect(all(cards.root).filter((n) => n.tag === "code").map(text)).toEqual(["codex login"]);
-        expect(text(cards.root)).not.toContain("Session settled");
+        expect(text(cards.region())).not.toContain("Session settled");
     } finally {
         cards.dispose();
-        disposeBar();
     }
 });
 

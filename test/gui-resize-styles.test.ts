@@ -25,9 +25,6 @@ test("nothing in the app writes to <html>'s style but the preferences", () => {
     const files = (dir: string): string[] => readdirSync(join(gui, dir), { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(dir, e.name)) : /\.tsx?$/.test(e.name) ? [join(dir, e.name)] : []));
     const writers = files(".").filter((f) => /documentElement\.style|documentElement\)\.style/.test(read(f)));
     expect(writers).toEqual([]);
-    // The title bar's place reaches the toasts as a signal, set on .toasts alone.
-    expect(read("components/Header.tsx")).not.toContain("--bar-start");
-    expect(read("components/Toasts.tsx")).toContain('"--bar-start"');
 });
 
 test("the composer dock's height doesn't inherit: only the transcript's boxes that use it have it", () => {
@@ -41,9 +38,3 @@ test("the composer dock's height doesn't inherit: only the transcript's boxes th
     expect(new Set(users)).toEqual(new Set([".transcript-end", ".jump"]));
 });
 
-test("the title bar doesn't read its box as it mounts: its ResizeObserver's first report places the toasts", () => {
-    const bar = read("components/Header.tsx");
-    const mount = bar.slice(bar.indexOf("export function TitleBar"), bar.indexOf("return (", bar.indexOf("export function TitleBar")));
-    expect(mount).toContain("new ResizeObserver(place)");
-    expect(mount).not.toMatch(/^\s*place\(\);/m);
-});
