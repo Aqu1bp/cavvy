@@ -9,6 +9,8 @@ import type { ScheduledJob } from "../agent/schedule";
 import { GIT_TOOL_HEADINGS } from "../tools/git-tools";
 import { BROWSER_TOOL_HEADINGS } from "../tools/browser-tools";
 import { BrowserSession } from "../browser/session";
+import { SimulatorSession } from "../simulator/session";
+import { SIMULATOR_TOOL_HEADINGS } from "../tools/simulator-tools";
 import { WakeQueue, WatcherMap, formatWakes, stopWatchers, wakeDisplay, type Wake } from "../agent/wakes";
 import { turnDuration } from "./duration";
 import { existsSync, readFileSync } from "fs";
@@ -252,6 +254,11 @@ export class Runtime {
     get browser(): BrowserSession {
         return this.toolState.browser!;
     }
+
+    /** The session's simulator. */
+    get simulator(): SimulatorSession {
+        return this.toolState.simulator!;
+    }
     readonly checker: PermissionChecker;
     readonly classifier: AutoClassifier;
     /** The reviewModel the reviewer's verdicts came from. */
@@ -415,6 +422,9 @@ export class Runtime {
         // The browser exists from the start, so the window hears of the first page the agent opens (it makes no process until then).
         this.toolState.browser = new BrowserSession({ root: ws.cwd, settings: () => this.settings(), refuse: (url, approved) => this.checker.urlRefusal(url, approved) });
         this.toolState.browser.onChange(() => this.engine.sendBrowser(this.id, this.browser.state()));
+        // So does the simulator, so the window hears when the agent starts or uses one (it starts nothing until then).
+        this.toolState.simulator = new SimulatorSession({ settings: () => this.settings() });
+        this.toolState.simulator.onChange(() => this.engine.sendSimulator(this.id, this.simulator.state()));
         this.toolState.secrets!.onChange(() => this.setState({ secrets: this.toolState.secrets!.names() }));
         this.schedules = new SessionSchedules({
             session: () => this.session,
@@ -2405,6 +2415,9 @@ export class Runtime {
             it.url = String(input.url ?? "");
             if (input.prompt) it.description = redact(String(input.prompt).slice(0, 300));
             if (suggestions.length) it.options.push({ id: "always", label: `Always allow ${suggestions[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1")}` });
+        } else if (SIMULATOR_TOOL_HEADINGS[tool.name]) {
+            // What it does ("Start iPhone 17", "Simulator: tap e4") heads the prompt where the preview says.
+            it.heading = req.preview?.summary ? redact(req.preview.summary) : SIMULATOR_TOOL_HEADINGS[tool.name]!;
         } else if (BROWSER_TOOL_HEADINGS[tool.name]) {
             it.heading = BROWSER_TOOL_HEADINGS[tool.name]!;
             if (tool.name === "BrowserNavigate") it.url = String(input.url ?? "");
@@ -4055,6 +4068,7 @@ export class Runtime {
             killAllShells({ state: this.toolState }),
             this.toolState.lsp?.dispose(),
             this.toolState.browser?.dispose(),
+            this.toolState.simulator?.dispose(),
             commit,
         ]);
         try {

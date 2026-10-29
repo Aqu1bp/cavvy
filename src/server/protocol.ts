@@ -1439,6 +1439,8 @@ export interface GuiSettings {
     webSearch?: string;
     /** The Browser tools and pane (false turns them off; true, the default, is stored as unset). */
     browser?: boolean;
+    /** The Simulator tools and pane (false turns them off; true, the default, is stored as unset). */
+    simulator?: boolean;
     allowBypass?: boolean;
     /** A message sent while a turn runs: steer it (default) or wait for it to end. */
     followUpBehavior?: FollowUpMode;
@@ -1532,6 +1534,46 @@ export interface BrowserState {
 export type BrowserCommand = "goto" | "back" | "forward" | "reload" | "new_tab" | "switch_tab" | "close_tab";
 
 // ---------------------------------------------------------------------------
+// The simulator (src/simulator): Xcode's iOS simulators, seen and used from the GUI's Simulator pane.
+
+export interface SimulatorDevice {
+    udid: string;
+    name: string;
+    /** "iOS 27.0" */
+    runtime: string;
+    state: "booted" | "booting" | "shutting_down" | "shutdown";
+    kind: "iphone" | "ipad";
+}
+
+/**
+ * Where a session's simulator stands. `unavailable`: there are no simulators here (`error` says why). `off`: the
+ * session has no device running. `booting`: its device is starting. `ready`: it runs, and `screen` is its size in
+ * device pixels. `error`: its device runs, but Cavvy can't show or use it (`error` says why).
+ */
+export interface SimulatorState {
+    status: "unavailable" | "off" | "booting" | "ready" | "error";
+    error?: string;
+    /** The session's device (also when it's off: the one the pane offers to start). */
+    device?: SimulatorDevice;
+    /** The devices that can be started, booted first. */
+    devices: SimulatorDevice[];
+    screen?: { width: number; height: number; scale: number };
+    /** When the agent last did something on it (ms since the epoch). */
+    agentAt?: number;
+}
+
+/** What a person did in the Simulator pane. A touch is at a fraction of the screen (0…1 each way); a key by KeyboardEvent.code. */
+export type SimulatorInput =
+    | { kind: "touch"; phase: "down" | "move" | "up"; x: number; y: number }
+    | { kind: "key"; code: string; down: boolean }
+    | { kind: "button"; name: "home" | "lock" | "siri" }
+    /** Text as it is (a paste, an input method's result), not keys. */
+    | { kind: "text"; text: string };
+
+/** What the pane's device menu can ask for. */
+export type SimulatorCommand = "select" | "boot" | "shutdown";
+
+// ---------------------------------------------------------------------------
 // Events
 
 export type ServerEvent =
@@ -1542,6 +1584,14 @@ export type ServerEvent =
      * `data`: a JPEG frame, base64 on the legacy RPC connection; `width` and `height`: the page's size in CSS pixels, which a click's coordinates are in.
      */
     | { type: "browser.frame"; sessionId: string; frameId: string; tab: number; data: string; width: number; height: number }
+    /** A session's simulator changed: its device, whether it runs, the devices there are (sent to the windows that have the session open). */
+    | { type: "simulator.state"; sessionId: string; state: SimulatorState }
+    /**
+     * A picture of the session's simulator screen, for a window watching it (simulator.watch), sent after it acknowledges the last
+     * (simulator.ack). `data`: a JPEG, binary on the picture socket and base64 on the RPC connection; `width` and `height`:
+     * the screen's size in device pixels (the picture may be smaller).
+     */
+    | { type: "simulator.frame"; sessionId: string; frameId: string; data: Uint8Array | string; width: number; height: number }
     /**
      * `pos`: where in the shell's output this ends (the window gives it back to
      * terminal.attach). `reset`: the window's screen is to be reset before `data`,
@@ -1654,6 +1704,20 @@ export interface Methods {
     "browser.command": { params: { id: string; command: BrowserCommand; url?: string; tab?: number }; result: BrowserState };
     /** The person answers a confirm or prompt the page is showing. */
     "browser.dialog": { params: { id: string; accept: boolean; text?: string; tab?: number }; result: null };
+    /** The session's simulator: its device, whether it runs, and the devices there are (looked up again). */
+    "simulator.state": { params: { id: string }; result: SimulatorState };
+    /**
+     * The window shows the session's simulator: its pictures come as simulator.frame until simulator.unwatch. `side`: the longest
+     * side the pane draws the screen at, in device pixels, so pictures aren't larger than shown (called again when it changes).
+     */
+    "simulator.watch": { params: { id: string; side?: number }; result: SimulatorState };
+    "simulator.unwatch": { params: { id: string }; result: null };
+    /** The window has received this picture. */
+    "simulator.ack": { params: { id: string; frameId: string }; result: null };
+    /** What the person did in the pane; the agent is told of it the next time it looks. */
+    "simulator.input": { params: { id: string; input: SimulatorInput }; result: null };
+    /** The device menu: use another device (`select`), start the session's (`boot`, a device given picks it first), or shut it down. */
+    "simulator.command": { params: { id: string; command: SimulatorCommand; udid?: string }; result: SimulatorState };
     /** After scripts.run, once the window has sent what was typed while it opened: the script's command may be typed now. */
     "terminal.arm": { params: { id: string }; result: null };
     /**

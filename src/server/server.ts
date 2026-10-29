@@ -18,7 +18,7 @@ import { Engine, RpcError, type EngineClient, type EngineOptions } from "./engin
 import { parseInput } from "../browser/interact";
 import type { BrowserInput, ClientMessage, Method, ServerEvent, ServerMessage } from "./protocol";
 import { redact, registerSecret } from "../util/redact";
-import { encodeBrowserFrame } from "./browser-wire";
+import { encodeBrowserFrame, encodeSimulatorFrame } from "./browser-wire";
 import { attachDesktopHost, detachDesktopHost, type DesktopHost } from "../browser/host";
 import { wireReplacer } from "./timeline";
 
@@ -224,14 +224,19 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                 c.send = (ev: ServerEvent) => {
                     if (ws.readyState !== 1) return;
                     // A stalled transport is disconnected, never allowed to queue megabytes of pictures.
-                    if (ev.type === "browser.frame" && ws.getBufferedAmount() > 1024 * 1024) {
+                    if ((ev.type === "browser.frame" || ev.type === "simulator.frame") && ws.getBufferedAmount() > 1024 * 1024) {
                         ws.close(1013, "Browser viewer is too slow; reconnect");
                         return;
                     }
                     if (ws.data.browser && ev.type === "browser.frame") {
                         const { sessionId, frameId, tab, width, height, data } = ev;
                         ws.send(encodeBrowserFrame({ sessionId, frameId, tab, width, height }, Buffer.from(data, "base64")));
-                    } else ws.send(JSON.stringify({ event: ev } satisfies ServerMessage, wireReplacer));
+                    } else if (ws.data.browser && ev.type === "simulator.frame") {
+                        // Binary as the helper made it: no base64 on the way.
+                        const { sessionId, frameId, width, height, data } = ev;
+                        ws.send(encodeSimulatorFrame({ sessionId, frameId, width, height }, typeof data === "string" ? Buffer.from(data, "base64") : data));
+                    } else if (ev.type === "simulator.frame" && typeof ev.data !== "string") ws.send(JSON.stringify({ event: { ...ev, data: Buffer.from(ev.data).toString("base64") } } satisfies ServerMessage, wireReplacer));
+                    else ws.send(JSON.stringify({ event: ev } satisfies ServerMessage, wireReplacer));
                 };
                 engine.clients.add(c);
             },
@@ -247,9 +252,9 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                     return;
                 }
                 if (typeof msg?.method !== "string") return;
-                if (ws.data.browser && !msg.method.startsWith("browser.")) { ws.close(1008, "Browser methods only"); return; }
+                if (ws.data.browser && !msg.method.startsWith("browser.") && !msg.method.startsWith("simulator.")) { ws.close(1008, "Browser methods only"); return; }
                 // High-rate inputs and acknowledgements don't need a response or pending-RPC bookkeeping.
-                const notification = ws.data.browser && msg.id === undefined && (msg.method === "browser.input" || msg.method === "browser.ack");
+                const notification = ws.data.browser && msg.id === undefined && (msg.method === "browser.input" || msg.method === "browser.ack" || msg.method === "simulator.input" || msg.method === "simulator.ack");
                 if (!notification && typeof msg.id !== "number") return;
                 if (ws.data.browser && msg.method === "browser.input") {
                     const p = msg.params as { id?: unknown; tab?: unknown; input?: unknown };

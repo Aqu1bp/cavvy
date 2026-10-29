@@ -72,6 +72,7 @@ import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./s
 import { WATCH_INSTRUCTIONS, watchServerTools } from "../tools/git-tools";
 import { MONITOR_INSTRUCTIONS, monitorServerTools, nativeMonitorCall, stoppedMonitorNote } from "../tools/monitor";
 import { BROWSER_INSTRUCTIONS, BrowserNavigateTool, browserServerTools, nativeBrowserCall, servedBrowserName } from "../tools/browser-tools";
+import { SIMULATOR_INSTRUCTIONS, SimulatorControlTool, nativeSimulatorCall, servedSimulatorName, simulatorServerTools } from "../tools/simulator-tools";
 import { nativeWorktreeCall, servedWorktreeFor, WORKTREE_INSTRUCTIONS, worktreeServerTools } from "../tools/worktree-tools";
 import { offered } from "../tools/index";
 import { lostNote, SessionBackground, type BackgroundTaskInfo } from "./background";
@@ -1682,9 +1683,11 @@ export class Agent {
         const monitoring = watching && caller === "codex";
         // Neither has a browser to show Cavvy's pane: its tools go to both.
         const browsing = !acp && offered(BrowserNavigateTool, this.o.settings());
+        // Nor a simulator: its tools go to both, on a Mac with Xcode.
+        const simulating = !acp && offered(SimulatorControlTool, this.o.settings());
         // Claude Code has EnterWorktree and ExitWorktree of its own; the others get Cavvy's.
         const worktrees = caller === "codex" || acp;
-        if (!delegating && !(store && ask) && !scheduling && !watching && !browsing && !worktrees) return undefined;
+        if (!delegating && !(store && ask) && !scheduling && !watching && !browsing && !simulating && !worktrees) return undefined;
         const tools: ServerTool[] = [];
         const instructions: string[] = [];
         if (delegating) {
@@ -1720,6 +1723,10 @@ export class Agent {
         if (browsing) {
             tools.push(...browserServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId)));
             instructions.push(BROWSER_INSTRUCTIONS);
+        }
+        if (simulating) {
+            tools.push(...simulatorServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId)));
+            instructions.push(SIMULATOR_INSTRUCTIONS);
         }
         if (worktrees) {
             tools.push(...worktreeServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), () => this.state));
@@ -2779,7 +2786,7 @@ export class Agent {
         if ((e.type === "tool_start" || e.type === "tool_end") && e.call.name.startsWith(`mcp__${MCP_SERVER_NAME}__`)) {
             const served = e.call.name.slice(`mcp__${MCP_SERVER_NAME}__`.length);
             const input = (e.call.input ?? {}) as Record<string, unknown>;
-            const native = nativeMonitorCall(served, input) ?? nativeBrowserCall(served, input) ?? nativeWorktreeCall(served, input);
+            const native = nativeMonitorCall(served, input) ?? nativeBrowserCall(served, input) ?? nativeSimulatorCall(served, input) ?? nativeWorktreeCall(served, input);
             const tool = native && this.findTool(native.name);
             if (native && tool) {
                 const call = { ...e.call, ...native };
@@ -2899,7 +2906,7 @@ export class Agent {
         // Only the main agent can be woken, so a sub-agent gets no Monitor (Cavvy's sub-agents don't either). Nor can its stop end the main turn.
         if (tool.name === "Monitor" && callId && (await this.fromBackendSubagent(callId))) return { text: "Monitor isn't available to sub-agents: only the main agent can be woken by one.", isError: true };
         // The CLI approves Cavvy's tools without asking: a rule naming the tool as served is enforced here, before the checks its own name gets.
-        const served = servedBrowserName(tool.name) ?? servedWorktreeFor(tool.name);
+        const served = servedBrowserName(tool.name) ?? servedSimulatorName(tool.name) ?? servedWorktreeFor(tool.name);
         if (served) {
             const refused = await this.authorizeServedTool(served, tool.title(input), input, signal);
             if (refused) return refused;
@@ -3281,7 +3288,7 @@ export class Agent {
 
         // A browser tool Claude Code or Codex calls, in auto mode: runs without Cavvy's reviewer, as T3 Code's do (that
         // reviewer would be a one-off run of the CLI itself). Rules, plan mode, read-only agents and hooks still hold.
-        if (served && servedBrowserName(tool.name) && decision.needsClassifier && !decision.dangerous && hookDecision !== "ask") return { tool, input, sandbox, auto: "auto mode" };
+        if (served && (servedBrowserName(tool.name) || servedSimulatorName(tool.name)) && decision.needsClassifier && !decision.dangerous && hookDecision !== "ask") return { tool, input, sandbox, auto: "auto mode" };
 
         let classifierReason: string | undefined;
         let summary: string | undefined;
@@ -3729,6 +3736,8 @@ export class Agent {
                 lsp: this.state.lsp?.fork(),
                 // Its pages are the session's tabs.
                 browser: this.state.browser,
+                // And its device, the session's.
+                simulator: this.state.simulator,
             },
             host: {
                 emit: (e) => {

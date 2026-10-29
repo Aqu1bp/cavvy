@@ -338,7 +338,7 @@ const SCREENSHOT_DAYS = 30;
  * a reply links to, up to MAX_SHOWN_IMAGE (a bigger one, of a long and wide page, is saved as a copy that fits). Older
  * ones go as one is saved. Undefined when it can't be written; the agent still sees it.
  */
-async function saveScreenshot(shot: ImagePart): Promise<string | undefined> {
+export async function saveScreenshot(shot: ImagePart): Promise<string | undefined> {
     const image = base64Size(shot.data) > MAX_SHOWN_IMAGE ? await fitImage(shot) : shot;
     if (!image) return undefined;
     const dir = join(paths.home(), "screenshots");

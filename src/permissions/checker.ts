@@ -30,7 +30,7 @@ import { findMatch, EDIT_TOOLS, READ_TOOLS, toolPath, type RuleTarget } from "./
 import { accountTarget, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, type CommandAnalysis, CAVVY_FILES, cavvyHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, suggestBashRules, withoutHeredocData } from "./bash-safety";
 import { accessNeeded, looksDestructive, sandboxEnabled, sandboxKind, sandboxPolicy, type SandboxKind, type SandboxPolicy } from "./sandbox";
 import { stableStringify, type ApprovedAction } from "./classifier";
-import { isBrowserTool, isQuietBrowserCall, isReadOnly, isShellTool } from "../tools/types";
+import { isBrowserTool, isQuietBrowserCall, isReadOnly, isShellTool, isSimulatorTool } from "../tools/types";
 import { canonical, expandPath, isInside, spellings } from "../util/files";
 import { cavvyHome, opencodeConfigDir, paths } from "../config/paths";
 import { homeAliases, LEGACY } from "../config/legacy";
@@ -453,6 +453,9 @@ export class PermissionChecker {
             if (isBrowserTool(tool.name) && tool.category === "execute" && !isReadOnly(tool, input)) {
                 return { behavior: "deny", reason: "Plan mode is active: the browser can be opened and read (snapshots, screenshots, logs), but not clicked, typed into or scripted. Call ExitPlanMode with your plan first." };
             }
+            if (isSimulatorTool(tool.name) && !isReadOnly(tool, input)) {
+                return { behavior: "deny", reason: "Plan mode is active: the simulator can be read (snapshots, screenshots, the device list), but not started, tapped or typed into. Call ExitPlanMode with your plan first." };
+            }
             if (tool.name === "EnterWorktree" || tool.name === "ExitWorktree") {
                 return { behavior: "deny", reason: "Plan mode is active: the session stays where it is, in no new worktree. Call ExitPlanMode with your plan first." };
             }
@@ -566,6 +569,8 @@ export class PermissionChecker {
                 // What a page does is the page's: clicking and typing run its scripts and can submit its forms. Hovering,
                 // scrolling and waiting change nothing, so they go unasked; the rest asks once, then "don't ask again" allows the tool.
                 if (isBrowserTool(tool.name) && (isReadOnly(tool, input) || isQuietBrowserCall(tool.name, input))) return { behavior: "allow" };
+                // Listing the simulators and waiting on one change nothing; starting, installing, tapping and typing ask once, then "don't ask again" allows the tool.
+                if (isSimulatorTool(tool.name) && isReadOnly(tool, input)) return { behavior: "allow" };
                 // GitCommit, GitPush, CreatePullRequest: "don't ask again" allows the tool in this project.
                 const suggestions = [tool.name];
                 // Publishing reaches other people and can't be taken back: auto mode's reviewer doesn't decide it, the user does.

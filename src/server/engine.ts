@@ -65,6 +65,8 @@ import type {
     ArchiveOffer,
     ArchiveResult,
     BrowserState,
+    SimulatorInput,
+    SimulatorState,
     CliSessionInfo,
     CliSessionsList,
     CommandInfo,
@@ -109,6 +111,7 @@ import { IMPLEMENT_MODES, PROTOCOL_VERSION, SCRIPT_LIMITS } from "./protocol";
 import { modelRef, type AttachedPart, type ImagePart } from "../providers/types";
 import { checkFiles, checkMedia, toWire } from "./attachments";
 import { BrowserError } from "../browser/page";
+import { SimulatorError } from "../simulator/simctl";
 
 export interface EngineOptions {
     /** --dangerously-skip-permissions: bypass mode may be chosen. */
@@ -443,6 +446,11 @@ export class Engine {
 
     cliCommands(provider: string | undefined, cwd: string): ReadonlySet<string> | undefined {
         return provider ? this.cliCommandNames.get(`${provider}:${resolve(cwd)}`) : undefined;
+    }
+
+    /** The session's simulator changed: the windows that have it open hear of it. */
+    sendSimulator(sessionId: string, state: SimulatorState) {
+        for (const c of this.clients) if (c.subs.has(sessionId)) c.send({ type: "simulator.state", sessionId, state });
     }
 
     /** The session's browser changed: the windows that have it open hear of it. */
@@ -1107,6 +1115,7 @@ export class Engine {
         this.clients.delete(client);
         this.terminals.drop(client);
         for (const rt of this.runtimes.values()) rt.browser.unwatch(client);
+        for (const rt of this.runtimes.values()) rt.simulator.unwatch(client);
         this.setups.drop(client);
         for (const rt of this.runtimes.values()) {
             rt.setDrafting(client, false);
@@ -1691,6 +1700,7 @@ export class Engine {
             idleCompaction: s.idleCompaction,
             webSearch: s.webSearch,
             browser: s.browser?.enabled,
+            simulator: s.simulator?.enabled,
             allowBypass: s.permissions?.allowBypass,
             followUpBehavior: s.followUpBehavior,
             editor: s.editor,
@@ -1717,6 +1727,7 @@ export class Engine {
                 const { enabled: _, ...rest } = s.browser ?? {};
                 s.browser = patch.browser === false ? { ...rest, enabled: false } : Object.keys(rest).length ? rest : undefined;
             }
+            if ("simulator" in patch) s.simulator = patch.simulator === false ? { enabled: false } : undefined;
             if ("defaultMode" in patch || "allowBypass" in patch) {
                 const perms = (s.permissions ??= {});
                 if ("defaultMode" in patch) perms.defaultMode = patch.defaultMode && PERMISSION_MODES.includes(patch.defaultMode) ? patch.defaultMode : undefined;
@@ -1978,6 +1989,30 @@ export class Engine {
                 }
                 return null;
             }
+            case "simulator.state":
+                return await simulatorCall(() => this.runtime(p.id).simulator.refresh());
+            case "simulator.watch": {
+                const rt = this.runtime(p.id);
+                const side = typeof p.side === "number" && Number.isFinite(p.side) ? p.side : undefined;
+                return await simulatorCall(() => rt.simulator.watch(client, (f, frameId) => client.send({ type: "simulator.frame", sessionId: rt.id, frameId, data: f.data, width: f.width, height: f.height }), side));
+            }
+            case "simulator.unwatch":
+                this.runtimes.get(str(p.id, "id"))?.simulator.unwatch(client);
+                return null;
+            case "simulator.ack":
+                this.runtimes.get(str(p.id, "id"))?.simulator.ack(client, str(p.frameId, "frameId"));
+                return null;
+            case "simulator.input": {
+                const input = parseSimulatorInput(p.input);
+                if (!input) throw new RpcError("Bad simulator input");
+                await simulatorCall(() => this.runtime(p.id).simulator.input(input));
+                return null;
+            }
+            case "simulator.command": {
+                const command = str(p.command, "command");
+                if (command !== "select" && command !== "boot" && command !== "shutdown") throw new RpcError("Unknown simulator command");
+                return await simulatorCall(() => this.runtime(p.id).simulator.command(command, typeof p.udid === "string" ? p.udid : undefined));
+            }
             case "browser.state":
                 return this.runtime(p.id).browser.state();
             case "browser.watch": {
@@ -2119,6 +2154,7 @@ export class Engine {
                 const id = str(p.id, "id");
                 client.subs.delete(id);
                 this.runtimes.get(id)?.browser.unwatch(client);
+                this.runtimes.get(id)?.simulator.unwatch(client);
                 this.unloadIfUnused(id);
                 return null;
             }
@@ -2702,6 +2738,34 @@ function realPath(p: string): string {
 
 function optStr(v: unknown): string | undefined {
     return typeof v === "string" && v ? v : undefined;
+}
+
+/** A simulator call whose refusal (none running, Xcode missing) is for the window to show. */
+async function simulatorCall<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+        return await fn();
+    } catch (e) {
+        throw e instanceof SimulatorError ? new RpcError(e.message, "simulator") : e;
+    }
+}
+
+/** What the Simulator pane sent, checked; undefined when it isn't an input. */
+export function parseSimulatorInput(v: unknown): SimulatorInput | undefined {
+    if (!v || typeof v !== "object") return undefined;
+    const i = v as Record<string, unknown>;
+    const fraction = (n: unknown) => typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 1;
+    switch (i.kind) {
+        case "touch":
+            return (i.phase === "down" || i.phase === "move" || i.phase === "up") && fraction(i.x) && fraction(i.y) ? { kind: "touch", phase: i.phase, x: i.x as number, y: i.y as number } : undefined;
+        case "key":
+            return typeof i.code === "string" && i.code.length <= 32 && typeof i.down === "boolean" ? { kind: "key", code: i.code, down: i.down } : undefined;
+        case "button":
+            return i.name === "home" || i.name === "lock" || i.name === "siri" ? { kind: "button", name: i.name } : undefined;
+        case "text":
+            return typeof i.text === "string" && i.text.length > 0 && i.text.length <= 10_000 ? { kind: "text", text: i.text } : undefined;
+        default:
+            return undefined;
+    }
 }
 
 /** A browser call whose refusal (not an address, no such tab) is for the window to show. */

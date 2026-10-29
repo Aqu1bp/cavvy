@@ -311,7 +311,7 @@ export async function endRun(s: RunSetup, agent: Agent | undefined, started: Pro
         : undefined;
     // Delegated tasks still running end with the run.
     try {
-        await Promise.all([ended, agent?.dispose(), killAllShells({ state: s.toolState }), s.toolState.lsp?.dispose(), s.toolState.browser?.dispose(), within(s.mcp.closeAll(), 1500)]);
+        await Promise.all([ended, agent?.dispose(), killAllShells({ state: s.toolState }), s.toolState.lsp?.dispose(), s.toolState.browser?.dispose(),s.toolState.simulator?.dispose(), within(s.mcp.closeAll(), 1500)]);
     } finally {
         s.original?.release();
     }

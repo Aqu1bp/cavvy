@@ -3,6 +3,7 @@
 
 import { GIT_TOOL_HEADINGS } from "../tools/git-tools";
 import { BROWSER_TOOL_HEADINGS } from "../tools/browser-tools";
+import { SIMULATOR_TOOL_HEADINGS } from "../tools/simulator-tools";
 import { WakeQueue, WatcherMap, formatWakes, stopWatchers, wakeDisplay, type Wake } from "../agent/wakes";
 import { spawnSync } from "bun";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "fs";
@@ -438,7 +439,7 @@ export class App {
         this.screen.flushNow();
         // SessionEnd hooks get at most 5 seconds.
         const ended = this.sessionHook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000));
-        await Promise.all([ended, disposed, killAllShells({ state: this.toolState }), this.toolState.lsp?.dispose(), this.toolState.browser?.dispose(), Promise.race([this.mcp.closeAll(), new Promise((r) => setTimeout(r, 1500))])]);
+        await Promise.all([ended, disposed, killAllShells({ state: this.toolState }), this.toolState.lsp?.dispose(), this.toolState.browser?.dispose(),this.toolState.simulator?.dispose(), Promise.race([this.mcp.closeAll(), new Promise((r) => setTimeout(r, 1500))])]);
         if (finishWorktree) {
             for (const line of await finishWorktree().catch((e: Error) => [theme.error(`Couldn't remove the worktree: ${redact(e.message)}`)])) this.screen.print(line);
             this.screen.flushNow();
@@ -1786,6 +1787,9 @@ export class App {
             header.push(bold(String(input.url ?? "")));
             if (input.prompt) header.push(theme.muted(String(input.prompt).slice(0, 200)));
             if (suggestions.length) items.push({ label: `Yes, and don't ask again for ${bold(suggestions[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1"))}`, value: "always" });
+        } else if (SIMULATOR_TOOL_HEADINGS[tool.name]) {
+            title = SIMULATOR_TOOL_HEADINGS[tool.name]!;
+            header.push(bold(req.preview?.summary ?? req.title));
         } else if (BROWSER_TOOL_HEADINGS[tool.name]) {
             title = BROWSER_TOOL_HEADINGS[tool.name]!;
             header.push(bold(tool.name === "BrowserNavigate" ? String(input.url ?? "") : req.title));
