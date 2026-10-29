@@ -2397,7 +2397,7 @@ export class Agent {
                 const display = joinSteered(queued, "\n");
                 const content: UserContent[] = [{ type: "text", text: joinSteered(queued, "\n\n") }, ...steer.attachments, ...steer.context.map(reminder)];
                 /** Its place in the session, after what the backend said before it, as the prompt it is. */
-                const store = (id: number) => this.checkpoint(display, false, (checkpoint) => void stored.set(id, { id, message: this.session.push({ role: "user", content, meta: { kind: "prompt", display, checkpoint } }), texts: queued, attachments: steer.attachments }));
+                const store = (id: number) => this.checkpoint(display, false, (checkpoint) => void stored.set(id, { id, message: this.session.push({ role: "user", content, meta: { kind: "prompt", display, checkpoint, steered: true } }), texts: queued, attachments: steer.attachments }));
                 const out: SteerMessage[] = [];
                 const t = steer.transaction;
                 if (queued.length) {

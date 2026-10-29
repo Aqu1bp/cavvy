@@ -627,7 +627,7 @@ export function replay(o: ReplayInput): Turn[] {
                 const rec = o.ui.turn(si, index) ?? (index === 1 && before >= 0 ? o.ui.turn(si - 1, before) : undefined);
                 const imported = Boolean(m.meta?.imported);
                 // A wake (a watched PR, a monitor) isn't a prompt to rewind to.
-                const t = start({ text: promptText(m), ...attachedPrompt(m.content), ...(kind === "command" ? { command: true } : {}), ...(kind === "wake" ? { wake: true } : archived || imported ? {} : { index }) }, rec?.at, index);
+                const t = start({ text: promptText(m), ...attachedPrompt(m.content), ...(kind === "command" ? { command: true } : {}), ...(m.meta?.steered ? { steered: true } : {}), ...(kind === "wake" ? { wake: true } : archived || imported ? {} : { index }) }, rec?.at, index);
                 t.snapshotId = m.meta?.checkpoint;
                 if (imported) t.imported = true;
                 if (rec?.end) t.endedAt = rec.end;
