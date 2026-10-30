@@ -384,12 +384,14 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                 to.fn = undefined;
             });
         }
+        // The rows of turns far from the view are let go of once more than a page of turns is drawn ("Show earlier"),
+        // not as a session opens.
         onCleanup(observeWorkRendering(scroller, content, (moved) => {
             if (stick() || smoothScroll) return;
             scroller!.scrollTop += moved;
             wrote();
             reading = capture();
-        }));
+        }, () => visible().length > PAGE));
         const ro = new ResizeObserver(() => {
             const above = grewAbove();
             if (!ready) return;
