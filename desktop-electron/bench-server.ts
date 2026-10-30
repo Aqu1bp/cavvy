@@ -9,6 +9,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { dlopen, FFIType, ptr } from "bun:ffi";
 import { startMockLlm } from "../scripts/mock-llm";
 import { createDemoProject } from "../scripts/demo-project";
 
@@ -59,6 +60,17 @@ function cpuSeconds(pid: number): number {
     const t = Bun.spawnSync(["ps", "-o", "time=", "-p", String(pid)]).stdout.toString().trim();
     return t ? t.split(":").map(Number).reduce((a, x) => a * 60 + x, 0) : 0;
 }
+/**
+ * Instructions a process has retired (macOS's proc_pid_rusage, RUSAGE_INFO_V4). Unlike CPU time, it doesn't depend on
+ * which cores ran the work or how fast they were clocked: the same work counts the same.
+ */
+const libproc = dlopen("/usr/lib/libproc.dylib", { proc_pid_rusage: { args: [FFIType.i32, FFIType.i32, FFIType.ptr], returns: FFIType.i32 } });
+function instructions(pid: number): number {
+    const buf = new BigUint64Array(64);
+    if (libproc.symbols.proc_pid_rusage(pid, 4, ptr(buf)) !== 0) return NaN;
+    // After a 16-byte uuid, ri_instructions is the 30th 64-bit field.
+    return Number(buf[2 + 29]);
+}
 const rssMB = (pid: number) => Math.round(Number(Bun.spawnSync(["ps", "-o", "rss=", "-p", String(pid)]).stdout.toString().trim() || 0) / 1024);
 
 const mock = startMockLlm({ port: 0, delayMs: 14 });
@@ -100,15 +112,16 @@ try {
             }
             await sleep(1000);
             // Nothing of ours asks the server anything while it's measured.
-            const b0 = { ...rpc.got }, c0 = cpuSeconds(server.pid), t0 = performance.now();
+            const b0 = { ...rpc.got }, c0 = cpuSeconds(server.pid), i0 = instructions(server.pid), t0 = performance.now();
             await sleep(SECONDS * 1000);
-            const wall = (performance.now() - t0) / 1000, cpu = cpuSeconds(server.pid) - c0;
+            const wall = (performance.now() - t0) / 1000, cpu = cpuSeconds(server.pid) - c0, ins = instructions(server.pid) - i0;
             const after = await status();
             const percent = Math.round((cpu / wall) * 1000) / 10;
             report.cases[c.name] = {
                 sessions: ids.length,
                 serverCpuPercent: percent,
                 perSessionPercent: Math.round((percent / ids.length) * 10) / 10,
+                megaInstructionsPerSecond: Math.round(ins / wall / 1e6),
                 rssMB: rssMB(server.pid),
                 wsKBPerSecond: Math.round((rpc.got.bytes - b0.bytes) / 1024 / wall * 10) / 10,
                 messagesPerSecond: Math.round((rpc.got.messages - b0.messages) / wall),
