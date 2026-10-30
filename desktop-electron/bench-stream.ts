@@ -363,7 +363,7 @@ try {
     // Idle, the long session on screen.
     await show(long);
     await sleep(3000);
-    await phase("idleLongOnScreen", SECONDS);
+    await phase("idleLongOnScreen", SECONDS, { perSecond: "0" });
     // A long reply (about 80 tokens a second, as a fast model) streaming on screen: a short session, then the long one.
     const text = "perfstream text 8 80";
     await show(short);
@@ -394,6 +394,18 @@ try {
     // A 40 KB reply at about 400 tokens a second, on screen: each second's cost, with the reply's length so far.
     await show(long);
     if (want("growth")) await streamWhile([[long, "perfstream text 30 400"]], () => phase("growth", 24, { perSecond: `[...document.querySelectorAll('.transcript [data-turn]')].at(-1)?.textContent?.length ?? 0` }));
+    // With --mounted 40,200,480: a reply streaming in the long session with that many of its turns drawn ("Show
+    // earlier" clicked until they are), followed at the end ("Latest").
+    for (const n of (arg("--mounted") ?? "").split(",").filter(Boolean).map(Number)) {
+        await show(long);
+        for (let i = 0; i < 40 && (await js(`document.querySelectorAll('.transcript [data-turn]').length`)) < n; i++) {
+            if (!(await js(`(() => { const b = document.querySelector('.transcript .earlier'); b?.click(); return !!b; })()`))) break;
+            await sleep(1000);
+        }
+        await js(`document.querySelector('.jump')?.click()`);
+        await sleep(3000);
+        await streamWhile([[long, text]], () => phase(`textLong@${n}`, SECONDS));
+    }
     // Memory once it's all over and settled.
     await sleep(5000);
     report.memoryAfterMB = rss([...(await pids())]);
