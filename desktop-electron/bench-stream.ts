@@ -98,7 +98,26 @@ function summarizeTrace(events: any[], uiPid: number, seconds: number) {
     for (const e of events) if (e.ph === "X" && main(e) && names.includes(e.name)) by[e.name] = (by[e.name] ?? 0) + (e.dur ?? 0) / 1000;
     const counts: Record<string, number> = {};
     for (const e of events) if (/Draw|Swap|Frame/.test(e.name) && (e.ph === "X" || e.ph === "B")) counts[`${e.name}@${threads.get(`${e.pid}:${e.tid}`)}`] = (counts[`${e.name}@${threads.get(`${e.pid}:${e.tid}`)}`] ?? 0) + 1;
+    // Style and layout a script asked for (it read a size or a position with something changed): by the call that read it.
+    const forced: Record<string, { n: number; ms: number }> = {};
+    let layouts = 0, forcedN = 0, forcedMs = 0;
+    for (const e of events) {
+        if (e.ph !== "X" || !main(e) || (e.name !== "Layout" && e.name !== "UpdateLayoutTree")) continue;
+        if (e.name === "Layout") layouts++;
+        const stack = e.args?.beginData?.stackTrace as { functionName: string; url: string; lineNumber: number; columnNumber: number }[] | undefined;
+        if (!stack?.length) continue;
+        const f = stack[0]!;
+        const k = `${e.name} ${f.functionName || "(anonymous)"} ${f.url.split("/").pop()}:${f.lineNumber + 1}:${f.columnNumber + 1}`;
+        const ms = (e.dur ?? 0) / 1000;
+        forced[k] = { n: (forced[k]?.n ?? 0) + 1, ms: (forced[k]?.ms ?? 0) + ms };
+        forcedN++;
+        forcedMs += ms;
+    }
     return {
+        layoutsPerSecond: Math.round(layouts / seconds),
+        forcedPerSecond: Math.round(forcedN / seconds),
+        forcedMsPerSecond: Math.round((forcedMs / seconds) * 10) / 10,
+        forcedBy: Object.fromEntries(Object.entries(forced).sort((a, b) => b[1].n - a[1].n).slice(0, 12).map(([k, v]) => [k, `${Math.round(v.n / seconds)}/s ${Math.round((v.ms / seconds) * 10) / 10}ms/s`])),
         frameEvents: Object.fromEntries(Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 12)),
         perSecondMs: Object.fromEntries(Object.entries(by).sort((a, b) => b[1] - a[1]).map(([k, v]) => [k, Math.round((v / seconds) * 10) / 10])),
         // Frames the page's main thread ran (style, layout, paint), and frames its compositor drew.
@@ -278,7 +297,7 @@ try {
         measuring = false;
         const heap = await js(`(() => { const m = performance.memory; return m ? { usedMB: Math.round(m.usedJSHeapSize / 1048576), totalMB: Math.round(m.totalJSHeapSize / 1048576) } : null; })()`);
         // What's animating: by animation (CSS name, or a script's), its element and its state.
-        const dom = await js(`(() => { const by = {}; for (const a of document.getAnimations()) { const t = a.effect && a.effect.target; const k = (a.animationName || a.constructor.name) + ' ' + (t ? t.tagName.toLowerCase() + '.' + String(t.getAttribute('class') || '').trim().split(/\\s+/).slice(0, 2).join('.') : '') + ' ' + a.playState; by[k] = (by[k] || 0) + 1; } return { nodes: document.getElementsByTagName('*').length, animations: document.getAnimations().length, fresh: document.querySelectorAll('.md-fresh').length, byAnimation: Object.fromEntries(Object.entries(by).sort((x, y) => y[1] - x[1]).slice(0, 12)) }; })()`);
+        const dom = await js(`(() => { const by = {}; for (const a of document.getAnimations()) { const t = a.effect && a.effect.target; const k = (a.animationName || a.constructor.name) + ' ' + (t ? t.tagName.toLowerCase() + '.' + String(t.getAttribute('class') || '').trim().split(/\\s+/).slice(0, 2).join('.') : '') + ' ' + a.playState; by[k] = (by[k] || 0) + 1; } return { nodes: document.getElementsByTagName('*').length, animations: document.getAnimations().length, fresh: document.querySelectorAll('.md-fresh').length, turns: document.querySelectorAll('.transcript [data-turn]').length, farTurns: document.querySelectorAll('.transcript [data-far]').length, rows: document.querySelectorAll('[data-work-row]').length, farRows: document.querySelectorAll('[data-work-far]').length, byAnimation: Object.fromEntries(Object.entries(by).sort((x, y) => y[1] - x[1]).slice(0, 12)) }; })()`);
         const wsKB = Math.round((wsBytes - b0) / 1024 / wall), wsN = Math.round((wsFrames - f0) / wall);
         // With --shot <dir>: what the window showed, to check a change looks the same.
         if (arg("--shot")) {
@@ -301,11 +320,13 @@ try {
         const events: any[] = [];
         page.listeners.set("Tracing.dataCollected", (p) => events.push(...p.value));
         const ended = new Promise((r) => page.listeners.set("Tracing.tracingComplete", r));
-        await page.cdp("Tracing.start", { transferMode: "ReportEvents", traceConfig: { includedCategories: ["devtools.timeline", "disabled-by-default-devtools.timeline", "disabled-by-default-devtools.timeline.frame", "toplevel", "blink", "cc", "viz", "benchmark", "__metadata"] } });
+        await page.cdp("Tracing.start", { transferMode: "ReportEvents", traceConfig: { includedCategories: ["devtools.timeline", "disabled-by-default-devtools.timeline", "disabled-by-default-devtools.timeline.frame", "disabled-by-default-devtools.timeline.stack", "toplevel", "blink", "cc", "viz", "benchmark", "__metadata"] } });
         await sleep(3000);
         await page.cdp("Tracing.end");
         await Promise.race([ended, sleep(15000)]);
         const uiProfile = (await page.cdp("Profiler.stop")).result?.profile;
+        // With --profiles <dir>: the page's profile, to open in DevTools or read for what a function costs with its calls.
+        if (arg("--profiles") && uiProfile) await Bun.write(join(arg("--profiles")!, `${label}-${name}.cpuprofile`), JSON.stringify(uiProfile));
         const mainProfile = main ? (await main.cdp("Profiler.stop")).result?.profile : undefined;
         const uiPid = [...roles].find(([, r]) => r === "ui")?.[0] ?? 0;
         const hidden = await js(`(() => { document.removeEventListener('visibilitychange', __onVis); return __hiddenAt.length; })()`);
