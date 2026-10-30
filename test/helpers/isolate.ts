@@ -4,6 +4,7 @@
 // - CAVVY_HOME points at a fresh temp dir, so ~/.cavvy is never touched.
 // - CAVVY_NO_KEYCHAIN keeps the credential store off the OS keychain.
 // - CAVVY_BROWSER names no browser, so the Browser tools aren't offered unless a test sets it.
+// - CAVVY_SIMULATOR=0 hides the Mac's simulators, so the Simulator tools aren't offered unless a test fakes them.
 // - Every API-key-like variable is removed from the environment.
 // - CLI config and secure-storage selectors point at fresh empty folders, so nothing
 //   (listing CLI sessions, say) can reach the real Claude Code or Codex stores.
@@ -25,6 +26,8 @@ export function isolate(): { home: string; cleanup: () => void } {
     // No test finds the machine's own Chrome (the Browser tools would be offered, and served to agent CLIs, wherever one is
     // installed): only a test that points CAVVY_BROWSER at one gets a browser.
     process.env.CAVVY_BROWSER = join(home, "no-browser");
+    // Nor the Mac's own simulators (the Simulator tools would be offered wherever Xcode is): a test that wants them fakes them.
+    process.env.CAVVY_SIMULATOR = "0";
     const claude = mkdtempSync(join(tmpdir(), "cavvy-test-claude-"));
     const codex = mkdtempSync(join(tmpdir(), "cavvy-test-codex-"));
     process.env.CLAUDE_CONFIG_DIR = claude;

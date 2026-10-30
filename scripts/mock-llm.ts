@@ -34,6 +34,8 @@
 //   "monitor"        watches a build log with Monitor; its lines wake the agent later
 //   "browser"        opens the demo site (or the address in the prompt) in the browser, clicks its first button, takes a
 //                    screenshot, and shows it in its reply
+//   "simulator"      starts an iOS simulator, opens Settings by its ref, scrolls, takes a screenshot and shows it in
+//                    its reply (needs a Mac with Xcode)
 //   anything else    a short markdown answer
 //
 //   bun scripts/mock-llm.ts [--port 4010] [--delay 12]
@@ -153,6 +155,18 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         // has spaces); where it couldn't be saved, said without it.
         const saved = /put !\[[^\]]*\]\((<(?:\\.|[^\\<>\n])*>|[^\s()<>]+)\) in your last message/.exec(lastResult)?.[1];
         return { text: `The page loads and the button works.${saved ? `\n\n![The page after the click](${saved})` : ""}` };
+    }
+    if (/\bsimulator\b/.test(p)) {
+        if (toolRounds === 0) return { text: "I'll start a simulator and look at it.", calls: [{ name: "SimulatorControl", args: { action: "boot" } }] };
+        if (toolRounds === 1) {
+            const settings = /button "Settings" \[(e\d+)\]/.exec(lastResult);
+            if (!settings) return { text: `I couldn't find Settings on the screen: ${lastResult.split("\n")[0]}` };
+            return { text: "It's on the home screen. I'll open Settings.", calls: [{ name: "SimulatorAct", args: { action: "tap", ref: settings[1] } }] };
+        }
+        if (toolRounds === 2) return { text: "Settings is open. I'll scroll down its list.", calls: [{ name: "SimulatorAct", args: { action: "swipe", direction: "up" } }] };
+        if (toolRounds === 3) return { text: "A screenshot, to show you.", calls: [{ name: "SimulatorScreenshot", args: {} }] };
+        const saved = /put !\[[^\]]*\]\((<(?:\\.|[^\\<>\n])*>|[^\s()<>]+)\) in your last message/.exec(lastResult)?.[1];
+        return { text: `Settings opens and scrolls.${saved ? `\n\n![Settings in the simulator](${saved})` : ""}` };
     }
     // A monitor's lines woke the agent: say what they were.
     if (/<event source="monitor"/.test(prompt)) {
@@ -460,6 +474,7 @@ function titleFor(prompt: string): string {
     if (/\bbackground\b/.test(p)) return "Review tests in the background";
     if (/\bmonitor\b/.test(p)) return "Watch the build";
     if (/\bbrowser\b/.test(p)) return "Check the app in the browser";
+    if (/\bsimulator\b/.test(p)) return "Check the app in the simulator";
     return prompt.split(/\s+/).slice(0, 4).join(" ").replace(/^\w/, (c) => c.toUpperCase());
 }
 

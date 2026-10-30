@@ -11,6 +11,7 @@ import "./styles/header.css";
 import "./styles/stage.css";
 import "./styles/panel.css";
 import "./styles/browser.css";
+import "./styles/simulator.css";
 import "./styles/review.css";
 import "./styles/agent-view.css";
 import "./styles/home.css";

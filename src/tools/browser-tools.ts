@@ -339,7 +339,7 @@ const SCREENSHOT_DAYS = 30;
  * ones go as one is saved. Undefined when it can't be written; the agent still sees it.
  * Pixels finer than the page's (a Retina display's) are in its name, as `@2x`: the chat draws it at the page's size.
  */
-async function saveScreenshot(shot: ImagePart & { width: number }): Promise<string | undefined> {
+export async function saveScreenshot(shot: ImagePart & { width: number }): Promise<string | undefined> {
     const image = base64Size(shot.data) > MAX_SHOWN_IMAGE ? await fitImage(shot) : shot;
     if (!image) return undefined;
     const dir = join(paths.home(), "screenshots");

@@ -34,3 +34,30 @@ export function decodeBrowserFrame(packet: ArrayBuffer): BrowserImageFrame | und
         return { sessionId: h.sessionId, frameId: h.frameId, tab: h.tab, width: h.width, height: h.height, data: new Uint8Array(packet, 4 + length) };
     } catch { return; }
 }
+
+/** A picture of a session's simulator screen, on the same socket: told apart from a browser frame by its header's `simulator`. */
+export interface SimulatorImageFrame {
+    sessionId: string;
+    frameId: string;
+    width: number;
+    height: number;
+    data: Uint8Array<ArrayBuffer>;
+}
+
+export function encodeSimulatorFrame(frame: Omit<SimulatorImageFrame, "data">, data: Uint8Array): Uint8Array<ArrayBuffer> {
+    return encodeBrowserFrame({ ...frame, tab: -1, simulator: true } as Omit<BrowserImageFrame, "data">, data);
+}
+
+/** A simulator picture, or undefined when the packet isn't one. */
+export function decodeSimulatorFrame(packet: ArrayBuffer): SimulatorImageFrame | undefined {
+    if (packet.byteLength < 5) return;
+    const length = new DataView(packet).getUint32(0);
+    if (length > MAX_HEADER || 4 + length >= packet.byteLength) return;
+    try {
+        const h = JSON.parse(decoder.decode(new Uint8Array(packet, 4, length)));
+        if (h.simulator !== true || typeof h.sessionId !== "string" || typeof h.frameId !== "string" || !Number.isSafeInteger(h.width) || !Number.isSafeInteger(h.height) || h.width < 1 || h.height < 1 || h.width > 16000 || h.height > 16000) return;
+        return { sessionId: h.sessionId, frameId: h.frameId, width: h.width, height: h.height, data: new Uint8Array(packet, 4 + length) };
+    } catch {
+        return;
+    }
+}
