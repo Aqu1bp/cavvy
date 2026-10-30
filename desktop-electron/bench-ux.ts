@@ -48,7 +48,8 @@ try {
     // ---- The app.
     const exe = arg("--app");
     const spawnedAt = performance.now();
-    app = Bun.spawn(exe ? [exe] : [join(repo, "desktop-electron/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"), join(repo, "desktop-electron")], {
+    // Drawn even when another window covers it: otherwise a covered window measures nothing.
+    app = Bun.spawn(exe ? [exe, "--disable-backgrounding-occluded-windows"] : [join(repo, "desktop-electron/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"), "--disable-backgrounding-occluded-windows", join(repo, "desktop-electron")], {
         cwd: repo,
         env: { ...process.env, CAVVY_HOME: join(dir, "home"), CAVVY_NO_KEYCHAIN: "1", CAVVY_ELECTRON_TEST_PORT: "9344", CAVVY_ELECTRON_USER_DATA: join(dir, "electron-data"), CAVVY_ELECTRON_CWD: project, CAVVY_ELECTRON_METRICS: metricsFile },
         stdout: "ignore",
