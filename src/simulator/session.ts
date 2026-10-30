@@ -9,7 +9,7 @@ import type { SimulatorCommand, SimulatorDevice, SimulatorInput, SimulatorInputK
 import { FrameFeed } from "../browser/feed";
 import { helperBinary, SimHelper, type ScreenSize } from "./helper";
 import { isModifier, strokesForPress, strokesForText, usageOfCode, type KeyStroke } from "./keys";
-import { agrees, outline, type AxNode, type Outline, type RefTarget, type SeenLine } from "./outline";
+import { agrees, outline, refStillThere, type AxNode, type Outline, type RefTarget, type SeenLine } from "./outline";
 import * as simctl from "./simctl";
 import { SimulatorError } from "./simctl";
 
@@ -38,6 +38,7 @@ const SIDE = { min: 320, max: 2000, unknown: 1400 };
  */
 const KEY_GAP_MS = 12;
 const SUBMIT_PAUSE_MS = 1000;
+const PANE_TEXT_PAUSE_MS = 300;
 
 /** How long a helper nothing uses (no pane showing its device, no agent call) keeps running. */
 const IDLE_MS = 60_000;
@@ -433,6 +434,11 @@ export class SimulatorSession {
     private refs = new Map<string, RefTarget>();
     /** The person used the device since the agent last looked. */
     private touched = false;
+    /** The number of the last ref given out, and the app in front when the refs in use were read. */
+    private lastRef = 0;
+    private refsPid?: number;
+    /** Text the person pasted being sent, and a moment for the app to take it. */
+    private paneText?: Promise<void>;
     /** Where the person's finger is down, and the keys they hold: let go when their window goes. */
     private finger?: { x: number; y: number };
     private keysHeld = new Set<number>();
@@ -576,7 +582,27 @@ export class SimulatorSession {
 
     /** What the person did in the pane. What changes the device counts as their use of it (`touched`). */
     async input(input: SimulatorInput): Promise<void> {
-        const helper = await this.running();
+        const helper = this.attachedHelper() ?? (await this.running());
+        // Keys follow text pasted before them (Enter would overtake it, as text takes a while to send), and text the text before.
+        if (input.kind === "text" || input.kind === "key") {
+            const before = this.paneText;
+            if (input.kind === "text") {
+                this.touched = true;
+                const sent = (async () => {
+                    await before;
+                    await this.sending(helper, "keys", () => this.typeText(helper, input.text));
+                })();
+                // The app takes a moment to take it, as for `type`'s Enter.
+                const taken = sent.catch(() => undefined).then(() => sleep(PANE_TEXT_PAUSE_MS));
+                const last = taken.then(() => {
+                    if (this.paneText === last) this.paneText = undefined;
+                });
+                this.paneText = last;
+                await sent;
+                return;
+            }
+            if (before) await before;
+        }
         switch (input.kind) {
             case "touch":
                 this.touched = true;
@@ -598,10 +624,6 @@ export class SimulatorSession {
             case "button":
                 this.touched = true;
                 await this.sending(helper, "buttons", () => helper.call({ op: "button", name: input.name }));
-                break;
-            case "text":
-                this.touched = true;
-                await this.sending(helper, "keys", () => this.typeText(helper, input.text));
                 break;
         }
     }
@@ -672,6 +694,16 @@ export class SimulatorSession {
         return helper;
     }
 
+    /**
+     * The helper this session already has, without asking simctl how the device is. A person's touches don't wait on
+     * that: what a fast swipe sent during it would arrive at once, which the device takes for a tap, and a long one
+     * would stop every second.
+     */
+    private attachedHelper(): SimHelper | undefined {
+        const a = this.udid ? attached.get(this.udid) : undefined;
+        return this.enabled && a?.sessions.has(this) && a.helper?.running ? a.helper : undefined;
+    }
+
     /** The helper of the session's device, which must be running. */
     private async running(): Promise<SimHelper> {
         if (!this.enabled) throw new SimulatorError(TURNED_OFF);
@@ -694,6 +726,8 @@ export class SimulatorSession {
     /** The agent did something: the window is told (a dot on the pane's tab), and the person's use since is forgotten. */
     private agentActs() {
         this.agentAt = Date.now();
+        // The screen is about to change: the action returns a new outline, and one alongside it has nothing to go on.
+        this.refs = new Map();
         this.announce();
     }
 
@@ -813,7 +847,18 @@ export class SimulatorSession {
         if (typeof before?.pid !== "number") return;
         const home = before.process === "SpringBoard";
         const changes = Number(before.changes);
-        await this.untilFront(helper, (r) => r.pid !== before.pid || (!home && Number(r.changes) > changes && Number(r.stillMs) >= 300), home ? 6000 : 3000, signal);
+        // An app starting is in front a while before there's anything of it to read.
+        let inFront: number | undefined;
+        await this.untilFront(
+            helper,
+            (r) => {
+                if (r.pid === before.pid) return !home && Number(r.changes) > changes && Number(r.stillMs) >= 300;
+                inFront ??= Date.now();
+                return !!(r.tree as AxNode | undefined)?.children?.length || Date.now() - inFront >= 3000;
+            },
+            8000,
+            signal,
+        );
     }
 
     /** Reads which app is in front until `done` says so (true), at most `timeoutMs` (false). */
@@ -850,8 +895,10 @@ export class SimulatorSession {
         const helper = await this.running();
         const screen = this.points(helper);
         // What another tool has taken, as the screen is read: a helper that's just started is still finding out.
-        const [{ o, read, stale }] = await Promise.all([this.look(helper), known(helper)]);
+        const [{ o, read, stale, pid }] = await Promise.all([this.look(helper), known(helper)]);
         this.refs = o.refs;
+        this.lastRef = Math.max(this.lastRef, o.lastRef);
+        this.refsPid = pid;
         const d = this.device();
         const head = `${d?.name ?? "Simulator"} (${d?.runtime ?? "iOS"}), ${screen.width}×${screen.height} points.`;
         const note = this.touched ? "\nThe user used the simulator since you last looked: the screen may not be where you left it." : "";
@@ -870,7 +917,7 @@ export class SimulatorSession {
      * (the tree is behind: the front app changes a second or more after the picture does), they're read again for at
      * most `waitMs`; `stale` if they never agreed.
      */
-    private async look(helper: SimHelper, waitMs = 2500): Promise<{ o: Outline; read: TextRead; stale: boolean }> {
+    private async look(helper: SimHelper, waitMs = 2500): Promise<{ o: Outline; read: TextRead; stale: boolean; pid?: number }> {
         const start = Date.now();
         const screen = this.points(helper);
         let before: string | undefined;
@@ -883,9 +930,9 @@ export class SimulatorSession {
                 await sleep(150);
                 continue;
             }
-            const o = outline((r.tree ?? {}) as AxNode, screen, read.lines);
+            const o = outline((r.tree ?? {}) as AxNode, screen, read.lines, this.lastRef);
             const stale = !read.loading && !read.error && agrees(o) === false;
-            if (!stale || Date.now() - start >= waitMs) return { o, read, stale };
+            if (!stale || Date.now() - start >= waitMs) return { o, read, stale, pid: typeof r.pid === "number" ? r.pid : undefined };
             await sleep(300);
         }
     }
@@ -914,7 +961,8 @@ export class SimulatorSession {
             } catch (e) {
                 if (!/Nothing on the screen/.test((e as Error).message) || Date.now() > end) throw e;
             }
-            if (i === 3) await restartBridge(helper.udid);
+            // Too soon after its input process restarted, a restart doesn't help: there's a second, later on.
+            if (i === 3 || i === 23) await restartBridge(helper.udid, i === 23);
             await sleep(500);
         }
     }
@@ -926,16 +974,50 @@ export class SimulatorSession {
         return { png: r.png, width: Number(r.width), height: Number(r.height), points: this.points(helper) };
     }
 
-    /** Where a ref or a point is, as a fraction of the screen. */
-    private async at(helper: SimHelper, target: { ref?: string; x?: number; y?: number }): Promise<{ x: number; y: number; name: string }> {
+    /**
+     * A ref stands for what was at that spot on the screen last read. The person having used it since, it may be
+     * anything now: nothing is done, and the agent gets the screen as it is.
+     */
+    private async refStands(ref: string | undefined): Promise<void> {
+        if (ref === undefined || !this.touched) return;
+        const screen = await this.snapshot();
+        throw new SimulatorError(`Not done: ${ref} may not be what it was.\n\n${screen}`);
+    }
+
+    /**
+     * Whatever moved the screen since it was read (another session, another Cavvy, the app itself): a ref that's no
+     * longer what it stood for is refused the same way. What can't be read now doesn't stop the action.
+     */
+    private async refHolds(helper: SimHelper, ref: string, t: RefTarget): Promise<void> {
+        const r = await helper.call({ op: "describe" }).catch(() => undefined);
+        if (!r) return;
+        let holds = this.refsPid === undefined || r.pid === this.refsPid;
+        if (holds) {
+            const read = t.element ? undefined : await this.readText(helper);
+            holds = !!read?.loading || !!read?.error || refStillThere(t, (r.tree ?? {}) as AxNode, read?.lines ?? []);
+        }
+        if (holds) return;
+        const screen = await this.snapshot();
+        throw new SimulatorError(`Not done: ${ref} isn't there any more: the screen has changed.\n\n${screen}`);
+    }
+
+    /**
+     * Where a ref or a point is, as a fraction of the screen. Using a ref uses up the screen it's of: what's done next
+     * changes it, and the action returns a new one (another action alongside this one gets an error, not a guess).
+     */
+    private async at(helper: SimHelper, target: { ref?: string; x?: number; y?: number }): Promise<{ x: number; y: number; name: string; target?: RefTarget }> {
         const screen = this.points(helper);
         let x: number;
         let y: number;
         let name: string;
+        let found: RefTarget | undefined;
         if (target.ref !== undefined) {
-            const r = this.refs.get(target.ref.replace(/^\[|\]$/g, ""));
-            if (!r) throw new SimulatorError(`There's no ref ${target.ref} in the last snapshot. Take a new one with SimulatorSnapshot.`);
-            ({ x, y, name } = r);
+            await this.refStands(target.ref);
+            found = this.refs.get(target.ref.replace(/^\[|\]$/g, ""));
+            if (!found) throw new SimulatorError(`There's no ref ${target.ref} in the last snapshot. Take a new one with SimulatorSnapshot.`);
+            this.refs = new Map();
+            await this.refHolds(helper, target.ref, found);
+            ({ x, y, name } = found);
             name = `${JSON.stringify(name)} [${target.ref}]`;
         } else {
             x = target.x!;
@@ -943,20 +1025,25 @@ export class SimulatorSession {
             name = `${Math.round(x)},${Math.round(y)}`;
         }
         if (x < 0 || y < 0 || x > screen.width || y > screen.height) throw new SimulatorError(`${Math.round(x)},${Math.round(y)} is off the screen, which is ${screen.width}×${screen.height} points.`);
-        return { x: x / screen.width, y: y / screen.height, name };
+        return { x: x / screen.width, y: y / screen.height, name, target: found };
     }
 
-    async tap(target: { ref?: string; x?: number; y?: number }, o: { count?: number; holdMs?: number } = {}): Promise<string> {
+    async tap(target: { ref?: string; x?: number; y?: number }, o: { count?: number; holdMs?: number } = {}, signal?: AbortSignal): Promise<string> {
         const helper = await this.running();
-        const p = await this.at(helper, target);
         await this.reaches(helper, "touch");
+        const p = await this.at(helper, target);
         this.agentActs();
         await this.sending(helper, "touch", async () => {
             for (let i = 0; i < (o.count ?? 1); i++) {
+                stopped(signal);
                 await helper.call({ op: "touch", phase: "down", x: p.x, y: p.y });
-                await sleep(o.holdMs ?? 60);
-                await helper.call({ op: "touch", phase: "up", x: p.x, y: p.y });
-                if (i + 1 < (o.count ?? 1)) await sleep(90);
+                // Stopped or not, the finger lifts.
+                try {
+                    await pause(o.holdMs ?? 60, signal);
+                } finally {
+                    await helper.call({ op: "touch", phase: "up", x: p.x, y: p.y });
+                }
+                if (i + 1 < (o.count ?? 1)) await pause(90, signal);
             }
         });
         await this.reaches(helper, "touch");
@@ -967,14 +1054,15 @@ export class SimulatorSession {
      * A finger drawn across the screen: from a ref or point to another point, or by `direction` (the way the finger
      * moves: "up" scrolls content down the page) across most of the screen or of the element at `from`.
      */
-    async swipe(o: { from?: { ref?: string; x?: number; y?: number }; to?: { x: number; y: number }; direction?: "up" | "down" | "left" | "right"; durationMs?: number }): Promise<string> {
+    async swipe(o: { from?: { ref?: string; x?: number; y?: number }; to?: { x: number; y: number }; direction?: "up" | "down" | "left" | "right"; durationMs?: number }, signal?: AbortSignal): Promise<string> {
         const helper = await this.running();
         const screen = this.points(helper);
-        let start = o.from ? await this.at(helper, o.from) : { x: 0.5, y: 0.5, name: "the middle of the screen" };
+        await this.reaches(helper, "touch");
+        let start: { x: number; y: number; name: string; target?: RefTarget } = o.from ? await this.at(helper, o.from) : { x: 0.5, y: 0.5, name: "the middle of the screen" };
         let end: { x: number; y: number };
         if (o.to) end = await this.at(helper, o.to);
         else {
-            const r = o.from?.ref ? this.refs.get(o.from.ref.replace(/^\[|\]$/g, "")) : undefined;
+            const r = start.target;
             // Across most of the element (or the screen), centered on where it starts.
             const spanX = r ? (r.frame[2] * 0.7) / screen.width : 0.6;
             const spanY = r ? (r.frame[3] * 0.7) / screen.height : 0.5;
@@ -984,64 +1072,96 @@ export class SimulatorSession {
             start = { ...start, x: clamp(start.x - dx / 2), y: clamp(start.y - dy / 2) };
             end = { x: clamp(start.x + dx), y: clamp(start.y + dy) };
         }
-        await this.reaches(helper, "touch");
         this.agentActs();
         const duration = Math.min(Math.max(o.durationMs ?? 300, 50), 5000);
         const steps = Math.max(2, Math.round(duration / 16));
         await this.sending(helper, "touch", async () => {
+            stopped(signal);
             await helper.call({ op: "touch", phase: "down", x: start.x, y: start.y });
-            for (let i = 1; i <= steps; i++) {
-                await sleep(duration / steps);
-                const t = i / steps;
-                await helper.call({ op: "touch", phase: "move", x: start.x + (end.x - start.x) * t, y: start.y + (end.y - start.y) * t });
+            let at = { x: start.x, y: start.y };
+            // Stopped or not, the finger lifts.
+            try {
+                for (let i = 1; i <= steps; i++) {
+                    await pause(duration / steps, signal);
+                    const t = i / steps;
+                    at = { x: start.x + (end.x - start.x) * t, y: start.y + (end.y - start.y) * t };
+                    await helper.call({ op: "touch", phase: "move", ...at });
+                }
+            } finally {
+                await helper.call({ op: "touch", phase: "up", ...at });
             }
-            await helper.call({ op: "touch", phase: "up", x: end.x, y: end.y });
         });
         await this.reaches(helper, "touch");
         const pt = (p: { x: number; y: number }) => `${Math.round(p.x * screen.width)},${Math.round(p.y * screen.height)}`;
         return `Swiped from ${pt(start)} to ${pt(end)}.${this.uncertainNote(helper)}`;
     }
 
-    async type(text: string, o: { ref?: string; submit?: boolean } = {}): Promise<string> {
+    async type(text: string, o: { ref?: string; submit?: boolean; clear?: boolean } = {}, signal?: AbortSignal): Promise<string> {
         const helper = await this.running();
+        await this.refStands(o.ref);
         await this.reaches(helper, "keyboard");
+        let secure = o.ref ? this.refs.get(o.ref.replace(/^\[|\]$/g, ""))?.secure : undefined;
         // One run from the tap on the field to Enter: the input process restarting between them would lose the field.
         const pasted = await this.sending(helper, "keys", async () => {
             if (o.ref) {
                 const r = this.refs.get(o.ref.replace(/^\[|\]$/g, ""));
-                await this.tap({ ref: o.ref });
+                await this.tap({ ref: o.ref }, {}, signal);
                 // Until there's a field to type in where it was tapped, or by its name (at most two seconds): one that
                 // opens for editing (Safari's address, on a page) slides in first. Then a moment for it to take the keys.
-                if (r) await this.untilFront(helper, (t) => fieldFor(t.tree as AxNode | undefined, r), 2000);
-                await sleep(150);
+                if (r?.element) await this.untilFront(helper, (t) => !!fieldFor(t.tree as AxNode | undefined, r), 2000, signal);
+                await pause(150, signal);
+                // The tap put the caret where it landed: the text goes at the end, unless the tap selected what's
+                // there (Safari's address), for the text to replace.
+                if (r && !o.clear) {
+                    const field = fieldFor((await helper.call({ op: "describe" }).catch(() => undefined))?.tree as AxNode | undefined, r);
+                    // A web page's field isn't in the tree, and its tap doesn't select.
+                    if (field ? field.selection?.[1] === 0 : !r.element) await helper.call({ op: "keys", keys: strokesForPress("ArrowDown", ["Meta"]) });
+                }
             }
             this.agentActs();
-            const pasted = await this.typeText(helper, text, o.submit ? KEY_GAP_MS : 0);
+            if (o.clear) {
+                stopped(signal);
+                await helper.call({ op: "keys", keys: [...strokesForPress("A", ["Meta"]), ...strokesForPress("Backspace")] });
+            }
+            // Which field the keys go to isn't known without a ref: a password field on the screen may be it.
+            if (!o.ref) secure = hasPasswordField((await helper.call({ op: "describe" }).catch(() => undefined))?.tree as AxNode | undefined);
+            const pasted = text ? await this.typeText(helper, text, o.submit ? KEY_GAP_MS : 0, signal) : false;
             if (o.submit) {
                 // Enter right behind the text overtakes what the app hasn't taken yet (Safari searched for "examp" for
                 // "example.com"). The screen being still says nothing here (a field's cursor blinks): a pause does.
-                await sleep(SUBMIT_PAUSE_MS);
+                await pause(SUBMIT_PAUSE_MS, signal);
                 await helper.call({ op: "keys", keys: strokesForPress("Enter") });
             }
             return pasted;
         });
         await this.reaches(helper, "keyboard");
-        return `${pasted ? "Pasted" : "Typed"} ${JSON.stringify(text.length > 60 ? `${text.slice(0, 60)}…` : text)}${o.submit ? " and pressed Enter" : ""}.${this.uncertainNote(helper)}`;
+        const what = secure ? `${text.length} character${text.length === 1 ? "" : "s"}, not shown as a password field is involved` : JSON.stringify(text.length > 60 ? `${text.slice(0, 60)}…` : text);
+        const done = text ? `${pasted ? "Pasted" : "Typed"} ${what}` : "Cleared the field";
+        return `${done}${o.submit ? " and pressed Enter" : ""}.${this.uncertainNote(helper)}`;
     }
 
     /**
      * Types text key by key (`gapMs` apart), or pastes it when a U.S. keyboard can't type it, or the device's keyboard
      * has another layout (keys are where they are: German's would type "Lazy" as "Layz"). Returns whether it was pasted.
      */
-    private async typeText(helper: SimHelper, text: string, gapMs = 0): Promise<boolean> {
+    private async typeText(helper: SimHelper, text: string, gapMs = 0, signal?: AbortSignal): Promise<boolean> {
         const strokes = simctl.typesAsUS(await simctl.keyboardOf(helper.udid)) ? strokesForText(text) : undefined;
         if (strokes) {
             // In batches, so a long text doesn't hold the helper's queue for its whole length (Shift can be down
             // between two). Its callers send it as one run (`sending`).
-            for (let i = 0; i < strokes.length; i += 64) await helper.call({ op: "keys", keys: strokes.slice(i, i + 64), ...(gapMs ? { gapMs } : {}) });
+            for (let i = 0; i < strokes.length; i += 64) {
+                if (signal?.aborted) {
+                    // Stopped between two batches, with Shift perhaps down.
+                    await helper.call({ op: "keys", keys: strokesForPress("ShiftLeft").slice(-1) });
+                    stopped(signal);
+                }
+                await helper.call({ op: "keys", keys: strokes.slice(i, i + 64), ...(gapMs ? { gapMs } : {}) });
+            }
             return false;
         }
+        stopped(signal);
         await simctl.pasteboard(helper.udid, text);
+        stopped(signal);
         await helper.call({ op: "keys", keys: strokesForPress("Meta+V") });
         return true;
     }
@@ -1070,7 +1190,7 @@ export class SimulatorSession {
         }
     }
 
-    async press(key: string, modifiers: string[] = []): Promise<string> {
+    async press(key: string, modifiers: string[] = [], signal?: AbortSignal): Promise<string> {
         const helper = await this.running();
         let strokes: KeyStroke[];
         try {
@@ -1079,6 +1199,7 @@ export class SimulatorSession {
             throw new SimulatorError((e as Error).message);
         }
         await this.reaches(helper, "keyboard");
+        stopped(signal);
         this.agentActs();
         await this.sending(helper, "keys", () => helper.call({ op: "keys", keys: strokes }));
         await this.reaches(helper, "keyboard");
@@ -1088,12 +1209,18 @@ export class SimulatorSession {
     async button(name: "home" | "lock", signal?: AbortSignal): Promise<string> {
         const helper = await this.running();
         await this.reaches(helper, "buttons");
+        stopped(signal);
         this.agentActs();
-        const before = name === "home" ? await helper.call({ op: "describe" }).catch(() => undefined) : undefined;
+        const before = await helper.call({ op: "describe" }).catch(() => undefined);
         await this.sending(helper, "buttons", () => helper.call({ op: "button", name }));
         await this.reaches(helper, "buttons");
-        // The home screen shows a second or more before the tree's app is SpringBoard: until then it reads as the app.
+        // The home or lock screen shows a second or more before the tree's app is SpringBoard: until then it reads as the app.
         if (typeof before?.pid === "number" && before.process !== "SpringBoard") await this.untilFront(helper, (r) => r.pid !== before.pid, 4000, signal);
+        // From the home screen, the app in front doesn't change: its tree does.
+        else if (typeof before?.pid === "number" && name === "lock") {
+            const tree = JSON.stringify(before.tree ?? {});
+            await this.untilFront(helper, (r) => JSON.stringify(r.tree ?? {}) !== tree, 3000, signal);
+        }
         return `Pressed the ${name === "home" ? "Home" : "side (lock)"} button.${this.uncertainNote(helper)}`;
     }
 
@@ -1224,12 +1351,21 @@ export class SimulatorSession {
             return still ? "The screen is still." : `The screen was still changing after ${Math.round(timeoutMs / 1000)} seconds.`;
         }
         const helper = await this.running();
-        const want = text.replace(/\s+/g, " ").trim().toLowerCase();
-        const has = (o: Outline) => o.texts.some((t) => t.toLowerCase().includes(want));
+        // Without spaces: the picture's text can have one the page hasn't ("example. com").
+        const squeezed = (s: string) => s.replace(/\s+/g, "").toLowerCase();
+        const want = squeezed(text);
+        const has = (o: Outline) => o.texts.some((t) => squeezed(t).includes(want));
         while (true) {
             if (signal?.aborted) throw new SimulatorError("Interrupted by user.");
-            // A tree the picture doesn't show yet (the app before, still) doesn't count.
-            const { o, read, stale } = await this.look(helper, 0);
+            // A tree the picture doesn't show yet (the app before, still) doesn't count. A screen that can't be read
+            // yet (its input process restarted, say) is one that doesn't show it yet.
+            const seen = await this.look(helper, 0).catch((e: Error) => e);
+            if (seen instanceof Error) {
+                if (Date.now() >= end) throw seen;
+                await sleep(300);
+                continue;
+            }
+            const { o, read, stale } = seen;
             if (!stale && has(o)) return `${JSON.stringify(text)} is on the screen.`;
             if (Date.now() >= end) {
                 const unread = read.loading ? " (Text in the picture isn't read yet, so a web page's can't be found: a screenshot shows it.)" : "";
@@ -1251,6 +1387,20 @@ export class SimulatorSession {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+function stopped(signal?: AbortSignal) {
+    if (signal?.aborted) throw new SimulatorError("Interrupted by user.");
+}
+/** A sleep that Stop ends, as an error. */
+async function pause(ms: number, signal?: AbortSignal): Promise<void> {
+    stopped(signal);
+    if (!signal) return void (await sleep(ms));
+    let done = () => {};
+    const wake = new Promise<void>((r) => (done = r));
+    signal.addEventListener("abort", done, { once: true });
+    await Promise.race([sleep(ms), wake]);
+    signal.removeEventListener("abort", done);
+    stopped(signal);
+}
 /** Whether a process (an app's, which runs on this Mac) is still running. */
 const alive = (pid: number) => {
     try {
@@ -1266,14 +1416,22 @@ const inRun = new AsyncLocalStorage<boolean>();
 const FIELDS = new Set(["AXTextField", "AXSecureTextField", "AXTextArea", "AXSearchField"]);
 
 /** Whether the tree has a field to type in at the ref's point, or named as it is. */
-function fieldFor(node: AxNode | undefined, r: RefTarget): boolean {
-    if (!node) return false;
+function fieldFor(node: AxNode | undefined, r: RefTarget): AxNode | undefined {
+    if (!node) return undefined;
     if (FIELDS.has(node.role ?? "")) {
         const [x, y, w, h] = node.frame ?? [];
-        if ([node.label, node.value, node.placeholder].includes(r.name)) return true;
-        if (x !== undefined && y !== undefined && w !== undefined && h !== undefined && r.x >= x && r.x <= x + w && r.y >= y && r.y <= y + h) return true;
+        if ([node.label, node.value, node.placeholder].includes(r.name)) return node;
+        if (x !== undefined && y !== undefined && w !== undefined && h !== undefined && r.x >= x && r.x <= x + w && r.y >= y && r.y <= y + h) return node;
     }
-    return (node.children ?? []).some((c) => fieldFor(c, r));
+    for (const c of node.children ?? []) {
+        const field = fieldFor(c, r);
+        if (field) return field;
+    }
+    return undefined;
+}
+
+function hasPasswordField(node: AxNode | undefined): boolean {
+    return !!node && (node.subrole === "AXSecureTextField" || node.role === "AXSecureTextField" || (node.children ?? []).some(hasPasswordField));
 }
 
 /** Whether a process runs (a simulator's processes are this Mac's): without asking the device, so before each input. */

@@ -176,3 +176,67 @@ describe("whether the tree is the screen's", () => {
         expect(agrees(outline({ role: "AXApplication", children: settings.children!.slice(0, 3) }, SCREEN, []))).toBeUndefined();
     });
 });
+
+describe("noise in what's read from the picture", () => {
+    const line = (text: string, frame: number[]): SeenLine => ({ text, confidence: 1, frame });
+    const seen = (o: { text: string }) => o.text.split("\n").filter((l) => l.includes("- seen"));
+
+    test("a word read wrong in an element's own text isn't listed again", () => {
+        const form: AxNode = { role: "AXApplication", children: [{ role: "AXStaticText", label: "Standby Learn more", frame: [20, 300, 300, 30] }] };
+        expect(seen(outline(form, SCREEN, [line("Stanuby aarn mora", [20, 285, 200, 20])]))).toEqual([]);
+    });
+
+    test("nor is anything else inside a line's element (an icon, a clock), but text outside it is", () => {
+        const form: AxNode = { role: "AXApplication", children: [{ role: "AXStaticText", label: "4:02 PM", frame: [20, 300, 200, 80] }] };
+        expect(seen(outline(form, SCREEN, [line("4:0₴", [30, 310, 120, 60]), line("Fresh news", [20, 500, 100, 20])]))).toEqual(['- seen "Fresh news" [e2]']);
+    });
+
+    test("a tall element's text isn't its own: it may hold other lines", () => {
+        const page: AxNode = { role: "AXApplication", children: [{ role: "AXGroup", label: "Page", frame: [0, 100, 402, 600] }] };
+        expect(seen(outline(page, SCREEN, [line("Fresh news", [20, 500, 100, 20])]))).toHaveLength(1);
+    });
+
+    const ALERT: AxNode = {
+        role: "AXApplication",
+        children: [
+            { role: "AXStaticText", label: "Test alert", frame: [65, 374, 260, 22] },
+            { role: "AXButton", label: "Cancel", frame: [51, 442, 140, 48] },
+        ],
+    };
+
+    test("what's behind a dialog isn't listed, can't be tapped or waited for, and the outline says so", () => {
+        const o = outline(ALERT, SCREEN, [line("Tap me", [150, 120, 80, 20]), line("Switch: on", [5, 380, 80, 20]), line("Choose one", [65, 403, 260, 20])]);
+        expect(seen(o)).toEqual(['- seen "Choose one" [e3]']);
+        expect(o.text).toContain("(Text outside this dialog isn't listed: a screenshot shows it.)");
+        expect(o.texts).not.toContain("Tap me");
+    });
+
+    test("a web page under toolbars at the screen's edges isn't a dialog", () => {
+        const safari: AxNode = { role: "AXApplication", children: [{ role: "AXButton", label: "Back", frame: [10, 800, 40, 40] }] };
+        const o = outline(safari, SCREEN, [line("Tap me", [150, 120, 80, 20])]);
+        expect(seen(o)).toHaveLength(1);
+        expect(o.text).not.toContain("dialog");
+    });
+});
+
+test("refs go on from where the last outline's stopped, so one is never another element's later", () => {
+    const first = outline(tree, SCREEN);
+    const next = outline(tree, SCREEN, [], first.lastRef);
+    expect(next.refs.has("e1")).toBe(false);
+    expect(next.refs.has(`e${first.lastRef + 1}`)).toBe(true);
+    expect(next.lastRef).toBe(first.lastRef * 2);
+});
+
+test("a button over the whole screen is tapped at its corner, where what it's around isn't", () => {
+    const menu: AxNode = { role: "AXApplication", children: [{ role: "AXButton", label: "Dismiss context menu", frame: [0, 0, 402, 874] }, { role: "AXButton", label: "Open", frame: [100, 400, 200, 44] }] };
+    const o = outline(menu, SCREEN);
+    expect(o.refs.get("e1")).toMatchObject({ x: 10, y: 70 });
+    expect(o.refs.get("e2")).toMatchObject({ x: 200, y: 422 });
+});
+
+test("a web page's alert, an empty sheet in the tree, is said to be there", () => {
+    const page: AxNode = { role: "AXApplication", children: [{ role: "AXSheet", frame: [0, 0, 402, 874] }, { role: "AXButton", label: "Back", frame: [10, 800, 40, 40] }] };
+    const lines = [{ text: "Hello from the page", confidence: 1, frame: [60, 400, 200, 20] }];
+    expect(outline(page, SCREEN, lines).text).toContain("(A dialog or menu is open");
+    expect(outline({ role: "AXApplication", children: [page.children![1]!] }, SCREEN, lines).text).not.toContain("A dialog");
+});

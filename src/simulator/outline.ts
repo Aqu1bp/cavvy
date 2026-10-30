@@ -17,6 +17,8 @@ export interface AxNode {
     frame?: number[];
     disabled?: boolean;
     selected?: boolean;
+    /** A field's selection: where it starts and how long it is (0: a caret). */
+    selection?: number[];
     children?: AxNode[];
 }
 
@@ -32,6 +34,10 @@ export interface RefTarget {
     y: number;
     frame: [number, number, number, number];
     name: string;
+    /** A password field: what's typed in it isn't said back. */
+    secure?: boolean;
+    /** What it is in the tree, to find it there again (a `seen` line has none). */
+    element?: { role?: string; label: string };
 }
 
 export interface Outline {
@@ -39,6 +45,8 @@ export interface Outline {
     refs: Map<string, RefTarget>;
     /** The labels and values of the elements shown: the text on the screen (the picture's, also joined up, for a phrase that wraps). */
     texts: string[];
+    /** The last ref's number: the next outline's go on from it, so a ref is never another element's later. */
+    lastRef: number;
     /** Of the tree's elements whose label is text to see (a row's, a heading's), how many the picture shows where they are. */
     agreement: { checked: number; matched: number };
 }
@@ -53,6 +61,9 @@ const SEEN_KNOWN = 0.6;
 /** The tree isn't the screen's when it has at least this many elements to check and the picture shows under this share of them. */
 const AGREE_MIN = 4;
 const AGREE_SHARE = 0.4;
+/** A line this much inside a single line's element (at most this many lines tall) is that element's text, however it was read. */
+const SEEN_INSIDE = 0.7;
+const SEEN_LINE_HEIGHTS = 3;
 
 const ROLES: Record<string, string> = {
     AXApplication: "app",
@@ -95,6 +106,7 @@ const CHECKED = new Set(["text", "heading", "link", "cell", "switch", "button", 
 function roleOf(n: AxNode): string {
     const r = n.role ?? "";
     if (r === "AXButton" && /tab/i.test(n.subrole ?? "")) return "tab";
+    if (n.subrole === "AXSecureTextField") return "securefield";
     return ROLES[r] ?? (r.replace(/^AX/, "").toLowerCase() || "element");
 }
 
@@ -106,19 +118,20 @@ function quoted(s: string, n = 120): string {
 
 /**
  * The tree as an outline. `screen` is the screen's size in points: an element wholly outside it is left out, as
- * nobody could tap it, and one partly outside says so. Refs number the elements from e1, in the order shown.
+ * nobody could tap it, and one partly outside says so. Refs number the elements from after `firstRef`, in the order shown.
  */
-export function outline(root: AxNode, screen: { width: number; height: number }, seen: SeenLine[] = []): Outline {
+export function outline(root: AxNode, screen: { width: number; height: number }, seen: SeenLine[] = [], firstRef = 0): Outline {
     const refs = new Map<string, RefTarget>();
     const lines: string[] = [];
     const texts: string[] = [];
     /** The text of each element on the screen, where it is: what the picture's lines are checked against. */
-    const shown: { frame: [number, number, number, number]; words: Set<string> }[] = [];
+    const shown: { frame: [number, number, number, number]; words: Set<string>; button: boolean }[] = [];
     /** Elements showing their label as text, which the picture should have too. */
     const checks: { frame: number[]; words: string[] }[] = [];
     let size = 0;
     let cut = false;
-    let seq = 0;
+    let seq = firstRef;
+    let sheet = false;
     const add = (line: string): boolean => {
         if (size + line.length + 1 > MAX_OUTLINE) {
             cut = true;
@@ -141,11 +154,13 @@ export function outline(root: AxNode, screen: { width: number; height: number },
         // An element nobody sees takes its children with it, unless it's a container whose own frame says nothing.
         if (outside && !STRUCTURAL.has(role) && role !== "app") return;
         const placeholder = clean(n.placeholder);
-        if (f && !outside && (label || value || placeholder) && role !== "app") shown.push({ frame: f, words: new Set(wordsOf(`${label} ${value} ${placeholder}`)) });
+        if (f && !outside && (label || value || placeholder) && role !== "app") shown.push({ frame: f, words: new Set(wordsOf(`${label} ${value} ${placeholder}`)), button: role === "button" });
         if (f && !outside && label && CHECKED.has(role) && f[0] >= 0 && f[1] >= 0 && f[0] + f[2] <= screen.width && f[1] + f[3] <= screen.height && f[2] >= 40 && f[2] >= f[3] * 2.5) {
             const words = wordsOf(label).filter((w) => w.length > 1);
             if (words.some((w) => w.length > 2)) checks.push({ frame: f, words });
         }
+        // A web page's alert or menu: all the tree has of it is an empty sheet over the screen.
+        if (n.role === "AXSheet" && !kids.length) sheet = true;
         const silent = STRUCTURAL.has(role) && !label && !value;
         let next = depth;
         if (!silent && role !== "app") {
@@ -165,7 +180,16 @@ export function outline(root: AxNode, screen: { width: number; height: number },
                 const x1 = Math.min(f[0] + f[2], screen.width);
                 const y1 = Math.min(f[1] + f[3], screen.height);
                 const ref = `e${++seq}`;
-                refs.set(ref, { x: Math.round(((x0 + x1) / 2) * 10) / 10, y: Math.round(((y0 + y1) / 2) * 10) / 10, frame: f, name: label || value || role });
+                // A button over the whole screen is what's around something (a menu's "Dismiss"): its center may be the thing.
+                const around = role === "button" && x1 - x0 >= screen.width * 0.9 && y1 - y0 >= screen.height * 0.9;
+                refs.set(ref, {
+                    x: around ? x0 + 10 : Math.round(((x0 + x1) / 2) * 10) / 10,
+                    y: around ? statusBar(screen) + 10 : Math.round(((y0 + y1) / 2) * 10) / 10,
+                    frame: f,
+                    name: label || value || role,
+                    ...(role === "securefield" ? { secure: true } : {}),
+                    element: { role: n.role, label },
+                });
                 line += ` [${ref}]`;
                 if (partly) line += " (partly off screen)";
             }
@@ -177,7 +201,10 @@ export function outline(root: AxNode, screen: { width: number; height: number },
         for (const k of kids) visit(k, next);
     };
     visit(root, 0);
-    const picture = seenLines(seen, shown, screen);
+    const box = dialogBox(shown, screen);
+    const inPicture = seenLines(seen, shown, screen);
+    // What a dialog dims isn't there to read or tap.
+    const picture = box ? inPicture.filter((l) => inside(l.frame, box) >= SEEN_INSIDE) : inPicture;
     for (const l of picture) {
         if (cut) break;
         const ref = `e${++seq}`;
@@ -195,8 +222,27 @@ export function outline(root: AxNode, screen: { width: number; height: number },
     }).length;
     const app = clean(root.label) || clean(root.title);
     const head = app ? `Screen: ${app}` : "Screen";
+    if (picture.length < inPicture.length) lines.push("(Text outside this dialog isn't listed: a screenshot shows it.)");
+    else if (sheet && picture.length) lines.push("(A dialog or menu is open: text listed here may be behind it, out of reach. A screenshot shows which.)");
     const body = lines.length ? lines.join("\n") : "(nothing on the screen can be read; take a screenshot)";
-    return { text: `${head}\n${body}${cut ? `\n… (the outline stops at ${MAX_OUTLINE.toLocaleString("en-US")} characters)` : ""}`, refs, texts, agreement: { checked: checks.length, matched } };
+    return { text: `${head}\n${body}${cut ? `\n… (the outline stops at ${MAX_OUTLINE.toLocaleString("en-US")} characters)` : ""}`, refs, texts, lastRef: seq, agreement: { checked: checks.length, matched } };
+}
+
+/**
+ * Whether what a ref stood for is still where it was: the same kind of element with the same label in the tree, or
+ * for a `seen` line, the same words in the picture there.
+ */
+export function refStillThere(t: RefTarget, tree: AxNode, seen: SeenLine[]): boolean {
+    if (!t.element) {
+        const want = wordsOf(t.name);
+        return seen.some((l) => l.frame.length === 4 && overlaps(l.frame, t.frame) && want.filter((w) => wordsOf(l.text).some((k) => alike(w, k))).length / want.length >= SEEN_KNOWN);
+    }
+    const same = (n: AxNode): boolean => {
+        const f = n.frame;
+        if (n.role === t.element!.role && (clean(n.label) || clean(n.title)) === t.element!.label && f?.length === 4 && f.every((v, i) => Math.abs(v - t.frame[i]!) <= 2)) return true;
+        return (n.children ?? []).some(same);
+    };
+    return same(tree);
 }
 
 /** Whether the picture shows what the tree says (undefined: too little to tell, an app whose text is icons or a web page). */
@@ -236,8 +282,9 @@ function seenLines(seen: SeenLine[], shown: { frame: number[]; words: Set<string
         const words = all.some((w) => w.length > 1) ? all.filter((w) => w.length > 1) : all;
         if (!words.length) continue;
         const near = shown.filter((e) => overlaps(e.frame, f));
-        const known = words.filter((w) => near.some((e) => e.words.has(w))).length;
+        const known = words.filter((w) => near.some((e) => [...e.words].some((k) => alike(w, k)))).length;
         if (known / words.length >= SEEN_KNOWN) continue;
+        if (near.some((e) => e.frame[3]! <= f[3] * SEEN_LINE_HEIGHTS && inside(f, e.frame) >= SEEN_INSIDE)) continue;
         out.push({ text, frame: f });
     }
     // Reading order: in rows (a line whose top is within half a line of the row's first joins it), left to right.
@@ -249,6 +296,41 @@ function seenLines(seen: SeenLine[], shown: { frame: number[]; words: Set<string
         else rows.push([l]);
     }
     return rows.flatMap((row) => row.sort((a, b) => a.frame[0] - b.frame[0]));
+}
+
+/** How much of `a` is inside `b`, from 0 to 1. */
+function inside(a: number[], b: number[]): number {
+    const w = Math.min(a[0]! + a[2]!, b[0]! + b[2]!) - Math.max(a[0]!, b[0]!);
+    const h = Math.min(a[1]! + a[3]!, b[1]! + b[3]!) - Math.max(a[1]!, b[1]!);
+    return w <= 0 || h <= 0 ? 0 : (w * h) / (a[2]! * a[3]!);
+}
+
+/** The same word, or one read wrong: "stanuby" for "standby" (a short word has to be exact). */
+function alike(a: string, b: string): boolean {
+    if (a === b) return true;
+    const most = Math.floor(Math.min(a.length, b.length) / 2.5);
+    if (!most || Math.abs(a.length - b.length) > most) return false;
+    let row = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+        const next: number[] = [i];
+        for (let j = 1; j <= b.length; j++) next[j] = Math.min(row[j]! + 1, next[j - 1]! + 1, row[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+        row = next;
+    }
+    return row[b.length]! <= most;
+}
+
+/**
+ * Where a dialog is, when the tree is one: an alert hides the rest of the screen from the tree, leaving a few elements
+ * with a button in the middle of it. A web page's tree has its toolbars at the screen's edges.
+ */
+function dialogBox(shown: { frame: number[]; button: boolean }[], screen: { width: number; height: number }): number[] | undefined {
+    if (!shown.some((e) => e.button)) return undefined;
+    const left = Math.min(...shown.map((e) => e.frame[0]!));
+    const top = Math.min(...shown.map((e) => e.frame[1]!));
+    const right = Math.max(...shown.map((e) => e.frame[0]! + e.frame[2]!));
+    const bottom = Math.max(...shown.map((e) => e.frame[1]! + e.frame[3]!));
+    if (left < 24 || right > screen.width - 24 || top < screen.height * 0.2 || bottom > screen.height * 0.8) return undefined;
+    return [left - 16, top - 16, right - left + 32, bottom - top + 32];
 }
 
 /** How far down the status bar reaches, in points: a tall iPhone's is beside its camera; an iPad's or a short iPhone's is a thin strip. */

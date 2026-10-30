@@ -165,6 +165,10 @@ describe("a device another tool has taken input from", () => {
     const GONE = join(W, "gone");
     const SAFARI = join(W, "safari");
     const SLOW = join(W, "slow");
+    // What the screen reads as, when this exists: the helper's answer.
+    const TREE = join(W, "tree");
+    // What the picture reads as, when this exists.
+    const LINES = join(W, "lines");
     // Settings opens a field to type in half a second after it's tapped (while OPENS exists), as Safari's address does.
     const OPENS = join(W, "opens");
     const EDITING = join(W, "editing");
@@ -180,6 +184,8 @@ describe("a device another tool has taken input from", () => {
     let lookupMs = 300;
     /** How long a lookup that works takes. */
     let lookupOkMs = 0;
+    /** How long listing the devices takes. */
+    let listMs = 0;
     let logMs = 0;
     let inputPid = 0;
     let inputs: ReturnType<typeof Bun.spawn>[] = [];
@@ -208,7 +214,7 @@ describe("a device another tool has taken input from", () => {
         writeFileSync(
             bin,
             `#!${process.execPath}
-const { existsSync, appendFileSync, rmSync, writeFileSync } = require("fs");
+const { existsSync, appendFileSync, readFileSync, rmSync, writeFileSync } = require("fs");
 const out = (o) => { const p = Buffer.from(JSON.stringify(o)); const h = Buffer.alloc(5); h[0] = 74; h.writeUInt32BE(p.length, 1); process.stdout.write(Buffer.concat([h, p])); };
 const held = () => existsSync(${JSON.stringify(HELD)});
 let said = held();
@@ -218,11 +224,13 @@ out({ event: "ready", width: 1206, height: 2622, scale: 3, held: said });
 for await (const line of console) {
     const c = JSON.parse(line);
     if (existsSync(${JSON.stringify(DIE)})) { rmSync(${JSON.stringify(DIE)}); process.exit(0); }
-    appendFileSync(${JSON.stringify(OPS)}, (c.op === "claim" ? JSON.stringify({ claim: c.touch ? (c.keys ? "all" : "not keys") : "not touch" }) : \`\${c.op} \${Date.now()}\`) + "\\n");
+    appendFileSync(${JSON.stringify(OPS)}, (c.op === "claim" ? JSON.stringify({ claim: c.touch ? (c.keys ? "all" : "not keys") : "not touch" }) : \`\${c.op} \${Date.now()} \${JSON.stringify(c.keys ?? c.phase ?? "")}\`) + "\\n");
     if (["touch", "keys", "button"].includes(c.op) && existsSync(${JSON.stringify(SLOW)})) await Bun.sleep(400);
     if (c.op === "touch" && c.phase === "up" && existsSync(${JSON.stringify(OPENS)})) setTimeout(() => writeFileSync(${JSON.stringify(EDITING)}, ""), 500);
     tell();
     if (c.op === "describe" && existsSync(${JSON.stringify(GONE)})) out({ id: c.id, tree: { role: "AXApplication" }, pid: 99999, gone: true, stillMs: 1000 });
+    else if (c.op === "text" && existsSync(${JSON.stringify(LINES)})) out({ id: c.id, lines: JSON.parse(readFileSync(${JSON.stringify(LINES)}, "utf8")) });
+    else if (c.op === "describe" && existsSync(${JSON.stringify(TREE)})) out({ id: c.id, stillMs: 1000, ...JSON.parse(readFileSync(${JSON.stringify(TREE)}, "utf8")) });
     else if (c.op === "describe") out({ id: c.id, tree: { role: "AXApplication", children: [{ role: existsSync(${JSON.stringify(EDITING)}) ? "AXTextField" : "AXButton", label: "Settings", frame: [20, 100, 60, 60] }] }, pid: 1, process: existsSync(${JSON.stringify(SAFARI)}) ? "MobileSafari" : "SpringBoard", stillMs: 1000 });
     else out({ id: c.id, ok: true });
 }
@@ -235,6 +243,8 @@ for await (const line of console) {
         rmSync(GONE, { force: true });
         rmSync(SAFARI, { force: true });
         rmSync(SLOW, { force: true });
+        rmSync(TREE, { force: true });
+        rmSync(LINES, { force: true });
         rmSync(OPENS, { force: true });
         rmSync(EDITING, { force: true });
         cut = "";
@@ -245,6 +255,7 @@ for await (const line of console) {
         psSlowOnce = 0;
         lookupMs = 300;
         lookupOkMs = 0;
+        listMs = 0;
         logMs = 0;
         inputs = [];
         await nextInputProcess();
@@ -253,7 +264,10 @@ for await (const line of console) {
         simctl.setRunner(async (args) => {
             ran2.push(args);
             const line = args.join(" ");
-            if (line === "xcrun simctl list devices -j") return { code: 0, stdout: DEVICES.replace('"Shutdown"', '"Booted"'), stderr: "" };
+            if (line === "xcrun simctl list devices -j") {
+                await Bun.sleep(listMs);
+                return { code: 0, stdout: DEVICES.replace('"Shutdown"', '"Booted"'), stderr: "" };
+            }
             if (line === "xcrun simctl spawn AAAA launchctl list" && lookupFails) {
                 await Bun.sleep(lookupMs);
                 return { code: 1, stdout: "", stderr: "launchctl list failed" };
@@ -355,6 +369,241 @@ for await (const line of console) {
         expect(readFileSync(OPS, "utf8").split("\n").filter((o) => o.includes("claim"))).toEqual(['{"claim":"all"}', '{"claim":"all"}']);
         expect(s.state().inputCut).toBeUndefined();
         expect(await s.tap({ x: 100, y: 200 })).toBe("Tapped 100,200.");
+        s.dispose();
+    });
+
+    test("the pane's touches don't wait on simctl: a fast swipe isn't held back and sent at once", async () => {
+        const s = session();
+        await s.command("boot");
+        // What's known of the devices has gone stale, and asking again is slow.
+        await Bun.sleep(1100);
+        listMs = 600;
+        const started = Date.now();
+        await s.input({ kind: "touch", phase: "down", x: 0.8, y: 0.5 });
+        await s.input({ kind: "touch", phase: "move", x: 0.5, y: 0.5 });
+        await s.input({ kind: "touch", phase: "up", x: 0.2, y: 0.5 });
+        expect(Date.now() - started).toBeLessThan(400);
+        s.dispose();
+    });
+
+    /** What was sent, by kind: each `keys` batch's strokes, each touch's phase. */
+    const sent = (op: string) =>
+        readFileSync(OPS, "utf8")
+            .split("\n")
+            .filter((o) => o.startsWith(`${op} `))
+            .map((o) => JSON.parse(o.split(" ").slice(2).join(" ")));
+    const FORM = (fields: Record<string, unknown>[]) => JSON.stringify({ pid: 5, process: "Final", tree: { role: "AXApplication", children: fields } });
+    const FIELD = { role: "AXTextField", value: "hello", frame: [20, 100, 200, 40] };
+    const PASSWORD = { role: "AXTextField", subrole: "AXSecureTextField", value: "Password", frame: [20, 200, 200, 40] };
+    const [META, A, BACKSPACE, ENTER, ARROW_DOWN] = [0xe3, 0x04, 0x2a, 0x28, 0x51];
+    /** The last ref in an outline. */
+    const lastRef = (outline: string) => [...outline.matchAll(/\[(e\d+)\]/g)].at(-1)![1]!;
+    const pressed = (usage: number) => sent("keys").some((batch) => batch.some((k: [number, boolean]) => k[0] === usage && k[1]));
+
+    test("the person having used the screen, a ref is refused with the screen as it is, and nothing is sent", async () => {
+        const s = session();
+        await s.snapshot();
+        await s.input({ kind: "touch", phase: "down", x: 0.5, y: 0.5 });
+        await s.input({ kind: "touch", phase: "up", x: 0.5, y: 0.5 });
+        const touches = sent("touch").length;
+        const refused = (await s.tap({ ref: "e1" }).catch((e) => e)) as Error;
+        expect(refused.message).toContain("Not done: e1 may not be what it was.");
+        expect(refused.message).toContain('- button "Settings" [e2]');
+        expect(sent("touch")).toHaveLength(touches);
+        // It has read the screen now, and the refs are new.
+        await expect(s.tap({ ref: "e1" })).rejects.toThrow("There's no ref e1");
+        const again = lastRef(await s.snapshot());
+        expect(await s.tap({ ref: again })).toContain("Tapped");
+        const typing = lastRef(await s.snapshot());
+        await s.input({ kind: "touch", phase: "down", x: 0.5, y: 0.5 });
+        await s.input({ kind: "touch", phase: "up", x: 0.5, y: 0.5 });
+        await expect(s.type("secret", { ref: typing })).rejects.toThrow("Not done");
+        expect(sent("keys")).toHaveLength(0);
+        // A point is what the agent says it is.
+        await s.input({ kind: "touch", phase: "down", x: 0.5, y: 0.5 });
+        await s.input({ kind: "touch", phase: "up", x: 0.5, y: 0.5 });
+        expect(await s.tap({ x: 10, y: 10 })).toContain("Tapped");
+        s.dispose();
+    });
+
+    test("a ref used by one action isn't good for another alongside it", async () => {
+        const s = session();
+        const first = lastRef(await s.snapshot());
+        const results = await Promise.allSettled([s.tap({ ref: first }), s.tap({ ref: first })]);
+        expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+        expect(String((results.find((r) => r.status === "rejected") as PromiseRejectedResult).reason)).toContain(`There's no ref ${first}`);
+        // Nor for what comes with a button press, whichever goes first.
+        const second = lastRef(await s.snapshot());
+        const typed = sent("keys").length;
+        const [pressed2, typing] = await Promise.allSettled([s.button("home"), s.type("secret", { ref: second })]);
+        expect(pressed2.status).toBe("fulfilled");
+        expect(String((typing as PromiseRejectedResult).reason)).toContain(`There's no ref ${second}`);
+        expect(sent("keys")).toHaveLength(typed);
+        s.dispose();
+    });
+
+    test("a ref from before an action, sent after its outline (a batch, one call after another), is refused, never another element", async () => {
+        const s = session();
+        const old = lastRef(await s.snapshot());
+        // The first call of the batch: it acts and reads the new screen, as every action's result does.
+        await s.tap({ ref: old });
+        const now = await s.snapshot();
+        expect(now).not.toContain(`[${old}]`);
+        const touches = sent("touch").length;
+        await expect(s.tap({ ref: old })).rejects.toThrow(`There's no ref ${old}`);
+        expect(sent("touch")).toHaveLength(touches);
+        s.dispose();
+    });
+
+    test("another session moved the screen: a ref is refused with the screen as it is, and nothing is sent", async () => {
+        const a = session();
+        const b = session();
+        const screen = (label: string, pid: number, y = 100) => JSON.stringify({ pid, process: "Final", tree: { role: "AXApplication", children: [{ role: "AXButton", label, frame: [20, y, 200, 40] }] } });
+        for (const [what, after] of [
+            ["another app in front", screen("Tap me", 7)],
+            ["another element there", screen("Row 0", 5)],
+            ["moved", screen("Tap me", 5, 300)],
+        ] as const) {
+            writeFileSync(TREE, screen("Tap me", 5));
+            const ref = lastRef(await a.snapshot());
+            await b.snapshot();
+            writeFileSync(TREE, after);
+            const touches = existsSync(OPS) ? sent("touch").length : 0;
+            const refused = (await a.tap({ ref }).catch((e) => e)) as Error;
+            expect(`${what}: ${refused.message}`).toContain(`Not done: ${ref} isn't there any more`);
+            expect(refused.message).toContain("Screen");
+            expect(existsSync(OPS) ? sent("touch").length : 0).toBe(touches);
+        }
+        // Nothing changed: it goes.
+        writeFileSync(TREE, screen("Tap me", 5));
+        expect(await a.tap({ ref: lastRef(await a.snapshot()) })).toContain("Tapped");
+        a.dispose();
+        b.dispose();
+    });
+
+    test("a line read from the picture is looked for in the picture again", async () => {
+        const s = session();
+        writeFileSync(TREE, FORM([]));
+        writeFileSync(LINES, JSON.stringify([{ text: "Learn more", confidence: 1, frame: [20, 300, 100, 20] }]));
+        const ref = /seen "Learn more" \[(e\d+)\]/.exec(await s.snapshot())![1]!;
+        writeFileSync(LINES, JSON.stringify([{ text: "Something else", confidence: 1, frame: [20, 300, 100, 20] }]));
+        await expect(s.tap({ ref })).rejects.toThrow(`Not done: ${ref} isn't there any more`);
+        const again = /seen "Something else" \[(e\d+)\]/.exec(await s.snapshot())![1]!;
+        expect(await s.tap({ ref: again })).toContain("Tapped");
+        s.dispose();
+    });
+
+    test("clear with no text empties the field", async () => {
+        const s = session();
+        expect(await s.type("", { clear: true })).toBe("Cleared the field.");
+        expect(sent("keys")).toHaveLength(1);
+        expect(SimulatorActTool.validate!({ action: "type", clear: true }, ctx)).toBeUndefined();
+        expect(SimulatorActTool.validate!({ action: "type" }, ctx)).toBe("type needs text, or clear");
+        s.dispose();
+    });
+
+    test("Stop lifts a finger held down or moving, and what's left isn't sent", async () => {
+        const s = session();
+        const stop = new AbortController();
+        const holding = s.tap({ x: 10, y: 10 }, { holdMs: 5000 }, stop.signal);
+        await Bun.sleep(150);
+        let started = Date.now();
+        stop.abort();
+        await expect(holding).rejects.toThrow("Interrupted by user.");
+        expect(Date.now() - started).toBeLessThan(1000);
+        expect(sent("touch")).toEqual(["down", "up"]);
+
+        const stop2 = new AbortController();
+        const swiping = s.swipe({ direction: "up", durationMs: 5000 }, stop2.signal);
+        await Bun.sleep(150);
+        started = Date.now();
+        stop2.abort();
+        await expect(swiping).rejects.toThrow("Interrupted by user.");
+        expect(Date.now() - started).toBeLessThan(1000);
+        expect(sent("touch").at(-1)).toBe("up");
+        s.dispose();
+    });
+
+    test("Stop before Enter: type doesn't press it, and press sends nothing", async () => {
+        const s = session();
+        const stop = new AbortController();
+        const typing = s.type("hi", { submit: true }, stop.signal);
+        await Bun.sleep(500);
+        stop.abort();
+        await expect(typing).rejects.toThrow("Interrupted by user.");
+        expect(pressed(ENTER)).toBe(false);
+        const before = sent("keys").length;
+        await expect(s.press("Enter", [], stop.signal)).rejects.toThrow("Interrupted by user.");
+        expect(sent("keys")).toHaveLength(before);
+        s.dispose();
+    });
+
+    test("in the pane, a key follows text sent before it", async () => {
+        const s = session();
+        await s.snapshot();
+        await Promise.all([s.input({ kind: "text", text: "hi" }), s.input({ kind: "key", code: "Enter", down: true }), s.input({ kind: "key", code: "Enter", down: false })]);
+        const usages = sent("keys").flat().map((k: [number, boolean]) => k[0]);
+        expect(usages.indexOf(ENTER)).toBeGreaterThan(usages.findIndex((u: number) => u !== ENTER));
+        s.dispose();
+    });
+
+    test("what's typed in a password field isn't said back; elsewhere it is", async () => {
+        const s = session();
+        writeFileSync(TREE, FORM([FIELD, PASSWORD]));
+        const outline = await s.snapshot();
+        expect(outline).toContain('- securefield value="Password" [e2]');
+        const by = await s.type("hunter2", { ref: "e2" });
+        expect(by).toBe("Typed 7 characters, not shown as a password field is involved.");
+        // Without a ref it may be the one the keys go to.
+        expect(await s.type("hunter2")).not.toContain("hunter2");
+        writeFileSync(TREE, FORM([FIELD]));
+        expect(await s.type("hello", { ref: lastRef(await s.snapshot()) })).toBe('Typed "hello".');
+        expect(await s.type("hello")).toBe('Typed "hello".');
+        s.dispose();
+    });
+
+    test("type by ref goes at the field's end, unless the tap selected what's there; clear replaces it", async () => {
+        const s = session();
+        writeFileSync(TREE, FORM([{ ...FIELD, selection: [2, 0] }]));
+        await s.type("x", { ref: lastRef(await s.snapshot()) });
+        expect(pressed(ARROW_DOWN)).toBe(true);
+
+        rmSync(OPS);
+        writeFileSync(TREE, FORM([{ ...FIELD, selection: [0, 5] }]));
+        await s.type("x", { ref: lastRef(await s.snapshot()) });
+        expect(pressed(ARROW_DOWN)).toBe(false);
+
+        rmSync(OPS);
+        writeFileSync(TREE, FORM([{ ...FIELD, selection: [2, 0] }]));
+        await s.type("x", { ref: lastRef(await s.snapshot()), clear: true });
+        expect(pressed(ARROW_DOWN)).toBe(false);
+        expect(sent("keys")[0].filter((k: [number, boolean]) => k[1]).map((k: [number, boolean]) => k[0])).toEqual([META, A, BACKSPACE]);
+        s.dispose();
+    });
+
+    test("lock waits for the lock screen, from an app and from the home screen", async () => {
+        const s = session();
+        for (const [before, after] of [
+            [{ pid: 5, process: "Final", tree: { role: "AXApplication", label: "Final" } }, { pid: 1, process: "SpringBoard", tree: { role: "AXApplication" } }],
+            [{ pid: 1, process: "SpringBoard", tree: { role: "AXApplication", label: "Home" } }, { pid: 1, process: "SpringBoard", tree: { role: "AXApplication" } }],
+        ]) {
+            writeFileSync(TREE, JSON.stringify(before));
+            await s.snapshot();
+            const started = Date.now();
+            let done = 0;
+            const locking = s.button("lock").then(() => (done = Date.now()));
+            await Bun.sleep(700);
+            writeFileSync(TREE, JSON.stringify(after));
+            await locking;
+            expect(done - started).toBeGreaterThanOrEqual(700);
+        }
+        s.dispose();
+    });
+
+    test("wait finds text the picture read with a space the page hasn't got", async () => {
+        const s = session();
+        writeFileSync(TREE, FORM([{ role: "AXStaticText", label: "example. com", frame: [20, 100, 200, 40] }]));
+        expect(await s.waitFor("example.com", 2000)).toContain("is on the screen");
         s.dispose();
     });
 
@@ -694,7 +943,7 @@ for await (const line of console) {
         const agent = session();
         const other = session();
         await agent.tap({ x: 100, y: 200 });
-        const swiping = agent.swipe({ direction: "up", durationMs: 2000 }).catch((e) => e as Error);
+        const swiping = agent.swipe({ direction: "up", durationMs: 1000 }).catch((e) => e as Error);
         await Bun.sleep(100);
         const taking = other.takeControl();
         await Bun.sleep(300);
@@ -706,7 +955,7 @@ for await (const line of console) {
         expect(String(await swiping)).toContain("The input was taken back from another tool as this was sent");
         agent.dispose();
         other.dispose();
-    });
+    }, 15_000);
 
     test("input that outlasts take_control's wait for it, and ends as the input process restarts: it's an error, not done", async () => {
         writeFileSync(HELD, "");

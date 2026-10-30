@@ -110,14 +110,19 @@
     gap: calc(10 * var(--sp));
     max-width: calc(100% - 32 * var(--sp));
     padding: calc(4 * var(--sp)) calc(4 * var(--sp)) calc(4 * var(--sp)) calc(14 * var(--sp));
-    border-radius: var(--pill);
+    border-radius: calc(14 * var(--sp));
     background: color-mix(in srgb, var(--warn) 10%, var(--sheet-2));
     box-shadow:
         inset 0 0 0 1px color-mix(in srgb, var(--warn) 30%, transparent),
         0 calc(4 * var(--sp)) calc(14 * var(--sp)) rgb(0 0 0 / 0.18);
     color: var(--warn);
     font-size: 0.857rem;
-    white-space: nowrap;
+    width: max-content;
+}
+
+.sim-taken span {
+    flex: 1 1 0;
+    min-width: 0;
 }
 
 .sim-taken .btn {

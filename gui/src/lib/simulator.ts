@@ -13,6 +13,60 @@ export interface Rect extends Size {
     y: number;
 }
 
+/**
+ * A two-finger swipe on the pane, which the device sees as a finger: how large its turns have been (CSS pixels), and
+ * whether the finger has lifted with the turns still coming (`coasting`).
+ */
+export interface WheelSwipe {
+    peak: number;
+    last: number;
+    falls: number;
+    coasting: boolean;
+}
+
+/** Turns getting smaller with none getting larger, and how far below the swipe's largest, that say the fingers have left the trackpad. */
+const WHEEL_FALLS = 5;
+const WHEEL_SLOWED_TO = 0.6;
+
+export function wheelStart(size: number): WheelSwipe {
+    return { peak: size, last: size, falls: 0, coasting: false };
+}
+
+/**
+ * The swipe after a turn. Browsers don't say when the fingers leave the trackpad, and macOS keeps turning for seconds
+ * after: the finger lifts at the screen's edge, where it can go no further, or as the turns die down. It's still moving
+ * then, so the device sees a flick: a page turns, a list carries on. The turns left over move nothing.
+ */
+export function wheelTurn(s: WheelSwipe, size: number, atEdge: boolean): WheelSwipe {
+    if (s.coasting) return { ...s, last: size };
+    const falls = size > s.last ? 0 : size < s.last ? s.falls + 1 : s.falls;
+    const peak = Math.max(s.peak, size);
+    return { peak, last: size, falls, coasting: atEdge || (falls >= WHEEL_FALLS && size < peak * WHEEL_SLOWED_TO) };
+}
+
+/**
+ * A mouse wheel's notch is one large turn on its own, and a finger that far at once is a fling (the device sends a list
+ * dozens of rows away). The finger goes there at this pace, in screens a second, where a list moves as far as it does.
+ */
+const WHEEL_PACE = 0.55;
+/** A turn this long after the last is on its own; closer, the turns are a series, a trackpad's, which come as they are. */
+export const WHEEL_SERIES_MS = 20;
+/** A turn moving the finger this far (a share of the screen) goes at the pace when it's on its own. */
+export const WHEEL_JUMP = 0.03;
+
+/** Where a finger going to `to` at the pace is after `ms`, at most there. */
+export function wheelPaced(from: { x: number; y: number }, to: { x: number; y: number }, ms: number): { x: number; y: number } {
+    const left = Math.hypot(to.x - from.x, to.y - from.y);
+    const step = (WHEEL_PACE * ms) / 1000;
+    if (left <= step) return { x: to.x, y: to.y };
+    return { x: from.x + ((to.x - from.x) * step) / left, y: from.y + ((to.y - from.y) * step) / left };
+}
+
+/** A turn much larger than the one before while coasting: the fingers are back, and this is a new swipe. */
+export function wheelSwipesAgain(s: WheelSwipe, size: number): boolean {
+    return s.coasting && size > s.last * 1.5 && size > s.last + 4;
+}
+
 /** Room around the screen in the pane, in CSS pixels. */
 export const SCREEN_MARGIN = 24;
 

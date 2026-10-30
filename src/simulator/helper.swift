@@ -478,6 +478,16 @@ func describe(_ element: NSObject, depth: Int, budget: inout Int) -> [String: An
         let (selectedOf, _) = imp(element, "isAccessibilitySelected", as: BoolFn.self)
         if selectedOf(element, selectedSel) { node["selected"] = true }
     }
+    // What's selected in a field (a tap on Safari's address selects it all): typing replaces it.
+    if ["AXTextField", "AXSearchField", "AXTextArea"].contains(node["role"] as? String ?? "") {
+        let selectionSel = NSSelectorFromString("accessibilitySelectedTextRange")
+        if element.responds(to: selectionSel) {
+            typealias RangeFn = @convention(c) (AnyObject, Selector) -> NSRange
+            let (selectionOf, _) = imp(element, "accessibilitySelectedTextRange", as: RangeFn.self)
+            let r = selectionOf(element, selectionSel)
+            if r.location != NSNotFound { node["selection"] = [r.location, r.length] }
+        }
+    }
     var children: [[String: Any]] = []
     var kids = element.perform(NSSelectorFromString("accessibilityChildren"))?.takeUnretainedValue() as? [NSObject] ?? []
     // A list that gives none of its rows (iPad Settings' sidebar) may still give the chosen one.

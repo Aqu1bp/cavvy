@@ -173,7 +173,7 @@ export const SimulatorSnapshotTool: Tool<{ screenshot?: boolean }> = {
     name: "SimulatorSnapshot",
     category: "read",
     readOnly: true,
-    description: `Reads the simulator's screen as a text outline from its accessibility tree: buttons, text, fields, cells and switches with their labels and values, and a ref like [e12] on each that SimulatorAct can tap. Text the tree lacks (a web page's) is read from the picture and listed after it as seen "…" lines, with refs too. Refs last until the next snapshot (an action returns a new one). Coordinates are in points. Pass screenshot only when how it looks matters: the outline is cheaper and exact.`,
+    description: `Reads the simulator's screen as a text outline from its accessibility tree: buttons, text, fields, cells and switches with their labels and values, and a ref like [e12] on each that SimulatorAct can tap. Text the tree lacks (a web page's) is read from the picture and listed after it as seen "…" lines, with refs too. Refs last until your next action, which returns a new outline with new refs. If the screen has changed since, or the user has used it, a ref is refused and you get the new outline. Coordinates are in points. Pass screenshot only when how it looks matters: the outline is cheaper and exact.`,
     parameters: {
         type: "object",
         properties: { screenshot: { type: "boolean", description: "Also return a screenshot" } },
@@ -202,6 +202,7 @@ interface ActInput {
     durationMs?: number;
     text?: string;
     submit?: boolean;
+    clear?: boolean;
     key?: string;
     modifiers?: string[];
     button?: (typeof BUTTONS)[number];
@@ -215,7 +216,7 @@ export const SimulatorActTool: Tool<ActInput> = {
     description: `Acts on the simulator as a finger and a hardware keyboard would. action:
 - tap, double_tap, long_press: at ref (from a snapshot; preferred) or at x and y in points.
 - swipe: from ref or x,y (default: the middle) to toX,toY, or by direction (up, down, left, right: the way the finger moves, so up scrolls further down a list); durationMs (default 300).
-- type: text into the focused field (ref taps a field first); submit then presses Enter.
+- type: text into the focused field (ref taps a field first, and adds to its end); clear replaces what's in it, or with no text empties it; submit then presses Enter.
 - press: a key such as Enter, Backspace, Tab, Escape, ArrowDown, or a combination like Meta+A (more modifiers in modifiers).
 - button: home or lock.
 - wait: for text to show (timeoutMs, default 10000); with no text, for the screen to be still.
@@ -233,6 +234,7 @@ Returns the screen once it's still, as a new outline; it says when the user used
             durationMs: { type: "integer", description: "swipe: how long it takes" },
             text: { type: "string", description: "type: what to type; wait: text to wait for" },
             submit: { type: "boolean", description: "type: press Enter afterwards" },
+            clear: { type: "boolean", description: "type: replace what's in the field" },
             key: { type: "string", description: "press: the key" },
             modifiers: { type: "array", items: { type: "string", enum: ["Control", "Shift", "Alt", "Meta"] }, description: "press: modifier keys held" },
             button: { type: "string", enum: [...BUTTONS], description: "button: which" },
@@ -256,7 +258,7 @@ Returns the screen once it's still, as a new outline; it says when the user used
                 if (input.direction !== undefined && !DIRECTIONS.includes(input.direction)) return `Unknown direction "${String(input.direction)}"`;
                 return undefined;
             case "type":
-                return typeof input.text === "string" && input.text ? undefined : "type needs text";
+                return (typeof input.text === "string" && input.text) || input.clear ? undefined : "type needs text, or clear";
             case "press":
                 return typeof input.key === "string" && input.key ? undefined : "press needs a key";
             case "button":
@@ -276,19 +278,19 @@ Returns the screen once it's still, as a new outline; it says when the user used
             const hasTarget = input.ref !== undefined || typeof input.x === "number";
             switch (input.action) {
                 case "tap":
-                    return after(s, await s.tap(target), ctx);
+                    return after(s, await s.tap(target, {}, ctx.signal), ctx);
                 case "double_tap":
-                    return after(s, await s.tap(target, { count: 2 }), ctx);
+                    return after(s, await s.tap(target, { count: 2 }, ctx.signal), ctx);
                 case "long_press":
-                    return after(s, await s.tap(target, { holdMs: 800 }), ctx);
+                    return after(s, await s.tap(target, { holdMs: 800 }, ctx.signal), ctx);
                 case "swipe": {
                     const to = typeof input.toX === "number" && typeof input.toY === "number" ? { x: input.toX, y: input.toY } : undefined;
-                    return after(s, await s.swipe({ from: hasTarget ? target : undefined, to, direction: input.direction, durationMs: input.durationMs }), ctx);
+                    return after(s, await s.swipe({ from: hasTarget ? target : undefined, to, direction: input.direction, durationMs: input.durationMs }, ctx.signal), ctx);
                 }
                 case "type":
-                    return after(s, await s.type(input.text!, { ref: input.ref, submit: input.submit }), ctx);
+                    return after(s, await s.type(input.text ?? "", { ref: input.ref, submit: input.submit, clear: input.clear }, ctx.signal), ctx);
                 case "press":
-                    return after(s, await s.press(input.key!, input.modifiers ?? []), ctx);
+                    return after(s, await s.press(input.key!, input.modifiers ?? [], ctx.signal), ctx);
                 case "button":
                     return after(s, await s.button(input.button!, ctx.signal), ctx);
                 case "wait": {

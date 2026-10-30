@@ -1,7 +1,7 @@
 // The Simulator pane's arithmetic (gui/src/lib/simulator.ts): where the screen is drawn, where a pointer lands on it,
 // and what the pane says in place of the screen; and when the agent's use of it is news (gui/src/state/simulator.ts).
 import { expect, test } from "bun:test";
-import { cornerRadius, deviceDetail, paneNote, placeScreen, SCREEN_MARGIN, screenFraction, takenNote } from "../gui/src/lib/simulator";
+import { cornerRadius, deviceDetail, paneNote, placeScreen, SCREEN_MARGIN, screenFraction, takenNote, wheelPaced, wheelStart, wheelSwipesAgain, wheelTurn } from "../gui/src/lib/simulator";
 import { adoptSimulatorState, setSimulatorShown, simulatorUnseen } from "../gui/src/state/simulator";
 import type { SimulatorDevice, SimulatorState } from "../src/server/protocol";
 
@@ -64,4 +64,55 @@ test("what another app took of the device's input is named: all of it is its inp
     // Taken over, and what it took couldn't be read: it may have it.
     expect(takenNote(undefined, true)).toBe("Another app may have this device's input");
     expect(takenNote(["keyboard"], true)).toBe("Another app took this device's keyboard");
+});
+
+test("a wheel's notch moves the finger at a pace, and stops where it was going", () => {
+    const to = { x: 0.5, y: 0.2 };
+    const p = wheelPaced({ x: 0.5, y: 0.5 }, to, 100);
+    expect(p.x).toBe(0.5);
+    expect(p.y).toBeCloseTo(0.445, 3);
+    expect(wheelPaced({ x: 0.5, y: 0.21 }, to, 100)).toEqual(to);
+});
+
+const wheelRun = (sizes: number[], atEdge = -1) => {
+    let s = wheelStart(sizes[0]!);
+    let lifted = -1;
+    sizes.slice(1).forEach((size, i) => {
+        s = wheelTurn(s, size, i + 1 === atEdge);
+        if (s.coasting && lifted < 0) lifted = i + 1;
+    });
+    return { s, lifted };
+};
+
+test("a finger reaching the screen's edge lifts", () => {
+    expect(wheelRun([10, 12, 14, 16], 2).lifted).toBe(2);
+});
+
+test("turns dying down lift the finger, while it's still moving", () => {
+    const { lifted } = wheelRun([20, 40, 37, 34, 31, 28, 25, 22, 20, 18, 16]);
+    expect(lifted).toBe(7);
+});
+
+test("fingers moving on, at any steady pace, keep the finger down", () => {
+    expect(wheelRun([30, 30, 30, 30, 30, 30, 30, 30, 30]).lifted).toBe(-1);
+    // Slowed well below the swipe's fastest, and then steady.
+    expect(wheelRun([40, 10, 10, 10, 10, 10, 10, 10, 10, 10]).lifted).toBe(-1);
+    // Uneven, as fingers are: never five turns in a row.
+    expect(wheelRun([40, 20, 18, 16, 19, 17, 15, 18, 16, 14, 17]).lifted).toBe(-1);
+});
+
+test("once lifted it stays lifted, whatever the turns, until a new swipe", () => {
+    const { s } = wheelRun([20, 40, 37, 34, 31, 28, 25, 22, 20]);
+    expect(s.coasting).toBe(true);
+    expect(wheelTurn(s, 1, false).coasting).toBe(true);
+});
+
+test("a turn much larger than the last, while coasting, is a new swipe", () => {
+    const coast = { ...wheelStart(40), coasting: true, last: 6 };
+    expect(wheelSwipesAgain(coast, 5)).toBe(false);
+    expect(wheelSwipesAgain(coast, 8)).toBe(false);
+    expect(wheelSwipesAgain(coast, 12)).toBe(true);
+    expect(wheelSwipesAgain({ ...coast, coasting: false }, 12)).toBe(false);
+    // The last turns of a coast are small: going from 1 to 2 isn't fingers coming back.
+    expect(wheelSwipesAgain({ ...coast, last: 1 }, 2)).toBe(false);
 });

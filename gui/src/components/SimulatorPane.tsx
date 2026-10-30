@@ -10,11 +10,11 @@ import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc } from "../state/app";
 import { adoptSimulatorState, loadSimulatorState, setSimulatorShown, simulatorState } from "../state/simulator";
 import { settingsTab } from "../state/ui";
-import { AGENT_ACTIVE_MS, cornerRadius, deviceDetail, paneNote, placeScreen, screenFraction, takenNote, type Rect, type Size } from "../lib/simulator";
+import { AGENT_ACTIVE_MS, cornerRadius, deviceDetail, paneNote, placeScreen, screenFraction, takenNote, WHEEL_JUMP, wheelPaced, WHEEL_SERIES_MS, wheelStart, wheelSwipesAgain, wheelTurn, type Rect, type Size, type WheelSwipe } from "../lib/simulator";
 import { Menu } from "./ui/Menu";
 import { Spinner } from "./ui/bits";
 
-/** A wheel gesture becomes a finger drag; it lifts this long after the last turn. */
+/** A wheel gesture becomes a finger drag; it lifts this long after the last turn, if it hasn't already (wheelTurn). */
 const WHEEL_IDLE_MS = 120;
 
 export function SimulatorPane(p: { handle: SessionHandle }) {
@@ -58,6 +58,7 @@ export function SimulatorPane(p: { handle: SessionHandle }) {
 
     const boxSize = (): Size => ({ width: box?.clientWidth ?? 0, height: box?.clientHeight ?? 0 });
     const scale = () => state()?.screen?.scale ?? 3;
+    const buttonsTaken = () => !!state()?.inputCut?.includes("buttons");
 
     const place = () => {
         const s = screen ?? (state()?.screen ? { width: state()!.screen!.width, height: state()!.screen!.height } : undefined);
@@ -206,7 +207,19 @@ export function SimulatorPane(p: { handle: SessionHandle }) {
     };
     const heldKeys = new Set<string>();
     let finger: { x: number; y: number } | undefined;
-    let wheel: { x: number; y: number; timer: ReturnType<typeof setTimeout> } | undefined;
+    let wheel:
+        | {
+              x: number;
+              y: number;
+              timer: ReturnType<typeof setTimeout>;
+              swipe: WheelSwipe;
+              /** When the last turn came. */
+              at: number;
+              /** Where the finger is going at the pace (wheelPaced), and the frame moving it. */
+              to?: { x: number; y: number };
+              frame?: number;
+          }
+        | undefined;
     let moving = 0;
     let move: { x: number; y: number } | undefined;
 
@@ -214,16 +227,19 @@ export function SimulatorPane(p: { handle: SessionHandle }) {
         if (finger) send({ kind: "touch", phase: "up", ...finger });
         finger = undefined;
     };
+    const endWheel = () => {
+        if (!wheel) return;
+        clearTimeout(wheel.timer);
+        if (wheel.frame) cancelAnimationFrame(wheel.frame);
+        if (!wheel.swipe.coasting) send({ kind: "touch", phase: "up", x: wheel.x, y: wheel.y });
+        wheel = undefined;
+    };
     const cancelInput = () => {
         cancelAnimationFrame(moving);
         moving = 0;
         move = undefined;
         lift();
-        if (wheel) {
-            clearTimeout(wheel.timer);
-            send({ kind: "touch", phase: "up", x: wheel.x, y: wheel.y });
-            wheel = undefined;
-        }
+        endWheel();
         for (const code of heldKeys) send({ kind: "key", code, down: false });
         heldKeys.clear();
     };
@@ -248,6 +264,7 @@ export function SimulatorPane(p: { handle: SessionHandle }) {
         keyboard?.focus({ preventScroll: true });
         canvas?.setPointerCapture(e.pointerId);
         lift();
+        endWheel();
         finger = p0;
         send({ kind: "touch", phase: "down", ...p0 });
     };
@@ -265,28 +282,62 @@ export function SimulatorPane(p: { handle: SessionHandle }) {
         finger = pointOf(e, true) ?? finger;
         lift();
     };
+    const paceWheel = (now: number, before: number) => {
+        if (!wheel?.to) return;
+        const p = wheelPaced(wheel, wheel.to, now - before);
+        wheel.x = p.x;
+        wheel.y = p.y;
+        if (now !== before) send({ kind: "touch", phase: "move", ...p });
+        if (p.x === wheel.to.x && p.y === wheel.to.y) {
+            wheel.to = wheel.frame = undefined;
+            wheel.timer = setTimeout(endWheel, WHEEL_IDLE_MS);
+        } else wheel.frame = requestAnimationFrame((t) => paceWheel(t, now));
+    };
     const onWheel = (e: WheelEvent) => {
         const p0 = pointOf(e);
         if (!p0 && !wheel) return;
         e.preventDefault();
         if (finger) return;
         const r = at();
-        const dy = (e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY) / r.height;
-        const dx = (e.deltaMode === 1 ? e.deltaX * 16 : e.deltaX) / r.width;
+        const pxY = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+        const pxX = e.deltaMode === 1 ? e.deltaX * 16 : e.deltaX;
+        const dy = pxY / r.height;
+        const dx = pxX / r.width;
+        const size = Math.abs(pxX) + Math.abs(pxY);
+        if (wheel && p0 && wheelSwipesAgain(wheel.swipe, size)) endWheel();
+        const alone = !wheel || e.timeStamp - wheel.at >= WHEEL_SERIES_MS;
         if (!wheel) {
-            wheel = { ...p0!, timer: 0 as unknown as ReturnType<typeof setTimeout> };
+            wheel = { ...p0!, timer: 0 as unknown as ReturnType<typeof setTimeout>, swipe: wheelStart(size), at: e.timeStamp };
             send({ kind: "touch", phase: "down", x: wheel.x, y: wheel.y });
         }
+        wheel.at = e.timeStamp;
         clearTimeout(wheel.timer);
         // Content follows the finger: turning the wheel down moves the finger up, as a trackpad scrolls.
-        wheel.x = Math.min(Math.max(wheel.x - dx, 0), 1);
-        wheel.y = Math.min(Math.max(wheel.y - dy, 0), 1);
+        const from = wheel.to ?? wheel;
+        if (!wheel.swipe.coasting && alone && (wheel.to || Math.abs(dx) + Math.abs(dy) >= WHEEL_JUMP)) {
+            wheel.swipe = wheelTurn(wheel.swipe, size, false);
+            wheel.to = { x: Math.min(Math.max(from.x - dx, 0), 1), y: Math.min(Math.max(from.y - dy, 0), 1) };
+            wheel.frame ??= requestAnimationFrame((t) => paceWheel(t, t));
+            return;
+        }
+        // A series after all: it starts from where the finger was going.
+        if (wheel.to) {
+            cancelAnimationFrame(wheel.frame!);
+            wheel.x = wheel.to.x;
+            wheel.y = wheel.to.y;
+            wheel.to = wheel.frame = undefined;
+        }
+        wheel.timer = setTimeout(endWheel, WHEEL_IDLE_MS);
+        const coasted = wheel.swipe.coasting;
+        const x = wheel.x - dx;
+        const y = wheel.y - dy;
+        const along = Math.abs(dx) >= Math.abs(dy) ? x : y;
+        wheel.swipe = wheelTurn(wheel.swipe, size, along < 0 || along > 1);
+        if (coasted) return;
+        wheel.x = Math.min(Math.max(x, 0), 1);
+        wheel.y = Math.min(Math.max(y, 0), 1);
         send({ kind: "touch", phase: "move", x: wheel.x, y: wheel.y });
-        wheel.timer = setTimeout(() => {
-            if (!wheel) return;
-            send({ kind: "touch", phase: "up", x: wheel.x, y: wheel.y });
-            wheel = undefined;
-        }, WHEEL_IDLE_MS);
+        if (wheel.swipe.coasting) send({ kind: "touch", phase: "up", x: wheel.x, y: wheel.y });
     };
     let composing = false;
     const onKey = (down: boolean) => (e: KeyboardEvent) => {
@@ -351,7 +402,7 @@ export function SimulatorPane(p: { handle: SessionHandle }) {
                         <span class="truncate">Agent is using this</span>
                     </span>
                 </Show>
-                <button class="hb sm" aria-label="Home" title="Home" disabled={!running()} onClick={() => send({ kind: "button", name: "home" })}>
+                <button class="hb sm" aria-label="Home" title={buttonsTaken() ? "Another app took the buttons" : "Home"} disabled={!running() || buttonsTaken()} onClick={() => send({ kind: "button", name: "home" })}>
                     <House size={14} />
                 </button>
                 <button class="hb sm" aria-label={`Shut down ${device()?.name ?? "the simulator"}`} title="Shut down" disabled={!running() || busy()} onClick={() => command("shutdown")}>
@@ -422,7 +473,7 @@ export function SimulatorPane(p: { handle: SessionHandle }) {
                 <Show when={running() && takenNote(state()?.inputCut, state()?.inputUncertain)}>
                     {(taken) => (
                         <div class="sim-taken" role="status">
-                            <span class="truncate">{taken()}</span>
+                            <span>{taken()}</span>
                             <button class="btn sm" disabled={busy()} title="Restarts its home screen, closing its apps" onClick={() => command("take_control")}>
                                 Take control
                             </button>
