@@ -10,6 +10,7 @@ import type { SessionBackground } from "../agent/background";
 import type { LspManager } from "../lsp/manager";
 import type { DiagnosticReport } from "../lsp/diagnostics";
 import type { BrowserSession } from "../browser/session";
+import type { SimulatorSession } from "../simulator/session";
 
 
 /** One completion on the session's own model for an MCP server's sampling request: at most `maxTokens`, with why it stopped. */
@@ -85,6 +86,8 @@ export interface ToolState {
     lsp?: LspManager;
     /** The session's tabs in the project's browser (src/browser); made when the session starts, closed with it, shared with its sub-agents. */
     browser?: BrowserSession;
+    /** The session's use of Xcode's simulators (src/simulator); made when it's first needed, closed with the session, shared with its sub-agents. */
+    simulator?: SimulatorSession;
     /** Events that wake the session's agent (watched pull requests, monitors); the host starts a turn for them when idle. */
     wakes?: WakeQueue;
     /** Things watching in the background for this session, by id; the host stops them when the session closes. */
@@ -190,6 +193,13 @@ const BROWSER_TOOL_NAMES = new Set(["BrowserNavigate", "BrowserSnapshot", "Brows
 
 export function isBrowserTool(name: string): boolean {
     return BROWSER_TOOL_NAMES.has(name);
+}
+
+/** The tools that drive the simulator (src/tools/simulator-tools.ts). */
+const SIMULATOR_TOOL_NAMES = new Set(["SimulatorControl", "SimulatorSnapshot", "SimulatorAct", "SimulatorScreenshot"]);
+
+export function isSimulatorTool(name: string): boolean {
+    return SIMULATOR_TOOL_NAMES.has(name);
 }
 
 /** A browser call that only moves the pointer over the page: it goes unasked, though not in plan mode (a page's hover handlers run). */

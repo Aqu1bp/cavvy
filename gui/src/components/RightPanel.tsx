@@ -8,7 +8,7 @@
 // drawn. The plan and its steps are in the conversation (Composer, Activity).
 
 import { createEffect, createMemo, createResource, createSignal, For, Match, on, onCleanup, Show, Switch } from "solid-js";
-import { Bot, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitCommitHorizontal, GitPullRequestArrow, Globe, KeyRound, Plug, SquarePen, Terminal, X } from "lucide-solid";
+import { Bot, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitCommitHorizontal, GitPullRequestArrow, Globe, KeyRound, Plug, Smartphone, SquarePen, Terminal, X } from "lucide-solid";
 import type { ChangesInfo, GitFileDiff } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc, toast } from "../state/app";
@@ -27,6 +27,8 @@ import { PublishDialog } from "./PublishDialog";
 import { uncleared, WorkList } from "./BackgroundTasks";
 import { BrowserPane } from "./BrowserPane";
 import { browserUnseen, loadBrowserState } from "../state/browser";
+import { SimulatorPane } from "./SimulatorPane";
+import { loadSimulatorState, simulatorOffered, simulatorState, simulatorUnseen } from "../state/simulator";
 
 /** The folder the session works in: its actions, from the header's button (the path on hover). */
 function WorkspaceButton(p: { handle: SessionHandle }) {
@@ -382,6 +384,11 @@ export function RightPanel(p: { handle: SessionHandle }) {
     const files = () => (changes()?.count ? `${changes()!.count.toLocaleString()}${changes()!.atLeast ? "+" : ""}` : undefined);
     // What the agent does in the browser is told even while the pane isn't showing (a dot on its tab).
     createEffect(on(() => p.handle.id, (id) => void loadBrowserState(id).catch(() => undefined)));
+    // And on the simulator, whose tab shows only on a Mac with Xcode.
+    createEffect(on(() => p.handle.id, (id) => void loadSimulatorState(id).catch(() => undefined)));
+    createEffect(() => {
+        if (inspectorPane() === "simulator" && simulatorState(p.handle.id)?.status === "unavailable") setInspectorPane("changes");
+    });
     const [fit, fitRef] = useTabFit();
     // Shown as icons, a tab's label is its tooltip; its name always says its count.
     const tip = (label: string) => (fit() === "icons" ? label : undefined);
@@ -469,11 +476,33 @@ export function RightPanel(p: { handle: SessionHandle }) {
                                 </>
                             ),
                         },
+                        ...(simulatorOffered(p.handle.id)
+                            ? [
+                                  {
+                                      value: "simulator" as const,
+                                      get name() {
+                                          return tabName("Simulator", simulatorUnseen(p.handle.id) && "the agent used it");
+                                      },
+                                      get title() {
+                                          return tip("Simulator");
+                                      },
+                                      label: (
+                                          <>
+                                              <Smartphone class="seg-i" />
+                                              <span class="seg-l">Simulator</span>
+                                              <Show when={simulatorUnseen(p.handle.id)}>
+                                                  <span class="ct-dot" title="The agent used the simulator" />
+                                              </Show>
+                                          </>
+                                      ),
+                                  },
+                              ]
+                            : []),
                     ]}
                 />
                 <WorkspaceButton handle={p.handle} />
             </div>
-            <div class="insp-body panel-scroll" classList={{ "br-body": inspectorPane() === "browser" }}>
+            <div class="insp-body panel-scroll" classList={{ "br-body": inspectorPane() === "browser" || inspectorPane() === "simulator" }}>
                 {/* A pane is made when its tab is chosen, and fades in then: not when what's in it changes. */}
                 <Switch>
                     <Match when={inspectorPane() === "agents"}>
@@ -489,6 +518,11 @@ export function RightPanel(p: { handle: SessionHandle }) {
                     <Match when={inspectorPane() === "browser"}>
                         <div class="pane">
                             <BrowserPane handle={p.handle} />
+                        </div>
+                    </Match>
+                    <Match when={inspectorPane() === "simulator"}>
+                        <div class="pane">
+                            <SimulatorPane handle={p.handle} />
                         </div>
                     </Match>
                     <Match when={inspectorPane() === "changes"}>

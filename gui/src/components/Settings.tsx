@@ -12,6 +12,7 @@ import { updateView } from "../lib/app-update";
 import { connectCli, editors, refreshEditors } from "../state/actions";
 import { ACCENTS, CHAT_WIDTHS, prefs, PREF_DEFAULTS, setPrefs, type AccentId, type Scheme } from "../state/prefs";
 import { setSettingsTab, settingsTab, type SettingsTab } from "../state/ui";
+import { loadSimulatorState } from "../state/simulator";
 import { canReveal, copyText, isDesktop, mod, openExternal, os, revealPath } from "../lib/platform";
 import { keybindingsFile, keymap, withShortcut } from "../state/keybindings";
 import { ACTIONS, CONTEXTS, KEYBINDINGS_DOCS, formatKeys } from "../../../src/keybindings/core";
@@ -270,6 +271,11 @@ function General() {
                 <Row title="Browser" desc="Let agents use a browser you can watch in the side panel.">
                     <Toggle label="Browser" checked={s().browser !== false} onChange={(v) => void update({ browser: v })} />
                 </Row>
+                <Show when={app.hello?.platform === "darwin"}>
+                    <Row title="Simulator" desc="Let agents use Xcode's iOS simulators, which you can watch in the side panel.">
+                        <Toggle label="Simulator" checked={s().simulator !== false} onChange={(v) => void update({ simulator: v }).then(() => (app.activeId ? loadSimulatorState(app.activeId) : undefined)).catch(() => undefined)} />
+                    </Row>
+                </Show>
                 <Row title="Expand tool activity" desc="Show every tool call instead of a one-line summary.">
                     <Toggle label="Expand tool activity" checked={prefs.expandActivity} onChange={(v) => setPrefs("expandActivity", v)} />
                 </Row>

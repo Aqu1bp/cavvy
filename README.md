@@ -19,7 +19,7 @@ Cavvy reads, edits and runs code in your project, asks before doing anything ris
 - **Any model.** Anthropic, OpenAI, Gemini and Vertex AI, OpenRouter, Groq, DeepSeek, xAI, Mistral, Together, Fireworks and Cerebras; local models through Ollama and LM Studio; and any OpenAI-compatible endpoint. One searchable list, with context sizes and prices.
 - **Your Claude or ChatGPT plan.** Cavvy runs your own Claude Code or Codex, signed in by you, so a subscription works without an API key. Several accounts per CLI, switched between responses.
 - **Asks before it acts.** Five permission modes, from asking before every edit to an auto mode where workspace edits go through, shell commands run in a sandbox (on macOS), and a reviewer model checks the rest.
-- **A desktop app.** Several sessions at once, approvals with diff previews, a review pane where you commit, push and open pull requests, worktrees, a terminal panel, and a browser the agent can drive.
+- **A desktop app.** Several sessions at once, approvals with diff previews, a review pane where you commit, push and open pull requests, worktrees, a terminal panel, a browser the agent can drive, and on a Mac with Xcode, iOS simulators it can drive too.
 - **Other models as sub-agents.** Hand a task to another provider's model: a second opinion, a review, a cheaper research run.
 - **Works with what you already use.** MCP servers, Claude Code plugins and marketplaces, hooks in Claude Code's format, and `CLAUDE.md` and `AGENTS.md` memory files.
 - **Keys stay secret.** They're kept in the OS keychain (or an owner-only file where there's none), sent only to the endpoint they're for, and redacted from tool output, transcripts and logs.
@@ -74,6 +74,7 @@ In the terminal app, `/login` adds an API key (or `/login claude-code`, `/login 
 | [Desktop app and GUI](docs/desktop.md) | Building, installing and updating, using it, the terminal panel, project scripts, security |
 | [Changes, worktrees and comparing models](docs/git.md) | The review pane, committing and pushing, pull requests, worktrees, one task on several models |
 | [Browser](docs/browser.md) | The browser tools and the Browser pane |
+| [Simulator](docs/simulator.md) | iOS simulators the agent drives, and the Simulator pane |
 | [Sub-agents on other models](docs/sub-agents.md) | Delegating a task to another provider's model |
 | [Asking for secrets](docs/secrets.md) | Tokens the agent asks you for, kept out of its sight |
 | [Project files](docs/project-files.md) | `CAVVY.md` and other memory files, settings files, trust |

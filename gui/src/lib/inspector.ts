@@ -46,7 +46,7 @@ export function reviewWidthRange(shown: number, sheetWidth: number): { min: numb
 }
 
 /** The side panel's tabs. */
-export type InspectorPane = "changes" | "agents" | "commands" | "browser";
+export type InspectorPane = "changes" | "agents" | "commands" | "browser" | "simulator";
 
 /** How the side panel's tabs give way as it narrows, roomiest first: labels with room around them; with tight
  *  padding; without the count of files (what runs stays); then icons, each tab's label kept as its name and tooltip. */
