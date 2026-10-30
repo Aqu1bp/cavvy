@@ -12,6 +12,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { dlopen, FFIType, ptr } from "bun:ffi";
 
 const args = process.argv.slice(2);
 const arg = (n: string) => (args.includes(n) ? args[args.indexOf(n) + 1] : undefined);
@@ -66,6 +67,13 @@ function cpuTimes(pids: number[]): Map<number, number> {
         out.set(Number(pid), s);
     }
     return out;
+}
+
+/** Instructions a process has retired (macOS's proc_pid_rusage, RUSAGE_INFO_V4: ri_instructions, after a 16-byte uuid). */
+const libproc = dlopen("/usr/lib/libproc.dylib", { proc_pid_rusage: { args: [FFIType.i32, FFIType.i32, FFIType.ptr], returns: FFIType.i32 } });
+function instructions(pid: number): number {
+    const buf = new BigUint64Array(64);
+    return libproc.symbols.proc_pid_rusage(pid, 4, ptr(buf)) === 0 ? Number(buf[2 + 29]) : NaN;
 }
 
 /** Resident memory (MB) by role. */
@@ -278,6 +286,7 @@ try {
         measuring = true;
         const t0 = performance.now();
         const c0 = cpuTimes([...roles.keys()]);
+        const i0 = new Map([...roles.keys()].map((pid) => [pid, instructions(pid)]));
         const b0 = wsBytes, f0 = wsFrames;
         const series: Record<string, unknown>[] = [];
         let last = c0, lastT = t0;
@@ -298,6 +307,10 @@ try {
         const cpu: Record<string, number> = {};
         for (const [pid, role] of roles) cpu[role] = (cpu[role] ?? 0) + ((c1.get(pid) ?? 0) - (c0.get(pid) ?? 0));
         for (const k of Object.keys(cpu)) cpu[k] = Math.round((cpu[k]! / wall) * 1000) / 10;
+        // Millions of instructions a second by role: the same work counts the same on whichever cores ran it.
+        const mips: Record<string, number> = {};
+        for (const [pid, role] of roles) if (role !== "WindowServer") mips[role] = (mips[role] ?? 0) + (instructions(pid) - (i0.get(pid) ?? NaN)) / wall / 1e6;
+        for (const k of Object.keys(mips)) mips[k] = Math.round(mips[k]!);
         const memoryMB = rss([...roles]);
         const footprintMB = footprint([...roles]);
         measuring = false;
@@ -339,6 +352,8 @@ try {
         report.phases[name] = {
             cpuPercent: cpu,
             appTotal: Math.round(((cpu.ui ?? 0) + (cpu.gpu ?? 0) + (cpu.main ?? 0) + (cpu.server ?? 0)) * 10) / 10,
+            mips,
+            appMips: (mips.ui ?? 0) + (mips.gpu ?? 0) + (mips.main ?? 0) + (mips.server ?? 0),
             memoryMB,
             footprintMB,
             heap,
