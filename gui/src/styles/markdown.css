@@ -306,17 +306,21 @@
     margin-left: -1.25em;
 }
 
-/* While the reply streams: what just arrived fades in (lib/stream-dom.ts marks
-   it), and a soft dot sits where it's being written, after the last text or the
-   code being typed. */
-.md.streaming :is(.md-fresh, .code.fresh) {
-    animation: md-fresh 260ms var(--ease-out) both;
-}
+/* While the reply streams, what has just come out is drawn lighter for a moment: an ink trail. lib/stream-dom.ts
+   gives each new piece a tier by its age, only when more text comes out, so nothing animates and nothing is drawn
+   between the reply's own updates. Opacity, not a colour: links, code and emphasis keep their own. A soft dot sits
+   where it's being written, after the last text or the code being typed. */
+@media (prefers-reduced-motion: no-preference) {
+    .md.streaming .md-t1 {
+        opacity: 0.45;
+    }
 
-/* Never fully clear at first, so the dot doesn't sit past a blank. */
-@keyframes md-fresh {
-    from {
-        opacity: 0.35;
+    .md.streaming .md-t2 {
+        opacity: 0.7;
+    }
+
+    .md.streaming .md-t3 {
+        opacity: 0.88;
     }
 }
 
@@ -344,7 +348,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .md.streaming :is(.md-fresh, .code.fresh),
     .md-caret,
     .md .code.writing .code-body code::after {
         animation: none;

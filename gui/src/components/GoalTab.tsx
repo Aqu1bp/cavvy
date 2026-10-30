@@ -46,7 +46,7 @@ export function GoalTab(p: { sessionId: string; goal: GoalState }) {
         <div class={`queue goal-tab st-${g().state}`} role="status" aria-label="Goal">
             <div class="goal-row">
                 <Show when={g().state === "checking" || g().state === "waiting"} fallback={<Goal size={14} class="goal-icon" aria-hidden="true" />}>
-                    <LoaderCircle size={14} class="goal-icon spinner" aria-hidden="true" />
+                    <span class="goal-icon spinner" aria-hidden="true"><LoaderCircle size={14} /></span>
                 </Show>
                 <span class="goal-label">Goal</span>
                 <Show when={native()}>

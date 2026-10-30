@@ -10,13 +10,16 @@ export function Kbd(p: { keys: string }) {
     );
 }
 
+/** It turns as a box around the svg: Chromium turns an svg itself on the main thread, every frame, for as long as it shows. */
 export function Spinner(p: { size?: number; class?: string }) {
     const s = p.size ?? 14;
     return (
-        <svg class={`spinner ${p.class ?? ""}`} width={s} height={s} viewBox="0 0 16 16" aria-hidden="true">
-            <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-opacity="0.2" stroke-width="2" />
-            <path d="M14 8a6 6 0 0 0-6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-        </svg>
+        <span class={`spinner ${p.class ?? ""}`} aria-hidden="true">
+            <svg width={s} height={s} viewBox="0 0 16 16">
+                <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-opacity="0.2" stroke-width="2" />
+                <path d="M14 8a6 6 0 0 0-6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+            </svg>
+        </span>
     );
 }
 

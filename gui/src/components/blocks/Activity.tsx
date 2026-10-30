@@ -557,7 +557,7 @@ function StatusIcon(p: { tool: ToolBlock }) {
                 <Spinner size={12} class="tone-accent" />
             </Match>
             <Match when={p.tool.status === "awaiting"}>
-                <Hand size={12} class="tone-warn pulse" />
+                <span class="tone-warn pulse"><Hand size={12} /></span>
             </Match>
             <Match when={p.tool.status === "queued"}>
                 <Clock size={12} class="tone-muted" />

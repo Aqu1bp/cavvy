@@ -290,9 +290,16 @@ h3 {
     }
 }
 
+/* Looping motion goes on an HTML box, never on an svg: Chromium runs an svg's animation on the main thread (style,
+   paint and a commit every frame, 120 a second here), a box's on the compositor. */
+.spinner,
+.pulse {
+    display: inline-flex;
+    flex: none;
+}
+
 .spinner {
     animation: spin 0.8s linear infinite;
-    flex: none;
 }
 
 @keyframes pulse {

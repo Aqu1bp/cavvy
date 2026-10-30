@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { MarkdownRenderer, settle } from "../gui/src/lib/markdown";
 import { LAG_MS, revealEnd, revealStep } from "../gui/src/lib/reveal";
+import { TRAIL_MS, trailTier } from "../gui/src/lib/stream-dom";
 import { Marked } from "../gui/node_modules/marked/lib/marked.esm.js";
 
 const visible = (r: MarkdownRenderer, text: string, streaming = true) => r.segments(text, streaming).map((s) => s.kind === "html" ? { kind: s.kind, html: s.html } : { kind: s.kind, lang: s.lang, code: s.code, open: s.open });
@@ -167,4 +168,20 @@ test("reveal drains a burst at one speed by its deadline, never crawls, and stop
     expect(revealEnd("The engine takes", 0, 3)).toBe(3);
     // A long word (a URL) comes in pieces.
     expect(revealEnd("x https://example.com/a/very/long/path", 0, 3)).toBe(19);
+});
+
+test("what just came out is drawn lighter by its age, then plain", () => {
+    expect(TRAIL_MS).toEqual([35, 70, 120]);
+    expect([0, 34, 35, 69, 70, 119, 120, 500].map(trailTier)).toEqual([0, 0, 1, 1, 2, 2, -1, -1]);
+});
+
+test("streamed text has no animation: the trail is static opacity, none with Reduce motion", () => {
+    const css = readFileSync(new URL("../gui/src/styles/markdown.css", import.meta.url), "utf8");
+    expect(css).not.toMatch(/md-fresh/);
+    expect(css).not.toMatch(/code\.fresh/);
+    const trail = css.slice(css.indexOf("@media (prefers-reduced-motion: no-preference)"), css.indexOf(".md-caret,"));
+    expect([...trail.matchAll(/\.md-t(\d) \{\s*opacity: ([\d.]+);\s*\}/g)].map((m) => [m[1], Number(m[2])])).toEqual([["1", 0.45], ["2", 0.7], ["3", 0.88]]);
+    expect(trail).not.toMatch(/animation|transition/);
+    // Outside that media query nothing draws the tiers.
+    expect(css.replace(trail, "")).not.toMatch(/md-t\d/);
 });
