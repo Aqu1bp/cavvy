@@ -284,6 +284,14 @@ try {
         if (arg("--shot")) {
             const shot = await page.cdp("Page.captureScreenshot", { format: "png" });
             if (shot.result?.data) await Bun.write(join(arg("--shot")!, `${label}-${name}.png`), Buffer.from(shot.result.data, "base64"));
+            // And close up where the reply is being written, with the marks there at that moment.
+            const at = await js(`(() => { const c = document.querySelector('.md-caret'); if (!c) return null; const r = c.getBoundingClientRect(); const col = c.closest('.md').getBoundingClientRect(); return { x: col.x - 8, y: Math.max(0, r.y - 70), width: col.width + 16, height: 100, scale: 2, marks: [...document.querySelectorAll('.md .md-fresh')].map((m) => m.className.replace('md-fresh', '').trim() || 'none') }; })()`);
+            if (at) {
+                const { marks, ...clip } = at;
+                const close = await page.cdp("Page.captureScreenshot", { format: "png", clip, captureBeyondViewport: false });
+                if (close.result?.data) await Bun.write(join(arg("--shot")!, `${label}-${name}-caret.png`), Buffer.from(close.result.data, "base64"));
+                await Bun.write(join(arg("--shot")!, `${label}-${name}-marks.json`), JSON.stringify(marks));
+            }
         }
         // Where the time goes.
         await page.cdp("Profiler.enable");
