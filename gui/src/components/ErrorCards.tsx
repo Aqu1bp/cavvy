@@ -1,10 +1,11 @@
-// Errors: cards right above the composer, where you're looking, rather than pills in the title bar
-// with the confirmations (Toasts.tsx). The whole message shows, and it stays until it's dismissed
-// or its cause is fixed (state/app.ts). Two show, then "N more"; a repeat bumps the card's count and
-// nudges it instead of stacking another. In Settings, where there's no composer, they sit at the foot
-// of the page; with neither on screen (or the composer covered: a maximized terminal, a short floating
-// inspector), at the window's. An error that belongs to something on screen shows there instead (a
-// provider's row in Settings → Providers).
+// What the app tells you, in one place: right above the composer, where you're looking. Errors are
+// cards: the whole message shows, and it stays until it's dismissed or its cause is fixed
+// (state/app.ts). Two show, then "N more"; a repeat bumps the card's count and nudges it instead of
+// stacking another. Confirmations (an Undo, "Copied") are pills over them that go on their own
+// (Toasts.tsx). In Settings, where there's no composer, they sit at the foot of the page; with
+// neither on screen (or the composer covered: a maximized terminal, a short floating inspector), at
+// the window's. An error that belongs to something on screen shows there instead (a provider's row
+// in Settings → Providers).
 
 import { createEffect, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { CircleAlert, Copy, X } from "lucide-solid";
@@ -13,6 +14,7 @@ import { settingsTab, shellLayout } from "../state/ui";
 import { copyText } from "../lib/platform";
 import { errorPlace, messageParts, splitError, type ErrorPlace } from "../lib/error-text";
 import { coversComposer } from "../lib/layout";
+import { ToastItem } from "./Toasts";
 
 /** Cards shown at once; the rest are counted under them. */
 export const MAX_ERROR_CARDS = 2;
@@ -82,8 +84,8 @@ function ErrorCard(p: { toast: Toast }) {
 }
 
 /**
- * The error stack at one place (see errorPlace): mount one wherever errors may show, and only
- * the one that applies shows them. On Home: `<ErrorCards place="home" />` above its composer.
+ * The feedback at one place (see errorPlace): mount one wherever it may show, and only the one
+ * that applies shows it. On Home: `<ErrorCards place="home" />` above its composer.
  */
 export function ErrorCards(p: { place: ErrorPlace }) {
     const place = p.place;
@@ -101,16 +103,23 @@ export function ErrorCards(p: { place: ErrorPlace }) {
         const layout = shellLayout();
         return coversComposer(layout) || (layout.inspector.open && layout.inspector.mode !== "dock");
     };
+    const here = () => errorPlace(mounted(), !!settingsTab(), windowHost()) === place;
     // Newest first, as the mockup stacks them.
-    const errors = () => (errorPlace(mounted(), !!settingsTab(), windowHost()) === place ? toasts.filter((t) => t.level === "error").reverse() : []);
+    const errors = () => (here() ? toasts.filter((t) => t.level === "error").reverse() : []);
+    const notes = () => (here() ? toasts.filter((t) => t.level !== "error") : []);
     const shown = () => errors().slice(0, MAX_ERROR_CARDS);
     const more = () => errors().length - shown().length;
     return (
-        <div class={`error-cards at-${place}`} classList={{ empty: !shown().length }} role="alert" aria-live="assertive" aria-relevant="additions text">
-            <For each={shown()}>{(t) => <ErrorCard toast={t} />}</For>
-            <Show when={more() > 0}>
-                <div class="error-more">{more()} more</div>
-            </Show>
+        <div class={`feedback at-${place}`}>
+            <div class="toast-region" role="status" aria-live="polite" aria-relevant="additions text">
+                <For each={notes()}>{(t) => <ToastItem toast={t} />}</For>
+            </div>
+            <div class={`error-cards at-${place}`} classList={{ empty: !shown().length }} role="alert" aria-live="assertive" aria-relevant="additions text">
+                <For each={shown()}>{(t) => <ErrorCard toast={t} />}</For>
+                <Show when={more() > 0}>
+                    <div class="error-more">{more()} more</div>
+                </Show>
+            </div>
         </div>
     );
 }

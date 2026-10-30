@@ -9,6 +9,7 @@ import type { PlanLimits } from "../server/protocol";
 import { findCli } from "./cli";
 import { agentCli } from "./defs";
 import { AcpBackend, acpStatus } from "./acp/backend";
+import { AgyBackend, agyStatus } from "./agy/backend";
 
 export function createBackend(def: ProviderDef): AgentBackendClient {
     switch (agentCli(def.id)?.protocol) {
@@ -18,6 +19,8 @@ export function createBackend(def: ProviderDef): AgentBackendClient {
             return new CodexBackend(def);
         case "acp":
             return new AcpBackend(def);
+        case "agy-stream-json":
+            return new AgyBackend(def);
         default:
             throw new Error(`No agent backend for ${def.id}`);
     }
@@ -32,6 +35,8 @@ export interface AgentCliStatus {
     description: string;
     /** Signed in with an API key: usage is billed to that, not a plan. */
     apiKey?: boolean;
+    /** Why it can't be used, when that isn't its sign-in (it didn't answer, or it can't run here): what to tell the user. */
+    problem?: string;
     /** CLI-reported identity and plan, for the settings UI only. */
     email?: string;
     plan?: string;
@@ -64,6 +69,7 @@ async function checkCli(providerId: string, signal: AbortSignal | undefined, acc
     if (!def) throw new Error(`${providerId} isn't an agent CLI`);
     // An ACP agent has its default sign-in only, and no plan limits to report.
     if (def.protocol === "acp") return { status: await acpStatus(providerId, signal) };
+    if (def.protocol === "agy-stream-json") return { status: await agyStatus(providerId, signal) };
     accountEnv(providerId, accountId);
     const cli = def.cli;
     const base = { signIn: cli.signIn, signOut: cli.signOut, installHint: cli.install };

@@ -46,7 +46,7 @@ createDemoProject(project);
 
 const site = startDemoSite();
 const mock = startMockLlm({ port: Number(arg("--mock-port") ?? 0), delayMs: Number(arg("--delay") ?? 14), site: site.url });
-writeFileSync(join(home, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock (demo)", baseUrl: mock.url, requiresKey: false }] }, null, 2));
+writeFileSync(join(home, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock (demo)", baseUrl: mock.url, requiresKey: false, modelEffortLevels: { "mock-opus": ["low", "medium", "high", "xhigh", "max"] } }] }, null, 2));
 writeFileSync(join(home, "settings.json"), JSON.stringify({ model: "mock:mock-opus", smallModel: "mock:mock-haiku" }, null, 2));
 // A few skills for the / and $ menus ("use the release-notes skill" has the model load one).
 const demoSkills: Record<string, string> = {

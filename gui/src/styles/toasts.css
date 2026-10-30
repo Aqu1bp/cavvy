@@ -22,26 +22,16 @@
     line-height: 1.6;
 }
 
-/* ---- Toasts ------------------------------------------------------------
-   They drop into the title bar's row, over the session title for a moment,
-   rather than over the content: centred between where the title starts and
-   where the tool capsule begins (--bar-start, --bar-end and --bar-top, which
-   the title bar keeps up to date), never narrower than 240px. They're set on
-   .toasts itself, not the root: a custom property changing on the root
-   restyles every element under it. */
+/* ---- Feedback: toasts and error cards in one place ----------------------
+   Right above the composer, where you're looking (ErrorCards.tsx): the error
+   cards in its column, and the confirmations as pills floating over them, so
+   one coming and going doesn't move the conversation. At the foot of Settings,
+   or of the window when there's neither, the two stack as one. */
 
-.toasts {
-    position: fixed;
-    z-index: 80;
-    /* Centred on the title bar's content, which sits on the window's top line (header.css). */
-    top: calc(var(--bar-top, 8px) + var(--top-line) - var(--win-pad, 8px) - 18 * var(--sp));
-    left: var(--bar-start, calc(var(--sidebar-w) + 8px));
-    right: max(8 * var(--sp), min(calc(var(--bar-end, 190px) + 8 * var(--sp)), calc(100vw - var(--bar-start, calc(var(--sidebar-w) + 8px)) - 240 * var(--sp))));
-    display: flex;
-    flex-direction: column;
-    gap: calc(8 * var(--sp));
-    align-items: center;
-    pointer-events: none;
+/* Above the composer: no box of its own, so the cards stay in the composer's column. */
+.feedback.at-composer,
+.feedback.at-home {
+    display: contents;
 }
 
 .toast-region {
@@ -50,10 +40,27 @@
     gap: calc(8 * var(--sp));
     align-items: center;
     max-width: 100%;
+    pointer-events: none;
 }
 
 .toast-region:empty {
     display: none;
+}
+
+/* Over the composer column (and the cards in it), not in it. */
+.feedback.at-composer > .toast-region,
+.feedback.at-home > .toast-region {
+    position: absolute;
+    z-index: 5;
+    left: 0;
+    right: 0;
+    bottom: calc(100% + 10 * var(--sp));
+}
+
+/* On Home the heading is right above the composer: the pills go under it (and its strip) instead. */
+.feedback.at-home > .toast-region {
+    top: calc(100% + 14 * var(--sp));
+    bottom: auto;
 }
 
 /* A glass pill (the class is .glass too; this also covers a toast without it). */
@@ -74,7 +81,7 @@
     box-shadow: 0 0 0 0.5px var(--ctl-stroke), inset 0 1px 0 var(--ctl-hi), inset 0 -1px 0 var(--ctl-lo), var(--ctl-shadow);
     color: var(--fg);
     font-size: 0.929rem;
-    animation: toast-in 420ms var(--spring);
+    animation: toast-in 360ms var(--spring);
 }
 
 .toast::before {
@@ -93,7 +100,7 @@
 @keyframes toast-in {
     from {
         opacity: 0;
-        transform: translateY(-12px) scale(0.96);
+        transform: translateY(10px) scale(0.96);
     }
 }
 
@@ -215,25 +222,32 @@
     display: none;
 }
 
-/* Over the Settings page (in .settings-host, App.tsx), or the window. */
-.error-cards.at-settings,
-.error-cards.at-window {
+/* Over the Settings page (in .settings-host, App.tsx), or the window: the pills, then the cards under them. */
+.feedback.at-settings,
+.feedback.at-window {
     position: absolute;
     z-index: 20;
     left: 50%;
     bottom: calc(10 * var(--sp));
-    flex: none;
-    /* The padding is the scroller's room for the rings (above): 560 wide, 16 from each side, for the cards. */
+    display: flex;
+    flex-direction: column;
+    gap: calc(8 * var(--sp));
+    /* The cards' padding is the scroller's room for the rings (above): 560 wide, 16 from each side, for the cards. */
     width: min(572 * var(--sp), 100% - 20 * var(--sp));
-    margin: 0;
     transform: translateX(-50%);
     pointer-events: none;
 }
 
-.error-cards.at-window {
+.feedback.at-window {
     position: fixed;
     z-index: 80;
     width: min(572 * var(--sp), 100vw - 20 * var(--sp));
+}
+
+.feedback.at-settings > .error-cards,
+.feedback.at-window > .error-cards {
+    flex: none;
+    margin: 0;
 }
 
 .error-card {

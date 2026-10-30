@@ -9,6 +9,13 @@ import { ProviderError } from "../providers/types";
 /** How long a one-off may take when the request gives no signal of its own. */
 export const ONE_OFF_TIMEOUT_MS = 120_000;
 
+/** A CLI that runs whole turns only (an ACP agent, Antigravity) refuses every one-off with this: there's no point asking again. */
+export class WholeTurnsOnly extends ProviderError {
+    constructor(name: string) {
+        super(`${name} runs whole turns only, so it can't answer a one-off request. Set smallModel to another provider's model for those.`);
+    }
+}
+
 /** A request the CLI can answer as a one-off: it offers no tools. */
 export function oneOffRefusal(name: string, req: ChatRequest): ProviderError | undefined {
     return req.tools?.length ? new ProviderError(`${name} runs whole turns with its own tools, so it can't answer a request that offers tools of Cavvy's. Set smallModel to another provider's model for those.`) : undefined;

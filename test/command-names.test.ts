@@ -308,7 +308,7 @@ describe("sandboxPolicy: the agent CLIs' config", () => {
             writeFileSync(join(ws, ".claude", "worktrees", ".cavvy", ".git"), "");
             symlinkSync(ws, join(ws, ".claude", "worktrees", "link"));
             const p = sandboxPolicy([ws], { cavvyHome: H });
-            expect(p.cliConfig).toEqual([join(ws, ".claude"), join(ws, ".codex"), join(ws, ".opencode"), join(ws, ".grok")]);
+            expect(p.cliConfig).toEqual([join(ws, ".claude"), join(ws, ".codex"), join(ws, ".opencode"), join(ws, ".grok"), join(ws, ".agents")]);
             // Only a real folder with a .git, not named like the config (as withoutWorktrees in checker.ts).
             expect(p.worktrees).toEqual([wt]);
             for (const c of [".cavvy", ".mcp.json", ".claude", ".codex", ".git"]) expect(p.readOnly).toContain(join(wt, c));
@@ -317,7 +317,7 @@ describe("sandboxPolicy: the agent CLIs' config", () => {
 
             const lines = seatbeltProfile(p).split("\n");
             const allow = lines.findIndex((l) => l.startsWith("(allow file-write*") && l.includes(`(subpath "${ws}")`));
-            const cli = lines.indexOf(`(deny file-write* (subpath "${join(ws, ".claude")}") (subpath "${join(ws, ".codex")}") (subpath "${join(ws, ".opencode")}") (subpath "${join(ws, ".grok")}"))`);
+            const cli = lines.indexOf(`(deny file-write* (subpath "${join(ws, ".claude")}") (subpath "${join(ws, ".codex")}") (subpath "${join(ws, ".opencode")}") (subpath "${join(ws, ".grok")}") (subpath "${join(ws, ".agents")}"))`);
             const reopen = lines.indexOf(`(allow file-write* (subpath "${wt}"))`);
             const protect = lines.findIndex((l) => l.startsWith("(deny file-write*") && l.includes(`(subpath "${join(wt, ".claude")}")`));
             // Later rules win: the CLIs' config is closed, its worktrees reopened, their own config closed again.
@@ -341,7 +341,7 @@ describe("sandboxPolicy: the agent CLIs' config", () => {
             mkdirSync(join(elsewhere, "worktrees", "x"), { recursive: true });
             writeFileSync(join(elsewhere, "worktrees", "x", ".git"), "");
             const p = sandboxPolicy([ws], { cavvyHome: H });
-            expect(p.cliConfig).toEqual([join(ws, ".claude"), elsewhere, join(ws, ".codex"), join(ws, ".opencode"), join(ws, ".grok")]);
+            expect(p.cliConfig).toEqual([join(ws, ".claude"), elsewhere, join(ws, ".codex"), join(ws, ".opencode"), join(ws, ".grok"), join(ws, ".agents")]);
             expect(p.worktrees).toEqual([]);
         } finally {
             rmSync(ws, { recursive: true, force: true });

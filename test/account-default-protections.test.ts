@@ -81,7 +81,8 @@ if (!process.env.CAVVY_TEST_DEFAULT_ACCOUNTS) {
         const expected = await Bun.file(join(import.meta.dir, "fixtures", "seatbelt-no-accounts.txt")).text();
         // Frozen from origin/main's construction without account paths, including its literal deny set; since then Cavvy
         // home's contents and extended attributes (not its listing) are what's denied, with its secrets and accounts/ wholly, ps works, and the
-        // folder above OpenCode's global config (~/.config) can't be moved.
+        // folder above OpenCode's global config (~/.config) can't be moved; and Antigravity's config is protected as the
+        // other agent CLIs' is (.agents/, ~/.gemini/config, ~/.gemini/antigravity-cli, with ~/.gemini unmovable).
         expect(seatbeltProfile(policy).replaceAll(home, "/workspace")).toBe(expected);
     });
 

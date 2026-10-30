@@ -82,7 +82,7 @@ export interface AgentCliDef {
     planLabel: string;
     cli: CliInfo & { signOut: string };
     /** The protocol its live sessions speak (src/backends/live). */
-    protocol: "claude-stream-json" | "codex-app-server" | "acp";
+    protocol: "claude-stream-json" | "codex-app-server" | "acp" | "agy-stream-json";
     /** The arguments that start an ACP CLI in ACP mode. */
     acpArgs?: string[];
     /** After its stdin is closed, how long it may take to exit before it's terminated (LiveOptions.stopGraceMs; 3 s when left out). */
@@ -102,6 +102,10 @@ export interface AgentCliDef {
     };
     /** The project's own configuration for it, which it loads only in a trusted folder (src/config/trust.ts). */
     projectConfig?: (cwd: string, has: (path: string) => boolean) => string[];
+    /** Nothing turns its projectConfig off: where the folder isn't trusted, it doesn't run (agentNeedsTrust). */
+    projectConfigAlways?: boolean;
+    /** Auto mode has no reviewer for it: Cavvy asks before each command (the mode menu says so). */
+    autoAsks?: boolean;
     /** Its models to prefer, best first (src/providers/models.ts PREFERRED). */
     preferredModels?: RegExp[];
     /** What it runs with its own sub-agents, so those providers' models aren't offered to it (src/agent/delegation.ts). */
@@ -314,7 +318,65 @@ const GROK: AgentCliDef = {
     caps: { ...ACP_CAPS, autoReviewer: true },
 };
 
-export const AGENT_CLIS: readonly AgentCliDef[] = [CLAUDE_CODE, CODEX, OPENCODE, GROK];
+// Antigravity's CLI 1.4.9 in headless stream-json mode (`agy -p= --input-format stream-json --output-format
+// stream-json`): test/fixtures/protocol/agy-1.4.9-*.jsonl. Its protocol is src/backends/agy/connection.ts, and Cavvy's
+// permission gate (a PreToolUse hook in a workspace folder of Cavvy's own) src/backends/agy/gate.ts.
+const ANTIGRAVITY: AgentCliDef = {
+    id: "antigravity",
+    name: "Antigravity",
+    vendor: "Google",
+    planLabel: "Antigravity plan",
+    cli: {
+        command: "agy",
+        product: "Antigravity CLI",
+        install: "Install Antigravity's CLI (https://antigravity.google/docs/cli)",
+        // Run with no arguments, it signs in (and /logout signs out).
+        signIn: "agy",
+        signOut: "agy, then /logout",
+    },
+    protocol: "agy-stream-json",
+    // It runs a project's .agents/hooks.json whatever Cavvy's folder trust says: it runs only where the folder is trusted.
+    projectConfig: (cwd, has) => (has(join(cwd, ".agents", "hooks.json")) ? [".agents/hooks.json"] : []),
+    projectConfigAlways: true,
+    autoAsks: true,
+    preferredModels: [/^gemini-4-carbon/, /^gemini-4-argon-high$/, /^gemini-4-argon/],
+    caps: {
+        // A message sent while a turn runs joins it at its next model call, through the gate's PreInvocation hook
+        // (agy-1.4.9-steer.jsonl); on stdin it would wait for the next turn (-midturn.jsonl). Its attachments go as
+        // files, as a prompt's do.
+        steering: "between-tool-rounds",
+        steersAttachments: ["image", "text", "pdf"],
+        // A command it starts in the background, the turn waits for (agy-1.4.9-cancel-*.jsonl).
+        backgroundTasks: false,
+        stopTask: false,
+        moveToBackground: false,
+        wakes: "none",
+        // The model is set when it starts (a change restarts it, resuming the conversation). The mode is Cavvy's, at the gate.
+        live: { model: false, effort: false, mode: "per-turn" },
+        fork: false,
+        rewind: false,
+        compact: "none",
+        planLimits: "none",
+        hooks: "none",
+        mcpAttach: "none",
+        mcpInstructionsInSystemPrompt: false,
+        ownMonitor: false,
+        nativeAgents: false,
+        loadsPlugins: false,
+        skills: "paste",
+        cliCommandsAreSkills: false,
+        // Its stream-json input takes text only (agy-1.4.9-image.jsonl), but read_file shows it an image or a PDF
+        // (-attach-files.jsonl): attachments go as files of Cavvy's, named in the message.
+        pdfs: true,
+        images: true,
+        autoReviewer: false,
+        resolvesUnknownCommands: false,
+        importSessions: false,
+        usageLogs: false,
+    },
+};
+
+export const AGENT_CLIS: readonly AgentCliDef[] = [CLAUDE_CODE, CODEX, OPENCODE, GROK, ANTIGRAVITY];
 
 export function agentCli(id: string): AgentCliDef | undefined {
     return AGENT_CLIS.find((d) => d.id === id);

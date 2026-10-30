@@ -1513,6 +1513,12 @@ export function listSessions(cwd: string, limit = 50): SessionSummary[] {
     return out.slice(0, limit);
 }
 
+/** A session file's title (its first prompt if it has none) and folder, without loading it: a trashed one's, say. */
+export function sessionLabel(file: string): { title: string; cwd?: string } {
+    const head = sessionHead(file);
+    return { title: (head.title ?? head.first ?? "(untitled)").replace(/\s+/g, " ").trim().slice(0, 120), cwd: head.cwd };
+}
+
 /** The folder a session file records, without loading it. */
 export function sessionFolder(file: string): string | undefined {
     try {

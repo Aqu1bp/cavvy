@@ -1,6 +1,6 @@
 import { For, Show } from "solid-js";
-import { Check, ChevronDown, FilePen, Hand, Map as MapIcon, ShieldAlert, Zap } from "lucide-solid";
-import { MODE_LABELS, type PermissionModeId } from "@shared/protocol";
+import { Check, ChevronDown, FilePen, Hand, Map as MapIcon, ShieldAlert, ShieldCheck } from "lucide-solid";
+import { AUTO_WITHOUT_REVIEWER, MODE_LABELS, type PermissionModeId } from "@shared/protocol";
 import { setMode } from "../state/actions";
 import { Menu } from "./ui/Menu";
 import type { ComposerMenu } from "./ModelPicker";
@@ -13,7 +13,7 @@ export function ModeIcon(p: { mode: PermissionModeId; size?: number }) {
         <Show when={p.mode !== "default"} fallback={<Hand size={s} />}>
             <Show when={p.mode !== "acceptEdits"} fallback={<FilePen size={s} />}>
                 <Show when={p.mode !== "plan"} fallback={<MapIcon size={s} />}>
-                    <Show when={p.mode !== "auto"} fallback={<Zap size={s} />}>
+                    <Show when={p.mode !== "auto"} fallback={<ShieldCheck size={s} />}>
                         <ShieldAlert size={s} />
                     </Show>
                 </Show>
@@ -31,8 +31,9 @@ export function nextMode(m: PermissionModeId, bypass: boolean): PermissionModeId
 const BYPASS_OFF = "Turn on “Allow bypass mode” in Settings first.";
 
 /** Grey but Plan, in the accent, and Bypass, in red: the two worth noticing. */
-export function ModePicker(p: ComposerMenu & { mode: PermissionModeId; bypassAllowed: boolean }) {
+export function ModePicker(p: ComposerMenu & { mode: PermissionModeId; bypassAllowed: boolean; /** The model has no reviewer for auto mode. */ autoAsks?: boolean }) {
     let anchor: HTMLButtonElement | undefined;
+    const describe = (m: PermissionModeId) => (m === "auto" && p.autoAsks ? AUTO_WITHOUT_REVIEWER : MODE_LABELS[m].description);
     return (
         <>
             <button
@@ -62,7 +63,7 @@ export function ModePicker(p: ComposerMenu & { mode: PermissionModeId; bypassAll
                                     role="menuitemradio"
                                     aria-checked={p.mode === m}
                                     disabled={disabled()}
-                                    title={disabled() ? BYPASS_OFF : MODE_LABELS[m].description}
+                                    title={disabled() ? BYPASS_OFF : describe(m)}
                                     onClick={() => {
                                         p.setOpen(false);
                                         void setMode(m);
@@ -74,12 +75,14 @@ export function ModePicker(p: ComposerMenu & { mode: PermissionModeId; bypassAll
                                     <span class="menu-text">
                                         <span class="menu-label">{MODE_LABELS[m].label}</span>
                                         {/* Off, what turns it on matters more than what it does. */}
-                                        <Show when={disabled()} fallback={<span class="menu-desc">{MODE_LABELS[m].description}</span>}>
+                                        <Show when={disabled()} fallback={<span class="menu-desc">{describe(m)}</span>}>
                                             <span class="menu-desc menu-hint">{BYPASS_OFF}</span>
                                         </Show>
                                     </span>
                                     <Show when={p.mode === m}>
-                                        <Check size={15} stroke-width={2} class="menu-check" />
+                                        <span class="menu-ico">
+                                            <Check size={15} stroke-width={2} class="menu-check" />
+                                        </span>
                                     </Show>
                                 </button>
                             );

@@ -625,33 +625,40 @@ export function EffortGlyph(p: { level: number }) {
 }
 
 /**
- * The glyph grown into a control: one bar per level the model takes, rising
- * left to right; the chosen level and those below fill with the accent.
- * Click or drag across them, or use the arrows, Home/End and 1–n; hovering
- * previews a level before it's picked. It applies as it moves. Settings →
- * General uses it too (`size="sm"`).
+ * Effort as a slider, from Quick to Thorough: a knob that stops at a dot per
+ * level the model takes, with the track behind it filled with the accent.
+ * Click or drag along it, or use the arrows, Home/End and 1–n; hovering a
+ * level's dot grows it, to show where a click would put the knob. It applies
+ * as it moves. Settings → General uses it too (`size="sm"`).
  */
-export function EffortBars(p: { levels: Effort[]; value?: EffortLevel; onChange: (id: EffortLevel) => void; size?: "sm"; label?: string; ref?: (el: HTMLDivElement) => void }) {
+export function EffortSlider(p: { levels: Effort[]; value?: EffortLevel; onChange: (id: EffortLevel) => void; size?: "sm"; label?: string; ref?: (el: HTMLDivElement) => void }) {
     let el: HTMLDivElement | undefined;
-    let down = false;
+    let thumb: HTMLSpanElement | undefined;
+    const [down, setDown] = createSignal(false);
     const [hover, setHover] = createSignal(-1);
     const at = () => p.levels.findIndex((e) => e.id === p.value);
+    // Where a stop is along the track, 0 to 1.
+    const place = (i: number) => (p.levels.length > 1 ? Math.max(i, 0) / (p.levels.length - 1) : 0);
     const go = (i: number) => {
         const l = p.levels[i];
         if (l && l.id !== p.value) p.onChange(l.id);
     };
     const under = (e: PointerEvent) => {
         const r = el!.getBoundingClientRect();
-        return effortAt(e.clientX, r.left, r.width, p.levels.length);
+        // The knob's middle travels from half its width (and the track's padding) in from either end.
+        const t = thumb?.getBoundingClientRect?.();
+        const inset = t ? t.width / 2 + (t.top - r.top) : 0;
+        return effortAt(e.clientX, r.left, r.width, p.levels.length, inset);
     };
-    const up = () => (down = false);
+    const up = () => setDown(false);
     return (
         <div
             ref={(e) => {
                 el = e;
                 p.ref?.(e);
             }}
-            class={`es ${p.size ?? ""} ${hover() >= 0 ? "hov" : ""}`}
+            class={`es ${p.size ?? ""} ${at() < 0 ? "unset" : ""} ${down() ? "drag" : ""}`}
+            style={{ "--p": String(place(at())) }}
             role="slider"
             tabIndex={0}
             aria-label={p.label ?? "Reasoning effort"}
@@ -663,16 +670,17 @@ export function EffortBars(p: { levels: Effort[]; value?: EffortLevel; onChange:
                 // Only the primary button picks; a right- or middle-click leaves the level alone.
                 if (e.button !== 0) return;
                 e.preventDefault();
-                el!.focus({ preventScroll: true });
+                // Focused by the pointer: no focus ring, as a click would leave.
+                el!.focus({ preventScroll: true, focusVisible: false } as FocusOptions);
                 try {
                     el!.setPointerCapture(e.pointerId);
                 } catch {
                     // Synthetic events have no pointer to capture.
                 }
-                down = true;
+                setDown(true);
                 go(under(e));
             }}
-            onPointerMove={(e) => (down ? go(under(e)) : setHover(under(e)))}
+            onPointerMove={(e) => (down() ? go(under(e)) : setHover(under(e)))}
             onPointerLeave={() => setHover(-1)}
             onPointerUp={up}
             onPointerCancel={up}
@@ -684,13 +692,12 @@ export function EffortBars(p: { levels: Effort[]; value?: EffortLevel; onChange:
                 go(i);
             }}
         >
-            <For each={p.levels}>
-                {(l, i) => (
-                    <span class={`eb ${i() <= at() ? "on" : ""} ${i() <= hover() ? "pre" : ""}`} style={{ "--h": String((i() + 1) / p.levels.length) }} title={l.label}>
-                        <i />
-                    </span>
-                )}
-            </For>
+            <span class="es-fill" aria-hidden="true" />
+            {/* The dots span the knob's travel, so each sits where the knob's middle stops. */}
+            <span class="es-stops" aria-hidden="true">
+                <For each={p.levels}>{(l, i) => <i class={`${i() <= at() ? "on" : ""} ${i() === hover() && i() !== at() && !down() ? "hov" : ""}`} title={l.label} />}</For>
+            </span>
+            <span ref={thumb} class="es-thumb" aria-hidden="true" />
         </div>
     );
 }
@@ -701,7 +708,7 @@ const FAST_BUSY = "Change speed after this response finishes";
 /**
  * Reasoning effort (and fast mode, where the model has it) in one picker: the
  * level glyph, with a filled ⚡ before it while fast mode is on. Its popover
- * names the level, has the "⚡ Fast" pill, and the bars.
+ * names the level, has the "⚡ Fast" pill beside it, and the slider.
  */
 export function EffortPicker(p: ComposerMenu & { current?: ModelSummary; currentRef?: string; effort?: EffortLevel; fast?: boolean; busy?: boolean }) {
     let anchor: HTMLButtonElement | undefined;
@@ -749,7 +756,7 @@ export function EffortPicker(p: ComposerMenu & { current?: ModelSummary; current
                 anchor={() => anchor}
                 onClose={() => p.setOpen(false)}
                 placement={p.placement ?? "top"}
-                width={220}
+                width={264}
                 class="effort-pop"
                 initialFocus={() => (bars?.isConnected ? bars : fastBtn)}
                 onKeyDown={(e) => {
@@ -768,7 +775,7 @@ export function EffortPicker(p: ComposerMenu & { current?: ModelSummary; current
                 }}
             >
                 <div class="ep-h">
-                    <b class="ep-lv">{label()}</b>
+                    <b>{label()}</b>
                     <Show when={fastOk()}>
                         <button ref={fastBtn} class={`ep-fast ${fastOn() ? "on" : ""}`} aria-pressed={fastOn()} disabled={p.busy} title={p.busy ? FAST_BUSY : FAST_TIP} onClick={() => void setFastMode(!p.fast)}>
                             <Zap size={12} stroke-width={2.25} />
@@ -777,7 +784,11 @@ export function EffortPicker(p: ComposerMenu & { current?: ModelSummary; current
                     </Show>
                 </div>
                 <Show when={reasoning()}>
-                    <EffortBars ref={(e) => (bars = e)} levels={levels()} value={shown()} onChange={pick} />
+                    <div class="ep-ends" aria-hidden="true">
+                        <span>Quick</span>
+                        <span>Thorough</span>
+                    </div>
+                    <EffortSlider ref={(e) => (bars = e)} levels={levels()} value={shown()} onChange={pick} />
                 </Show>
             </Menu>
         </Show>

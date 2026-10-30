@@ -10,7 +10,7 @@ import { isolate, tempDir } from "./helpers/isolate";
 
 const { home: CAVVY_HOME, cleanup } = isolate();
 const { sandboxPolicy, seatbeltProfile, bwrapArgs, sandboxArgv, needsHostAccess, accessNeeded, looksDestructive, blockedBySandbox, sandboxKind, SANDBOX_HINT, WORKTREE_HINT } = await import("../src/permissions/sandbox");
-const { opencodeConfigDir } = await import("../src/config/paths");
+const { antigravityConfigDirs, opencodeConfigDir } = await import("../src/config/paths");
 const { ANALYSIS_LIMIT, analyzeCommand, pushesDefaultBranch, commandsWithDirs, configTarget, isReadOnlyCommand, shellWord } = await import("../src/permissions/bash-safety");
 const { BashTool, BashOutputTool, KillShellTool, killAllShells, sandboxOutputHint } = await import("../src/tools/bash");
 import type { Sandbox } from "../src/permissions/sandbox";
@@ -28,9 +28,9 @@ describe("sandboxPolicy", () => {
         expect(p.writable).toContain(real(tmpdir()));
         expect(p.writable).toContain(process.platform === "darwin" ? "/private/tmp" : "/tmp");
         // OpenCode's global config (its plugins run when it starts) too, wherever the workspace is.
-        expect(p.readOnly).toEqual([join(ws, ".cavvy"), join(ws, ".harness"), join(ws, ".mcp.json"), join(ws, "opencode.json"), join(ws, "opencode.jsonc"), real(CAVVY_HOME), opencodeConfigDir(home)]);
+        expect(p.readOnly).toEqual([join(ws, ".cavvy"), join(ws, ".harness"), join(ws, ".mcp.json"), join(ws, "opencode.json"), join(ws, "opencode.jsonc"), real(CAVVY_HOME), opencodeConfigDir(home), ...antigravityConfigDirs(home)]);
         // The agent CLIs' config folders: OpenCode's and Grok's (plugins, hooks) as Claude Code's and Codex's.
-        expect(p.cliConfig).toEqual([".claude", ".codex", ".opencode", ".grok"].map((c) => join(ws, c)));
+        expect(p.cliConfig).toEqual([".claude", ".codex", ".opencode", ".grok", ".agents"].map((c) => join(ws, c)));
         for (const c of [".ssh", ".aws", ".gnupg", ".config/gcloud", ".netrc", ".npmrc", ".git-credentials", "Library/Keychains"]) expect(p.unreadable).toContain(join(home, c));
         // The secrets and accounts/ can't be read or listed; the rest of the home can be listed, not read.
         for (const f of ["credentials.json", "providers.json", "accounts"]) expect(p.unreadable).toContain(join(real(CAVVY_HOME), f));

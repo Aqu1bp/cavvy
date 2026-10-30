@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "path";
 import { CASE_FOLDS, canonical, CASE_INSENSITIVE_FS, expandPath, isInside, spellings } from "../util/files";
 import { accountCredentialFiles, accountFolders } from "../providers/accounts";
 import { homeAliases } from "../config/legacy";
-import { opencodeConfigDir } from "../config/paths";
+import { antigravityConfigDirs, opencodeConfigDir } from "../config/paths";
 
 export interface SimpleCommand {
     text: string;
@@ -1492,7 +1492,7 @@ const STARTUP_FILE = anyCase(/>\s*~\/\.(bash|zsh)(rc|_profile|env)|>\s*~\/\.prof
 const DATA_READERS = new Set(["cat", "tee", "wc", "head", "tail", "uniq", "cut", "tr", "nl", "grep", "egrep", "fgrep"]);
 
 /** Files whose contents run later: shell startup files, anything in a .git, Cavvy's and agent CLIs' configuration. */
-const RUNS_LATER = anyCase(/(^|\/)\.(bash(rc|_profile|_login|_logout|env|_aliases)|zsh(rc|env|_profile)|zprofile|zlogin|zlogout|profile|kshrc|mkshrc|envrc)$|(^|\/)\.git(\/|$)|(^|\/)\.(cavvy|harness|claude|codex|opencode|grok)(\/|$)|(^|\/)(\.mcp\.json|opencode\.jsonc?)$|(^|\/)(crontab|\.config\/(fish|git|nvim|systemd|autostart|opencode)|Library\/LaunchAgents)(\/|$)/);
+const RUNS_LATER = anyCase(/(^|\/)\.(bash(rc|_profile|_login|_logout|env|_aliases)|zsh(rc|env|_profile)|zprofile|zlogin|zlogout|profile|kshrc|mkshrc|envrc)$|(^|\/)\.git(\/|$)|(^|\/)\.(cavvy|harness|claude|codex|opencode|grok|agents)(\/|$)|(^|\/)(\.mcp\.json|opencode\.jsonc?)$|(^|\/)(crontab|\.config\/(fish|git|nvim|systemd|autostart|opencode)|Library\/LaunchAgents)(\/|$)/);
 
 /**
  * The line with its here-documents' data blanked (lines kept), when that data
@@ -2205,7 +2205,7 @@ export function sensitiveTarget(cmd: string, opts: { cwd?: string; cavvyHome?: s
 // permissions, hooks, MCP servers, skills, git hooks/fsmonitor. A shell command
 // that isn't read-only and names one asks, like an Edit of the same file would.
 // OpenCode's global config (~/.config/opencode, $XDG_CONFIG_HOME/opencode) too; see configTarget for where it is.
-const CONFIG_PATH = /(^|[\s'"=:/])(\.cavvy|\.harness|\.codex|\.opencode|\.grok|\.mcp\.json|opencode\.jsonc?|\.git|\.config\/opencode|\$\{?XDG_CONFIG_HOME\}?\/opencode)(?=$|[/\s'";|&)>])/i;
+const CONFIG_PATH = /(^|[\s'"=:/])(\.cavvy|\.harness|\.codex|\.opencode|\.grok|\.agents|\.mcp\.json|opencode\.jsonc?|\.git|\.config\/opencode|\$\{?XDG_CONFIG_HOME\}?\/opencode)(?=$|[/\s'";|&)>])/i;
 // .claude/ too, but see claudeConfigIn.
 const CLAUDE_DIR = /(^|[\s'"=:/])\.claude(?=$|[/\s'";|&)>])/gi;
 const WORKTREE = /\/worktrees\/([^/\s'"`;|&()<>*?[\]{}$\\]+)(?=$|[/\s'";|&)>])/iy;
@@ -2259,7 +2259,7 @@ function claudeConfigIn(text: string): boolean {
         const w = WORKTREE.exec(text);
         if (!w || (climbing ??= climbs(text))) return true;
         const name = w[1]!;
-        if (name === "." || name === ".." || spellings(name).some((n) => /^(\.(cavvy|harness|claude|codex|opencode|grok|git|mcp\.json)|opencode\.jsonc?)$/.test(n))) return true;
+        if (name === "." || name === ".." || spellings(name).some((n) => /^(\.(cavvy|harness|claude|codex|opencode|grok|agents|git|mcp\.json)|opencode\.jsonc?)$/.test(n))) return true;
     }
     return false;
 }
@@ -2603,8 +2603,8 @@ export function configTarget(cmd: string, cavvyHome?: string): string | undefine
     const unquoted = a.commands.map((c, k) => c.argv.filter((_, i) => !messages[k]!.includes(i)).join(" ")).join(" ; ");
     // In every spelling (on a case-insensitive volume `.CAVVY/` is `.cavvy/`), and by the link at Harness's old place.
     const homes = cavvyHome ? [cavvyHome, ...homeAliases(cavvyHome)].flatMap(spellings) : [];
-    // OpenCode's global config by its path, where XDG_CONFIG_HOME puts it.
-    const opencode = spellings(opencodeConfigDir());
+    // OpenCode's global config by its path, where XDG_CONFIG_HOME puts it, and Antigravity's.
+    const opencode = [opencodeConfigDir(), ...antigravityConfigDirs()].flatMap(spellings);
     const bodies = commands.flatMap((c) => c.programs.map((argv) => argv.join(" ")));
     for (const text of [withoutMessages(cmd), unquoted, ...bodies].flatMap(spellings)) {
         if (CONFIG_PATH.test(text) || claudeConfigIn(text)) return "cavvy or git configuration";

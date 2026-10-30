@@ -28,6 +28,8 @@ export const [commitRequest, setCommitRequest] = createSignal<{ id: string; path
 export const [folderPickerOpen, setFolderPickerOpen] = createSignal<{ then: (path: string | undefined) => void; title?: string; action?: string; start?: string } | undefined>();
 /** The MCP servers dialog, and the server to show first. */
 export const [mcpOpen, setMcpOpen] = createSignal<{ focus?: string } | undefined>();
+/** Recently deleted: the trashed sessions, with Restore. */
+export const [deletedOpen, setDeletedOpen] = createSignal(false);
 /** Opened from the keyboard or a slash command; the composer's pickers watch these. */
 export const [modelPickerOpen, setModelPickerOpen] = createSignal(false);
 export const [modePickerOpen, setModePickerOpen] = createSignal(false);
@@ -114,12 +116,6 @@ export const [railDrag, setRailDrag] = createSignal<number>();
 export const [inspectorDrag, setInspectorDrag] = createSignal<number>();
 export const [reviewDrag, setReviewDrag] = createSignal<number>();
 export const [terminalDrag, setTerminalDrag] = createSignal<number>();
-
-/** Where the title bar's title starts and its tools end (from the window's left and right edges), and its top: the toasts drop into that row. */
-export interface TitleBarBox { start: number; end: number; top: number }
-export const [titleBarBox, setTitleBarBox] = createSignal<TitleBarBox | undefined>(undefined, {
-    equals: (a, b) => a === b || (!!a && !!b && a.start === b.start && a.end === b.end && a.top === b.top),
-});
 
 /** The window's layout, kept by the shell (App.tsx) from lib/layout.ts's rules. */
 export const [shellLayout, setShellLayout] = createSignal<WindowLayout>({

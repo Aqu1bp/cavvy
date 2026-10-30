@@ -66,6 +66,14 @@ export function opencodeConfigDir(home = homedir()): string {
     return join(process.env.XDG_CONFIG_HOME ? resolve(process.env.XDG_CONFIG_HOME) : join(home, ".config"), "opencode");
 }
 
+/**
+ * Antigravity's CLI's global config: ~/.gemini/config (its hooks.json, shared with the Antigravity app) and
+ * ~/.gemini/antigravity-cli (its settings.json and permission rules). Its hooks run commands when it starts.
+ */
+export function antigravityConfigDirs(home = homedir()): string[] {
+    return [join(home, ".gemini", "config"), join(home, ".gemini", "antigravity-cli")];
+}
+
 /** Directory for a project's sessions: ~/.cavvy/projects/<slug>/ */
 export function projectStateDir(cwd: string): string {
     const slug = resolve(cwd).replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(-120) || "root";

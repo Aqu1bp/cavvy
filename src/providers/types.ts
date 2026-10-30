@@ -69,6 +69,8 @@ export interface UserMessage {
         checkpoint?: number;
         /** Brought in from a Claude Code or Codex session started elsewhere: shown, never rewound to. */
         imported?: boolean;
+        /** Sent while an agent CLI's turn ran, and joined that turn at its next step: shown as steered in. */
+        steered?: boolean;
         /** Models (modelRef) that refused a request for this message's images: they're sent it without them. The images stay. */
         imagesRefused?: string[];
         /** State at a compaction boundary, restored before replaying later tool calls. */
