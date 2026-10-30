@@ -1,7 +1,7 @@
 // The simulator's screen as text (src/simulator/outline.ts): roles, labels and values, refs standing for the center
 // of what's on screen, what's left out, and the text read from the picture that the tree hasn't got.
 import { describe, expect, test } from "bun:test";
-import { agrees, MAX_OUTLINE, outline, type AxNode, type SeenLine } from "../src/simulator/outline";
+import { agrees, MAX_OUTLINE, outline, refNow, type AxNode, type SeenLine } from "../src/simulator/outline";
 
 const SCREEN = { width: 402, height: 874 };
 
@@ -239,4 +239,71 @@ test("a web page's alert, an empty sheet in the tree, is said to be there", () =
     const lines = [{ text: "Hello from the page", confidence: 1, frame: [60, 400, 200, 20] }];
     expect(outline(page, SCREEN, lines).text).toContain("(A dialog or menu is open");
     expect(outline({ role: "AXApplication", children: [page.children![1]!] }, SCREEN, lines).text).not.toContain("A dialog");
+});
+
+describe("what's under a bar at the bottom of the screen", () => {
+    const line = (text: string, y: number): SeenLine => ({ text, confidence: 1, frame: [16, y, 120, 20] });
+    const bar = { role: "AXApplication", children: [{ role: "AXButton", label: "Back", frame: [34, 780, 48, 48] }] };
+
+    test("isn't read: the glass blurs it into nonsense", () => {
+        const o = outline(bar, SCREEN, [line("A real line above", 740), line("NUVV LO", 775), line("Under it", 830)]).text;
+        expect(o).toContain("A real line above");
+        expect(o).not.toContain("NUVV LO");
+        expect(o).not.toContain("Under it");
+    });
+
+    test("a field is a bar's too (Safari's address, shrunk), but a row of text isn't", () => {
+        const lines = [line("Below", 790)];
+        expect(outline({ role: "AXApplication", children: [{ role: "AXTextField", label: "Address", value: "site", frame: [160, 806, 60, 16] }] }, SCREEN, lines).text).not.toContain('seen "Below"');
+        expect(outline({ role: "AXApplication", children: [{ role: "AXStaticText", label: "Row 9", frame: [16, 745, 200, 20] }] }, SCREEN, lines).text).toContain('seen "Below"');
+    });
+
+    test("a button higher up says nothing about what's below it", () => {
+        const higher = { role: "AXApplication", children: [{ role: "AXButton", label: "Back", frame: [34, 100, 48, 48] }] };
+        expect(outline(higher, SCREEN, [line("A web page's text", 775)]).text).toContain('seen "A web page\'s text"');
+    });
+});
+
+describe("whether a ref still stands for what it did", () => {
+    const button = (label: string, y: number, w = 200) => ({ role: "AXButton", label, frame: [20, y, w, 40] });
+    const app = (...children: AxNode[]): AxNode => ({ role: "AXApplication", children });
+    const refs = (o: { refs: Map<string, unknown> }) => [...o.refs.values()] as Parameters<typeof refNow>[0][];
+
+    test("a label that counts is the same button, with the screen around it unchanged", () => {
+        const was = outline(app(button("Resend in 997", 100), button("Steady", 200)), SCREEN);
+        const [resend] = refs(was);
+        expect(refNow(resend!, app(button("Resend in 990", 100), button("Steady", 200)), [], refs(was))).toBe("Resend in 990");
+        // And one counting beside it, and one narrower for its digits, with the same place in it.
+        const beside = outline(app(button("Resend in 997", 100), button("Elapsed 3", 200)), SCREEN);
+        expect(refNow(refs(beside)[0]!, app(button("Resend in 996", 100, 180), button("Elapsed 4", 200)), [], refs(beside))).toBe("Resend in 996");
+    });
+
+    test("a numbered list that moved is not: its rows all changed", () => {
+        const rows = (first: number) => app(...[0, 1, 2, 3].map((i) => button(`Item ${first + i}`, 100 + i * 50)));
+        const was = outline(rows(5), SCREEN);
+        expect(refNow(refs(was)[0]!, rows(6), [], refs(was))).toBeUndefined();
+        expect(refNow(refs(was)[2]!, rows(35), [], refs(was))).toBeUndefined();
+        expect(refNow(refs(was)[0]!, rows(5), [], refs(was))).toBe("Item 5");
+    });
+
+    test("only a number apart: letters have to say it's the same, and its place has to be in it", () => {
+        const was = outline(app(button("12", 100), button("Item 1", 200)), SCREEN);
+        expect(refNow(refs(was)[0]!, app(button("13", 100), button("Item 1", 200)), [], refs(was))).toBeUndefined();
+        expect(refNow(refs(was)[1]!, app(button("12", 100), button("Item 2", 300)), [], refs(was))).toBeUndefined();
+        expect(refNow(refs(was)[1]!, app(button("12", 100), { ...button("Item 1", 200), role: "AXStaticText" }), [], refs(was))).toBeUndefined();
+    });
+
+    test("similar lines in the picture: a moved page isn't the same line, a misread or counting one on a still page is", () => {
+        const page = (first: number): SeenLine[] => [0, 1, 2, 3].map((i) => ({ text: `Line ${first + i} of the page`, confidence: 1, frame: [16, 100 + i * 40, 200, 20] }));
+        const was = outline(app(), SCREEN, page(5));
+        const [five, six, seven, eight] = refs(was);
+        expect(refNow(five!, app(), page(19), refs(was))).toBeUndefined();
+        expect(refNow(seven!, app(), page(5), refs(was))).toBe("Line 7 of the page");
+        const counted = page(5).map((l, i) => (i === 3 ? { ...l, text: "Line 9 of the page" } : l));
+        expect(refNow(eight!, app(), counted, refs(was))).toBe("Line 9 of the page");
+        const misread = page(5).map((l, i) => (i === 1 ? { ...l, text: "Lime 6 of the page" } : l));
+        expect(refNow(six!, app(), misread, refs(was))).toBe("Lime 6 of the page");
+        // Other words altogether, whatever the rest does.
+        expect(refNow(six!, app(), page(5).map((l, i) => (i === 1 ? { ...l, text: "Something else" } : l)), refs(was))).toBeUndefined();
+    });
 });

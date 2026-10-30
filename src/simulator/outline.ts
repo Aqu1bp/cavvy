@@ -64,6 +64,11 @@ const AGREE_SHARE = 0.4;
 /** A line this much inside a single line's element (at most this many lines tall) is that element's text, however it was read. */
 const SEEN_INSIDE = 0.7;
 const SEEN_LINE_HEIGHTS = 3;
+/** A ref's text nearly the same is the same with at most this many others changed: another counter beside it. */
+const REF_OTHERS_CHANGED = 1;
+/** A button or field this far down the screen (a share of its height) is on a bar. */
+const BAR_FROM = 0.85;
+const BAR_FIELD_INSET = 16;
 
 const ROLES: Record<string, string> = {
     AXApplication: "app",
@@ -125,7 +130,7 @@ export function outline(root: AxNode, screen: { width: number; height: number },
     const lines: string[] = [];
     const texts: string[] = [];
     /** The text of each element on the screen, where it is: what the picture's lines are checked against. */
-    const shown: { frame: [number, number, number, number]; words: Set<string>; button: boolean }[] = [];
+    const shown: { frame: [number, number, number, number]; words: Set<string>; button: boolean; control: boolean }[] = [];
     /** Elements showing their label as text, which the picture should have too. */
     const checks: { frame: number[]; words: string[] }[] = [];
     let size = 0;
@@ -154,7 +159,7 @@ export function outline(root: AxNode, screen: { width: number; height: number },
         // An element nobody sees takes its children with it, unless it's a container whose own frame says nothing.
         if (outside && !STRUCTURAL.has(role) && role !== "app") return;
         const placeholder = clean(n.placeholder);
-        if (f && !outside && (label || value || placeholder) && role !== "app") shown.push({ frame: f, words: new Set(wordsOf(`${label} ${value} ${placeholder}`)), button: role === "button" });
+        if (f && !outside && (label || value || placeholder) && role !== "app") shown.push({ frame: f, words: new Set(wordsOf(`${label} ${value} ${placeholder}`)), button: role === "button", control: role === "button" || EDITABLE.has(role) });
         if (f && !outside && label && CHECKED.has(role) && f[0] >= 0 && f[1] >= 0 && f[0] + f[2] <= screen.width && f[1] + f[3] <= screen.height && f[2] >= 40 && f[2] >= f[3] * 2.5) {
             const words = wordsOf(label).filter((w) => w.length > 1);
             if (words.some((w) => w.length > 2)) checks.push({ frame: f, words });
@@ -229,21 +234,45 @@ export function outline(root: AxNode, screen: { width: number; height: number },
 }
 
 /**
- * Whether what a ref stood for is still where it was: the same kind of element with the same label in the tree, or
- * for a `seen` line, the same words in the picture there.
+ * What a ref stood for reads now, if it's still where it was (undefined if not). The same kind of element with the
+ * same label in the tree, or for a `seen` line, the same words in the picture there. Nearly the same (a label that
+ * counts, "Resend in 997"; a line read a little differently) is the same when the rest of `screen`, the refs it was
+ * read with, hasn't changed: on a screen that moved, "Line 19" is where "Line 5" was.
  */
-export function refStillThere(t: RefTarget, tree: AxNode, seen: SeenLine[]): boolean {
+export function refNow(t: RefTarget, tree: AxNode, seen: SeenLine[], screen: Iterable<RefTarget> = []): string | undefined {
+    const same = there(t, tree, seen, true);
+    if (same !== undefined) return same;
+    const near = there(t, tree, seen, false);
+    if (near === undefined) return undefined;
+    const changed = [...screen].filter((o) => o !== t && !o.element === !t.element && there(o, tree, seen, true) === undefined);
+    return changed.length <= REF_OTHERS_CHANGED ? near : undefined;
+}
+
+/** What's at a ref's place now: its very text, or (not `exact`) nearly. */
+function there(t: RefTarget, tree: AxNode, seen: SeenLine[], exact: boolean): string | undefined {
     if (!t.element) {
         const want = wordsOf(t.name);
-        return seen.some((l) => l.frame.length === 4 && overlaps(l.frame, t.frame) && want.filter((w) => wordsOf(l.text).some((k) => alike(w, k))).length / want.length >= SEEN_KNOWN);
+        // A number read differently is another number; another word may be the same one misread.
+        const sameWord = (w: string, k: string) => (exact && (/\p{N}/u.test(w) || /\p{N}/u.test(k)) ? w === k : alike(w, k));
+        return seen.find((l) => l.frame.length === 4 && overlaps(l.frame, t.frame) && want.filter((w) => wordsOf(l.text).some((k) => sameWord(w, k))).length / want.length >= (exact ? 1 : SEEN_KNOWN))?.text;
     }
-    const same = (n: AxNode): boolean => {
+    const { role, label } = t.element;
+    const find = (n: AxNode): string | undefined => {
         const f = n.frame;
-        if (n.role === t.element!.role && (clean(n.label) || clean(n.title)) === t.element!.label && f?.length === 4 && f.every((v, i) => Math.abs(v - t.frame[i]!) <= 2)) return true;
-        return (n.children ?? []).some(same);
+        const now = clean(n.label) || clean(n.title);
+        if (n.role === role && f?.length === 4) {
+            if (exact ? now === label && f.every((v, i) => Math.abs(v - t.frame[i]!) <= 2) : /\p{L}/u.test(now) && numberless(now) === numberless(label) && t.x >= f[0]! && t.x <= f[0]! + f[2]! && t.y >= f[1]! && t.y <= f[1]! + f[3]!) return now;
+        }
+        for (const k of n.children ?? []) {
+            const found = find(k);
+            if (found !== undefined) return found;
+        }
+        return undefined;
     };
-    return same(tree);
+    return find(tree);
 }
+
+const numberless = (s: string) => s.replace(/\p{N}+/gu, "#");
 
 /** Whether the picture shows what the tree says (undefined: too little to tell, an app whose text is icons or a web page). */
 export function agrees(o: Outline): boolean | undefined {
@@ -266,16 +295,18 @@ const overlaps = (a: number[], b: number[]) => a[0]! < b[0]! + b[2]! && b[0]! < 
  * The picture's lines the tree doesn't have, top to bottom: read surely, on the screen, and not mostly words of the
  * elements they overlap (a button's title, read again, with an icon beside it read as a letter). The status bar (the
  * clock, the battery, a link back to the app before), which no app's tree has, is left out, and so are icons read as
- * a letter or two.
+ * a letter or two, and what's under a bar at the bottom of the screen (blurred by its glass, read as "NUVV LO").
  */
-function seenLines(seen: SeenLine[], shown: { frame: number[]; words: Set<string> }[], screen: { width: number; height: number }): { text: string; frame: [number, number, number, number] }[] {
+function seenLines(seen: SeenLine[], shown: { frame: number[]; words: Set<string>; button: boolean; control: boolean }[], screen: { width: number; height: number }): { text: string; frame: [number, number, number, number] }[] {
     const out: { text: string; frame: [number, number, number, number] }[] = [];
+    // A button's frame is its piece of glass; a field's (Safari's address, shrunk) is only the text on it.
+    const bar = Math.min(screen.height, ...shown.filter((e) => e.control && e.frame[1]! >= screen.height * BAR_FROM).map((e) => e.frame[1]! - (e.button ? 0 : BAR_FIELD_INSET)));
     for (const l of seen) {
         const text = clean(l.text);
         const f = l.frame.map((v) => Math.round(v * 10) / 10) as [number, number, number, number];
         if (!text || f.length !== 4 || l.confidence < SEEN_CONFIDENCE) continue;
         if (f[0] >= screen.width || f[1] >= screen.height || f[0] + f[2] <= 0 || f[1] + f[3] <= 0) continue;
-        if (f[1] + f[3] / 2 < statusBar(screen)) continue;
+        if (f[1] + f[3] / 2 < statusBar(screen) || f[1] + f[3] / 2 >= bar) continue;
         if ((text.match(/[\p{L}\p{N}]/gu) ?? []).length < 2) continue;
         // An icon beside the text reads as a letter: only longer words count, unless there are none.
         const all = wordsOf(text);

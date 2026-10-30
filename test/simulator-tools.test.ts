@@ -493,6 +493,67 @@ for await (const line of console) {
         s.dispose();
     });
 
+    test("a button whose label counts is tapped by ref, and said as it reads now; a list that moved isn't", async () => {
+        const s = session();
+        const screen = (...labels: string[]) => FORM(labels.map((label, i) => ({ role: "AXButton", label, frame: [20, 100 + i * 50, 200, 40] })));
+        writeFileSync(TREE, screen("Resend in 997", "Steady"));
+        const ref = /"Resend in 997" \[(e\d+)\]/.exec(await s.snapshot())![1]!;
+        writeFileSync(TREE, screen("Resend in 990", "Steady"));
+        expect(await s.tap({ ref })).toBe(`Tapped "Resend in 990" [${ref}].`);
+
+        const rows = (n: number) => screen(`Item ${n}`, `Item ${n + 1}`, `Item ${n + 2}`);
+        writeFileSync(TREE, rows(5));
+        const row = /"Item 5" \[(e\d+)\]/.exec(await s.snapshot())![1]!;
+        writeFileSync(TREE, rows(6));
+        const touches = sent("touch").length;
+        const refused = (await s.tap({ ref: row }).catch((e) => e)) as Error;
+        expect(refused.message).toContain(`Not done: ${row} isn't there any more`);
+        expect(refused.message).toContain("tap it by x,y");
+        expect(sent("touch").length).toBe(touches);
+        s.dispose();
+    });
+
+    test("text waits for the caret's move to a web field's end, or the page loses some of it", async () => {
+        const s = session();
+        writeFileSync(TREE, FORM([]));
+        writeFileSync(LINES, JSON.stringify([{ text: "prefilled text", confidence: 1, frame: [20, 300, 100, 20] }]));
+        await s.type("x", { ref: lastRef(await s.snapshot()) });
+        const batches = readFileSync(OPS, "utf8").split("\n").filter((o) => o.startsWith("keys "));
+        const at = (o: string) => Number(o.split(" ")[1]);
+        expect(batches).toHaveLength(2);
+        expect(batches[0]).toContain(`[${ARROW_DOWN},true]`);
+        expect(at(batches[1]!) - at(batches[0]!)).toBeGreaterThanOrEqual(140);
+        s.dispose();
+    });
+
+    test("paste puts text in through the pasteboard, as written", async () => {
+        const s = session();
+        writeFileSync(TREE, FORM([FIELD]));
+        expect(await s.type("user.name@example.com", { paste: true })).toBe('Pasted "user.name@example.com".');
+        expect(ran2.some((a) => a.includes("pbcopy"))).toBe(true);
+        const down = sent("keys")[0].filter((k: [number, boolean]) => k[1]).map((k: [number, boolean]) => k[0]);
+        expect(down).toEqual([META, 0x19]);
+        s.dispose();
+    });
+
+    test("the result says when iOS changed what was typed; not when it's there as typed, or wasn't typed", async () => {
+        const s = session();
+        const run = async (field: string, input: Record<string, unknown>) => {
+            writeFileSync(TREE, FORM([{ ...FIELD, selection: [0, 5], value: field }]));
+            return String(((await SimulatorActTool.run({ action: "type", ...input } as any, { ...ctx, state: { ...ctx.state, simulator: s } })) as { content: unknown }).content).split("\n")[0]!;
+        };
+        await s.snapshot();
+        expect(await run("User.name@example.com", { text: "user.name@example.com" })).toContain("iOS seems to have changed it");
+        expect(await run("The quick brown fox", { text: "teh quick brwon fox" })).toContain("iOS seems to have changed it");
+        expect(await run("user.name@example.com", { text: "user.name@example.com" })).not.toContain("changed it");
+        expect(await run("nothing like it", { text: "user.name@example.com" })).not.toContain("changed it");
+        expect(await run("User.name@example.com", { text: "user.name@example.com", paste: true })).not.toContain("changed it");
+        // Wrapped onto two of the picture's lines, it's as typed.
+        writeFileSync(LINES, JSON.stringify([{ text: "the first half of a long line", confidence: 1, frame: [20, 300, 300, 20] }, { text: "and its second half", confidence: 1, frame: [20, 330, 300, 20] }]));
+        expect(await run("hello", { text: "the first half of a long line and its second half" })).not.toContain("changed it");
+        s.dispose();
+    });
+
     test("clear with no text empties the field", async () => {
         const s = session();
         expect(await s.type("", { clear: true })).toBe("Cleared the field.");

@@ -545,40 +545,79 @@ func recognize(_ s: IOSurface) throws -> [[String: Any]] {
     let w = Double(s.width) / scale, h = Double(s.height) / scale
     return (request.results ?? []).flatMap { o -> [[String: Any]] in
         guard let c = o.topCandidates(1).first else { return [] }
-        return pieces(c, o.boundingBox, w, h).map { text, b in
+        return pieces(c, o.boundingBox, s, w, h).map { text, b in
             // Vision's box is a fraction of the picture from its bottom left; the tree's frames are points from the top left.
             ["text": text, "confidence": Double(c.confidence), "frame": [b.minX * w, (1 - b.maxY) * h, b.width * w, b.height * h].map { ($0 * 10).rounded() / 10 }]
         }
     }
 }
 
-/// A line's text in pieces where a gap wider than the line is tall parts it: links side by side ("Domains Protocols
-/// Numbers") read as one line, and a ref for each should land on it. Gaps are between what spaces separate, so a "&"
-/// between words is no gap. Boxes are fractions of a picture `w`×`h` points.
-func pieces(_ c: VNRecognizedText, _ box: CGRect, _ w: Double, _ h: Double) -> [(String, CGRect)] {
+/// A line's text in pieces where a wide gap parts it: links side by side ("Domains Protocols Numbers") read as one line,
+/// and a ref for each should land on it. Vision spreads a line's words evenly over its box, so the gaps are looked for
+/// in the picture: its widest gaps, one fewer than the words, are between the words. When that makes words of unlikely
+/// widths (a "|" Vision didn't read, taken for one), the line stays whole. Boxes are fractions of a picture `w`×`h` points.
+func pieces(_ c: VNRecognizedText, _ box: CGRect, _ s: IOSurface, _ w: Double, _ h: Double) -> [(String, CGRect)] {
     let text = c.string
     let tokens = text.split(whereSeparator: { $0.isWhitespace })
-    var boxes: [CGRect] = []
-    for t in tokens {
-        guard let b = try? c.boundingBox(for: t.startIndex..<t.endIndex)?.boundingBox else { return [(text, box)] }
-        boxes.append(b)
+    guard tokens.count > 1, let runs = inkRuns(s, box), runs.count >= tokens.count else { return [(text, box)] }
+    // Arabic's words go right to left.
+    let first = try? c.boundingBox(for: tokens[0].startIndex..<tokens[0].endIndex)?.boundingBox
+    let last = try? c.boundingBox(for: tokens[tokens.count - 1].startIndex..<tokens[tokens.count - 1].endIndex)?.boundingBox
+    let backwards = (first?.minX ?? 0) > (last?.minX ?? 0)
+    let between = runs.indices.dropFirst().sorted { runs[$0].lowerBound - runs[$0 - 1].upperBound > runs[$1].lowerBound - runs[$1 - 1].upperBound }.prefix(tokens.count - 1).sorted()
+    var words: [Range<Double>] = []
+    var start = 0
+    for i in between + [runs.count] {
+        words.append(runs[start].lowerBound..<runs[i - 1].upperBound)
+        start = i
     }
-    guard tokens.count > 1 else { return [(text, box)] }
+    if backwards { words.reverse() }
+    let perCharacter = zip(words, tokens).map { ($0.upperBound - $0.lowerBound) / Double($1.count) }
+    guard let least = perCharacter.min(), let most = perCharacter.max(), most <= least * 5 else { return [(text, box)] }
     var out: [(String, CGRect)] = []
-    var first = 0
+    var from = 0
     for i in 1...tokens.count {
         if i < tokens.count {
-            let a = boxes[i - 1], b = boxes[i]
-            // Apart either way: Arabic's words go right to left.
-            let gap = (max(a.minX, b.minX) - min(a.maxX, b.maxX)) * w
-            if gap <= box.height * h * 1.2 { continue }
+            let gap = (max(words[i - 1].lowerBound, words[i].lowerBound) - min(words[i - 1].upperBound, words[i].upperBound)) * w
+            if gap <= box.height * h * 0.7 { continue }
         }
-        let part = String(text[tokens[first].startIndex..<tokens[i - 1].endIndex])
-        let frame = boxes[first...(i - 1)].reduce(boxes[first]) { $0.union($1) }
-        out.append((part, CGRect(x: frame.minX, y: box.minY, width: frame.width, height: box.height)))
-        first = i
+        let left = min(words[from].lowerBound, words[i - 1].lowerBound), right = max(words[from].upperBound, words[i - 1].upperBound)
+        out.append((String(text[tokens[from].startIndex..<tokens[i - 1].endIndex]), CGRect(x: left, y: box.minY, width: right - left, height: box.height)))
+        from = i
     }
     return out
+}
+
+/// The stretches of a line's box with something drawn in them, left to right, as fractions of the picture's width:
+/// columns unlike the background, read just left of the box. On a picture behind the text, one long stretch.
+func inkRuns(_ s: IOSurface, _ box: CGRect) -> [Range<Double>]? {
+    guard s.bytesPerElement == 4, s.lock(options: .readOnly, seed: nil) == 0 else { return nil }
+    defer { s.unlock(options: .readOnly, seed: nil) }
+    let width = s.width, height = s.height, row = s.bytesPerRow
+    let x0 = max(0, Int(box.minX * Double(width))), x1 = min(width, Int(box.maxX * Double(width)))
+    let y0 = max(0, Int((1 - box.maxY) * Double(height))), y1 = min(height, Int((1 - box.minY) * Double(height)))
+    guard x1 > x0, y1 > y0 else { return nil }
+    let bytes = s.baseAddress.assumingMemoryBound(to: UInt8.self)
+    let ground = bytes + ((y0 + y1) / 2) * row + max(0, x0 - 3) * 4
+    var runs: [Range<Double>] = []
+    var begun: Int?
+    for x in x0..<x1 {
+        var ink = false
+        for y in y0..<y1 {
+            let p = bytes + y * row + x * 4
+            if abs(Int(p[0]) - Int(ground[0])) + abs(Int(p[1]) - Int(ground[1])) + abs(Int(p[2]) - Int(ground[2])) > 96 {
+                ink = true
+                break
+            }
+        }
+        if ink, begun == nil { begun = x }
+        if !ink, let b = begun {
+            runs.append(Double(b) / Double(width)..<Double(x) / Double(width))
+            begun = nil
+        }
+    }
+    if let b = begun { runs.append(Double(b) / Double(width)..<Double(x1) / Double(width)) }
+    return runs
 }
 
 func warmText() {

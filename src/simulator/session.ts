@@ -9,7 +9,7 @@ import type { SimulatorCommand, SimulatorDevice, SimulatorInput, SimulatorInputK
 import { FrameFeed } from "../browser/feed";
 import { helperBinary, SimHelper, type ScreenSize } from "./helper";
 import { isModifier, strokesForPress, strokesForText, usageOfCode, type KeyStroke } from "./keys";
-import { agrees, outline, refStillThere, type AxNode, type Outline, type RefTarget, type SeenLine } from "./outline";
+import { agrees, outline, refNow, type AxNode, type Outline, type RefTarget, type SeenLine } from "./outline";
 import * as simctl from "./simctl";
 import { SimulatorError } from "./simctl";
 
@@ -39,6 +39,8 @@ const SIDE = { min: 320, max: 2000, unknown: 1400 };
 const KEY_GAP_MS = 12;
 const SUBMIT_PAUSE_MS = 1000;
 const PANE_TEXT_PAUSE_MS = 300;
+/** Text right behind the caret's move to a web field's end doesn't land: the page gets the keys, the field loses some. */
+const CARET_PAUSE_MS = 150;
 
 /** How long a helper nothing uses (no pane showing its device, no agent call) keeps running. */
 const IDLE_MS = 60_000;
@@ -988,17 +990,17 @@ export class SimulatorSession {
      * Whatever moved the screen since it was read (another session, another Cavvy, the app itself): a ref that's no
      * longer what it stood for is refused the same way. What can't be read now doesn't stop the action.
      */
-    private async refHolds(helper: SimHelper, ref: string, t: RefTarget): Promise<void> {
+    private async refHolds(helper: SimHelper, ref: string, t: RefTarget, screen: Map<string, RefTarget>): Promise<string> {
         const r = await helper.call({ op: "describe" }).catch(() => undefined);
-        if (!r) return;
-        let holds = this.refsPid === undefined || r.pid === this.refsPid;
-        if (holds) {
+        if (!r) return t.name;
+        if (this.refsPid === undefined || r.pid === this.refsPid) {
             const read = t.element ? undefined : await this.readText(helper);
-            holds = !!read?.loading || !!read?.error || refStillThere(t, (r.tree ?? {}) as AxNode, read?.lines ?? []);
+            if (read?.loading || read?.error) return t.name;
+            const now = refNow(t, (r.tree ?? {}) as AxNode, read?.lines ?? [], screen.values());
+            if (now !== undefined) return now || t.name;
         }
-        if (holds) return;
-        const screen = await this.snapshot();
-        throw new SimulatorError(`Not done: ${ref} isn't there any more: the screen has changed.\n\n${screen}`);
+        const after = await this.snapshot();
+        throw new SimulatorError(`Not done: ${ref} isn't there any more: the screen has changed. If its label keeps changing, tap it by x,y.\n\n${after}`);
     }
 
     /**
@@ -1015,9 +1017,10 @@ export class SimulatorSession {
             await this.refStands(target.ref);
             found = this.refs.get(target.ref.replace(/^\[|\]$/g, ""));
             if (!found) throw new SimulatorError(`There's no ref ${target.ref} in the last snapshot. Take a new one with SimulatorSnapshot.`);
+            const screen = this.refs;
             this.refs = new Map();
-            await this.refHolds(helper, target.ref, found);
-            ({ x, y, name } = found);
+            name = await this.refHolds(helper, target.ref, found, screen);
+            ({ x, y } = found);
             name = `${JSON.stringify(name)} [${target.ref}]`;
         } else {
             x = target.x!;
@@ -1096,7 +1099,7 @@ export class SimulatorSession {
         return `Swiped from ${pt(start)} to ${pt(end)}.${this.uncertainNote(helper)}`;
     }
 
-    async type(text: string, o: { ref?: string; submit?: boolean; clear?: boolean } = {}, signal?: AbortSignal): Promise<string> {
+    async type(text: string, o: { ref?: string; submit?: boolean; clear?: boolean; paste?: boolean } = {}, signal?: AbortSignal): Promise<string> {
         const helper = await this.running();
         await this.refStands(o.ref);
         await this.reaches(helper, "keyboard");
@@ -1115,7 +1118,10 @@ export class SimulatorSession {
                 if (r && !o.clear) {
                     const field = fieldFor((await helper.call({ op: "describe" }).catch(() => undefined))?.tree as AxNode | undefined, r);
                     // A web page's field isn't in the tree, and its tap doesn't select.
-                    if (field ? field.selection?.[1] === 0 : !r.element) await helper.call({ op: "keys", keys: strokesForPress("ArrowDown", ["Meta"]) });
+                    if (field ? field.selection?.[1] === 0 : !r.element) {
+                        await helper.call({ op: "keys", keys: strokesForPress("ArrowDown", ["Meta"]) });
+                        await pause(CARET_PAUSE_MS, signal);
+                    }
                 }
             }
             this.agentActs();
@@ -1125,7 +1131,7 @@ export class SimulatorSession {
             }
             // Which field the keys go to isn't known without a ref: a password field on the screen may be it.
             if (!o.ref) secure = hasPasswordField((await helper.call({ op: "describe" }).catch(() => undefined))?.tree as AxNode | undefined);
-            const pasted = text ? await this.typeText(helper, text, o.submit ? KEY_GAP_MS : 0, signal) : false;
+            const pasted = text ? await this.typeText(helper, text, o.submit ? KEY_GAP_MS : 0, signal, o.paste) : false;
             if (o.submit) {
                 // Enter right behind the text overtakes what the app hasn't taken yet (Safari searched for "examp" for
                 // "example.com"). The screen being still says nothing here (a field's cursor blinks): a pause does.
@@ -1142,10 +1148,11 @@ export class SimulatorSession {
 
     /**
      * Types text key by key (`gapMs` apart), or pastes it when a U.S. keyboard can't type it, or the device's keyboard
-     * has another layout (keys are where they are: German's would type "Lazy" as "Layz"). Returns whether it was pasted.
+     * has another layout (keys are where they are: German's would type "Lazy" as "Layz"), or `paste` asks for it. Returns
+     * whether it was pasted.
      */
-    private async typeText(helper: SimHelper, text: string, gapMs = 0, signal?: AbortSignal): Promise<boolean> {
-        const strokes = simctl.typesAsUS(await simctl.keyboardOf(helper.udid)) ? strokesForText(text) : undefined;
+    private async typeText(helper: SimHelper, text: string, gapMs = 0, signal?: AbortSignal, paste = false): Promise<boolean> {
+        const strokes = !paste && simctl.typesAsUS(await simctl.keyboardOf(helper.udid)) ? strokesForText(text) : undefined;
         if (strokes) {
             // In batches, so a long text doesn't hold the helper's queue for its whole length (Shift can be down
             // between two). Its callers send it as one run (`sending`).

@@ -41,11 +41,22 @@ async function guarded(ctx: ToolContext, fn: (s: SimulatorSession) => Promise<To
  * What the screen shows once it's still (at most a few seconds after an action, and not before 0.6: what an action
  * does can take half a second to start showing), as the result's tail.
  */
-async function after(s: SimulatorSession, done: string, ctx: ToolContext, waitMs = 2500): Promise<ToolResult> {
+async function after(s: SimulatorSession, done: string, ctx: ToolContext, waitMs = 2500, typed?: string): Promise<ToolResult> {
     await s.settle(waitMs, ctx.signal, 600).catch(() => undefined);
     // What was done is done: a screen that can't be read now says so, and the action still stands.
     const screen = await s.snapshot().catch((e) => `The screen couldn't be read: ${sentence((e as Error).message)} Try SimulatorSnapshot again.`);
-    return { content: `${done}\n\n${screen}`, display: { summary: done } };
+    const changed = typed && done.startsWith("Typed \"") && reworded(typed, screen) ? " iOS seems to have changed it (capitals, corrections): the outline has what's there, and paste puts text in as written." : "";
+    return { content: `${done}${changed}\n\n${screen}`, display: { summary: done } };
+}
+
+/** Whether the screen has a line with most of the words typed, but not as typed (which may wrap onto the picture's next line). */
+function reworded(typed: string, screen: string): boolean {
+    if (screen.replace(/" \[e\d+\]\n\s*- seen "/g, " ").includes(JSON.stringify(typed).slice(1, -1))) return false;
+    const words = typed.toLowerCase().split(/\s+/).filter(Boolean);
+    return screen.split("\n").some((l) => {
+        const line = l.toLowerCase();
+        return words.filter((w) => line.includes(w)).length / words.length >= 0.5;
+    });
 }
 
 const short = (text: string, n = 60) => {
@@ -203,6 +214,7 @@ interface ActInput {
     text?: string;
     submit?: boolean;
     clear?: boolean;
+    paste?: boolean;
     key?: string;
     modifiers?: string[];
     button?: (typeof BUTTONS)[number];
@@ -216,7 +228,7 @@ export const SimulatorActTool: Tool<ActInput> = {
     description: `Acts on the simulator as a finger and a hardware keyboard would. action:
 - tap, double_tap, long_press: at ref (from a snapshot; preferred) or at x and y in points.
 - swipe: from ref or x,y (default: the middle) to toX,toY, or by direction (up, down, left, right: the way the finger moves, so up scrolls further down a list); durationMs (default 300).
-- type: text into the focused field (ref taps a field first, and adds to its end); clear replaces what's in it, or with no text empties it; submit then presses Enter.
+- type: text into the focused field (ref taps a field first, and adds to its end); clear replaces what's in it, or with no text empties it; submit then presses Enter. iOS capitalizes and corrects what's typed in a field that lets it, as it does for anyone: paste puts text in as written, through the device's pasteboard.
 - press: a key such as Enter, Backspace, Tab, Escape, ArrowDown, or a combination like Meta+A (more modifiers in modifiers).
 - button: home or lock.
 - wait: for text to show (timeoutMs, default 10000); with no text, for the screen to be still.
@@ -235,6 +247,7 @@ Returns the screen once it's still, as a new outline; it says when the user used
             text: { type: "string", description: "type: what to type; wait: text to wait for" },
             submit: { type: "boolean", description: "type: press Enter afterwards" },
             clear: { type: "boolean", description: "type: replace what's in the field" },
+            paste: { type: "boolean", description: "type: paste the text, as written, rather than type it" },
             key: { type: "string", description: "press: the key" },
             modifiers: { type: "array", items: { type: "string", enum: ["Control", "Shift", "Alt", "Meta"] }, description: "press: modifier keys held" },
             button: { type: "string", enum: [...BUTTONS], description: "button: which" },
@@ -288,7 +301,7 @@ Returns the screen once it's still, as a new outline; it says when the user used
                     return after(s, await s.swipe({ from: hasTarget ? target : undefined, to, direction: input.direction, durationMs: input.durationMs }, ctx.signal), ctx);
                 }
                 case "type":
-                    return after(s, await s.type(input.text ?? "", { ref: input.ref, submit: input.submit, clear: input.clear }, ctx.signal), ctx);
+                    return after(s, await s.type(input.text ?? "", { ref: input.ref, submit: input.submit, clear: input.clear, paste: input.paste }, ctx.signal), ctx, undefined, input.text);
                 case "press":
                     return after(s, await s.press(input.key!, input.modifiers ?? [], ctx.signal), ctx);
                 case "button":
