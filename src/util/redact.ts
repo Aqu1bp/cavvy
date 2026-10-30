@@ -50,7 +50,22 @@ interface SecretSpan {
 }
 
 export function redact(text: string): string {
+    // Most text holds no secret (a streaming reply's every few words come through here): that's told in one pass.
+    if (!mayHoldSecret(text)) return text;
     return redactThrough(text, text.length);
+}
+
+/** Every known format at once: no match anywhere means none of them matches. */
+const ANY_PATTERN = new RegExp(PATTERNS.map(([pattern]) => `(?:${pattern.source})`).join("|"));
+
+function mayHoldSecret(text: string): boolean {
+    if (ANY_PATTERN.test(text)) return true;
+    // Found as redaction finds them: a value that overlaps itself with its failure table (linear time), others by indexOf.
+    for (const [secret, { label, prefix }] of exact) {
+        if (secret.length > text.length) continue;
+        if (prefix ? !exactSpans(text, secret, label, prefix).next().done : text.includes(secret)) return true;
+    }
+    return false;
 }
 
 /** Match the full text, but show only original positions before the limit.

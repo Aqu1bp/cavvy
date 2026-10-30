@@ -5,6 +5,7 @@ const iso = isolate();
 const { registerSecret, unregisterSecret, redact, redactPrefix, redactionVersion } = await import("../src/util/redact");
 const { SecretStore } = await import("../src/agent/secrets");
 const { BashTool } = await import("../src/tools/bash");
+const { SECRET_PATTERNS } = await import("../src/util/secret-patterns");
 afterAll(() => iso.cleanup());
 
 test("redaction versions change only when registered values or labels change", () => {
@@ -160,6 +161,34 @@ test("redacted prefixes keep original positions when markers shrink complete sec
     } finally {
         unregisterSecret(complete);
         unregisterSecret(incomplete);
+    }
+});
+
+test("every secret pattern can join the combined check: no flag of its own to lose", () => {
+    for (const [pattern] of SECRET_PATTERNS) expect(pattern.flags).toBe("g");
+});
+
+test("text with no secret comes back as it is, and each kind of secret is still caught", () => {
+    const plain = "The engine streams every event back, and `sendPrompt()` sends it.";
+    expect(redact(plain)).toBe(plain);
+    expect(redact("")).toBe("");
+    expect(redact("key ghp_" + "a".repeat(36) + " here")).toBe("key [REDACTED github-token] here");
+    expect(redact("AKIA" + "A".repeat(16))).toBe("[REDACTED aws-key-id]");
+    // Registered values that match no format, one overlapping itself; and, on input built to be slow to search, not slow.
+    const value = "plain-registered-value-55127";
+    const overlapping = "a".repeat(8191) + "b";
+    try {
+        registerSecret(value, "ONE_OFF");
+        registerSecret(overlapping, "OVERLAPPING");
+        expect(redact(`x${value}y`)).toBe("x[REDACTED ONE_OFF]y");
+        expect(redact(value.slice(0, -1))).toBe(value.slice(0, -1));
+        const near = "a".repeat(1024 * 1024);
+        const start = performance.now();
+        expect(redact(near)).toBe(near);
+        expect(performance.now() - start).toBeLessThan(1500);
+    } finally {
+        unregisterSecret(value);
+        unregisterSecret(overlapping);
     }
 });
 
