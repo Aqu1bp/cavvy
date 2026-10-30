@@ -24,6 +24,12 @@ test("incremental Markdown agrees with a fresh parse at every streamed character
         "Before\n\n<!-- html\n\nmore -->\n\nAfter",
         "Before\n\n<div>\ntext\n</div>\n\nAfter",
         "[later]\n\nParagraph\n\n[later]: https://example.com\n",
+        // A definition inside a quote or a list counts too, as does one split over two lines.
+        "[later]\n\nParagraph\n\n> [later]: https://example.com\n",
+        "[later]\n\nParagraph\n\n- [later]: https://example.com\n",
+        "[later]\n\nParagraph\n\n[later]:\nhttps://example.com\n",
+        // Inline links, checkboxes and citations depend on nothing later in the text.
+        "See [one](https://example.com/1) first.\n\nThen [two](https://example.com/2) and [three][].\n\n- [ ] todo\n- [x] done\n\nAs noted [1].\n\nThe end.",
         "Before\r\n\r\n- item\r\n\r\nAfter",
         "Before\n\n---\n\nAfter with https://example.com and `inline`.",
         "Before\n\n1. ordered\n2. second\n\n    code\n\nAfter",
@@ -77,6 +83,13 @@ test("long Markdown lexes only the growing block on append, with safe full-parse
     chars = 0;
     r.segments(text + "\n\n[ref]: https://example.com", true);
     expect(chars).toBeGreaterThan(text.length);
+    // Links in the text don't change that: only a definition can reach back.
+    const linked = new Counted();
+    text = Array.from({ length: paragraphs }, (_, i) => `Paragraph [${i}](https://example.com/${i}).\n\n`).join("");
+    linked.segments(text, true);
+    chars = 0;
+    for (let i = 0; i < 100; i++) { text += "word "; linked.segments(text, true); }
+    expect(chars).toBeLessThan(30_000);
 });
 
 /** What a reader would see of the non-code blocks: text with the tags taken out. */

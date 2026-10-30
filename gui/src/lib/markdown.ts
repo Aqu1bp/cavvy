@@ -270,12 +270,13 @@ export class MarkdownRenderer {
                 // Freeze only across a blank line after a closed, stable block.
                 // Adjacent blocks can change classification as markers arrive
                 // (e.g. '> b\n--'), and lists/quotes can absorb lazy continuations.
-                // Reference definitions can change earlier inline tokens, so any
-                // '[' takes the conservative full-lexer path. Normalized source
+                // A reference definition can change earlier inline tokens, so
+                // text that may hold one ("]:", wherever it sits: quotes and
+                // lists hold them too) takes the full lexer. Normalized source
                 // (e.g. CRLF) and replacements also use the full lexer.
                 // While streaming, only the tail is settled: frozen blocks are
                 // closed, and settle() only changes the end of what it's given.
-                const append = previous && previous.streaming === streaming && previous.tailStart >= 0 && text.startsWith(previous.text) && !text.includes("[");
+                const append = previous && previous.streaming === streaming && previous.tailStart >= 0 && text.startsWith(previous.text) && !text.includes("]:");
                 relexedFrom = append ? previous.tailIndex : 0;
                 const from = append ? previous.tailStart : 0;
                 const source = streaming ? settle(text.slice(from)) : text.slice(from);
