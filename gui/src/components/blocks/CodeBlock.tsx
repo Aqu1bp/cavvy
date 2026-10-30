@@ -1,6 +1,7 @@
 import { RenderBoundary } from "../ui/ErrorBoundary";
-import { createEffect, createSignal, on, onCleanup, Show } from "solid-js";
+import { createEffect, createSignal, on, onCleanup, onMount, Show } from "solid-js";
 import { highlight } from "../../lib/highlight";
+import { trailBlock } from "../../lib/stream-dom";
 import { CopyButton } from "../ui/bits";
 
 const LABELS: Record<string, string> = { ts: "TypeScript", typescript: "TypeScript", tsx: "TSX", js: "JavaScript", javascript: "JavaScript", jsx: "JSX", py: "Python", python: "Python", rs: "Rust", rust: "Rust", go: "Go", sh: "Shell", bash: "Shell", shell: "Shell", zsh: "Shell", console: "Console", json: "JSON", yaml: "YAML", yml: "YAML", toml: "TOML", md: "Markdown", markdown: "Markdown", html: "HTML", css: "CSS", sql: "SQL", diff: "Diff", swift: "Swift", kotlin: "Kotlin", java: "Java", c: "C", cpp: "C++", ruby: "Ruby", rb: "Ruby", php: "PHP" };
@@ -17,8 +18,11 @@ function CodeBlockContent(p: { code: string; lang?: string; streaming?: boolean;
     const [lit, setLit] = createSignal<{ code: string; lang?: string; html: string }>();
     const [failure, setFailure] = createSignal<unknown>();
     createEffect(() => { if (failure()) throw failure(); });
-    // Written while the reply streams: it fades in (see markdown.css).
+    // Written while the reply streams: it comes out in the reply's ink trail (lib/stream-dom.ts).
     const born = Boolean(p.streaming);
+    let box: HTMLDivElement | undefined;
+    // Once its classes are set (Solid sets them after the ref).
+    onMount(() => born && box && trailBlock(box));
     let token = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let busy = false;
@@ -78,7 +82,7 @@ function CodeBlockContent(p: { code: string; lang?: string; streaming?: boolean;
     };
     const label = () => (p.lang ? (LABELS[p.lang.toLowerCase()] ?? p.lang) : "");
     return (
-        <div class={`code${p.bare ? " bare" : ""}${p.streaming ? " writing" : ""}${born ? " fresh" : ""}`}>
+        <div class={`code${p.bare ? " bare" : ""}${p.streaming ? " writing" : ""}`} ref={box}>
             <Show when={!p.bare}>
                 <div class="code-head" data-find-skip>
                     <span class="code-lang">{label() || "Code"}</span>

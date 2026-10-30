@@ -4,12 +4,22 @@
 // and links are recreated, and there's no telling what's new. Instead the
 // block's DOM is brought in line with the new HTML, keeping every node that
 // didn't change; text added at the end of a run and elements added at the
-// end of a list of children are marked `md-fresh`, which fades them in.
-// Each mark is taken out once its fade has run (a long reply would otherwise
-// pile up thousands of wrappers, every one restyled on every frame), and any
-// left when the reply is finished.
+// end of a list of children are marked `md-fresh`.
+//
+// What has just come out is drawn lighter for a moment, an ink trail: each
+// mark gets a tier by its age (md-t1 to md-t3, a static opacity in
+// markdown.css), worked out again only when more text comes out (which draws
+// the block again anyway) and once more after the last of it. Nothing
+// animates, so nothing is drawn between the reply's own updates. Past the last
+// tier a mark is taken out, its text joined to the text beside it; what's left
+// when the reply is finished is taken out too.
 
 const FRESH = "md-fresh";
+/** The trail's tiers by a mark's age (ms): younger than the first, tier 1, and so on; older than the last, plain. */
+export const TRAIL_MS = [35, 70, 120] as const;
+const TIERS = ["md-t1", "md-t2", "md-t3"] as const;
+/** Once more this long after the last text came out, so a stream that stalls doesn't leave words light. */
+const SETTLE_MS = 130;
 /** Inline elements a caret goes after rather than inside. */
 const INLINE = new Set(["A", "B", "CODE", "DEL", "EM", "I", "S", "SPAN", "STRONG"]);
 /** Attributes set after rendering (lib/markdown.ts leaves images without a src). */
@@ -18,17 +28,58 @@ const KEPT = new Set(["src", "tabindex", "data-loading"]);
 const painted = new WeakMap<Element, string>();
 const carets = new WeakMap<Element, HTMLElement>();
 
+/** The trail's tier (0 to 2) for a mark this many ms old, or -1 once it's past the trail. */
+export function trailTier(age: number): number {
+    return TRAIL_MS.findIndex((t) => age < t);
+}
+
+/** The marks still in the trail, and when each came out. */
+let trail: { el: HTMLElement; at: number }[] = [];
+/** When the text being painted came out. */
+let paintedAt = 0;
+let settling: ReturnType<typeof setTimeout> | undefined;
+
+/** What's just come out: in the trail from now. */
+function mark(el: HTMLElement) {
+    el.classList.add(FRESH);
+    trail.push({ el, at: paintedAt });
+}
+
+/** Each mark's tier for its age now; a mark past the trail is taken out (one gone from the page with it). */
+function retier(now: number) {
+    trail = trail.filter(({ el, at }) => {
+        const tier = trailTier(now - at);
+        if (tier >= 0) {
+            TIERS.forEach((c, i) => el.classList.toggle(c, i === tier));
+            return true;
+        }
+        const parent = el.parentNode;
+        unmark(el);
+        parent?.normalize();
+        return false;
+    });
+    clearTimeout(settling);
+    settling = trail.length ? setTimeout(() => retier(performance.now()), SETTLE_MS) : undefined;
+}
+
+/**
+ * A block that came out while the reply streams (a code block of its own, say) goes into the trail as a whole. Its
+ * marks are taken out like any other.
+ */
+export function trailBlock(el: HTMLElement) {
+    paintedAt = performance.now();
+    mark(el);
+    retier(paintedAt);
+}
+
 /**
  * Shows `html` in `el`. While `live`, an update changes only what's different
- * and fades in what's new (a block first painted while live fades in whole);
+ * and marks what's new (a block first painted while live is marked whole);
  * otherwise it's plain innerHTML. `caret`: the writing mark goes after the
  * block's last text.
  */
 export function paint(el: HTMLElement, html: string, live: boolean, caret: boolean) {
-    if (live && !fading.has(el)) {
-        fading.add(el);
-        el.addEventListener("animationend", faded);
-    }
+    paintedAt = performance.now();
     carets.get(el)?.remove();
     carets.delete(el);
     const before = painted.get(el);
@@ -36,38 +87,28 @@ export function paint(el: HTMLElement, html: string, live: boolean, caret: boole
         if (live && before !== undefined) morph(el, html);
         else {
             el.innerHTML = html;
-            if (live) el.classList.add(FRESH);
+            if (live) mark(el);
         }
         painted.set(el, html);
     }
-    if (!live) settleFresh(el);
+    if (live) retier(paintedAt);
+    else settleFresh(el);
     if (caret) placeCaret(el);
 }
-
-/** Blocks listening for their marks' fades to end. */
-const fading = new WeakSet<Element>();
 
 /** One mark taken out: wrapped text goes back to plain text. */
 function unmark(m: HTMLElement) {
     if (m.dataset.fresh !== undefined) m.replaceWith(...m.childNodes);
     else {
-        m.classList.remove(FRESH);
+        m.classList.remove(FRESH, ...TIERS);
         if (!m.classList.length) m.removeAttribute("class");
     }
 }
 
-/** A mark whose fade has run is taken out, its text joined to the text beside it. */
-function faded(e: AnimationEvent) {
-    const m = e.target as HTMLElement;
-    if (e.animationName !== "md-fresh" || !m.classList.contains(FRESH)) return;
-    const parent = m.parentNode;
-    unmark(m);
-    parent?.normalize();
-}
-
-/** Takes out the fade-in marks: wrapped text goes back to plain text. */
+/** Takes out the marks: wrapped text goes back to plain text. */
 export function settleFresh(el: HTMLElement) {
-    el.classList.remove(FRESH);
+    if (trail.length) trail = trail.filter((t) => !el.contains(t.el));
+    if (el.classList.contains(FRESH)) unmark(el);
     const marked = el.querySelectorAll<HTMLElement>(`.${FRESH}`);
     if (!marked.length) return;
     for (const m of marked) unmark(m);
@@ -103,9 +144,9 @@ function isFreshText(n: Node): n is HTMLElement {
 function freshText(text: string): Node {
     if (!text.trim()) return document.createTextNode(text);
     const span = document.createElement("span");
-    span.className = FRESH;
     span.dataset.fresh = "";
     span.textContent = text;
+    mark(span);
     return span;
 }
 
@@ -123,7 +164,7 @@ function sync(old: Node, next: Node) {
             // Added at the end: new.
             if (n.nodeType === Node.TEXT_NODE) old.appendChild(freshText((n as Text).data));
             else {
-                if (n.nodeType === Node.ELEMENT_NODE) (n as Element).classList.add(FRESH);
+                if (n.nodeType === Node.ELEMENT_NODE) mark(n as HTMLElement);
                 old.appendChild(n);
             }
             return;
@@ -151,14 +192,16 @@ function sync(old: Node, next: Node) {
     for (const u of have.slice(want.length)) for (const n of u.nodes) old.removeChild(n);
 }
 
+/** An element's attributes as the new HTML has them, its marks (fresh, and its tier) kept. */
 function attributes(el: Element, want: Element) {
+    const marks = [FRESH, ...TIERS].filter((c) => el.classList.contains(c)).join(" ");
     for (const a of [...el.attributes]) {
         if (want.hasAttribute(a.name) || KEPT.has(a.name)) continue;
-        if (a.name === "class" && el.classList.contains(FRESH)) el.setAttribute("class", FRESH);
+        if (a.name === "class" && marks) el.setAttribute("class", marks);
         else el.removeAttribute(a.name);
     }
     for (const a of want.attributes) {
-        const value = a.name === "class" && el.classList.contains(FRESH) ? `${a.value} ${FRESH}` : a.value;
+        const value = a.name === "class" && marks ? `${a.value} ${marks}` : a.value;
         if (el.getAttribute(a.name) !== value) el.setAttribute(a.name, value);
     }
 }

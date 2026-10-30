@@ -214,10 +214,10 @@ test("more work after prose keeps the rows before it, as they were", () => {
 });
 
 test("streaming Markdown retains code host, highlights finished lines at a bounded rate and preserves finished segments", async () => {
-    let mounts = 0, highlights = 0;
+    let mounts = 0, highlights = 0, trailed = 0;
     const highlighted: string[] = [];
     const Code = component(source("blocks/CodeBlock"), "CodeBlock", {
-        RenderBoundary: boundary(), CopyButton: () => node("copy"),
+        RenderBoundary: boundary(), CopyButton: () => node("copy"), trailBlock: () => trailed++,
         highlight: async (code: string) => { highlights++; highlighted.push(code); return "highlighted"; },
     });
     // The DOM side (lib/stream-dom.ts) is a browser's: here a block just records what it was given.
@@ -236,6 +236,8 @@ test("streaming Markdown retains code host, highlights finished lines at a bound
         const paragraph = all(root).find((n) => has(n, "md-block"));
         for (let i = 0; i < 100; i++) setValue(value() + `const v${i} = ${i};\n`);
         expect(mounts).toBe(1);
+        // Written while the reply streams, it came out in the ink trail once, as a whole.
+        expect(trailed).toBe(1);
         expect(highlights).toBe(0);
         expect(all(root).find((n) => has(n, "code"))).toBe(code);
         expect(all(root).find((n) => has(n, "md-block"))).toBe(paragraph);
