@@ -495,7 +495,8 @@ export class Engine {
     }
 
     sessionChanged(rt: Runtime) {
-        if (!rt.session.messages.length && !rt.busy) return;
+        // An empty new session isn't listed. A turn can end with nothing in the history (a !command, a prompt a hook blocked): its row has to hear that it ended.
+        if (!rt.session.messages.length && !rt.busy && rt.firstPrompt() === undefined) return;
         const member = readStore().runs?.flatMap((r) => r.sessions).find((s) => s.id === rt.id);
         const outcome = runOutcome(rt);
         if (member && member.outcome !== outcome) updateStore((s) => {
