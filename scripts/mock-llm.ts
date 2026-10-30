@@ -388,6 +388,15 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         ];
         return steps[toolRounds];
     }
+    // Long streams for CPU measurements (desktop-electron/bench-stream.ts): "perfstream text R N", R copies of the long
+    // reply at N tokens a second; "perfstream cmd L", a command printing L lines, 50 a second; "perfstream bg S", a
+    // command left running in the background, a line a second for S seconds.
+    const perf = /\bperfstream (text|cmd|bg) (\d+)(?: (\d+))?/.exec(p);
+    if (perf) {
+        if (perf[1] === "bg") return toolRounds === 0 ? { text: "Starting it.", calls: [{ name: "Bash", args: { command: `for i in $(seq 1 ${Number(perf[2])}); do echo "tick $i"; sleep 1; done`, description: "Start the dev server", run_in_background: true } }] } : { text: "It's running." };
+        if (perf[1] === "text") return toolRounds === 0 ? { text: Array.from({ length: Number(perf[2]) }, () => STREAM_DEMO).join("\n\n"), rate: Number(perf[3] ?? 80) } : undefined;
+        return toolRounds === 0 ? { text: "Running it.", calls: [{ name: "Bash", args: { command: `for i in $(seq 1 ${Number(perf[2])}); do echo "✓ case $i of the suite passes: signs in, refreshes the token and signs out again"; sleep 0.02; done`, description: "Run the suite" } }] } : { text: "Done." };
+    }
     if (/\blivecmd\b/.test(p)) return toolRounds === 0 ? { text: "Running it.", calls: [{ name: "Bash", args: { command: 'for i in $(seq 1 12); do echo "✓ check $i of 12"; sleep 0.5; done', description: "Run the checks" } }] } : { text: "All 12 checks pass." };
     if (/\bstubborn\b/.test(p)) return toolRounds === 0 ? { text: "Running it.", calls: [{ name: "Bash", args: { command: "trap '' TERM; sleep 3", description: "Wait, ignoring SIGTERM" } }] } : { text: "Done." };
     // A fast model's turn: quick steps in three rounds, then a long reply, all at one rate.

@@ -25,6 +25,11 @@ export const LAG_MS = 180;
 const MIN_CHARS_PER_SECOND = 90;
 /** A word longer than this (a URL, a path) is let out in pieces. */
 const MAX_WORD = 16;
+/**
+ * Text comes out at most this often: every other frame on a 120 Hz display, every frame at 60 Hz. A word out 8 ms
+ * sooner can't be seen, and each step renders the block again, lays the column out and glides it.
+ */
+const STEP_MS = 15;
 /** Far behind (a hidden window, a long burst): catch up at once. */
 const MAX_BACKLOG = 4000;
 /** A block that starts while the reply streams comes out from its start, unless it already has this much (drawn again mid-reply). */
@@ -80,6 +85,10 @@ export function createReveal(text: Accessor<string>, streaming: Accessor<boolean
         }
     };
     const tick = (now: number) => {
+        if (last && now - last < STEP_MS) {
+            frame = requestAnimationFrame(tick);
+            return;
+        }
         const dt = last ? Math.min(64, now - last) : 16;
         last = now;
         const step = revealStep(target.length - pos, dt, carry, due - now);
