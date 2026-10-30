@@ -1,7 +1,7 @@
 // The Simulator pane's arithmetic: where the device's screen is drawn in the pane, where a pointer lands on it, and
 // what the pane says the device is doing. Pure: the component (SimulatorPane.tsx) feeds them sizes and states.
 
-import type { SimulatorDevice, SimulatorState } from "@shared/protocol";
+import type { SimulatorDevice, SimulatorInputKind, SimulatorState } from "@shared/protocol";
 
 export interface Size {
     width: number;
@@ -65,6 +65,17 @@ export function paneNote(state: SimulatorState | undefined): { title: string; de
         case "ready":
             return undefined;
     }
+}
+
+/**
+ * What the pane says when another tool has taken some of the device's input (all of it is its input), or has taken
+ * over and what it took can't be read.
+ */
+export function takenNote(cut: SimulatorInputKind[] | undefined, uncertain?: boolean): string | undefined {
+    if (!cut?.length) return uncertain ? "Another app may have this device's input" : undefined;
+    const names = { touch: "touch screen", keyboard: "keyboard", buttons: "buttons" };
+    const what = cut.length >= 3 ? "input" : cut.map((k) => names[k]).join(" and ");
+    return `Another app took this device's ${what}`;
 }
 
 /** The device menu's line for a device: "iPhone 17", with "iOS 27.0" and whether it runs under it. */

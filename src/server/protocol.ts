@@ -1560,9 +1560,14 @@ export interface SimulatorState {
     screen?: { width: number; height: number; scale: number };
     /** When the agent last did something on it (ms since the epoch). */
     agentAt?: number;
-    /** Another tool has taken its input (Cavvy's touches and keys go nowhere) until it restarts. */
-    inputTaken?: boolean;
+    /** What another tool has taken of its input (Cavvy's goes nowhere), until it's taken back (take_control). */
+    inputCut?: SimulatorInputKind[];
+    /** Another tool has taken over its input, and what it took couldn't be read. */
+    inputUncertain?: boolean;
 }
+
+/** A device's own inputs: its touch screen, its hardware keyboard and its buttons. */
+export type SimulatorInputKind = "touch" | "keyboard" | "buttons";
 
 /** What a person did in the Simulator pane. A touch is at a fraction of the screen (0…1 each way); a key by KeyboardEvent.code. */
 export type SimulatorInput =
@@ -1572,8 +1577,8 @@ export type SimulatorInput =
     /** Text as it is (a paste, an input method's result), not keys. */
     | { kind: "text"; text: string };
 
-/** What the pane's device menu can ask for; a restart takes the device's input back from another tool. */
-export type SimulatorCommand = "select" | "boot" | "shutdown" | "restart";
+/** What the pane can ask of its device: from its menu, and taking its input back from another tool. */
+export type SimulatorCommand = "select" | "boot" | "shutdown" | "take_control";
 
 // ---------------------------------------------------------------------------
 // Events

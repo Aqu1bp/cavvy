@@ -3,8 +3,9 @@
 // stream of pictures and sends a person's touches and keys back. It needs no GUI: the TUI and headless runs use it
 // as the tools do. A device is shared: sessions that use the same one share its helper, which runs while any does.
 
+import { AsyncLocalStorage } from "async_hooks";
 import { simulatorEnabled, type Settings } from "../config/settings";
-import type { SimulatorCommand, SimulatorDevice, SimulatorInput, SimulatorState } from "../server/protocol";
+import type { SimulatorCommand, SimulatorDevice, SimulatorInput, SimulatorInputKind, SimulatorState } from "../server/protocol";
 import { FrameFeed } from "../browser/feed";
 import { helperBinary, SimHelper, type ScreenSize } from "./helper";
 import { isModifier, strokesForPress, strokesForText, usageOfCode, type KeyStroke } from "./keys";
@@ -41,12 +42,10 @@ const SUBMIT_PAUSE_MS = 1000;
 /** How long a helper nothing uses (no pane showing its device, no agent call) keeps running. */
 const IDLE_MS = 60_000;
 
-/**
- * Another tool has taken the device's input (helper.swift says how). Keys then go nowhere, so sending them is an
- * error. Touches and buttons are taken only once the tool attaches, so they're still sent, and this is said after.
- */
-const TAKEN = "(one using Xcode's device input service, such as Claude's desktop app), and the simulator doesn't give it back until the device restarts";
-const RESTART = "SimulatorControl action=shutdown, then action=boot";
+/** Who takes a device's input (helper.swift says how), and how the agent takes it back. */
+const TAKER = "another tool (one using Xcode's device input service, such as Claude's desktop app)";
+const TAKE_BACK = "SimulatorControl action=take_control takes the input back (it restarts the home screen, closing the apps)";
+const INPUT_NAMES: Record<SimulatorInputKind, string> = { touch: "touch screen", keyboard: "keyboard", buttons: "buttons" };
 
 /** The text Vision read from the screen's picture; `loading` while its model loads, `error` when it couldn't read. */
 interface TextRead {
@@ -66,6 +65,36 @@ interface Attached {
     sessions: Set<SimulatorSession>;
     /** The last stream settings sent, so the same aren't sent again. */
     streamed?: string;
+    /**
+     * What of its input another tool has taken (simctl.cutInputs), read when Xcode's device input service takes over,
+     * and the input process it was read for: it lasts as long as that process does, whatever helpers come and go.
+     */
+    cut?: { process: number; started?: number; inputs: SimulatorInputKind[] };
+    /** It couldn't be read (for this input process, when that's known): whether Cavvy's input reaches it isn't known. */
+    uncertain?: { process?: number; started?: number };
+    /**
+     * Being read (`quiet`: only to see whether what couldn't be read can be now, which input doesn't wait for), and
+     * asked for again meanwhile, so read again after.
+     */
+    reading?: Promise<void>;
+    quiet?: boolean;
+    readAgain?: boolean;
+    /** When what's known was last found to be of the process running under its pid (verify). */
+    verifiedAt?: number;
+    /** Taking it back (one at a time, whoever asks); and how many times it's been, so what was found out before isn't kept. */
+    taking?: Promise<boolean>;
+    takenBack: number;
+    /**
+     * Runs of touches, keys or button presses being sent to it, by whichever session: a claim (helper.swift) mustn't
+     * come between them, nor the input process restarting (`restarting`, which new ones wait for).
+     */
+    sending: { touch: number; keys: number; buttons: number };
+    restarting?: Promise<void>;
+    /** How many restarts have begun (a run that saw one begin may have been cut short). */
+    restartsBegun: number;
+    /** The device's input process as last looked up (each read does), so input sent can tell it restarted meanwhile. */
+    input?: ProcessRead & { process: number };
+    lookingUp?: Promise<void>;
     idle?: ReturnType<typeof setTimeout>;
 }
 
@@ -109,7 +138,7 @@ function stateOf(udid: string): SimulatorDevice["state"] | undefined {
 /** The helper on a booted device, started for it when there's none. */
 async function helperFor(udid: string, session: SimulatorSession): Promise<SimHelper> {
     let a = attached.get(udid);
-    if (!a) attached.set(udid, (a = { udid, sessions: new Set() }));
+    if (!a) attached.set(udid, (a = { udid, sessions: new Set(), takenBack: 0, sending: { touch: 0, keys: 0, buttons: 0 }, restartsBegun: 0 }));
     a.sessions.add(session);
     if (a.helper?.running) {
         idleCheck(a);
@@ -127,7 +156,13 @@ async function helperFor(udid: string, session: SimulatorSession): Promise<SimHe
                     for (const s of entry.sessions) s.frame({ data, width: size.width, height: size.height });
                 },
                 size: () => announceAll(),
-                taken: () => announceAll(),
+                // Taking over, it cuts off the inputs not yet used; letting go (taken back elsewhere, say) doesn't bring
+                // them back unless the input process restarted.
+                held: (on) => {
+                    if (on) checkInputs(entry);
+                    else void recheck(entry);
+                    announceAll();
+                },
                 exit: (error) => {
                     if (entry.helper === helper) entry.helper = undefined;
                     if (error) entry.error = error;
@@ -139,6 +174,10 @@ async function helperFor(udid: string, session: SimulatorSession): Promise<SimHe
             await helper.ready;
             entry.helper = helper;
             entry.streamed = undefined;
+            // Read again if the service has the input (the helper's first word says); what was taken lasts while the
+            // input process it was taken from does.
+            void recheck(entry);
+            lookUp(entry);
             updateStream(entry);
             announceAll();
             return helper;
@@ -151,6 +190,178 @@ async function helperFor(udid: string, session: SimulatorSession): Promise<SimHe
             .finally(() => (entry.starting = undefined));
     }
     return a.starting!;
+}
+
+/**
+ * Reads what another tool has taken of the device's input (once at a time), and tells the windows. Asked meanwhile, it
+ * reads again after (the service may have taken over since), unless it's only `again: false` (a check of what the read
+ * will say). What's read of the input process before the input was taken back is dropped.
+ */
+function checkInputs(a: Attached, again = true) {
+    if (a.reading) {
+        if (again) a.readAgain = true;
+        return;
+    }
+    const takenBack = a.takenBack;
+    a.quiet = !again;
+    a.reading = (async () => {
+        // Which process it's of, first, and when it started: one that fails is of that process (another may have
+        // started meanwhile, even with its pid).
+        const pid = await simctl.inputProcess(a.udid).catch(() => undefined);
+        const before = pid === undefined ? undefined : await simctl.startOf(pid);
+        if (pid !== undefined) a.input = { process: pid, started: before };
+        const r = pid === undefined ? undefined : await simctl.cutInputs(a.udid, pid).catch(() => undefined);
+        const started = r?.started ?? before;
+        if (a.takenBack !== takenBack) return;
+        if (r) {
+            // What it let go of stays let go while it runs: what an earlier read found (its log since pruned) is kept,
+            // and when it started, if this read couldn't say.
+            const earlier = a.cut && sameProcess(a.cut, { process: r.process, started }) ? a.cut : undefined;
+            const before = earlier?.inputs ?? [];
+            a.cut = { process: r.process, started: started ?? earlier?.started, inputs: (["touch", "keyboard", "buttons"] as const).filter((k) => r.cut.includes(k) || before.includes(k)) };
+            a.uncertain = undefined;
+            a.verifiedAt = Date.now();
+        } else {
+            // And when it started, if an earlier read of it could say and this one can't.
+            const earlier = [a.uncertain, a.cut].find((k) => k?.process === pid && k?.started !== undefined);
+            a.uncertain = { process: pid, started: started ?? earlier?.started };
+        }
+    })().finally(() => {
+        a.reading = undefined;
+        a.quiet = undefined;
+        if (a.readAgain) {
+            a.readAgain = false;
+            checkInputs(a);
+        }
+        announceAll();
+    });
+}
+
+/** What's known of what was taken from the device, once what's being found out is (but for a quiet read). */
+async function settled(a: Attached | undefined): Promise<void> {
+    while (a?.reading && (!a.quiet || a.readAgain)) await a.reading;
+}
+
+/**
+ * What's known of what was taken from the helper's device, of an input process that still runs: being read (a second
+ * or so after the service takes over), what it says decides.
+ */
+async function known(helper: SimHelper): Promise<Attached | undefined> {
+    const a = attached.get(helper.udid);
+    await settled(a);
+    if (!a) return a;
+    await current(a);
+    // And the process it's of is the one running under its pid (asked at most every two seconds).
+    if ((a.cut || a.uncertain) && Date.now() - (a.verifiedAt ?? 0) > 2000 && (await verify(a))) await current(a);
+    return a;
+}
+
+/**
+ * What's known is of input processes that still run (recheck), once what's being found out is: again while what's
+ * read turns out to be of one that's gone meanwhile (taken back elsewhere as it was read). `quietToo`: and once
+ * what's only being read again quietly is.
+ */
+async function current(a: Attached, quietToo = false): Promise<void> {
+    for (let i = 0; i < 3; i++) {
+        recheck(a);
+        if (quietToo) await a.reading;
+        await settled(a);
+        if (![a.cut?.process, a.uncertain?.process].some((pid) => pid !== undefined && !runs(pid))) return;
+    }
+}
+
+type ProcessRead = { process?: number; started?: number };
+
+/** Two reads of the same process: the same pid, started at the same time (when both say). */
+const sameProcess = (x: ProcessRead, y: ProcessRead) => x.process === y.process && (x.started === undefined || y.started === undefined || Math.abs(x.started - y.started) <= 5);
+
+/** Whether the process read no longer runs, or its pid is another's (when the Mac says when it started). */
+async function gone(k: ProcessRead): Promise<boolean> {
+    if (k.process === undefined) return false;
+    return !runs(k.process) || !sameProcess(k, { process: k.process, started: await simctl.startOf(k.process) });
+}
+
+/**
+ * The device's input process, when it's known and still the one. When it's not, it's looked up, and waited for a
+ * second at most (a quarter of one, as a rule: once after the helper starts, or the process restarts).
+ */
+async function inputNow(a: Attached): Promise<ProcessRead | undefined> {
+    if (a.input && !(await gone(a.input))) return a.input;
+    lookUp(a);
+    if (a.lookingUp) await Promise.race([a.lookingUp, sleep(1000)]);
+    return a.input && !(await gone(a.input)) ? a.input : undefined;
+}
+
+/** Looks up the device's input process, once at a time, and not during a read (which does). */
+function lookUp(a: Attached) {
+    if (a.reading || a.lookingUp) return;
+    a.lookingUp = (async () => {
+        const pid = await simctl.inputProcess(a.udid).catch(() => undefined);
+        if (pid !== undefined) a.input = { process: pid, started: await simctl.startOf(pid) };
+    })().finally(() => (a.lookingUp = undefined));
+}
+
+/**
+ * Drops what's known of input processes `stale` says are gone: their inputs work again, and when the service has the
+ * input, what it took of the new one is read. Returns whether it dropped any.
+ */
+function drop(a: Attached, stale: (k: ProcessRead & { process: number }) => boolean): boolean {
+    let dropped = false;
+    if (a.cut && stale(a.cut)) [a.cut, dropped] = [undefined, true];
+    if (a.uncertain?.process !== undefined && stale(a.uncertain as ProcessRead & { process: number })) [a.uncertain, dropped] = [undefined, true];
+    if (dropped) {
+        if (a.helper?.held) checkInputs(a);
+        announceAll();
+    }
+    return dropped;
+}
+
+/**
+ * What's known of an input process that no longer runs (the device restarted, or another Cavvy took the input back) is
+ * dropped (`drop`). What couldn't be read for a process that couldn't be looked up is read again, quietly (it only
+ * ever adds a note to input).
+ */
+function recheck(a: Attached) {
+    if (!drop(a, (k) => !runs(k.process)) && a.uncertain && a.uncertain.process === undefined) checkInputs(a, false);
+}
+
+/**
+ * Before what's known is acted on (input refused, the input taken back, the pane saying so): the process running under
+ * its pid is the one it was read for, not another since (pids are reused). Returns whether any was dropped.
+ */
+async function verify(a: Attached): Promise<boolean> {
+    a.verifiedAt = Date.now();
+    const known = [a.cut, a.uncertain].filter((k): k is ProcessRead & { process: number; started: number } => k?.process !== undefined && k.started !== undefined);
+    const now = new Map(await Promise.all(known.map(async (k) => [k.process, await simctl.startOf(k.process)] as const)));
+    // When the Mac doesn't say when it started, it's the one if it runs.
+    return drop(a, (k) => k.started !== undefined && now.has(k.process) && (now.get(k.process) === undefined ? !runs(k.process) : !sameProcess(k, { process: k.process, started: now.get(k.process) })));
+}
+
+/**
+ * Whether another tool has taken some of the device's input (or has taken over, and what it took isn't known): not if
+ * it's been taken back elsewhere, and what couldn't be read is read again first, since taking it back closes the apps.
+ */
+async function stillTaken(a: Attached): Promise<boolean> {
+    await settled(a);
+    await current(a, true);
+    if (await verify(a)) await current(a, true);
+    // What's left is of the process that runs (its pid not another's since).
+    if (a.uncertain) {
+        checkInputs(a, false);
+        await current(a, true);
+        if (await verify(a)) await current(a, true);
+    }
+    return !!a.cut?.inputs.length || !!a.uncertain;
+}
+
+/**
+ * Restarts the device's bridge, so its accessibility service answers for what's on the screen: at most every half
+ * minute, unless `now`.
+ */
+async function restartBridge(udid: string, now = false): Promise<void> {
+    if (!now && Date.now() - (bridgeRestarted.get(udid) ?? 0) <= 30_000) return;
+    bridgeRestarted.set(udid, Date.now());
+    await simctl.restartBridge(udid).catch(() => undefined);
 }
 
 /** The session no longer uses the device: its helper stops when no session does. */
@@ -256,7 +467,9 @@ export class SimulatorSession {
         if (a?.error && !a.helper?.running && !a.starting) return { status: "error", error: a.error, ...base };
         // Running: its screen's size comes once Cavvy is attached to it (a moment after it's watched or used).
         const helper = a?.helper?.running ? a.helper : undefined;
-        return { status: "ready", ...(helper?.size ? { screen: helper.size } : {}), ...(helper?.inputTaken ? { inputTaken: true } : {}), ...base };
+        const cut = helper ? (a?.cut?.inputs ?? []) : [];
+        const taken = cut.length ? { inputCut: cut } : helper && a?.uncertain ? { inputUncertain: true } : {};
+        return { status: "ready", ...(helper?.size ? { screen: helper.size } : {}), ...taken, ...base };
     }
 
     /** The session's device: the one it chose, else a booted one, else the first that can start (the pane offers it). */
@@ -311,8 +524,15 @@ export class SimulatorSession {
         this.feed.add(key, send);
         if (side !== undefined && Number.isFinite(side)) this.sides.set(key, side);
         // A device started elsewhere (Xcode, a script) shows while the pane is open; one that's running reports its own end.
+        // What it shows as taken, of an input process that's since restarted (taken back elsewhere, with no word of it
+        // here), is looked up again.
         this.polling ??= setInterval(() => {
             if (this.state().status !== "ready") void refreshDevices(true).catch(() => undefined);
+            else if (this.udid && attached.has(this.udid)) {
+                const a = attached.get(this.udid)!;
+                recheck(a);
+                void verify(a);
+            }
         }, 5000);
         this.polling.unref?.();
         const state = await this.refresh();
@@ -377,16 +597,16 @@ export class SimulatorSession {
             }
             case "button":
                 this.touched = true;
-                await helper.call({ op: "button", name: input.name });
+                await this.sending(helper, "buttons", () => helper.call({ op: "button", name: input.name }));
                 break;
             case "text":
                 this.touched = true;
-                await this.typeText(helper, input.text);
+                await this.sending(helper, "keys", () => this.typeText(helper, input.text));
                 break;
         }
     }
 
-    /** The device menu: use a device, start the session's, shut it down, or restart it (to take its input back). */
+    /** The pane: use a device, start the session's or shut it down (its menu), or take its input back from another tool. */
     async command(command: SimulatorCommand, udid?: string): Promise<SimulatorState> {
         if (!this.enabled) throw new SimulatorError(TURNED_OFF);
         await refreshDevices(true);
@@ -397,9 +617,11 @@ export class SimulatorSession {
             this.select(d.udid);
             await this.bootDevice(d);
         } else if (command === "shutdown" && d) await this.shutdownDevice(d);
-        else if (command === "restart" && d) {
-            if (d.state === "booted") await this.shutdownDevice(d);
-            await this.bootDevice({ ...d, state: "shutdown" });
+        // The pane shows the screen coming back: it needn't wait until it can be read. A window that says it's taken
+        // after it's been taken back (another's Take control) doesn't close the apps again.
+        else if (command === "take_control" && d?.state === "booted") {
+            const helper = await this.adopt(d.udid);
+            if (await this.somethingTaken(helper)) await this.takeInputBack(helper, undefined, false);
         } else if (command === "select" && d?.state === "booted" && this.watched) void this.adopt(d.udid).catch(() => undefined);
         return this.state();
     }
@@ -627,7 +849,8 @@ export class SimulatorSession {
     async snapshot(): Promise<string> {
         const helper = await this.running();
         const screen = this.points(helper);
-        const { o, read, stale } = await this.look(helper);
+        // What another tool has taken, as the screen is read: a helper that's just started is still finding out.
+        const [{ o, read, stale }] = await Promise.all([this.look(helper), known(helper)]);
         this.refs = o.refs;
         const d = this.device();
         const head = `${d?.name ?? "Simulator"} (${d?.runtime ?? "iOS"}), ${screen.width}×${screen.height} points.`;
@@ -637,7 +860,7 @@ export class SimulatorSession {
         // Only where the tree has little to say: a screen of native views has its text in the tree.
         const loading = read.loading && o.texts.length < 10 ? "\n(Text in the picture isn't read yet: a screenshot shows a web page's.)" : "";
         const failed = read.error ? `\n(Text in the picture couldn't be read: ${read.error})` : "";
-        return `${head}${note}${out}\n${o.text}${loading}${failed}`;
+        return `${head}${note}${this.cutNote(helper)}${out}\n${o.text}${loading}${failed}`;
     }
 
     /**
@@ -678,23 +901,21 @@ export class SimulatorSession {
 
     /**
      * The screen's accessibility tree. A device that has just started has nothing to read for a while, and its
-     * accessibility service may not answer until its bridge restarts: after a few tries, it's restarted (at most every
-     * half minute) and asked again, for up to about 20 seconds.
+     * accessibility service may not answer until its bridge restarts; after its home screen restarts (take_control),
+     * the bridge can go on answering for an app that's gone. After a few tries, it's restarted (at most every half
+     * minute) and asked again, for up to about 20 seconds.
      */
     private async describe(helper: SimHelper): Promise<Record<string, unknown>> {
         const end = Date.now() + 25_000;
         for (let i = 0; ; i++) {
             try {
-                return await helper.call({ op: "describe" });
+                const r = await helper.call({ op: "describe" });
+                if (r.gone !== true || Date.now() > end) return r;
             } catch (e) {
                 if (!/Nothing on the screen/.test((e as Error).message) || Date.now() > end) throw e;
-                const udid = this.udid!;
-                if (i === 3 && Date.now() - (bridgeRestarted.get(udid) ?? 0) > 30_000) {
-                    bridgeRestarted.set(udid, Date.now());
-                    await simctl.restartBridge(udid).catch(() => undefined);
-                }
-                await sleep(500);
             }
+            if (i === 3) await restartBridge(helper.udid);
+            await sleep(500);
         }
     }
 
@@ -728,14 +949,18 @@ export class SimulatorSession {
     async tap(target: { ref?: string; x?: number; y?: number }, o: { count?: number; holdMs?: number } = {}): Promise<string> {
         const helper = await this.running();
         const p = await this.at(helper, target);
+        await this.reaches(helper, "touch");
         this.agentActs();
-        for (let i = 0; i < (o.count ?? 1); i++) {
-            await helper.call({ op: "touch", phase: "down", x: p.x, y: p.y });
-            await sleep(o.holdMs ?? 60);
-            await helper.call({ op: "touch", phase: "up", x: p.x, y: p.y });
-            if (i + 1 < (o.count ?? 1)) await sleep(90);
-        }
-        return `${o.holdMs ? "Long-pressed" : o.count === 2 ? "Double-tapped" : "Tapped"} ${p.name}.${this.takenNote(helper)}`;
+        await this.sending(helper, "touch", async () => {
+            for (let i = 0; i < (o.count ?? 1); i++) {
+                await helper.call({ op: "touch", phase: "down", x: p.x, y: p.y });
+                await sleep(o.holdMs ?? 60);
+                await helper.call({ op: "touch", phase: "up", x: p.x, y: p.y });
+                if (i + 1 < (o.count ?? 1)) await sleep(90);
+            }
+        });
+        await this.reaches(helper, "touch");
+        return `${o.holdMs ? "Long-pressed" : o.count === 2 ? "Double-tapped" : "Tapped"} ${p.name}.${this.uncertainNote(helper)}`;
     }
 
     /**
@@ -759,35 +984,49 @@ export class SimulatorSession {
             start = { ...start, x: clamp(start.x - dx / 2), y: clamp(start.y - dy / 2) };
             end = { x: clamp(start.x + dx), y: clamp(start.y + dy) };
         }
+        await this.reaches(helper, "touch");
         this.agentActs();
         const duration = Math.min(Math.max(o.durationMs ?? 300, 50), 5000);
         const steps = Math.max(2, Math.round(duration / 16));
-        await helper.call({ op: "touch", phase: "down", x: start.x, y: start.y });
-        for (let i = 1; i <= steps; i++) {
-            await sleep(duration / steps);
-            const t = i / steps;
-            await helper.call({ op: "touch", phase: "move", x: start.x + (end.x - start.x) * t, y: start.y + (end.y - start.y) * t });
-        }
-        await helper.call({ op: "touch", phase: "up", x: end.x, y: end.y });
+        await this.sending(helper, "touch", async () => {
+            await helper.call({ op: "touch", phase: "down", x: start.x, y: start.y });
+            for (let i = 1; i <= steps; i++) {
+                await sleep(duration / steps);
+                const t = i / steps;
+                await helper.call({ op: "touch", phase: "move", x: start.x + (end.x - start.x) * t, y: start.y + (end.y - start.y) * t });
+            }
+            await helper.call({ op: "touch", phase: "up", x: end.x, y: end.y });
+        });
+        await this.reaches(helper, "touch");
         const pt = (p: { x: number; y: number }) => `${Math.round(p.x * screen.width)},${Math.round(p.y * screen.height)}`;
-        return `Swiped from ${pt(start)} to ${pt(end)}.${this.takenNote(helper)}`;
+        return `Swiped from ${pt(start)} to ${pt(end)}.${this.uncertainNote(helper)}`;
     }
 
     async type(text: string, o: { ref?: string; submit?: boolean } = {}): Promise<string> {
         const helper = await this.running();
-        if (o.ref) {
-            await this.tap({ ref: o.ref });
-            await sleep(350);
-        }
-        this.agentActs();
-        const pasted = await this.typeText(helper, text, o.submit ? KEY_GAP_MS : 0);
-        if (o.submit) {
-            // Enter right behind the text overtakes what the app hasn't taken yet (Safari searched for "examp" for
-            // "example.com"). The screen being still says nothing here (a field's cursor blinks): a pause does.
-            await sleep(SUBMIT_PAUSE_MS);
-            await this.keys(helper, strokesForPress("Enter"));
-        }
-        return `${pasted ? "Pasted" : "Typed"} ${JSON.stringify(text.length > 60 ? `${text.slice(0, 60)}…` : text)}${o.submit ? " and pressed Enter" : ""}.`;
+        await this.reaches(helper, "keyboard");
+        // One run from the tap on the field to Enter: the input process restarting between them would lose the field.
+        const pasted = await this.sending(helper, "keys", async () => {
+            if (o.ref) {
+                const r = this.refs.get(o.ref.replace(/^\[|\]$/g, ""));
+                await this.tap({ ref: o.ref });
+                // Until there's a field to type in where it was tapped, or by its name (at most two seconds): one that
+                // opens for editing (Safari's address, on a page) slides in first. Then a moment for it to take the keys.
+                if (r) await this.untilFront(helper, (t) => fieldFor(t.tree as AxNode | undefined, r), 2000);
+                await sleep(150);
+            }
+            this.agentActs();
+            const pasted = await this.typeText(helper, text, o.submit ? KEY_GAP_MS : 0);
+            if (o.submit) {
+                // Enter right behind the text overtakes what the app hasn't taken yet (Safari searched for "examp" for
+                // "example.com"). The screen being still says nothing here (a field's cursor blinks): a pause does.
+                await sleep(SUBMIT_PAUSE_MS);
+                await helper.call({ op: "keys", keys: strokesForPress("Enter") });
+            }
+            return pasted;
+        });
+        await this.reaches(helper, "keyboard");
+        return `${pasted ? "Pasted" : "Typed"} ${JSON.stringify(text.length > 60 ? `${text.slice(0, 60)}…` : text)}${o.submit ? " and pressed Enter" : ""}.${this.uncertainNote(helper)}`;
     }
 
     /**
@@ -795,26 +1034,40 @@ export class SimulatorSession {
      * has another layout (keys are where they are: German's would type "Lazy" as "Layz"). Returns whether it was pasted.
      */
     private async typeText(helper: SimHelper, text: string, gapMs = 0): Promise<boolean> {
-        const strokes = simctl.typesAsUS(await simctl.keyboardOf(this.udid!)) ? strokesForText(text) : undefined;
+        const strokes = simctl.typesAsUS(await simctl.keyboardOf(helper.udid)) ? strokesForText(text) : undefined;
         if (strokes) {
-            // In batches, so a long text doesn't hold the helper's queue for its whole length.
-            for (let i = 0; i < strokes.length; i += 64) await this.keys(helper, strokes.slice(i, i + 64), gapMs);
+            // In batches, so a long text doesn't hold the helper's queue for its whole length (Shift can be down
+            // between two). Its callers send it as one run (`sending`).
+            for (let i = 0; i < strokes.length; i += 64) await helper.call({ op: "keys", keys: strokes.slice(i, i + 64), ...(gapMs ? { gapMs } : {}) });
             return false;
         }
-        await simctl.pasteboard(this.udid!, text);
-        await this.keys(helper, strokesForPress("Meta+V"));
+        await simctl.pasteboard(helper.udid, text);
+        await helper.call({ op: "keys", keys: strokesForPress("Meta+V") });
         return true;
     }
 
-    /** Sends keys (`gapMs` apart). When another tool has the device's input they went nowhere: that's an error. */
-    private async keys(helper: SimHelper, keys: KeyStroke[], gapMs = 0): Promise<void> {
-        const r = await helper.call({ op: "keys", keys, ...(gapMs ? { gapMs } : {}) });
-        if (r.taken === true) throw new SimulatorError(`Keys can't reach ${this.device()?.name ?? "the simulator"}: another tool has taken its input ${TAKEN}. Restart it with ${RESTART}.`);
-    }
-
-    /** What the agent is told after a touch or a button when another tool has the device's input. */
-    private takenNote(helper: SimHelper): string {
-        return helper.inputTaken ? ` Another tool has taken ${this.device()?.name ?? "the simulator"}'s input ${TAKEN}: if nothing changed, restart it with ${RESTART}.` : "";
+    /**
+     * Sends a run of touches, keys or a press, which a claim (an input let go of) doesn't come between, nor the input process
+     * restarting (taking the input back waits for it a while, and it waits for that). Counted on the device, not the
+     * session: the session can move to another device while it's sent.
+     */
+    private async sending<T>(helper: SimHelper, kind: "touch" | "keys" | "buttons", send: () => Promise<T>): Promise<T> {
+        const a = attached.get(helper.udid);
+        const outer = !inRun.getStore();
+        while (outer && a?.restarting) await a.restarting.catch(() => undefined);
+        const begun = a?.restartsBegun;
+        if (a) a.sending[kind]++;
+        try {
+            // The input process it's sent to, when known: another Cavvy taking the input back restarts it too.
+            const to = outer && a ? await inputNow(a) : undefined;
+            const done = await inRun.run(true, send);
+            // The input process began restarting under it all the same (taken back elsewhere, after waiting a while),
+            // or it's another.
+            if (outer && a && (a.restartsBegun !== begun || (to && (await gone(to))))) throw new SimulatorError(`The input was taken back from another tool as this was sent, which restarted ${nameOf(helper.udid)}'s home screen: what was sent may not have arrived.`);
+            return done;
+        } finally {
+            if (a) a.sending[kind]--;
+        }
     }
 
     async press(key: string, modifiers: string[] = []): Promise<string> {
@@ -825,19 +1078,142 @@ export class SimulatorSession {
         } catch (e) {
             throw new SimulatorError((e as Error).message);
         }
+        await this.reaches(helper, "keyboard");
         this.agentActs();
-        await this.keys(helper, strokes);
-        return `Pressed ${[...modifiers, key].join("+")}.`;
+        await this.sending(helper, "keys", () => helper.call({ op: "keys", keys: strokes }));
+        await this.reaches(helper, "keyboard");
+        return `Pressed ${[...modifiers, key].join("+")}.${this.uncertainNote(helper)}`;
     }
 
     async button(name: "home" | "lock", signal?: AbortSignal): Promise<string> {
         const helper = await this.running();
+        await this.reaches(helper, "buttons");
         this.agentActs();
         const before = name === "home" ? await helper.call({ op: "describe" }).catch(() => undefined) : undefined;
-        await helper.call({ op: "button", name });
+        await this.sending(helper, "buttons", () => helper.call({ op: "button", name }));
+        await this.reaches(helper, "buttons");
         // The home screen shows a second or more before the tree's app is SpringBoard: until then it reads as the app.
         if (typeof before?.pid === "number" && before.process !== "SpringBoard") await this.untilFront(helper, (r) => r.pid !== before.pid, 4000, signal);
-        return `Pressed the ${name === "home" ? "Home" : "side (lock)"} button.${this.takenNote(helper)}`;
+        return `Pressed the ${name === "home" ? "Home" : "side (lock)"} button.${this.uncertainNote(helper)}`;
+    }
+
+    // -----------------------------------------------------------------------
+    // Input another tool has taken
+
+    /**
+     * Another tool has taken this input from the device: what's sent goes nowhere, so it's an error. Asked before an
+     * input and again after it, since the service can take over as it's sent (the helper says so before its answer,
+     * which starts a read).
+     */
+    private async reaches(helper: SimHelper, kind: SimulatorInputKind): Promise<void> {
+        const a = await known(helper);
+        if (!a?.cut?.inputs.includes(kind)) return;
+        if (await verify(a)) {
+            await current(a);
+            if (!a.cut?.inputs.includes(kind)) return;
+        }
+        const what = { touch: "Touches", keyboard: "Keys", buttons: "Buttons" }[kind];
+        throw new SimulatorError(`${what} can't reach ${nameOf(helper.udid)}: ${TAKER} has taken its ${INPUT_NAMES[kind]}. ${TAKE_BACK}.`);
+    }
+
+    /** Said after an input when the service took over the device's input and what it took couldn't be read. */
+    private uncertainNote(helper: SimHelper): string {
+        if (!attached.get(helper.udid)?.uncertain) return "";
+        return ` ${sentence(`${capital(TAKER)} has taken over ${nameOf(helper.udid)}'s input, and whether this reached it can't be told: if nothing changed, ${TAKE_BACK}`)}`;
+    }
+
+    /** What the agent is told in a snapshot when another tool has taken some of the device's input. */
+    private cutNote(helper: SimHelper): string {
+        const a = attached.get(helper.udid);
+        const names = (a?.cut?.inputs ?? []).map((k) => INPUT_NAMES[k]);
+        if (names.length) return `\n${capital(TAKER)} has taken this device's ${names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0]}: ${TAKE_BACK}.`;
+        if (a?.uncertain) return `\n${sentence(`${capital(TAKER)} has taken over this device's input, and what it took can't be read: if your input doesn't reach it, ${TAKE_BACK}`)}`;
+        return "";
+    }
+
+    /**
+     * Takes the device's input back from another tool (simctl.takeInput). Its input process restarts, and the home
+     * screen with it, closing the apps; then each input is claimed (helper.swift), so the tool attaching again doesn't
+     * take it. Waits (at most about 25 seconds) until the home screen can be read: the picture is back in a second or
+     * two, the tree in about ten. Refused when nothing has been taken, since it closes the apps.
+     */
+    async takeControl(signal?: AbortSignal): Promise<SimulatorDevice> {
+        // The device its helper is for, whatever the session uses by the time it's done.
+        const helper = await this.running();
+        const d = devices.find((x) => x.udid === helper.udid)!;
+        if (!(await this.somethingTaken(helper))) throw new SimulatorError(`Nothing has taken ${d.name}'s input: there's nothing to take back.`);
+        this.agentActs();
+        if (!(await this.takeInputBack(helper, signal))) throw new SimulatorError(`Nothing has taken ${d.name}'s input any more (it was taken back elsewhere): there's nothing to take back.`);
+        return d;
+    }
+
+    /** Whether another tool has taken some of the device's input (or has taken over, and what it took isn't known). */
+    private async somethingTaken(helper: SimHelper): Promise<boolean> {
+        const a = attached.get(helper.udid);
+        return !!a && (await stillTaken(a));
+    }
+
+    /** Returns whether it did: by the time it would, it may have been taken back elsewhere. */
+    private async takeInputBack(helper: SimHelper, signal?: AbortSignal, untilRead = true): Promise<boolean> {
+        const a = attached.get(helper.udid)!;
+        // Asked for twice (two windows), it's done once. Until it's done, what was taken stays known: if it fails, it can
+        // be asked for again.
+        a.taking ??= (async () => {
+            await settled(a);
+            // Not in the middle of input being sent (a swipe, typing, a press): it'd be cut short. New input waits.
+            let restarted!: () => void;
+            a.restarting = new Promise((done) => (restarted = done));
+            try {
+                for (const end = Date.now() + 6000; (a.sending.touch || a.sending.keys || a.sending.buttons) && Date.now() < end && !signal?.aborted; ) await sleep(50);
+                // Still taken, after that wait?
+                if (!(await stillTaken(a))) return false;
+                if (signal?.aborted) throw new SimulatorError("Interrupted by user.");
+                a.restartsBegun++;
+                await simctl.takeInput(a.udid, signal);
+            } finally {
+                a.restarting = undefined;
+                restarted();
+            }
+            // What's being found out now is of the input process before.
+            a.takenBack++;
+            a.cut = undefined;
+            a.uncertain = undefined;
+            announceAll();
+            // The new input process connects its inputs within a second.
+            await sleep(1500);
+            await this.claim(helper);
+            // The service took over again meanwhile (its notice may have been of the process before): read again.
+            if (helper.held) checkInputs(a);
+            lookUp(a);
+            return true;
+        })().finally(() => (a.taking = undefined));
+        if (!(await a.taking)) return false;
+        // Claimed again once the screen can be read (the home screen, or an app the person opened from it), in case the
+        // first came too soon. It reads in about ten seconds, unless the device's bridge goes on answering for the home
+        // screen before (an app that's gone): then it's restarted.
+        const readable = (r: Record<string, unknown>) => typeof r.process === "string" && !!(r.tree as AxNode | undefined)?.children?.length;
+        const read = (async () => {
+            if (!(await this.untilFront(helper, readable, 8000, signal))) {
+                await restartBridge(helper.udid, true);
+                await this.untilFront(helper, readable, 15_000, signal);
+            }
+            await this.claim(helper);
+        })();
+        if (untilRead) await read;
+        else read.catch(() => undefined);
+        return true;
+    }
+
+    /**
+     * Claims the device's inputs (helper.swift), but not one in use on it: a finger down or a key held in a window, or
+     * touches, keys or a press being sent. Their own events claim it.
+     */
+    private claim(helper: SimHelper): Promise<unknown> {
+        const a = attached.get(helper.udid);
+        const people = [...(a?.sessions ?? [])];
+        const touch = !a?.sending.touch && !people.some((s) => s.finger);
+        const keys = !a?.sending.keys && !people.some((s) => s.keysHeld.size);
+        return helper.call({ op: "claim", touch, keys, buttons: !a?.sending.buttons }).catch(() => undefined);
     }
 
     /** Waits until text shows in the outline (a label or value containing it), or for the screen to be still. */
@@ -884,6 +1260,34 @@ const alive = (pid: number) => {
         return (e as NodeJS.ErrnoException).code === "EPERM";
     }
 };
+/** Inside a run of input (`sending`): one sent from inside another (type's tap) is the outer one's. */
+const inRun = new AsyncLocalStorage<boolean>();
+
+const FIELDS = new Set(["AXTextField", "AXSecureTextField", "AXTextArea", "AXSearchField"]);
+
+/** Whether the tree has a field to type in at the ref's point, or named as it is. */
+function fieldFor(node: AxNode | undefined, r: RefTarget): boolean {
+    if (!node) return false;
+    if (FIELDS.has(node.role ?? "")) {
+        const [x, y, w, h] = node.frame ?? [];
+        if ([node.label, node.value, node.placeholder].includes(r.name)) return true;
+        if (x !== undefined && y !== undefined && w !== undefined && h !== undefined && r.x >= x && r.x <= x + w && r.y >= y && r.y <= y + h) return true;
+    }
+    return (node.children ?? []).some((c) => fieldFor(c, r));
+}
+
+/** Whether a process runs (a simulator's processes are this Mac's): without asking the device, so before each input. */
+function runs(pid: number): boolean {
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (e) {
+        return (e as NodeJS.ErrnoException).code === "EPERM";
+    }
+}
+
+const nameOf = (udid: string) => devices.find((d) => d.udid === udid)?.name ?? "the simulator";
+const capital = (s: string) => `${s[0]!.toUpperCase()}${s.slice(1)}`;
 /** A message as a sentence, ending in a full stop. */
 export const sentence = (m: string) => (/[.!?]$/.test(m.trim()) ? m.trim() : `${m.trim()}.`);
 const clamp = (v: number) => Math.min(Math.max(v, 0.02), 0.98);
@@ -896,4 +1300,5 @@ export function resetSimulators() {
     listedAt = 0;
     booting.clear();
     stopping.clear();
+    bridgeRestarted.clear();
 }

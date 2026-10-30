@@ -1,8 +1,8 @@
 // What simctl says (src/simulator/simctl.ts): the devices that can run, in the order the pane and the agent list them,
-// and its errors without their boilerplate.
+// its errors without their boilerplate, and what another tool has taken of a device's input.
 import { expect, test } from "bun:test";
 import { afterEach } from "bun:test";
-import { keyboardOf, launch, parseDevices, pasteboard, runningFor, runtimeName, setRunner, simctlError, typesAsUS } from "../src/simulator/simctl";
+import { cutInputs, keyboardOf, launch, parseDevices, pasteboard, runningFor, runtimeName, setRunner, simctlError, takeInput, typesAsUS } from "../src/simulator/simctl";
 
 afterEach(() => setRunner(undefined));
 
@@ -80,4 +80,61 @@ test("text goes on the pasteboard in a UTF-8 locale, whatever the app's own (pbc
     });
     await pasteboard("UDID", "café 日本 ✓");
     expect(calls).toEqual([{ args: ["xcrun", "simctl", "pbcopy", "UDID"], input: "café 日本 ✓", env: { LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" } }]);
+});
+
+test("what another tool took is read from the log of the device's input process, as far back as it has run", async () => {
+    const calls: string[][] = [];
+    setRunner(async (args) => {
+        calls.push(args);
+        if (args.includes("launchctl")) return { code: 0, stdout: "PID\tStatus\tLabel\n88\t0\tcom.apple.SpringBoard\n91\t-15\tcom.apple.backboardd\n", stderr: "" };
+        if (args[0] === "ps") return { code: 0, stdout: "1-02:03:04\n", stderr: "" };
+        // The touch screen's service is named by its display; others the simulator has (a game controller's) aren't input Cavvy sends.
+        const lines = ["ScreenTouchService.957D2487-AAAA", "MainScreenButtonsService", "GamePadService", "ScreenTouchService.1234"].map((s) => `2026-10-29 21:20:18.869 Df backboardd[91:de3209] (SimulatorHID) Disconnecting service: <SimHIDVirtualService: 0x1: identifier: 0x2 com.apple.SimulatorHID.${s}, state: disconnected>`);
+        return { code: 0, stdout: `Timestamp\n${lines.join("\n")}\n`, stderr: "" };
+    });
+    const r = await cutInputs("UDID");
+    expect(r).toMatchObject({ process: 91, cut: ["touch", "buttons"] });
+    // When it started, to tell it from another process given its pid later.
+    expect(Math.abs(r.started! - (Date.now() / 1000 - (86400 + 7384)))).toBeLessThan(2);
+    expect(calls[1]).toEqual(["ps", "-o", "etime=", "-p", "91"]);
+    expect(calls[2]).toEqual(["xcrun", "simctl", "spawn", "UDID", "log", "show", "--last", `${86400 + 7384 + 10}s`, "--style", "compact", "--predicate", 'processIdentifier == 91 AND eventMessage CONTAINS "Disconnecting service"']);
+});
+
+test("with no input process, or a log that can't be read, what was taken isn't known", async () => {
+    setRunner(async () => ({ code: 0, stdout: "PID\tStatus\tLabel\n", stderr: "" }));
+    await expect(cutInputs("UDID")).rejects.toThrow("The device's input process isn't running.");
+    setRunner(async (args) => (args.includes("log") ? { code: 1, stdout: "", stderr: "log: Could not open the log store" } : args.includes("launchctl") ? { code: 0, stdout: "1\t0\tcom.apple.backboardd\n", stderr: "" } : { code: 1, stdout: "", stderr: "" }));
+    await expect(cutInputs("UDID")).rejects.toThrow(/Could not open the log store/);
+});
+
+test("taking the input back tells the service it no longer has it, then restarts the input process", async () => {
+    const calls: string[] = [];
+    setRunner(async (args) => {
+        calls.push(args.slice(4).join(" "));
+        return { code: 0, stdout: "", stderr: "" };
+    });
+    await takeInput("UDID");
+    expect(calls).toEqual(["notifyutil -s com.apple.coredevice.dtuhidd.active 0 -p com.apple.coredevice.dtuhidd.active", "launchctl kickstart -k user/foreground/com.apple.backboardd"]);
+});
+
+test("taking the input back, interrupted before it begins: nothing's done (begun, it's done whole)", async () => {
+    const calls: string[] = [];
+    setRunner(async (args) => {
+        calls.push(args.slice(4).join(" "));
+        return { code: 0, stdout: "", stderr: "" };
+    });
+    const stop = new AbortController();
+    stop.abort();
+    await expect(takeInput("UDID", stop.signal)).rejects.toThrow("Interrupted by user.");
+    expect(calls).toEqual([]);
+});
+
+test("the input process failing to restart: the service is said to have the input again, so what it took is found", async () => {
+    const calls: string[] = [];
+    setRunner(async (args) => {
+        calls.push(args.slice(4).join(" "));
+        return args.includes("kickstart") ? { code: 1, stdout: "", stderr: "Could not kickstart service" } : { code: 0, stdout: "", stderr: "" };
+    });
+    await expect(takeInput("UDID")).rejects.toThrow("Could not kickstart service");
+    expect(calls.at(-1)).toBe("notifyutil -s com.apple.coredevice.dtuhidd.active 1 -p com.apple.coredevice.dtuhidd.active");
 });

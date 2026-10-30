@@ -10,7 +10,7 @@ import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc } from "../state/app";
 import { adoptSimulatorState, loadSimulatorState, setSimulatorShown, simulatorState } from "../state/simulator";
 import { settingsTab } from "../state/ui";
-import { AGENT_ACTIVE_MS, cornerRadius, deviceDetail, paneNote, placeScreen, screenFraction, type Rect, type Size } from "../lib/simulator";
+import { AGENT_ACTIVE_MS, cornerRadius, deviceDetail, paneNote, placeScreen, screenFraction, takenNote, type Rect, type Size } from "../lib/simulator";
 import { Menu } from "./ui/Menu";
 import { Spinner } from "./ui/bits";
 
@@ -419,13 +419,15 @@ export function SimulatorPane(p: { handle: SessionHandle }) {
                         {connected() ? "Connecting…" : "Reconnecting…"}
                     </div>
                 </Show>
-                <Show when={running() && state()?.inputTaken}>
-                    <div class="sim-taken" role="status">
-                        <span class="truncate">Another app has this device's input</span>
-                        <button class="btn sm" disabled={busy()} onClick={() => command("restart")}>
-                            Restart
-                        </button>
-                    </div>
+                <Show when={running() && takenNote(state()?.inputCut, state()?.inputUncertain)}>
+                    {(taken) => (
+                        <div class="sim-taken" role="status">
+                            <span class="truncate">{taken()}</span>
+                            <button class="btn sm" disabled={busy()} title="Restarts its home screen, closing its apps" onClick={() => command("take_control")}>
+                                Take control
+                            </button>
+                        </div>
+                    )}
                 </Show>
                 <Show when={note()}>
                     {(n) => (

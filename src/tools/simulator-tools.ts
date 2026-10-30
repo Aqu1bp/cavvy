@@ -16,7 +16,7 @@ import type { Tool, ToolContext, ToolResult } from "./types";
 /** The names these tools have when Cavvy serves them to Claude Code and Codex (mcp__cavvy__simulator_act). */
 export const SIMULATOR_SERVER_TOOLS = ["simulator_control", "simulator_snapshot", "simulator_act", "simulator_screenshot"];
 
-const CONTROLS = ["list", "boot", "shutdown", "install", "launch", "terminate", "open_url"] as const;
+const CONTROLS = ["list", "boot", "shutdown", "install", "launch", "terminate", "open_url", "take_control"] as const;
 const ACTIONS = ["tap", "double_tap", "long_press", "swipe", "type", "press", "button", "wait"] as const;
 const BUTTONS = ["home", "lock"] as const;
 const DIRECTIONS = ["up", "down", "left", "right"] as const;
@@ -80,6 +80,7 @@ export const SimulatorControlTool: Tool<ControlInput> = {
 - install: a built .app (path to the .app folder, e.g. from xcodebuild's build/Build/Products/Debug-iphonesimulator); returns its bundle id.
 - launch: start an app by bundle id, or bring it to the front as it is if it's running; with args (launch arguments) it starts afresh. Returns its screen.
 - terminate: end an app. open_url: open a URL or deep link.
+- take_control: take the device's input back when another tool has taken it (a snapshot says so). It restarts the home screen, closing the apps.
 To build an app for it: xcodebuild -scheme <scheme> -destination 'platform=iOS Simulator,id=<UDID>' -derivedDataPath build build.`,
     parameters: {
         type: "object",
@@ -115,6 +116,7 @@ To build an app for it: xcodebuild -scheme <scheme> -destination 'platform=iOS S
             launch: `Launch ${input.bundleId} on the simulator`,
             terminate: `End ${input.bundleId} on the simulator`,
             open_url: `Open ${short(input.url ?? "", 80)} on the simulator`,
+            take_control: "Take the simulator's input back (closes its apps)",
         };
         return { summary: what[input.action] ?? `Simulator: ${input.action}` };
     },
@@ -157,6 +159,10 @@ To build an app for it: xcodebuild -scheme <scheme> -destination 'platform=iOS S
                 case "open_url":
                     await s.openUrl(input.url!, ctx.signal);
                     return after(s, `Opened ${short(input.url!, 120)}.`, ctx, 4000);
+                case "take_control": {
+                    const d = await s.takeControl(ctx.signal);
+                    return after(s, `Took ${d.name}'s input back: its home screen restarted, and its apps closed.`, ctx);
+                }
             }
         }),
 };

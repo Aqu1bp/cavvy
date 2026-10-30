@@ -1,7 +1,7 @@
 // The Simulator pane's arithmetic (gui/src/lib/simulator.ts): where the screen is drawn, where a pointer lands on it,
 // and what the pane says in place of the screen; and when the agent's use of it is news (gui/src/state/simulator.ts).
 import { expect, test } from "bun:test";
-import { cornerRadius, deviceDetail, paneNote, placeScreen, SCREEN_MARGIN, screenFraction } from "../gui/src/lib/simulator";
+import { cornerRadius, deviceDetail, paneNote, placeScreen, SCREEN_MARGIN, screenFraction, takenNote } from "../gui/src/lib/simulator";
 import { adoptSimulatorState, setSimulatorShown, simulatorUnseen } from "../gui/src/state/simulator";
 import type { SimulatorDevice, SimulatorState } from "../src/server/protocol";
 
@@ -53,4 +53,15 @@ test("the agent's use is told (a dot on the tab) when it's new, also in a sessio
     setSimulatorShown("known", true);
     expect(simulatorUnseen("known")).toBe(false);
     setSimulatorShown("known", false);
+});
+
+test("what another app took of the device's input is named: all of it is its input", () => {
+    expect(takenNote(undefined)).toBeUndefined();
+    expect(takenNote([])).toBeUndefined();
+    expect(takenNote(["keyboard"])).toBe("Another app took this device's keyboard");
+    expect(takenNote(["touch", "buttons"])).toBe("Another app took this device's touch screen and buttons");
+    expect(takenNote(["touch", "keyboard", "buttons"])).toBe("Another app took this device's input");
+    // Taken over, and what it took couldn't be read: it may have it.
+    expect(takenNote(undefined, true)).toBe("Another app may have this device's input");
+    expect(takenNote(["keyboard"], true)).toBe("Another app took this device's keyboard");
 });

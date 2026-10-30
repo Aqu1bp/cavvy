@@ -99,7 +99,7 @@
     margin-top: calc(10 * var(--sp));
 }
 
-/* Another tool has the device's input, which a restart takes back: said over the top of the screen. */
+/* Another tool has taken the device's input, and Take control takes it back: said over the top of the screen. */
 .sim-taken {
     position: absolute;
     left: 50%;

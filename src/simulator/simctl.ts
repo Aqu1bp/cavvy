@@ -5,7 +5,7 @@ import { spawn } from "child_process";
 import { existsSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
-import type { SimulatorDevice } from "../server/protocol";
+import type { SimulatorDevice, SimulatorInputKind } from "../server/protocol";
 
 export class SimulatorError extends Error {}
 
@@ -247,6 +247,66 @@ export async function openUrl(udid: string, url: string, signal?: AbortSignal): 
  */
 export async function restartBridge(udid: string): Promise<void> {
     await simctl(["spawn", udid, "launchctl", "kickstart", "-k", "user/foreground/com.apple.CoreSimulator.bridge"], { timeoutMs: 20_000 });
+}
+
+// ---------------------------------------------------------------------------
+// Input another tool has taken
+
+/** The notification state Xcode's device input service (dtuhidd) sets when it takes over (helper.swift reads it). */
+const HELD = "com.apple.coredevice.dtuhidd.active";
+
+/** The process id of the device's input process (backboardd). */
+export async function inputProcess(udid: string, signal?: AbortSignal): Promise<number> {
+    // It answers in a quarter of a second: one that hasn't in five isn't going to.
+    const list = await simctl(["spawn", udid, "launchctl", "list"], { signal, timeoutMs: 5000 });
+    const pid = Number(list.split("\n").map((l) => l.split("\t")).find((c) => c[2]?.trim() === "com.apple.backboardd")?.[0]);
+    if (!pid) throw new SimulatorError("The device's input process isn't running.");
+    return pid;
+}
+
+/**
+ * What the device's input process (backboardd) has cut off for Xcode's device input service. When the service starts,
+ * the simulator lets go of each of its touch screen, keyboard and buttons that hasn't had input since the process
+ * started, and they don't come back until it restarts (takeInput). It logs each it lets go, so the device's log says,
+ * in a second or so. Of `process` when it's been looked up (inputProcess).
+ */
+export async function cutInputs(udid: string, process?: number, signal?: AbortSignal): Promise<{ process: number; started?: number; cut: SimulatorInputKind[] }> {
+    const pid = process ?? (await inputProcess(udid, signal));
+    const ran = await runningFor(pid);
+    // When it started is had now: the log can take seconds to read.
+    const started = ran === undefined ? undefined : startedAgo(ran);
+    const age = ran ?? 86_400;
+    const log = await simctl(["spawn", udid, "log", "show", "--last", `${age + 10}s`, "--style", "compact", "--predicate", `processIdentifier == ${pid} AND eventMessage CONTAINS "Disconnecting service"`], { signal, timeoutMs: 30_000 });
+    const names: Record<string, SimulatorInputKind> = { ScreenTouchService: "touch", ExternalKeyboardService: "keyboard", MainScreenButtonsService: "buttons" };
+    const cut = new Set<SimulatorInputKind>();
+    for (const m of log.matchAll(/Disconnecting service:.*?SimulatorHID\.(\w+)/g)) if (names[m[1]!]) cut.add(names[m[1]!]!);
+    return { process: pid, ...(started === undefined ? {} : { started }), cut: (["touch", "keyboard", "buttons"] as const).filter((k) => cut.has(k)) };
+}
+
+/** When a process on this Mac started (seconds since 1970), to tell it from another given its pid later. */
+export async function startOf(pid: number): Promise<number | undefined> {
+    const ran = await runningFor(pid);
+    return ran === undefined ? undefined : startedAgo(ran);
+}
+
+const startedAgo = (seconds: number) => Math.round(Date.now() / 1000) - seconds;
+
+/**
+ * Takes the device's input back from Xcode's device input service: says it no longer has it, and restarts the input
+ * process, which connects the touch screen, keyboard and buttons afresh (in half a second). The home screen restarts
+ * with it, closing the apps. When the restart fails, the service is said to have it again, so whoever looks next finds
+ * what it took (that cuts off nothing more: what's in use stays).
+ */
+export async function takeInput(udid: string, signal?: AbortSignal): Promise<void> {
+    // Once begun, it's done whole (in a second): half done, the input would stay cut off with no word of it.
+    if (signal?.aborted) throw new SimulatorError("Interrupted by user.");
+    try {
+        await simctl(["spawn", udid, "notifyutil", "-s", HELD, "0", "-p", HELD], { timeoutMs: 15_000 });
+        await simctl(["spawn", udid, "launchctl", "kickstart", "-k", "user/foreground/com.apple.backboardd"], { timeoutMs: 30_000 });
+    } catch (e) {
+        await simctl(["spawn", udid, "notifyutil", "-s", HELD, "1", "-p", HELD], { timeoutMs: 15_000 }).catch(() => undefined);
+        throw e;
+    }
 }
 
 /** Puts text on the device's pasteboard (to paste what the keyboard can't type). */

@@ -8,8 +8,10 @@
 // Commands arrive on stdin, one JSON object per line, each with an "id". Messages go out on stdout, each a type byte
 // ("J" JSON, "F" a JPEG frame of the stream, "S" a PNG screenshot answering a command), a 4-byte big-endian length,
 // then the payload. Every command is answered with {"id", "ok"} or {"id", "error"} ("S" carries its id in the JSON
-// before it); input, with "taken" when another tool has the device's input. Events: {"event":"ready"|"size", "width",
-// "height", "scale"} in device pixels; {"event":"input", "taken": true}; {"event":"error"}.
+// before it). Events: {"event":"ready"|"size", "width", "height", "scale"} in device pixels (ready with "held":
+// whether Xcode's device input service says it has the device's input); {"event":"input", "held"} when that changes,
+// as an input is answered (before its answer) or on a timer;
+// {"event":"error"}.
 
 import AppKit
 import CoreImage
@@ -183,29 +185,52 @@ func keys(_ list: [[Any]], gap: Double = 0) throws {
     }
 }
 
-// Xcode's device input service in the simulator (dtuhidd) takes the device's input for a tool that uses it, as
-// Claude's desktop app does: the simulator drops its hardware keyboard when the service starts, and its touch screen
-// and buttons when the tool attaches. They don't come back until the device restarts, and input sent to them still
-// goes, without an error. The service says it has them in a notification state, which CoreSimulator reads.
+// Xcode's device input service in the simulator (dtuhidd) takes over the device's input for a tool that uses it, as
+// Claude's desktop app does. When it starts, the simulator lets go of each of the touch screen, keyboard and buttons
+// that hasn't had input yet, and input sent to them goes nowhere, without an error, until the device's input process
+// restarts. The service says it has started in a notification state, which CoreSimulator reads; which inputs were
+// let go, Cavvy reads from the device's log (simctl.ts).
 typealias GetStateFn = @convention(c) (AnyObject, Selector, UnsafeMutablePointer<UInt64>, NSString, UnsafeMutablePointer<NSError?>?) -> Bool
 let getState: (GetStateFn, Selector)? = device.responds(to: NSSelectorFromString("darwinNotificationGetState:name:error:")) ? imp(device, "darwinNotificationGetState:name:error:", as: GetStateFn.self) : nil
-let takenLock = NSLock()
-var taken = false
 
-/// Whether another tool has taken the device's input since the helper started (once taken, it stays so).
-func inputTaken() -> Bool {
-    takenLock.withLock {
-        if !taken, let (fn, sel) = getState {
-            var value: UInt64 = 0
-            taken = fn(device, sel, &value, "com.apple.coredevice.dtuhidd.active" as NSString, nil) && value != 0
-        }
-        return taken
-    }
+/// Whether Xcode's device input service says it has the device's input.
+func inputHeld() -> Bool {
+    guard let (fn, sel) = getState else { return false }
+    var value: UInt64 = 0
+    return fn(device, sel, &value, "com.apple.coredevice.dtuhidd.active" as NSString, nil) && value != 0
 }
 
-/// An input command's answer, which says when the input went nowhere.
+/// What Cavvy was last told of it, by the ready event or the timer: each change is told once, in order.
+let heldLock = NSLock()
+var heldSaid = false
+
+/// Tells Cavvy whether the service has the input: in `event` (the ready event), or on its own when it's changed.
+func tellHeld(in event: [String: Any]? = nil) {
+    heldLock.lock()
+    defer { heldLock.unlock() }
+    let held = inputHeld()
+    if var event {
+        event["held"] = held
+        emitJSON(event)
+    } else if held != heldSaid {
+        emitJSON(["event": "input", "held": held])
+    }
+    heldSaid = held
+}
+
+/// An input command's answer: before it, whether the service has the device's input if that's changed (it may have
+/// taken over as the input went).
 func inputAnswer() -> [String: Any] {
-    inputTaken() ? ["ok": true, "taken": true] : ["ok": true]
+    tellHeld()
+    return ["ok": true]
+}
+
+/// Each input let go of where nothing is down (a touch, a key, Home), which does nothing on the device but counts as
+/// input: the simulator then keeps them when the service starts again. One in use (a finger down) is left as it is.
+func claim(touchScreen: Bool, keyboard: Bool, buttons: Bool) throws {
+    if touchScreen { try touch(touchUp, 0.5, 0.5) }
+    if keyboard { try keys([[NSNumber(value: 0xE1), false]]) }  // Left Shift
+    if buttons { try button("home", "up") }
 }
 
 // MARK: - Screen
@@ -273,7 +298,8 @@ func noteSize(_ s: IOSurface) {
     if size == lastSize { return }
     let first = lastSize == (0, 0)
     lastSize = size
-    emitJSON(["event": first ? "ready" : "size", "width": size.0, "height": size.1, "scale": scale])
+    let event: [String: Any] = ["event": first ? "ready" : "size", "width": size.0, "height": size.1, "scale": scale]
+    if first { tellHeld(in: event) } else { emitJSON(event) }
 }
 
 // The stream: a frame when the screen changes, at most `fps` a second, only the newest when Cavvy reads slower. A
@@ -484,6 +510,9 @@ func describeScreen() throws -> [String: Any] {
         reply["pid"] = pid
         var path = [CChar](repeating: 0, count: 4096)
         if proc_pidpath(pid, &path, UInt32(path.count)) > 0 { reply["process"] = URL(fileURLWithPath: String(cString: path)).lastPathComponent }
+        // One that's no longer running: the device's bridge still answers for the screen before (its home screen
+        // restarted), until the bridge restarts.
+        else if kill(pid, 0) != 0 && errno == ESRCH { reply["gone"] = true }
     }
     return reply
 }
@@ -578,6 +607,8 @@ func handle(_ c: [String: Any]) throws -> [String: Any] {
     case "keys":
         try keys(c["keys"] as? [[Any]] ?? [], gap: ((c["gapMs"] as? NSNumber)?.doubleValue ?? 0) / 1000)
         return inputAnswer()
+    case "claim":
+        try claim(touchScreen: c["touch"] as? Bool ?? true, keyboard: c["keys"] as? Bool ?? true, buttons: c["buttons"] as? Bool ?? true)
     case "stream":
         let on = c["on"] as? Bool ?? false
         screenQueue.sync {
@@ -625,18 +656,14 @@ if let s = surface() { noteSize(s) }
 warmText()
 
 // A device that shuts down (elsewhere, or to restart) takes its screen and input with it, and they don't come back
-// when it starts again: the helper ends with it, and Cavvy starts another for the device's next start. Its input
-// taken by another tool is said once, as it happens.
+// when it starts again: the helper ends with it, and Cavvy starts another for the device's next start. Whether
+// Xcode's device input service has its input is said as it changes.
 let shutdownStates: Set<Int> = [1, 4]  // SimDeviceState: shut down, shutting down
 let stateWatch = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
-var takenSaid = false
 stateWatch.schedule(deadline: .now() + 1, repeating: 1)
 stateWatch.setEventHandler {
     if let state = (device.value(forKey: "state") as? NSNumber)?.intValue, shutdownStates.contains(state) { exit(0) }
-    if !takenSaid && inputTaken() {
-        takenSaid = true
-        emitJSON(["event": "input", "taken": true])
-    }
+    tellHeld()
 }
 stateWatch.resume()
 

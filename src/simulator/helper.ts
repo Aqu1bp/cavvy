@@ -72,8 +72,8 @@ export interface ScreenSize {
 export interface HelperEvents {
     frame(jpeg: Uint8Array, size: ScreenSize): void;
     size(size: ScreenSize): void;
-    /** Another tool has taken the device's input (see helper.swift): it doesn't come back until the device restarts. */
-    taken(): void;
+    /** Xcode's device input service says it has taken over the device's input (see helper.swift), or no longer does. */
+    held(on: boolean): void;
     exit(error: string | undefined): void;
 }
 
@@ -98,11 +98,13 @@ export class SimHelper {
     private exited = false;
     private lastError?: string;
     size?: ScreenSize;
-    /** Another tool has the device's input: what's sent to it goes nowhere. */
-    inputTaken = false;
+    /** Xcode's device input service says it has the device's input: what it let go of, the device's log says. */
+    held = false;
     readonly ready: Promise<ScreenSize>;
 
     private constructor(
+        /** The device it's attached to. */
+        readonly udid: string,
         private child: ChildProcessByStdio<Writable, Readable, Readable>,
         private events: Partial<HelperEvents>,
     ) {
@@ -128,7 +130,7 @@ export class SimHelper {
 
     static start(bin: string, developerDir: string, udid: string, events: Partial<HelperEvents>): SimHelper {
         const child = spawn(bin, [developerDir, udid], { stdio: ["pipe", "pipe", "pipe"] });
-        return new SimHelper(child, events);
+        return new SimHelper(udid, child, events);
     }
 
     get running(): boolean {
@@ -163,10 +165,14 @@ export class SimHelper {
                 }
                 if (msg.event === "ready" || msg.event === "size") {
                     this.size = { width: Number(msg.width), height: Number(msg.height), scale: Number(msg.scale) || 1 };
-                    if (msg.event === "ready") ready(this.size);
+                    if (msg.event === "ready") {
+                        // Said first, so what it took is being read before the first command.
+                        this.setHeld(msg.held === true);
+                        ready(this.size);
+                    }
                     else this.events.size?.(this.size);
                 } else if (msg.event === "input") {
-                    if (msg.taken === true) this.taken();
+                    this.setHeld(msg.held === true);
                 } else if (msg.event === "error") {
                     this.lastError = String(msg.message ?? "The simulator helper failed.");
                 } else if (typeof msg.id === "number") this.settle(msg.id, msg);
@@ -179,15 +185,14 @@ export class SimHelper {
         if (!p) return;
         this.pending.delete(id);
         clearTimeout(p.timer);
-        if (reply.taken === true) this.taken();
         if (typeof reply.error === "string") p.reject(new SimulatorError(reply.error));
         else p.resolve(reply);
     }
 
-    private taken() {
-        if (this.inputTaken) return;
-        this.inputTaken = true;
-        this.events.taken?.();
+    private setHeld(on: boolean) {
+        if (this.held === on) return;
+        this.held = on;
+        this.events.held?.(on);
     }
 
     /** Sends a command and waits for its answer. */
