@@ -41,6 +41,11 @@ const SUBMIT_PAUSE_MS = 1000;
 const PANE_TEXT_PAUSE_MS = 300;
 /** Text right behind the caret's move to a web field's end doesn't land: the page gets the keys, the field loses some. */
 const CARET_PAUSE_MS = 150;
+/** How long a field takes to read the pasteboard after Meta+V. */
+const PASTED_MS = 500;
+/** How long a started app gets to be still (one that never is, with a clock on the screen, doesn't hold things up). */
+const STARTED_SETTLE_MS = 1500;
+const SAFARI = "MobileSafari";
 
 /** How long a helper nothing uses (no pane showing its device, no agent call) keeps running. */
 const IDLE_MS = 60_000;
@@ -864,6 +869,46 @@ export class SimulatorSession {
     }
 
     /** Reads which app is in front until `done` says so (true), at most `timeoutMs` (false). */
+    /**
+     * An app brought up by a tap (on its icon) is in front a second or more before there's anything of it to read: until
+     * there is (at most `timeoutMs`), or if this is the app last read, whose screen may just have nothing to read.
+     */
+    async untilStarted(timeoutMs: number, signal?: AbortSignal): Promise<void> {
+        const helper = await this.running();
+        let waited = false;
+        await this.untilFront(
+            helper,
+            (r) => {
+                const up = r.pid === this.refsPid || !!(r.tree as AxNode | undefined)?.children?.length;
+                waited ||= !up;
+                return up;
+            },
+            timeoutMs,
+            signal,
+        );
+        if (waited) await this.settle(STARTED_SETTLE_MS, signal);
+    }
+
+    /**
+     * Safari waiting for a page is still, with nothing of the page to see: until the picture has text (at most
+     * `timeoutMs`). Anything else opening a URL has its own elements to read.
+     */
+    async untilPage(timeoutMs: number, signal?: AbortSignal): Promise<void> {
+        const helper = await this.running();
+        const end = Date.now() + timeoutMs;
+        let waited = false;
+        while (Date.now() < end) {
+            stopped(signal);
+            const r = await helper.call({ op: "describe" }).catch(() => undefined);
+            if (r?.process !== SAFARI) return;
+            const read = await this.readText(helper);
+            if (read.error || read.loading || outline((r.tree ?? {}) as AxNode, this.points(helper), read.lines).text.includes("\n- seen ")) break;
+            waited = true;
+            await pause(500, signal);
+        }
+        if (waited) await this.settle(STARTED_SETTLE_MS, signal);
+    }
+
     private async untilFront(helper: SimHelper, done: (r: Record<string, unknown>) => boolean, timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
         const end = Date.now() + timeoutMs;
         while (Date.now() < end) {
@@ -1149,7 +1194,8 @@ export class SimulatorSession {
     /**
      * Types text key by key (`gapMs` apart), or pastes it when a U.S. keyboard can't type it, or the device's keyboard
      * has another layout (keys are where they are: German's would type "Lazy" as "Layz"), or `paste` asks for it. Returns
-     * whether it was pasted.
+     * whether it was pasted. What's pasted doesn't stay on the device's pasteboard: it may be a password in a web page's
+     * field, which isn't known for one.
      */
     private async typeText(helper: SimHelper, text: string, gapMs = 0, signal?: AbortSignal, paste = false): Promise<boolean> {
         const strokes = !paste && simctl.typesAsUS(await simctl.keyboardOf(helper.udid)) ? strokesForText(text) : undefined;
@@ -1168,8 +1214,13 @@ export class SimulatorSession {
         }
         stopped(signal);
         await simctl.pasteboard(helper.udid, text);
-        stopped(signal);
-        await helper.call({ op: "keys", keys: strokesForPress("Meta+V") });
+        try {
+            stopped(signal);
+            await helper.call({ op: "keys", keys: strokesForPress("Meta+V") });
+            await sleep(PASTED_MS);
+        } finally {
+            await simctl.pasteboard(helper.udid, "");
+        }
         return true;
     }
 

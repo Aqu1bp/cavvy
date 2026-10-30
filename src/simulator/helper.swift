@@ -543,9 +543,10 @@ func recognize(_ s: IOSurface) throws -> [[String: Any]] {
     request.automaticallyDetectsLanguage = true
     try VNImageRequestHandler(ciImage: CIImage(ioSurface: s), options: [:]).perform([request])
     let w = Double(s.width) / scale, h = Double(s.height) / scale
+    let lines = (request.results ?? []).map(\.boundingBox)
     return (request.results ?? []).flatMap { o -> [[String: Any]] in
         guard let c = o.topCandidates(1).first else { return [] }
-        return pieces(c, o.boundingBox, s, w, h).map { text, b in
+        return pieces(c, o.boundingBox, among: lines, s, w, h).map { text, b in
             // Vision's box is a fraction of the picture from its bottom left; the tree's frames are points from the top left.
             ["text": text, "confidence": Double(c.confidence), "frame": [b.minX * w, (1 - b.maxY) * h, b.width * w, b.height * h].map { ($0 * 10).rounded() / 10 }]
         }
@@ -556,7 +557,7 @@ func recognize(_ s: IOSurface) throws -> [[String: Any]] {
 /// and a ref for each should land on it. Vision spreads a line's words evenly over its box, so the gaps are looked for
 /// in the picture: its widest gaps, one fewer than the words, are between the words. When that makes words of unlikely
 /// widths (a "|" Vision didn't read, taken for one), the line stays whole. Boxes are fractions of a picture `w`×`h` points.
-func pieces(_ c: VNRecognizedText, _ box: CGRect, _ s: IOSurface, _ w: Double, _ h: Double) -> [(String, CGRect)] {
+func pieces(_ c: VNRecognizedText, _ box: CGRect, among lines: [CGRect], _ s: IOSurface, _ w: Double, _ h: Double) -> [(String, CGRect)] {
     let text = c.string
     let tokens = text.split(whereSeparator: { $0.isWhitespace })
     guard tokens.count > 1, let runs = inkRuns(s, box), runs.count >= tokens.count else { return [(text, box)] }
@@ -571,6 +572,15 @@ func pieces(_ c: VNRecognizedText, _ box: CGRect, _ s: IOSurface, _ w: Double, _
         words.append(runs[start].lowerBound..<runs[i - 1].upperBound)
         start = i
     }
+    // Letters spaced out (a heading's) space their words out as much, and justified text has even gaps, and another
+    // line above or below it that starts and ends where it does.
+    let gapsAt = { (i: Int) in (runs[i].lowerBound - runs[i - 1].upperBound) * w }
+    let lineHeight = box.height * h
+    let inside = runs.indices.dropFirst().filter { !between.contains($0) }.map(gapsAt).sorted()
+    let wide = max(lineHeight * 0.7, (inside.isEmpty ? 0 : inside[inside.count / 2]) * 4)
+    let wordGaps = between.map(gapsAt)
+    let flush = lines.contains { $0 != box && abs($0.minX - box.minX) * w <= 6 && abs($0.maxX - box.maxX) * w <= 6 && abs($0.midY - box.midY) * h <= lineHeight * 2.5 }
+    if flush, let least = wordGaps.min(), let most = wordGaps.max(), most <= least * 1.5, most <= lineHeight * 4 { return [(text, box)] }
     if backwards { words.reverse() }
     let perCharacter = zip(words, tokens).map { ($0.upperBound - $0.lowerBound) / Double($1.count) }
     guard let least = perCharacter.min(), let most = perCharacter.max(), most <= least * 5 else { return [(text, box)] }
@@ -579,7 +589,7 @@ func pieces(_ c: VNRecognizedText, _ box: CGRect, _ s: IOSurface, _ w: Double, _
     for i in 1...tokens.count {
         if i < tokens.count {
             let gap = (max(words[i - 1].lowerBound, words[i].lowerBound) - min(words[i - 1].upperBound, words[i].upperBound)) * w
-            if gap <= box.height * h * 0.7 { continue }
+            if gap <= wide { continue }
         }
         let left = min(words[from].lowerBound, words[i - 1].lowerBound), right = max(words[from].upperBound, words[i - 1].upperBound)
         out.append((String(text[tokens[from].startIndex..<tokens[i - 1].endIndex]), CGRect(x: left, y: box.minY, width: right - left, height: box.height)))

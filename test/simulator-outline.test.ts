@@ -286,6 +286,21 @@ describe("whether a ref still stands for what it did", () => {
         expect(refNow(refs(was)[0]!, rows(5), [], refs(was))).toBe("Item 5");
     });
 
+    test("in a list of two, a row that moved up, or one added above, isn't the row it was", () => {
+        const was = outline(app(button("Delete order 5", 100), button("Delete order 6", 150)), SCREEN);
+        const five = refs(was)[0]!;
+        expect(refNow(five, app(button("Delete order 6", 100)), [], refs(was))).toBeUndefined();
+        expect(refNow(five, app(button("Delete order 4", 100), button("Delete order 5", 150), button("Delete order 6", 200)), [], refs(was))).toBeUndefined();
+
+        const line = (text: string, y: number): SeenLine => ({ text, confidence: 1, frame: [16, y, 200, 20] });
+        const page = outline(app(), SCREEN, [line("Delete order 5", 100), line("Delete order 6", 150)]);
+        expect(refNow(refs(page)[0]!, app(), [line("Delete order 6", 100)], refs(page))).toBeUndefined();
+        expect(refNow(refs(page)[0]!, app(), [line("Delete order 4", 100), line("Delete order 5", 150), line("Delete order 6", 200)], refs(page))).toBeUndefined();
+        // Words, not only numbers.
+        const names = outline(app(), SCREEN, [line("Reply to Alice now", 100), line("Reply to Bob now", 150)]);
+        expect(refNow(refs(names)[0]!, app(), [line("Reply to Bob now", 100)], refs(names))).toBeUndefined();
+    });
+
     test("only a number apart: letters have to say it's the same, and its place has to be in it", () => {
         const was = outline(app(button("12", 100), button("Item 1", 200)), SCREEN);
         expect(refNow(refs(was)[0]!, app(button("13", 100), button("Item 1", 200)), [], refs(was))).toBeUndefined();

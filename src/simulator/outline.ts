@@ -237,7 +237,7 @@ export function outline(root: AxNode, screen: { width: number; height: number },
  * What a ref stood for reads now, if it's still where it was (undefined if not). The same kind of element with the
  * same label in the tree, or for a `seen` line, the same words in the picture there. Nearly the same (a label that
  * counts, "Resend in 997"; a line read a little differently) is the same when the rest of `screen`, the refs it was
- * read with, hasn't changed: on a screen that moved, "Line 19" is where "Line 5" was.
+ * read with, hasn't changed, and nothing like it has: on a list that moved, "Item 6" is where "Item 5" was.
  */
 export function refNow(t: RefTarget, tree: AxNode, seen: SeenLine[], screen: Iterable<RefTarget> = []): string | undefined {
     const same = there(t, tree, seen, true);
@@ -245,16 +245,16 @@ export function refNow(t: RefTarget, tree: AxNode, seen: SeenLine[], screen: Ite
     const near = there(t, tree, seen, false);
     if (near === undefined) return undefined;
     const changed = [...screen].filter((o) => o !== t && !o.element === !t.element && there(o, tree, seen, true) === undefined);
-    return changed.length <= REF_OTHERS_CHANGED ? near : undefined;
+    const like = (o: RefTarget) => (t.element ? numberless(o.name) === numberless(t.name) : wordsLike(t.name, o.name, alike) >= SEEN_KNOWN);
+    return changed.length <= REF_OTHERS_CHANGED && !changed.some(like) ? near : undefined;
 }
 
 /** What's at a ref's place now: its very text, or (not `exact`) nearly. */
 function there(t: RefTarget, tree: AxNode, seen: SeenLine[], exact: boolean): string | undefined {
     if (!t.element) {
-        const want = wordsOf(t.name);
         // A number read differently is another number; another word may be the same one misread.
         const sameWord = (w: string, k: string) => (exact && (/\p{N}/u.test(w) || /\p{N}/u.test(k)) ? w === k : alike(w, k));
-        return seen.find((l) => l.frame.length === 4 && overlaps(l.frame, t.frame) && want.filter((w) => wordsOf(l.text).some((k) => sameWord(w, k))).length / want.length >= (exact ? 1 : SEEN_KNOWN))?.text;
+        return seen.find((l) => l.frame.length === 4 && overlaps(l.frame, t.frame) && wordsLike(t.name, l.text, sameWord) >= (exact ? 1 : SEEN_KNOWN))?.text;
     }
     const { role, label } = t.element;
     const find = (n: AxNode): string | undefined => {
@@ -273,6 +273,13 @@ function there(t: RefTarget, tree: AxNode, seen: SeenLine[], exact: boolean): st
 }
 
 const numberless = (s: string) => s.replace(/\p{N}+/gu, "#");
+
+/** The share of `a`'s words that `b` has. */
+function wordsLike(a: string, b: string, same: (w: string, k: string) => boolean): number {
+    const want = wordsOf(a);
+    const has = wordsOf(b);
+    return want.filter((w) => has.some((k) => same(w, k))).length / want.length;
+}
 
 /** Whether the picture shows what the tree says (undefined: too little to tell, an app whose text is icons or a web page). */
 export function agrees(o: Outline): boolean | undefined {

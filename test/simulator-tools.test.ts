@@ -207,6 +207,9 @@ describe("a device another tool has taken input from", () => {
     let restart: "ok" | "fails" | "taken again" | "slow" = "ok";
     let restartedAt = 0;
     const ran2: string[][] = [];
+    const pasted: string[] = [];
+    let onCopy = () => {};
+    let onOpen = () => {};
     beforeEach(async () => {
         const hash = createHash("sha256").update(HELPER_SOURCE).update("\0").update(DEV).digest("hex").slice(0, 16);
         const bin = join(paths.home(), "simulator", hash, "cavvy-sim");
@@ -261,8 +264,18 @@ for await (const line of console) {
         await nextInputProcess();
         restart = "ok";
         ran2.length = 0;
-        simctl.setRunner(async (args) => {
+        pasted.length = 0;
+        simctl.setRunner(async (args, o) => {
             ran2.push(args);
+            if (args.includes("openurl")) {
+                onOpen();
+                onOpen = () => {};
+            }
+            if (args.includes("pbcopy")) {
+                pasted.push(String(o?.input));
+                onCopy();
+                onCopy = () => {};
+            }
             const line = args.join(" ");
             if (line === "xcrun simctl list devices -j") {
                 await Bun.sleep(listMs);
@@ -530,9 +543,25 @@ for await (const line of console) {
         const s = session();
         writeFileSync(TREE, FORM([FIELD]));
         expect(await s.type("user.name@example.com", { paste: true })).toBe('Pasted "user.name@example.com".');
-        expect(ran2.some((a) => a.includes("pbcopy"))).toBe(true);
         const down = sent("keys")[0].filter((k: [number, boolean]) => k[1]).map((k: [number, boolean]) => k[0]);
         expect(down).toEqual([META, 0x19]);
+        s.dispose();
+    });
+
+    test("what's pasted doesn't stay on the device's pasteboard, stopped or not", async () => {
+        const s = session();
+        writeFileSync(TREE, FORM([FIELD]));
+        const copies = () => pasted.slice();
+        await s.type("hunter2", { paste: true });
+        expect(copies()).toEqual(["hunter2", ""]);
+        // Stopped once it's there, before it's pasted.
+        const stop = new AbortController();
+        pasted.length = 0;
+        onCopy = () => stop.abort();
+        const keys = sent("keys").length;
+        await expect(s.type("hunter2", { paste: true }, stop.signal)).rejects.toThrow();
+        expect(sent("keys").length).toBe(keys);
+        expect(copies()).toEqual(["hunter2", ""]);
         s.dispose();
     });
 
@@ -548,11 +577,57 @@ for await (const line of console) {
         expect(await run("user.name@example.com", { text: "user.name@example.com" })).not.toContain("changed it");
         expect(await run("nothing like it", { text: "user.name@example.com" })).not.toContain("changed it");
         expect(await run("User.name@example.com", { text: "user.name@example.com", paste: true })).not.toContain("changed it");
+        // A line break shows as a space; a narrow field shows the end; an unrelated line with a word of it isn't the field.
+        expect(await run("first line here second line here", { text: "first line here\nsecond line here" })).not.toContain("changed it");
+        expect(await run("over the lazy dog", { text: "the quick brown fox over the lazy dog" })).not.toContain("changed it");
+        expect(await run("Welcome john", { text: "john smith" })).not.toContain("changed it");
+        // Pressing Enter went on: what's on the screen now says nothing of the field.
+        expect(await run("john smith WELCOME", { text: "JOHN SMITH", submit: true })).not.toContain("changed it");
         // Wrapped onto two of the picture's lines, it's as typed.
         writeFileSync(LINES, JSON.stringify([{ text: "the first half of a long line", confidence: 1, frame: [20, 300, 300, 20] }, { text: "and its second half", confidence: 1, frame: [20, 330, 300, 20] }]));
         expect(await run("hello", { text: "the first half of a long line and its second half" })).not.toContain("changed it");
         s.dispose();
     });
+
+    test("an app a tap started is waited for; the app already read, with nothing to read, isn't", async () => {
+        const s = session();
+        const app = (pid: number, children: unknown[]) => JSON.stringify({ pid, process: "App", tree: { role: "AXApplication", children } });
+        writeFileSync(TREE, app(5, [{ role: "AXButton", label: "Icon", frame: [20, 100, 200, 40] }]));
+        await s.snapshot();
+        writeFileSync(TREE, app(9, []));
+        setTimeout(() => writeFileSync(TREE, app(9, [{ role: "AXButton", label: "Ready", frame: [20, 100, 200, 40] }])), 900);
+        const started = (await SimulatorActTool.run({ action: "tap", x: 50, y: 50 } as any, { ...ctx, state: { ...ctx.state, simulator: s } })) as { content: string };
+        expect(started.content).toContain('"Ready"');
+
+        writeFileSync(TREE, app(9, []));
+        await s.snapshot();
+        const at = Date.now();
+        const still = (await SimulatorActTool.run({ action: "tap", x: 50, y: 50 } as any, { ...ctx, state: { ...ctx.state, simulator: s } })) as { content: string };
+        expect(still.content).toContain("nothing on the screen can be read");
+        expect(Date.now() - at).toBeLessThan(2500);
+        s.dispose();
+    }, 15_000);
+
+    test("open_url waits for Safari's page to show text; another app has its own to read", async () => {
+        const s = session();
+        const open = () => SimulatorControlTool.run({ action: "open_url", url: "http://example.com/" } as any, { ...ctx, state: { ...ctx.state, simulator: s } }) as Promise<{ content: string }>;
+        const front = (process: string, changes = 0) => JSON.stringify({ pid: 5, process, changes, tree: { role: "AXApplication", children: [{ role: "AXButton", label: "Back", frame: [34, 780, 48, 48] }] } });
+        writeFileSync(TREE, front("MobileSafari"));
+        writeFileSync(LINES, "[]");
+        // It moves to the page at once, and the page's text comes well after the screen is still.
+        onOpen = () => {
+            writeFileSync(TREE, front("MobileSafari", 1));
+            setTimeout(() => writeFileSync(LINES, JSON.stringify([{ text: "Example Domain", confidence: 1, frame: [20, 300, 200, 20] }])), 2500);
+        };
+        expect((await open()).content).toContain('seen "Example Domain"');
+
+        writeFileSync(TREE, front("App"));
+        writeFileSync(LINES, "[]");
+        const at = Date.now();
+        await s.untilPage(8000);
+        expect(Date.now() - at).toBeLessThan(1000);
+        s.dispose();
+    }, 20_000);
 
     test("clear with no text empties the field", async () => {
         const s = session();
