@@ -53,7 +53,9 @@ function retier(now: number) {
             TIERS.forEach((c, i) => el.classList.toggle(c, i === tier));
             return true;
         }
-        const parent = el.parentNode;
+        // Only a text wrapper's text needs joining. A block's parent can hold Solid's own text nodes (a code block's
+        // tail, empty for now), which normalize() would take out from under it.
+        const parent = el.dataset.fresh !== undefined ? el.parentNode : null;
         unmark(el);
         parent?.normalize();
         return false;
