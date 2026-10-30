@@ -113,7 +113,11 @@ function summarizeTrace(events: any[], uiPid: number, seconds: number) {
         forcedN++;
         forcedMs += ms;
     }
+    // Every kind of event on the page's main thread, by its time (nested events counted in their parents' too).
+    const all: Record<string, number> = {};
+    for (const e of events) if (e.ph === "X" && main(e)) all[e.name] = (all[e.name] ?? 0) + (e.dur ?? 0) / 1000;
     return {
+        allMainMs: Object.fromEntries(Object.entries(all).sort((a, b) => b[1] - a[1]).slice(0, 40).map(([k, v]) => [k, Math.round((v / seconds) * 10) / 10])),
         layoutsPerSecond: Math.round(layouts / seconds),
         forcedPerSecond: Math.round(forcedN / seconds),
         forcedMsPerSecond: Math.round((forcedMs / seconds) * 10) / 10,
