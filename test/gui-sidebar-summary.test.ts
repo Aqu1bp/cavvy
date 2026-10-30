@@ -1,10 +1,12 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { realpathSync, statSync, utimesSync, writeFileSync } from "fs";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "fs";
 import { join } from "path";
+import { sessionStatus } from "../gui/src/lib/session-status";
 import { isolate, tempDir } from "./helpers/isolate";
 import type { Interaction, SessionOp, SessionState, SessionSummary, Turn } from "../src/server/protocol";
 
 const iso = isolate();
+const { startMockLlm } = await import("../scripts/mock-llm");
 const { Engine } = await import("../src/server/engine");
 const { Runtime } = await import("../src/server/runtime");
 const { Session, listAllSessions } = await import("../src/agent/session");
@@ -118,6 +120,75 @@ describe("sidebar summaries", () => {
         // This fixture never booted Runtime's persistence/cleanup resources.
         engine.runtimes.clear();
         await engine.stop();
+    });
+
+    describe("a turn that leaves nothing in the history says it ended", () => {
+        const mock = startMockLlm({ delayMs: 0 });
+        const settings = join(process.env.CAVVY_HOME!, "settings.json");
+        const providers = join(process.env.CAVVY_HOME!, "providers.json");
+        afterAll(() => mock.stop());
+        afterEach(() => {
+            rmSync(settings, { force: true });
+            rmSync(providers, { force: true });
+        });
+        const withModel = (hooks?: object) => {
+            writeFileSync(providers, JSON.stringify({ custom: [{ id: "mock", name: "Mock", baseUrl: mock.url, requiresKey: false }] }));
+            writeFileSync(settings, JSON.stringify({ model: "mock:mock-opus", smallModel: "mock:mock-haiku", hooks }));
+        };
+
+        /** A new session, what it's sent, and every row the sidebar was sent for it until it's idle again. */
+        async function rows(text: string, during?: (rt: InstanceType<typeof Runtime>) => void) {
+            const engine = new Engine({ listModels: async () => [] });
+            const sent: SessionSummary[] = [];
+            engine.clients.add({ subs: new Set<string>(), send: (event: { type: string; session?: SessionSummary }) => {
+                if (event.type === "sessions.upsert") sent.push(event.session!);
+            } } as never);
+            const rt = await engine.createSession(realpathSync(tempDir("sidebar-end-")), { mode: "bypassPermissions" });
+            await rt.ready;
+            // Empty, it isn't listed.
+            engine.sessionChanged(rt);
+            expect(sent).toEqual([]);
+            const sending = rt.send(text);
+            during?.(rt);
+            await sending;
+            while (rt.busy) await Bun.sleep(5);
+            const model = rt.agent !== undefined;
+            await engine.stop();
+            return { model, sent, last: sent.at(-1)! };
+        }
+
+        function ended({ sent, last }: { sent: SessionSummary[]; last: SessionSummary }) {
+            expect(sent[0]).toMatchObject({ status: "running", messages: 0 });
+            expect(last).toMatchObject({ status: "idle", messages: 0 });
+            expect(last.turnStartedAt).toBeUndefined();
+            // Minutes later, as the row would show it.
+            expect(sessionStatus(last, Date.now() + 480_000)).toBeUndefined();
+        }
+
+        test("a !command with no model", async () => {
+            const r = await rows("!echo hi");
+            expect(r.model).toBe(false);
+            ended(r);
+        });
+
+        test("a !command as a new session's first message, with a model", async () => {
+            withModel();
+            const r = await rows("!echo hi");
+            expect(r.model).toBe(true);
+            ended(r);
+        });
+
+        test("a !command stopped while it runs", async () => {
+            const r = await rows("!sleep 30", (rt) => setTimeout(() => rt.interrupt(), 50));
+            ended(r);
+        });
+
+        test("a first prompt a hook blocks", async () => {
+            withModel({ UserPromptSubmit: [{ hooks: [{ type: "command", command: "echo no >&2; exit 2" }] }] });
+            const r = await rows("hello");
+            expect(r.model).toBe(true);
+            ended(r);
+        });
     });
 
     test("opening, repairing or renaming a saved session isn't work: it keeps its place, below one that worked since", async () => {
