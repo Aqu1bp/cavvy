@@ -30,8 +30,9 @@ const cases: { name: string; prompts: string[] }[] = [
     { name: "text1", prompts: [TEXT] },
     { name: "text4", prompts: [TEXT, TEXT, TEXT, TEXT] },
     { name: "cmd1", prompts: [CMD] },
-    // The same reply four times as fast; and one session open with nothing running, for what the server costs anyway.
-    { name: "fast1", prompts: ["perfstream text 8 320"] },
+    // Text four times as fast (four times as much of it, so it lasts as long); and one session open with
+    // nothing running, for what the server costs anyway.
+    { name: "fast1", prompts: ["perfstream text 32 320"] },
     { name: "idle1", prompts: [""] },
 ].filter((c) => !only || only.includes(c.name));
 const report: Record<string, any> = { label, at: new Date().toISOString(), seconds: SECONDS, cases: {} };

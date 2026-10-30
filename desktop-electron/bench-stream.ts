@@ -3,7 +3,7 @@
 // bytes the page received. On the demo's mock model ("perfstream" in scripts/mock-llm.ts). Writes
 // bench-results/bench-stream-<label>.json.
 //
-//   bun desktop-electron/bench-stream.ts --label before [--history 200] [--seconds 15] [--only idle,textLong]
+//   bun desktop-electron/bench-stream.ts --label before [--history 200] [--seconds 15] [--only idleLongOnScreen,textLongOnScreen]
 //
 // Phases: idle with a long session on screen; a long reply streaming in a short session, then in the long one; a
 // command's output streaming in the long one; the long one streaming while a short one is on screen; and a 40 KB reply
