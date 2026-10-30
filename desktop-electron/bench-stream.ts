@@ -165,7 +165,7 @@ try {
     for (let i = 0; ; i++) { if (await fetch(`http://127.0.0.1:${DEMO_PORT}/healthz`).then((r) => r.ok, () => false)) break; if (i > 120) throw new Error("demo didn't start"); await sleep(500); }
 
     // ---- The app (development build), its main process's Node inspector on 9345.
-    app = Bun.spawn([join(repo, "desktop-electron/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"), "--inspect=9345", "--disable-backgrounding-occluded-windows", join(repo, "desktop-electron")], {
+    app = Bun.spawn([join(repo, "desktop-electron/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"), "--inspect=9345", "--disable-backgrounding-occluded-windows", ...(arg("--chromium") ?? "").split(" ").filter(Boolean), join(repo, "desktop-electron")], {
         cwd: repo,
         env: { ...process.env, CAVVY_HOME: join(dir, "home"), CAVVY_NO_KEYCHAIN: "1", CAVVY_ELECTRON_TEST_PORT: "9346", CAVVY_ELECTRON_USER_DATA: join(dir, "electron-data"), CAVVY_ELECTRON_CWD: project, CAVVY_ELECTRON_METRICS: metricsFile },
         stdout: "ignore",
@@ -184,7 +184,9 @@ try {
     // Experiments: --css <rules> added to the page; --reduced-motion as macOS's Reduce motion setting.
     if (arg("--css")) await js(`(() => { const s = document.createElement('style'); s.textContent = ${JSON.stringify(arg("--css"))}; document.head.append(s); })()`);
     if (args.includes("--reduced-motion")) await page.cdp("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
-    report.experiment = { css: arg("--css"), reducedMotion: args.includes("--reduced-motion") };
+    // Whether Chromium keeps an accessibility tree for the page (it does while anything on the Mac reads the screen through accessibility).
+    const ax = main ? (await main.cdp("Runtime.evaluate", { expression: "process.mainModule.require(\"electron\").app.isAccessibilitySupportEnabled()", returnByValue: true })).result?.result?.value : undefined;
+    report.experiment = { css: arg("--css"), reducedMotion: args.includes("--reduced-motion"), chromium: arg("--chromium"), accessibility: ax };
 
     // ---- Sessions, through the app's own server.
     let server: { pid?: number; port?: number; token?: string } = {};
