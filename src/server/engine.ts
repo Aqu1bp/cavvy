@@ -2208,6 +2208,7 @@ export class Engine {
                 return null;
             case "session.setFastMode":
                 if (typeof p.enabled !== "boolean") throw new RpcError("enabled must be a boolean");
+                await this.runtime(p.id).ready.catch(() => undefined);
                 await this.runtime(p.id).yieldIdleCompaction();
                 this.runtime(p.id).setFastMode(p.enabled);
                 return null;
