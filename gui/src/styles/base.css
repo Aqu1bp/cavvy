@@ -1051,17 +1051,20 @@ svg.lucide {
    is native, takes every press inside it whatever is drawn on top, and only no-drag regions cut holes in it. So only
    the top strip drags (where window-drag.ts's stripEnd puts it), with everything that takes a press cut out of it.
    Not the frame's gaps (data-window-drag): .win-drag lies under the whole window, and as a region it would swallow
-   every click in it. The browser's pages are never part of it. */
+   every click in it. The browser's pages are never part of it. Nor the conversation's rows: the title bar covers the
+   strip, so no press reaches them there, and each hole is a box Chromium finds again after every layout, for the whole
+   page, and tells the main process about when it has moved, as all of them do while a reply streams. */
 .app.electron::before {
     content: "";
     position: fixed;
     inset: 0 0 auto 0;
-    height: calc(2 * var(--top-line) - var(--win-pad, 8px));
+    /* No lower than the title bar's end: compact density's is shorter. */
+    height: min(2 * var(--top-line) - var(--win-pad, 8px), var(--win-pad, 8px) + var(--header-h));
     -webkit-app-region: drag;
     pointer-events: none;
 }
 
-.app.electron :is(button, a, input, textarea, select, summary, label, video, audio, iframe, [role], [contenteditable]:not([contenteditable="false"]), [tabindex]:not([tabindex="-1"]), [draggable="true"], [data-window-drag="off"]),
+.app.electron :is(button, a, input, textarea, select, summary, label, video, audio, iframe, [role], [contenteditable]:not([contenteditable="false"]), [tabindex]:not([tabindex="-1"]), [draggable="true"], [data-window-drag="off"]):not(.transcript *),
 .app.electron .br-host-tab {
     -webkit-app-region: no-drag;
 }
