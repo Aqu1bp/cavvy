@@ -5,6 +5,8 @@
 const ROW = ".worklog > :not(.steps), .steps > *, .reply > .md > *";
 const TRACKED = "data-work-row";
 const FAR = "data-work-far";
+/** A turn a screen or more from the view (Transcript.tsx): its rows skip their layout with it, so they aren't watched. */
+const TURN_FAR = "data-far";
 const MIN_ROWS = 80;
 
 type Callbacks = {
@@ -18,13 +20,37 @@ const intersections = (to: Callbacks): IntersectionObserverCallback => (entries,
 const sizes = (to: Callbacks): ResizeObserverCallback => (entries, observer) => to.sizes?.(entries, observer);
 const mutations = (to: Callbacks): MutationCallback => (entries, observer) => to.mutations?.(entries, observer);
 
-/** `shift`: compensate height changes above the reader when skipped rows become visible again. */
-export function observeWorkRendering(root: HTMLElement, content: HTMLElement, shift: (pixels: number) => void) {
+/**
+ * `shift`: compensate height changes above the reader when skipped rows become visible again. `parkFar`: whether rows of
+ * turns far from the view are let go of (below).
+ */
+export function observeWorkRendering(root: HTMLElement, content: HTMLElement, shift: (pixels: number) => void, parkFar: () => boolean = () => true) {
     if (typeof IntersectionObserver === "undefined" || typeof ResizeObserver === "undefined" || typeof MutationObserver === "undefined") return () => {};
-    const rows = new Map<HTMLElement, { near: boolean; height?: number; intrinsic: string }>();
+    const rows = new Map<HTMLElement, { near: boolean; height?: number; intrinsic: string; parkedFar?: boolean }>();
     const to: Callbacks = {};
     let io: IntersectionObserver | undefined;
     let ro: ResizeObserver | undefined;
+    // With many turns drawn, only rows in turns near the view are watched or skipped on their own: what they cost each
+    // frame (our observers, and the browser's for each skipped box) goes with what's near, not with how much of the
+    // conversation is drawn. With few, it's little, and letting them go as a session opens would cost the opening.
+    let parking = false;
+    const parked = (el: HTMLElement) => parking && !!el.closest(`[${TURN_FAR}]`);
+    const watch = (el: HTMLElement) => { io?.observe(el); ro?.observe(el); };
+    const unwatch = (el: HTMLElement) => { io?.unobserve(el); ro?.unobserve(el); };
+    /** Its turn gone far: the turn skips it. Skipped on its own before, it is again as the turn comes near, at its size. */
+    const park = (el: HTMLElement) => {
+        unwatch(el);
+        const row = rows.get(el);
+        if (!row || !el.hasAttribute(FAR)) return;
+        el.removeAttribute(FAR);
+        row.parkedFar = true;
+    };
+    const wake = (el: HTMLElement) => {
+        const row = rows.get(el);
+        if (row?.parkedFar) el.setAttribute(FAR, "");
+        if (row) row.parkedFar = false;
+        watch(el);
+    };
     const skip = (el: HTMLElement) => {
         const row = rows.get(el);
         if (!row || row.near || row.height === undefined || row.height <= 0 || el.hasAttribute(FAR)) return;
@@ -70,14 +96,13 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
         };
         io = new IntersectionObserver(intersections(to), { root, rootMargin: "100% 0px" });
         ro = new ResizeObserver(sizes(to));
-        for (const el of rows.keys()) { io.observe(el); ro.observe(el); }
+        for (const el of rows.keys()) if (!parked(el)) watch(el);
     };
     const add = (el: HTMLElement) => {
         if (rows.has(el) || !el.matches(ROW) || el.parentElement?.closest(ROW)) return;
         rows.set(el, { near: true, intrinsic: el.style.containIntrinsicBlockSize });
         el.setAttribute(TRACKED, "");
-        io?.observe(el);
-        ro?.observe(el);
+        if (!parked(el)) watch(el);
     };
     const collect = (node: Node) => {
         // MutationObserver can deliver changes made inside a removed subtree in the same
@@ -94,8 +119,7 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
     const remove = (el: HTMLElement) => {
         const row = rows.get(el);
         if (!row) return;
-        io?.unobserve(el);
-        ro?.unobserve(el);
+        unwatch(el);
         el.removeAttribute(TRACKED);
         el.removeAttribute(FAR);
         el.style.containIntrinsicBlockSize = row.intrinsic;
@@ -103,6 +127,14 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
     };
     to.mutations = (records) => {
         for (const record of records) {
+            // A turn gone far or come near: its rows' watch stops, or starts again (each told at once where it is).
+            if (record.type === "attributes") {
+                const turn = record.target as HTMLElement;
+                if (!io || !parking || !content.contains(turn)) continue;
+                const far = turn.hasAttribute(TURN_FAR);
+                for (const el of turn.querySelectorAll<HTMLElement>(`[${TRACKED}]`)) if (rows.has(el)) (far ? park : wake)(el);
+                continue;
+            }
             for (const node of record.removedNodes) {
                 if (node.nodeType !== 1 || content.contains(node)) continue;
                 const el = node as HTMLElement;
@@ -112,11 +144,22 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
             for (const node of record.addedNodes) collect(node);
         }
         start();
+        sync();
+    };
+    /** Rows of the turns already far let go of, or taken back, as `parkFar` changes (turns going in or out). */
+    const sync = () => {
+        const want = !!io && parkFar();
+        if (want === parking) return;
+        parking = want;
+        for (const turn of content.querySelectorAll<HTMLElement>(`[${TURN_FAR}]`)) {
+            for (const el of turn.querySelectorAll<HTMLElement>(`[${TRACKED}]`)) if (rows.has(el)) (want ? park : wake)(el);
+        }
     };
     collect(content);
     start();
+    sync();
     const mo = new MutationObserver(mutations(to));
-    mo.observe(content, { childList: true, subtree: true });
+    mo.observe(content, { childList: true, subtree: true, attributes: true, attributeFilter: [TURN_FAR] });
     return () => {
         io?.disconnect();
         ro?.disconnect();

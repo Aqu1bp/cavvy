@@ -384,12 +384,15 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                 to.fn = undefined;
             });
         }
+        // The rows of turns far from the view are let go of once more than a page of turns is drawn ("Show earlier"), or once
+        // a turn runs here (they cost on each frame, and a turn is what draws frames). Not as a session opens.
+        let ran = false;
         onCleanup(observeWorkRendering(scroller, content, (moved) => {
             if (stick() || smoothScroll) return;
             scroller!.scrollTop += moved;
             wrote();
             reading = capture();
-        }));
+        }, () => (ran ||= p.handle.view.state.busy) || visible().length > PAGE));
         const ro = new ResizeObserver(() => {
             const above = grewAbove();
             if (!ready) return;

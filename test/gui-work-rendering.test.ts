@@ -36,7 +36,7 @@ class Observer {
 const names = ["IntersectionObserver", "ResizeObserver", "MutationObserver"] as const;
 const original = names.map((name) => globalThis[name]);
 afterEach(() => names.forEach((name, i) => { (globalThis as any)[name] = original[i]; }));
-function fixture(count = 80) {
+function fixture(count = 80, parkFar = () => true) {
     (globalThis as any).IntersectionObserver = class extends Observer { constructor(cb: any) { super(cb); io = this; } };
     (globalThis as any).ResizeObserver = class extends Observer { constructor(cb: any) { super(cb); ro = this; } };
     (globalThis as any).MutationObserver = class extends Observer { constructor(cb: any) { super(cb); mo = this; } };
@@ -45,7 +45,7 @@ function fixture(count = 80) {
     const content = new Box(); root.append(content);
     const rows = Array.from({ length: count }, () => new Box(true)); rows.forEach((row) => content.append(row));
     const shifts: number[] = [];
-    const dispose = observeWorkRendering(root as any, content as any, (by) => shifts.push(by));
+    const dispose = observeWorkRendering(root as any, content as any, (by) => shifts.push(by), parkFar);
     const measure = (row: Box, height = row.natural) => ro.emit([{ target: row, contentRect: { height } }]);
     const near = (row: Box, isIntersecting: boolean) => io.emit([{ target: row, isIntersecting }]);
     return { root, content, rows, shifts, dispose, measure, near };
@@ -144,5 +144,57 @@ test("mutations inside an already removed subtree do not retain detached rows", 
     expect(io.targets.has(row)).toBe(false);
     expect(ro.targets.has(row)).toBe(false);
     expect(row.attributes.size).toBe(0);
+    f.dispose();
+});
+
+test("rows in a turn gone far aren't watched, and are again once it comes near", () => {
+    const f = fixture();
+    const turn = new Box(); f.content.append(turn);
+    const rows = Array.from({ length: 3 }, () => new Box(true)); rows.forEach((row) => turn.append(row));
+    mo.emit([{ addedNodes: [turn], removedNodes: [] }]);
+    expect(rows.every((row) => io.targets.has(row) && ro.targets.has(row))).toBe(true);
+    f.measure(rows[0]!); f.near(rows[0]!, false);
+    turn.setAttribute("data-far");
+    mo.emit([{ type: "attributes", target: turn, addedNodes: [], removedNodes: [] }]);
+    expect(rows.some((row) => io.targets.has(row) || ro.targets.has(row))).toBe(false);
+    // Skipped with the turn, not on its own, and with the size it was measured at.
+    expect(rows[0]!.hasAttribute("data-work-far")).toBe(false);
+    expect(rows[0]!.style.containIntrinsicBlockSize).toBe("auto 31px");
+    const late = new Box(true); turn.append(late);
+    mo.emit([{ addedNodes: [late], removedNodes: [] }]);
+    expect(io.targets.has(late)).toBe(false);
+    turn.removeAttribute("data-far");
+    mo.emit([{ type: "attributes", target: turn, addedNodes: [], removedNodes: [] }]);
+    expect([...rows, late].every((row) => io.targets.has(row) && ro.targets.has(row))).toBe(true);
+    // Skipped on its own again as it was, until the observer says where it is now.
+    expect(rows.map((row) => row.hasAttribute("data-work-far"))).toEqual([true, false, false]);
+    // The rows outside it were watched all along.
+    expect(io.targets.size).toBe(84);
+    f.dispose();
+});
+
+test("rows of far turns are let go of only while parkFar says so (many turns drawn), and taken back after", () => {
+    let many = false;
+    const f = fixture(80, () => many);
+    const turn = new Box(); f.content.append(turn);
+    const rows = Array.from({ length: 3 }, () => new Box(true)); rows.forEach((row) => turn.append(row));
+    mo.emit([{ addedNodes: [turn], removedNodes: [] }]);
+    f.measure(rows[0]!); f.near(rows[0]!, false);
+    turn.setAttribute("data-far");
+    mo.emit([{ type: "attributes", target: turn, addedNodes: [], removedNodes: [] }]);
+    // A session as it opens: nothing let go of.
+    expect(rows.every((row) => io.targets.has(row))).toBe(true);
+    expect(rows[0]!.hasAttribute("data-work-far")).toBe(true);
+    // More turns drawn: the far turn's rows are let go of with the next change.
+    many = true;
+    const more = new Box(); f.content.append(more);
+    mo.emit([{ addedNodes: [more], removedNodes: [] }]);
+    expect(rows.some((row) => io.targets.has(row))).toBe(false);
+    expect(rows[0]!.hasAttribute("data-work-far")).toBe(false);
+    // Fewer again: taken back as they were.
+    many = false;
+    mo.emit([{ addedNodes: [], removedNodes: [more] }]);
+    expect(rows.every((row) => io.targets.has(row) && ro.targets.has(row))).toBe(true);
+    expect(rows[0]!.hasAttribute("data-work-far")).toBe(true);
     f.dispose();
 });
