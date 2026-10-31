@@ -1,12 +1,12 @@
 // What streams on screen moves on one clock: text coming out (lib/reveal.ts) and the server's updates going into the
-// store (state/app.ts) happen in the same frame, about 30 times a second on any display, rather than each asking for a
+// store (state/app.ts) happen in the same frame, about 20 times a second on any display, rather than each asking for a
 // frame of its own. Waiting for the next step takes a timer, not a frame: a frame asked for on every refresh and then
 // left empty still runs the page's whole pipeline, 120 times a second on a ProMotion display.
 
 import { batch } from "solid-js";
 
 /** How often. A word out sooner can't be seen; each step lays the column out, paints and draws the window. */
-export const STEP_MS = 33;
+export const STEP_MS = 50;
 /** The timer ends this much early and the step waits for the frame, so it lands on the frame it's due. */
 const FRAME_SLACK_MS = 4;
 

@@ -283,8 +283,11 @@ test("a streaming reply drawn again (its session switched back to) shows what ha
             dispose();
             return out;
         });
-        // New while the reply streams: from its start, let out as the rest comes.
-        expect(first(false)).toEqual({ text: "", behind: true });
+        // New while the reply streams: from its start, its first words at once, let out as the rest comes.
+        const fresh = first(false);
+        expect(fresh.behind).toBe(true);
+        expect(fresh.text.length).toBeGreaterThan(0);
+        expect(fresh.text.length).toBeLessThan(45);
         // Drawn again: as far as it has come.
         expect(first(true)).toEqual({ text: "Sessions keep running when the window closes.", behind: false });
     } finally {

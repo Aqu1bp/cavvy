@@ -3,7 +3,7 @@
     "gitSpawnsPerTurn": 27,
     "gitSpawnsIdle": 0,
     "markdownParsedPerCharacter": 12.3,
-    "streamClockWakesPerSecond": 31,
+    "streamClockWakesPerSecond": 21,
     "guiEagerJsBytes": 1290000,
     "guiEagerCssBytes": 295000
 }
