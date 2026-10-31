@@ -25,7 +25,7 @@ const INLINE = new Set(["A", "B", "CODE", "DEL", "EM", "I", "S", "SPAN", "STRONG
 /** Attributes set after rendering (lib/markdown.ts leaves images without a src). */
 const KEPT = new Set(["src", "tabindex", "data-loading"]);
 /** The writing mark pulses once nothing has come out for this long: while text flows, it's in a new place every step. */
-const CARET_WAIT_MS = 400;
+export const CARET_WAIT_MS = 400;
 
 const painted = new WeakMap<Element, string>();
 const carets = new WeakMap<Element, HTMLElement>();

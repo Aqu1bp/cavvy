@@ -290,7 +290,7 @@ button.bc:hover {
 }
 
 /* Following the end (base.css): its tint, over the same plain colour as the capsule beside it. */
-[data-following] .header .needs.glass {
+[data-following] :is(.header, .set-top) .needs.glass {
     background-image: linear-gradient(color-mix(in srgb, var(--warn) 10%, transparent), color-mix(in srgb, var(--warn) 5%, transparent)), linear-gradient(var(--ctl), var(--ctl));
 }
 

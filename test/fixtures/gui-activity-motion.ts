@@ -217,7 +217,7 @@ test("streaming Markdown retains code host, highlights finished lines at a bound
     let mounts = 0, highlights = 0, trailed = 0;
     const highlighted: string[] = [];
     const Code = component(source("blocks/CodeBlock"), "CodeBlock", {
-        RenderBoundary: boundary(), CopyButton: () => node("copy"), trailBlock: () => trailed++,
+        RenderBoundary: boundary(), CopyButton: () => node("copy"), trailBlock: () => trailed++, CARET_WAIT_MS: 100,
         highlight: async (code: string) => { highlights++; highlighted.push(code); return "highlighted"; },
     });
     // The DOM side (lib/stream-dom.ts) is a browser's: here a block just records what it was given.
@@ -242,6 +242,9 @@ test("streaming Markdown retains code host, highlights finished lines at a bound
         expect(all(root).find((n) => has(n, "code"))).toBe(code);
         expect(all(root).find((n) => has(n, "md-block"))).toBe(paragraph);
         expect(text(root)).toContain("const v99 = 99;");
+        // Its writing mark is still while code flows.
+        expect(code!.props.class).toContain("writing");
+        expect(code!.props.class).not.toContain("waiting");
         // A finished paragraph above the code was painted once, live, without the writing mark.
         expect(painted).toEqual([{ html: "<p>Finished paragraph.</p>\n", live: true, caret: false }]);
         // While it's written, the finished lines are highlighted once the interval has passed, in one go (the last
@@ -251,10 +254,15 @@ test("streaming Markdown retains code host, highlights finished lines at a bound
         expect(highlighted[0]!.endsWith("const v98 = 98;")).toBe(true);
         const lit = all(root).find((n) => has(n, "code-lit"));
         expect(lit?.props.innerHTML).toBe("highlighted\n");
+        // With no code coming it pulses; more code, and it's still again.
+        expect(code!.props.class).toContain("waiting");
+        setValue(value() + "const more = 1;\n");
+        expect(code!.props.class).not.toContain("waiting");
         highlights = 0;
         setValue(value() + "```\n\nAfter code.");
         setStreaming(false);
         await Promise.resolve();
+        expect(code!.props.class).not.toContain("writing");
         expect(mounts).toBe(1);
         expect(highlights).toBe(1);
         expect(all(root).find((n) => has(n, "code"))).toBe(code);
