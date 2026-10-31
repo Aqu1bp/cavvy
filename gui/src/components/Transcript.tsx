@@ -162,41 +162,40 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         wrote();
     };
 
-    // Pinned to the end while a turn runs, new content glides in rather than jumping: one scrollTop write a
-    // frame (to the end, at once), then a short compositor-only translate from where it was drawn to where it
-    // is, picked up from wherever a glide still running is. Scrolling runs no script of ours. Only what's in
-    // sight (or glides into it) moves, not the whole column: a long conversation costs no more to glide.
-    let pinFrame = 0;
-    /** The running glide: the same translate on each of the column's rows in sight. */
-    let glides: { el: HTMLElement; anim: Animation }[] = [];
+    // Pinned to the end while a turn runs, new content glides in rather than jumping: one scrollTop write with each
+    // growth (to the end, at once, in the frame that grew: a frame of its own costs the page's whole pipeline), then a
+    // short compositor-only translate from where it was drawn to where it is, picked up from wherever a glide still
+    // running is. Scrolling runs no script of ours. Only what's in sight (or glides into it) moves, not the whole
+    // column: a long conversation costs no more to glide.
+    /** The running glide: the same translate, from `from`, on each of the column's rows in sight. */
+    let glides: { el: HTMLElement; anim: Animation; from: number }[] = [];
     /** A fold's moves (fold()): what's above an answer, coming down. */
     let folds: { el: HTMLElement; anim: Animation }[] = [];
     const translate = (el: Element) => new DOMMatrixReadOnly(getComputedStyle(el).transform).m42;
-    /** How far a running glide has the rows in sight drawn from their place (px). */
+    /** How far a running glide has the rows in sight drawn from their place (px), worked out: asked of the page, it lays out. */
     const shift = () => {
         const g = glides[0];
-        return g?.anim.playState === "running" ? translate(g.el) : 0;
+        return g?.anim.playState === "running" ? g.from * (1 - (g.anim.effect?.getComputedTiming().progress ?? 0)) : 0;
     };
     const cancelGlide = () => {
         for (const g of glides) g.anim.cancel();
         glides = [];
     };
     const stopGlide = () => {
-        cancelAnimationFrame(pinFrame);
-        pinFrame = 0;
         cancelGlide();
         for (const f of folds) f.anim.cancel();
         folds = [];
     };
-    /** The column's rows in the view, or within `px` of it, from the end up (where a pin leaves it, a few). */
+    /** The column's rows in the view, or within `px` of it, by layout (not as a glide draws them), from the end up (where a pin leaves it, a few). */
     const inSight = (px: number) => {
         const out: HTMLElement[] = [];
         if (!scroller || !content) return out;
-        const view = scroller.getBoundingClientRect();
+        const top = layoutTop(scroller) + scroller.scrollTop;
+        const bottom = top + scroller.clientHeight;
         for (let el = content.lastElementChild as HTMLElement | null; el; el = el.previousElementSibling as HTMLElement | null) {
-            const box = el.getBoundingClientRect();
-            if (box.bottom < view.top - px) break;
-            if (box.top <= view.bottom + px) out.push(el);
+            const y = layoutTop(el);
+            if (y + el.offsetHeight < top - px) break;
+            if (y <= bottom + px) out.push(el);
         }
         return out;
     };
@@ -205,8 +204,8 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
      * counted). Moved down since it was last looked at, it means what changed is above what the reader sees: an image
      * getting its size, rows drawn again after being skipped, turns going in. Following the end, the view then stays
      * still at once, before the frame is drawn. Only growth in view, or at the end, glides. Asked on every change of
-     * size, every scroll while following and every glide's frame, each acting on what it finds (one only looking would
-     * take growth it saw for where things are).
+     * size and every scroll while following, each acting on what it finds (one only looking would take growth it saw
+     * for where things are).
      */
     let seen: { el: HTMLElement; top: number } | undefined;
     const layoutTop = (el: HTMLElement) => {
@@ -223,31 +222,44 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         if (hit instanceof HTMLElement && content.contains(hit) && hit !== content.lastElementChild) seen = { el: hit, top: layoutTop(hit) - layoutTop(content) };
     };
     const grewAbove = () => {
-        const moved = !!content && seen !== undefined && seen.el.isConnected && layoutTop(seen.el) - layoutTop(content) > seen.top + 0.5;
-        look();
+        if (!scroller || !content || !seen?.el.isConnected) {
+            look();
+            return false;
+        }
+        const y = layoutTop(seen.el);
+        const top = y - layoutTop(content);
+        const moved = top > seen.top + 0.5;
+        // While it's still in the upper part of the view it goes on being what's watched: a look is a hit test.
+        const inView = y - layoutTop(scroller) - scroller.scrollTop;
+        if (moved || inView < 0 || inView > scroller.clientHeight / 2) look();
+        else seen.top = top;
         return moved;
     };
     const pin = () => {
-        if (pinFrame) return;
-        pinFrame = requestAnimationFrame(() => {
-            pinFrame = 0;
-            if (!scroller || !stick() || smoothScroll) return;
-            // Grown above what's in view since this was asked for (an image in the turns that just went in): no glide.
-            if (grewAbove()) return toBottom();
-            const before = scroller.scrollTop;
-            const end = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-            if (Math.abs(end - before) <= 0.5) return;
-            scroller.scrollTop = end;
-            wrote();
-            pinned = { at: performance.now(), from: before };
-            const ms = motionMs(GLIDE_MS);
-            if (!ms || !content || typeof content.animate !== "function") return;
-            const running = shift();
-            cancelGlide();
-            const from = glideFrom(scroller.scrollTop - before, running);
-            if (from === undefined) return;
-            // Placed with the last glide gone; a row farther than `from` from the view never comes into it.
-            glides = inSight(Math.abs(from)).map((el) => ({ el, anim: el.animate([{ transform: `translateY(${from}px)` }, { transform: "none" }], { duration: ms, easing: GLIDE_EASE }) }));
+        if (!scroller || !stick() || smoothScroll) return;
+        const before = scroller.scrollTop;
+        const end = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+        if (Math.abs(end - before) <= 0.5) return;
+        scroller.scrollTop = end;
+        wrote();
+        pinned = { at: performance.now(), from: before };
+        const ms = motionMs(GLIDE_MS);
+        if (!ms || !content || typeof content.animate !== "function") return;
+        const from = glideFrom(scroller.scrollTop - before, shift());
+        if (from === undefined) return cancelGlide();
+        // A row farther than `from` from the view never comes into it. A row already moving goes on in the animation it
+        // has: a transform taken off and put back lays the column out again, each time.
+        const rows = inSight(Math.abs(from));
+        const steps = [{ transform: `translateY(${from}px)` }, { transform: "none" }];
+        for (const g of glides) if (!rows.includes(g.el)) g.anim.cancel();
+        glides = rows.map((el) => {
+            const anim = glides.find((g) => g.el === el && g.anim.playState === "running")?.anim;
+            if (!anim) return { el, from, anim: el.animate(steps, { duration: ms, easing: GLIDE_EASE }) };
+            const effect = anim.effect as KeyframeEffect;
+            effect.updateTiming({ duration: ms, easing: GLIDE_EASE });
+            effect.setKeyframes(steps);
+            anim.currentTime = 0;
+            return { el, from, anim };
         });
     };
 
@@ -540,7 +552,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         const from = now - was;
         if (!ms || Math.abs(from) < 1 || !content || typeof content.animate !== "function") return;
         pinned = { at: performance.now(), from: scroller.scrollTop - from };
-        glides = inSight(Math.abs(from)).map((el) => ({ el, anim: el.animate([{ transform: `translateY(${from}px)` }, { transform: "none" }], { duration: ms, easing: GROW_EASE }) }));
+        glides = inSight(Math.abs(from)).map((el) => ({ el, from, anim: el.animate([{ transform: `translateY(${from}px)` }, { transform: "none" }], { duration: ms, easing: GROW_EASE }) }));
     }));
 
     // Sending a prompt jumps back down.
@@ -603,7 +615,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             if (!moved) restore();
             reading = capture();
         }
-        // Scroll events come before the frame's glide: growth above seen here lands here, before it's drawn.
+        // Growth above seen here lands here, before it's drawn.
         else if (grewAbove() && !smoothScroll) toBottom();
     };
     /** Find moved to a match: up from the end, it stops following (its scroll may come just after a write of ours). */
