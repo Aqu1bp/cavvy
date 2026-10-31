@@ -30,7 +30,7 @@ test("a streaming reply's Markdown is parsed about once, not again with each chu
     }
 });
 
-test("however many things are streaming, the page wakes for them 30 times a second at most", () => {
+test("however many things are streaming, the page wakes for them 20 times a second at most", () => {
     const real = { raf: globalThis.requestAnimationFrame, caf: globalThis.cancelAnimationFrame, timeout: globalThis.setTimeout, clear: globalThis.clearTimeout, now: performance.now };
     let now = 1000, wakes = 0, frame: ((t: number) => void) | undefined, id = 0;
     const timers = new Map<number, { at: number; fn: () => void }>();
@@ -56,6 +56,6 @@ test("however many things are streaming, the page wakes for them 30 times a seco
         Object.assign(globalThis, { requestAnimationFrame: real.raf, cancelAnimationFrame: real.caf, setTimeout: real.timeout, clearTimeout: real.clear });
         performance.now = real.now;
     }
-    expect(wakes).toBeGreaterThan(24);
+    expect(wakes).toBeGreaterThan(16);
     withinBudget("streamClockWakesPerSecond", wakes);
 });

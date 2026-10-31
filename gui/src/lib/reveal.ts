@@ -6,9 +6,10 @@
 // one speed over that time, so a burst sweeps in rather than landing whole and
 // a pause in the stream is spread over the words before it. The lag is
 // bounded, so a fast model still finishes fast. A block that starts while the
-// reply streams comes out from its start. When the stream ends, the few words
-// still waiting finish at the same pace. Text that isn't streaming, or that
-// changed other than by growing, shows at once.
+// reply streams comes out from its start, its first words in the step they
+// arrive. When the stream ends, the few words still waiting come out in the next
+// step: nothing follows them to keep a pace with. Text that isn't streaming, or
+// that changed other than by growing, shows at once.
 
 import { createComputed, createContext, createSignal, onCleanup, untrack, type Accessor } from "solid-js";
 import { offStep, onStep, STEP_MS } from "./stream-clock";
@@ -21,7 +22,7 @@ import { offStep, onStep, STEP_MS } from "./stream-clock";
 export const DrawnAgain = createContext<() => boolean>(() => false);
 
 /** How far behind the stream the text runs at most: what has arrived is out this long after the last of it came. */
-export const LAG_MS = 180;
+export const LAG_MS = 90;
 /** The slowest pace, so the last words don't crawl in. */
 const MIN_CHARS_PER_SECOND = 90;
 /** A word longer than this (a URL, a path) is let out in pieces. */
@@ -110,10 +111,14 @@ export function createReveal(text: Accessor<string>, streaming: Accessor<boolean
             return;
         }
         if (pos < t.length) {
-            // More came: all of it is out a moment from now.
-            if (live) due = performance.now() + LAG_MS;
-            run(true);
+            // More came: all of it is out a moment from now. No more to come: all of it now.
+            const now = performance.now();
+            due = live ? now + LAG_MS : now;
             setBehind(true);
+            if (running) return;
+            run(true);
+            // Nothing was waiting: these are the first words, which don't wait for the next step.
+            tick(now);
         }
     });
     onCleanup(() => run(false));
