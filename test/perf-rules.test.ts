@@ -26,6 +26,15 @@ test("the GUI's only timers that run for good are the clock's and the ones liste
     });
 });
 
+test("the conversation's rows aren't holes in the window's drag strip", () => {
+    // Chromium finds each hole again after every layout, for the whole page, and tells the main process when one has moved.
+    const css = read("gui/src/styles/base.css");
+    const rule = /\.app\.electron :is\(button[^{]*\{[^}]*no-drag/.exec(css)?.[0] ?? "";
+    expect(rule).toContain(":not(.transcript *)");
+    // Which is safe because the title bar covers the strip: it ends no lower than the bar does.
+    expect(css).toContain("height: min(2 * var(--top-line) - var(--win-pad, 8px), var(--win-pad, 8px) + var(--header-h));");
+});
+
 test("nothing new blocks the server or an agent on a child process", () => {
     // A spawnSync there stops every session, and the socket, until it returns.
     expect(uses(["src/server", "src/agent", "src/util"], "**/*.ts", /\bspawnSync\(/g)).toEqual({
