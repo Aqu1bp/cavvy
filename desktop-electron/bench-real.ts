@@ -102,12 +102,11 @@ try {
     // Directly, not with `open`: macOS then counts it as part of whoever started it, and asks nothing new. An `open`ed test
     // build is its own app under the same bundle id as the installed one, and each one's Allow undoes the other's.
     const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|CAVVY|ANTHROPIC|ELECTRON_RUN_AS_NODE)/.test(k)));
-    Bun.spawn([join(appPath, "Contents/MacOS/cavvy-desktop"), "--disable-backgrounding-occluded-windows"], { cwd: repo, env: { ...clean, CAVVY_HOME: join(dir, "home"), CAVVY_ELECTRON_USER_DATA: join(dir, "electron-data"), CAVVY_NO_KEYCHAIN: "1", CAVVY_ELECTRON_TEST_PORT: String(PORT), CAVVY_ELECTRON_METRICS: metricsFile, CAVVY_ELECTRON_CWD: repo }, stdout: "ignore", stderr: "ignore" });
+    mainPid = Bun.spawn([join(appPath, "Contents/MacOS/cavvy-desktop"), "--disable-backgrounding-occluded-windows"], { cwd: repo, env: { ...clean, CAVVY_HOME: join(dir, "home"), CAVVY_ELECTRON_USER_DATA: join(dir, "electron-data"), CAVVY_NO_KEYCHAIN: "1", CAVVY_ELECTRON_TEST_PORT: String(PORT), CAVVY_ELECTRON_METRICS: metricsFile, CAVVY_ELECTRON_CWD: repo }, stdout: "ignore", stderr: "ignore" }).pid;
     let server: { pid?: number; port?: number; token?: string } = {};
     for (let i = 0; !server.token; i++) {
         const m = (await Bun.file(metricsFile).json().catch(() => ({}))) as { server?: typeof server; procs?: { pid: number; role: string }[] };
         server = m.server ?? {};
-        mainPid = m.procs?.find((p) => p.role === "main")?.pid ?? mainPid;
         if (i > 600) throw new Error("the app's server didn't start");
         if (!server.token) await sleep(100);
     }
@@ -233,13 +232,15 @@ try {
                 running: sessions.filter((x) => x.status === "running" || x.status === "waiting").length,
             });
         }
+        let followedUp = false;
         if (now - t0 < RUN_MS) for (const s of sessions) {
             const i = ids.indexOf(s.id);
             if (s.status === "running" || s.status === "waiting" || sent[i]! >= CHAINS[i]!.length) continue;
             await rpc.call("session.send", { id: s.id, text: CHAINS[i]![sent[i]!]! + ONLY });
             sent[i]!++;
+            followedUp = true;
         }
-        const done = sessions.length === 3 && sessions.every((s) => s.status !== "running" && s.status !== "waiting") && (now - t0 >= RUN_MS || sent.every((n, i) => n >= CHAINS[i]!.length));
+        const done = !followedUp && sessions.length === 3 && sessions.every((s) => s.status !== "running" && s.status !== "waiting") && (now - t0 >= RUN_MS || sent.every((n, i) => n >= CHAINS[i]!.length));
         if (done || now - t0 > CAP_MS) {
             if (!done) {
                 report.capped = true;
@@ -290,7 +291,7 @@ try {
     report.error = String((e as Error)?.message ?? e);
 } finally {
     // Only this instance: its main process, then its server if it outlived it.
-    if (mainPid) process.kill(mainPid, "SIGTERM");
+    if (mainPid) { try { process.kill(mainPid, "SIGTERM"); } catch {} }
     await sleep(4000);
     for (const pid of [mainPid, serverPid]) {
         if (!pid) continue;

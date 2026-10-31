@@ -42,12 +42,18 @@ for (let r = 1; r <= runs; r++) for (const [name, target] of builds) {
     if (only.includes("ux")) bench("bench-ux.ts", `pb-${name}-${r}`, target, arg("--throttle") ? ["--throttle", arg("--throttle")!] : []);
 }
 
-const load = async (kind: string, name: string) => (await Promise.all(Array.from({ length: runs }, (_, i) => json(join(results, `bench-${kind}-pb-${name}-${i + 1}.json`))))).filter(Boolean);
+/** The runs of a bench that finished; a run that failed or is missing is said out loud, and left out. */
+async function load(kind: string, name: string) {
+    const all = await Promise.all(Array.from({ length: runs }, (_, i) => json(join(results, `bench-${kind}-pb-${name}-${i + 1}.json`))));
+    all.forEach((r, i) => { if (!r || r.error) console.error(`WARNING: ${kind} run ${i + 1} of ${name} ${r ? `failed: ${r.error}` : "is missing"}`); });
+    return all.filter((r) => r && !r.error);
+}
 if (only.includes("stream")) {
     const by = Object.fromEntries(await Promise.all(builds.map(async ([name]) => [name, await load("stream", name)])));
     table("Work: million instructions/s");
     for (const phase of PHASES.split(",")) {
-        const of = (name: string, f: (p: any) => number) => median((by[name] ?? []).map((r: any) => (r.phases[phase] ? f(r.phases[phase]) : NaN)));
+        for (const [name] of builds) for (const r of by[name] ?? []) if (r.phases[phase]?.invalid) console.error(`WARNING: ${phase} of ${name} left out: ${r.phases[phase].invalid}`);
+        const of = (name: string, f: (p: any) => number) => median((by[name] ?? []).map((r: any) => (r.phases[phase] && !r.phases[phase].invalid ? f(r.phases[phase]) : NaN)));
         const pick = (f: (p: any) => number) => Object.fromEntries(builds.map(([n]) => [n, of(n, f)]));
         row(phase, pick((p) => ["ui", "gpu", "main", "server"].reduce((sum, k) => sum + (p.mips?.[k] ?? 0), 0)));
         row("  of which GPU", pick((p) => p.mips?.gpu ?? 0));

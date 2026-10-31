@@ -41,9 +41,10 @@ beforeAll(async () => {
     await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });
     ws.onmessage = (m) => {
         const text = String(m.data);
-        bytes += text.length;
         const msg = JSON.parse(text);
         if (msg.id) { replies.get(msg.id)?.(msg); replies.delete(msg.id); return; }
+        // What the server sends on its own, not its answers to this test's asking how the turn is going.
+        bytes += text.length;
         const ev = msg.event;
         if (ev?.type === "session.ops") for (const op of ev.ops) {
             if (op.op === "append") streamed += String(op.text ?? "").length;
@@ -80,7 +81,8 @@ test("a reply costs its size on the socket, and not much more", async () => {
     bytes = streamed = 0;
     await turn(cwd, "perfstream text 2 2000");
     expect(streamed).toBeGreaterThan(STREAM_DEMO.length);
-    withinBudget("wireBytesPerCharacter", Math.round((bytes / streamed) * 100) / 100);
+    // Chunks race the server's flush, and a busy machine puts more into each message: fewer bytes, with no change here.
+    withinBudget("wireBytesPerCharacter", Math.round((bytes / streamed) * 100) / 100, { room: true });
 }, 60_000);
 
 test("a turn starts few gits, and an idle session none", async () => {
