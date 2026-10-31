@@ -261,11 +261,23 @@ try {
 
     const row = (id: string) => `document.querySelector('[data-session-row="${id}"] .slim-hit, [data-session-row="${id}"] .card-hit, [data-session-id="${id}"] .slim-hit')`;
     const show = async (id: string) => {
+        const away = () => page.cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x: 900, y: 500, button: "none", buttons: 0 });
+        // The rail holds its rows under the pointer, and the real cursor may be there: away from it first.
+        await away();
         for (let i = 0; i < 100 && !(await js(`!!${row(id)}`)); i++) await sleep(100);
-        const at = await js(`(() => { const el = ${row(id)}; el.scrollIntoView({ block: 'center' }); const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + Math.min(r.height / 2, 14) }; })()`);
-        await page.cdp("Input.dispatchMouseEvent", { type: "mouseMoved", ...at });
-        await page.cdp("Input.dispatchMouseEvent", { type: "mousePressed", ...at, button: "left", buttons: 1, clickCount: 1 });
-        await page.cdp("Input.dispatchMouseEvent", { type: "mouseReleased", ...at, button: "left", buttons: 0, clickCount: 1 });
+        const current = `document.querySelector('[data-session-id="${id}"]')?.classList.contains('cur')`;
+        for (let tries = 0; tries < 3 && !(await js(current)); tries++) {
+            await away();
+            await sleep(450);
+            const at = await js(`(() => { const el = ${row(id)}; el.scrollIntoView({ block: 'center' }); const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + Math.min(r.height / 2, 14), button: "none", buttons: 0 }; })()`);
+            await page.cdp("Input.dispatchMouseEvent", { type: "mouseMoved", ...at });
+            await page.cdp("Input.dispatchMouseEvent", { type: "mousePressed", ...at, button: "left", buttons: 1, clickCount: 1 });
+            await page.cdp("Input.dispatchMouseEvent", { type: "mouseReleased", ...at, button: "left", buttons: 0, clickCount: 1 });
+            for (let i = 0; i < 20 && !(await js(current)); i++) await sleep(100);
+        }
+        // A stretch measured on the wrong session reads as a very good number.
+        if (!(await js(current))) throw new Error(`session ${id} didn't open`);
+        await away();
         await sleep(2500);
     };
 
