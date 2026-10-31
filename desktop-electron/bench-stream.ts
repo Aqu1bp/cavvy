@@ -3,7 +3,7 @@
 // bytes the page received. On the demo's mock model ("perfstream" in scripts/mock-llm.ts). Writes
 // bench-results/bench-stream-<label>.json.
 //
-//   bun desktop-electron/bench-stream.ts --label before [--history 200] [--seconds 15] [--only idleLongOnScreen,textLongOnScreen]
+//   bun desktop-electron/bench-stream.ts --label before [--app <packaged executable>] [--history 200] [--seconds 15] [--only idleLongOnScreen,textLongOnScreen]
 //
 // Phases: idle with a long session on screen; a long reply streaming in a short session, then in the long one; a
 // command's output streaming in the long one; the long one streaming while a short one is on screen; and a 40 KB reply
@@ -176,8 +176,9 @@ function topSelf(p: { nodes: { id: number; callFrame: { functionName: string; ur
 try {
     for (let i = 0; ; i++) { if (await fetch(`http://127.0.0.1:${DEMO_PORT}/healthz`).then((r) => r.ok, () => false)) break; if (i > 120) throw new Error("demo didn't start"); await sleep(500); }
 
-    // ---- The app (development build), its main process's Node inspector on 9345.
-    app = Bun.spawn([join(repo, "desktop-electron/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"), "--inspect=9345", "--disable-backgrounding-occluded-windows", ...(arg("--chromium") ?? "").split(" ").filter(Boolean), join(repo, "desktop-electron")], {
+    // ---- The app (a development build, or with --app a packaged one), its main process's Node inspector on 9345.
+    const exe = arg("--app");
+    app = Bun.spawn([...(exe ? [exe] : [join(repo, "desktop-electron/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron")]), "--inspect=9345", "--disable-backgrounding-occluded-windows", ...(arg("--chromium") ?? "").split(" ").filter(Boolean), ...(exe ? [] : [join(repo, "desktop-electron")])], {
         cwd: repo,
         env: { ...process.env, CAVVY_HOME: join(dir, "home"), CAVVY_NO_KEYCHAIN: "1", CAVVY_ELECTRON_TEST_PORT: "9346", CAVVY_ELECTRON_USER_DATA: join(dir, "electron-data"), CAVVY_ELECTRON_CWD: project, CAVVY_ELECTRON_METRICS: metricsFile },
         stdout: "ignore",
@@ -283,6 +284,11 @@ try {
         const roles = await pids();
         await js(`(() => { window.__hiddenAt = []; window.__onVis = () => document.visibilityState !== 'visible' && __hiddenAt.push(performance.now()); document.addEventListener('visibilitychange', __onVis); })()`);
         const visibleAtStart = await js(`document.visibilityState`);
+        // Experiments: BENCH_SAMPLE=<dir>, macOS's `sample` of the UI process through the stretch, by thread.
+        if (process.env.BENCH_SAMPLE) {
+            const ui = [...roles].find(([, role]) => role === "ui")?.[0];
+            if (ui) Bun.spawn(["/usr/bin/sample", String(ui), String(Math.min(seconds, 8)), "-f", join(process.env.BENCH_SAMPLE, `${label}-${name}.txt`)], { stdout: "ignore", stderr: "ignore" });
+        }
         measuring = true;
         const t0 = performance.now();
         const c0 = cpuTimes([...roles.keys()]);
@@ -381,10 +387,24 @@ try {
     };
     const want = (n: string) => !only || only.includes(n);
 
+    // A turn running with nothing coming ("hangforever"): what waiting on a model costs, most of a turn's time.
+    if (want("waitingOnScreen")) {
+        await show(short);
+        await streamWhile([[short, "hangforever"]], () => phase("waitingOnScreen", SECONDS));
+    }
+
     // Idle, the long session on screen.
     await show(long);
     await sleep(3000);
     await phase("idleLongOnScreen", SECONDS, { perSecond: "0" });
+    // Idle again just after coming back to it from another session.
+    if (want("idleAfterSwitch")) {
+        await show(short);
+        await sleep(3000);
+        await show(long);
+        await sleep(1000);
+        await phase("idleAfterSwitch", SECONDS, { perSecond: "0" });
+    }
     // A long reply (about 80 tokens a second, as a fast model) streaming on screen: a short session, then the long one.
     const text = "perfstream text 8 80";
     await show(short);

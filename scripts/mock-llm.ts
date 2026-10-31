@@ -487,7 +487,7 @@ function recall(messages: Json[]): string {
     return `Your first message was "${said[0] ?? ""}". You've said: ${said.map((s) => `"${s}"`).join(", ")}.`;
 }
 
-const STREAM_DEMO = `Sessions keep running when the window closes: the server owns them, and the GUI is only a view onto its state. Here's how a turn moves through it.
+export const STREAM_DEMO = `Sessions keep running when the window closes: the server owns them, and the GUI is only a view onto its state. Here's how a turn moves through it.
 
 ## How a turn runs
 

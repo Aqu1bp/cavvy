@@ -1,5 +1,5 @@
 // Startup, launch after launch with one profile: the first has no code cache, later ones do. For each, from the moment
-// it's spawned: the server ready, the window shown, and the composer there to type in. Writes bench-startup-<label>.json.
+// it's spawned: the server ready, the window shown, and the composer there to type in. Writes bench-results/bench-startup-<label>.json.
 //
 //   bun desktop-electron/bench-startup.ts --label dev
 //   bun desktop-electron/bench-startup.ts --label packaged --app <…>/Cavvy.app/Contents/MacOS/Cavvy
@@ -57,7 +57,7 @@ try {
     report.error = String((e as Error)?.stack ?? e);
 } finally {
     demo.kill();
-    await Bun.write(join(import.meta.dir, `bench-startup-${label}.json`), JSON.stringify(report, null, 1));
+    await Bun.write(join(import.meta.dir, "bench-results", `bench-startup-${label}.json`), JSON.stringify(report, null, 1));
     console.log(JSON.stringify(report));
     rmSync(dir, { recursive: true, force: true });
     process.exit(0);
