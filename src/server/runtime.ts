@@ -57,6 +57,7 @@ import type { McpAsker } from "../mcp/elicitation";
 import { notifyAfterMs } from "../ui/notify";
 import { displayPath } from "../util/files";
 import { gitBranch } from "../util/git";
+import { pathSettling } from "../util/env";
 import { redact, redactPrefix, lineRedactor } from "../util/redact";
 import { redactedReport } from "../lsp/diagnostics";
 import { agentNeedsTrust, trustedByUser } from "../config/trust";
@@ -481,7 +482,8 @@ export class Runtime {
         if (opts.resumed) this.goal.restore(session.goal);
         this.view.state.goal = this.goal.view();
         this.goalLive = true;
-        this.ready = this.track(this.initModel());
+        // The model's found on PATH, and what waits for this (a first turn, saved schedules) works with what's on it.
+        this.ready = this.track(pathSettling ? pathSettling.then(() => (this.closed ? undefined : this.initModel())) : this.initModel());
         // Saved schedules come back once there's a model to run them with.
         void this.ready.then(() => !this.closed && this.schedules.restore(), () => undefined);
         const warn = (msg: string, level: "info" | "warn" = "warn") => this.notice(msg, level);
