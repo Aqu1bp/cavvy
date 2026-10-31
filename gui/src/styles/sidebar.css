@@ -411,7 +411,7 @@
     border-radius: 50%;
     border: 2px solid color-mix(in srgb, var(--accent) 22%, transparent);
     border-top-color: var(--accent);
-    animation: spin 0.9s linear infinite;
+    animation: spin 0.9s steps(27) infinite;
 }
 
 .card .t {

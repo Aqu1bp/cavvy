@@ -9,6 +9,8 @@ import type { InspectorPane } from "../lib/inspector";
 export type SettingsTab = "general" | "appearance" | "providers" | "plugins" | "usage" | "shortcuts" | "about";
 
 export const [paletteOpen, setPaletteOpen] = createSignal(false);
+/** The session on screen follows the end of its conversation: nothing is passing behind what floats over it. */
+export const [following, setFollowing] = createSignal(false);
 export const [settingsTab, setSettingsTab] = createSignal<SettingsTab | undefined>();
 /** "Add account…" in the model picker: the CLI provider whose new-account form Settings → Providers opens. */
 export const [addAccountFor, setAddAccountFor] = createSignal<string | undefined>();

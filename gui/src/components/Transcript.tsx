@@ -3,7 +3,7 @@ import { ArrowDown, ArrowUpLeft, GitFork } from "lucide-solid";
 import type { Turn } from "@shared/protocol";
 import { fork, forkAnchor } from "../state/actions";
 import { activate, app, toast, type SessionHandle } from "../state/app";
-import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setJumpTarget, setRewindOpen, takeDockGlide } from "../state/ui";
+import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setFollowing, setJumpTarget, setRewindOpen, takeDockGlide } from "../state/ui";
 import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
 import { anchoredTop, atBottom, FAR, firstBelow, firstWindow, MORE_TURNS, restoredShown, turnHeight, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
@@ -525,6 +525,9 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
 
     // The composer opening or closing its large size (Composer.tsx): following the end, the end stays just above it,
     // gliding with its edge from where it was drawn. Here, as the dock's new height is set: before it's drawn.
+    createEffect(() => setFollowing(stick()));
+    onCleanup(() => setFollowing(false));
+
     createEffect(on(() => p.dock, (now, was) => {
         if (!takeDockGlide() || now === undefined || was === undefined || !scroller || !stick() || smoothScroll) return;
         stopGlide();

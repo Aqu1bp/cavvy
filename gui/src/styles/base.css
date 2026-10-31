@@ -114,6 +114,15 @@ textarea,
     pointer-events: none;
 }
 
+/* Following the end, nothing passes behind these: the column keeps room for the dock, and only the sheet shows through.
+   A blur of the sheet is the sheet, but it's worked out again on every frame the column moves, and that was most of what
+   a reply streaming cost the GPU. The same colour, with nothing to blur. (The steps, open, lie over the conversation.) */
+[data-following] :is(.composer-box, .ask, .uq-tray, .steps-tray:not(.open), .cap, .needs).glass {
+    background: linear-gradient(var(--ctl), var(--ctl)), var(--sheet);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+}
+
 .glass > * {
     position: relative;
 }
@@ -299,7 +308,7 @@ h3 {
 }
 
 .spinner {
-    animation: spin 0.8s linear infinite;
+    animation: spin 0.8s steps(24) infinite;
 }
 
 @keyframes pulse {
@@ -309,7 +318,7 @@ h3 {
 }
 
 .pulse {
-    animation: pulse 1.4s ease-in-out infinite;
+    animation: pulse 1.4s steps(14) infinite;
 }
 
 /* A continuous compositor animation. Text stays readable without repainting
@@ -321,7 +330,7 @@ h3 {
 
 .shimmer {
     color: var(--fg-2);
-    animation: shimmer 2.2s ease-in-out infinite;
+    animation: shimmer 2.2s steps(33) infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -364,7 +373,7 @@ h3 {
         transition-duration: 0.001ms !important;
     }
     .spinner {
-        animation: spin 1.6s linear infinite !important;
+        animation: spin 1.6s steps(32) infinite !important;
     }
 }
 

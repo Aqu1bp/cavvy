@@ -24,9 +24,12 @@ const SETTLE_MS = 130;
 const INLINE = new Set(["A", "B", "CODE", "DEL", "EM", "I", "S", "SPAN", "STRONG"]);
 /** Attributes set after rendering (lib/markdown.ts leaves images without a src). */
 const KEPT = new Set(["src", "tabindex", "data-loading"]);
+/** The writing mark pulses once nothing has come out for this long: while text flows, it's in a new place every step. */
+export const CARET_WAIT_MS = 400;
 
 const painted = new WeakMap<Element, string>();
 const carets = new WeakMap<Element, HTMLElement>();
+let caretWait: ReturnType<typeof setTimeout> | undefined;
 
 /** The trail's tier (0 to 2) for a mark this many ms old, or -1 once it's past the trail. */
 export function trailTier(age: number): number {
@@ -231,4 +234,6 @@ function placeCaret(el: HTMLElement) {
     caret.setAttribute("aria-hidden", "true");
     at.parentNode!.insertBefore(caret, at.nextSibling);
     carets.set(el, caret);
+    clearTimeout(caretWait);
+    caretWait = setTimeout(() => caret.classList.add("waiting"), CARET_WAIT_MS);
 }

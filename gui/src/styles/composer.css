@@ -354,7 +354,7 @@
     height: calc(6 * var(--sp));
     border-radius: 50%;
     background: var(--accent);
-    animation: uq-joining 1.2s ease-in-out infinite;
+    animation: uq-joining 1.2s steps(12) infinite;
 }
 
 @keyframes uq-joining {

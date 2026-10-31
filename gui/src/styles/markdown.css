@@ -333,7 +333,13 @@
     border-radius: 50%;
     background: var(--accent);
     vertical-align: 0.05em;
-    animation: md-caret 1.1s var(--ease-in-out) infinite alternate;
+}
+
+/* Stepped, like every animation that runs on for as long as something waits: the compositor draws the window on a
+   refresh only if something changed, so 20 small changes a second rather than one on every refresh. */
+.md-caret.waiting,
+.md .code.writing.waiting .code-body code::after {
+    animation: md-caret 1.1s steps(22) infinite alternate;
 }
 
 .md .code.writing .code-body code::after {
@@ -348,8 +354,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .md-caret,
-    .md .code.writing .code-body code::after {
+    .md-caret.waiting,
+    .md .code.writing.waiting .code-body code::after {
         animation: none;
     }
 }

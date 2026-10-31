@@ -11,6 +11,7 @@
 // changed other than by growing, shows at once.
 
 import { createComputed, createContext, createSignal, onCleanup, untrack, type Accessor } from "solid-js";
+import { offStep, onStep, STEP_MS } from "./stream-clock";
 
 /**
  * True while a transcript draws what it already had (a session opened, or switched back to): its text is shown as
@@ -25,11 +26,6 @@ export const LAG_MS = 180;
 const MIN_CHARS_PER_SECOND = 90;
 /** A word longer than this (a URL, a path) is let out in pieces. */
 const MAX_WORD = 16;
-/**
- * Text comes out at most this often: every other frame on a 120 Hz display, every frame at 60 Hz. A word out 8 ms
- * sooner can't be seen, and each step renders the block again, lays the column out and glides it.
- */
-const STEP_MS = 15;
 /** Far behind (a hidden window, a long burst): catch up at once. */
 const MAX_BACKLOG = 4000;
 /** A block that starts while the reply streams comes out from its start, unless it already has this much (drawn again mid-reply). */
@@ -68,28 +64,24 @@ export function createReveal(text: Accessor<string>, streaming: Accessor<boolean
     let pos = fresh ? 0 : target.length;
     const [shown, setShown] = createSignal(target.slice(0, pos));
     const [behind, setBehind] = createSignal(false);
-    let frame = 0;
+    let running = false;
     let last = 0;
     let carry = 0;
     /** When what has arrived should all be out (performance.now() ms). */
     let due = 0;
     const run = (on: boolean) => {
-        if (on === (frame !== 0)) return;
+        if (on === running) return;
+        running = on;
         pending += on ? 1 : -1;
-        if (on) frame = requestAnimationFrame(tick);
+        if (on) onStep(tick);
         else {
-            cancelAnimationFrame(frame);
-            frame = 0;
+            offStep(tick);
             last = 0;
             carry = 0;
         }
     };
     const tick = (now: number) => {
-        if (last && now - last < STEP_MS) {
-            frame = requestAnimationFrame(tick);
-            return;
-        }
-        const dt = last ? Math.min(64, now - last) : 16;
+        const dt = last ? Math.min(64, now - last) : STEP_MS;
         last = now;
         const step = revealStep(target.length - pos, dt, carry, due - now);
         carry = step.carry;
@@ -97,7 +89,7 @@ export function createReveal(text: Accessor<string>, streaming: Accessor<boolean
             pos = revealEnd(target, pos, step.chars);
             setShown(target.slice(0, pos));
         }
-        if (pos < target.length) frame = requestAnimationFrame(tick);
+        if (pos < target.length) onStep(tick);
         else {
             run(false);
             setBehind(false);
@@ -109,7 +101,7 @@ export function createReveal(text: Accessor<string>, streaming: Accessor<boolean
         target = t;
         const grew = t.length >= pos && t.startsWith(untrack(shown));
         // When the stream ends mid-burst, what's left still comes out at the same pace (a moment).
-        const draining = !live && frame !== 0;
+        const draining = !live && running;
         if ((!live && !draining) || !grew || t.length - pos > MAX_BACKLOG || typeof requestAnimationFrame === "undefined" || document.hidden) {
             run(false);
             pos = t.length;

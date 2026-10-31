@@ -6,6 +6,7 @@ import { component, node, renderer, text, type Node } from "../helpers/gui-rende
 import * as liveLine from "../../gui/src/lib/live-line";
 import * as format from "../../gui/src/lib/format";
 import { createReveal, LAG_MS, revealing } from "../../gui/src/lib/reveal";
+import { STEP_MS } from "../../gui/src/lib/stream-clock";
 
 const source = (file: string) => readFileSync(new URL(`../../gui/src/components/${file}.tsx`, import.meta.url), "utf8").replace(/^import [\s\S]*?;\n/gm, "");
 
@@ -18,14 +19,23 @@ globalThis.cancelAnimationFrame = ((id: number) => frames.delete(id)) as any;
 (globalThis as any).document = { hidden: false };
 const realNow = performance.now.bind(performance);
 performance.now = () => clock;
+/** The clock's timer, on the same clock (only while the test that uses them runs). */
+const timers = new Map<number, { at: number; fn: () => void }>();
+const realTimers = { set: globalThis.setTimeout, clear: globalThis.clearTimeout };
+const fakeTimers = () => {
+    globalThis.setTimeout = ((fn: () => void, ms = 0) => (timers.set(++seq, { at: clock + ms, fn }), seq)) as any;
+    globalThis.clearTimeout = ((id: number) => void timers.delete(id)) as any;
+};
 const flush = () => {
     clock += 16;
+    for (const [id, t] of [...timers]) if (t.at <= clock) (timers.delete(id), t.fn());
     const due = [...frames.values()];
     frames.clear();
     due.forEach((fn) => fn(clock));
 };
 
 test("a block that starts while the reply streams comes out from its start, at one pace, all of it within the lag", () => {
+    fakeTimers();
     solid.createRoot((dispose) => {
         const [value, setValue] = solid.createSignal("A fast model sends a whole paragraph at once, ");
         const [streaming, setStreaming] = solid.createSignal(true);
@@ -45,8 +55,9 @@ test("a block that starts while the reply streams comes out from its start, at o
             last = shown().length;
         }
         expect(shown()).toBe(value());
-        expect(clock - start).toBeLessThanOrEqual(LAG_MS + 16);
-        const body = steps.slice(1, -1);
+        expect(clock - start).toBeLessThanOrEqual(LAG_MS + STEP_MS);
+        // A frame with no step due lets nothing out.
+        const body = steps.filter((n) => n > 0).slice(1, -1);
         expect(Math.max(...body) - Math.min(...body)).toBeLessThanOrEqual(12);
         expect(revealing()).toBe(false);
         // More, then the stream ends mid-burst: what's left still comes out, within the lag of when it arrived.
@@ -59,6 +70,8 @@ test("a block that starts while the reply streams comes out from its start, at o
         expect(clock - end).toBeLessThanOrEqual(LAG_MS);
         dispose();
     });
+    globalThis.setTimeout = realTimers.set;
+    globalThis.clearTimeout = realTimers.clear;
     // Drawn again mid-reply with much already there (a session switched back to): shown at once, not replayed.
     solid.createRoot((dispose) => {
         const long = "x ".repeat(1000);

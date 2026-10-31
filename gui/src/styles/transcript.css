@@ -692,7 +692,7 @@
     height: calc(8 * var(--sp));
     border-radius: 50%;
     background: var(--accent);
-    animation: orb 1.1s var(--ease) infinite alternate;
+    animation: orb 1.1s steps(22) infinite alternate;
 }
 
 @keyframes orb {
