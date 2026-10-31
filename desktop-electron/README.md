@@ -10,7 +10,7 @@ real Chromium page in the window, which you use directly and the agent drives to
 
 ## The app
 
-- `src/main.ts`: the window, the server (started with `serve --handshake --login-env`, restarted if it stops, but not
+- `src/main.ts`: the window (its page reloaded if it dies, asking first if that keeps happening), the server (started with `serve --handshake --login-env`, restarted if it stops, but not
   more than five times a minute, and asked to quit with the app), the GUI served from `cavvy://app` with the same
   Content-Security-Policy the Tauri shell had, the menu bar, and where the window was (`window-state.ts`).
 - `src/preload.ts`: the page's only way to the app (`window.cavvyDesktop`, `gui/src/lib/platform.ts`). Each call is

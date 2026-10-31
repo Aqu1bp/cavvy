@@ -140,6 +140,7 @@ async function stopServer() {
 
 let win: BrowserWindow | undefined;
 let shown = false;
+const goneAt: number[] = [];
 /** How the window opened (window-state.ts): maximized or full screen once it's shown, as showing it hidden would show it early. */
 let opened: WindowState | undefined;
 const host = new BrowserHost(() => win);
@@ -195,6 +196,10 @@ function createWindow() {
     win.webContents.on("will-navigate", (e, url) => {
         if (!url.startsWith(`${PAGE_ORIGIN}/`)) e.preventDefault();
     });
+    win.webContents.on("render-process-gone", (_e, { reason }) => {
+        console.error(`[cavvy] the window's page is gone (${reason})`);
+        if (reason !== "clean-exit") void pageGone();
+    });
     win.on("closed", () => {
         win = undefined;
         host.windowGone();
@@ -207,6 +212,22 @@ function createWindow() {
     }
     void win.loadURL(DEV_URL ?? `${ORIGIN}/index.html`);
     setTimeout(showWindow, SHOW_ANYWAY_MS);
+}
+
+/** The page gone, the window stays empty. The server's still working and a reload picks up where the page was; asked first if that keeps happening. */
+async function pageGone() {
+    const now = Date.now();
+    while (goneAt.length && now - goneAt[0]! > RESTART_WINDOW_MS) goneAt.shift();
+    goneAt.push(now);
+    const w = win;
+    if (!w || quitting) return;
+    if (goneAt.length >= MAX_STARTS) {
+        console.error("[cavvy] the window's page keeps crashing; asking");
+        const { response } = await dialog.showMessageBox(w, { type: "warning", message: "Reload Cavvy's window?", detail: "It keeps crashing.", buttons: ["Reload", "Quit"], defaultId: 0, cancelId: 0 });
+        if (response === 1) { app.quit(); return; }
+        goneAt.length = 0;
+    }
+    if (!w.isDestroyed() && !quitting) w.webContents.reload();
 }
 
 function showWindow() {

@@ -115,6 +115,14 @@ test("the server ships on the Bun that's tested, and not on 1.3", () => {
     expect(Bun.semver.order(shipped, "1.4.0")).toBe(1);
 });
 
+test("a window whose page dies gets it back", () => {
+    // Without this the window stays empty until the app's restarted, while the server carries on behind it.
+    const main = read("desktop-electron/src/main.ts");
+    const handler = main.slice(main.indexOf('"render-process-gone"'), main.indexOf('win.on("closed"'));
+    expect(handler).toContain("pageGone()");
+    expect(main.slice(main.indexOf("async function pageGone"), main.indexOf("function showWindow"))).toContain("webContents.reload()");
+});
+
 test("budgets only come down, and what's loaded at startup is read from index.html", async () => {
     const { eagerAssets, raised } = await import("../scripts/perf-budgets");
     expect(raised({ a: 2, b: 2 }, { a: 1, b: 2, c: 9 })).toEqual([]);
