@@ -150,6 +150,8 @@ export class SignInReplaced extends McpError {
 export class McpManager {
     servers = new Map<string, ServerState>();
     onChange?: () => void;
+    /** closeAll() has been: a start still to come doesn't happen. */
+    private closed = false;
     /** Servers left out by load() for their name's length. */
     skipped = 0;
 
@@ -274,6 +276,7 @@ export class McpManager {
     }
 
     async startAll(signal?: AbortSignal) {
+        if (this.closed) return;
         await Promise.all([...this.servers.values()].filter((s) => s.status === "pending").map((s) => this.start(s, signal)));
     }
 
@@ -568,6 +571,7 @@ export class McpManager {
     }
 
     async closeAll() {
+        this.closed = true;
         await Promise.all([...this.servers.values()].map((s) => s.client?.close()));
     }
 

@@ -12,6 +12,7 @@ import { planLimitKey, type AccountInfo, type BackgroundTaskInfo } from "./proto
 import { endedText } from "../agent/background";
 import { mergeLimits } from "../backends/limits";
 import { Terminals } from "./terminals";
+import { loginPathSettled } from "./login-env";
 import { deleteScript, findScript, findSetupScript, listScripts, markUsed, reorderScripts, saveScript } from "./scripts";
 import { checkGrant, SetupTickets, setupTrusted } from "./setup";
 import { RpcError } from "./rpc-error";
@@ -249,7 +250,7 @@ export class Workspace {
         const mcp = new McpManager(this.cwd, () => this.settings, this.trusted, () => (this.settings = loadSettings(this.cwd, { trusted: this.trusted })), true);
         mcp.onChange = () => this.engine.workspaceChanged(this);
         mcp.load();
-        void mcp.startAll();
+        void loginPathSettled().then(() => mcp.startAll());
         return mcp;
     }
 
@@ -385,7 +386,7 @@ export class Engine {
     async start() {
         void this.firstListings();
         this.loadLimits();
-        void this.checkPlans();
+        void loginPathSettled().then(() => this.checkPlans());
         // Every window applies a save of the keybindings file at once.
         this.stopKeybindings = watchKeybindings((r) => this.broadcast({ type: "keybindings.changed", keybindings: { path: keybindingsPath(), ...r } }));
         this.updates.start();
@@ -618,7 +619,7 @@ export class Engine {
 
     refreshListings(force = false): Promise<ProviderListing[]> {
         if (this.refreshing && !force) return this.refreshing;
-        const p = (this.o.listModels ?? listAllModels)({ refresh: force })
+        const p = loginPathSettled().then(() => (this.o.listModels ?? listAllModels)({ refresh: force }))
             .then((l) => {
                 const key = (x: ProviderListing[]) => JSON.stringify(x.map((y) => [y.provider.id, y.status, y.models.map((m) => [m.id, m.contextWindow, m.pricing?.input])]));
                 const changed = key(l) !== key(this.listings);
