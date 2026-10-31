@@ -7,6 +7,7 @@
 //   bun desktop-electron/bench-ux.ts --label dev
 //   bun desktop-electron/bench-ux.ts --label packaged --app <…>/Cavvy.app/Contents/MacOS/Cavvy
 //   bun desktop-electron/bench-ux.ts --label traced --trace <dir>    # also a Chromium trace of each session opened
+//   bun desktop-electron/bench-ux.ts --label slow --throttle 4       # the page slowed down as on a slower machine
 //
 // Interactions: opening a long session; flicking through it and back; jumping to its start; unfolding a turn's work;
 // switching between sessions (open in the window and not); opening the side panel and its tabs; opening a big diff and
@@ -208,6 +209,8 @@ try {
         return { busyMs: Math.round(busy / 1000), totalMs: Math.round(total / 1000), markdownMs: Math.round(markdown / 100) / 10, top: [...byFn].filter(([k]) => k !== "(idle)").sort((a, b) => b[1] - a[1]).slice(0, 14).map(([k, v]) => `${Math.round(v / 100) / 10}ms ${k}`) };
     };
     /** With --trace <dir>: a Chromium trace of a stretch (the session opens, the big diff's), every process, written to <dir>/trace-<label>-<name>.json. */
+    // A slower machine than this one: Chromium's own slowdown of the page, by this factor.
+    if (arg("--throttle")) await cdp("Emulation.setCPUThrottlingRate", { rate: Number(arg("--throttle")) });
     const traceDir = arg("--trace");
     const traced = async (name: string, run: () => Promise<void>) => {
         if (!traceDir) return run();

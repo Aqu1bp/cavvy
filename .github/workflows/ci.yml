@@ -29,6 +29,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The merge and the base it merges into: the budgets below compare the two.
+          fetch-depth: 2
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: ${{ env.BUN_VERSION }}
@@ -42,6 +45,13 @@ jobs:
       - run: bun run gui:typecheck
       - run: bun run desktop:typecheck
       - run: bun run gui:build
+      - run: bun run perf:budgets
+      # Adding the label takes effect on the next push.
+      - name: Performance budgets only come down
+        if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'perf-budget-raise')
+        run: |
+          git show HEAD^1:test/perf-budgets.json > "$RUNNER_TEMP/base-budgets.json" 2>/dev/null || echo '{}' > "$RUNNER_TEMP/base-budgets.json"
+          bun scripts/perf-budgets.ts ratchet "$RUNNER_TEMP/base-budgets.json"
 
   test:
     name: Tests (${{ matrix.shard }}/4)

@@ -1,0 +1,9 @@
+{
+    "wireBytesPerCharacter": 3.3,
+    "gitSpawnsPerTurn": 27,
+    "gitSpawnsIdle": 0,
+    "markdownParsedPerCharacter": 12.3,
+    "streamClockWakesPerSecond": 31,
+    "guiEagerJsBytes": 1290000,
+    "guiEagerCssBytes": 295000
+}
