@@ -5,7 +5,8 @@
 //
 //   bun desktop-electron/pack.ts            → desktop-electron/out/Cavvy-darwin-<arch>/Cavvy.app
 //
-// ELECTRON_ZIP_DIR names a folder holding electron-v<version>-darwin-<arch>.zip to build offline.
+// ELECTRON_ZIP_DIR names a folder holding electron-v<version>-darwin-<arch>.zip to build offline. The server's Bun is
+// downloaded once, unless it's the Bun doing the building.
 
 import { packager } from "@electron/packager";
 import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
