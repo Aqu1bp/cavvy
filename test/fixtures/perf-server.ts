@@ -60,8 +60,8 @@ afterAll(async () => {
 });
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-async function turn(cwd: string, prompt: string) {
-    const id = (await call("session.create", { cwd })).result.state.id as string;
+async function turn(cwd: string, prompt: string, into?: string) {
+    const id = into ?? (await call("session.create", { cwd })).result.state.id as string;
     await call("session.open", { id });
     await call("session.send", { id, text: prompt });
     for (let i = 0; i < 1200; i++) {
@@ -84,6 +84,16 @@ test("a reply costs its size on the socket, and not much more", async () => {
     // Chunks race the server's flush, and a busy machine puts more into each message: fewer bytes, with no change here.
     withinBudget("wireBytesPerCharacter", Math.round((bytes / streamed) * 100) / 100, { room: true });
 }, 60_000);
+
+test("a turn that changes nothing starts fewer gits: the tree it has is still the tree", async () => {
+    const cwd = createDemoProject(tempDir("cavvy-perf-still-"), { git: true });
+    const id = await turn(cwd, "hello");
+    await sleep(1000);
+    const before = gitSpawns();
+    await turn(cwd, "hello", id);
+    await sleep(1000);
+    withinBudget("gitSpawnsUnchangedTurn", gitSpawns() - before);
+}, 120_000);
 
 test("a turn starts few gits, and an idle session none", async () => {
     const cwd = createDemoProject(tempDir("cavvy-perf-git-"), { git: true });
