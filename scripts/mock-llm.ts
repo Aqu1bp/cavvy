@@ -10,6 +10,7 @@
 //   "todo"           keeps a todo list while working
 //   "slow"           streams a long answer slowly
 //   "streamdemo"     a long markdown reply (headings, lists, code, a table) at a model's pace: uneven chunks, uneven gaps
+//   "perfbig K"      a command printing K KB, then a line (desktop-electron/bench-heavy.ts)
 //   "perfreply B D M" a long reply of every kind of block, B bytes, D bytes every M ms (desktop-electron/bench-reply.ts);
 //                    "perfreply B D M code", one long code block; "... list", one long list; "... table", one long table
 //   "fastdemo N"     a turn of quick steps and a long markdown reply at N tokens a second ("fastdemo burst": a paragraph at a
@@ -390,6 +391,8 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         ];
         return steps[toolRounds];
     }
+    const big = /\bperfbig (\d+)\b/.exec(p);
+    if (big) return toolRounds === 0 ? { text: "Running it.", calls: [{ name: "Bash", args: { command: `seq -f "✓ case %g of the suite ran and printed this line" 1 ${Math.round((Number(big[1]) * 1024) / 50)}`, description: "Print a long log" } }] } : { text: "It printed what it was asked to." };
     const reply = /\bperfreply (\d+) (\d+) (\d+)(?: (code|list|table))?\b/.exec(p);
     if (reply) return toolRounds === 0 ? { text: reply[4] ? longBlock(reply[4], Number(reply[1])) : longMarkdown(Number(reply[1])), rate: { bytes: Number(reply[2]), ms: Number(reply[3]) } } : undefined;
     // Long streams for CPU measurements (desktop-electron/bench-stream.ts): "perfstream text R N", R copies of the long

@@ -4,8 +4,9 @@
 // comparison in PandaCode's bench/t3-compare (50 KB in 25-byte deltas, 16 ms apart), so the numbers can be set beside
 // T3 Code's; the reply is this repo's own (scripts/mock-llm.ts). Writes bench-results/bench-reply-<label>.json.
 //
-//   bun desktop-electron/bench-reply.ts --label new --app <…>/Cavvy.app [--runs 3] [--bytes 50000]
+//   bun desktop-electron/bench-reply.ts --label new --app <…>/Cavvy.app [--runs 3] [--bytes 50000] [--delta 25] [--every 16] [--reduced-motion] [--shape code|list|table]
 
+import { dlopen, FFIType, ptr } from "bun:ffi";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -18,11 +19,30 @@ const appPath = arg("--app");
 if (!appPath) throw new Error("usage: bench-reply.ts --label x --app <Cavvy.app> [--runs 3] [--bytes 50000]");
 const RUNS = Number(arg("--runs") ?? 3);
 const BYTES = Number(arg("--bytes") ?? 50_000);
-const DELTA_BYTES = 25, DELTA_MS = 16;
+const DELTA_BYTES = Number(arg("--delta") ?? 25), DELTA_MS = Number(arg("--every") ?? 16);
 const SPAN_MS = (BYTES / DELTA_BYTES) * DELTA_MS;
 const repo = resolve(import.meta.dir, "..");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor((xs.length - 1) / 2)]!;
+/**
+ * What a process has spent, from macOS's proc_pid_rusage (RUSAGE_INFO_V6: words after a 16-byte uuid). Instructions count the
+ * same on whichever cores ran them, which milliseconds don't; energy is what it cost the battery (CPU only).
+ */
+const libproc = dlopen("/usr/lib/libproc.dylib", { proc_pid_rusage: { args: [FFIType.i32, FFIType.i32, FFIType.ptr], returns: FFIType.i32 } });
+function spent(pid: number) {
+    const buf = new BigUint64Array(80);
+    if (libproc.symbols.proc_pid_rusage(pid, 6, ptr(buf)) !== 0) return { instructions: NaN, onPCores: NaN, energy: NaN };
+    return { instructions: Number(buf[31]), onPCores: Number(buf[40]), energy: Number(buf[42]) };
+}
+/** Since `from`, by role: giga-instructions, joules, and the share of instructions on performance cores. */
+function spentSince(from: Map<string, ReturnType<typeof spent>>, roles: Map<string, number>) {
+    const out: Record<string, { gigaInstructions: number; joules: number; pShare: number }> = {};
+    for (const [role, pid] of roles) {
+        const a = from.get(role)!, b = spent(pid), instructions = b.instructions - a.instructions;
+        out[role] = { gigaInstructions: Math.round(instructions / 1e7) / 100, joules: Math.round((b.energy - a.energy) / 1e7) / 100, pShare: Math.round(((b.onPCores - a.onPCores) / instructions) * 100) / 100 };
+    }
+    return out;
+}
 
 async function connect(url: string, subprotocols?: string[]) {
     const ws = new WebSocket(url, subprotocols);
@@ -64,39 +84,53 @@ async function run(n: number) {
         const at = await js(`(() => { const r = ${row}.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + Math.min(r.height / 2, 14) }; })()`);
         for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) await page.call("Input.dispatchMouseEvent", { type, ...at, button: type === "mouseMoved" ? "none" : "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
         await page.call("Input.dispatchMouseEvent", { type: "mouseMoved", x: 900, y: 500, button: "none", buttons: 0 });
+        // Its turns on screen, or the numbers would be of a window showing something else.
+        for (let i = 0; !(await js(`[...document.querySelectorAll('[data-turn]')].length >= 20`)); i++) { if (i > 100) throw new Error("the session didn't open"); await sleep(100); }
         await sleep(5000);
 
+        // What it costs with nothing animating: the floor under the motion's share.
+        if (args.includes("--reduced-motion")) await page.call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
         await page.call("Performance.enable", { timeDomain: "timeTicks" });
         await js(`(() => { window.__mutations = 0; new MutationObserver((l) => { window.__mutations += l.length; }).observe(document.body, { childList: true, characterData: true, attributes: true, subtree: true }); })()`);
         const metrics = async () => Object.fromEntries(((await page.call("Performance.getMetrics")).result?.metrics ?? []).map((m: any) => [m.name, m.value])) as Record<string, number>;
         const spend = (a: Record<string, number>, b: Record<string, number>, ms: number) => {
             const d = (k: string) => Math.round((b[k]! - a[k]!) * 1000);
-            return { taskMs: d("TaskDuration"), scriptMs: d("ScriptDuration"), layoutMs: d("LayoutDuration"), styleMs: d("RecalcStyleDuration"), layouts: b.LayoutCount! - a.LayoutCount!, styles: b.RecalcStyleCount! - a.RecalcStyleCount!, spanMs: ms };
+            return { taskMs: d("TaskDuration"), threadMs: d("ThreadTime"), scriptMs: d("ScriptDuration"), layoutMs: d("LayoutDuration"), styleMs: d("RecalcStyleDuration"), layouts: b.LayoutCount! - a.LayoutCount!, styles: b.RecalcStyleCount! - a.RecalcStyleCount!, spanMs: ms };
         };
         const heap = async () => { await page.call("HeapProfiler.collectGarbage"); await sleep(200); await page.call("HeapProfiler.collectGarbage"); return Math.round(((await page.call("Runtime.getHeapUsage")).result?.usedSize ?? 0) / 104857.6) / 10; };
+
+        // The app's processes, by its own list of them.
+        const procs = (((await Bun.file(metricsFile).json().catch(() => ({}))) as any).procs ?? []) as { pid: number; role: string }[];
+        const roles = new Map<string, number>(procs.filter((p) => ["ui", "gpu", "main"].includes(p.role)).map((p) => [p.role, p.pid]));
+        if (server.pid) roles.set("server", server.pid);
+        if (!roles.has("ui")) throw new Error("no window process");
+        const mark = () => new Map([...roles].map(([role, pid]) => [role, spent(pid)]));
 
         // ---- Nothing delivered.
         let m0 = await metrics();
         let mut0 = await js(`window.__mutations`);
+        let i0 = mark();
         await sleep(SPAN_MS);
-        const idle = { ...spend(m0, await metrics(), SPAN_MS), mutations: (await js(`window.__mutations`)) - mut0 };
+        const idle = { ...spend(m0, await metrics(), SPAN_MS), mutations: (await js(`window.__mutations`)) - mut0, spent: spentSince(i0, roles) };
 
         // ---- The reply.
         const heapBefore = await heap();
         m0 = await metrics();
         mut0 = await js(`window.__mutations`);
+        i0 = mark();
         const t0 = Date.now();
-        await rpc.call("session.send", { id, text: `perfreply ${BYTES} ${DELTA_BYTES} ${DELTA_MS}` });
+        await rpc.call("session.send", { id, text: `perfreply ${BYTES} ${DELTA_BYTES} ${DELTA_MS}${arg("--shape") ? ` ${arg("--shape")}` : ""}` });
         await sleep(SPAN_MS - 3000);
         // The last moments: when the socket hands over the last of it, and the frame after the text is on screen.
         await page.call("Network.enable");
         let delivered = 0;
         page.listeners.set("Network.webSocketFrameReceived", (p: any) => { if (String(p.response?.payloadData ?? "").includes(REPLY_END.slice(-12))) delivered ||= Date.now(); });
         const painted = (await page.call("Runtime.evaluate", { expression: `new Promise((done) => { const tick = () => { const m = [...document.querySelectorAll('.md')].at(-1); if (m && m.textContent.includes(${JSON.stringify(REPLY_END)})) requestAnimationFrame(() => done(Date.now())); else requestAnimationFrame(tick); }; tick(); })`, awaitPromise: true, returnByValue: true }, 120_000)).result?.result?.value as number;
+        if (typeof painted !== "number") throw new Error("the reply never showed");
         await finish(id, 60_000);
         await sleep(1000);
         const m1 = await metrics();
-        const reply = { ...spend(m0, m1, Date.now() - t0), mutations: (await js(`window.__mutations`)) - mut0, wallToPaintMs: painted - t0, lastDeliveryToPaintMs: delivered ? painted - delivered : null };
+        const reply = { ...spend(m0, m1, Date.now() - t0), spent: spentSince(i0, roles), mutations: (await js(`window.__mutations`)) - mut0, wallToPaintMs: painted - t0, lastDeliveryToPaintMs: delivered ? painted - delivered : null };
         const shown = await js(`[...document.querySelectorAll('.md')].at(-1)?.textContent.length`);
         const heapAfter = await heap();
         return { n, idle, reply, heapBefore, heapAfter, shown };
@@ -114,7 +148,7 @@ const med = (f: (r: (typeof results)[number]) => number) => median(results.map(f
 const report = {
     label, at: new Date().toISOString(), bytes: BYTES, runs: results,
     median: {
-        taskMs: med((r) => r.reply.taskMs), scriptMs: med((r) => r.reply.scriptMs), layoutMs: med((r) => r.reply.layoutMs), styleMs: med((r) => r.reply.styleMs),
+        windowGigaInstructions: med((r) => r.reply.spent.ui!.gigaInstructions), windowJoules: med((r) => r.reply.spent.ui!.joules), appJoules: med((r) => Object.values(r.reply.spent).reduce((sum, s) => sum + s.joules, 0)), threadMs: med((r) => r.reply.threadMs), taskMs: med((r) => r.reply.taskMs), scriptMs: med((r) => r.reply.scriptMs), layoutMs: med((r) => r.reply.layoutMs), styleMs: med((r) => r.reply.styleMs),
         idleTaskMs: med((r) => r.idle.taskMs), idleScriptMs: med((r) => r.idle.scriptMs), idleMutations: med((r) => r.idle.mutations),
         mutations: med((r) => r.reply.mutations), lastDeliveryToPaintMs: med((r) => r.reply.lastDeliveryToPaintMs ?? NaN), heapBeforeMB: med((r) => r.heapBefore), heapAfterMB: med((r) => r.heapAfter),
     },
