@@ -1,6 +1,6 @@
 {
     "wireBytesPerCharacter": 3.3,
-    "gitSpawnsPerTurn": 27,
+    "gitSpawnsPerTurn": 20,
     "gitSpawnsIdle": 0,
     "markdownParsedPerCharacter": 12.3,
     "streamClockWakesPerSecond": 21,

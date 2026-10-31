@@ -437,24 +437,24 @@ export class TurnSnapshots {
         try {
             inTime();
             const metadataEnv = { GIT_NO_REPLACE_OBJECTS: "1" };
-            const top = await git(this.cwd, ["rev-parse", "--show-toplevel"], { deadline, privateEnv: metadataEnv });
+            const top = await git(this.cwd, ["rev-parse", "--show-toplevel", "--show-object-format"], { deadline, privateEnv: metadataEnv });
             if (top.code !== 0) return undefined;
-            this.root = top.out.toString().replace(/\n$/, "");
+            // The format is the last line: a folder's name can hold a newline.
+            const asked = top.out.toString().replace(/\n$/, "");
+            const cut = asked.lastIndexOf("\n");
+            this.root = asked.slice(0, cut);
             result.root = this.root;
             // The repository's other worktrees in its folder are places of their own (turn-places.ts), not contents left out.
             const listed = await listWorktrees(this.root, deadline);
             this.worktreesListed = listed !== undefined;
             this.worktrees = listed ? nearby(listed, this.root) : [];
             this.nested = insideRoot(this.worktrees, this.root);
-            const [format, listing] = await Promise.all([
-                git(this.root, ["rev-parse", "--show-object-format"], { deadline, privateEnv: metadataEnv }),
-                git(this.root, ["ls-files", "-z", "-t", "--stage", "--cached", "--others", "--exclude-standard"], { maxBytes: 16 * 1024 * 1024, deadline, privateEnv: metadataEnv }),
-            ]);
-            if (format.code || listing.code || listing.cut) throw new Error("The repository file list is unavailable or exceeds the snapshot budget.");
+            const listing = await git(this.root, ["ls-files", "-z", "-t", "--stage", "--cached", "--others", "--exclude-standard"], { maxBytes: 16 * 1024 * 1024, deadline, privateEnv: metadataEnv });
+            if (listing.code || listing.cut) throw new Error("The repository file list is unavailable or exceeds the snapshot budget.");
             // ls-files can succeed while warning that an untracked directory
             // could not be opened. That list cannot establish deletions.
             if (listing.err.trim()) throw new Error(`The repository file list is incomplete: ${redact(listing.err.trim())}`);
-            this.algo = format.out.toString().trim() === "sha256" ? "sha256" : "sha1";
+            this.algo = asked.slice(cut + 1).trim() === "sha256" ? "sha256" : "sha1";
             this.ensure();
             await this.measureStore(inTime);
             const wt = new WorkTree(this.root, this.algo, true, inTime, deadline);

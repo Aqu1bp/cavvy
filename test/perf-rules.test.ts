@@ -28,10 +28,11 @@ test("the GUI's only timers that run for good are the clock's and the ones liste
 
 test("nothing new blocks the server or an agent on a child process", () => {
     // A spawnSync there stops every session, and the socket, until it returns.
-    expect(uses(["src/server", "src/agent"], "**/*.ts", /\bspawnSync\(/g)).toEqual({
+    expect(uses(["src/server", "src/agent", "src/util"], "**/*.ts", /\bspawnSync\(/g)).toEqual({
         "src/agent/turn-snapshots.ts": 1,
         "src/server/git-publish.ts": 1,
         "src/server/worktrees.ts": 1,
+        "src/util/git.ts": 2,
     });
 });
 
