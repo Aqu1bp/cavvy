@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Engine, Workspace } from "../src/server/engine";
-import { adoptLoginPath, loginPathSettled } from "../src/server/login-env";
+import { adoptLoginPath } from "../src/server/login-env";
 
 let dir: string;
 let file: string;
@@ -68,14 +68,13 @@ test("what's looked for once waits for its answer, so a tool new since last time
     process.env.CAVVY_HOME = home;
 
     const { answered } = await adoptLoginPath(file);
-    let settled = false;
-    void loginPathSettled().then(() => (settled = true));
     let listedWith: string | undefined;
     const engine = new Engine({ startCwd: dir, listModels: async () => ((listedWith = process.env.PATH), []) });
     const listed = engine.refreshListings();
     const workspace = new Workspace(engine, dir, false);
+    // Opening the MCP panel asks too: it doesn't get ahead of the answer, or the server would stay failed.
+    void workspace.mcp.sync();
     await Bun.sleep(50);
-    expect(settled).toBe(false);
     expect(listedWith).toBeUndefined();
     expect(workspace.mcp.servers.get("fresh")?.status).toBe("pending");
 

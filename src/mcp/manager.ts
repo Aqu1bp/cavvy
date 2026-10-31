@@ -7,6 +7,7 @@
 // refuses a project server that isn't approved.
 
 import { existsSync } from "fs";
+import { pathSettling } from "../util/env";
 import type { McpServerConfig, Settings } from "../config/settings";
 import { loadSettings, readJson } from "../config/settings";
 import { paths } from "../config/paths";
@@ -276,12 +277,17 @@ export class McpManager {
     }
 
     async startAll(signal?: AbortSignal) {
-        if (this.closed) return;
         await Promise.all([...this.servers.values()].filter((s) => s.status === "pending").map((s) => this.start(s, signal)));
     }
 
     async start(st: ServerState, signal?: AbortSignal) {
-        if (this.servers.get(st.name) !== st) return;
+        if (pathSettling) {
+            const was = st.status;
+            await pathSettling;
+            // Another start got there first.
+            if (st.status !== was) return;
+        }
+        if (this.closed || this.servers.get(st.name) !== st) return;
         if (!mayStart(st)) {
             const error = startError(st);
             if (error) {

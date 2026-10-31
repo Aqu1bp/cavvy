@@ -2,6 +2,15 @@ import { knownSecrets } from "./redact";
 import { secretEnvVarNames } from "../auth/credentials";
 
 /**
+ * PATH about to change (server/login-env.ts: the login shell hasn't answered). What's looked for on PATH once and then kept (the
+ * providers' CLIs, MCP servers: one that isn't found stays failed) waits for this, so a tool new since last time is found.
+ */
+export let pathSettling: Promise<unknown> | undefined;
+export function settlePathAfter(answer: Promise<unknown>) {
+    pathSettling = answer.finally(() => { pathSettling = undefined; });
+}
+
+/**
  * Environment for every process Cavvy starts (shell, hooks, MCP
  * servers, git, ripgrep, editors): inherited, minus anything that holds an
  * API key Cavvy knows about. `extra` (settings `env`) may set any

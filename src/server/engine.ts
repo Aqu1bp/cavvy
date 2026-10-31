@@ -12,7 +12,6 @@ import { planLimitKey, type AccountInfo, type BackgroundTaskInfo } from "./proto
 import { endedText } from "../agent/background";
 import { mergeLimits } from "../backends/limits";
 import { Terminals } from "./terminals";
-import { loginPathSettled } from "./login-env";
 import { deleteScript, findScript, findSetupScript, listScripts, markUsed, reorderScripts, saveScript } from "./scripts";
 import { checkGrant, SetupTickets, setupTrusted } from "./setup";
 import { RpcError } from "./rpc-error";
@@ -50,7 +49,7 @@ import { billingOf, parseRunRequest, startRun, type RunHost, type RunRecord } fr
 import { readRegular } from "./git-changes";
 import { agentsByWorktree } from "./worktree-agents";
 import { checkPathInput, confinePath, defaultDetectEnv, opensAsProject, detectEditor, editorArgv, editorById, EDITOR_IDS, EDITORS, MAX_COL, MAX_LINE, position, takesLines, type DetectEnv } from "./editors";
-import { childEnv } from "../util/env";
+import { childEnv, pathSettling } from "../util/env";
 import { expandPath, isInside, MAX_SHOWN_IMAGE, sniffImage } from "../util/files";
 import { maskKey, redact } from "../util/redact";
 import { searchResources } from "../mcp/mentions";
@@ -250,7 +249,7 @@ export class Workspace {
         const mcp = new McpManager(this.cwd, () => this.settings, this.trusted, () => (this.settings = loadSettings(this.cwd, { trusted: this.trusted })), true);
         mcp.onChange = () => this.engine.workspaceChanged(this);
         mcp.load();
-        void loginPathSettled().then(() => mcp.startAll());
+        void mcp.startAll();
         return mcp;
     }
 
@@ -386,7 +385,7 @@ export class Engine {
     async start() {
         void this.firstListings();
         this.loadLimits();
-        void loginPathSettled().then(() => this.checkPlans());
+        void Promise.resolve(pathSettling).then(() => this.checkPlans());
         // Every window applies a save of the keybindings file at once.
         this.stopKeybindings = watchKeybindings((r) => this.broadcast({ type: "keybindings.changed", keybindings: { path: keybindingsPath(), ...r } }));
         this.updates.start();
@@ -619,7 +618,7 @@ export class Engine {
 
     refreshListings(force = false): Promise<ProviderListing[]> {
         if (this.refreshing && !force) return this.refreshing;
-        const p = loginPathSettled().then(() => (this.o.listModels ?? listAllModels)({ refresh: force }))
+        const p = Promise.resolve(pathSettling).then(() => (this.o.listModels ?? listAllModels)({ refresh: force }))
             .then((l) => {
                 const key = (x: ProviderListing[]) => JSON.stringify(x.map((y) => [y.provider.id, y.status, y.models.map((m) => [m.id, m.contextWindow, m.pricing?.input])]));
                 const changed = key(l) !== key(this.listings);

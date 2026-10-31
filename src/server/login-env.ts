@@ -3,6 +3,8 @@
 // wouldn't find your tools. The desktop app's server asks your login shell
 // for its PATH once at startup and adds what's missing.
 
+import { settlePathAfter } from "../util/env";
+
 const MARK = "__CAVVY_PATH__";
 
 /** PATH as your interactive login shell sets it, or undefined if that couldn't be found out. */
@@ -39,13 +41,6 @@ export function mergePath(current: string | undefined, login: string | undefined
     return out.join(":");
 }
 
-let answer: Promise<unknown> = Promise.resolve();
-/**
- * When the login shell has answered (adoptLoginPath). What's looked for on PATH once and then kept (the providers' CLIs, local MCP
- * servers: one that isn't found stays failed) looks after this, so a tool that's new since last time is found.
- */
-export const loginPathSettled = () => answer;
-
 /**
  * Takes PATH from your login shell. One that takes seconds to start (nvm, oh-my-zsh) shouldn't hold up the app: what it said
  * last time, remembered in `file`, is used at once and its answer takes over when it comes. Only a first launch waits.
@@ -59,7 +54,7 @@ export async function adoptLoginPath(file: string) {
         process.env.PATH = mergePath(started, login);
         if (login !== remembered) await Bun.write(file, login).catch(() => undefined);
     });
-    answer = answered;
+    settlePathAfter(answered);
     if (remembered) process.env.PATH = mergePath(started, remembered);
     else await answered;
     return { answered };
