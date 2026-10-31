@@ -28,11 +28,14 @@
     inset: 0 0 -18px 0;
     z-index: -1;
     pointer-events: none;
-    background: linear-gradient(var(--sheet) 45%, color-mix(in srgb, var(--sheet) 0%, transparent));
-    -webkit-backdrop-filter: blur(6px);
-    backdrop-filter: blur(6px);
-    -webkit-mask-image: linear-gradient(#000 55%, transparent);
-    mask-image: linear-gradient(#000 55%, transparent);
+    /* A fade drawn with the page: a blur or a mask here would be worked out again on every frame the column moves. */
+    background: linear-gradient(
+        var(--sheet) 45%,
+        color-mix(in srgb, var(--sheet) 82%, transparent) 55%,
+        color-mix(in srgb, var(--sheet) 36%, transparent) 70%,
+        color-mix(in srgb, var(--sheet) 9%, transparent) 85%,
+        color-mix(in srgb, var(--sheet) 0%, transparent)
+    );
 }
 
 /* The rail's two buttons, here while it's hidden or floating: on the lights'
