@@ -7,6 +7,7 @@
 // refuses a project server that isn't approved.
 
 import { existsSync } from "fs";
+import { pathSettling } from "../util/env";
 import type { McpServerConfig, Settings } from "../config/settings";
 import { loadSettings, readJson } from "../config/settings";
 import { paths } from "../config/paths";
@@ -150,6 +151,8 @@ export class SignInReplaced extends McpError {
 export class McpManager {
     servers = new Map<string, ServerState>();
     onChange?: () => void;
+    /** closeAll() has been: a start still to come doesn't happen. */
+    private closed = false;
     /** Servers left out by load() for their name's length. */
     skipped = 0;
 
@@ -278,7 +281,13 @@ export class McpManager {
     }
 
     async start(st: ServerState, signal?: AbortSignal) {
-        if (this.servers.get(st.name) !== st) return;
+        if (pathSettling) {
+            const was = st.status;
+            await pathSettling;
+            // Another start got there first.
+            if (st.status !== was) return;
+        }
+        if (this.closed || this.servers.get(st.name) !== st) return;
         if (!mayStart(st)) {
             const error = startError(st);
             if (error) {
@@ -568,6 +577,7 @@ export class McpManager {
     }
 
     async closeAll() {
+        this.closed = true;
         await Promise.all([...this.servers.values()].map((s) => s.client?.close()));
     }
 

@@ -49,7 +49,7 @@ import { billingOf, parseRunRequest, startRun, type RunHost, type RunRecord } fr
 import { readRegular } from "./git-changes";
 import { agentsByWorktree } from "./worktree-agents";
 import { checkPathInput, confinePath, defaultDetectEnv, opensAsProject, detectEditor, editorArgv, editorById, EDITOR_IDS, EDITORS, MAX_COL, MAX_LINE, position, takesLines, type DetectEnv } from "./editors";
-import { childEnv } from "../util/env";
+import { childEnv, pathSettling } from "../util/env";
 import { expandPath, isInside, MAX_SHOWN_IMAGE, sniffImage } from "../util/files";
 import { maskKey, redact } from "../util/redact";
 import { searchResources } from "../mcp/mentions";
@@ -385,7 +385,7 @@ export class Engine {
     async start() {
         void this.firstListings();
         this.loadLimits();
-        void this.checkPlans();
+        void Promise.resolve(pathSettling).then(() => this.checkPlans());
         // Every window applies a save of the keybindings file at once.
         this.stopKeybindings = watchKeybindings((r) => this.broadcast({ type: "keybindings.changed", keybindings: { path: keybindingsPath(), ...r } }));
         this.updates.start();
@@ -618,7 +618,7 @@ export class Engine {
 
     refreshListings(force = false): Promise<ProviderListing[]> {
         if (this.refreshing && !force) return this.refreshing;
-        const p = (this.o.listModels ?? listAllModels)({ refresh: force })
+        const p = Promise.resolve(pathSettling).then(() => (this.o.listModels ?? listAllModels)({ refresh: force }))
             .then((l) => {
                 const key = (x: ProviderListing[]) => JSON.stringify(x.map((y) => [y.provider.id, y.status, y.models.map((m) => [m.id, m.contextWindow, m.pricing?.input])]));
                 const changed = key(l) !== key(this.listings);
@@ -2208,6 +2208,7 @@ export class Engine {
                 return null;
             case "session.setFastMode":
                 if (typeof p.enabled !== "boolean") throw new RpcError("enabled must be a boolean");
+                await this.runtime(p.id).ready.catch(() => undefined);
                 await this.runtime(p.id).yieldIdleCompaction();
                 this.runtime(p.id).setFastMode(p.enabled);
                 return null;

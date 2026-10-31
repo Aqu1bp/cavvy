@@ -3,8 +3,9 @@
 //
 //   bun desktop-electron/bench-startup.ts --label dev
 //   bun desktop-electron/bench-startup.ts --label packaged --app <…>/Cavvy.app/Contents/MacOS/Cavvy
+//   add --slow-shell 2 for a login shell that takes 2 s to start
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -16,6 +17,8 @@ const repo = resolve(import.meta.dir, "..");
 const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "cavvy-startup-"));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const report: Record<string, unknown> = { label, launches: [] as unknown[] };
+const slowShell = join(dir, "slow-shell");
+if (arg("--slow-shell")) { writeFileSync(slowShell, `#!/bin/sh\nsleep ${Number(arg("--slow-shell"))}\nexec /bin/zsh "$@"\n`); chmodSync(slowShell, 0o755); }
 const demo = Bun.spawn(["bun", "--no-env-file", "scripts/gui-demo.ts", "--port", "4635", "--token", "startup-bench-token-1234567", "--dir", dir], { cwd: repo, stdout: "ignore", stderr: "ignore" });
 try {
     for (let i = 0; ; i++) { if (await fetch("http://127.0.0.1:4635/healthz").then((r) => r.ok, () => false)) break; if (i > 120) throw new Error("demo"); await sleep(500); }
@@ -25,7 +28,7 @@ try {
         const spawnedAt = performance.now();
         const app = Bun.spawn(exe ? [exe] : [join(repo, "desktop-electron/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"), join(repo, "desktop-electron")], {
             cwd: repo,
-            env: { ...process.env, CAVVY_HOME: join(dir, "home"), CAVVY_NO_KEYCHAIN: "1", CAVVY_ELECTRON_TEST_PORT: "9343", CAVVY_ELECTRON_USER_DATA: join(dir, "electron-data"), CAVVY_ELECTRON_CWD: join(dir, "acme-platform"), CAVVY_ELECTRON_METRICS: metricsFile },
+            env: { ...process.env, ...(arg("--slow-shell") ? { SHELL: slowShell } : {}), CAVVY_HOME: join(dir, "home"), CAVVY_NO_KEYCHAIN: "1", CAVVY_ELECTRON_TEST_PORT: "9343", CAVVY_ELECTRON_USER_DATA: join(dir, "electron-data"), CAVVY_ELECTRON_CWD: join(dir, "acme-platform"), CAVVY_ELECTRON_METRICS: metricsFile },
             stdout: "ignore",
             stderr: "ignore",
         });
