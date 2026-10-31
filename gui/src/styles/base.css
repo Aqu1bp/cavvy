@@ -116,8 +116,8 @@ textarea,
 
 /* Following the end, nothing passes behind these: the column keeps room for the dock, and only the sheet shows through.
    A blur of the sheet is the sheet, but it's worked out again on every frame the column moves, and that was most of what
-   a reply streaming cost the GPU. The same colour, with nothing to blur. */
-[data-following] :is(.composer-box, .ask, .uq-tray, .steps-tray, .cap, .needs).glass {
+   a reply streaming cost the GPU. The same colour, with nothing to blur. (The steps, open, lie over the conversation.) */
+[data-following] :is(.composer-box, .ask, .uq-tray, .steps-tray:not(.open), .cap, .needs).glass {
     background: linear-gradient(var(--ctl), var(--ctl)), var(--sheet);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
