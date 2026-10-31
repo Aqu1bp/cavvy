@@ -411,12 +411,12 @@
     border-radius: 50%;
     border: 2px solid color-mix(in srgb, var(--accent) 22%, transparent);
     border-top-color: var(--accent);
-    animation: spin 0.9s steps(27) infinite;
+    animation: spin 0.9s steps(18) infinite;
 }
 
 /* Words coming out say it's working: this would have the window drawn again for no news (lib/reveal.ts). */
 [data-flowing] .sidebar .cur .spin-ring {
-    animation-play-state: paused;
+    animation: none;
 }
 
 .card .t {
