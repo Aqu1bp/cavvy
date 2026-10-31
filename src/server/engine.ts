@@ -389,7 +389,8 @@ export class Engine {
         // Every window applies a save of the keybindings file at once.
         this.stopKeybindings = watchKeybindings((r) => this.broadcast({ type: "keybindings.changed", keybindings: { path: keybindingsPath(), ...r } }));
         this.updates.start();
-        this.reopenScheduled();
+        // A turn it starts straight away has what's on PATH to work with.
+        void Promise.resolve(pathSettling).then(() => this.reopenScheduled());
         purgeTrash();
         this.purgeTimer = setInterval(() => purgeTrash(), PURGE_EVERY_MS);
         this.purgeTimer.unref?.();
