@@ -289,6 +289,11 @@ button.bc:hover {
     box-shadow: 0 0 0 1px color-mix(in srgb, var(--warn) 34%, transparent), inset 0 1px 0 var(--ctl-hi), var(--ctl-shadow);
 }
 
+/* Following the end (base.css): its tint, over the same plain colour as the capsule beside it. */
+[data-following] .header .needs.glass {
+    background-image: linear-gradient(color-mix(in srgb, var(--warn) 10%, transparent), color-mix(in srgb, var(--warn) 5%, transparent)), linear-gradient(var(--ctl), var(--ctl));
+}
+
 .needs:hover,
 .needs[aria-expanded="true"] {
     filter: brightness(1.04);
