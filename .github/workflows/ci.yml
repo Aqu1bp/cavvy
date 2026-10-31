@@ -18,7 +18,7 @@ permissions:
   contents: read
 
 env:
-  BUN_VERSION: 1.3.14
+  BUN_VERSION: 1.4.4
   CAVVY_NO_KEYCHAIN: "1"
 
 jobs:

@@ -90,6 +90,13 @@ test("a blur doesn't come back over what's following the end of a reply", () => 
     expect(header.slice(header.indexOf(".header::before"), header.indexOf("}", header.indexOf(".header::before")))).not.toContain("backdrop-filter");
 });
 
+test("the server ships on the Bun that's tested, and not on 1.3", () => {
+    // 1.3 collects garbage on nearly every wake of the event loop: over ten times a reply's work in the server.
+    const shipped = read("desktop-electron/pack.ts").match(/SERVER_BUN = "(.+?)"/)?.[1] ?? "";
+    expect(shipped).toBe(read(".github/workflows/ci.yml").match(/BUN_VERSION: (\S+)/)?.[1] ?? "none");
+    expect(Bun.semver.order(shipped, "1.4.0")).toBe(1);
+});
+
 test("budgets only come down, and what's loaded at startup is read from index.html", async () => {
     const { eagerAssets, raised } = await import("../scripts/perf-budgets");
     expect(raised({ a: 2, b: 2 }, { a: 1, b: 2, c: 9 })).toEqual([]);
