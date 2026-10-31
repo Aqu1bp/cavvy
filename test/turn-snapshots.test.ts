@@ -661,6 +661,129 @@ describe("per-turn snapshots", () => {
         expect(single.files[0]!.added).toBe(1);
     }, 120_000);
 
+    test("a capture of many new files is one pack, and reads as loose objects do", async () => {
+        const files: Record<string, string> = {};
+        for (let i = 0; i < 400; i++) files[`src/d${i % 7}/f${i}.txt`] = `file ${i}\n`;
+        const { cwd, dir, snapshots } = setup(files);
+        await snapshots.begin(1, "Change one of many");
+        write(cwd, "src/d0/f0.txt", "changed\n");
+        await snapshots.end();
+        const turn = snapshots.list()[0]!;
+        expect([turn.start.incomplete, turn.end!.incomplete]).toEqual([false, false]);
+        expect(turn.changed).toEqual(["src/d0/f0.txt"]);
+        const objects = objectsDir(dir);
+        const names = readdirSync(join(objects, "pack")).sort();
+        expect(names.map((n) => n.replace(/-[0-9a-f]+/, ""))).toEqual(["pack.idx", "pack.pack"]);
+        // Only what the turn changed is outside it: the file and the trees above it.
+        expect(readdirSync(objects).filter((n) => n !== "pack").flatMap((n) => readdirSync(join(objects, n))).length).toBeLessThanOrEqual(4);
+        expectPrivate(objects);
+        const shown = await snapshots.changes({ scope: "last-turn", path: "src/d0/f0.txt" });
+        expect(shown.files.map((f) => [f.path, f.added, f.removed])).toEqual([["src/d0/f0.txt", 1, 1]]);
+        expect(JSON.stringify(shown)).toContain("file 0");
+
+        // Reopened, what's in the pack isn't stored again.
+        const before = inventory(objects);
+        const reopened = new TurnSnapshots(dir, cwd);
+        await reopened.begin(2, "Nothing new");
+        await reopened.end();
+        expect(reopened.list()[1]!.end!.incomplete).toBe(false);
+        expect(inventory(objects)).toEqual(before);
+        expect((await reopened.changes({ scope: "turn", turnId: 1 })).files.map((f) => f.path)).toEqual(["src/d0/f0.txt"]);
+    });
+
+    test("reopened, a pack whose index was cut off or never came is written again", async () => {
+        const cutOff = (index: string, whole: Buffer) => writeFileSync(index, whole.subarray(0, 8 + 256 * 4 + whole.readUInt32BE(8 + 255 * 4) * 20));
+        for (const leave of [cutOff, (index: string) => rmSync(index)]) {
+            const files: Record<string, string> = {};
+            for (let i = 0; i < 400; i++) files[`src/f${i}.txt`] = `file ${i}\n`;
+            const { cwd, dir, snapshots } = setup(files);
+            await snapshots.begin(1, "Many files");
+            await snapshots.end();
+            const folder = join(objectsDir(dir), "pack");
+            const index = join(folder, readdirSync(folder).find((n) => n.endsWith(".idx"))!);
+            leave(index, readFileSync(index));
+            const reopened = new TurnSnapshots(dir, cwd);
+            await reopened.begin(2, "Change one");
+            write(cwd, "src/f0.txt", "changed\n");
+            await reopened.end();
+            expect(reopened.list()[1]!.end!.incomplete).toBe(false);
+            expect(JSON.stringify(await reopened.changes({ scope: "turn", turnId: 2 }))).toContain("file 0");
+            expectPrivate(objectsDir(dir));
+        }
+    });
+
+    test("a pack works in a SHA-256 repository", async () => {
+        const files: Record<string, string> = {};
+        for (let i = 0; i < 300; i++) files[`f${i}.txt`] = `file ${i}\n`;
+        const { cwd, dir, snapshots } = setup(files, "sha256");
+        await snapshots.begin(1, "Change one");
+        write(cwd, "f1.txt", "changed\n");
+        await snapshots.end();
+        expect(snapshots.list()[0]!.changed).toEqual(["f1.txt"]);
+        const before = inventory(objectsDir(dir));
+        const reopened = new TurnSnapshots(dir, cwd);
+        await reopened.begin(2, "Nothing new");
+        await reopened.end();
+        expect(inventory(objectsDir(dir))).toEqual(before);
+    });
+
+    test("big files go into a pack too, and each pack's bytes count toward the quota", async () => {
+        const big = (seed: number) => Buffer.from(Array.from({ length: 5 * 1024 * 1024 }, (_, i) => (i * 2654435761 + seed * 97) % 251));
+        const { cwd, dir, snapshots } = setup({ "a.bin": big(1), "b.bin": big(2) });
+        await snapshots.begin(1, "Two big files");
+        await snapshots.end();
+        const turn = snapshots.list()[0]!;
+        expect(turn.start.incomplete).toBe(false);
+        expect(readdirSync(join(objectsDir(dir), "pack")).length).toBe(2);
+        expect(git(cwd, ["cat-file", "-s", `${turn.start.tree}:a.bin`], { GIT_OBJECT_DIRECTORY: objectsDir(dir) }).toString().trim()).toBe(String(5 * 1024 * 1024));
+
+        const small = setup(Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`f${i}.txt`, `file ${i}\n`])));
+        const limited = new TurnSnapshots(small.dir, small.cwd, { maxStoreBytes: 500 });
+        await limited.begin(1, "Over the limit");
+        const start = limited.list()[0]!.start;
+        expect(start.incomplete).toBe(true);
+        expect(start.notes.join(" ")).toContain("Snapshot storage limit reached");
+        // Nothing's left half written, and a later capture with room finishes.
+        const roomy = new TurnSnapshots(small.dir, small.cwd);
+        await roomy.begin(2, "Room again");
+        expect(roomy.list().at(-1)!.start.incomplete).toBe(false);
+    });
+
+    test("over the limit partway through a pack: what fitted is kept and counted, and what didn't is read again", async () => {
+        const files: Record<string, string> = {};
+        for (let i = 0; i < 400; i++) files[`f${i}.txt`] = `file ${i} ${"x".repeat(200)}\n`;
+        const { cwd, dir } = setup(files);
+        const limited = new TurnSnapshots(dir, cwd, { maxStoreBytes: 4000 });
+        await limited.begin(1, "Over the limit");
+        expect(limited.list()[0]!.start.notes.join(" ")).toContain("Snapshot storage limit reached");
+        const packed = readdirSync(join(objectsDir(dir), "pack")).map((n) => statSync(join(objectsDir(dir), "pack", n)).size);
+        expect(packed.length).toBe(2);
+        expect(packed[0]! + packed[1]!).toBeLessThanOrEqual(4000);
+        expect(packed[0]! + packed[1]!).toBeGreaterThan(3000);
+        // With room, it finishes, the file it hadn't got to included.
+        const roomy = new TurnSnapshots(dir, cwd);
+        await roomy.begin(2, "Room again");
+        write(cwd, "f399.txt", "changed\n");
+        await roomy.end();
+        expect(roomy.list().at(-1)!.start.incomplete).toBe(false);
+        expect(roomy.list().at(-1)!.changed).toEqual(["f399.txt"]);
+        const shown = await roomy.changes({ scope: "last-turn", path: "f399.txt" });
+        expect(JSON.stringify(shown)).toContain("file 399");
+    });
+
+    test("however often a capture's taken, what's in a pack isn't written again", async () => {
+        const files: Record<string, string> = {};
+        for (let i = 0; i < 300; i++) files[`f${i}.txt`] = `file ${i}\n`;
+        const { dir, snapshots } = setup(files);
+        await snapshots.begin(1, "Stored");
+        await snapshots.end();
+        expect(readdirSync(join(objectsDir(dir), "pack")).length).toBe(2);
+        const before = inventory(objectsDir(dir));
+        await snapshots.begin(2, "Again");
+        await snapshots.end();
+        expect(inventory(objectsDir(dir))).toEqual(before);
+    });
+
     test("snapshots are pruned with file history after thirty days", async () => {
         const { cwd } = setup({ "a.txt": "a\n" });
         const dir = join(paths.projectsDir(), `snapshot-prune-${next++}`, "file-history", "old-session");
