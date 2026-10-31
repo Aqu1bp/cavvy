@@ -6,8 +6,8 @@
 // process avoids a subprocess per file and preserves the bytes on disk.
 
 import { appendFileSync, chmodSync, mkdirSync, readFileSync } from "fs";
-import { chmod, lstat, mkdir, readdir, readlink, rename, rm, writeFile } from "fs/promises";
-import { dirname, isAbsolute, join, relative } from "path";
+import { chmod, lstat, mkdir, readdir, readFile, readlink, rename, rm, writeFile } from "fs/promises";
+import { basename, dirname, isAbsolute, join, relative } from "path";
 import { deflateSync } from "zlib";
 import { randomBytes } from "crypto";
 import { FileHistory, MAX_SNAPSHOT_BYTES, canonical } from "./checkpoints";
@@ -24,6 +24,16 @@ import { redact } from "../util/redact";
 const MAX_REACHED = 20_000;
 /** Files looked up at once: about as cheap as it gets, and not so many that one wait holds up the deadline. */
 const STAT_BATCH = 64;
+/** Files read at once for a capture: much faster than one by one, and little to hold in memory. */
+const READ_AT_ONCE = 8;
+/**
+ * A capture with this many new objects, or this many bytes of them, writes one pack rather than a file for each. Creating a
+ * small file costs more than reading and compressing one, and on disk it takes a whole block.
+ */
+const PACK_FROM_OBJECTS = 256;
+const PACK_FROM_BYTES = 8 * 1024 * 1024;
+/** A pack is finished at this size, and another begun. */
+const PACK_MAX_BYTES = 64 * 1024 * 1024;
 
 export interface TurnCapture {
     tree?: string;
@@ -107,6 +117,30 @@ function treeObjects(entries: Map<string, Entry>, algo: "sha1" | "sha256", inTim
     return { root: tree(root), objects };
 }
 
+/** An object as a pack holds it: its type and size, then its bytes compressed, with no header. */
+function packEntry(type: "blob" | "tree", raw: Buffer): Buffer[] {
+    let size = raw.length;
+    let byte = ((type === "tree" ? 2 : 3) << 4) | (size % 16);
+    size = Math.floor(size / 16);
+    const head: number[] = [];
+    while (size > 0) {
+        head.push(byte | 0x80);
+        byte = size % 128;
+        size = Math.floor(size / 128);
+    }
+    head.push(byte);
+    return [Buffer.from(head), deflateSync(raw, { level: 1 })];
+}
+
+/** The object ids a pack's index lists (version 2), or none if it isn't one. */
+function packIndexOids(index: Buffer, hashBytes: number): string[] {
+    const names = 8 + 256 * 4;
+    if (index.length < names || index.readUInt32BE(0) !== 0xff744f63 || index.readUInt32BE(4) !== 2) return [];
+    const count = index.readUInt32BE(8 + 255 * 4);
+    if (index.length < names + count * hashBytes) return [];
+    return Array.from({ length: count }, (_, i) => index.toString("hex", names + i * hashBytes, names + (i + 1) * hashBytes));
+}
+
 export class TurnSnapshots {
     private turns = new Map<number, SnapshotTurn>();
     private active?: SnapshotTurn;
@@ -115,7 +149,13 @@ export class TurnSnapshots {
     private cache = new Map<string, { stamp: string; entry: Entry }>();
     private indexEntries = new Map<string, Entry>();
     private hardened = new Set<string>();
-    private stored = new Set<string>();
+    /** The objects on disk, and which kind each is. */
+    private stored = new Map<string, "loose" | "pack">();
+    /** New objects of the capture under way, until it's known how many there are. */
+    private unwritten = new Map<string, { type: "blob" | "tree"; raw: Buffer }>();
+    private unwrittenBytes = 0;
+    /** Many new objects: the pack they're going into, in memory until it's finished. */
+    private pack?: { chunks: Buffer[]; bytes: number; oids: Set<string> };
     private objectBytes?: number;
     private inflight = new Map<string, Slot<GitChangesInfo>>();
     private saved = false;
@@ -359,46 +399,124 @@ export class TurnSnapshots {
     private async measureStore(inTime: () => void) {
         if (this.objectBytes !== undefined) return;
         let bytes = 0;
-        const stored = new Set<string>();
+        const stored = new Map<string, "loose" | "pack">();
+        const objects = join(this.storage, "objects");
         const walk = async (dir: string) => {
             const names = await readdir(dir);
             inTime();
             const stats = await Promise.all(names.map((name) => lstat(join(dir, name))));
             for (let i = 0; i < names.length; i++) {
-                const path = join(dir, names[i]!), st = stats[i]!;
-                if (st.isDirectory()) await walk(path);
-                else {
-                    bytes += st.size;
-                    if (st.isFile()) stored.add(path);
+                const name = names[i]!, path = join(dir, name), st = stats[i]!;
+                if (st.isDirectory()) { await walk(path); continue; }
+                bytes += st.size;
+                if (!st.isFile()) continue;
+                if (dir !== objects && /^[0-9a-f]{2}$/.test(basename(dir)) && /^[0-9a-f]+$/.test(name)) stored.set(basename(dir) + name, "loose");
+                // A pack counts once both of its files are there.
+                if (basename(dir) === "pack" && name.endsWith(".idx") && names.includes(`${name.slice(0, -4)}.pack`)) {
+                    for (const oid of packIndexOids(await readFile(path), this.algo === "sha1" ? 20 : 32)) stored.set(oid, "pack");
                 }
             }
         };
-        await walk(join(this.storage, "objects"));
+        await walk(objects);
         inTime();
         this.objectBytes = bytes;
         this.stored = stored;
     }
 
-    private async store(buf: Buffer, type = "blob", oid = blobId(buf, this.algo)): Promise<string> {
-        const folder = join(this.storage, "objects", oid.slice(0, 2));
-        const path = join(folder, oid.slice(2));
-        if (this.stored.has(path)) {
-            if (!this.hardened.has(path)) {
+    private async store(buf: Buffer, type: "blob" | "tree" = "blob", oid = blobId(buf, this.algo)): Promise<string> {
+        const kept = this.stored.get(oid);
+        if (kept) {
+            const folder = join(this.storage, "objects", oid.slice(0, 2));
+            const path = join(folder, oid.slice(2));
+            if (kept === "loose" && !this.hardened.has(path)) {
                 await chmod(folder, 0o700);
                 await chmod(path, 0o600);
                 this.hardened.add(path);
             }
             return oid;
         }
+        if (this.unwritten.has(oid) || this.pack?.oids.has(oid)) return oid;
         // No Git filters or EOL conversion: precisely the object format used
         // by hash-object --no-filters, with a bounded read of the source file.
-        const compressed = deflateSync(Buffer.concat([Buffer.from(`${type} ${buf.length}\0`), buf]), { level: 1 });
+        this.unwritten.set(oid, { type, raw: buf });
+        this.unwrittenBytes += buf.length;
+        if (this.pack || this.unwritten.size >= PACK_FROM_OBJECTS || this.unwrittenBytes >= PACK_FROM_BYTES) this.intoPack();
+        return oid;
+    }
+
+    private reserve(bytes: number) {
         const limit = this.options.maxStoreBytes ?? MAX_SNAPSHOT_STORE_BYTES;
-        if (this.objectBytes! + compressed.length > limit) throw new Error("Snapshot storage limit reached (256 MiB per session by default).");
+        if (this.objectBytes! + bytes > limit) throw new Error("Snapshot storage limit reached (256 MiB per session by default).");
+        this.objectBytes! += bytes;
+    }
+
+    /** What's waiting goes into the pack being made. */
+    private intoPack() {
+        // On disk it's this and its index: a line there for each object, and what each of the two has anyway.
+        const hashBytes = this.algo === "sha1" ? 20 : 32;
+        const whole = 12 + hashBytes + 8 + 256 * 4 + 2 * hashBytes;
+        if (!this.pack) {
+            this.reserve(whole);
+            this.pack = { chunks: [], bytes: whole, oids: new Set() };
+        }
+        const pack = this.pack;
+        for (const [oid, { type, raw }] of this.unwritten) {
+            const entry = packEntry(type, raw);
+            const size = entry[0]!.length + entry[1]!.length;
+            this.reserve(size + hashBytes + 8);
+            pack.chunks.push(...entry);
+            pack.bytes += size + hashBytes + 8;
+            pack.oids.add(oid);
+            this.unwritten.delete(oid);
+        }
+        this.unwrittenBytes = 0;
+    }
+
+    /** Puts the pack in the object folder with its index, for git to find. */
+    private async finishPack() {
+        const pack = this.pack;
+        this.pack = undefined;
+        if (!pack) return;
+        if (!pack.oids.size) { this.objectBytes! -= pack.bytes; return; }
+        const header = Buffer.alloc(12);
+        header.write("PACK");
+        header.writeUInt32BE(2, 4);
+        header.writeUInt32BE(pack.oids.size, 8);
+        const hash = new Bun.CryptoHasher(this.algo);
+        hash.update(header);
+        for (const chunk of pack.chunks) hash.update(chunk);
+        const digest = hash.digest() as Buffer;
+        const folder = join(this.storage, "objects", "pack");
+        const name = join(folder, `pack-${digest.toString("hex")}`);
+        const tmp = `${name}.${randomBytes(4).toString("hex")}.tmp`;
+        try {
+            await mkdir(folder, { recursive: true, mode: 0o700 });
+            await chmod(folder, 0o700);
+            await writeFile(tmp, Buffer.concat([header, ...pack.chunks, digest]), { mode: 0o600 });
+            await rename(tmp, `${name}.pack`);
+            // Its own deadline: what's read so far is worth keeping when the capture has run out of time.
+            const made = await this.run(["-c", "pack.writeReverseIndex=false", "index-pack", "-o", `${name}.idx`, `${name}.pack`], Date.now() + 10_000);
+            if (made.code) throw new Error("Could not index the private snapshot pack.");
+            await chmod(`${name}.idx`, 0o600);
+            await chmod(`${name}.pack`, 0o600);
+        } catch (e) {
+            await rm(tmp, { force: true }).catch(() => {});
+            await rm(`${name}.pack`, { force: true }).catch(() => {});
+            await rm(`${name}.idx`, { force: true }).catch(() => {});
+            this.objectBytes! -= pack.bytes;
+            throw e;
+        }
+        for (const oid of pack.oids) this.stored.set(oid, "pack");
+    }
+
+    private async writeLoose(oid: string, type: string, raw: Buffer) {
+        const folder = join(this.storage, "objects", oid.slice(0, 2));
+        const path = join(folder, oid.slice(2));
+        const compressed = deflateSync(Buffer.concat([Buffer.from(`${type} ${raw.length}\0`), raw]), { level: 1 });
+        this.reserve(compressed.length);
         await mkdir(folder, { recursive: true, mode: 0o700 });
         await chmod(folder, 0o700);
         const tmp = `${path}.${randomBytes(4).toString("hex")}.tmp`;
-        this.objectBytes! += compressed.length;
         try {
             await writeFile(tmp, compressed, { mode: 0o600 });
             await rename(tmp, path);
@@ -408,9 +526,28 @@ export class TurnSnapshots {
             await rm(tmp, { force: true }).then(() => { this.objectBytes! -= compressed.length; }).catch(() => {});
             throw e;
         }
-        this.stored.add(path);
+        this.stored.set(oid, "loose");
         this.hardened.add(path);
-        return oid;
+    }
+
+    /** Everything new, on disk: as a pack if it came to one, each in its own file if it's only a few. What's left over is let go. */
+    private async writeOut() {
+        try {
+            if (this.pack) {
+                // Over the limit partway: what fitted is kept, as it would be in files of their own.
+                let over: unknown;
+                try { this.intoPack(); } catch (e) { over = e; }
+                await this.finishPack();
+                if (over) throw over;
+            }
+            for (const [oid, { type, raw }] of this.unwritten) {
+                await this.writeLoose(oid, type, raw);
+                this.unwritten.delete(oid);
+            }
+        } finally {
+            this.unwritten.clear();
+            this.unwrittenBytes = 0;
+        }
     }
 
     private async harden(trees: Set<string>) {
@@ -435,6 +572,8 @@ export class TurnSnapshots {
         const deadline = started + (this.options.budgetMs ?? 2000);
         const result: TurnCapture = { incomplete: false, notes: [], skipped: pathMap(), durationMs: 0 };
         let plannedTrees = new Set<string>();
+        /** What's been read; known once its objects are on disk. */
+        const read: [string, { stamp: string; entry: Entry }][] = [];
         const inTime = () => {
             if (this.stopped) throw new Error("The snapshot session was closed.");
             if (Date.now() >= deadline) throw new Error("Snapshot exceeded its time budget (2 seconds by default).");
@@ -483,6 +622,7 @@ export class TurnSnapshots {
                         return undefined;
                     });
                 }));
+                const toRead: { path: string; st: NonNullable<(typeof stats)[number]>; stamp: string; skip: (reason: string) => void }[] = [];
                 for (let i = 0; i < batch.length; i++) {
                     inTime();
                     const path = batch[i]!, st = stats[i];
@@ -503,14 +643,21 @@ export class TurnSnapshots {
                     if (st.size > MAX_SNAPSHOT_BYTES) { skip("Over 10 MB; not captured, change unknown."); continue; }
                     const cached = this.cache.get(path);
                     if (cached?.stamp === stamp) { entries.set(path, cached.entry); continue; }
-                    const buf = st.isSymbolicLink() ? await readlink(join(this.root, path), { encoding: "buffer" }).catch(() => undefined) : (await readRegular(join(this.root, path), MAX_SNAPSHOT_BYTES))?.buf;
-                    if (!buf) { skip("Unreadable, changed while being read, or over 10 MB; not captured."); continue; }
-                    inTime();
-                    const after = await wt.stat(path, true).catch(() => undefined);
-                    if (!after || `${after.dev}:${after.ino}:${after.mode}:${after.size}:${after.mtimeMs}:${after.ctimeMs}` !== stamp) { result.skipped[path] = "Changed while being read; not captured."; continue; }
-                    const entry = { mode: st.isSymbolicLink() ? "120000" : st.mode & 0o100 ? "100755" : "100644", oid: await this.store(buf), size: buf.length };
-                    this.cache.set(path, { stamp, entry });
-                    entries.set(path, entry);
+                    toRead.push({ path, st, stamp, skip });
+                }
+                for (let k = 0; k < toRead.length; k += READ_AT_ONCE) {
+                    const done = await Promise.allSettled(toRead.slice(k, k + READ_AT_ONCE).map(async ({ path, st, stamp, skip }) => {
+                        const buf = st.isSymbolicLink() ? await readlink(join(this.root!, path), { encoding: "buffer" }).catch(() => undefined) : (await readRegular(join(this.root!, path), MAX_SNAPSHOT_BYTES))?.buf;
+                        if (!buf) { skip("Unreadable, changed while being read, or over 10 MB; not captured."); return; }
+                        inTime();
+                        const after = await wt.stat(path, true).catch(() => undefined);
+                        if (!after || `${after.dev}:${after.ino}:${after.mode}:${after.size}:${after.mtimeMs}:${after.ctimeMs}` !== stamp) { result.skipped[path] = "Changed while being read; not captured."; return; }
+                        const entry = { mode: st.isSymbolicLink() ? "120000" : st.mode & 0o100 ? "100755" : "100644", oid: await this.store(buf), size: buf.length };
+                        read.push([path, { stamp, entry }]);
+                        entries.set(path, entry);
+                    }));
+                    for (const d of done) if (d.status === "rejected") throw d.reason;
+                    if ((this.pack?.bytes ?? 0) >= PACK_MAX_BYTES) await this.finishPack();
                 }
             }
             inTime();
@@ -528,6 +675,7 @@ export class TurnSnapshots {
                     inTime();
                     await this.store(bytes, "tree", oid);
                 }
+                await this.writeOut();
                 // Reset only on first use/reopen or after a failed index update.
                 // Afterwards update just changed paths; object/stat caches avoid rehashing.
                 if (!this.indexEntries.size) {
@@ -543,6 +691,7 @@ export class TurnSnapshots {
                 if (tree.code || oid !== planned.root) throw new Error("Could not write the private snapshot tree.");
                 this.lastTree = oid;
             }
+            await this.writeOut();
             this.indexEntries = entries;
             result.tree = this.lastTree;
             result.incomplete = Object.keys(result.skipped).length > 0;
@@ -551,7 +700,10 @@ export class TurnSnapshots {
             result.notes.push((e as Error).message);
             this.indexEntries.clear();
             this.lastTree = undefined;
+            // What it read in the time it had isn't read again next time.
+            await this.writeOut().catch(() => {});
         } finally {
+            for (const [path, known] of read) if (this.stored.has(known.entry.oid)) this.cache.set(path, known);
             if (this.saved) {
                 await this.harden(plannedTrees).catch(() => { result.incomplete = true; result.notes.push("Could not set snapshot storage permissions."); });
                 await rm(join(this.storage, "index.lock"), { force: true }).catch(() => {});
