@@ -14,6 +14,11 @@ import { appInfo } from "./app-info";
 
 const here = import.meta.dir;
 const repo = resolve(here, "..");
+/**
+ * The Bun the server runs on, whichever Bun builds it: on 1.3 a reply costs the server over ten times the work, nearly
+ * all of it collecting garbage. The same as BUN_VERSION in .github/workflows/ci.yml, so what ships is what was tested.
+ */
+const SERVER_BUN = "1.4.4";
 
 /** The Electron this folder has installed: the one packaged. */
 function electronVersion(): string {
@@ -39,7 +44,7 @@ export async function pack(o: { install?: boolean } = {}): Promise<string> {
     run(["bun", "run", "gui:build"]);
     cpSync(join(repo, "gui", "dist"), join(stage, "gui"), { recursive: true });
     const server = join(stage, "cavvy");
-    run(["bun", "build", "--compile", "--minify", "--sourcemap=none", `--target=bun-darwin-${arch}`, "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--outfile", server, join(repo, "src", "index.ts")]);
+    run(["bun", "build", "--compile", "--minify", "--sourcemap=none", `--target=bun-darwin-${arch}-v${SERVER_BUN}`, "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--outfile", server, join(repo, "src", "index.ts")]);
 
     const [out] = await packager({
         dir: here,
