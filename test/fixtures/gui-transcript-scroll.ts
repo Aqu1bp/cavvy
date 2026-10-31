@@ -70,14 +70,26 @@ const slides: { from: string; options: { duration: number; easing?: string }; an
 /** How many times a turn's box was measured, and the column searched for a turn by id. */
 let turnRects = 0;
 let turnSearches = 0;
+/** How many times the page was asked what's at a point: a hit test each. */
+let hitTests = 0;
 const decorate = (n: Node): any => Object.assign(n, {
     animate: (keyframes: { transform: string }[], options: { duration: number; easing?: string }) => {
-        const anim = { playState: "running", startTime: undefined as number | undefined, cancel() { anim.playState = "idle"; } };
+        const startAt = (steps: { transform: string }[]) => Number(/translateY\((-?[\d.]+)px\)/.exec(steps[0]!.transform)?.[1]);
+        let from = startAt(keyframes);
+        const anim = {
+            playState: "running", startTime: undefined as number | undefined, currentTime: 0, cancel() { anim.playState = "idle"; },
+            effect: {
+                // How far along a running move is: where shiftNow has it.
+                getComputedTiming: () => ({ progress: 1 - shiftNow / from }),
+                updateTiming() {},
+                setKeyframes(steps: { transform: string }[]) { from = startAt(steps); glides.push({ el: n, from, duration: options.duration, anim }); },
+            },
+        };
         if (keyframes[0]!.transform.startsWith("translate(")) {
             slides.push({ from: keyframes[0]!.transform, options, anim });
             return anim;
         }
-        glides.push({ el: n, from: Number(/translateY\((-?[\d.]+)px\)/.exec(keyframes[0]!.transform)?.[1]), duration: options.duration, anim });
+        glides.push({ el: n, from, duration: options.duration, anim });
         return anim;
     },
     getBoundingClientRect: () => has(n, "transcript") ? { top: 0, bottom: viewportHeight, height: viewportHeight } : (n.props["data-turn"] && turnRects++, { top: absolute(n) - top + drawn(n), bottom: absolute(n) - top + drawn(n) + height(n), height: height(n) }),
@@ -106,6 +118,7 @@ const create = (tag: string): any => {
         // Its place in its parent by layout (a translate isn't counted), each element its children's offsetParent.
         offsetParent: { get: () => (n.parent && "offsetTop" in n.parent ? n.parent : null) },
         offsetTop: { get: () => n.parent ? n.parent.children.slice(0, n.parent.children.indexOf(n)).reduce((sum, child) => sum + height(child), 0) : 0 },
+        offsetHeight: { get: () => height(n) },
         parentElement: { get: () => n.parent ?? null },
         isConnected: { get: () => { let x: Node = n; while (x.parent) x = x.parent; return x === root; } },
         previousElementSibling: { get: () => { const s = elements(n.parent); return s[s.indexOf(n) - 1] ?? null; } },
@@ -159,7 +172,7 @@ const scope = {
     rewindTarget: { set() {} }, setRewindOpen() {}, ArrowDown: () => node("icon"), FindBar: (p: any) => { findProps = p; return node("find"); }, CardFoldsProvider: (p: any) => p.children,
     setTimeout(fn: () => void) { tasks.push(fn); return 0; },
     // What's at a point of the view: the row of the column laid out there.
-    document: { elementFromPoint: (_x: number, y: number) => all(root).find((n) => n.parent && has(n.parent, "transcript-col") && absolute(n) - top <= y && y < absolute(n) - top + height(n)) ?? null },
+    document: { elementFromPoint: (_x: number, y: number) => (hitTests++, all(root)).find((n) => n.parent && has(n.parent, "transcript-col") && absolute(n) - top <= y && y < absolute(n) - top + height(n)) ?? null },
     HTMLElement: { [Symbol.hasInstance]: (x: any) => !!x?.props },
     TurnView: (p: any) => {
         restoredOpen ||= p.workOpen;
@@ -357,17 +370,16 @@ try {
     }
     turnHeights.delete(aboveRead);
     dispose();
-    // While a turn runs, growth at the end is written once, in the next frame, and the column glides in from where it was.
+    // While a turn runs, growth at the end is written once, in the frame that grew (one of its own costs the page's whole
+    // pipeline), and the column glides in from where it was.
     const live = { id: "live", view: { state: {}, turns: turns(45).map((t, i) => ({ ...t, status: i === 44 ? "running" : "done" })) } };
     dispose = mount(live);
     const bottom = () => height(scroller()) - viewportHeight;
     assert.equal(top, bottom(), "a running turn starts followed");
-    const start = top;
-    turnHeights.set("turn-44", 420); resize();
-    assert.equal(top, start, "nothing is written until the next frame");
     let glideWrites = scrollWrites;
-    flush();
-    assert.equal(top, bottom(), "growth is at the end in one frame");
+    turnHeights.set("turn-44", 420); resize();
+    assert.equal(frames.size, 0, "no frame is asked for");
+    assert.equal(top, bottom(), "growth is at the end in the frame it grew");
     assert.equal(scrollWrites, glideWrites + 1, "with one scrollTop write");
     // In sight: the end's room and the last turn (the one before is 420px above the view, more than the glide's 220).
     assert.deepEqual(glides.map((g) => g.el), [button("transcript-end"), turn("turn-44")], "and one glide, of only the rows in sight");
@@ -379,7 +391,8 @@ try {
     // More growth while that glide runs: one motion, picked up where it is (drawn 100px down by now).
     shiftNow = 100;
     turnHeights.set("turn-44", 460); resize(); flush();
-    assert.ok(glides.slice(0, first).every((g) => g.anim.playState === "idle"), "the running glide gives way");
+    assert.deepEqual(glides.slice(first).map((g) => g.anim), glides.slice(0, first).map((g) => g.anim), "the rows go on in the animations they have: a transform taken off and put back lays the column out");
+    assert.ok(glides.every((g) => g.anim.playState === "running"));
     assert.equal(glides.at(-1)!.from, 140, "the next starts from where the last one was, plus the growth");
     shiftNow = 0; glides.forEach((g) => g.anim.cancel());
     scroller().props.onScroll();
@@ -403,11 +416,11 @@ try {
     assert.deepEqual([top, glides.length], [bottom(), still], "growth above the view isn't glided: it's at the end before it's drawn");
     flush();
     assert.equal(glides.length, still);
-    // And when it comes after the end grew in the same frame (the glide asked for, not yet written): no glide either.
-    turnHeights.set("turn-44", 1500); resize();
+    // And when it comes in the same frame as the end growing: no glide either.
+    turnHeights.set("turn-44", 1500);
     turnHeights.set("turn-40", 850);
-    flush();
-    assert.deepEqual([top, glides.length], [bottom(), still], "the frame's glide sees the growth above and lands at once");
+    resize(); flush();
+    assert.deepEqual([top, glides.length], [bottom(), still], "growth above seen with the end's lands at once");
     // Or a scroll event sees it first (our last write's, told in the next frame): it lands there, nothing glides after.
     turnHeights.set("turn-40", 1100); scroller().props.onScroll();
     assert.equal(top, bottom(), "a scroll event seeing growth above lands at the end");
@@ -417,7 +430,13 @@ try {
     turnHeights.set("turn-44", 1600); resize(); flush();
     assert.equal(glides.length, still + 2, "growth in view glides as before");
     glides.forEach((g) => g.anim.cancel());
-    turnHeights.delete("turn-40"); turnHeights.set("turn-44", 1460); viewportHeight = 500; resize(); flush(); scroller().props.onScroll();
+    // Growth at the end, with what's watched still in the upper part of the view: no hit test each time.
+    turnHeights.delete("turn-40"); turnHeights.set("turn-44", 300); resize(); flush(); scroller().props.onScroll();
+    const looks = hitTests;
+    for (const grown of [310, 320, 330]) { turnHeights.set("turn-44", grown); resize(); flush(); scroller().props.onScroll(); }
+    assert.equal(hitTests, looks, "what's watched goes on being watched");
+    glides.forEach((g) => g.anim.cancel());
+    turnHeights.set("turn-44", 1460); viewportHeight = 500; resize(); flush(); scroller().props.onScroll();
     glides.forEach((g) => g.anim.cancel());
     assert.equal(top, bottom());
     // Scrolled away while a glide runs (Home, the scrollbar): the turn read there isn't gliding, so where it's
