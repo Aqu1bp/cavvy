@@ -712,6 +712,38 @@ describe("per-turn snapshots", () => {
         }
     });
 
+    test("sessions in one repository share what they know of its files, and each keeps its own objects", async () => {
+        const files: Record<string, string> = {};
+        for (let i = 0; i < 400; i++) files[`src/f${i}.txt`] = `file ${i}\n`;
+        const { cwd, dir, snapshots } = setup(files);
+        await snapshots.begin(1, "First");
+        await snapshots.end();
+
+        const otherDir = join(dirname(dir), `${next++}-other`);
+        mkdirSync(otherDir, { recursive: true });
+        const other = new TurnSnapshots(otherDir, cwd);
+        await other.begin(1, "Second session");
+        write(cwd, "src/f0.txt", "changed\n");
+        await other.end();
+        expect(other.list()[0]!.end!.incomplete).toBe(false);
+        // Known to the first session doesn't mean it's in this one's store: it can still show what it replaced.
+        expect(readdirSync(join(objectsDir(otherDir), "pack")).filter((n) => n.endsWith(".pack")).length).toBe(1);
+        expect(JSON.stringify(await other.changes({ scope: "turn", turnId: 1 }))).toContain("file 0");
+        expect((other as any).known).toBe((snapshots as any).known);
+
+        // The first session learns the changed file from the second, and still stores it itself.
+        await snapshots.begin(3, "Next");
+        await snapshots.end();
+        expect(snapshots.list()[1]!.end!.incomplete).toBe(false);
+        write(cwd, "src/f0.txt", "file 0\n");
+        await snapshots.begin(5, "Back");
+        write(cwd, "src/f1.txt", "also changed\n");
+        await snapshots.end();
+        const shown = await snapshots.changes({ scope: "last-turn" });
+        expect(shown.files.map((f) => f.path)).toEqual(["src/f1.txt"]);
+        expect(JSON.stringify(shown)).toContain("also changed");
+    });
+
     test("a pack works in a SHA-256 repository", async () => {
         const files: Record<string, string> = {};
         for (let i = 0; i < 300; i++) files[`f${i}.txt`] = `file ${i}\n`;

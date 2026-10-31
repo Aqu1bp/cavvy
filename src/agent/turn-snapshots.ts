@@ -142,12 +142,25 @@ function packIndexOids(index: Buffer, hashBytes: number): string[] {
     return Array.from({ length: count }, (_, i) => index.toString("hex", names + i * hashBytes, names + (i + 1) * hashBytes));
 }
 
+type KnownFile = { path: string; stamp: string; entry: Entry };
+
+/**
+ * What a repository's files hold, by their stamps. The same for every session working in it, so it's held once: at
+ * 100,000 files it's tens of MB. Let go with the last of them. Each session's objects are still its own (`stored`).
+ */
+const knownFiles = new Map<string, WeakRef<Map<string, KnownFile>>>();
+function knownIn(root: string): Map<string, KnownFile> {
+    let known = knownFiles.get(root)?.deref();
+    if (!known) knownFiles.set(root, new WeakRef((known = new Map())));
+    return known;
+}
+
 export class TurnSnapshots {
     private turns = new Map<number, SnapshotTurn>();
     private active?: SnapshotTurn;
     private root?: string;
     private algo: "sha1" | "sha256" = "sha1";
-    private cache = new Map<string, { stamp: string; entry: Entry }>();
+    private known = new Map<string, KnownFile>();
     private indexEntries = new Map<string, Entry>();
     private hardened = new Set<string>();
     /** The objects on disk, and which kind each is. */
@@ -576,7 +589,7 @@ export class TurnSnapshots {
         const result: TurnCapture = { incomplete: false, notes: [], skipped: pathMap(), durationMs: 0 };
         let plannedTrees = new Set<string>();
         /** What's been read; known once its objects are on disk. */
-        const read: [string, { stamp: string; entry: Entry }][] = [];
+        const read: KnownFile[] = [];
         const inTime = () => {
             if (this.stopped) throw new Error("The snapshot session was closed.");
             if (Date.now() >= deadline) throw new Error("Snapshot exceeded its time budget (2 seconds by default).");
@@ -590,6 +603,7 @@ export class TurnSnapshots {
             const asked = top.out.toString().replace(/\n$/, "");
             const cut = asked.lastIndexOf("\n");
             this.root = asked.slice(0, cut);
+            this.known = knownIn(this.root);
             result.root = this.root;
             // The repository's other worktrees in its folder are places of their own (turn-places.ts), not contents left out.
             const listed = await listWorktrees(this.root, deadline);
@@ -644,8 +658,8 @@ export class TurnSnapshots {
                         continue;
                     }
                     if (st.size > MAX_SNAPSHOT_BYTES) { skip("Over 10 MB; not captured, change unknown."); continue; }
-                    const cached = this.cache.get(path);
-                    if (cached?.stamp === stamp) { entries.set(path, cached.entry); continue; }
+                    const known = this.known.get(path);
+                    if (known?.stamp === stamp && this.stored.has(known.entry.oid)) { entries.set(known.path, known.entry); continue; }
                     toRead.push({ path, st, stamp, skip });
                 }
                 for (let k = 0; k < toRead.length; k += READ_AT_ONCE) {
@@ -655,9 +669,14 @@ export class TurnSnapshots {
                         inTime();
                         const after = await wt.stat(path, true).catch(() => undefined);
                         if (!after || `${after.dev}:${after.ino}:${after.mode}:${after.size}:${after.mtimeMs}:${after.ctimeMs}` !== stamp) { result.skipped[path] = "Changed while being read; not captured."; return; }
-                        const entry = { mode: st.isSymbolicLink() ? "120000" : st.mode & 0o100 ? "100755" : "100644", oid: await this.store(buf), size: buf.length };
-                        read.push([path, { stamp, entry }]);
-                        entries.set(path, entry);
+                        const mode = st.isSymbolicLink() ? "120000" : st.mode & 0o100 ? "100755" : "100644", oid = blobId(buf, this.algo);
+                        // The same as another session knows it: its strings are kept, not a copy of them.
+                        const had = this.known.get(path);
+                        const same = had?.entry.oid === oid && had.entry.mode === mode && had.entry.size === buf.length;
+                        const file: KnownFile = same ? (had.stamp === stamp ? had : { path: had.path, stamp, entry: had.entry }) : { path, stamp, entry: { mode, oid, size: buf.length } };
+                        await this.store(buf, "blob", file.entry.oid);
+                        read.push(file);
+                        entries.set(file.path, file.entry);
                     }));
                     for (const d of done) if (d.status === "rejected") throw d.reason;
                     if ((this.pack?.bytes ?? 0) >= PACK_MAX_BYTES) await this.finishPack();
@@ -706,7 +725,7 @@ export class TurnSnapshots {
             // What it read in the time it had isn't read again next time.
             await this.writeOut().catch(() => {});
         } finally {
-            for (const [path, known] of read) if (this.stored.has(known.entry.oid)) this.cache.set(path, known);
+            for (const file of read) if (this.stored.has(file.entry.oid)) this.known.set(file.path, file);
             if (this.saved) {
                 await this.harden(plannedTrees).catch(() => { result.incomplete = true; result.notes.push("Could not set snapshot storage permissions."); });
                 await rm(join(this.storage, "index.lock"), { force: true }).catch(() => {});
