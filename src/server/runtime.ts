@@ -117,6 +117,8 @@ import { SecretStore, secretValueError } from "../agent/secrets";
 
 /** How often streamed output goes out to the GUI. */
 const FLUSH_MS = 24;
+/** Words in a session no window has on screen: the session and its row go on as they are, and this wakes the window less. */
+const HIDDEN_FLUSH_MS = 500;
 
 interface Pending {
     interaction: Interaction;
@@ -283,6 +285,8 @@ export class Runtime {
     private batch = 0;
     private outbox: SessionOp[] = [];
     private flushTimer?: ReturnType<typeof setTimeout>;
+    /** The timer's one that can wait (HIDDEN_FLUSH_MS). */
+    private flushWaits = false;
     private abort?: AbortController;
     private queued: Queued[] = [];
     private queueSeq = 0;
@@ -876,7 +880,11 @@ export class Runtime {
         applyOp(this.view, structuredClone(o));
         this.noteStep(o);
         this.outbox.push(o);
-        if (!this.flushTimer) this.flushTimer = setTimeout(() => this.flush(), FLUSH_MS);
+        const waits = (o.op === "append" || o.op === "agent.append") && !this.engine.sessionShown(this.id);
+        if (this.flushTimer && (waits || !this.flushWaits)) return;
+        clearTimeout(this.flushTimer);
+        this.flushWaits = waits;
+        this.flushTimer = setTimeout(() => this.flush(), waits ? HIDDEN_FLUSH_MS : FLUSH_MS);
     }
 
     /** Where this session compacts on its own, in tokens of context (SessionState.compactAt). */

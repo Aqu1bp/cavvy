@@ -1717,6 +1717,34 @@ describe("sessions", () => {
         c.close();
     }, 30_000);
 
+    test("what a session prints comes less often while another's on screen, and at once when it's shown", async () => {
+        const c = await client();
+        const id = await c.open("session.create", { cwd: project() });
+        const frames = () => c.events.filter((e) => e.type === "session.ops" && e.sessionId === id && e.ops.some((op) => op.op === "append" && op.field === "output")).length;
+        const printing = (n: number) => `!for i in $(seq 1 ${n}); do echo $i; sleep 0.1; done`;
+        await c.call("session.send", { id, text: printing(12) });
+        await c.until(id, done, 15_000);
+        const shown = frames();
+        expect(shown).toBeGreaterThan(6);
+
+        await c.call("session.shown", {});
+        await c.call("session.send", { id, text: printing(30) });
+        await Bun.sleep(1000);
+        const hidden = frames() - shown;
+        expect(hidden).toBeLessThanOrEqual(3);
+        // Right after one has come, some words are waiting for the next, 500 ms on: being shown sends them now.
+        const seen = frames();
+        while (frames() === seen) await Bun.sleep(10);
+        await Bun.sleep(250);
+        const waiting = frames();
+        await c.call("session.shown", { id });
+        await Bun.sleep(60);
+        expect(frames()).toBeGreaterThan(waiting);
+        await c.until(id, done, 15_000);
+        expect(lastTurn(c.view(id)).blocks.filter((b) => b.t === "shell").map((b) => (b as Extract<Block, { t: "shell" }>).output)).toEqual([Array.from({ length: 30 }, (_, i) => i + 1).join("\n")]);
+        c.close();
+    }, 30_000);
+
     test("a key a !command prints in two pieces isn't shown as it streams", async () => {
         const c = await client();
         const id = await c.open("session.create", { cwd: project() });
