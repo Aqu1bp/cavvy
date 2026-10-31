@@ -39,8 +39,20 @@ export function mergePath(current: string | undefined, login: string | undefined
     return out.join(":");
 }
 
-/** Bun.which doesn't see this (it reads the PATH the process started with): pass it `{ PATH: process.env.PATH }`. */
-export async function adoptLoginPath() {
-    const merged = mergePath(process.env.PATH, await loginShellPath());
-    if (merged) process.env.PATH = merged;
+/**
+ * Takes PATH from your login shell. One that takes seconds to start (nvm, oh-my-zsh) shouldn't hold up the app: what it said
+ * last time, remembered in `file`, is used at once and its answer takes over when it comes. Only a first launch waits.
+ * Bun.which doesn't see this (it reads the PATH the process started with): pass it `{ PATH: process.env.PATH }`.
+ */
+export async function adoptLoginPath(file: string) {
+    const started = process.env.PATH;
+    const remembered = await Bun.file(file).text().catch(() => undefined);
+    const answered = loginShellPath().then(async (login) => {
+        if (!login) return;
+        process.env.PATH = mergePath(started, login);
+        if (login !== remembered) await Bun.write(file, login).catch(() => undefined);
+    });
+    if (remembered) process.env.PATH = mergePath(started, remembered);
+    else await answered;
+    return { answered };
 }
