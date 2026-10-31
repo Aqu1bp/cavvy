@@ -227,12 +227,20 @@ try {
         // Before the repository grows: the same turns in the small one, to set beside the large.
         const per = async () => {
             const id = await create(a);
-            await turn(a, id, "fastdemo burst short");
-            await sleep(2000);
+            const one = async () => {
+                const from = spent(a.serverPid).instructions, t0 = performance.now();
+                await turn(a, id, "fastdemo burst short");
+                const turnMs = performance.now() - t0;
+                await sleep(2000);
+                return { turnMs: Math.round(turnMs), serverG: Math.round((spent(a.serverPid).instructions - from) / 1e7) / 100 };
+            };
+            // What a new session pays once, then what each turn costs: the first few can still be catching up.
+            const first = await one();
             let at = gits(0).to;
             const each = [];
-            for (let i = 0; i < 5; i++) { await turn(a, id, "fastdemo burst short"); await sleep(2000); const g = gits(at); at = g.to; each.push(g); }
-            return { spawnsPerTurn: median(each.map((g) => g.spawns)), msPerTurn: median(each.map((g) => g.ms)), top: each.at(-1)!.top };
+            for (let i = 0; i < 8; i++) { const w = await one(); const g = gits(at); at = g.to; each.push({ ...g, ...w }); }
+            const settled = each.slice(-5);
+            return { first, turns: each.map((x) => ({ turnMs: x.turnMs, serverG: x.serverG })), turnMs: median(settled.map((g) => g.turnMs)), serverG: median(settled.map((g) => g.serverG)), spawnsPerTurn: median(settled.map((g) => g.spawns)), msPerTurn: median(settled.map((g) => g.ms)), top: settled.at(-1)!.top };
         };
         const small = await per();
         await quit(a);
