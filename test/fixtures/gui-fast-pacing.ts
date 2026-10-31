@@ -40,8 +40,9 @@ test("a block that starts while the reply streams comes out from its start, at o
         const [value, setValue] = solid.createSignal("A fast model sends a whole paragraph at once, ");
         const [streaming, setStreaming] = solid.createSignal(true);
         const [shown, behind] = createReveal(value, streaming);
-        // Not the chunk that arrived with it, whole: nothing yet, then word by word.
-        expect(shown()).toBe("");
+        // Not the chunk that arrived with it, whole: its first words at once, then word by word.
+        expect(shown().length).toBeGreaterThan(0);
+        expect(shown().length).toBeLessThan(value().length);
         expect(behind()).toBe(true);
         expect(revealing()).toBe(true);
         // A burst of 600 characters on top: it's all out LAG_MS after it came, at one speed (not fast, then a crawl).
