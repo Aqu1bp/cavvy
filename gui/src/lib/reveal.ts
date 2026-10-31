@@ -32,9 +32,28 @@ const MAX_BACKLOG = 4000;
 /** A block that starts while the reply streams comes out from its start, unless it already has this much (drawn again mid-reply). */
 const MAX_FRESH = 1200;
 
+/** Words not flowing for this long is a wait (a tool, a pause), not a gap between chunks. */
+const FLOW_GAP_MS = 400;
+
 /** Reveals with text still to let out: the transcript keeps gliding to its end until they're done. */
 let pending = 0;
 export const revealing = () => pending > 0;
+
+let flowing = false;
+let flowEnd: ReturnType<typeof setTimeout> | undefined;
+/** `data-flowing` on the page while words come out: the open session's spinner holds still then (sidebar.css), the words say it's working. */
+function markFlowing() {
+    clearTimeout(flowEnd);
+    if (pending > 0) {
+        if (!flowing) globalThis.document?.documentElement?.setAttribute("data-flowing", "");
+        flowing = true;
+    } else {
+        flowEnd = setTimeout(() => {
+            flowing = false;
+            globalThis.document?.documentElement?.removeAttribute("data-flowing");
+        }, FLOW_GAP_MS);
+    }
+}
 
 /**
  * Characters to let out after `dt` ms with `backlog` waiting and `left` ms until all of it should be out,
@@ -74,6 +93,7 @@ export function createReveal(text: Accessor<string>, streaming: Accessor<boolean
         if (on === running) return;
         running = on;
         pending += on ? 1 : -1;
+        markFlowing();
         if (on) onStep(tick);
         else {
             offStep(tick);
