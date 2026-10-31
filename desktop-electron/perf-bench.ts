@@ -6,6 +6,7 @@
 //
 // Writes the benches' own results to desktop-electron/bench-results/, and prints the table. Real models: bench-real.ts.
 
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 
 const args = process.argv.slice(2);
@@ -23,6 +24,8 @@ const PHASES = "idleLongOnScreen,waitingOnScreen,textShortOnScreen,textLongOnScr
 
 function bench(script: string, label: string, target: string, extra: string[] = []) {
     console.error(`${script} ${label}`);
+    // Not last time's result, if this run writes none.
+    rmSync(join(results, `${script.replace(".ts", "")}-${label}.json`), { force: true });
     const run = Bun.spawnSync(["caffeinate", "-dim", "bun", join(here, script), "--label", label, "--app", exe(target), ...extra], { stdout: "ignore", stderr: "ignore" });
     if (run.exitCode) console.error(`  exited ${run.exitCode}`);
 }
