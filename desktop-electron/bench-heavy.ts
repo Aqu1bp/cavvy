@@ -82,6 +82,8 @@ async function launch() {
     let server: any = {};
     for (let i = 0; !server.token; i++) { server = ((await Bun.file(metricsFile).json().catch(() => ({}))) as any).server ?? {}; if (i > 200) throw new Error("no server"); if (!server.token) await sleep(100); }
     const rpc = await connect(`ws://127.0.0.1:${server.port}/ws`, ["cavvy.v1", `auth.${server.token}`]);
+    // This connection shows nothing: left unsaid, the server would count it as looking at every session.
+    void rpc.call("session.shown", {});
     let crashed = false;
     await page.call("Inspector.enable");
     page.listeners.set("Inspector.targetCrashed", () => { crashed = true; });
@@ -356,6 +358,18 @@ try {
         const first = checkpoints[0], last = checkpoints.at(-1);
         if (first && last) report.soak.growthMBPerHour = Math.round((last.memory.total - first.memory.total) / Math.max(0.01, (last.minutes - first.minutes) / 60));
         save();
+        // History kept, or a leak? With its sessions closed, what's left is what doesn't go.
+        if (!a.crashed()) {
+            // Second by second as it goes quiet: does anything come back?
+            report.soak.quiet = [];
+            for (let k = 0; k < 9; k++) { await sleep(10_000); report.soak.quiet.push(footprint().byKind.server); }
+            report.soak.settled = { memory: footprint(), heapMB: await heapMB(a) };
+            for (const id of ids) await a.rpc.call("session.close", { id });
+            await a.js(`(() => { sessionStorage.removeItem('cavvy.navigation'); location.reload(); })()`);
+            await sleep(120_000);
+            report.soak.closed = { memory: footprint(), heapMB: await heapMB(a), serverFiles: openFiles(a.serverPid) };
+            save();
+        }
     }
     await quit(a);
 } catch (e) {
