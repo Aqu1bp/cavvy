@@ -219,6 +219,8 @@ test("streaming Markdown retains code host, highlights finished lines at a bound
     const Code = component(source("blocks/CodeBlock"), "CodeBlock", {
         RenderBoundary: boundary(), CopyButton: () => node("copy"), trailBlock: () => trailed++, CARET_WAIT_MS: 100,
         highlight: async (code: string) => { highlights++; highlighted.push(code); return "highlighted"; },
+        highlightMore: async (_writing: number, lines: string) => { highlights++; highlighted.push(lines); return "highlighted\n"; },
+        newWriting: () => 1, endWriting() {}, growing: (el: Node) => (html: string) => { el.props.innerHTML = html; },
     });
     // The DOM side (lib/stream-dom.ts) is a browser's: here a block just records what it was given.
     const painted: { html: string; live: boolean; caret: boolean }[] = [];
@@ -251,7 +253,7 @@ test("streaming Markdown retains code host, highlights finished lines at a bound
         // line may still be being typed: marked drops an open block's final newline).
         await Bun.sleep(300);
         expect(highlights).toBe(1);
-        expect(highlighted[0]!.endsWith("const v98 = 98;")).toBe(true);
+        expect(highlighted[0]!.endsWith("const v98 = 98;\n")).toBe(true);
         const lit = all(root).find((n) => has(n, "code-lit"));
         expect(lit?.props.innerHTML).toBe("highlighted\n");
         // With no code coming it pulses; more code, and it's still again.

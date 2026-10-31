@@ -7,6 +7,8 @@ import * as liveLine from "../../gui/src/lib/live-line";
 import * as format from "../../gui/src/lib/format";
 import { createReveal, LAG_MS, revealing } from "../../gui/src/lib/reveal";
 import { STEP_MS } from "../../gui/src/lib/stream-clock";
+import { growing } from "../../gui/src/lib/stream-dom";
+import { withinBudget } from "../helpers/perf-budget";
 
 const source = (file: string) => readFileSync(new URL(`../../gui/src/components/${file}.tsx`, import.meta.url), "utf8").replace(/^import [\s\S]*?;\n/gm, "");
 
@@ -139,6 +141,75 @@ test("the page says words are flowing while they come out, through a gap between
     delete (document as any).documentElement;
     globalThis.setTimeout = realTimers.set;
     globalThis.clearTimeout = realTimers.clear;
+});
+
+test("a code block being written goes to the highlighter a line at a time, each line once", async () => {
+    fakeTimers();
+    const sent: { writing: number; lines: string }[] = [];
+    const whole: string[] = [];
+    const shown: string[] = [];
+    const ended: number[] = [];
+    let writings = 0;
+    const CodeBlock = component(source("blocks/CodeBlock"), "CodeBlock", {
+        RenderBoundary: (p: { children: unknown }) => p.children, CopyButton: () => node("copy"), CARET_WAIT_MS: 400, trailBlock() {},
+        growing: () => (html: string) => shown.push(html),
+        newWriting: () => ++writings, endWriting: (writing: number) => ended.push(writing),
+        highlightMore: async (writing: number, lines: string) => { sent.push({ writing, lines }); return `[${lines}]`; },
+        highlight: async (code: string) => { whole.push(code); return `{${code}}`; },
+    });
+    const [code, setCode] = solid.createSignal("");
+    const [streaming, setStreaming] = solid.createSignal(true);
+    const dispose = renderer.render(() => CodeBlock({ get code() { return code(); }, lang: "ts", get streaming() { return streaming(); } }), node("root"));
+    const realDate = Date.now;
+    Date.now = () => clock;
+    const run = async (ms: number) => { const start = clock; while (clock - start < ms) { flush(); await Promise.resolve(); await Promise.resolve(); } };
+    try {
+        const lines = Array.from({ length: 120 }, (_, i) => `const a${i} = ${i};\n`);
+        // A chunk at a time, some ending within a line.
+        let written = "";
+        for (const line of lines) {
+            for (const part of [line.slice(0, 5), line.slice(5)]) {
+                written += part;
+                setCode(written);
+                await run(40);
+            }
+        }
+        await run(300);
+        const once = sent.map((s) => s.lines).join("");
+        expect(once).toBe(lines.join(""));
+        expect(new Set(sent.map((s) => s.writing)).size).toBe(1);
+        expect(sent.length).toBeGreaterThan(5);
+        // The page is only ever given what was there and more.
+        for (let i = 1; i < shown.length; i++) expect(shown[i]!.startsWith(shown[i - 1]!)).toBe(true);
+        setStreaming(false);
+        await run(32);
+        expect(whole).toEqual([lines.join("").slice(0, -1)]);
+        expect(ended).toEqual([1]);
+        withinBudget("codeTokenizedPerLine", (once.split("\n").length - 1 + whole.join("").split("\n").length) / lines.length);
+        // Replaced, not grown: from the top, with a place of its own.
+        sent.length = 0;
+        setStreaming(true);
+        setCode("let other = 1;\n");
+        await run(300);
+        expect(sent).toEqual([{ writing: 2, lines: "let other = 1;\n" }]);
+    } finally {
+        dispose();
+        Date.now = realDate;
+        globalThis.setTimeout = realTimers.set;
+        globalThis.clearTimeout = realTimers.clear;
+    }
+    expect(ended).toEqual([1, 2]);
+});
+
+test("HTML that grows is added to the end, and anything else replaces it", () => {
+    const calls: string[] = [];
+    const el = { insertAdjacentHTML: (_where: string, html: string) => calls.push(`add ${html}`), set innerHTML(html: string) { calls.push(`set ${html}`); } } as unknown as HTMLElement;
+    const show = growing(el);
+    show("<a>");
+    show("<a><b>");
+    show("<a><b><c>");
+    show("<z>");
+    expect(calls).toEqual(["set <a>", "add <b>", "add <c>", "set <z>"]);
 });
 
 test("the live line shows each state long enough to read it: one that comes too soon waits, and those in between are skipped", async () => {

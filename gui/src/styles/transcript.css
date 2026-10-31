@@ -2599,6 +2599,12 @@
     white-space: pre;
 }
 
+/* While it's being written, a box for each finished line: the line being typed is laid out on its own, not the block with it. */
+.code-lit.lines,
+.code-lit.lines .line {
+    display: block;
+}
+
 /* ---- Diffs ---------------------------------------------------------- */
 
 .diff {

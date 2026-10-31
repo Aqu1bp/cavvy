@@ -206,6 +206,33 @@ export async function highlightLineChunks(code: string, lang: string | undefined
     return true;
 }
 
+/** Code blocks being written: where each has got to in its grammar and how much it has had. */
+const writing = new Map<number, { state?: GrammarState; chars: number }>();
+
+/**
+ * The HTML of the lines just finished in a block being written (`stream`; `lines` each end in a newline), a box for each
+ * (.code-lit.lines). The grammar picks up where the last lines left it, so each line is read once however long the block
+ * grows. Undefined: it stays plain.
+ */
+export async function highlightMore(stream: number, lines: string, lang: string | undefined): Promise<string | undefined> {
+    const was = writing.get(stream) ?? { chars: 0 };
+    const chars = was.chars + lines.length;
+    if (!lang || chars > MAX_CHARS) return void writing.delete(stream);
+    writing.set(stream, was);
+    const id = await ensure(lang);
+    if (!id) return void writing.delete(stream);
+    const h = await highlighter();
+    // As Shiki splits them (a CRLF ends a line too): the last line carries no stray \r into the grammar's state.
+    const { tokens, grammarState } = h.codeToTokens(lines.replace(/\r?\n$/, ""), { lang: id, theme: "cavvy", ...(was.state ? { grammarState: was.state } : {}) });
+    // Ended while it waited for its grammar: it isn't kept.
+    if (writing.has(stream)) writing.set(stream, { state: grammarState, chars });
+    return tokens.map((line) => `<span class="line">${line.map(tokenHtml).join("")}\n</span>`).join("");
+}
+
+export function endWriting(stream: number) {
+    writing.delete(stream);
+}
+
 /** Start loading Shiki in the background (after first paint). */
 export function warmUp() {
     void highlighter().catch(() => undefined);

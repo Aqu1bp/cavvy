@@ -3,6 +3,7 @@
     "gitSpawnsPerTurn": 20,
     "gitSpawnsIdle": 0,
     "markdownParsedPerCharacter": 12.3,
+    "codeTokenizedPerLine": 2,
     "streamClockWakesPerSecond": 21,
     "guiEagerJsBytes": 1290000,
     "guiEagerCssBytes": 295000
