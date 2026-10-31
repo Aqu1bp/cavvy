@@ -268,7 +268,8 @@ export async function readRegular(abs: string, max: number): Promise<{ buf?: Buf
         const chunks: Buffer[] = [];
         let total = 0;
         for (;;) {
-            const chunk = Buffer.alloc(Math.min(256 * 1024, max + 1 - total));
+            // Sized to the file, with a little over to find its end: most are small, and this runs for every file of a repository.
+            const chunk = Buffer.allocUnsafe(Math.min(Math.min(256 * 1024, total < st.size ? st.size + 1 - total : 4096), max + 1 - total));
             const { bytesRead } = await fh.read(chunk, 0, chunk.length, null);
             if (!bytesRead) break;
             chunks.push(chunk.subarray(0, bytesRead));

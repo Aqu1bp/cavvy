@@ -22,6 +22,8 @@ import { redact } from "../util/redact";
 
 /** Paths a turn reached that are kept (TurnSnapshots.reach): past this many, the rest go unseen. */
 const MAX_REACHED = 20_000;
+/** Files looked up at once: about as cheap as it gets, and not so many that one wait holds up the deadline. */
+const STAT_BATCH = 64;
 
 export interface TurnCapture {
     tree?: string;
@@ -130,6 +132,8 @@ export class TurnSnapshots {
     private checks = new WorktreeChecks();
     /** Where the open turn worked (reach): only a worktree it reached can be one it worked in. */
     private reached = new Set<string>();
+    /** The tree of what's in the private index, while nothing has gone wrong with it. */
+    private lastTree: string | undefined;
     private readonly storage: string;
     private readonly journal: string;
 
@@ -357,10 +361,11 @@ export class TurnSnapshots {
         let bytes = 0;
         const stored = new Set<string>();
         const walk = async (dir: string) => {
-            for (const name of await readdir(dir)) {
-                inTime();
-                const path = join(dir, name);
-                const st = await lstat(path);
+            const names = await readdir(dir);
+            inTime();
+            const stats = await Promise.all(names.map((name) => lstat(join(dir, name))));
+            for (let i = 0; i < names.length; i++) {
+                const path = join(dir, names[i]!), st = stats[i]!;
                 if (st.isDirectory()) await walk(path);
                 else {
                     bytes += st.size;
@@ -468,72 +473,84 @@ export class TurnSnapshots {
                 modes.set(path, staged[1]!);
                 return path;
             }))];
-            for (const path of paths) {
-                inTime();
-                if (!safePath(path)) throw new Error("A repository path cannot be safely captured.");
-                const st = await wt.stat(path, true).catch(() => {
-                    result.skipped[path] = "Unreadable path; not captured, change unknown.";
-                    return undefined;
-                });
-                if (!st) continue; // A tracked file deleted from disk.
-                const stamp = `${st.dev}:${st.ino}:${st.mode}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
-                const skip = (reason: string) => {
-                    result.skipped[path] = reason;
-                    (result.skippedStamps ??= pathMap())[path] = stamp;
-                };
-                if (!st.isFile() && !st.isSymbolicLink()) {
-                    // A tracked file replaced by a directory is deleted; its new
-                    // untracked children are separate entries, not a nested repo.
-                    if (st.isDirectory() && modes.has(path) && modes.get(path) !== "160000") continue;
-                    if (st.isDirectory() && this.nested.has(path)) continue;
-                    skip(st.isDirectory() ? "Submodule or nested repository contents are not captured." : "Not a regular file.");
-                    continue;
+            // Looked up together: one by one, each is a trip to another thread and back, and a large repository runs out of time on that alone.
+            for (let at = 0; at < paths.length; at += STAT_BATCH) {
+                const batch = paths.slice(at, at + STAT_BATCH);
+                const stats = await Promise.all(batch.map((path) => {
+                    if (!safePath(path)) throw new Error("A repository path cannot be safely captured.");
+                    return wt.stat(path, true).catch(() => {
+                        result.skipped[path] = "Unreadable path; not captured, change unknown.";
+                        return undefined;
+                    });
+                }));
+                for (let i = 0; i < batch.length; i++) {
+                    inTime();
+                    const path = batch[i]!, st = stats[i];
+                    if (!st) continue; // A tracked file deleted from disk.
+                    const stamp = `${st.dev}:${st.ino}:${st.mode}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
+                    const skip = (reason: string) => {
+                        result.skipped[path] = reason;
+                        (result.skippedStamps ??= pathMap())[path] = stamp;
+                    };
+                    if (!st.isFile() && !st.isSymbolicLink()) {
+                        // A tracked file replaced by a directory is deleted; its new
+                        // untracked children are separate entries, not a nested repo.
+                        if (st.isDirectory() && modes.has(path) && modes.get(path) !== "160000") continue;
+                        if (st.isDirectory() && this.nested.has(path)) continue;
+                        skip(st.isDirectory() ? "Submodule or nested repository contents are not captured." : "Not a regular file.");
+                        continue;
+                    }
+                    if (st.size > MAX_SNAPSHOT_BYTES) { skip("Over 10 MB; not captured, change unknown."); continue; }
+                    const cached = this.cache.get(path);
+                    if (cached?.stamp === stamp) { entries.set(path, cached.entry); continue; }
+                    const buf = st.isSymbolicLink() ? await readlink(join(this.root, path), { encoding: "buffer" }).catch(() => undefined) : (await readRegular(join(this.root, path), MAX_SNAPSHOT_BYTES))?.buf;
+                    if (!buf) { skip("Unreadable, changed while being read, or over 10 MB; not captured."); continue; }
+                    inTime();
+                    const after = await wt.stat(path, true).catch(() => undefined);
+                    if (!after || `${after.dev}:${after.ino}:${after.mode}:${after.size}:${after.mtimeMs}:${after.ctimeMs}` !== stamp) { result.skipped[path] = "Changed while being read; not captured."; continue; }
+                    const entry = { mode: st.isSymbolicLink() ? "120000" : st.mode & 0o100 ? "100755" : "100644", oid: await this.store(buf), size: buf.length };
+                    this.cache.set(path, { stamp, entry });
+                    entries.set(path, entry);
                 }
-                if (st.size > MAX_SNAPSHOT_BYTES) { skip("Over 10 MB; not captured, change unknown."); continue; }
-                const cached = this.cache.get(path);
-                if (cached?.stamp === stamp) { entries.set(path, cached.entry); continue; }
-                const buf = st.isSymbolicLink() ? await readlink(join(this.root, path), { encoding: "buffer" }).catch(() => undefined) : (await readRegular(join(this.root, path), MAX_SNAPSHOT_BYTES))?.buf;
-                if (!buf) { skip("Unreadable, changed while being read, or over 10 MB; not captured."); continue; }
-                inTime();
-                const after = await wt.stat(path, true).catch(() => undefined);
-                if (!after || `${after.dev}:${after.ino}:${after.mode}:${after.size}:${after.mtimeMs}:${after.ctimeMs}` !== stamp) { result.skipped[path] = "Changed while being read; not captured."; continue; }
-                const entry = { mode: st.isSymbolicLink() ? "120000" : st.mode & 0o100 ? "100755" : "100644", oid: await this.store(buf), size: buf.length };
-                this.cache.set(path, { stamp, entry });
-                entries.set(path, entry);
             }
             inTime();
-            const planned = treeObjects(entries, this.algo, inTime);
-            plannedTrees = new Set(planned.objects.keys());
-            for (const [oid, bytes] of planned.objects) {
-                inTime();
-                await this.store(bytes, "tree", oid);
-            }
-            // Reset only on first use/reopen or after a failed index update.
-            // Afterwards update just changed paths; object/stat caches avoid rehashing.
-            if (!this.indexEntries.size) {
-                const reset = await this.run(["read-tree", "--empty"], deadline);
-                if (reset.code) throw new Error("Could not initialize the private snapshot index.");
-            }
             const updates: string[] = [];
             for (const path of this.indexEntries.keys()) if (!entries.has(path)) updates.push(`0 ${"0".repeat(this.algo === "sha1" ? 40 : 64)}\t${path}\0`);
             for (const [path, e] of entries) {
                 const was = this.indexEntries.get(path);
                 if (was?.oid !== e.oid || was.mode !== e.mode) updates.push(`${e.mode} ${e.oid}\t${path}\0`);
             }
-            if (updates.length) {
-                const update = await this.run(["update-index", "-z", "--index-info"], deadline, updates.join(""));
-                if (update.code || update.cut) throw new Error("Could not update the private snapshot index.");
+            // Nothing changed since the last one: it's the same tree.
+            if (updates.length || !this.lastTree) {
+                const planned = treeObjects(entries, this.algo, inTime);
+                plannedTrees = new Set(planned.objects.keys());
+                for (const [oid, bytes] of planned.objects) {
+                    inTime();
+                    await this.store(bytes, "tree", oid);
+                }
+                // Reset only on first use/reopen or after a failed index update.
+                // Afterwards update just changed paths; object/stat caches avoid rehashing.
+                if (!this.indexEntries.size) {
+                    const reset = await this.run(["read-tree", "--empty"], deadline);
+                    if (reset.code) throw new Error("Could not initialize the private snapshot index.");
+                }
+                if (updates.length) {
+                    const update = await this.run(["update-index", "-z", "--index-info"], deadline, updates.join(""));
+                    if (update.code || update.cut) throw new Error("Could not update the private snapshot index.");
+                }
+                const tree = await this.run(["write-tree"], deadline);
+                const oid = tree.out.toString().trim();
+                if (tree.code || oid !== planned.root) throw new Error("Could not write the private snapshot tree.");
+                this.lastTree = oid;
             }
-            const tree = await this.run(["write-tree"], deadline);
-            const oid = tree.out.toString().trim();
-            if (tree.code || oid !== planned.root) throw new Error("Could not write the private snapshot tree.");
             this.indexEntries = entries;
-            result.tree = oid;
+            result.tree = this.lastTree;
             result.incomplete = Object.keys(result.skipped).length > 0;
         } catch (e) {
             result.incomplete = true;
             result.notes.push((e as Error).message);
             this.indexEntries.clear();
+            this.lastTree = undefined;
         } finally {
             if (this.saved) {
                 await this.harden(plannedTrees).catch(() => { result.incomplete = true; result.notes.push("Could not set snapshot storage permissions."); });
@@ -560,6 +577,7 @@ export class TurnSnapshots {
 
     private async compare(turn: SnapshotTurn, deadline: number): Promise<Change[]> {
         if (!turn.end) return [];
+        if (turn.start.tree && turn.start.tree === turn.end.tree && !Object.keys(turn.start.skipped).length && !Object.keys(turn.end.skipped).length) return [];
         const [before, after] = await Promise.all([this.tree(turn.start, deadline), this.tree(turn.end, deadline)]);
         const skipped = pathMap(turn.start.skipped, turn.end.skipped);
         const changes: Change[] = [];
