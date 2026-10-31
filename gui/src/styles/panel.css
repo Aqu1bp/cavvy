@@ -487,10 +487,10 @@
 .task .ki .nd.st-running::after {
     content: "";
     position: absolute;
-    inset: -2px;
+    inset: calc(-2 * var(--sp));
     border-radius: 50%;
     pointer-events: none;
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
+    box-shadow: 0 0 0 calc(2 * var(--sp)) color-mix(in srgb, var(--accent) 25%, transparent);
     opacity: 0;
     animation: nd-pulse 1.8s steps(18) infinite;
 }

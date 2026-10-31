@@ -121,6 +121,7 @@ const workToggles = new Map<string, (el: any, toggle: () => void) => void>();
 /** Each turn's onFold (TurnView calls it as its work, faded out, folds away). */
 const onFolds = new Map<string, (el: any, fold: () => void) => void>();
 const scope = {
+    setFollowing() {},
     renderer: { ...solid, ...renderer, createElement: create },
     anchoredTop, atBottom, FAR, firstBelow, firstWindow, MORE_TURNS, restoredShown, turnHeight, window: { innerHeight: 500 }, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow, DrawnAgain,
     LiveLine: () => node("live-line"), Spinner: () => node("spinner"),
