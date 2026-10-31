@@ -299,7 +299,7 @@ h3 {
 }
 
 .spinner {
-    animation: spin 0.8s linear infinite;
+    animation: spin 0.8s steps(24) infinite;
 }
 
 @keyframes pulse {
@@ -309,7 +309,7 @@ h3 {
 }
 
 .pulse {
-    animation: pulse 1.4s ease-in-out infinite;
+    animation: pulse 1.4s steps(14) infinite;
 }
 
 /* A continuous compositor animation. Text stays readable without repainting
@@ -321,7 +321,7 @@ h3 {
 
 .shimmer {
     color: var(--fg-2);
-    animation: shimmer 2.2s ease-in-out infinite;
+    animation: shimmer 2.2s steps(33) infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -364,7 +364,7 @@ h3 {
         transition-duration: 0.001ms !important;
     }
     .spinner {
-        animation: spin 1.6s linear infinite !important;
+        animation: spin 1.6s steps(32) infinite !important;
     }
 }
 

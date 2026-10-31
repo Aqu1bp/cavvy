@@ -24,6 +24,7 @@ import { applyKeybindingsFile, keymap } from "./keybindings";
 import { orderSessions } from "../lib/session-order";
 import { composerStorage } from "../lib/drafts";
 import { composerDrafts } from "../lib/composer-draft";
+import { onStep } from "../lib/stream-clock";
 
 export const rpc = new Rpc(credentials, windowKey);
 rpc.retriesCredentials = isDesktop;
@@ -393,7 +394,7 @@ function schedule(h: SessionHandle) {
     if (h.scheduled) return;
     h.scheduled = true;
     // Frames don't run in a hidden window; don't let updates wait for it to come back.
-    if (document.visibilityState === "visible") requestAnimationFrame(() => flush(h));
+    if (document.visibilityState === "visible") onStep(() => flush(h));
     else setTimeout(() => flush(h), 200);
 }
 
