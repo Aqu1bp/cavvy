@@ -15,6 +15,7 @@ import { actionOf, setEnterSends } from "./state/keybindings";
 import { clampInspectorWidth, closesOnShrink, columnSteps, heldSizes, requestCloses, tracks, COLUMN_NARROW, COLUMN_SHORT, INSPECTOR_DEFAULT, windowLayout } from "./lib/layout";
 import { warmUp } from "./lib/highlight";
 import { warmMarkdown } from "./lib/markdown";
+import { alignAnimations } from "./lib/stream-clock";
 import { frameDrag } from "./lib/drag";
 import { skipCovered } from "./lib/cover";
 import { Sidebar } from "./components/Sidebar";
@@ -286,6 +287,7 @@ function Reconnecting() {
 }
 
 export function App() {
+    onMount(alignAnimations);
     const active = () => handleFor(app.activeId);
     const agent = () => {
         const id = agentFocus();

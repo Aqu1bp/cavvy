@@ -309,7 +309,7 @@ h3 {
 }
 
 .spinner {
-    animation: spin 0.8s steps(24) infinite;
+    animation: spin 0.8s steps(16) infinite;
 }
 
 @keyframes pulse {
@@ -331,7 +331,7 @@ h3 {
 
 .shimmer {
     color: var(--fg-2);
-    animation: shimmer 2.2s steps(33) infinite;
+    animation: shimmer 2.2s steps(22) infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {

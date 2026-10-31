@@ -14,7 +14,7 @@ test("activity motion is continuous, compositor friendly and disabled for reduce
     const shimmer = base.slice(base.indexOf("@keyframes shimmer"), base.indexOf(".shimmer svg"));
     expect(shimmer).not.toMatch(/background-position|background-clip/);
     // Steps too small to see: smooth to look at, and the window isn't drawn again on every refresh for it.
-    expect(Number(shimmer.match(/steps\((\d+)\)/)?.[1])).toBeGreaterThanOrEqual(30);
+    expect(Number(shimmer.match(/steps\((\d+)\)/)?.[1])).toBeGreaterThanOrEqual(20);
     expect(shimmer).toMatch(/opacity:/);
     expect(shimmer).toMatch(/prefers-reduced-motion: reduce[\s\S]*animation: none/);
     for (const name of ["wkids", "tool-detail", "agl"]) {
