@@ -414,6 +414,11 @@
     animation: spin 0.9s steps(27) infinite;
 }
 
+/* Words coming out say it's working: this would have the window drawn again for no news (lib/reveal.ts). */
+[data-flowing] .sidebar .cur .spin-ring {
+    animation-play-state: paused;
+}
+
 .card .t {
     min-width: 0;
     font-weight: 500;

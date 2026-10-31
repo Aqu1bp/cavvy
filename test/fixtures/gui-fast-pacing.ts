@@ -110,6 +110,37 @@ function liveLineView() {
 
 const tool = (id: string, label: string): liveLine.LiveLineState => ({ key: `tool:${id}:running`, kind: "tool", label, detail: `src/${id}.ts`, toolId: id });
 
+test("the page says words are flowing while they come out, through a gap between chunks, and not once they've stopped", () => {
+    fakeTimers();
+    const marks = new Set<string>();
+    (document as any).documentElement = { setAttribute: (name: string) => marks.add(name), removeAttribute: (name: string) => marks.delete(name) };
+    const run = (ms: number) => { const start = clock; while (clock - start < ms) flush(); };
+    run(500); // What the last test let out is over.
+    solid.createRoot((dispose) => {
+        const [value, setValue] = solid.createSignal("Some words, ");
+        const [, behind] = createReveal(value, () => true);
+        expect(marks.has("data-flowing")).toBe(true);
+        run(200);
+        expect(behind()).toBe(false);
+        expect(marks.has("data-flowing")).toBe(true);
+        setValue(value() + "and some more of them, ");
+        run(200);
+        expect(behind()).toBe(false);
+        expect(marks.has("data-flowing")).toBe(true);
+        run(400);
+        expect(marks.has("data-flowing")).toBe(false);
+        // A new start after a wait marks it again.
+        setValue(value() + "then the rest.");
+        expect(marks.has("data-flowing")).toBe(true);
+        dispose();
+        run(500);
+        expect(marks.has("data-flowing")).toBe(false);
+    });
+    delete (document as any).documentElement;
+    globalThis.setTimeout = realTimers.set;
+    globalThis.clearTimeout = realTimers.clear;
+});
+
 test("the live line shows each state long enough to read it: one that comes too soon waits, and those in between are skipped", async () => {
     performance.now = realNow;
     const v = liveLineView();
