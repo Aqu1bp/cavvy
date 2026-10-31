@@ -825,6 +825,13 @@ export function start() {
     window.addEventListener("focus", recheckUpdate);
     rpc.onSlow((slow) => setApp("slowRequest", slow));
     rpc.onEvent(onEvent);
+    // The server's told what's on screen, so it can wake this window less for what isn't.
+    const [hidden, setHidden] = createSignal(document.hidden);
+    document.addEventListener("visibilitychange", () => setHidden(document.hidden));
+    createRoot(() => createEffect(() => {
+        const id = hidden() ? undefined : app.activeId;
+        if (app.conn === "open") void rpc.call("session.shown", { id }).catch(() => undefined);
+    }));
     rpc.onState((s) => {
         if (s === "open") connectionVersion++;
         batch(() => {

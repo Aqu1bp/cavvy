@@ -164,6 +164,8 @@ export interface EngineClient {
     subs: Set<string>;
     /** The window's key, when its connection presented one: its terminals are the window's, not this connection's. */
     window?: string;
+    /** The session on its screen (null: none). Undefined until it says, and then all count. */
+    shown?: string | null;
 }
 
 
@@ -456,6 +458,11 @@ export class Engine {
     /** The session's browser changed: the windows that have it open hear of it. */
     sendBrowser(sessionId: string, state: BrowserState) {
         for (const c of this.clients) if (c.subs.has(sessionId)) c.send({ type: "browser.state", sessionId, state });
+    }
+
+    sessionShown(sessionId: string): boolean {
+        for (const c of this.clients) if (c.subs.has(sessionId) && (c.shown === undefined || c.shown === sessionId)) return true;
+        return false;
     }
 
     sendOps(sessionId: string, seq: number, ops: SessionOp[]) {
@@ -2161,6 +2168,11 @@ export class Engine {
                 this.runtimes.get(id)?.browser.unwatch(client);
                 this.runtimes.get(id)?.simulator.unwatch(client);
                 this.unloadIfUnused(id);
+                return null;
+            }
+            case "session.shown": {
+                client.shown = typeof p.id === "string" ? p.id : null;
+                if (client.shown) this.runtimes.get(client.shown)?.flush();
                 return null;
             }
             case "session.send": {
