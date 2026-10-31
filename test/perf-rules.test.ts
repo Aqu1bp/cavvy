@@ -82,6 +82,24 @@ test("what animates for as long as something waits changes only when it must, an
     }
 });
 
+test("what animates for good changes on the stream clock's grid, or the window is drawn again for each one out of step", async () => {
+    const { STEP_MS } = await import("../gui/src/lib/stream-clock");
+    const css = files("gui/src/styles", "*.css").map(read).join("\n");
+    for (const a of endless()) {
+        const m = /\s([\d.]+)(m?s)\s[^;]*steps\((\d+)\)/.exec(a.decl);
+        expect(`${a.at}: ${a.decl}`).toMatch(/steps\(\d+\)/);
+        // steps() counts within each stretch between keyframes, not over the whole of it.
+        const block = css.slice(css.indexOf(`@keyframes ${a.name}`));
+        const body = block.slice(0, block.indexOf("\n}"));
+        const stops = [...new Set([0, 100, ...[...body.matchAll(/([\d.]+)%/g)].map((x) => Number(x[1]))])].sort((x, y) => x - y);
+        const ms = Number(m![1]) * (m![2] === "s" ? 1000 : 1);
+        for (let i = 1; i < stops.length; i++) {
+            const every = (ms * (stops[i]! - stops[i - 1]!)) / 100 / Number(m![3]);
+            expect(`${a.at}: ${a.decl}: ${Math.round(every * 100) / 100 % STEP_MS}`).toEndWith(": 0");
+        }
+    }
+});
+
 test("a blur doesn't come back over what's following the end of a reply", () => {
     // Most of what a streaming reply cost the GPU: base.css says why.
     const css = read("gui/src/styles/base.css");
@@ -95,6 +113,14 @@ test("the server ships on the Bun that's tested, and not on 1.3", () => {
     const shipped = read("desktop-electron/pack.ts").match(/SERVER_BUN = "(.+?)"/)?.[1] ?? "";
     expect(shipped).toBe(read(".github/workflows/ci.yml").match(/BUN_VERSION: (\S+)/)?.[1] ?? "none");
     expect(Bun.semver.order(shipped, "1.4.0")).toBe(1);
+});
+
+test("a window whose page dies gets it back", () => {
+    // Without this the window stays empty until the app's restarted, while the server carries on behind it.
+    const main = read("desktop-electron/src/main.ts");
+    const handler = main.slice(main.indexOf('"render-process-gone"'), main.indexOf('win.on("closed"'));
+    expect(handler).toContain("pageGone()");
+    expect(main.slice(main.indexOf("async function pageGone"), main.indexOf("function showWindow"))).toContain("webContents.reload()");
 });
 
 test("budgets only come down, and what's loaded at startup is read from index.html", async () => {

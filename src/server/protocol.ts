@@ -1778,6 +1778,8 @@ export interface Methods {
     "session.create": { params: { cwd: string; model?: string; mode?: PermissionModeId }; result: SessionSnapshot };
     "session.open": { params: { id: string }; result: SessionSnapshot };
     "session.close": { params: { id: string }; result: null };
+    /** The session this window has on screen, or none: the others' words can come less often. */
+    "session.shown": { params: { id?: string }; result: null };
     /** `literal`: send a leading /word as a message. Unknown commands fail with `unknown_command`, so clients keep the draft. */
     /** `mode`: what it does if a turn is running (default: the followUpBehavior setting). */
     "session.send": { params: { id: string; text: string; images?: { mediaType: string; data: string }[]; files?: WireFile[]; literal?: boolean; mode?: FollowUpMode }; result: { queued: boolean } };
