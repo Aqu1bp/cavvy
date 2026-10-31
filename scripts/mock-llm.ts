@@ -10,6 +10,7 @@
 //   "todo"           keeps a todo list while working
 //   "slow"           streams a long answer slowly
 //   "streamdemo"     a long markdown reply (headings, lists, code, a table) at a model's pace: uneven chunks, uneven gaps
+//   "perfreply B D M" a long reply of every kind of block, B bytes, D bytes every M ms (desktop-electron/bench-reply.ts)
 //   "fastdemo N"     a turn of quick steps and a long markdown reply at N tokens a second ("fastdemo burst": a paragraph at a
 //                    time; "fastdemo N short": a two-line reply)
 //   "agents"         hands two reviews to sub-agents on other models (Task), then sums up
@@ -51,7 +52,7 @@ interface Step {
     /** Stream the text the way a model does: a few characters to a few words at a time, at uneven gaps (same every run). */
     paced?: boolean;
     /** Stream reasoning and text at this many tokens a second (about 4 characters each), or "burst": a paragraph at a time. */
-    rate?: number | "burst";
+    rate?: number | "burst" | { bytes: number; ms: number };
     calls?: { name: string; args: Json }[];
 }
 
@@ -388,6 +389,8 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         ];
         return steps[toolRounds];
     }
+    const reply = /\bperfreply (\d+) (\d+) (\d+)\b/.exec(p);
+    if (reply) return toolRounds === 0 ? { text: longMarkdown(Number(reply[1])), rate: { bytes: Number(reply[2]), ms: Number(reply[3]) } } : undefined;
     // Long streams for CPU measurements (desktop-electron/bench-stream.ts): "perfstream text R N", R copies of the long
     // reply at N tokens a second; "perfstream cmd L", a command printing L lines, 50 a second; "perfstream bg S", a
     // command left running in the background, a line a second for S seconds.
@@ -521,6 +524,35 @@ function onDelta(turn: Turn, delta: string) {
 
 The short version: the GUI can come and go, and nothing in \`~/.cavvy/sessions\` is lost when it does. If a reply is cut off, *resume* picks it up from the last saved turn.`;
 
+/** A reply of `size` bytes with every kind of block a model writes, ending in REPLY_END. The same each time. */
+export const REPLY_END = "That is the end of this reply.";
+export function longMarkdown(size: number): string {
+    let seed = 2024;
+    const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+    const WORDS = "a session keeps running while the window is closed because the server owns it and every turn is saved as it happens so nothing here is lost when the view comes and goes again later".split(" ");
+    const words = (n: number) => Array.from({ length: n }, () => WORDS[Math.floor(rand() * WORDS.length)]!).join(" ");
+    const sentence = () => {
+        const [a, b, ...rest] = words(8 + Math.floor(rand() * 12)).split(" ");
+        const kind = rand();
+        const start = kind < 0.25 ? `**${a}** ${b}` : kind < 0.5 ? `${a} \`${b}\`` : kind < 0.65 ? `${a} [${b}](https://example.com/${b})` : `${a} ${b}`;
+        return `${start[0]!.toUpperCase()}${start.slice(1)} ${rest.join(" ")}.`;
+    };
+    const paragraph = () => Array.from({ length: 2 + Math.floor(rand() * 3) }, sentence).join(" ");
+    const code = (i: number) => "```ts\n" + Array.from({ length: 4 + Math.floor(rand() * 6) }, (_, k) => `export function part${i}_${k}(n: number): number {\n    return n * ${k + 2}; // ${words(4)}\n}\n`).join("") + "```\n\n";
+    const table = () => "| File | What changed | Lines |\n| --- | --- | ---: |\n" + Array.from({ length: 4 }, () => `| src/${WORDS[Math.floor(rand() * WORDS.length)]}.ts | ${words(4)} | ${Math.floor(rand() * 400)} |\n`).join("") + "\n";
+    const kinds = [
+        (i: number) => `## Part ${i}: ${words(3)}\n\n${paragraph()}\n\n`,
+        () => `${Array.from({ length: 3 + Math.floor(rand() * 3) }, () => `- ${sentence()}\n`).join("")}\n`,
+        () => `${Array.from({ length: 3 }, (_, k) => `${k + 1}. ${sentence()}\n`).join("")}\n`,
+        code,
+        table,
+        () => `> ${sentence()}\n\n`,
+    ];
+    let out = "";
+    for (let i = 0; out.length < size - REPLY_END.length; i++) out += kinds[i % kinds.length]!(i);
+    return out.slice(0, size - REPLY_END.length - 2) + "\n\n" + REPLY_END;
+}
+
 /** A model's pace: 1 to 5 tokens a chunk (about 4 characters each), 15 to 90ms apart. Seeded, so every run is the same. */
 function pacedChunks(text: string): [string, number][] {
     let seed = 7;
@@ -538,8 +570,12 @@ function pacedChunks(text: string): [string, number][] {
  * A fast model's stream: `rate` tokens a second (about 4 characters each), sent every 20ms as a provider batches
  * them; or "burst", a paragraph at a time, 250 to 700ms apart (seeded).
  */
-function ratedChunks(text: string, rate: number | "burst"): [string, number][] {
+function ratedChunks(text: string, rate: number | "burst" | { bytes: number; ms: number }): [string, number][] {
     const out: [string, number][] = [];
+    if (typeof rate === "object") {
+        for (let i = 0; i < text.length; i += rate.bytes) out.push([text.slice(i, i + rate.bytes), rate.ms]);
+        return out;
+    }
     if (rate === "burst") {
         let seed = 11;
         const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);

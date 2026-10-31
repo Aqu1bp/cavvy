@@ -42,7 +42,7 @@ The whole suite takes about 20 minutes on a Mac, and agents running it at once t
 
 ## Performance
 
-A change that makes a reply, a turn or startup cost more has to say so and why. The guards:
+A change that makes a reply, a turn or startup cost more has to say so and why. What we're aiming for is in `docs/performance-plan.md`. The guards:
 
 - `test/perf-budgets.json` holds what things may cost, counted rather than timed: `test/perf-work.test.ts` and `bun run perf:budgets` (after `gui:build`) check them. Over budget fails. More than 10% under fails too, so a saving lowers the budget in the same PR.
 - CI refuses a raised budget unless the PR has the `perf-budget-raise` label and says why.
