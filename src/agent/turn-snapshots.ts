@@ -132,12 +132,13 @@ function packEntry(type: "blob" | "tree", raw: Buffer): Buffer[] {
     return [Buffer.from(head), deflateSync(raw, { level: 1 })];
 }
 
-/** The object ids a pack's index lists (version 2), or none if it isn't one. */
+/** The object ids a pack's index lists (version 2), or none if it isn't a whole one. */
 function packIndexOids(index: Buffer, hashBytes: number): string[] {
     const names = 8 + 256 * 4;
     if (index.length < names || index.readUInt32BE(0) !== 0xff744f63 || index.readUInt32BE(4) !== 2) return [];
     const count = index.readUInt32BE(8 + 255 * 4);
-    if (index.length < names + count * hashBytes) return [];
+    // Each object's id, checksum and place, then what the pack and the index themselves hash to.
+    if (index.length < names + count * (hashBytes + 8) + 2 * hashBytes) return [];
     return Array.from({ length: count }, (_, i) => index.toString("hex", names + i * hashBytes, names + (i + 1) * hashBytes));
 }
 
@@ -488,21 +489,23 @@ export class TurnSnapshots {
         const digest = hash.digest() as Buffer;
         const folder = join(this.storage, "objects", "pack");
         const name = join(folder, `pack-${digest.toString("hex")}`);
-        const tmp = `${name}.${randomBytes(4).toString("hex")}.tmp`;
+        const tmp = `${name}.${randomBytes(4).toString("hex")}`;
+        const tmpPack = `${tmp}.pack.tmp`, tmpIndex = `${tmp}.idx.tmp`;
         try {
             await mkdir(folder, { recursive: true, mode: 0o700 });
             await chmod(folder, 0o700);
-            await writeFile(tmp, Buffer.concat([header, ...pack.chunks, digest]), { mode: 0o600 });
-            await rename(tmp, `${name}.pack`);
+            await writeFile(tmpPack, Buffer.concat([header, ...pack.chunks, digest]), { mode: 0o600 });
             // Its own deadline: what's read so far is worth keeping when the capture has run out of time.
-            const made = await this.run(["-c", "pack.writeReverseIndex=false", "index-pack", "-o", `${name}.idx`, `${name}.pack`], Date.now() + 10_000);
+            const made = await this.run(["-c", "pack.writeReverseIndex=false", "index-pack", "--index-version=2", "-o", tmpIndex, tmpPack], Date.now() + 10_000);
             if (made.code) throw new Error("Could not index the private snapshot pack.");
-            await chmod(`${name}.idx`, 0o600);
-            await chmod(`${name}.pack`, 0o600);
+            // Git writes an index in place and leaves it readable by all: it gets its name whole and private, and last, since it's what says there's a pack.
+            await chmod(tmpIndex, 0o600);
+            await rename(tmpPack, `${name}.pack`);
+            await rename(tmpIndex, `${name}.idx`);
         } catch (e) {
-            await rm(tmp, { force: true }).catch(() => {});
+            await rm(tmpPack, { force: true }).catch(() => {});
+            await rm(tmpIndex, { force: true }).catch(() => {});
             await rm(`${name}.pack`, { force: true }).catch(() => {});
-            await rm(`${name}.idx`, { force: true }).catch(() => {});
             this.objectBytes! -= pack.bytes;
             throw e;
         }

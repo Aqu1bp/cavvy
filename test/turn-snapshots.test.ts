@@ -691,6 +691,27 @@ describe("per-turn snapshots", () => {
         expect((await reopened.changes({ scope: "turn", turnId: 1 })).files.map((f) => f.path)).toEqual(["src/d0/f0.txt"]);
     });
 
+    test("reopened, a pack whose index was cut off or never came is written again", async () => {
+        const cutOff = (index: string, whole: Buffer) => writeFileSync(index, whole.subarray(0, 8 + 256 * 4 + whole.readUInt32BE(8 + 255 * 4) * 20));
+        for (const leave of [cutOff, (index: string) => rmSync(index)]) {
+            const files: Record<string, string> = {};
+            for (let i = 0; i < 400; i++) files[`src/f${i}.txt`] = `file ${i}\n`;
+            const { cwd, dir, snapshots } = setup(files);
+            await snapshots.begin(1, "Many files");
+            await snapshots.end();
+            const folder = join(objectsDir(dir), "pack");
+            const index = join(folder, readdirSync(folder).find((n) => n.endsWith(".idx"))!);
+            leave(index, readFileSync(index));
+            const reopened = new TurnSnapshots(dir, cwd);
+            await reopened.begin(2, "Change one");
+            write(cwd, "src/f0.txt", "changed\n");
+            await reopened.end();
+            expect(reopened.list()[1]!.end!.incomplete).toBe(false);
+            expect(JSON.stringify(await reopened.changes({ scope: "turn", turnId: 2 }))).toContain("file 0");
+            expectPrivate(objectsDir(dir));
+        }
+    });
+
     test("a pack works in a SHA-256 repository", async () => {
         const files: Record<string, string> = {};
         for (let i = 0; i < 300; i++) files[`f${i}.txt`] = `file ${i}\n`;
