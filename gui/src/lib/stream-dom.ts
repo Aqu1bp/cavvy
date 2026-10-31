@@ -67,6 +67,16 @@ function retier(now: number) {
     settling = trail.length ? setTimeout(() => retier(performance.now()), SETTLE_MS) : undefined;
 }
 
+/** Shows HTML in `el` that mostly grows: what only grew is added to the end, so what's there stays as it is, laid out. */
+export function growing(el: HTMLElement) {
+    let shown = "";
+    return (html: string) => {
+        if (shown && html.startsWith(shown)) el.insertAdjacentHTML("beforeend", html.slice(shown.length));
+        else el.innerHTML = html;
+        shown = html;
+    };
+}
+
 /**
  * A block that came out while the reply streams (a code block of its own, say) goes into the trail as a whole. Its
  * marks are taken out like any other.

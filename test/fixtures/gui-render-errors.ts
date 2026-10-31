@@ -238,7 +238,7 @@ for (const kind of ["CodeBlock", "DiffView"]) {
         const highlighting = retryingHighlighter();
         const Widget = component(source(`blocks/${kind}`), kind, {
             RenderBoundary: boundary(undefined, (error) => errors.push(error)),
-            ...highlighting, langOf: () => "typescript", escapeHtml: (s: string) => s,
+            ...highlighting, langOf: () => "typescript", escapeHtml: (s: string) => s, growing: (el: any) => (html: string) => { el.props.innerHTML = html; },
             ...diffWindow, oneSided, plural: format.plural,
             CopyButton: () => node("copy"),
             IntersectionObserver: class {

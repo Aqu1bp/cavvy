@@ -10,7 +10,8 @@
 //   "todo"           keeps a todo list while working
 //   "slow"           streams a long answer slowly
 //   "streamdemo"     a long markdown reply (headings, lists, code, a table) at a model's pace: uneven chunks, uneven gaps
-//   "perfreply B D M" a long reply of every kind of block, B bytes, D bytes every M ms (desktop-electron/bench-reply.ts)
+//   "perfreply B D M" a long reply of every kind of block, B bytes, D bytes every M ms (desktop-electron/bench-reply.ts);
+//                    "perfreply B D M code", one long code block; "... list", one long list; "... table", one long table
 //   "fastdemo N"     a turn of quick steps and a long markdown reply at N tokens a second ("fastdemo burst": a paragraph at a
 //                    time; "fastdemo N short": a two-line reply)
 //   "agents"         hands two reviews to sub-agents on other models (Task), then sums up
@@ -389,8 +390,8 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         ];
         return steps[toolRounds];
     }
-    const reply = /\bperfreply (\d+) (\d+) (\d+)\b/.exec(p);
-    if (reply) return toolRounds === 0 ? { text: longMarkdown(Number(reply[1])), rate: { bytes: Number(reply[2]), ms: Number(reply[3]) } } : undefined;
+    const reply = /\bperfreply (\d+) (\d+) (\d+)(?: (code|list|table))?\b/.exec(p);
+    if (reply) return toolRounds === 0 ? { text: reply[4] ? longBlock(reply[4], Number(reply[1])) : longMarkdown(Number(reply[1])), rate: { bytes: Number(reply[2]), ms: Number(reply[3]) } } : undefined;
     // Long streams for CPU measurements (desktop-electron/bench-stream.ts): "perfstream text R N", R copies of the long
     // reply at N tokens a second; "perfstream cmd L", a command printing L lines, 50 a second; "perfstream bg S", a
     // command left running in the background, a line a second for S seconds.
@@ -551,6 +552,20 @@ export function longMarkdown(size: number): string {
     let out = "";
     for (let i = 0; out.length < size - REPLY_END.length; i++) out += kinds[i % kinds.length]!(i);
     return out.slice(0, size - REPLY_END.length - 2) + "\n\n" + REPLY_END;
+}
+
+/** A reply of `size` bytes that's one long block of one kind, ending in REPLY_END. The same each time. */
+export function longBlock(kind: string, size: number): string {
+    const line = kind === "code"
+        ? (i: number) => i % 7 === 0
+            ? `\n/** Step ${i}: the part of the work it does, and what it needs. */\nexport function step${i}(input: string, count = ${i}): string[] {\n`
+            : i % 7 === 6 ? `    return result.filter((line) => line.length > ${i});\n}\n` : `    const part${i} = input.slice(${i}, count + ${i}).trim(); // ${i} of them\n`
+        : kind === "list"
+            ? (i: number) => `- **Item ${i}**: what it changes and why, in \`src/part${i}.ts\`, with a few words more to run to a line.\n`
+            : (i: number) => `| \`src/part${i}.ts\` | what it changes and why | ${i} |\n`;
+    let out = `Here it is.\n\n${kind === "code" ? "```ts\n" : kind === "table" ? "| File | What changed | Lines |\n| --- | --- | ---: |\n" : ""}`;
+    for (let i = 0; out.length < size - REPLY_END.length - 8; i++) out += line(i);
+    return `${out}${kind === "code" ? "```\n" : ""}\n${REPLY_END}`;
 }
 
 /** A model's pace: 1 to 5 tokens a chunk (about 4 characters each), 15 to 90ms apart. Seeded, so every run is the same. */
