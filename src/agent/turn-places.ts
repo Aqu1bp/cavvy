@@ -196,21 +196,27 @@ export function reachedPlaces<T extends { path: string }>(changed: readonly T[],
  * not a link or a folder put in its place), checked once while the folder stays the same one (its device and inode).
  */
 export class WorktreeChecks {
-    private known = new Map<string, { at: string; checked: Checked }>();
+    /** For every session: many in one repository's worktrees would each check every one of them otherwise. */
+    private static known = new Map<string, { at: string; checked: Checked }>();
+    private static readonly MAX = 1024;
 
     async check(root: string, w: Worktree): Promise<Checked | undefined> {
         const st = await lstat(w.path).catch(() => undefined);
         if (!st?.isDirectory()) return undefined;
         const at = `${st.dev}:${st.ino}`;
-        const had = this.known.get(w.path);
+        const key = `${root}\0${w.path}\0${w.main ? 1 : 0}`;
+        const known = WorktreeChecks.known;
+        const had = known.get(key);
         if (had?.at === at) return { ...had.checked, branch: w.branch };
         const found = await identify(root, w.path, w.main).catch(() => undefined);
         if (!found) {
-            this.known.delete(w.path);
+            known.delete(key);
             return undefined;
         }
         const checked: Checked = { ...w, ...found };
-        this.known.set(w.path, { at, checked });
+        known.delete(key);
+        known.set(key, { at, checked });
+        if (known.size > WorktreeChecks.MAX) known.delete(known.keys().next().value!);
         return checked;
     }
 }

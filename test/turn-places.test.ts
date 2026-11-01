@@ -300,7 +300,7 @@ test("reading a worktree runs none of the repository's programs: a clean filter 
     expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places?.map((p) => p.branch)).toEqual(["agent/filtered"]);
 });
 
-test("a worktree's folder swapped for a link to another repository isn't read", async () => {
+for (const reach of [false, true]) test(`a worktree's folder swapped for a link to another repository isn't read (${reach ? "reached" : "not reached"})`, async () => {
     const { base, cwd, wt, snapshots } = setup(["swapped"]);
     const other = join(base, "other-repo");
     mkdirSync(other, { recursive: true });
@@ -313,6 +313,7 @@ test("a worktree's folder swapped for a link to another repository isn't read", 
     rmSync(wt("swapped"), { recursive: true, force: true });
     symlinkSync(other, wt("swapped"));
     write(other, "more.txt", "changed\n");
+    if (reach) snapshots.reach([join(wt("swapped"), "more.txt")]);
     await snapshots.end();
     const info = await snapshots.changes({ scope: "turn", turnId: 1 });
     expect(JSON.stringify(info.places ?? [])).not.toContain("private.txt");

@@ -810,18 +810,24 @@ export class TurnSnapshots {
         const deadline = Date.now() + 1500;
         // First: whatever changes after this counts as after it.
         const since = await this.clock();
-        // Only folders that really are those worktrees are read (one swapped for a link isn't); the rest go unmarked.
         const root = captured.root;
-        const checked = (await eachLimited(this.worktrees, 4, (w) => this.checks.check(root, w))).filter((w): w is Checked => w !== undefined);
-        const start = this.active?.start;
-        const candidates = start ? reachedPlaces(checked, [root, ...checked.map((w) => w.path)], reached) : [];
-        const marked = whole ? checked : candidates;
         // At a turn's start, only that they're there: whether one moved is told at the end, for those it reached, by
         // when their files were written (movedSince). Many sessions in many worktrees of one repository would otherwise
-        // each read every worktree's state at every turn's start. Tokens still for the ones the turn that ends here
-        // reached, and when the clock couldn't be read.
+        // each check and read every worktree at every turn's start. Checked and read now: the ones the turn that ends
+        // here reached, and all of them when the clock couldn't be read.
         const lazy = whole && since !== undefined;
-        const tokens = await eachLimited(marked, 4, (w) => (lazy && !candidates.includes(w) ? Promise.resolve(THERE) : token(w, deadline)));
+        const start = this.active?.start;
+        const listed = this.worktrees;
+        const reachedOnes = start ? reachedPlaces(listed, [root, ...listed.map((w) => w.path)], reached) : [];
+        // Only folders that really are those worktrees are read (one swapped for a link isn't); the rest go unmarked.
+        const verify = (ws: readonly Worktree[]) => eachLimited(ws, 4, (w) => this.checks.check(root, w)).then((all) => all.filter((w): w is Checked => w !== undefined));
+        const candidates = await verify(reachedOnes);
+        const marked: Worktree[] = whole ? (lazy ? listed : await verify(listed)) : candidates;
+        const byPath = new Map(candidates.map((w) => [w.path, w]));
+        const tokens = await eachLimited(marked, 4, (w) => {
+            const c = byPath.get(w.path) ?? (lazy ? undefined : (w as Checked));
+            return c ? token(c, deadline) : Promise.resolve(THERE);
+        });
         const after = Object.fromEntries(marked.map((w, i) => [w.path, tokens[i]!]));
         captured.places = after;
         if (since !== undefined) captured.since = String(since);
