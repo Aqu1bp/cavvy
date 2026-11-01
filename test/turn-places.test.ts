@@ -94,6 +94,20 @@ test("a file edited again in a worktree that was already dirty still counts as w
     expect(info.places?.map((p) => [p.branch, p.files, p.added])).toEqual([["agent/dirty", 1, 2]]);
 });
 
+for (const packed of [false, true])
+    test(`a reached worktree whose branch only moved (no file changed) is worked in, its start not read beforehand (branch ${packed ? "packed" : "loose"} before)`, async () => {
+        const { cwd, wt, snapshots } = setup(["moved", "still"]);
+        if (packed) git(cwd, ["pack-refs", "--all"]);
+        await snapshots.begin(1, "commit nothing new");
+        // Its start marks the worktrees as there, without reading their HEADs, branches or indexes.
+        expect(Object.values(snapshots.list()[0]!.start.places ?? {})).toEqual(["+", "+"]);
+        await Bun.sleep(20);
+        snapshots.reach([wt("moved"), wt("still")]);
+        git(wt("moved"), ["commit", "-q", "--allow-empty", "-m", "Empty"]);
+        await snapshots.end();
+        expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places?.map((p) => p.branch)).toEqual(["agent/moved"]);
+    });
+
 test("a worktree that changed while the turn ran, but that it never reached, isn't its place: another session works there", async () => {
     const { wt, snapshots } = setup(["ours", "theirs"]);
     await snapshots.begin(1, "trim the copy");

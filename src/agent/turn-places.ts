@@ -26,6 +26,11 @@ export const MAX_PLACES = 16;
 const TOP = 6;
 /** A token that couldn't be taken: neither it nor what it's compared with says anything. */
 export const UNKNOWN = "?";
+/**
+ * A worktree marked at a turn's start as there, its token not taken: whether it moved is told at the end, for the
+ * few the turn reached, by when its files were written (movedSince).
+ */
+export const THERE = "+";
 /** Files stamped at once. */
 const STAT_WIDTH = 32;
 
@@ -265,6 +270,39 @@ export async function token(w: Checked, deadline: number): Promise<string> {
         return createHash("sha256").update(`${head.out.toString().trim()}\0${ref.out.toString().trim()}\0${stamp}`).digest("hex");
     } catch {
         return UNKNOWN;
+    }
+}
+
+/**
+ * Whether a worktree's HEAD, branch or index was written since `since` (the file system's clock, in nanoseconds): what
+ * its token, taken then, would show changed now, told by its files' times rather than by reading them. A branch that
+ * moves is written to a file of its own (packed before or not); packed-refs written with no such file counts too.
+ * Undefined when it can't be told (a reftable repository, HEAD unreadable).
+ */
+export async function movedSince(w: Checked, since: bigint): Promise<boolean | undefined> {
+    const written = async (p: string) => {
+        const st = await lstat(p, { bigint: true }).catch(() => undefined);
+        return st === undefined ? undefined : st.ctimeNs >= since;
+    };
+    try {
+        let common = w.gitDir;
+        const named = await readFile(join(w.gitDir, "commondir"), "utf-8").catch(() => undefined);
+        if (named !== undefined) common = resolve(w.gitDir, named.trim());
+        if (await lstat(join(common, "reftable")).then(() => true, () => false)) return undefined;
+        const head = await written(join(w.gitDir, "HEAD"));
+        if (head !== false) return head;
+        if ((await written(join(w.gitDir, "index"))) === true) return true;
+        const text = (await readFile(join(w.gitDir, "HEAD"), "utf-8")).trim();
+        // Detached: HEAD's own file says it all.
+        if (/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(text)) return false;
+        const ref = /^ref: (refs\/\S+)$/.exec(text)?.[1];
+        if (!ref || ref.split("/").includes("..")) return undefined;
+        const loose = await written(join(common, ref));
+        if (loose !== undefined) return loose;
+        // Packed, or a branch with no commits yet (no packed-refs either).
+        return (await written(join(common, "packed-refs"))) ?? false;
+    } catch {
+        return undefined;
     }
 }
 

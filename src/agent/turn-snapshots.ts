@@ -17,7 +17,7 @@ import { gitArgv } from "../util/git";
 import { coalesce, type Slot } from "../server/coalesce";
 import { MAX_DIFF_INPUT } from "../server/diffs";
 import type { GitChangesInfo, GitScope, TurnPlace } from "../server/protocol";
-import { changedSince, eachLimited, insideRoot, nearby, reachedPlaces, summarize, token, UNKNOWN, WorktreeChecks, WorktreeList, type Checked, type Worktree } from "./turn-places";
+import { changedSince, eachLimited, insideRoot, movedSince, nearby, reachedPlaces, summarize, THERE, token, UNKNOWN, WorktreeChecks, WorktreeList, type Checked, type Worktree } from "./turn-places";
 import { redact } from "../util/redact";
 import { cleanBlob, cleanBlobMs, modeOf, msTimesExact, parseIndex, type GitIndex } from "./git-index";
 import { Pace } from "../util/pace";
@@ -50,7 +50,7 @@ export interface TurnCapture {
     /** Metadata only: unchanged omissions are not falsely counted as changed files. */
     skippedStamps?: Record<string, string>;
     durationMs: number;
-    /** The repository's other worktrees inside its folder, each with its token (turn-places.ts), or UNKNOWN. */
+    /** The repository's other worktrees inside its folder, each with its token (turn-places.ts), UNKNOWN, or THERE. */
     places?: Record<string, string>;
     /** When it was taken, on the file system's clock (nanoseconds): what changed after it is newer (changedSince). */
     since?: string;
@@ -816,7 +816,12 @@ export class TurnSnapshots {
         const start = this.active?.start;
         const candidates = start ? reachedPlaces(checked, [root, ...checked.map((w) => w.path)], reached) : [];
         const marked = whole ? checked : candidates;
-        const tokens = await eachLimited(marked, 4, (w) => token(w, deadline));
+        // At a turn's start, only that they're there: whether one moved is told at the end, for those it reached, by
+        // when their files were written (movedSince). Many sessions in many worktrees of one repository would otherwise
+        // each read every worktree's state at every turn's start. Tokens still for the ones the turn that ends here
+        // reached, and when the clock couldn't be read.
+        const lazy = whole && since !== undefined;
+        const tokens = await eachLimited(marked, 4, (w) => (lazy && !candidates.includes(w) ? Promise.resolve(THERE) : token(w, deadline)));
         const after = Object.fromEntries(marked.map((w, i) => [w.path, tokens[i]!]));
         captured.places = after;
         if (since !== undefined) captured.since = String(since);
@@ -827,7 +832,11 @@ export class TurnSnapshots {
             const changed = await eachLimited(candidates, 4, async (w) => {
                 const was = before[w.path], now = after[w.path];
                 if (was === UNKNOWN || now === UNKNOWN) return false;
-                if (was === undefined || was !== now) return true;
+                if (was === undefined) return true;
+                if (was === THERE || now === THERE) {
+                    if (from === undefined) return false;
+                    if ((await movedSince(w, from)) === true) return true;
+                } else if (was !== now) return true;
                 return from !== undefined && (await changedSince(w, from, deadline)) === true;
             });
             const worked = candidates.filter((_, i) => changed[i]);
