@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { KIND, statFiles, statHere } from "../src/agent/stat-files";
@@ -71,8 +71,17 @@ for (const version of [2, 4]) {
         const viaWorkers = await scanIndexFiles(repo, index, 20, ["new.txt"], true, Date.now() + 10_000);
         expect(viaWorkers.differs).toEqual(whole.differs);
         expect(viaWorkers.contentKey).toBe(whole.contentKey);
-        // Only some paths: the same entries, and the same key.
-        const some = scanPaths(repo, index, 20, ["d1/e1/f1.txt", "d2", "d3/e0/f3.txt", "d4/e1/f4.txt", "new.txt"], true);
+        // Only some paths: the same entries, and the same key; asked again (by offset, the file being the same), the same.
+        const asked = ["d1/e1/f1.txt", "d2", "d3/e0/f3.txt", "d4/e1/f4.txt", "new.txt"];
+        const first = scanPaths(repo, index, 20, asked, true);
+        const some = scanPaths(repo, index, 20, asked, true);
+        expect(some).toEqual(first);
+        for (const set of [["d0"], ["d0/e1", "d6/e2/f20.txt"], ["d3", "d3/e0"], ["nothing/here", "d5/e2"], ["d1/e1/f1.txt"]]) {
+            const again = scanPaths(repo, index, 20, set, true);
+            // Read whole, as when the file is new to it.
+            writeFileSync(index, readFileSync(index));
+            expect(scanPaths(repo, index, 20, set, true)).toEqual(again);
+        }
         expect(some.contentKey).toBe(whole.contentKey);
         expect(some.states.map((s) => [s.path, s.tracked, s.kind, !!s.clean, s.special ?? ""])).toEqual([
             ["d1/e1/f1.txt", true, KIND.file, false, ""],

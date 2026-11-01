@@ -4,7 +4,7 @@
 // repository holds nothing of the files that haven't changed (turn-snapshots.ts). Runs on the stat worker
 // (stat-worker.ts), or here where there's none. Nothing is read but the index and stats; nothing runs.
 
-import { lstatSync, readFileSync, type Stats } from "fs";
+import { closeSync, fstatSync, lstatSync, openSync, readFileSync, readSync, type Stats } from "fs";
 
 /** What's at a path (as stat-files.ts has it). */
 export const AT = { missing: 0, file: 1, link: 2, dir: 3, other: 4, unreadable: 5 } as const;
@@ -236,6 +236,74 @@ export function scanIndex(root: string, indexFile: string, hashBytes: number, un
     return out;
 }
 
+/**
+ * Where each entry of an index file starts, kept by the worker once it's read one whole (scanPaths), with what it
+ * found: while the file is the same one (git writes a new index and renames it over the old), a few paths are found by
+ * binary search, a few small reads each, not by reading and parsing all of it again. Not for version 4 (each path is
+ * written as a change to the last one's, so one can't be read alone), a split index or a sparse one.
+ */
+const offsetsByIndex = new Map<string, { stamp: string; offsets: Uint32Array; contentKey: string; cacheRoot?: string }>();
+const MAX_OFFSET_TABLES = 32;
+const statStamp = (st: Stats) => `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
+
+/** The entries named in `wanted` and those under any of them, read by offset; undefined to read the file whole. */
+function entriesByOffset(fd: number, table: { offsets: Uint32Array }, hashBytes: number, wanted: ReadonlySet<string>, maxUnder: number): { entries: Map<string, Buffer>; under: string[] } | "wide" | undefined {
+    const { offsets } = table;
+    let chunk = Buffer.alloc(512);
+    /** Entry `i`: its header (to its flags) and path. */
+    const at = (i: number): { header: Buffer; path: Buffer } | undefined => {
+        const start = offsets[i]!;
+        let n = readSync(fd, chunk, 0, chunk.length, start);
+        const flags = n >= 42 + hashBytes ? chunk.readUInt16BE(40 + hashBytes) : 0;
+        const from = 42 + hashBytes + (flags & EXTENDED ? 2 : 0);
+        let nul = chunk.indexOf(0, from);
+        while ((nul < 0 || nul >= n) && n === chunk.length) {
+            chunk = Buffer.alloc(chunk.length * 4);
+            n = readSync(fd, chunk, 0, chunk.length, start);
+            nul = chunk.indexOf(0, from);
+        }
+        if (nul < 0 || nul >= n) return undefined;
+        return { header: Buffer.from(chunk.subarray(0, 44 + hashBytes)), path: Buffer.from(chunk.subarray(from, nul)) };
+    };
+    /** The first entry whose path is `target` or after it. */
+    const lowerBound = (target: Buffer): number => {
+        let lo = 0, hi = offsets.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            const e = at(mid);
+            if (!e) return -1;
+            if (Buffer.compare(e.path, target) < 0) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo;
+    };
+    const entries = new Map<string, Buffer>();
+    const under: string[] = [];
+    for (const path of wanted) {
+        const exact = Buffer.from(path, "utf-8");
+        const i = lowerBound(exact);
+        if (i < 0) return undefined;
+        const e = i < offsets.length ? at(i) : undefined;
+        // The first stage of a conflict is enough: any stage but 0 makes it special.
+        if (e && e.path.equals(exact) && !entries.has(path)) entries.set(path, e.header);
+        // What's under it, as a folder: the run of entries after "path/".
+        const prefix = Buffer.from(`${path}/`, "utf-8");
+        for (let j = lowerBound(prefix); j >= 0 && j < offsets.length; j++) {
+            const u = at(j);
+            if (!u) return undefined;
+            if (u.path.length < prefix.length || !u.path.subarray(0, prefix.length).equals(prefix)) break;
+            const name = u.path.toString("utf-8");
+            if (entries.has(name)) continue;
+            if (!wanted.has(name)) {
+                if (under.length >= maxUnder) return "wide";
+                under.push(name);
+            }
+            entries.set(name, u.header);
+        }
+    }
+    return { entries, under };
+}
+
 /** A path's state against the index: Differs, plus what the index records for it (when it does). */
 export interface PathState extends Differs {
     /** As the index records it, when that's what's on disk: its entry, to put back. */
@@ -253,6 +321,30 @@ export interface PathState extends Differs {
  */
 export function scanPaths(root: string, indexFile: string, hashBytes: number, paths: readonly string[], msExact: boolean, maxUnder = 5000): { unusable?: string; states: PathState[]; contentKey?: string; cacheRoot?: string } {
     let buf: Buffer, written: Stats;
+    const wanted = new Set(paths);
+    /** Each one's entry, up to its flags (its stat fields are blanked in the index's bytes for the content key). */
+    let entries = new Map<string, Buffer>();
+    /** Entries under a wanted path, in order. */
+    let under: string[] = [];
+    // The same index file as one read whole before: the entries by offset.
+    const table = offsetsByIndex.get(indexFile);
+    if (table) {
+        let fd: number | undefined;
+        try {
+            fd = openSync(indexFile, "r");
+            const st = fstatSync(fd);
+            if (statStamp(st) === table.stamp) {
+                const found = entriesByOffset(fd, table, hashBytes, wanted, maxUnder);
+                if (found === "wide") return { unusable: "wide", states: [] };
+                if (found) return { states: pathStates(root, hashBytes, [...wanted, ...found.under], found.entries, st.mtimeMs, msExact), contentKey: table.contentKey, ...(table.cacheRoot ? { cacheRoot: table.cacheRoot } : {}) };
+            }
+        } catch {
+            // Read whole, below.
+        } finally {
+            if (fd !== undefined) closeSync(fd);
+        }
+        offsetsByIndex.delete(indexFile);
+    }
     try {
         written = lstatSync(indexFile);
         buf = readFileSync(indexFile);
@@ -262,11 +354,6 @@ export function scanPaths(root: string, indexFile: string, hashBytes: number, pa
     if (buf.length < 12 + hashBytes || buf.readUInt32BE(0) !== MAGIC) return { unusable: "unreadable", states: [] };
     const version = buf.readUInt32BE(4);
     if (version < 2 || version > 4) return { unusable: "version", states: [] };
-    const wanted = new Set(paths);
-    /** Each one's entry, up to its flags (its stat fields are blanked in the index's bytes for the content key). */
-    const entries = new Map<string, Buffer>();
-    /** Entries under a wanted path, in order. */
-    const under: string[] = [];
     // Most entries are none of these, told without making a string of their path: by its length and first and last
     // bytes (a wanted one has the same), and by its folder, worked out once for each (a folder's entries come together).
     const sig = (b: Buffer, from: number, to: number) => (to - from) * 65536 + b[from]! * 256 + b[to - 1]!;
@@ -292,11 +379,13 @@ export function scanPaths(root: string, indexFile: string, hashBytes: number, pa
     const count = buf.readUInt32BE(8);
     const end = buf.length - hashBytes;
     const content = new ContentKey(buf);
+    const offsets = version === 4 ? undefined : new Uint32Array(count);
     let pos = 12;
     // A version 4 index's path is the last one's, cut and added to: built here, in place.
     let built = Buffer.alloc(4096), builtLength = 0;
     for (let n = 0; n < count; n++) {
         const start = pos;
+        if (offsets) offsets[n] = start;
         if (start + 42 + hashBytes > end) return { unusable: "unreadable", states: [] };
         const flags = buf.readUInt16BE(start + 40 + hashBytes);
         pos = start + 42 + hashBytes + (flags & EXTENDED ? 2 : 0);
@@ -345,8 +434,17 @@ export function scanPaths(root: string, indexFile: string, hashBytes: number, pa
         if (signature === "TREE") cacheRoot = cacheTreeOf(buf.subarray(p + 8, p + 8 + size), hashBytes)?.root;
         p += 8 + size;
     }
+    if (offsets && buf.length < 2 ** 32) {
+        if (offsetsByIndex.size >= MAX_OFFSET_TABLES) offsetsByIndex.delete(offsetsByIndex.keys().next().value!);
+        offsetsByIndex.set(indexFile, { stamp: statStamp(written), offsets, contentKey, ...(cacheRoot ? { cacheRoot } : {}) });
+    }
+    return { states: pathStates(root, hashBytes, [...wanted, ...under], entries, written.mtimeMs, msExact), contentKey, ...(cacheRoot ? { cacheRoot } : {}) };
+}
+
+/** Each path stat'ed, against its entry in the index (`entries`, by path), if it has one. */
+function pathStates(root: string, hashBytes: number, paths: string[], entries: Map<string, Buffer>, indexMs: number, msExact: boolean): PathState[] {
     const states: PathState[] = [];
-    for (const path of [...wanted, ...under]) {
+    for (const path of paths) {
         let st: Stats | undefined | null;
         try {
             // Every folder on the way a real one: a path through a link isn't there.
@@ -373,8 +471,8 @@ export function scanPaths(root: string, indexFile: string, hashBytes: number, pa
             && e.readUInt32BE(o + 8) * 1000 + e.readUInt32BE(o + 12) / 1e6 === st.mtimeMs
             && e.readUInt32BE(o) * 1000 + e.readUInt32BE(o + 4) / 1e6 === st.ctimeMs
             && e.readUInt32BE(o + 20) === st.ino % 2 ** 32 && e.readUInt32BE(o + 36) === st.size % 2 ** 32
-            && st.mtimeMs < written.mtimeMs;
+            && st.mtimeMs < indexMs;
         states.push({ path, tracked: true, kind, stamp, special, clean: same ? { mode: mode.toString(8).padStart(6, "0"), oid: e.toString("hex", o + 40, o + 40 + hashBytes) } : undefined });
     }
-    return { states, contentKey, ...(cacheRoot ? { cacheRoot } : {}) };
+    return states;
 }
