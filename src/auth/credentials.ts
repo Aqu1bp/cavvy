@@ -301,11 +301,19 @@ export function loadCavvyEnv(files: string[]): { legacyModel?: string; notes: st
     return { legacyModel, notes };
 }
 
-/** Env vars that hold secrets; stripped from Bash tool child processes. */
-export function secretEnvVarNames(): string[] {
+let secretNames: { from: readonly ProviderDef[]; names: readonly string[] } | undefined;
+
+/** Env vars that hold secrets; stripped from Bash tool child processes. Every process Cavvy starts asks: worked out again only when the providers change. */
+export function secretEnvVarNames(): readonly string[] {
+    const from = allProviders();
+    if (secretNames?.from !== from) secretNames = { from, names: Object.freeze(secretNamesOf(from)) };
+    return secretNames.names;
+}
+
+function secretNamesOf(providers: readonly ProviderDef[]): string[] {
     return [
         ...new Set([
-            ...allProviders().flatMap((p) => p.envKeys),
+            ...providers.flatMap((p) => p.envKeys),
             ...SEARCH_PROVIDERS.flatMap((s) => [...s.envKeys]),
             "ANTHROPIC_AUTH_TOKEN",
             "CLAUDE_CODE_OAUTH_TOKEN",

@@ -12,7 +12,7 @@
 // filter-safe read. A worktree is read only once its folder is checked to be that worktree (as session-worktrees.ts checks).
 
 import { createHash } from "crypto";
-import { realpathSync } from "fs";
+import { lstatSync, readFileSync, realpathSync } from "fs";
 import { lstat, readFile } from "fs/promises";
 import { dirname, join, relative, resolve } from "path";
 import { git, gitChanges } from "../server/git-changes";
@@ -73,6 +73,64 @@ export async function listWorktrees(root: string, deadline: number): Promise<Wor
         else if (field === "bare" || field.startsWith("prunable")) cur.skip = true;
     }
     return out;
+}
+
+/**
+ * The repository's worktrees (listWorktrees), listed again only once something that decides them has changed: the
+ * common Git dir's worktrees folder (one added or removed), a worktree's HEAD (its branch), or a worktree's folder
+ * (gone: prunable). Without a common Git dir to watch (a bare or unusual layout), listed every time.
+ */
+export class WorktreeList {
+    private last?: { list: Worktree[]; paths: string[]; stamps: string[] };
+
+    async get(root: string, deadline: number): Promise<Worktree[] | undefined> {
+        const last = this.last;
+        if (last && last.paths.every((p, i) => listStamp(p) === last.stamps[i])) return last.list;
+        const started = Date.now();
+        const list = await listWorktrees(root, deadline);
+        this.last = undefined;
+        if (!list) return list;
+        const paths = decidedBy(list);
+        const stamps = paths?.map(listStamp);
+        // Something that changed once the listing had begun may not be in it, so it isn't taken as what it says (a
+        // file's time is a little behind the clock: kernels stamp files with a coarse one).
+        if (paths && stamps && !stamps.some((s) => s === "?" || Number(s.split(":")[3] ?? 0) >= started - 50)) this.last = { list, paths, stamps };
+        return list;
+    }
+}
+
+/** A path's kind, inode, size and time (its folder's own time, for a folder): "-" for nothing there. */
+function listStamp(path: string): string {
+    try {
+        const st = lstatSync(path, { throwIfNoEntry: false });
+        return st ? `${st.mode}:${st.ino}:${st.isFile() ? st.size : 0}:${st.mtimeMs}` : "-";
+    } catch {
+        return "?";
+    }
+}
+
+/** What a listing of `list` depends on, as paths; undefined when its common Git dir isn't a folder in the main worktree. */
+function decidedBy(list: readonly Worktree[]): string[] | undefined {
+    const main = list.find((w) => w.main);
+    if (!main) return undefined;
+    const common = join(main.path, ".git");
+    try {
+        if (!lstatSync(common).isDirectory()) return undefined;
+    } catch {
+        return undefined;
+    }
+    const paths = [join(common, "worktrees"), join(common, "HEAD")];
+    for (const w of list) {
+        if (w.main) continue;
+        paths.push(w.path, join(w.path, ".git"));
+        try {
+            const named = /^gitdir: (.+)\n?$/.exec(readFileSync(join(w.path, ".git"), "utf-8"))?.[1];
+            if (named) paths.push(join(resolve(w.path, named), "HEAD"));
+        } catch {
+            // Gone: its folder's stamp says so.
+        }
+    }
+    return paths;
 }
 
 const within = (path: string, dir: string) => path.startsWith(dir.endsWith("/") ? dir : `${dir}/`);
