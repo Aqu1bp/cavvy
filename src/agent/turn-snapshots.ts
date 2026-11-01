@@ -5,9 +5,9 @@
 // Git's loose object format is zlib(header + bytes); hashing/compressing in
 // process avoids a subprocess per file and preserves the bytes on disk.
 
-import { appendFileSync, chmodSync, mkdirSync, readFileSync } from "fs";
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, type BigIntStats } from "fs";
 import { chmod, lstat, mkdir, readdir, readFile, readlink, rename, rm, writeFile } from "fs/promises";
-import { basename, dirname, isAbsolute, join, relative } from "path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "path";
 import { deflateSync } from "zlib";
 import { randomBytes } from "crypto";
 import { FileHistory, MAX_SNAPSHOT_BYTES, canonical } from "./checkpoints";
@@ -17,8 +17,9 @@ import { gitArgv } from "../util/git";
 import { coalesce, type Slot } from "../server/coalesce";
 import { MAX_DIFF_INPUT } from "../server/diffs";
 import type { GitChangesInfo, GitScope, TurnPlace } from "../server/protocol";
-import { eachLimited, fingerprint, insideRoot, listWorktrees, nearby, reachedPlaces, summarize, UNKNOWN, WorktreeChecks, type Checked, type Worktree } from "./turn-places";
+import { changedSince, eachLimited, insideRoot, listWorktrees, nearby, reachedPlaces, summarize, token, UNKNOWN, WorktreeChecks, type Checked, type Worktree } from "./turn-places";
 import { redact } from "../util/redact";
+import { cleanBlob, parseIndex, type GitIndex } from "./git-index";
 
 /** Paths a turn reached that are kept (TurnSnapshots.reach): past this many, the rest go unseen. */
 const MAX_REACHED = 20_000;
@@ -44,8 +45,10 @@ export interface TurnCapture {
     /** Metadata only: unchanged omissions are not falsely counted as changed files. */
     skippedStamps?: Record<string, string>;
     durationMs: number;
-    /** The repository's other worktrees inside its folder, each with its fingerprint (turn-places.ts), or UNKNOWN. */
+    /** The repository's other worktrees inside its folder, each with its token (turn-places.ts), or UNKNOWN. */
     places?: Record<string, string>;
+    /** When it was taken, on the file system's clock (nanoseconds): what changed after it is newer (changedSince). */
+    since?: string;
     /** Not saved: at a turn's end, the worktrees it worked in, summed up then, until finish() records them. */
     worked?: TurnPlace[];
 }
@@ -142,7 +145,17 @@ function packIndexOids(index: Buffer, hashBytes: number): string[] {
     return Array.from({ length: count }, (_, i) => index.toString("hex", names + i * hashBytes, names + (i + 1) * hashBytes));
 }
 
-type KnownFile = { path: string; stamp: string; entry: Entry };
+/**
+ * A file as last seen: its stamp and what it held. `borrowed`: its blob was taken from Git's index (the file was
+ * as Git last recorded it), so it's in the repository's objects and not, until a turn changes the file, this
+ * session's own.
+ */
+type KnownFile = { path: string; stamp: string; entry: Entry; borrowed?: boolean };
+
+const bigStamp = (st: BigIntStats) => `${st.dev}:${st.ino}:${st.mode}:${st.size}:${st.mtimeNs}:${st.ctimeNs}`;
+
+/** Attributes that make Git store something other than a file's bytes, and the values that leave them alone. */
+const CONVERTING = new Set(["text", "eol", "crlf", "filter", "ident", "working-tree-encoding"]);
 
 /**
  * What a repository's files hold, by their stamps. The same for every session working in it, so it's held once: at
@@ -188,6 +201,8 @@ export class TurnSnapshots {
     private reached = new Set<string>();
     /** The tree of what's in the private index, while nothing has gone wrong with it. */
     private lastTree: string | undefined;
+    /** Git's own index for this folder, as last read (fromIndex). */
+    private index?: { stamp: string; parsed: GitIndex };
     private readonly storage: string;
     private readonly journal: string;
 
@@ -345,7 +360,8 @@ export class TurnSnapshots {
         const reached = this.takeReached();
         return this.record(async () => {
             if (!this.active || this.stopped) return;
-            const captured = await this.marks(await this.capture(), reached);
+            // No turn starts here: only the worktrees this one reached are looked at.
+            const captured = await this.marks(await this.capture(), reached, false);
             if (this.stopped) return;
             await this.finish(captured ?? { incomplete: true, notes: ["The repository is no longer available."], skipped: pathMap(), durationMs: 0 });
         });
@@ -369,12 +385,21 @@ export class TurnSnapshots {
     private async finish(captured: TurnCapture) {
         const turn: SnapshotTurn = { ...this.active!, end: captured, endedAt: Date.now() };
         this.active = undefined;
+        let changes: Change[] | undefined;
         try {
-            const changes = await this.compare(turn, Date.now() + 2000);
+            changes = await this.compare(turn, Date.now() + 2000);
             turn.changed = changes.map((c) => c.path);
         } catch {
             captured.incomplete = true;
             captured.notes.push("The snapshot comparison is unavailable; some objects may be missing.");
+        }
+        if (changes?.length) {
+            try {
+                await this.keep(changes, turn.start.root ?? this.root ?? this.cwd, Date.now() + 5000);
+            } catch (e) {
+                captured.incomplete = true;
+                captured.notes.push((e as Error).message);
+            }
         }
         // The other worktrees it worked in, summed up when its end was captured (marks).
         if (captured.worked?.length) turn.places = captured.worked;
@@ -383,30 +408,93 @@ export class TurnSnapshots {
     }
 
     /**
-     * Each nearby worktree's fingerprint (turn-places.ts); and, at the end of a turn that's open, the ones it worked
-     * in (changed, or new, since it began, and `reached`), summed up now: at a steering boundary the next turn may
-     * already be under way by the time this one is finished, and what it does isn't this one's. Not when either end
+     * What a turn changed, before and after, as this session's own objects. Files Git's index had as they were were
+     * taken from the repository's objects (fromIndex): the ones the turn changed are copied in now, while the
+     * repository still has them, so its diff doesn't depend on them later.
+     */
+    private async keep(changes: Change[], root: string, deadline: number) {
+        const wanted = new Map<string, number>();
+        for (const c of changes) for (const e of [c.old, c.now]) {
+            if (e && e.mode !== "160000" && !this.stored.has(e.oid) && !this.unwritten.has(e.oid) && !this.pack?.oids.has(e.oid)) wanted.set(e.oid, e.size ?? 0);
+        }
+        if (!wanted.size) return;
+        // A batch at a time, each well within what one read takes.
+        const batches: string[][] = [[]];
+        let bytes = 0;
+        for (const [oid, size] of wanted) {
+            if (bytes + size > 32 * 1024 * 1024 && batches.at(-1)!.length) { batches.push([]); bytes = 0; }
+            batches.at(-1)!.push(oid);
+            bytes += size;
+        }
+        let missing = 0;
+        try {
+            for (const batch of batches) {
+                const found = await blobs(root, batch, deadline, { GIT_NO_REPLACE_OBJECTS: "1" });
+                for (const oid of batch) {
+                    const buf = found.get(oid);
+                    // Its bytes, whatever the repository holds under that name.
+                    if (!buf || blobId(buf, this.algo) !== oid) { missing++; continue; }
+                    await this.store(buf, "blob", oid);
+                }
+            }
+        } finally {
+            await this.writeOut();
+        }
+        if (missing) throw new Error(`${missing} of this turn's file versions could not be kept; their diffs may be unavailable.`);
+    }
+
+    /**
+     * Each nearby worktree's token (turn-places.ts: HEAD, branch, what's staged), and the time on the file system's
+     * clock; and, at the end of a turn that's open, the ones it worked in (reached, and new, or changed since it
+     * began), summed up now: at a steering boundary the next turn may already be under way by the time this one is
+     * finished, and what it does isn't this one's. Only reached worktrees can be worked in, so only they have their
+     * files looked at, and an end no turn starts from (`whole` false) takes tokens of only those. Not when either end
      * went unmarked.
      */
-    private async marks(captured: TurnCapture | undefined, reached: ReadonlySet<string> = new Set()): Promise<TurnCapture | undefined> {
+    private async marks(captured: TurnCapture | undefined, reached: ReadonlySet<string> = new Set(), whole = true): Promise<TurnCapture | undefined> {
         if (!captured?.root || this.stopped || !this.worktreesListed) return captured;
         const deadline = Date.now() + 1500;
+        // First: whatever changes after this counts as after it.
+        const since = await this.clock();
         // Only folders that really are those worktrees are read (one swapped for a link isn't); the rest go unmarked.
         const root = captured.root;
         const checked = (await eachLimited(this.worktrees, 4, (w) => this.checks.check(root, w))).filter((w): w is Checked => w !== undefined);
-        const prints = await eachLimited(checked, 4, (w) => fingerprint(w, deadline));
-        const after = Object.fromEntries(checked.map((w, i) => [w.path, prints[i]!]));
+        const start = this.active?.start;
+        const candidates = start ? reachedPlaces(checked, [root, ...checked.map((w) => w.path)], reached) : [];
+        const marked = whole ? checked : candidates;
+        const tokens = await eachLimited(marked, 4, (w) => token(w, deadline));
+        const after = Object.fromEntries(marked.map((w, i) => [w.path, tokens[i]!]));
         captured.places = after;
-        const before = this.active?.start.places;
+        if (since !== undefined) captured.since = String(since);
+        const before = start?.places;
         if (before && !this.stopped) {
-            const changed = checked.filter((w) => after[w.path] !== UNKNOWN && before[w.path] !== UNKNOWN && after[w.path] !== before[w.path]);
-            const worked = reachedPlaces(changed, [root, ...checked.map((w) => w.path)], reached);
+            const from = start.since !== undefined && /^\d+$/.test(start.since) ? BigInt(start.since) : undefined;
+            // New since it began, or its HEAD, branch or staging moved; else any of its files changed since.
+            const changed = await eachLimited(candidates, 4, async (w) => {
+                const was = before[w.path], now = after[w.path];
+                if (was === UNKNOWN || now === UNKNOWN) return false;
+                if (was === undefined || was !== now) return true;
+                return from !== undefined && (await changedSince(w, from, deadline)) === true;
+            });
+            const worked = candidates.filter((_, i) => changed[i]);
             if (worked.length) {
                 const until = Date.now() + 3000;
                 captured.worked = await eachLimited(worked, 4, (w) => summarize(w, until));
             }
         }
         return captured;
+    }
+
+    /** Now, on the file system's clock (a file's ctime just written), in nanoseconds: what changes after it is newer. */
+    private async clock(): Promise<bigint | undefined> {
+        try {
+            this.ensure();
+            const at = join(this.storage, "clock");
+            await writeFile(at, "", { mode: 0o600 });
+            return (await lstat(at, { bigint: true })).ctimeNs;
+        } catch {
+            return undefined;
+        }
     }
 
     /** Scan once on reopen; failed captures' objects and temporary files count too. */
@@ -583,6 +671,58 @@ export class TurnSnapshots {
         }
     }
 
+    /**
+     * Of `files` (tracked, stat taken), those Git's index has as they are on disk, each with the blob it names: the
+     * stat it recorded still matches (git-index.ts), no attribute or core.autocrlf makes Git store anything but the
+     * file's bytes, and, in a partial clone, the object is there. The rest are read as any other file.
+     */
+    private async fromIndex(files: { path: string; st: BigIntStats; stamp: string }[], deadline: number): Promise<Map<string, KnownFile>> {
+        const out = new Map<string, KnownFile>();
+        const env = { GIT_NO_REPLACE_OBJECTS: "1" };
+        const [where, autocrlf, partial] = await Promise.all([
+            git(this.root!, ["rev-parse", "--git-path", "index"], { deadline, privateEnv: env }),
+            git(this.root!, ["config", "--get", "core.autocrlf"], { deadline, privateEnv: env }),
+            git(this.root!, ["config", "--get", "extensions.partialclone"], { deadline, privateEnv: env }),
+        ]);
+        if (where.code) return out;
+        // Any value but false converts some text files (true, input), and which can't be told from the index.
+        if (autocrlf.code === 0 && !["false", "no", "off", "0", ""].includes(autocrlf.out.toString().trim().toLowerCase())) return out;
+        const index = await this.readIndex(resolve(this.root!, where.out.toString().replace(/\n$/, "")));
+        if (!index) return out;
+        const clean = files.flatMap((f) => {
+            const oid = cleanBlob(index, f.path, f.st);
+            return oid ? [{ ...f, oid }] : [];
+        });
+        if (!clean.length) return out;
+        const [attrs, present] = await Promise.all([
+            git(this.root!, ["check-attr", "-z", "--stdin", "--all"], { input: clean.map((f) => f.path).join("\0") + "\0", deadline, privateEnv: env }),
+            partial.code === 0 ? git(this.root!, ["cat-file", "--batch-check=%(objectname) %(objecttype)"], { input: [...new Set(clean.map((f) => f.oid))].join("\n") + "\n", deadline, privateEnv: env }) : undefined,
+        ]);
+        if (attrs.code || attrs.cut || present?.code || present?.cut) return out;
+        const converted = new Set<string>();
+        const fields = attrs.out.toString("utf-8").split("\0");
+        for (let i = 0; i + 2 < fields.length; i += 3) if (CONVERTING.has(fields[i + 1]!) && fields[i + 2] !== "unset" && fields[i + 2] !== "unspecified") converted.add(fields[i]!);
+        const there = present && new Set(present.out.toString().split("\n").filter((l) => l.endsWith(" blob")).map((l) => l.slice(0, l.indexOf(" "))));
+        for (const f of clean) {
+            if (converted.has(f.path) || (there && !there.has(f.oid))) continue;
+            const mode = f.st.isSymbolicLink() ? "120000" : Number(f.st.mode) & 0o100 ? "100755" : "100644";
+            out.set(f.path, { path: f.path, stamp: f.stamp, entry: { mode, oid: f.oid, size: Number(f.st.size) }, borrowed: true });
+        }
+        return out;
+    }
+
+    /** The index at `path`, parsed again only when it's been rewritten. */
+    private async readIndex(path: string): Promise<GitIndex | undefined> {
+        const st = await lstat(path, { bigint: true }).catch(() => undefined);
+        if (!st?.isFile()) return undefined;
+        const stamp = `${path}\0${bigStamp(st)}`;
+        if (this.index?.stamp === stamp) return this.index.parsed;
+        const buf = await readFile(path).catch(() => undefined);
+        const parsed = buf && parseIndex(buf, this.algo === "sha1" ? 20 : 32, st.mtimeNs);
+        this.index = parsed ? { stamp, parsed } : undefined;
+        return parsed;
+    }
+
     private async capture(): Promise<TurnCapture | undefined> {
         const started = Date.now();
         const deadline = started + (this.options.budgetMs ?? 2000);
@@ -629,58 +769,72 @@ export class TurnSnapshots {
                 modes.set(path, staged[1]!);
                 return path;
             }))];
+            type Seen = { path: string; st: BigIntStats; stamp: string };
+            const skip = ({ path, stamp }: Seen, reason: string) => {
+                result.skipped[path] = reason;
+                (result.skippedStamps ??= pathMap())[path] = stamp;
+            };
+            /** Tracked files not known by this stamp: Git's index may already have them. */
+            const tracked: Seen[] = [];
+            const toRead: Seen[] = [];
             // Looked up together: one by one, each is a trip to another thread and back, and a large repository runs out of time on that alone.
             for (let at = 0; at < paths.length; at += STAT_BATCH) {
                 const batch = paths.slice(at, at + STAT_BATCH);
                 const stats = await Promise.all(batch.map((path) => {
                     if (!safePath(path)) throw new Error("A repository path cannot be safely captured.");
-                    return wt.stat(path, true).catch(() => {
+                    return wt.statBig(path, true).catch(() => {
                         result.skipped[path] = "Unreadable path; not captured, change unknown.";
                         return undefined;
                     });
                 }));
-                const toRead: { path: string; st: NonNullable<(typeof stats)[number]>; stamp: string; skip: (reason: string) => void }[] = [];
                 for (let i = 0; i < batch.length; i++) {
                     inTime();
                     const path = batch[i]!, st = stats[i];
                     if (!st) continue; // A tracked file deleted from disk.
-                    const stamp = `${st.dev}:${st.ino}:${st.mode}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
-                    const skip = (reason: string) => {
-                        result.skipped[path] = reason;
-                        (result.skippedStamps ??= pathMap())[path] = stamp;
-                    };
+                    const seen: Seen = { path, st, stamp: bigStamp(st) };
                     if (!st.isFile() && !st.isSymbolicLink()) {
                         // A tracked file replaced by a directory is deleted; its new
                         // untracked children are separate entries, not a nested repo.
                         if (st.isDirectory() && modes.has(path) && modes.get(path) !== "160000") continue;
                         if (st.isDirectory() && this.nested.has(path)) continue;
-                        skip(st.isDirectory() ? "Submodule or nested repository contents are not captured." : "Not a regular file.");
+                        skip(seen, st.isDirectory() ? "Submodule or nested repository contents are not captured." : "Not a regular file.");
                         continue;
                     }
-                    if (st.size > MAX_SNAPSHOT_BYTES) { skip("Over 10 MB; not captured, change unknown."); continue; }
+                    if (st.size > MAX_SNAPSHOT_BYTES) { skip(seen, "Over 10 MB; not captured, change unknown."); continue; }
                     const known = this.known.get(path);
-                    if (known?.stamp === stamp && this.stored.has(known.entry.oid)) { entries.set(known.path, known.entry); continue; }
-                    toRead.push({ path, st, stamp, skip });
+                    if (known?.stamp === seen.stamp && (known.borrowed || this.stored.has(known.entry.oid))) { entries.set(known.path, known.entry); continue; }
+                    (modes.has(path) ? tracked : toRead).push(seen);
                 }
-                for (let k = 0; k < toRead.length; k += READ_AT_ONCE) {
-                    const done = await Promise.allSettled(toRead.slice(k, k + READ_AT_ONCE).map(async ({ path, st, stamp, skip }) => {
-                        const buf = st.isSymbolicLink() ? await readlink(join(this.root!, path), { encoding: "buffer" }).catch(() => undefined) : (await readRegular(join(this.root!, path), MAX_SNAPSHOT_BYTES))?.buf;
-                        if (!buf) { skip("Unreadable, changed while being read, or over 10 MB; not captured."); return; }
-                        inTime();
-                        const after = await wt.stat(path, true).catch(() => undefined);
-                        if (!after || `${after.dev}:${after.ino}:${after.mode}:${after.size}:${after.mtimeMs}:${after.ctimeMs}` !== stamp) { result.skipped[path] = "Changed while being read; not captured."; return; }
-                        const mode = st.isSymbolicLink() ? "120000" : st.mode & 0o100 ? "100755" : "100644", oid = blobId(buf, this.algo);
-                        // The same as another session knows it: its strings are kept, not a copy of them.
-                        const had = this.known.get(path);
-                        const same = had?.entry.oid === oid && had.entry.mode === mode && had.entry.size === buf.length;
-                        const file: KnownFile = same ? (had.stamp === stamp ? had : { path: had.path, stamp, entry: had.entry }) : { path, stamp, entry: { mode, oid, size: buf.length } };
-                        await this.store(buf, "blob", file.entry.oid);
-                        read.push(file);
-                        entries.set(file.path, file.entry);
-                    }));
-                    for (const d of done) if (d.status === "rejected") throw d.reason;
-                    if ((this.pack?.bytes ?? 0) >= PACK_MAX_BYTES) await this.finishPack();
+            }
+            // Files as Git last recorded them have the blob its index names: taken from there, not read and hashed.
+            if (tracked.length) {
+                const taken = await this.fromIndex(tracked, deadline);
+                for (const t of tracked) {
+                    const file = taken.get(t.path);
+                    if (!file) { toRead.push(t); continue; }
+                    this.known.set(t.path, file);
+                    entries.set(t.path, file.entry);
                 }
+            }
+            for (let k = 0; k < toRead.length; k += READ_AT_ONCE) {
+                const done = await Promise.allSettled(toRead.slice(k, k + READ_AT_ONCE).map(async (seen) => {
+                    const { path, st, stamp } = seen;
+                    const buf = st.isSymbolicLink() ? await readlink(join(this.root!, path), { encoding: "buffer" }).catch(() => undefined) : (await readRegular(join(this.root!, path), MAX_SNAPSHOT_BYTES))?.buf;
+                    if (!buf) { skip(seen, "Unreadable, changed while being read, or over 10 MB; not captured."); return; }
+                    inTime();
+                    const after = await wt.statBig(path, true).catch(() => undefined);
+                    if (!after || bigStamp(after) !== stamp) { result.skipped[path] = "Changed while being read; not captured."; return; }
+                    const mode = st.isSymbolicLink() ? "120000" : Number(st.mode) & 0o100 ? "100755" : "100644", oid = blobId(buf, this.algo);
+                    // The same as another session knows it: its strings are kept, not a copy of them.
+                    const had = this.known.get(path);
+                    const same = had?.entry.oid === oid && had.entry.mode === mode && had.entry.size === buf.length;
+                    const file: KnownFile = same ? (had.stamp === stamp && !had.borrowed ? had : { path: had.path, stamp, entry: had.entry }) : { path, stamp, entry: { mode, oid, size: buf.length } };
+                    await this.store(buf, "blob", file.entry.oid);
+                    read.push(file);
+                    entries.set(file.path, file.entry);
+                }));
+                for (const d of done) if (d.status === "rejected") throw d.reason;
+                if ((this.pack?.bytes ?? 0) >= PACK_MAX_BYTES) await this.finishPack();
             }
             inTime();
             const updates: string[] = [];
@@ -708,7 +862,8 @@ export class TurnSnapshots {
                     const update = await this.run(["update-index", "-z", "--index-info"], deadline, updates.join(""));
                     if (update.code || update.cut) throw new Error("Could not update the private snapshot index.");
                 }
-                const tree = await this.run(["write-tree"], deadline);
+                // Blobs taken from Git's index are in the repository's objects, not these.
+                const tree = await this.run(["write-tree", "--missing-ok"], deadline);
                 const oid = tree.out.toString().trim();
                 if (tree.code || oid !== planned.root) throw new Error("Could not write the private snapshot tree.");
                 this.lastTree = oid;

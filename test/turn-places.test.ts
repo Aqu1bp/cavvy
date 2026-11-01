@@ -238,10 +238,10 @@ test("a file swapped in by rename, the same size and time, still counts (its ino
     expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places?.map((p) => p.branch)).toEqual(["agent/swap"]);
 });
 
-test("out of time, a worktree's fingerprint is unknown, and a listing git can't give is unknown, not empty", async () => {
+test("out of time, a worktree's token is unknown, and a listing git can't give is unknown, not empty", async () => {
     const { wt } = setup(["late"]);
-    const { fingerprint, listWorktrees, UNKNOWN } = await import("../src/agent/turn-places");
-    expect(await fingerprint({ path: wt("late"), main: false }, Date.now() - 1)).toBe(UNKNOWN);
+    const { token, listWorktrees, UNKNOWN } = await import("../src/agent/turn-places");
+    expect(await token({ path: wt("late"), main: false, real: wt("late"), gitDir: join(wt("late"), ".git") }, Date.now() - 1)).toBe(UNKNOWN);
     const notRepo = join(realpathSync(iso.home), `not-a-repo-${next++}`);
     mkdirSync(notRepo, { recursive: true });
     expect(await listWorktrees(notRepo, Date.now() + 2000)).toBeUndefined();
@@ -330,4 +330,24 @@ test("a turn's places are kept: reopened, the session shows them as they were", 
     const reopened = new TurnSnapshots(dir, cwd);
     const info = await reopened.changes({ scope: "turn", turnId: 1 });
     expect(info.places?.map((p) => [p.branch, p.files, p.commits])).toEqual([["agent/home", 2, 1]]);
+});
+
+test("a tracked file deleted in a reached worktree during the turn counts as work in it", async () => {
+    const { wt, snapshots } = setup(["trim"]);
+    await snapshots.begin(1, "delete a file");
+    snapshots.reach([join(wt("trim"), "a.txt")]);
+    rmSync(join(wt("trim"), "a.txt"));
+    await snapshots.end();
+    expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places?.map((p) => [p.branch, p.files])).toEqual([["agent/trim", 1]]);
+});
+
+test("a reached worktree that changed only before the turn began isn't worked in by it", async () => {
+    const { wt, snapshots } = setup(["earlier"]);
+    write(wt("earlier"), "a.txt", "one\ntwo\nbefore\n");
+    write(wt("earlier"), "new.txt", "made before\n");
+    await Bun.sleep(20);
+    await snapshots.begin(1, "only look");
+    snapshots.reach([wt("earlier")]);
+    await snapshots.end();
+    expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places).toBeUndefined();
 });

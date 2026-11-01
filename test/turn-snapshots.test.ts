@@ -26,15 +26,20 @@ function write(dir: string, path: string, body: string | Buffer) {
     writeFileSync(join(dir, path), body);
 }
 
-function setup(files: Record<string, string | Buffer> = {}, format: "sha1" | "sha256" = "sha1") {
+/**
+ * A repository with `files` committed, or, with `untracked`, written after the commit: Git's index has committed
+ * files as they are, so a snapshot takes their blobs from it, and reads (and stores) only files Git doesn't have.
+ */
+function setup(files: Record<string, string | Buffer> = {}, format: "sha1" | "sha256" = "sha1", o: { untracked?: boolean } = {}) {
     const base = join(realpathSync(iso.home), `snapshot-${next++}`);
     const cwd = join(base, "repo");
     const dir = join(base, "history");
     mkdirSync(cwd, { recursive: true });
     git(cwd, ["init", "-q", "-b", "main", `--object-format=${format}`]);
-    for (const [path, body] of Object.entries(files)) write(cwd, path, body);
+    if (!o.untracked) for (const [path, body] of Object.entries(files)) write(cwd, path, body);
     git(cwd, ["add", "-A"]);
     git(cwd, ["commit", "-q", "--allow-empty", "-m", "Initial commit"]);
+    if (o.untracked) for (const [path, body] of Object.entries(files)) write(cwd, path, body);
     return { cwd, dir, snapshots: new TurnSnapshots(dir, cwd) };
 }
 
@@ -67,6 +72,14 @@ function objectsDir(root: string): string {
         }
     }
     throw new Error("No private objects directory");
+}
+
+/** Objects in a private store, loose and packed. */
+function storedCount(objects: string): number {
+    const loose = readdirSync(objects).filter((n) => /^[0-9a-f]{2}$/.test(n)).reduce((n, d) => n + readdirSync(join(objects, d)).length, 0);
+    const pack = join(objects, "pack");
+    const packed = existsSync(pack) ? readdirSync(pack).filter((n) => n.endsWith(".idx")).reduce((n, f) => n + readFileSync(join(pack, f)).readUInt32BE(8 + 255 * 4), 0) : 0;
+    return loose + packed;
 }
 
 function expectPrivate(root: string) {
@@ -121,7 +134,7 @@ describe("per-turn snapshots", () => {
     });
 
     test("tree objects and blobs left by failed captures count toward the quota", async () => {
-        const { cwd, dir } = setup({ "a.txt": "before\n" });
+        const { cwd, dir } = setup({ "a.txt": "before\n" }, "sha1", { untracked: true });
         // A loose blob fits, but its containing tree does not.
         const limited = new TurnSnapshots(dir, cwd, { maxStoreBytes: 32 });
         await limited.begin(1, "tree exceeds quota");
@@ -664,7 +677,7 @@ describe("per-turn snapshots", () => {
     test("a capture of many new files is one pack, and reads as loose objects do", async () => {
         const files: Record<string, string> = {};
         for (let i = 0; i < 400; i++) files[`src/d${i % 7}/f${i}.txt`] = `file ${i}\n`;
-        const { cwd, dir, snapshots } = setup(files);
+        const { cwd, dir, snapshots } = setup(files, "sha1", { untracked: true });
         await snapshots.begin(1, "Change one of many");
         write(cwd, "src/d0/f0.txt", "changed\n");
         await snapshots.end();
@@ -696,7 +709,7 @@ describe("per-turn snapshots", () => {
         for (const leave of [cutOff, (index: string) => rmSync(index)]) {
             const files: Record<string, string> = {};
             for (let i = 0; i < 400; i++) files[`src/f${i}.txt`] = `file ${i}\n`;
-            const { cwd, dir, snapshots } = setup(files);
+            const { cwd, dir, snapshots } = setup(files, "sha1", { untracked: true });
             await snapshots.begin(1, "Many files");
             await snapshots.end();
             const folder = join(objectsDir(dir), "pack");
@@ -715,7 +728,7 @@ describe("per-turn snapshots", () => {
     test("sessions in one repository share what they know of its files, and each keeps its own objects", async () => {
         const files: Record<string, string> = {};
         for (let i = 0; i < 400; i++) files[`src/f${i}.txt`] = `file ${i}\n`;
-        const { cwd, dir, snapshots } = setup(files);
+        const { cwd, dir, snapshots } = setup(files, "sha1", { untracked: true });
         await snapshots.begin(1, "First");
         await snapshots.end();
 
@@ -747,7 +760,7 @@ describe("per-turn snapshots", () => {
     test("a pack works in a SHA-256 repository", async () => {
         const files: Record<string, string> = {};
         for (let i = 0; i < 300; i++) files[`f${i}.txt`] = `file ${i}\n`;
-        const { cwd, dir, snapshots } = setup(files, "sha256");
+        const { cwd, dir, snapshots } = setup(files, "sha256", { untracked: true });
         await snapshots.begin(1, "Change one");
         write(cwd, "f1.txt", "changed\n");
         await snapshots.end();
@@ -761,7 +774,7 @@ describe("per-turn snapshots", () => {
 
     test("big files go into a pack too, and each pack's bytes count toward the quota", async () => {
         const big = (seed: number) => Buffer.from(Array.from({ length: 5 * 1024 * 1024 }, (_, i) => (i * 2654435761 + seed * 97) % 251));
-        const { cwd, dir, snapshots } = setup({ "a.bin": big(1), "b.bin": big(2) });
+        const { cwd, dir, snapshots } = setup({ "a.bin": big(1), "b.bin": big(2) }, "sha1", { untracked: true });
         await snapshots.begin(1, "Two big files");
         await snapshots.end();
         const turn = snapshots.list()[0]!;
@@ -769,7 +782,7 @@ describe("per-turn snapshots", () => {
         expect(readdirSync(join(objectsDir(dir), "pack")).length).toBe(2);
         expect(git(cwd, ["cat-file", "-s", `${turn.start.tree}:a.bin`], { GIT_OBJECT_DIRECTORY: objectsDir(dir) }).toString().trim()).toBe(String(5 * 1024 * 1024));
 
-        const small = setup(Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`f${i}.txt`, `file ${i}\n`])));
+        const small = setup(Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`f${i}.txt`, `file ${i}\n`])), "sha1", { untracked: true });
         const limited = new TurnSnapshots(small.dir, small.cwd, { maxStoreBytes: 500 });
         await limited.begin(1, "Over the limit");
         const start = limited.list()[0]!.start;
@@ -784,7 +797,7 @@ describe("per-turn snapshots", () => {
     test("over the limit partway through a pack: what fitted is kept and counted, and what didn't is read again", async () => {
         const files: Record<string, string> = {};
         for (let i = 0; i < 400; i++) files[`f${i}.txt`] = `file ${i} ${"x".repeat(200)}\n`;
-        const { cwd, dir } = setup(files);
+        const { cwd, dir } = setup(files, "sha1", { untracked: true });
         const limited = new TurnSnapshots(dir, cwd, { maxStoreBytes: 4000 });
         await limited.begin(1, "Over the limit");
         expect(limited.list()[0]!.start.notes.join(" ")).toContain("Snapshot storage limit reached");
@@ -806,7 +819,7 @@ describe("per-turn snapshots", () => {
     test("however often a capture's taken, what's in a pack isn't written again", async () => {
         const files: Record<string, string> = {};
         for (let i = 0; i < 300; i++) files[`f${i}.txt`] = `file ${i}\n`;
-        const { dir, snapshots } = setup(files);
+        const { dir, snapshots } = setup(files, "sha1", { untracked: true });
         await snapshots.begin(1, "Stored");
         await snapshots.end();
         expect(readdirSync(join(objectsDir(dir), "pack")).length).toBe(2);
@@ -814,6 +827,54 @@ describe("per-turn snapshots", () => {
         await snapshots.begin(2, "Again");
         await snapshots.end();
         expect(inventory(objectsDir(dir))).toEqual(before);
+    });
+
+    test("files as Git's index has them are taken from it, and what a turn changes is kept privately", async () => {
+        const files: Record<string, string> = {};
+        for (let i = 0; i < 400; i++) files[`src/f${i}.txt`] = `file ${i}\n`;
+        const { cwd, dir, snapshots } = setup(files);
+        await snapshots.begin(1, "Change one of many");
+        // Nothing was read into the store: only the two trees.
+        expect(storedCount(objectsDir(dir))).toBe(2);
+        write(cwd, "src/f7.txt", "changed\n");
+        await snapshots.end();
+        const turn = snapshots.list()[0]!;
+        expect([turn.start.incomplete, turn.end!.incomplete]).toEqual([false, false]);
+        expect(turn.changed).toEqual(["src/f7.txt"]);
+        // Both versions of what changed are the session's own: the diff outlives the repository's objects.
+        rmSync(join(cwd, ".git/objects"), { recursive: true });
+        mkdirSync(join(cwd, ".git/objects"));
+        const shown = await new TurnSnapshots(dir, cwd).changes({ scope: "last-turn" });
+        expect(shown.incomplete).toBe(false);
+        expect(shown.files.map((f) => [f.path, f.added, f.removed])).toEqual([["src/f7.txt", 1, 1]]);
+        expect(JSON.stringify(shown)).toContain("file 7");
+        expectPrivate(dir);
+    });
+
+    test("a file Git stores converted (attributes, core.autocrlf) is captured as its bytes, not taken from the index", async () => {
+        const crlf = "one\r\ntwo\r\n";
+        for (const convert of [(cwd: string) => write(cwd, ".gitattributes", "*.txt text eol=crlf\n"), (cwd: string) => git(cwd, ["config", "core.autocrlf", "true"])]) {
+            const { cwd, dir } = setup();
+            convert(cwd);
+            write(cwd, "a.txt", crlf);
+            git(cwd, ["add", "-A"]);
+            git(cwd, ["commit", "-q", "-m", "Converted"]);
+            const snapshots = new TurnSnapshots(dir, cwd);
+            await snapshots.begin(1, "Converted file");
+            const tree = snapshots.list()[0]!.start.tree!;
+            expect(git(cwd, ["cat-file", "blob", `${tree}:a.txt`], { GIT_OBJECT_DIRECTORY: objectsDir(dir), GIT_ALTERNATE_OBJECT_DIRECTORIES: "" }).toString()).toBe(crlf);
+        }
+    });
+
+    test("a file stamped no earlier than its index was written is read: it could have changed without its stat showing it", async () => {
+        const { cwd, dir } = setup({ "a.txt": "a\n" });
+        const at = statSync(join(cwd, "a.txt")).mtime;
+        utimesSync(join(cwd, ".git/index"), at, at);
+        const snapshots = new TurnSnapshots(dir, cwd);
+        await snapshots.begin(1, "Racily clean");
+        // The tree and the file's own blob.
+        expect(storedCount(objectsDir(dir))).toBe(2);
+        expect(snapshots.list()[0]!.start.incomplete).toBe(false);
     });
 
     test("snapshots are pruned with file history after thirty days", async () => {

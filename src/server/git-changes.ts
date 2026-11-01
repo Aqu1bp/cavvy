@@ -469,6 +469,15 @@ export class WorkTree {
         });
     }
 
+    /** As `stat`, in full precision: nanosecond times, as Git's index records them. */
+    async statBig(rel: string, strict = false): Promise<BigIntStats | undefined> {
+        if (!(await this.inside(rel, strict))) return undefined;
+        return lstat(join(this.root, rel), { bigint: true }).catch((e: NodeJS.ErrnoException) => {
+            if (strict && e.code !== "ENOENT" && e.code !== "ENOTDIR") throw e;
+            return undefined;
+        });
+    }
+
     /** The path as an entry (mode and blob id), or null when nothing comparable is there. */
     async entry(rel: string, was?: Entry, hash = true): Promise<Entry | null> {
         const st = await this.stat(rel);
