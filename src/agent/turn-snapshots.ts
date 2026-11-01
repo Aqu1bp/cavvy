@@ -22,6 +22,7 @@ import { redact } from "../util/redact";
 import { cleanBlob, cleanBlobMs, modeOf, msTimesExact, parseIndex, type GitIndex } from "./git-index";
 import { Pace } from "../util/pace";
 import { KIND, scanIndexFiles, statFiles } from "./stat-files";
+import { acquireWatch, releaseWatch, type FolderWatch } from "./folder-watch";
 
 /** Paths a turn reached that are kept (TurnSnapshots.reach): past this many, the rest go unseen. */
 const MAX_REACHED = 20_000;
@@ -364,6 +365,11 @@ export class TurnSnapshots {
     private lastTree: string | undefined;
     /** The last capture's lists and what it found at each path (stat-files.ts), with what it left out. */
     private scan?: { trackedId: string; untracked: string[]; kinds: Uint8Array; stamps: Float64Array; recheck: number[]; skipped: Record<string, string>; skippedStamps?: Record<string, string> };
+    /** The folder's watch, and when one was last asked for. */
+    private watch?: FolderWatch;
+    private watchTried = 0;
+    /** The last whole capture and the watch's count when it began (unchanged). */
+    private lastFast?: { gen: number; at: number; result: TurnCapture };
     /** The last capture from Git's index (captureIndexed): what it rested on, and what it found. */
     private lastIndexed?: { key: string; tree?: string; skipped: Record<string, string>; skippedStamps?: Record<string, string> };
     /** The last capture's files in their folders, with each folder's tree id (treeObjects). */
@@ -491,7 +497,7 @@ export class TurnSnapshots {
         const reached = this.takeReached();
         return this.record(async () => {
             if (this.stopped) return;
-            await this.open(id, prompt, await this.marks(await this.capture(), reached));
+            await this.open(id, prompt, await this.marks(await this.capture(false, reached.size === 0), reached));
         });
     }
 
@@ -504,7 +510,7 @@ export class TurnSnapshots {
         // The open turn goes on if the prompt doesn't: what it reached stays its own.
         const reached = new Set(this.reached);
         return this.record(async () => {
-            if (!this.stopped) captured = await this.marks(await this.capture(), reached);
+            if (!this.stopped) captured = await this.marks(await this.capture(false, reached.size === 0), reached);
         }).then(() => captured);
     }
 
@@ -529,7 +535,7 @@ export class TurnSnapshots {
         return this.record(async () => {
             if (!this.active || this.stopped) return;
             // No turn starts here: only the worktrees this one reached are looked at.
-            const captured = await this.marks(await this.capture(true), reached, false);
+            const captured = await this.marks(await this.capture(true, reached.size === 0), reached, false);
             if (this.stopped) return;
             await this.finish(captured ?? { incomplete: true, notes: ["The repository is no longer available."], skipped: pathMap(), durationMs: 0 });
         });
@@ -540,6 +546,27 @@ export class TurnSnapshots {
         this.stopped = true;
         this.active = undefined;
         await Promise.allSettled([...this.pending]);
+        if (this.watch) releaseWatch(this.watch);
+        this.watch = undefined;
+    }
+
+    /**
+     * The last capture again, when nothing can have changed since: the turn wrote nothing (`quiet`: none of its tool
+     * calls but read-only ones, nor a sub-agent's), and the folder's watch saw no change since that capture began. Events
+     * arrive a moment after a change: a capture within a quarter of a second of the last isn't taken for one.
+     */
+    private async unchanged(quiet: boolean, ending: boolean): Promise<TurnCapture | undefined> {
+        const w = this.watch, last = this.lastFast;
+        if (!quiet || !w?.healthy || !last || this.stopped) return undefined;
+        // A turn's end waits a little longer (FSEvents, on a Mac, delivers later than inotify): no model waits on it.
+        await new Promise((r) => setTimeout(r, ending ? 100 : 30));
+        if (!w.healthy || w.gen !== last.gen || Date.now() - last.at < 250) return undefined;
+        const out = structuredClone(last.result);
+        out.durationMs = 0;
+        delete out.places;
+        delete out.since;
+        delete out.worked;
+        return out;
     }
 
     /** One after another, in the order they're asked for: a start not awaited still lands before the next end. */
@@ -1256,7 +1283,10 @@ export class TurnSnapshots {
         return converts;
     }
 
-    private async capture(ending = false): Promise<TurnCapture | undefined> {
+    private async capture(ending = false, quiet = false): Promise<TurnCapture | undefined> {
+        const same = await this.unchanged(quiet, ending);
+        if (same) return same;
+        let genAtStart: number | undefined;
         const started = Date.now();
         const deadline = started + (this.options.budgetMs ?? (ending ? END_BUDGET_MS : 2000));
         const result: TurnCapture = { incomplete: false, notes: [], skipped: pathMap(), durationMs: 0 };
@@ -1284,6 +1314,13 @@ export class TurnSnapshots {
             }
             this.root = where.root;
             this.known = knownIn(this.root);
+            // The folder's watch (folder-watch.ts): taken once, again a while after one fails.
+            if (this.watch && (!this.watch.healthy || this.watch.root !== this.root)) { releaseWatch(this.watch); this.watch = undefined; }
+            if (!this.watch && Date.now() - this.watchTried > 5 * 60_000) {
+                this.watchTried = Date.now();
+                this.watch = acquireWatch(this.root, where.index ? dirname(where.index) : undefined);
+            }
+            genAtStart = this.watch?.healthy ? this.watch.gen : undefined;
             result.root = this.root;
             // The repository's other worktrees in its folder are places of their own (turn-places.ts), not contents left out.
             const listed = await worktreeListOf(this.root).get(this.root, deadline);
@@ -1549,6 +1586,8 @@ export class TurnSnapshots {
                 result.notes.push("Snapshot exceeded its time budget while finalizing storage.");
             }
             result.durationMs = Date.now() - started;
+            // What a capture that finds nothing changed takes again (unchanged).
+            this.lastFast = genAtStart !== undefined && result.tree && !result.notes.length && this.watch?.healthy ? { gen: genAtStart, at: Date.now(), result: structuredClone(result) } : undefined;
         }
         return result;
     }

@@ -918,6 +918,31 @@ describe("per-turn snapshots", () => {
         expectPrivate(dir);
     }, 60_000);
 
+    test("a turn that changed nothing takes the last capture again; a change something else made is still seen", async () => {
+        const { cwd, snapshots } = setup({ "a.txt": "a\n", "src/b.txt": "b\n" });
+        await snapshots.begin(1, "Look only");
+        await Bun.sleep(400);
+        await snapshots.end();
+        const quiet = snapshots.list()[0]!;
+        // Nothing started or read: the start's capture, again.
+        expect(quiet.end!.durationMs).toBe(0);
+        expect(quiet.end!.tree).toBe(quiet.start.tree);
+        expect(quiet.changed).toEqual([]);
+        await Bun.sleep(400);
+        await snapshots.begin(2, "Meanwhile, an editor saves");
+        await Bun.sleep(400);
+        write(cwd, "src/b.txt", "b, saved elsewhere\n");
+        await Bun.sleep(400);
+        await snapshots.end();
+        expect(snapshots.list()[1]!.changed).toEqual(["src/b.txt"]);
+        // A turn that wrote (a tool call that isn't read-only reached the folder) is always captured.
+        await Bun.sleep(400);
+        await snapshots.begin(3, "Write");
+        snapshots.reach([cwd]);
+        await snapshots.end();
+        expect(snapshots.list()[2]!.end!.durationMs).toBeGreaterThan(0);
+    }, 30_000);
+
     test("snapshots are pruned with file history after thirty days", async () => {
         const { cwd } = setup({ "a.txt": "a\n" });
         const dir = join(paths.projectsDir(), `snapshot-prune-${next++}`, "file-history", "old-session");
