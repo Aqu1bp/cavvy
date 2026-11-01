@@ -1,121 +1,43 @@
 # Performance goal
 
-Cavvy is as fast and as light as the best widely used coding-agent apps, in the packaged app, measured the same way each time. This is done when every line below meets its target in two runs in a row, and a run with real models shows the same. A target that turns out to be out of reach for an Electron app stays listed, with why.
+Cavvy is a light wrapper over the agents it runs: under heavy use the hardware runs out, not the app. So each target below is measured against what the same work costs without Cavvy (the same CLIs run bare, in terminals), on the same machine and in the same run, not against a fixed number. A target is met when it holds in two runs in a row under the whole workload below, not just with one or two sessions. One that turns out to be out of reach (Electron's own floor, say) stays listed with the measured reason; it isn't lowered.
 
-Today's figures are from the `optimized-app` branch, on an M5 MacBook Pro with 16 GB. T3 Code's and PandaCode's come from the comparison PandaCode publishes in its `bench/t3-compare` (headless Chrome, no socket, no window, on an M4 Max). Ours run in the real app with its window on screen.
+## The heavy-use workload
 
-## How to read these
+Every target must hold under all of this at once. Where it can't run on a real 16 GB laptop, it runs in a 16 GB cgroup.
+
+- 30 sessions open, 10 streaming at the same time
+- spread across many worktrees of large repositories (100,000 files, over 1 GB)
+- sessions 2,000+ turns long, tool output of tens of MB, many images
+- agents running builds, test suites, dev servers and file watchers
+- subagents, background tasks and MCP servers in many sessions at once
+- 1,000 sessions in history; the app left open for a week (a long soak stands in for this)
+- bursts: many sessions finishing at once, rate limits hitting all of them together
+
+## Pass mark
+
+| # | Target | Today | |
+|---|---|---|---|
+| 1 | **Breaking point.** Add sessions in steps under the workload until the machine gives out, once in Cavvy and once with the bare CLIs. Cavvy fits within 5% as many sessions; what ran out is RAM or CPU used by the agents and their processes, and Cavvy can still stop sessions then. | 4-core, 16 GB Linux VM, Sonnet, 30 sessions doing 15 turns each in 100,000-file worktrees (fixed work, CPU the limit): the bare CLIs take 436–455 s and 1,716–1,745 s of CPU; Cavvy 818 s and 3,064 s of CPU, with 2 sessions stuck and 15 turns failed | Fails |
+| 2 | **Scaling.** Cost per session stays flat from 1 to 30 sessions; one session running a big build or flooding output doesn't slow the others. | Same run: Cavvy's own processes 320 s of CPU (234 s of it git for snapshots), the 30 CLIs under it 1,073 s against 381–402 s bare (they're restarted between turns); its answers to the GUI 0.5 s (median), 1.7 s (p95) | Fails |
+| 3 | **Streaming.** A streaming reply costs no more than the same CLI printing it in a terminal, with 10 streaming at once. | 2 sessions: Cavvy's server 34% of a core, both CLIs 19% | Fails |
+| 4 | **Idle**, or waiting on a model: within measurement noise of Cavvy not running. | Not measured yet | |
+| 5 | **Hidden sessions:** no drawing or layout cost. | | Needs a Mac run |
+| 6 | **Snapshots.** The first one of a repository is no slower than `git status` on it. A turn that changed files costs about what `git add` of those files costs. An unchanged turn starts no processes and reads no repository files. | Unchanged turn: 2 gits and a stat of every file. 5,000 changed files: 1.3 s, `git add` 0.8 s | Fails |
+| 7 | **No dropped frames** while typing or scrolling with 10 replies streaming (8 ms a frame at 120 Hz). | | Needs a Mac run |
+| 8 | **Size doesn't show.** Opening a 2,000-turn session is as fast as opening a new one. Startup with 30 sessions restored is as fast as with 1. Lists and search with 1,000 sessions in history are as fast as with 10. A 50 MB tool output shows without freezing anything. | Not measured yet | |
+| 9 | **Memory.** All of Cavvy uses less than one of the agent CLIs it runs, at any session count, and stays flat over an hours-long soak (the end matches the start). | Same run: Cavvy's server 155 MB on average, 664 MB at its peak; a Claude Code CLI about 155 MB | Fails |
+| 10 | **Failures** with 20 live sessions: a crashed CLI, a server restart, a network drop, out of memory or a full disk loses no work, and the other sessions carry on. | Not measured yet | |
+
+## How it's measured
+
+`scripts/bench-ramp.ts` runs N real Claude Code sessions, each in its own worktree of a large repository (`scripts/bench-repo.ts`), given the same prompts (an edit and a build, a subagent's search, megabytes of tool output, a dev server, a commit), either under one `cavvy serve` as the desktop app runs it or as bare `claude -p` processes. Each session sends its next prompt as soon as its last turn ends. With a fixed number of turns each, it reports the wall time to the last turn's end and the whole machine's CPU over it, which is what the same work cost; every second, CPU and memory by role (Cavvy, its own helper processes, the CLIs, what the agents run), the machine's pressure, turn times and failures, and how fast Cavvy's socket answers; and, with the kernel's process accounting, every process's CPU, short-lived ones too, by command and role. Sampling processes once a second misses most of what agents run (a git or a compiler lasts a fraction of a second), and a clock that counts samples rather than time reads short on a busy machine: both made an earlier version of this bench say Cavvy was faster than the bare CLIs when it wasn't. Real models are the evidence. Where a comparison has to be exact (the same work to the byte in both), a stand-in for the model's API scripts the replies, and the CLIs and everything they run are real.
+
+The Mac-only targets (5, 7, and the window's share of 3 and 9) are measured with the packaged app: `bun run perf:bench`, `desktop-electron/bench-heavy.ts` and `bench-real.ts`, by instruction counts, not milliseconds:
 
 - **Instructions and energy decide.** A build that does less can show the same milliseconds or more, because macOS moves lighter work to slower cores: during a reply only 8–14% of the work runs on performance cores. Milliseconds still say how something feels, but they aren't a fair comparison between builds or between machines.
 - **A figure that looks too good is suspect.** A bench must fail if it isn't measuring what it says: `bench-stream` stops if a session didn't open, because the rail holds its rows while the real cursor is over it, and a stretch on the wrong session reads as a great result. Bench connections call `session.shown`, or the server counts them as looking at everything.
 - **Tracing inflates.** Rows from `bench-reply`'s trace run slower than the same work untraced.
-
-## One long reply
-
-`bun desktop-electron/bench-reply.ts`: 50 KB in 25-byte deltas, 16 ms apart, in a session with 20 earlier turns.
-
-| | T3 Code | PandaCode | First measured | Today | Target |
-|---|---:|---:|---:|---:|---:|
-| The window's instructions (G) | | | 59.1 | 34.5 | 30 |
-| The window's CPU energy (J) | | | 17.5 | 3.7 | 3.5 |
-| Main-thread work (ms, see above) | 8332 | 2947 | 7816 | 7644 | 3000, not comparable |
-| of which script (ms) | 5632 | 288 | 2066 | 2140 | 500, not comparable |
-| of which layout (ms) | 222 | 208 | 599 | 615 | 250, not comparable |
-| of which style (ms) | 403 | 283 | 835 | 955 | 300, not comparable |
-| Same stretch with nothing delivered (ms) | 133 | 38 | | 44 | 38 |
-| Last delivery to final paint (ms, traced) | 27 | 49 | 184 | 85 | 50 |
-| JS heap after the reply (MB) | 54.2 | 11.5 | 15.9 | 16.0 | 12 |
-
-The millisecond targets came from the published comparison, and they can't be met or missed fairly on this gauge. To say how Cavvy stands against those apps needs them measured by instructions in the same conditions, which hasn't been done.
-
-## The whole app
-
-`bun run perf:bench`. Instructions retired, in millions a second, across the window, GPU, main and server processes. Two runs each.
-
-| | Original | Today | Target |
-|---|---:|---:|---:|
-| A reply streaming, short session | 2301 | 642, 662 | 700 |
-| A reply streaming, long session | 3382 | 771, 801 | 900 |
-| Waiting on a model | 349 | 130, 133 | 60, likely out of reach |
-| Idle, long session, settled | 199 | 0–1% of a core | 50 |
-| Idle, long session, in its first 15 s | | 173 | |
-
-Waiting: with nothing animating at all the app takes 37. The spinner draws the window 20 times a second, which is what the rest of this is. Fewer steps would meet the target and look choppy, so it stays missed.
-
-## Five sessions at once
-
-`bun desktop-electron/bench-heavy.ts --only many`. An ordinary repository (2,000 files), and a very large one (100,000).
-
-| | 2,000 files | 100,000 files | Target |
-|---|---:|---:|---:|
-| 1 on screen, 4 out of sight, all streaming | 785 | 786 | 800 |
-| All 5 out of sight, streaming | 147 | 235 | 150, 250 |
-| All 5 waiting | 155 | 184 | 160, 200 |
-| Whole app's memory (MB) | 439–540 | 431–558 | 550, 600 |
-| of which the server (MB) | 61 | 113–131 | 100, 150 |
-
-## Long use
-
-`bun desktop-electron/bench-heavy.ts --only soak`: 5 sessions working non-stop, about 45 turns a minute, far more than people manage.
-
-| | Today | Target |
-|---|---:|---:|
-| Turns failed in an hour | 0 of 2752 | 0 |
-| Crashes | 0 | 0 |
-| Opening a session, during it (ms) | 44–71 | 100 |
-| Server's memory after 734 turns, ordinary repository (MB) | 51, from 48 | 100 |
-| Whole app's memory with the sessions closed afterwards (MB) | 298 (just opened with a session: 256–310) | 320 |
-| Page's JS heap, per turn kept (MB) | 0.03 | |
-
-In a repository of 30,000 files at this pace the server's memory climbs in steps: 95–110 MB in the first minutes, then 250–580 MB over an hour, and it stays there with the sessions closed. Snapshots alone stay flat over 30 turns, and a full collection once things go quiet gives nothing back, so this isn't garbage waiting to be collected. Its cause isn't known. At the pace people work it would take far longer to get there.
-
-## Very large sessions and repositories
-
-`bun desktop-electron/bench-heavy.ts --only open,git`. A session of 400 turns of 200 KB of output each.
-
-| | Today | Target |
-|---|---:|---:|
-| Opening it (ms) | 111–126 | 150 |
-| Switching back to it (ms) | 40 | 50 |
-| Frames over 50 ms | 0 | 0 |
-| Time in `git` per unchanged turn, 2,000 files (ms) | 65 | 100 |
-| Time in `git` per unchanged turn, 30,000 files (ms) | 118 | 150 |
-| Time in `git` per unchanged turn, 100,000 files (ms) | 194 | 250 |
-| Added to a turn once settled, 100,000 files (s) | 1.0 | 1.5 |
-| A session's snapshots on disk, 100,000 files (MB) | 18.6 | 50 |
-
-## Speed
-
-| | Today | Target |
-|---|---:|---:|
-| Launch to composer, cached (ms) | about 270 | 300 |
-| Launch to composer with a slow login shell (ms) | 297 | 350 |
-| Opening a long session (ms) | 59–69 | 100 |
-| Switching between long sessions (ms) | 48–63 | 50 |
-| First word on screen after it arrives (ms) | 13 | 50 |
-| Last word on screen after it arrives (ms) | 49 | 100 |
-| Longest frame while a reply streams (ms) | not over 50; finer not measured | 25 |
-
-## Memory
-
-| | Claude desktop | Today | Target |
-|---|---:|---:|---:|
-| The whole app, fresh and idle (MB) | 896 | 208 | 300 |
-| The whole app after a real run of 12 prompts (MB) | not measured | to measure again (500 before) | 400 |
-
-## Counted work
-
-`test/perf-budgets.json` holds these in CI, and a budget only comes down.
-
-| | Today | Target |
-|---|---:|---:|
-| Markdown parsed per streamed character | 12.3 | 3, not worth it |
-| Each code line tokenized | 2 | 2 |
-| `git` processes per turn with an edit | 20 | 20 |
-| `git` processes per unchanged turn | 6 | 6 |
-| `git` processes while idle | 0 | 0 |
-
-Markdown: reaching 3 would save about 31 ms of work over a 12-second reply, for a cache that could get a reply's text wrong. It stays at 12.3.
 
 ## Recovery
 
