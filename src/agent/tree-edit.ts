@@ -124,6 +124,17 @@ export class ObjectReader {
         return body;
     }
 
+    /** Waiting to be asked again (kept between captures): it doesn't keep the process running by itself. */
+    idle() {
+        this.timer.unref?.();
+        this.proc.unref();
+    }
+
+    /** Asked again: kept to while it reads. */
+    busy() {
+        this.proc.ref();
+    }
+
     close() {
         clearTimeout(this.timer);
         try { (this.proc.stdin as import("bun").FileSink).end(); } catch {}

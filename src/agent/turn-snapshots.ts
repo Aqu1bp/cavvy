@@ -24,7 +24,7 @@ import { Pace } from "../util/pace";
 import { KIND, scanIndexFiles, scanIndexPaths, statFiles } from "./stat-files";
 import type { Differs, IndexScan } from "./index-scan";
 import { acquireWatch, releaseWatch, type FolderWatch } from "./folder-watch";
-import { editTree, ObjectReader, type TreeEdit } from "./tree-edit";
+import { editTree, ObjectReader, parseTree, type TreeEdit } from "./tree-edit";
 
 /** Paths a turn reached that are kept (TurnSnapshots.reach): past this many, the rest go unseen. */
 const MAX_REACHED = 20_000;
@@ -130,6 +130,9 @@ function underAny(path: string, dirs: ReadonlySet<string>): boolean {
 const treeBodies = new Map<string, Buffer>();
 let treeBytes = 0;
 const TREE_CACHE_BYTES = 32 * 1024 * 1024;
+/** A session's object reader goes after this long unused, and is started again after this long at most. */
+const READER_IDLE_MS = 60_000;
+const READER_MAX_MS = 60 * 60_000;
 function rememberTree(oid: string, body: Buffer) {
     if (treeBodies.has(oid) || body.length > TREE_CACHE_BYTES / 8) return;
     treeBodies.set(oid, body);
@@ -475,6 +478,8 @@ export class TurnSnapshots {
     private watchTried = 0;
     /** The last whole capture and the watch's count when it began (unchanged). */
     private lastFast?: { gen: number; at: number; result: TurnCapture };
+    /** This session's reader of objects (readTree): kept between captures, while it's used. */
+    private reader?: { key: string; reader: ObjectReader; queue: Promise<unknown>; idle?: ReturnType<typeof setTimeout> };
     /** Captures taken from what `git status` said differs (captureFromStatus): for tests. */
     statusCount = 0;
     /**
@@ -691,6 +696,11 @@ export class TurnSnapshots {
         this.stopped = true;
         this.active = undefined;
         await Promise.allSettled([...this.pending]);
+        if (this.reader) {
+            clearTimeout(this.reader.idle);
+            this.reader.reader.close();
+            this.reader = undefined;
+        }
         if (this.watch) releaseWatch(this.watch);
         this.watch = undefined;
     }
@@ -1739,26 +1749,14 @@ export class TurnSnapshots {
             if (meta.length !== 2) continue;
             edits.set(path, meta[0] === "0" ? null : { mode: meta[0]!, oid: meta[1]! });
         }
-        // Started only for a tree not read or written before (most of a turn's are: the last capture's own).
-        let reader: ObjectReader | undefined;
-        try {
-            const tree = await editTree(base, edits, this.algo === "sha1" ? 20 : 32, async (oid) => {
-                const known = treeBodies.get(oid);
-                if (known) return known;
-                const body = await (reader ??= new ObjectReader(root, this.readEnv(), deadline)).read(oid, "tree");
-                rememberTree(oid, body);
-                return body;
-            }, async (body) => {
-                const oid = objectId("tree", body, this.algo);
-                await this.store(body, "tree", oid);
-                rememberTree(oid, body);
-                return oid;
-            });
-            await this.writeOut();
-            return tree;
-        } finally {
-            reader?.close();
-        }
+        const tree = await editTree(base, edits, this.algo === "sha1" ? 20 : 32, (oid) => this.readTree(root, oid, deadline), async (body) => {
+            const oid = objectId("tree", body, this.algo);
+            await this.store(body, "tree", oid);
+            rememberTree(oid, body);
+            return oid;
+        });
+        await this.writeOut();
+        return tree;
     }
 
     /**
@@ -2185,25 +2183,87 @@ export class TurnSnapshots {
      * The paths whose entries differ between two captured trees, each with both (git diff-tree, raw: no rename
      * detection, no blob read), so a turn's end reads what changed rather than both whole trees.
      */
+    /**
+     * A tree's bytes: known (treeBodies), or read by this session's `git cat-file --batch`, kept between captures (a
+     * turn's end reads the trees of the folders it changed, most of them new to it) and let go of after a minute idle.
+     */
+    private async readTree(root: string, oid: string, deadline: number): Promise<Buffer> {
+        const known = treeBodies.get(oid);
+        if (known) return known;
+        const env = this.readEnv();
+        const key = `${root}\0${JSON.stringify(env)}`;
+        let r = this.reader;
+        if (!r || r.key !== key) {
+            r?.reader.close();
+            r = this.reader = { key, reader: new ObjectReader(root, env, Date.now() + READER_MAX_MS), queue: Promise.resolve() };
+        }
+        const mine = r;
+        clearTimeout(mine.idle);
+        mine.reader.busy();
+        const job = mine.queue.then(() => {
+            if (Date.now() >= deadline) throw new Error("Snapshot exceeded its time budget (2 seconds by default).");
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            return Promise.race([
+                mine.reader.read(oid, "tree"),
+                new Promise<never>((_, fail) => (timer = setTimeout(() => fail(new Error("Snapshot exceeded its time budget (2 seconds by default).")), deadline - Date.now()))),
+            ]).finally(() => clearTimeout(timer));
+        });
+        mine.queue = job.catch(() => undefined);
+        const letGo = () => {
+            mine.reader.close();
+            if (this.reader === mine) this.reader = undefined;
+        };
+        try {
+            const body = await job;
+            rememberTree(oid, body);
+            return body;
+        } catch (e) {
+            // Out of time or broken: what it was reading is unknown; the next read starts another.
+            letGo();
+            throw e;
+        } finally {
+            if (this.reader === mine) {
+                mine.reader.idle();
+                mine.idle = setTimeout(letGo, READER_IDLE_MS);
+                mine.idle.unref?.();
+            }
+        }
+    }
+
     private async differ(start: TurnCapture, end: TurnCapture, deadline: number, trees?: Set<string>): Promise<Map<string, { old?: Entry; now?: Entry }>> {
         if (!start.tree || !end.tree) throw new Error("This turn has an incomplete snapshot with no tree.");
-        // The trees of what didn't change may be the repository's (captureIndexed): read, never written, from there too.
-        const r = await git(start.root ?? this.cwd, ["diff-tree", "-r", "-t", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", start.tree, end.tree], { privateEnv: this.readEnv(), deadline });
-        if (r.code || r.cut) throw new Error("Snapshot objects are missing or unreadable; this turn is incomplete.");
+        // As `git diff-tree -r -t` says it, worked out here: only the folders whose trees differ are read, most of them
+        // already known (the captures that made them: treeBodies). The trees of what didn't change may be the
+        // repository's (captureIndexed): read, never written, from there too.
+        const hashBytes = this.algo === "sha1" ? 20 : 32;
+        const read = (oid: string) => this.readTree(start.root ?? this.cwd, oid, deadline);
         const out = new Map<string, { old?: Entry; now?: Entry }>();
-        const none = /^0+$/;
-        // ":<old mode> <new mode> <old id> <new id> <status>" NUL "<path>" NUL, for each; the trees on the way (-t) too.
-        const fields = r.out.toString("utf-8").split("\0");
-        for (let i = 0; i + 1 < fields.length; i += 2) {
-            const m = /^:(\d{6}) (\d{6}) ([0-9a-f]+) ([0-9a-f]+) [A-Z]/.exec(fields[i]!);
-            const path = fields[i + 1]!;
-            if (!m || !safePath(path)) throw new Error("Snapshot contains an unsafe repository path.");
-            // A folder's line (git lists a file that became one, or the reverse, as a line of each kind).
-            if (m[1] === "040000" || m[2] === "040000") {
-                if (trees) for (const [mode, oid] of [[m[1], m[3]], [m[2], m[4]]]) if (mode === "040000" && !none.test(oid!)) trees.add(oid!);
-                continue;
+        const entry = (e: { mode: string; oid: Buffer }): Entry => ({ mode: e.mode.padStart(6, "0"), oid: e.oid.toString("hex") });
+        const walk = async (a: string | undefined, b: string | undefined, prefix: string): Promise<void> => {
+            const was = a ? parseTree(await read(a), hashBytes) : new Map<string, { mode: string; oid: Buffer }>();
+            const now = b ? parseTree(await read(b), hashBytes) : new Map<string, { mode: string; oid: Buffer }>();
+            for (const name of new Set([...was.keys(), ...now.keys()])) {
+                const x = was.get(name), y = now.get(name);
+                if (x && y && x.mode === y.mode && x.oid.equals(y.oid)) continue;
+                const path = prefix + Buffer.from(name, "latin1").toString("utf-8");
+                if (!safePath(path)) throw new Error("Snapshot contains an unsafe repository path.");
+                const xTree = x?.mode === "40000" ? x.oid.toString("hex") : undefined, yTree = y?.mode === "40000" ? y.oid.toString("hex") : undefined;
+                // A folder on either side: its trees are on the way to what changed in it (a file that became one, or
+                // the reverse, is that folder's files and the file, each on its own side).
+                if (xTree || yTree) {
+                    if (xTree) trees?.add(xTree);
+                    if (yTree) trees?.add(yTree);
+                    await walk(xTree, yTree, `${path}/`);
+                }
+                const xFile = x && !xTree ? x : undefined, yFile = y && !yTree ? y : undefined;
+                if (xFile || yFile) out.set(path, { old: xFile && entry(xFile), now: yFile && entry(yFile) });
             }
-            out.set(path, { old: m[1] === "000000" || none.test(m[3]!) ? undefined : { mode: m[1]!, oid: m[3]! }, now: m[2] === "000000" || none.test(m[4]!) ? undefined : { mode: m[2]!, oid: m[4]! } });
+        };
+        try {
+            await walk(start.tree, end.tree, "");
+        } catch (e) {
+            if ((e as Error).message === "Snapshot contains an unsafe repository path.") throw e;
+            throw new Error("Snapshot objects are missing or unreadable; this turn is incomplete.");
         }
         return out;
     }

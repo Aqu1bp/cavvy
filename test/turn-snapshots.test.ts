@@ -1008,6 +1008,42 @@ describe("per-turn snapshots", () => {
         await snapshots.stop();
     }, 60_000);
 
+    test("what a turn changed is what git diff-tree finds between its trees: files that became folders, and the reverse, too", async () => {
+        const { cwd, dir } = setup({ "a/b/c.txt": "c\n", "a-b": "ab\n", "z/y": "y\n", "é": "e\n", "keep/deep/k.txt": "k\n" });
+        const snapshots = new TurnSnapshots(dir, cwd, { narrowFromMs: 0 });
+        const names = ["a", "a-b", "a.txt", "a/b", "a/b/c", "a/b/c/d.txt", "a/b-c", "a/x", "z", "z/é.txt", "z/y", "é", "link"];
+        let seed = 11;
+        const random = (n: number) => ((seed = (seed * 1103515245 + 12345) % 2 ** 31), seed % n);
+        const onDisk = () => {
+            const out = new Set<string>();
+            for (const line of git(cwd, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]).toString().split("\0")) if (line && existsSync(join(cwd, line))) out.add(line);
+            return out;
+        };
+        for (let round = 0; round < 25; round++) {
+            await snapshots.begin(round + 1, `round ${round}`);
+            await Bun.sleep(40);
+            for (let k = random(3) + 1; k > 0; k--) {
+                const name = names[random(names.length)]!;
+                const files = onDisk();
+                if (files.has(name) && random(2)) rmSync(join(cwd, name), { force: true });
+                else {
+                    // A file where a folder was (or the other way): what was in its way goes.
+                    for (const p of files) if (p.startsWith(`${name}/`) || name.startsWith(`${p}/`)) rmSync(join(cwd, p), { recursive: true, force: true });
+                    if (existsSync(join(cwd, name)) && lstatSync(join(cwd, name)).isDirectory()) rmSync(join(cwd, name), { recursive: true, force: true });
+                    if (name === "link") { rmSync(join(cwd, name), { force: true }); symlinkSync(`target-${round}`, join(cwd, name)); }
+                    else write(cwd, name, `round ${round}\n`);
+                }
+            }
+            snapshots.reach([cwd]);
+            await snapshots.end();
+            const turn = snapshots.list().at(-1)!;
+            const env = { GIT_OBJECT_DIRECTORY: objectsDir(dir), GIT_ALTERNATE_OBJECT_DIRECTORIES: join(cwd, ".git/objects") };
+            const theirs = git(cwd, ["diff-tree", "-r", "-z", "--no-renames", "--name-only", turn.start.tree!, turn.end!.tree!], env).toString().split("\0").filter(Boolean).sort();
+            expect([round, [...(turn.changed ?? [])].sort()]).toEqual([round, theirs]);
+        }
+        await snapshots.stop();
+    }, 60_000);
+
     test("a turn that starts with nothing changed since the last one's end starts from that end, without looking again", async () => {
         const { cwd, dir } = setup({ "a.txt": "a\n", "b/c.txt": "c\n" });
         const snapshots = new TurnSnapshots(dir, cwd, { narrowFromMs: 0 });
