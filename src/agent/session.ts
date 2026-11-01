@@ -407,6 +407,10 @@ export class Session {
     private pending: Line[] = [];
     /** An append failed, maybe half way: the next one starts on a line of its own (blank lines are skipped on load). */
     private torn = false;
+    /** Saving failed, and hasn't worked since. */
+    private failing = false;
+    /** Told when saving stops working (and why), and when it works again (undefined). */
+    onSaving?: (error: Error | undefined) => void;
 
     /** Whether it's on disk now. */
     private write(line: Line): boolean {
@@ -421,26 +425,39 @@ export class Session {
             this.workedAt = this.savedWorkedAt = this.writtenAt;
             this.pending.push({ t: "worked", at: this.writtenAt });
         }
+        const lines = [...this.pending.splice(0), line];
+        let saved = 0;
         try {
             if (!this.started) {
                 ensureDir(projectStateDir(this.meta.cwd));
                 this.claim();
-                this.started = true;
                 if (!existsSync(this.file)) {
                     appendFileSync(this.file, redactedJson({ t: "meta", ...this.meta }) + "\n", { mode: 0o600 });
                     chmodSync(this.file, 0o600);
                 }
+                this.started = true;
             }
-            const lines = [...this.pending.splice(0), line];
-            // Not joined to what a failed one left, or both would be unreadable (and this one said to be saved).
-            appendFileSync(this.file, (this.torn ? "\n" : "") + lines.map((l) => redactedJson(l) + "\n").join(""));
-            this.torn = false;
+            // A line at a time: where one fails (a full disk), it and the ones after are written with the next, in order,
+            // and none twice. Not joined to what a failed one left, or both would be unreadable.
+            for (; saved < lines.length; saved++) {
+                appendFileSync(this.file, (this.torn ? "\n" : "") + redactedJson(lines[saved]!) + "\n");
+                this.torn = false;
+            }
+            if (this.failing) {
+                this.failing = false;
+                this.onSaving?.(undefined);
+            }
             return true;
         } catch (error) {
             // Imports must stop on a failed write before recording completion.
             if (this.strictWrites) throw error;
-            // Persistence is best effort; the session keeps working in memory.
+            // The session keeps working in memory; what isn't saved goes with the next write.
             this.torn = true;
+            this.pending.unshift(...lines.slice(saved));
+            if (!this.failing) {
+                this.failing = true;
+                this.onSaving?.(error as Error);
+            }
             return false;
         }
     }

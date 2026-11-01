@@ -403,6 +403,13 @@ export class Runtime {
         opts: { mode?: PermissionMode; resumed: boolean },
     ) {
         this.session = session;
+        // Saving stopped working (a full disk): said once, and once more when it works again (what waited is saved then).
+        session.onSaving = (error) => queueMicrotask(() => {
+            if (!error) return this.notice("Saved again.", "info");
+            const code = (error as NodeJS.ErrnoException).code;
+            const why = code === "ENOSPC" ? "the disk is full" : code === "EDQUOT" ? "the disk quota is used up" : code === "EACCES" || code === "EPERM" ? "its file can't be written" : redact(error.message).slice(0, 200);
+            this.notice(`This session can't be saved: ${why}.`, "warn");
+        });
         // Opened from disk: last active when it last worked, not now. Opening it isn't work: it keeps its place in the sidebar.
         if (opts.resumed) this.lastActive = session.workedAt ?? session.writtenAt ?? this.lastActive;
         // Capture new-session defaults so changing Home settings cannot change an open chat’s speed.
