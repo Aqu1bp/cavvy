@@ -79,6 +79,8 @@ const PACK_KEEP_FROM = 64;
 const END_BUDGET_MS = 10_000;
 /** How long a whole capture may go on after the turn it was taken for stopped waiting (capture). */
 const WHOLE_BUDGET_MS = 120_000;
+/** How long a capture waits for such a whole capture still going before it's taken as out of time. */
+const WHOLE_WAIT_MS = 100;
 
 /** Whether `work` settles before `deadline` (it goes on either way). */
 async function settlesBy(work: Promise<unknown>, deadline: number): Promise<boolean> {
@@ -1659,7 +1661,9 @@ export class TurnSnapshots {
         const started = Date.now();
         const deadline = started + (this.options.budgetMs ?? this.options.turnBudgetMs ?? (ending ? END_BUDGET_MS : 2000));
         const late = (): TurnCapture => ({ incomplete: true, notes: ["Snapshot exceeded its time budget (2 seconds by default)."], skipped: pathMap(), durationMs: Date.now() - started, ...(this.root ? { root: this.root } : {}) });
-        if (this.whole && !(await settlesBy(this.whole, deadline))) return late();
+        // One still going (a big repository on a busy machine): not waited for. A turn waiting the whole of its budget
+        // for it, and the next turn for that, got no more than this.
+        if (this.whole && !(await settlesBy(this.whole, Math.min(deadline, started + WHOLE_WAIT_MS)))) return late();
         if (this.indexedBase || this.options.budgetMs !== undefined) return this.captureBy(ending, quiet, deadline);
         const work = this.captureBy(ending, quiet, Math.max(deadline, started + WHOLE_BUDGET_MS));
         if (await settlesBy(work, deadline)) return work;

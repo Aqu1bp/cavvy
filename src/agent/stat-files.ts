@@ -96,6 +96,17 @@ function started(): Worker | undefined {
     return worker ?? undefined;
 }
 
+/**
+ * A worker of its own for looking a few paths up (scanIndexPaths, ~1 ms by offset): never behind another session's
+ * whole scan of a big repository (seconds) on the worker those run on.
+ */
+let lookups: Worker | null | undefined;
+function lookupWorker(): Worker | undefined {
+    if (lookups !== undefined || process.env.CAVVY_STAT_WORKER === "0") return lookups ?? undefined;
+    lookups = spawn(() => { lookups = null; }) ?? null;
+    return lookups ?? undefined;
+}
+
 /** Up to `n` workers to run side by side (the first is the one every capture uses), as many as could be started. */
 function pool(n: number): Worker[] {
     const first = started();
@@ -187,7 +198,7 @@ export async function scanIndexFiles(root: string, indexFile: string, hashBytes:
 
 /** Only `paths` against the index (scanPaths), on the worker; here where there's none. */
 export async function scanIndexPaths(root: string, indexFile: string, hashBytes: number, paths: string[], msExact: boolean, deadline: number): Promise<ReturnType<typeof scanPaths>> {
-    const w = started();
+    const w = lookupWorker();
     if (w) {
         const r = await ask(w, { root, indexFile, hashBytes, paths, msExact }, deadline);
         if (r.paths) return r.paths;

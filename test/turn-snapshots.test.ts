@@ -1005,25 +1005,33 @@ describe("per-turn snapshots", () => {
         await snapshots.begin(1, "Too soon");
         const first = snapshots.list()[0]!.start;
         expect([first.incomplete, first.tree]).toEqual([true, undefined]);
-        // It went on: the next capture waits for it (here, longer than a turn would), then looks only at what changed.
+        // It goes on in the background; once it's in, captures look only at what changed since.
         write(cwd, "d1/f1.txt", "changed\n");
         await Bun.sleep(100);
         const later = new TurnSnapshots(dir, cwd);
         expect(later.list().length).toBe(1);
-        // Turns that wait as long as they usually do.
+        // Turns that wait as long as they usually do; while it goes on, a turn doesn't wait for it (incomplete at once).
         (snapshots as unknown as { options: { turnBudgetMs?: number } }).options.turnBudgetMs = undefined;
-        await snapshots.begin(2, "In time");
+        const whole = () => (snapshots as unknown as { whole?: Promise<void> }).whole;
+        if (whole()) {
+            const t = Date.now();
+            await snapshots.begin(2, "While it goes on");
+            expect(Date.now() - t).toBeLessThan(1500);
+            expect(snapshots.list()[1]!.start.incomplete).toBe(true);
+            await whole();
+        }
+        await snapshots.begin(3, "In time");
         // From the one that went on: only what changed was looked at, and found as a whole capture finds it.
         expect(snapshots.narrowedCount).toBe(1);
-        const whole = new TurnSnapshots(join(dirname(dir), "whole"), cwd);
-        await whole.begin(1, "Everything");
-        expect(snapshots.list()[1]!.start.tree).toBe(whole.list()[0]!.start.tree!);
-        await whole.stop();
+        const everything = new TurnSnapshots(join(dirname(dir), "whole"), cwd);
+        await everything.begin(1, "Everything");
+        expect(snapshots.list().at(-1)!.start.tree).toBe(everything.list()[0]!.start.tree!);
+        await everything.stop();
         write(cwd, "d2/f2.txt", "changed in the turn\n");
         await snapshots.end();
-        const [, second] = snapshots.list();
-        expect([second!.start.incomplete, second!.end!.incomplete]).toEqual([false, false]);
-        expect(snapshots.list()[1]!.changed).toEqual(["d2/f2.txt"]);
+        const second = snapshots.list().at(-1)!;
+        expect([second.start.incomplete, second.end!.incomplete]).toEqual([false, false]);
+        expect(snapshots.list().at(-1)!.changed).toEqual(["d2/f2.txt"]);
         await snapshots.stop();
     }, 60_000);
 
