@@ -11,7 +11,7 @@
 //
 //   bun scripts/bench-ramp.ts --mode cavvy|bare --repo <repo> --steps 10,30 [--per-session 15 | --minutes 6]
 //       [--model sonnet] [--cavvy <checkout>] [--label x] [--mock <url>] [--acct] [--profile]
-//       [--debug <file>] [--times <file>]
+//       [--debug <file>] [--times <file>] [--hold <seconds>]
 //
 // --mock: the CLIs talk to bench-claude-api.ts instead of Anthropic, for the same work to the byte in both modes.
 // --debug: Cavvy's live-CLI debug log (CAVVY_DEBUG); --times: when each prompt was sent and each turn ended.
@@ -34,6 +34,8 @@ const LABEL = arg("--label") ?? `${MODE}`;
 const PER_SESSION = arg("--per-session") ? Number(arg("--per-session")) : undefined;
 const OUT = resolve(arg("--out") ?? join(CAVVY, "bench-results"));
 const DEBUG = arg("--debug");
+/** --hold <s>: after the last turn, everything stays up this long, idle, and what it costs then is reported. */
+const HOLD = Number(arg("--hold") ?? 0);
 const TIMES = arg("--times");
 /** --mock <url>: the CLIs talk to mock-agent-api.ts instead of Anthropic: the same work, to the byte, in both modes. */
 const MOCK = arg("--mock");
@@ -419,6 +421,14 @@ async function step(n: number) {
         }));
         endAt = performance.now();
         stat1 = cpuStat();
+        if (HOLD > 0) {
+            // Idle: sessions open, their CLIs alive, nothing asked. Each role's CPU over it, from the samples.
+            const from = samples.length, statHeld = cpuStat();
+            await sleep(HOLD * 1000);
+            const held = samples.slice(from);
+            const roleSum = (r: string) => Math.round(held.reduce((a, x) => a + (x.cpuSec[r] ?? 0), 0) * 100) / 100;
+            rep.idle = { seconds: HOLD, machineCpuSeconds: Math.round((cpuStat().busy - statHeld.busy) / 100), cpuSeconds: Object.fromEntries(["cavvy", "cavvy-helpers", "claude-cli", "agent-tools", "other"].map((r) => [r, roleSum(r)])) };
+        }
     } catch (e) {
         rep.error = String((e as Error)?.stack ?? e);
     } finally {
@@ -449,6 +459,7 @@ async function step(n: number) {
         psiAvg: { cpu: r1(avg(col((x) => x.psi.cpu))), io: r1(avg(col((x) => x.psi.io))), memory: r1(avg(col((x) => x.psi.memory))) },
         pingMs: { p50: r1(pct(col((x) => x.pingMs), 0.5)), p95: r1(pct(col((x) => x.pingMs), 0.95)), max: r1(Math.max(0, ...col((x) => x.pingMs))) },
         cores: NCPU, memMB: Math.round(totalmem() / 1048576),
+        ...(rep.idle ? { idle: rep.idle } : {}),
     };
     rep.turns = turns;
     rep.pidRoles = pidRoles;
