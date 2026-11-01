@@ -618,6 +618,11 @@ export class TurnSnapshots {
         this.persist(this.active);
     }
 
+    /** Once the captures asked for so far are in (a turn's end goes on after the turn). */
+    settled(): Promise<void> {
+        return this.last.then(() => undefined);
+    }
+
     end(): Promise<void> {
         const reached = this.takeReached();
         return this.record(async () => {
@@ -2043,6 +2048,8 @@ export class TurnSnapshots {
     }
 
     private async collect(req: { scope: GitScope; turnId?: number; path?: string }): Promise<GitChangesInfo> {
+        // A turn's closing capture may still be under way.
+        await this.settled();
         const turns = this.list();
         const turn = req.scope === "last-turn" ? turns.at(-1) : turns.find((t) => t.id === req.turnId);
         const out: GitChangesInfo = { repo: true, scope: req.scope, files: [], added: 0, removed: 0, tracked: true, bases: [], more: 0, turns: turns.map(({ id, prompt, startedAt, endedAt }) => ({ id, prompt, startedAt, endedAt })), turnId: turn?.id, snapshotAvailable: false, notes: [POLICY] };

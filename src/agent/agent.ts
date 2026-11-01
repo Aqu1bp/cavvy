@@ -735,7 +735,9 @@ export class Agent {
             // A refusal is kept only once the retry is answered. A turn that ends first (stopped, max turns, an error) keeps
             // nothing out: a compaction or another request after it sends the images again.
             this.refusing = undefined;
-            await this.turnSnapshots?.end();
+            // The turn's closing snapshot goes on after it (what reads it waits for it, TurnSnapshots.settled): a turn
+            // that changed thousands of files is done when its agent is.
+            void this.turnSnapshots?.end().catch(() => undefined);
             opts.signal.removeEventListener("abort", onAbort);
             this.running = false;
             this.prompted = false;

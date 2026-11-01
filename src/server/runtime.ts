@@ -3103,6 +3103,11 @@ export class Runtime {
             // Nothing the run steered in comes back once it's over (AgentHost.unsteered).
             this.steeredTurns.clear();
             this.setState({ busy: false, filesChanged: this.filesChanged(), activity: undefined, persisted: existsSync(this.session.path), todos: this.toolState.todos.map((t) => ({ ...t })) });
+            // The turn's closing snapshot comes a moment later: what it found changed counts then.
+            void TurnSnapshots.for(this.session, this.ws.cwd)?.settled().then(() => {
+                const filesChanged = this.filesChanged();
+                if (filesChanged !== this.view?.state.filesChanged) this.setState({ filesChanged });
+            });
             this.setStatus(reason === "error" ? "error" : this.pending.size ? "waiting" : "idle");
             // A CLI's goal shows as waiting for the user once its turn is over.
             if (this.nativeGoal) this.goalChanged();
