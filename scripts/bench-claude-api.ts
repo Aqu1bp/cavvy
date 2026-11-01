@@ -29,6 +29,8 @@ function textOf(c: unknown): string {
 
 /** The step of the turn: assistant messages since the user's last message with text (not tool results). */
 function plan(body: any): Block[] {
+    // Auto mode's check of a tool call (it stops at </severity>, below 50 allows): the mock's calls are routine.
+    if (Array.isArray(body.stop_sequences) && body.stop_sequences.includes("</severity>")) return [{ type: "text", text: "<severity>5" }];
     const msgs: any[] = body.messages ?? [];
     let at = msgs.length - 1;
     while (at >= 0 && !(msgs[at].role === "user" && /\bworkday\b/.test(textOf(msgs[at].content)))) at--;
