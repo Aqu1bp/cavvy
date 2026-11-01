@@ -112,6 +112,7 @@ import { modelRef, type AttachedPart, type ImagePart } from "../providers/types"
 import { checkFiles, checkMedia, toWire } from "./attachments";
 import { BrowserError } from "../browser/page";
 import { SimulatorError } from "../simulator/simctl";
+import { TitleQueue } from "./title-queue";
 
 export interface EngineOptions {
     /** --dangerously-skip-permissions: bypass mode may be chosen. */
@@ -342,6 +343,8 @@ export class Engine {
     private openingTerminals = new Map<string, { window: string | EngineClient; cancelled: boolean }>();
     /** Setup runs that a window may start, once, in the worktree it just created (see setup.ts). */
     readonly setups = new SetupTickets();
+    /** Session titles, asked of one model together when several come at once (title-queue.ts). */
+    readonly titles = new TitleQueue();
     readonly clients = new Set<EngineClient>();
     readonly workspaces = new Map<string, Workspace>();
     readonly runtimes = new Map<string, Runtime>();

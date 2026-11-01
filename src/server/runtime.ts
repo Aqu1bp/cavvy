@@ -113,6 +113,7 @@ import { applyOp, coalesce, findBlock, findTurn, type SessionView } from "./time
 import { planTitle } from "./plans";
 import type { Engine, Workspace } from "./engine";
 import { MCP_SERVER_NAME } from "../agent/delegation";
+import { numberedTitles, titlesByNumber } from "./title-queue";
 import { SecretStore, secretValueError } from "../agent/secrets";
 
 /** How often streamed output goes out to the GUI. */
@@ -3451,17 +3452,32 @@ export class Runtime {
         // Redacted before it's cut or capitalized: then a key in it no longer looks like one.
         this.titleFrom ??= redact(prompt);
         let title: string | undefined;
-        // Claude Code and Codex answer it as a one-off (backends/one-off.ts), on their light model.
+        const RULES = "2 to 6 words, sentence case, no quotes, no trailing punctuation. Describe the task, not the user.";
+        // Claude Code and Codex answer it as a one-off (backends/one-off.ts), on their light model: a CLI process of its
+        // own each time. Sessions asking while one runs are asked about together after it (title-queue.ts).
         try {
-            const raw = await this.complete(
-                "You name coding-assistant sessions for a sidebar. Reply with only the title: 2 to 6 words, sentence case, no quotes, no trailing punctuation. Describe the task, not the user.",
-                // Cut after redacting, so a registered value crossing the cut can't leave a prefix.
-                redactPrefix(prompt, 3000),
-                // A CLI starts a process of its own for it: a few seconds more than an API call.
-                AbortSignal.any([AbortSignal.timeout(45_000), (this.titleAbort = new AbortController()).signal]),
-            );
+            const target = await this.smallTarget();
+            const key = `${target.model.provider}\0${target.model.id}\0${this.session.accountId(target.model.provider) ?? ""}`;
+            const mine = (this.titleAbort = new AbortController()).signal;
+            const raw = await this.engine.titles.title(key, prompt, async (prompts) => {
+                // A CLI starts a process of its own for it: a few seconds more than an API call. Asked for others too, it
+                // isn't stopped with this session.
+                const signal = prompts.length > 1 ? AbortSignal.timeout(60_000) : AbortSignal.any([AbortSignal.timeout(45_000), mine]);
+                if (prompts.length === 1) {
+                    // Cut after redacting, so a registered value crossing the cut can't leave a prefix.
+                    return [await this.complete(`You name coding-assistant sessions for a sidebar. Reply with only the title: ${RULES}`, redactPrefix(prompts[0]!, 3000), signal, { target })];
+                }
+                const reply = await this.complete(
+                    `You name coding-assistant sessions for a sidebar. Each session's first request is below, numbered. Reply with one line per session, in order, each its number, a period and its title: ${RULES}`,
+                    numberedTitles(prompts.map((p) => redactPrefix(p, 1000))),
+                    signal,
+                    { target, maxTokens: 64 * prompts.length + 256 },
+                );
+                return titlesByNumber(reply, prompts.length);
+            });
+            mine.throwIfAborted();
             title = raw
-                .replace(/<[^>]*>/g, "")
+                ?.replace(/<[^>]*>/g, "")
                 .split("\n")
                 .map((l) => l.trim())
                 .find(Boolean)
