@@ -112,7 +112,7 @@ In a repository of 30,000 files at this pace the server's memory climbs in steps
 | Markdown parsed per streamed character | 12.3 | 3, not worth it |
 | Each code line tokenized | 2 | 2 |
 | `git` processes per turn with an edit | 20 | 20 |
-| `git` processes per unchanged turn | 6 | 6 |
+| `git` processes per unchanged turn | 2 | 2 |
 | `git` processes while idle | 0 | 0 |
 
 Markdown: reaching 3 would save about 31 ms of work over a 12-second reply, for a cache that could get a reply's text wrong. It stays at 12.3.

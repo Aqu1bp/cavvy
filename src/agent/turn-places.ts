@@ -257,9 +257,11 @@ const stagedByIndex = new Map<string, { stamp: string; digest: string }>();
 export async function token(w: Checked, deadline: number): Promise<string> {
     try {
         const index = join(w.gitDir, "index");
+        // HEAD and its branch as the files say (no git started for each worktree, each turn); as git says otherwise.
+        const read = await headOf(w.gitDir);
         const [head, ref, st] = await Promise.all([
-            run(w.real, ["rev-parse", "--verify", "-q", "HEAD"], { deadline, pin: w }),
-            run(w.real, ["symbolic-ref", "-q", "HEAD"], { deadline, pin: w }),
+            read ? { out: Buffer.from(read.oid) } : run(w.real, ["rev-parse", "--verify", "-q", "HEAD"], { deadline, pin: w }),
+            read ? { out: Buffer.from(read.ref) } : run(w.real, ["symbolic-ref", "-q", "HEAD"], { deadline, pin: w }),
             lstat(index, { bigint: true }).catch(() => undefined),
         ]);
         const stamp = st ? `${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}` : "-";
@@ -281,6 +283,35 @@ export async function token(w: Checked, deadline: number): Promise<string> {
         return createHash("sha256").update(`${head.out.toString().trim()}\0${ref.out.toString().trim()}\0${digest}`).digest("hex");
     } catch {
         return UNKNOWN;
+    }
+}
+
+/**
+ * A worktree's HEAD from its files: the commit (or "" for a branch with none yet) and the branch it's on ("" when
+ * detached), as `rev-parse --verify HEAD` and `symbolic-ref HEAD` would say. Undefined when the files don't simply say
+ * (a reftable repository, a ref to a ref): git's asked then.
+ */
+export async function headOf(gitDir: string): Promise<{ oid: string; ref: string } | undefined> {
+    try {
+        let common = gitDir;
+        const named = await readFile(join(gitDir, "commondir"), "utf-8").catch(() => undefined);
+        if (named !== undefined) common = resolve(gitDir, named.trim());
+        if (await lstat(join(common, "reftable")).then(() => true, () => false)) return undefined;
+        const head = (await readFile(join(gitDir, "HEAD"), "utf-8")).trim();
+        if (/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(head)) return { oid: head, ref: "" };
+        const ref = /^ref: (refs\/\S+)$/.exec(head)?.[1];
+        if (!ref || ref.split("/").includes("..")) return undefined;
+        const loose = await readFile(join(common, ref), "utf-8").then((t) => t.trim(), () => undefined);
+        if (loose !== undefined) return /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(loose) ? { oid: loose, ref } : undefined;
+        const packed = await readFile(join(common, "packed-refs"), "utf-8").catch(() => "");
+        for (const line of packed.split("\n")) {
+            const m = /^([0-9a-f]{40}(?:[0-9a-f]{24})?) (\S+)$/.exec(line);
+            if (m?.[2] === ref) return { oid: m[1]!, ref };
+        }
+        // A branch with no commits yet.
+        return { oid: "", ref };
+    } catch {
+        return undefined;
     }
 }
 

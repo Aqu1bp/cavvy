@@ -351,3 +351,23 @@ test("a reached worktree that changed only before the turn began isn't worked in
     await snapshots.end();
     expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places).toBeUndefined();
 });
+
+test("a worktree's HEAD read from its files is what git says: on a branch, detached, packed, and with no commits yet", async () => {
+    const { headOf } = await import("../src/agent/turn-places");
+    const { cwd, wt } = setup(["side"]);
+    const said = (dir: string) => {
+        let oid = "", ref = "";
+        try { oid = git(dir, ["rev-parse", "--verify", "-q", "HEAD"]).trim(); } catch {}
+        try { ref = git(dir, ["symbolic-ref", "-q", "HEAD"]).trim(); } catch {}
+        return { oid, ref };
+    };
+    const gitDir = (dir: string) => git(dir, ["rev-parse", "--absolute-git-dir"]).trim();
+    expect(await headOf(gitDir(cwd))).toEqual(said(cwd));
+    expect(await headOf(gitDir(wt("side")))).toEqual(said(wt("side")));
+    git(cwd, ["pack-refs", "--all"]);
+    expect(await headOf(gitDir(wt("side")))).toEqual(said(wt("side")));
+    git(wt("side"), ["checkout", "-q", "--detach"]);
+    expect(await headOf(gitDir(wt("side")))).toEqual(said(wt("side")));
+    git(cwd, ["checkout", "-q", "--orphan", "empty"]);
+    expect(await headOf(gitDir(cwd))).toEqual(said(cwd));
+});
