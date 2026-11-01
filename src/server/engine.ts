@@ -21,7 +21,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "pat
 import { homedir, hostname, userInfo } from "os";
 import { APP_VERSION, cavvyHome, paths } from "../config/paths";
 import { LEGACY } from "../config/legacy";
-import { JsonFileError, loadScope, loadSettings, readJson, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
+import { JsonFileError, loadScope, loadSettings, readJson, readJsonCached, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
 import { fireHooks } from "../agent/hooks";
 import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder } from "../agent/session";
@@ -200,13 +200,14 @@ const storeFile = () => join(cavvyHome(), "gui.json");
 /** The store's lists of session ids. */
 const STORE_FLAGS = ["pinned", "archived", "settled"] as const;
 
+/** As it is on disk, read again only once it's changed: it's read for every session's summary. Frozen: updateStore changes it. */
 function readStore(): GuiStore {
-    return readJson<GuiStore>(storeFile()) ?? {};
+    return readJsonCached<GuiStore>(storeFile()) ?? {};
 }
 
 /** Best effort: false when it couldn't be saved. */
 function updateStore(fn: (s: GuiStore) => void): boolean {
-    const s = readStore();
+    const s = readJson<GuiStore>(storeFile()) ?? {};
     fn(s);
     try {
         writeJson(storeFile(), s, 0o600);

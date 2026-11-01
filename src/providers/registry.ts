@@ -1,6 +1,6 @@
 // Built-in provider catalog. Adding an OpenAI-compatible provider is one entry.
 
-import { readJson, readJsonForUpdate, writeJson, type Effort } from "../config/settings";
+import { readJsonCached, readJsonForUpdate, writeJson, type Effort } from "../config/settings";
 import { isAbsolute } from "path";
 import { paths } from "../config/paths";
 
@@ -401,8 +401,9 @@ interface ProvidersFile {
     agents?: Record<string, AgentCliConfig>;
 }
 
+/** As it is on disk, read again only once it's changed (readJsonCached): frozen, so change a copy (readProvidersFileForUpdate). */
 export function readProvidersFile(): ProvidersFile {
-    return readJson<ProvidersFile>(paths.providers()) ?? {};
+    return readJsonCached<ProvidersFile>(paths.providers()) ?? {};
 }
 
 /** Read before writing back: throws on a broken file rather than losing its custom providers. */

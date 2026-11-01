@@ -173,7 +173,7 @@ export async function removeKey(providerId: string): Promise<boolean> {
         writeFileStore(store);
         removed = true;
     }
-    const pf = readProvidersFile();
+    const pf = structuredClone(readProvidersFile());
     if (pf.keychain?.includes(providerId)) {
         pf.keychain = pf.keychain.filter((x) => x !== providerId);
         writeProvidersFile(pf);
