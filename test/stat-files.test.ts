@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { KIND, statFiles, statHere } from "../src/agent/stat-files";
@@ -104,6 +104,38 @@ for (const version of [2, 4]) {
         expect(scanIndex(repo, index, 20, [], true).contentKey).not.toBe(settled);
     });
 }
+
+test("an index written again by git status (only stat fields differ) is known for the same without reading each entry; staged, it isn't", async () => {
+    const { scanPaths } = await import("../src/agent/index-scan");
+    const repo = join(root, "rewritten");
+    mkdirSync(repo, { recursive: true });
+    const git = (args: string[]) => {
+        const r = Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "core.hooksPath=/dev/null", ...args], { cwd: repo, env: { PATH: process.env.PATH!, HOME: root, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" }, stdout: "pipe", stderr: "pipe" });
+        if (r.exitCode !== 0) throw new Error(r.stderr.toString());
+    };
+    git(["init", "-q"]);
+    for (let i = 0; i < 200; i++) writeFileSync(join(repo, `f${i}.txt`), `${i}\n`);
+    git(["add", "-A"]);
+    git(["commit", "-qm", "init"]);
+    const index = join(repo, ".git/index");
+    const first = scanPaths(repo, index, 20, [], true);
+    const written = statSync(index).mtimeMs;
+    // Touched, and the index refreshed: written again, the same entries.
+    await Bun.sleep(1100);
+    for (let i = 0; i < 200; i += 7) writeFileSync(join(repo, `f${i}.txt`), `${i}\n`);
+    git(["status", "--porcelain"]);
+    expect(statSync(index).mtimeMs).not.toBe(written);
+    const again = scanPaths(repo, index, 20, [], true);
+    expect([again.unusable, again.contentKey, again.cacheRoot]).toEqual([undefined, first.contentKey, first.cacheRoot]);
+    // Staged: another key, and the one a whole read finds.
+    writeFileSync(join(repo, "f3.txt"), "changed\n");
+    git(["add", "f3.txt"]);
+    const staged = scanPaths(repo, index, 20, [], true);
+    expect(staged.contentKey).not.toBe(first.contentKey);
+    rmSync(join(repo, ".git/index.lock"), { force: true });
+    const whole = scanPaths(repo, index, 20, ["f3.txt"], true);
+    expect(whole.contentKey).toBe(staged.contentKey);
+});
 
 test("a scan nothing waits for any more stops: past its deadline it's not done, and the worker is free for the next", async () => {
     const { scanIndex, LATE } = await import("../src/agent/index-scan");

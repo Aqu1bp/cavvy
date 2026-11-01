@@ -247,7 +247,20 @@ export function scanIndex(root: string, indexFile: string, hashBytes: number, un
  * binary search, a few small reads each, not by reading and parsing all of it again. Not for version 4 (each path is
  * written as a change to the last one's, so one can't be read alone), a split index or a sparse one.
  */
-const offsetsByIndex = new Map<string, { stamp: string; offsets: Uint32Array; contentKey: string; cacheRoot?: string; specials: number; attributes: string[] }>();
+const offsetsByIndex = new Map<string, { stamp: string; offsets: Uint32Array; contentKey: string; cacheRoot?: string; specials: number; attributes: string[]; size: number; entriesEnd: number }>();
+
+/** The index's extensions from `at` (where its entries end): its cache-tree's root, or that it's split. */
+function extensionsOf(buf: Buffer, at: number, hashBytes: number): { cacheRoot?: string; split?: boolean } {
+    const end = buf.length - hashBytes;
+    let cacheRoot: string | undefined;
+    for (let p = at; p + 8 <= end;) {
+        const signature = buf.toString("latin1", p, p + 4), size = buf.readUInt32BE(p + 4);
+        if (signature === "link") return { split: true };
+        if (signature === "TREE") cacheRoot = cacheTreeOf(buf.subarray(p + 8, p + 8 + size), hashBytes)?.root;
+        p += 8 + size;
+    }
+    return cacheRoot ? { cacheRoot } : {};
+}
 const MAX_OFFSET_TABLES = 32;
 const statStamp = (st: Stats) => `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
 
@@ -344,6 +357,23 @@ export function scanPaths(root: string, indexFile: string, hashBytes: number, pa
         try {
             fd = openSync(indexFile, "r");
             const st = fstatSync(fd);
+            // Written again with the same entries (`git status` saving what it refreshed: only their stat fields differ),
+            // asked only what it records: its entries where they were, their content key the same, without making
+            // a path of each.
+            if (statStamp(st) !== table.stamp && !wanted.size && st.size === table.size) {
+                const buf = readFileSync(fd);
+                if (buf.length === table.size && buf.readUInt32BE(8) === table.offsets.length) {
+                    const content = new ContentKey(buf);
+                    for (const o of table.offsets) content.add(o);
+                    if (content.key(table.entriesEnd) === table.contentKey) {
+                        const ext = extensionsOf(buf, table.entriesEnd, hashBytes);
+                        if (ext.split) return { unusable: "split", states: [] };
+                        table.stamp = statStamp(st);
+                        table.cacheRoot = ext.cacheRoot;
+                        return { states: [], contentKey: table.contentKey, ...(ext.cacheRoot ? { cacheRoot: ext.cacheRoot } : {}), specials: table.specials, attributes: table.attributes };
+                    }
+                }
+            }
             if (statStamp(st) === table.stamp) {
                 const found = entriesByOffset(fd, table, hashBytes, wanted, maxUnder);
                 if (found === "wide") return { unusable: "wide", states: [] };
@@ -444,16 +474,12 @@ export function scanPaths(root: string, indexFile: string, hashBytes: number, pa
         content.add(start);
     }
     const contentKey = content.key(pos);
-    let cacheRoot: string | undefined;
-    for (let p = pos; p + 8 <= end;) {
-        const signature = buf.toString("latin1", p, p + 4), size = buf.readUInt32BE(p + 4);
-        if (signature === "link") return { unusable: "split", states: [] };
-        if (signature === "TREE") cacheRoot = cacheTreeOf(buf.subarray(p + 8, p + 8 + size), hashBytes)?.root;
-        p += 8 + size;
-    }
+    const ext = extensionsOf(buf, pos, hashBytes);
+    if (ext.split) return { unusable: "split", states: [] };
+    const cacheRoot = ext.cacheRoot;
     if (offsets && buf.length < 2 ** 32) {
         if (offsetsByIndex.size >= MAX_OFFSET_TABLES) offsetsByIndex.delete(offsetsByIndex.keys().next().value!);
-        offsetsByIndex.set(indexFile, { stamp: statStamp(written), offsets, contentKey, ...(cacheRoot ? { cacheRoot } : {}), specials, attributes });
+        offsetsByIndex.set(indexFile, { stamp: statStamp(written), offsets, contentKey, ...(cacheRoot ? { cacheRoot } : {}), specials, attributes, size: buf.length, entriesEnd: pos });
     }
     return { states: pathStates(root, hashBytes, [...wanted, ...under], entries, written.mtimeMs, msExact), contentKey, ...(cacheRoot ? { cacheRoot } : {}), specials, attributes };
 }
