@@ -877,7 +877,9 @@ export class Runtime {
     }
 
     private op(o: SessionOp) {
-        applyOp(this.view, structuredClone(o));
+        // The view mustn't share objects with what's still to be sent (it changes them); text appended to a block is
+        // only read (most ops while a reply streams), so it isn't copied.
+        applyOp(this.view, o.op === "append" || o.op === "agent.append" ? o : structuredClone(o));
         this.noteStep(o);
         this.outbox.push(o);
         const waits = (o.op === "append" || o.op === "agent.append") && !this.engine.sessionShown(this.id);
