@@ -3,7 +3,7 @@
 // "rewind" record cuts it back (/rewind).
 // Everything is passed through the redactor before it touches disk.
 
-import { appendFileSync, existsSync, openSync, readSync, closeSync, fstatSync, readdirSync, readFileSync, statSync, chmodSync, linkSync, unlinkSync, writeFileSync, writeSync } from "fs";
+import { appendFileSync, existsSync, openSync, readSync, closeSync, fstatSync, readdirSync, readFileSync, renameSync, statSync, chmodSync, linkSync, unlinkSync, writeFileSync, writeSync } from "fs";
 import { join, resolve } from "path";
 import { randomBytes } from "crypto";
 import { ensureDir, paths, projectStateDir, APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
@@ -1355,8 +1355,52 @@ interface SessionHead {
 /** What sessionHead found, by file: kept while the file is the same one, and taken on from where it left off when it's grown. */
 const heads = new Map<string, { ino: number; size: number; mtimeMs: number; scanned: number; tail: Buffer; head: SessionHead }>();
 const TAIL_BYTES = 64;
+/**
+ * The same, on disk (cache/session-heads.json): a list of a thousand sessions after a restart reads one file and stats
+ * each session's, rather than reading every one. Read once; written when it changed, after a list (saveSessionHeads).
+ */
+const headsFile = () => join(paths.home(), "cache", "session-heads.json");
+let headsLoaded = false;
+let headsDirty = false;
+
+function loadHeads() {
+    if (headsLoaded) return;
+    headsLoaded = true;
+    try {
+        const saved = JSON.parse(readFileSync(headsFile(), "utf-8")) as { version?: number; heads?: Record<string, { ino: number; size: number; mtimeMs: number; scanned: number; tail: string; head: SessionHead }> };
+        if (saved.version !== 1 || !saved.heads) return;
+        for (const [file, h] of Object.entries(saved.heads)) {
+            if (heads.size >= 4096) break;
+            if (typeof h?.size !== "number" || typeof h.scanned !== "number" || typeof h.head?.count !== "number") continue;
+            if (!heads.has(file)) heads.set(file, { ...h, tail: Buffer.from(String(h.tail), "base64") });
+        }
+    } catch {
+        // None yet, or unreadable: each session's file is read, as without it.
+    }
+}
+
+/** sessionHead's findings, written if they changed (a cache: not synced, and lost harmlessly). */
+export function saveSessionHeads() {
+    if (!headsDirty) return;
+    headsDirty = false;
+    try {
+        const out: Record<string, unknown> = {};
+        // A title comes from a first prompt's start: a long one is kept as that much (a reminder block first, which a
+        // title leaves out, taken out before it's cut).
+        const short = (t: string | undefined) => (t && t.length > 2000 ? t.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").slice(0, 2000) : t);
+        for (const [file, h] of heads) out[file] = { ...h, tail: h.tail.toString("base64"), head: { ...h.head, first: short(h.head.first) } };
+        const file = headsFile();
+        ensureDir(join(paths.home(), "cache"));
+        const tmp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}`;
+        writeFileSync(tmp, JSON.stringify({ version: 1, heads: out }), { mode: 0o600 });
+        renameSync(tmp, file);
+    } catch {
+        // Next time.
+    }
+}
 
 function sessionHead(file: string): SessionHead {
+    loadHeads();
     const fd = openSync(file, "r");
     try {
         const st = fstatSync(fd);
@@ -1378,6 +1422,7 @@ function sessionHead(file: string): SessionHead {
         readSync(fd, tail, 0, tail.length, scanned - tail.length);
         if (heads.size >= 4096 && !heads.has(file)) heads.delete(heads.keys().next().value!);
         heads.set(file, { ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, scanned, tail, head: { ...head } });
+        headsDirty = true;
         return head;
     } finally {
         closeSync(fd);
@@ -1556,6 +1601,7 @@ export function listSessions(cwd: string, limit = 50): SessionSummary[] {
         };
     });
     out.sort((a, b) => b.updatedAt - a.updatedAt);
+    saveSessionHeads();
     return out.slice(0, limit);
 }
 
@@ -1640,7 +1686,7 @@ export function listAllSessions(limit = 200): SessionSummary[] {
             }
         }
     }
-    return newestByWork(files, limit, ({ f, file, mtimeMs, createdAt }) => {
+    const out = newestByWork(files, limit, ({ f, file, mtimeMs, createdAt }) => {
         const head = sessionHead(file);
         if (!head.count || !head.cwd) return;
         return {
@@ -1654,6 +1700,8 @@ export function listAllSessions(limit = 200): SessionSummary[] {
             model: head.model,
         };
     });
+    saveSessionHeads();
+    return out;
 }
 
 /** When it last worked: never after its file was last written (a clock set back since), so newestByWork can stop early. */

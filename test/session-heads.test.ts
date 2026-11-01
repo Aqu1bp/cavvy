@@ -37,3 +37,25 @@ test("a session's head follows its file: grown, renamed, cut short and rewritten
     writeFileSync(s.path, lines.slice(0, firstMessage + 1).join("\n") + "\n" + "x".repeat(4096) + "\n");
     expect(head().messages).toBe(1);
 });
+
+test("after a restart the list comes from the heads kept on disk, still checked against each session's file", async () => {
+    const cwd = realpathSync(tempDir());
+    const s = Session.create(cwd);
+    s.push(say("Kept prompt"));
+    s.push(answer("One."));
+    expect(listSessions(cwd, 10).find((x) => x.id === s.meta.id)?.messages).toBe(2);
+    const { paths } = await import("../src/config/paths");
+    const cache = `${paths.home()}/cache/session-heads.json`;
+    expect(JSON.parse(readFileSync(cache, "utf8")).version).toBe(1);
+    // Grown since it was kept.
+    s.push(say("Another"));
+    s.release();
+    const listed = () => {
+        const r = Bun.spawnSync([process.execPath, "-e", `const { listSessions } = await import(${JSON.stringify(new URL("../src/agent/session.ts", import.meta.url).pathname)}); console.log(JSON.stringify(listSessions(${JSON.stringify(cwd)}, 10).map((x) => [x.title, x.messages])));`], { env: process.env, stdout: "pipe", stderr: "pipe" });
+        return JSON.parse(r.stdout.toString() || "null");
+    };
+    expect(listed()).toEqual([["Kept prompt", 3]]);
+    // Damaged: each session's file is read, as without it.
+    writeFileSync(cache, "{not json");
+    expect(listed()).toEqual([["Kept prompt", 3]]);
+});
