@@ -77,6 +77,19 @@ export const MAX_SNAPSHOT_STORE_BYTES = 256 * 1024 * 1024;
 const PACK_KEEP_FROM = 64;
 /** How long a turn's end capture may take (a start has 2 s: the model waits on it). */
 const END_BUDGET_MS = 10_000;
+/** How long a whole capture may go on after the turn it was taken for stopped waiting (capture). */
+const WHOLE_BUDGET_MS = 120_000;
+
+/** Whether `work` settles before `deadline` (it goes on either way). */
+async function settlesBy(work: Promise<unknown>, deadline: number): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<false>((r) => (timer = setTimeout(() => r(false), Math.max(0, deadline - Date.now()))));
+    try {
+        return await Promise.race([work.then(() => true, () => true), late]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
 /**
  * A capture looks only at what the folder's watch saw change (captureNarrowed) where the last whole one took this long
  * (ms): below it, looking at everything costs less than waiting for the watch's events.
@@ -426,6 +439,8 @@ export class TurnSnapshots {
         indexStamp: string;
         /** What Git's index recorded (index-scan.ts contentKey): rewritten without a change to it (git status refreshing its stat times, a commit), it's the same. */
         contentKey: string;
+        /** The tree Git worked out for its index then (its cache-tree), when it had: a commit since is told apart by it. */
+        cacheRoot?: string;
         ignoreKey: string;
         attributes: string[];
         differs: Map<string, Differs>;
@@ -440,6 +455,8 @@ export class TurnSnapshots {
     /** The last capture from Git's index (captureIndexed): what it rested on, and what it found. */
     /** Captures that looked only at what the folder's watch saw change (captureNarrowed): for tests. */
     narrowedCount = 0;
+    /** A whole capture that went on past the turn it was taken for (capture): the next waits for it. */
+    private whole?: Promise<void>;
     /** When unchanged last waited for the watch's events. */
     private settledAt = 0;
     private lastIndexed?: { key: string; tree?: string; skipped: Record<string, string>; skippedStamps?: Record<string, string> };
@@ -451,7 +468,7 @@ export class TurnSnapshots {
     private readonly storage: string;
     private readonly journal: string;
 
-    constructor(readonly dir: string, readonly cwd: string, private options: { budgetMs?: number; maxStoreBytes?: number; /** NARROW_FROM_MS, for tests. */ narrowFromMs?: number } = {}) {
+    constructor(readonly dir: string, readonly cwd: string, private options: { budgetMs?: number; maxStoreBytes?: number; /** NARROW_FROM_MS, for tests. */ narrowFromMs?: number; /** How long a turn waits for a capture, which goes on past it (capture): for tests. */ turnBudgetMs?: number } = {}) {
         this.storage = join(dir, "turn-snapshots");
         this.journal = join(dir, "turn-snapshots.jsonl");
         let lines: string;
@@ -1191,21 +1208,34 @@ export class TurnSnapshots {
             const at = p.endsWith("/.git") ? p.length - 5 : p.indexOf("/.git/");
             changing.add(at > 0 ? p.slice(0, at) : p);
         }
+        const hashBytes = this.algo === "sha1" ? 20 : 32;
+        // Git's index written since: what it records now. Something else (staged, committed), the paths whose entries
+        // differ are looked at too, as the trees Git worked out for both say (their cache-trees); without both, everything.
+        let contentKey = base.contentKey, cacheRoot = base.cacheRoot;
+        /** Paths whose entries in Git's index changed: as the last tree has them, they're the old entries. */
+        const moved = new Set<string>();
+        if (rewritten) {
+            const now = await scanIndexPaths(root, indexPath, hashBytes, [], true, deadline);
+            if (now.unusable || !now.contentKey) return false;
+            if (now.contentKey !== base.contentKey) {
+                if (!base.cacheRoot || !now.cacheRoot) return false;
+                const entries = await git(root, ["diff-tree", "-r", "-z", "--name-only", "--no-renames", base.cacheRoot, now.cacheRoot], { maxBytes: 1024 * 1024, deadline, privateEnv: { GIT_NO_REPLACE_OBJECTS: "1" } });
+                if (entries.code || entries.cut) return false;
+                for (const p of entries.out.toString("utf-8").split("\0")) if (p) { changing.add(p); moved.add(p); }
+                if (changing.size > NARROW_MAX_PATHS) return false;
+            }
+            contentKey = now.contentKey;
+            cacheRoot = now.cacheRoot;
+        }
         const changed = [...changing].filter((p) => !underAny(p, nested));
         // What's ignored or how files are stored may have changed for paths that didn't.
         if (changed.some((p) => /(^|\/)\.git(ignore|attributes)$/.test(p))) return false;
-        const hashBytes = this.algo === "sha1" ? 20 : 32;
-        if (!changed.length && rewritten) {
-            const again = await scanIndexPaths(root, indexPath, hashBytes, [], true, deadline);
-            if (again.unusable || again.contentKey !== base.contentKey) return false;
-        }
         if (!changed.length) {
             Object.assign(result.skipped, base.skipped);
             if (base.skippedStamps) result.skippedStamps = pathMap(base.skippedStamps);
             result.tree = base.tree;
             result.incomplete = Object.keys(result.skipped).length > 0;
-            base.gen = gen;
-            base.indexStamp = indexStamp;
+            Object.assign(base, { gen, indexStamp, contentKey, cacheRoot });
             this.narrowedCount++;
             return true;
         }
@@ -1222,14 +1252,16 @@ export class TurnSnapshots {
         if (listed.size > NARROW_MAX_PATHS) return false;
         for (const p of listed) wanted.add(p);
         const scanned = await scanIndexPaths(root, indexPath, hashBytes, [...wanted], true, deadline);
-        if (scanned.unusable || scanned.contentKey !== base.contentKey) return false;
+        // Written again meanwhile: everything.
+        if (scanned.unusable || scanned.contentKey !== contentKey) return false;
         inTime();
         const differs = new Map(base.differs), gone = new Set(base.gone);
         const skipped = pathMap(base.skipped), skippedStamps = base.skippedStamps && pathMap(base.skippedStamps);
         const now: Differs[] = [], out: string[] = [], restore: { path: string; mode: string; oid: string }[] = [];
         for (const st of scanned.states) {
             const path = st.path;
-            const was = differs.get(path), wasGone = gone.has(path), wasSkipped = path in skipped;
+            // What the last tree has here is something else than Git's index has now: put in, or taken out, whatever it is.
+            const was = differs.get(path) ?? moved.has(path), wasGone = gone.has(path), wasSkipped = path in skipped;
             differs.delete(path);
             gone.delete(path);
             delete skipped[path];
@@ -1267,6 +1299,8 @@ export class TurnSnapshots {
         Object.assign(base, {
             gen,
             indexStamp,
+            contentKey,
+            cacheRoot,
             differs,
             gone,
             tree: result.tree!,
@@ -1367,6 +1401,7 @@ export class TurnSnapshots {
                 gen,
                 indexStamp,
                 contentKey: scan.contentKey,
+                cacheRoot: scan.cacheTree?.root,
                 ignoreKey: ignoreKeyOf(root, indexPath),
                 attributes: scan.attributes,
                 differs: new Map(scan.differs.map((d) => [d.path, d])),
@@ -1595,12 +1630,33 @@ export class TurnSnapshots {
         return converts;
     }
 
+    /**
+     * The folder as it is now. A whole capture (no earlier one to look only at what changed since, captureNarrowed)
+     * can take longer than a turn waits for one: a turn's own budget gone, it's given up for that turn (incomplete,
+     * as one out of time is), but it goes on (up to WHOLE_BUDGET_MS) and the next one starts from it, rather than
+     * looking at everything again and running out of time again. Captures wait for it; nothing else runs meanwhile.
+     */
     private async capture(ending = false, quiet = false): Promise<TurnCapture | undefined> {
+        const started = Date.now();
+        const deadline = started + (this.options.budgetMs ?? this.options.turnBudgetMs ?? (ending ? END_BUDGET_MS : 2000));
+        const late = (): TurnCapture => ({ incomplete: true, notes: ["Snapshot exceeded its time budget (2 seconds by default)."], skipped: pathMap(), durationMs: Date.now() - started, ...(this.root ? { root: this.root } : {}) });
+        if (this.whole && !(await settlesBy(this.whole, deadline))) return late();
+        if (this.indexedBase || this.options.budgetMs !== undefined) return this.captureBy(ending, quiet, deadline);
+        const work = this.captureBy(ending, quiet, Math.max(deadline, started + WHOLE_BUDGET_MS));
+        if (await settlesBy(work, deadline)) return work;
+        const whole = (this.whole = work.then(() => undefined, () => undefined).finally(() => {
+            if (this.whole === whole) this.whole = undefined;
+        }));
+        this.pending.add(whole);
+        void whole.finally(() => this.pending.delete(whole));
+        return late();
+    }
+
+    private async captureBy(ending: boolean, quiet: boolean, deadline: number): Promise<TurnCapture | undefined> {
         const same = await this.unchanged(quiet, ending);
         if (same) return same;
         let genAtStart: number | undefined;
         const started = Date.now();
-        const deadline = started + (this.options.budgetMs ?? (ending ? END_BUDGET_MS : 2000));
         const result: TurnCapture = { incomplete: false, notes: [], skipped: pathMap(), durationMs: 0 };
         let plannedTrees = new Set<string>();
         let touched = false, planning = false;

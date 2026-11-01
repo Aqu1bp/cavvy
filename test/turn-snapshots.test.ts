@@ -970,6 +970,9 @@ describe("per-turn snapshots", () => {
             ["git status rewrites the index", () => { utimesSync(join(cwd, "h2/i/j.txt"), new Date(), new Date()); git(cwd, ["status", "--porcelain"]); }],
             ["committed", () => git(cwd, ["commit", "-q", "-m", "Two"])],
             ["after the commit", () => write(cwd, "a/d.txt", "d at last\n")],
+            ["edited, staged and committed", () => { write(cwd, "a/d.txt", "d committed\n"); git(cwd, ["add", "a/d.txt"]); git(cwd, ["commit", "-q", "-m", "Three"]); }],
+            ["an ignored file forced in", () => { git(cwd, ["add", "-f", "x.log"]); git(cwd, ["commit", "-q", "-m", "Four"]); }],
+            ["and taken out again", () => { git(cwd, ["rm", "-q", "--cached", "x.log"]); git(cwd, ["commit", "-q", "-m", "Five"]); }],
         ];
         await snapshots.begin(1, "start");
         /** The steps whose capture looked at everything. */
@@ -988,9 +991,39 @@ describe("per-turn snapshots", () => {
             await full.stop();
         }
         await snapshots.end();
-        // The rest looked only at what changed. One after Git's index records something else (staged) looks at
-        // everything; rewritten as it was (git status, a commit), it's no reason to.
+        // The rest looked only at what changed. Staged with no tree Git worked out for it, Git's index is looked at
+        // whole; rewritten as it was (git status), or committed (both trees there to compare), it isn't.
         expect(whole).toEqual(["staged"]);
+        await snapshots.stop();
+    }, 60_000);
+
+    test("a whole capture a turn can't wait for goes on, and the next turns start from it", async () => {
+        const files: Record<string, string> = {};
+        for (let i = 0; i < 3000; i++) files[`d${i % 30}/f${i}.txt`] = `line ${i}\n`;
+        const { cwd, dir } = setup(files);
+        const snapshots = new TurnSnapshots(dir, cwd, { turnBudgetMs: 1, narrowFromMs: 0 });
+        await snapshots.begin(1, "Too soon");
+        const first = snapshots.list()[0]!.start;
+        expect([first.incomplete, first.tree]).toEqual([true, undefined]);
+        // It went on: the next capture waits for it (here, longer than a turn would), then looks only at what changed.
+        write(cwd, "d1/f1.txt", "changed\n");
+        await Bun.sleep(100);
+        const later = new TurnSnapshots(dir, cwd);
+        expect(later.list().length).toBe(1);
+        // Turns that wait as long as they usually do.
+        (snapshots as unknown as { options: { turnBudgetMs?: number } }).options.turnBudgetMs = undefined;
+        await snapshots.begin(2, "In time");
+        // From the one that went on: only what changed was looked at, and found as a whole capture finds it.
+        expect(snapshots.narrowedCount).toBe(1);
+        const whole = new TurnSnapshots(join(dirname(dir), "whole"), cwd);
+        await whole.begin(1, "Everything");
+        expect(snapshots.list()[1]!.start.tree).toBe(whole.list()[0]!.start.tree!);
+        await whole.stop();
+        write(cwd, "d2/f2.txt", "changed in the turn\n");
+        await snapshots.end();
+        const [, second] = snapshots.list();
+        expect([second!.start.incomplete, second!.end!.incomplete]).toEqual([false, false]);
+        expect(snapshots.list()[1]!.changed).toEqual(["d2/f2.txt"]);
         await snapshots.stop();
     }, 60_000);
 

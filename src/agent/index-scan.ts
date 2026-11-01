@@ -251,7 +251,7 @@ export interface PathState extends Differs {
  * index is read whole, but only these paths are stat'ed: a turn that changed a few files of a 100,000-file repository
  * looks at those.
  */
-export function scanPaths(root: string, indexFile: string, hashBytes: number, paths: readonly string[], msExact: boolean, maxUnder = 5000): { unusable?: string; states: PathState[]; contentKey?: string } {
+export function scanPaths(root: string, indexFile: string, hashBytes: number, paths: readonly string[], msExact: boolean, maxUnder = 5000): { unusable?: string; states: PathState[]; contentKey?: string; cacheRoot?: string } {
     let buf: Buffer, written: Stats;
     try {
         written = lstatSync(indexFile);
@@ -338,9 +338,12 @@ export function scanPaths(root: string, indexFile: string, hashBytes: number, pa
         content.add(start);
     }
     const contentKey = content.key(pos);
+    let cacheRoot: string | undefined;
     for (let p = pos; p + 8 <= end;) {
-        if (buf.toString("latin1", p, p + 4) === "link") return { unusable: "split", states: [] };
-        p += 8 + buf.readUInt32BE(p + 4);
+        const signature = buf.toString("latin1", p, p + 4), size = buf.readUInt32BE(p + 4);
+        if (signature === "link") return { unusable: "split", states: [] };
+        if (signature === "TREE") cacheRoot = cacheTreeOf(buf.subarray(p + 8, p + 8 + size), hashBytes)?.root;
+        p += 8 + size;
     }
     const states: PathState[] = [];
     for (const path of [...wanted, ...under]) {
@@ -373,5 +376,5 @@ export function scanPaths(root: string, indexFile: string, hashBytes: number, pa
             && st.mtimeMs < written.mtimeMs;
         states.push({ path, tracked: true, kind, stamp, special, clean: same ? { mode: mode.toString(8).padStart(6, "0"), oid: e.toString("hex", o + 40, o + 40 + hashBytes) } : undefined });
     }
-    return { states, contentKey };
+    return { states, contentKey, ...(cacheRoot ? { cacheRoot } : {}) };
 }
