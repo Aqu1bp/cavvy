@@ -105,6 +105,26 @@ for (const version of [2, 4]) {
     });
 }
 
+test("a scan nothing waits for any more stops: past its deadline it's not done, and the worker is free for the next", async () => {
+    const { scanIndex, LATE } = await import("../src/agent/index-scan");
+    const { scanIndexFiles } = await import("../src/agent/stat-files");
+    const repo = join(root, "late");
+    mkdirSync(repo, { recursive: true });
+    const git = (args: string[]) => {
+        const r = Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "core.hooksPath=/dev/null", ...args], { cwd: repo, env: { PATH: process.env.PATH!, HOME: root, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" }, stdout: "pipe", stderr: "pipe" });
+        if (r.exitCode !== 0) throw new Error(r.stderr.toString());
+    };
+    git(["init", "-q"]);
+    for (let i = 0; i < 3000; i++) writeFileSync(join(repo, `f${i}.txt`), `${i}\n`);
+    git(["add", "-A"]);
+    const index = join(repo, ".git/index");
+    expect(() => scanIndex(repo, index, 20, [], true, { k: 0, n: 1 }, Date.now() - 1)).toThrow(LATE);
+    await expect(scanIndexFiles(repo, index, 20, [], true, Date.now() - 1)).rejects.toThrow(/time budget/);
+    const t = Date.now();
+    const scan = await scanIndexFiles(repo, index, 20, [], true, Date.now() + 10_000);
+    expect([scan.unusable, scan.gone.length, Date.now() - t < 5000]).toEqual([undefined, 0, true]);
+});
+
 test("a missing file doesn't decide how this system's file times compare (a new repository has no index yet)", async () => {
     const { msTimesExact } = await import("../src/agent/git-index");
     msTimesExact(join(root, "no-index-yet"));

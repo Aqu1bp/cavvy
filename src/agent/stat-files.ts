@@ -13,6 +13,8 @@ export const KIND = { missing: 0, file: 1, link: 2, dir: 3, other: 4, unreadable
 
 export interface StatRequest {
     id: number;
+    /** When nothing waits for the answer any more (Date.now()). */
+    deadline?: number;
     root: string;
     /** Names the tracked list: the same list, the same id (one per version of Git's index). */
     trackedId: string;
@@ -24,6 +26,8 @@ export interface StatRequest {
 /** A folder's differences from its Git index (index-scan.ts), worked out on the worker. */
 export interface IndexRequest {
     id: number;
+    /** When nothing waits for the answer any more (Date.now()). */
+    deadline?: number;
     root: string;
     indexFile: string;
     hashBytes: number;
@@ -36,6 +40,8 @@ export interface IndexRequest {
 /** Only some paths of a folder against its Git index (index-scan.ts scanPaths). */
 export interface PathsRequest {
     id: number;
+    /** When nothing waits for the answer any more (Date.now()). */
+    deadline?: number;
     root: string;
     indexFile: string;
     hashBytes: number;
@@ -137,7 +143,7 @@ function ask(w: Worker, req: Omit<StatRequest, "id"> | Omit<IndexRequest, "id"> 
             clearTimeout(timer);
             resolve(r);
         });
-        w.postMessage({ ...req, id });
+        w.postMessage({ ...req, id, deadline });
     });
 }
 

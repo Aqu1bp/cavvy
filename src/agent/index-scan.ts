@@ -110,7 +110,11 @@ const stampOf = (st: Stats) => [st.dev, st.ino, st.mode, st.size, st.mtimeMs, st
  * `part`: the `k`th of `n` runs of the index's entries only (stat-files.ts runs them side by side, as git's
  * preload-index does): the first works out the content key, the last looks at the untracked paths.
  */
-export function scanIndex(root: string, indexFile: string, hashBytes: number, untracked: readonly string[], msExact: boolean, part: { k: number; n: number } = { k: 0, n: 1 }): IndexScan {
+/** What a scan past its deadline throws. */
+export const LATE = "late";
+
+/** `deadline`: past it, it stops (throws LATE): nothing waits for what it would find. */
+export function scanIndex(root: string, indexFile: string, hashBytes: number, untracked: readonly string[], msExact: boolean, part: { k: number; n: number } = { k: 0, n: 1 }, deadline?: number): IndexScan {
     const out: IndexScan = { differs: [], gone: [], attributes: [] };
     let buf: Buffer, written: Stats;
     try {
@@ -199,6 +203,7 @@ export function scanIndex(root: string, indexFile: string, hashBytes: number, un
         // A sparse index's folder entry stands for files that aren't listed.
         if (kind === 0o04) return { ...out, unusable: "sparse" };
         if (again || n < from || n >= to) continue;
+        if (deadline !== undefined && (n & 1023) === 0 && Date.now() >= deadline) throw new Error(LATE);
         if (path === ".gitattributes" || path.endsWith("/.gitattributes")) out.attributes.push(path);
         const st = statOf(path);
         const special = kind === 0o16 ? "gitlink" : flags & (ASSUME_VALID | STAGE) || extended & (SKIP_WORKTREE | INTENT_TO_ADD) ? "entry" : undefined;

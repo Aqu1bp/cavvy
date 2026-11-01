@@ -77,8 +77,12 @@ export const MAX_SNAPSHOT_STORE_BYTES = 256 * 1024 * 1024;
 const PACK_KEEP_FROM = 64;
 /** How long a turn's end capture may take (a start has 2 s: the model waits on it). */
 const END_BUDGET_MS = 10_000;
-/** How long a whole capture may go on after the turn it was taken for stopped waiting (capture). */
-const WHOLE_BUDGET_MS = 120_000;
+/**
+ * How long a whole capture may go on after the turn it was taken for stopped waiting (capture). Long: with many
+ * sessions on a busy machine, each one's first waits its turn behind the others' on the stat worker, and one that gave
+ * up would only be started again by the next turn.
+ */
+const WHOLE_BUDGET_MS = 10 * 60_000;
 /** How long a capture waits for such a whole capture still going before it's taken as out of time. */
 const WHOLE_WAIT_MS = 100;
 

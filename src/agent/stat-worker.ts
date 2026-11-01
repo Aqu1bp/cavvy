@@ -6,7 +6,7 @@
 
 import { lstatSync, type Stats } from "fs";
 import { KIND, type StatRequest, type StatReply, type IndexRequest, type PathsRequest } from "./stat-files";
-import { scanIndex, scanPaths } from "./index-scan";
+import { LATE, scanIndex, scanPaths } from "./index-scan";
 
 declare const self: Worker;
 
@@ -67,8 +67,10 @@ self.onmessage = (e: MessageEvent<StatRequest | IndexRequest | PathsRequest>) =>
     let reply: StatReply;
     try {
         const r = e.data;
+        // Asked of a busy worker and nothing waits for it now: not done, so what's asked after it isn't held up too.
+        if (r.deadline !== undefined && Date.now() >= r.deadline) throw new Error(LATE);
         reply = "paths" in r ? { id: r.id, paths: scanPaths(r.root, r.indexFile, r.hashBytes, r.paths, r.msExact) }
-            : "indexFile" in r ? { id: r.id, scan: scanIndex(r.root, r.indexFile, r.hashBytes, r.untracked, r.msExact, r.part) } : stat(r);
+            : "indexFile" in r ? { id: r.id, scan: scanIndex(r.root, r.indexFile, r.hashBytes, r.untracked, r.msExact, r.part, r.deadline) } : stat(r);
     } catch (err) {
         reply = { id: e.data.id, error: String((err as Error)?.message ?? err) };
     }

@@ -1046,7 +1046,8 @@ describe("per-turn snapshots", () => {
             const t = Date.now();
             await snapshots.begin(2, "While it goes on");
             expect(Date.now() - t).toBeLessThan(1500);
-            expect(snapshots.list()[1]!.start.incomplete).toBe(true);
+            // Unless it came in while this waited for it (up to 100 ms).
+            if (whole()) expect(snapshots.list()[1]!.start.incomplete).toBe(true);
             await whole();
         }
         await snapshots.begin(3, "In time");
