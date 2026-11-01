@@ -67,7 +67,7 @@ Waiting: with nothing animating at all the app takes 37. The spinner draws the w
 | Whole app's memory with the sessions closed afterwards (MB) | 298 (just opened with a session: 256–310) | 320 |
 | Page's JS heap, per turn kept (MB) | 0.03 | |
 
-In a repository of 30,000 files at this pace the server's memory climbs in steps: 95–110 MB in the first minutes, then 250–580 MB over an hour, and it stays there with the sessions closed. Snapshots alone stay flat over 30 turns, and a full collection once things go quiet gives nothing back, so this isn't garbage waiting to be collected. Its cause isn't known. At the pace people work it would take far longer to get there.
+In a repository of 30,000 files at this pace the server's memory climbed in steps: 95–110 MB in the first minutes, then 250–580 MB over an hour, and it stayed there with the sessions closed. It was the turn snapshots: each read, hashed and kept every file of the repository, and each turn fingerprinted every other worktree. Since snapshots take unchanged files from Git's index and stat on a worker thread (`docs/git.md`), it stays level: 4 sessions on the mock model in a 27,600-file repository for 10 minutes on a 4-core Linux VM, 262–302 MB throughout (before: climbing to 970 MB, peaking at 1,189), with 772 turns done instead of 225 (median 3.0 s instead of 10.4) and the socket's slowest replies 3 ms at p95 instead of 137. To measure again on a Mac with `bench-heavy.ts --only soak`.
 
 ## Very large sessions and repositories
 
