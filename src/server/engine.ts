@@ -768,6 +768,7 @@ export class Engine {
     private recentProjects(): ProjectInfo[] {
         const seen = new Map<string, number>();
         for (const r of readStore().recent ?? []) seen.set(r.path, Math.max(seen.get(r.path) ?? 0, r.at));
+        for (const [path, at] of this.usedAt) seen.set(path, Math.max(seen.get(path) ?? 0, at));
         // Projects you've used from the terminal show up too.
         for (const s of listAllSessions(60)) if (!seen.has(s.cwd)) seen.set(s.cwd, s.updatedAt);
         return [...seen]
@@ -777,11 +778,18 @@ export class Engine {
             .filter((p) => p.exists);
     }
 
+    /** When each project was last used here: the recent list's order, between the store's writes. */
+    private usedAt = new Map<string, number>();
+
     private remember(path: string) {
-        // Used a moment ago: nothing to write (it's asked on every message sent, and sessions in different folders
-        // take turns). The list's order can be a minute behind.
+        const now = Date.now();
+        this.usedAt.delete(path);
+        this.usedAt.set(path, now);
+        if (this.usedAt.size > 64) this.usedAt.delete(this.usedAt.keys().next().value!);
+        // Written a while ago: nothing to write (it's asked on every message sent, and many sessions in different
+        // folders take turns). Saved, the order can be ten minutes behind; while this runs, it isn't.
         const had = readStore().recent?.find((r) => r.path === path);
-        if (had && Date.now() - had.at < 60_000 && had.at <= Date.now()) return;
+        if (had && now - had.at < 10 * 60_000 && had.at <= now) return;
         updateStore((s) => {
             s.recent = [{ path, at: Date.now() }, ...(s.recent ?? []).filter((r) => r.path !== path)].slice(0, 30);
         });

@@ -818,7 +818,7 @@ export class TurnSnapshots {
         const lazy = whole && since !== undefined;
         const start = this.active?.start;
         const listed = this.worktrees;
-        const reachedOnes = start ? reachedPlaces(listed, [root, ...listed.map((w) => w.path)], reached) : [];
+        const reachedOnes = start && reached.size ? reachedPlaces(listed, [root, ...listed.map((w) => w.path)], reached) : [];
         // Only folders that really are those worktrees are read (one swapped for a link isn't); the rest go unmarked.
         const verify = (ws: readonly Worktree[]) => eachLimited(ws, 4, (w) => this.checks.check(root, w)).then((all) => all.filter((w): w is Checked => w !== undefined));
         const candidates = await verify(reachedOnes);
