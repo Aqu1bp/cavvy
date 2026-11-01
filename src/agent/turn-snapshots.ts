@@ -1248,22 +1248,36 @@ export class TurnSnapshots {
         // What the last capture had under a changed path (a folder moved away names only itself) is looked at again.
         const changedSet = new Set(changed), wanted = new Set(changed);
         for (const p of [...base.differs.keys(), ...base.gone, ...Object.keys(base.skipped)]) if (underAny(p.replace(/\/$/, ""), changedSet)) wanted.add(p);
-        // Untracked, as git lists them: not ignored, and what's in a folder that appeared.
-        // Only the outermost paths: git lists a nested repository as one (its folder) only when not asked about what's in it.
-        const outermost = changed.filter((p) => !underAny(p, changedSet));
-        const others = await git(root, ["ls-files", "-z", "--others", "--exclude-standard", "--", ...outermost], { maxBytes: 16 * 1024 * 1024, deadline, privateEnv: { GIT_NO_REPLACE_OBJECTS: "1", GIT_LITERAL_PATHSPECS: "1" } });
-        if (others.code || others.cut || others.err.trim()) return false;
-        const listed = new Set(others.out.toString("utf-8").split("\0").filter(Boolean));
-        if (listed.size > NARROW_MAX_PATHS) return false;
-        for (const p of listed) wanted.add(p);
-        const scanned = await scanIndexPaths(root, indexPath, hashBytes, [...wanted], true, deadline);
+        // As Git's index has them, first: most turns only change files it tracks, and those need no listing.
+        const first = await scanIndexPaths(root, indexPath, hashBytes, [...wanted], true, deadline);
         // Written again meanwhile: everything.
-        if (scanned.unusable || scanned.contentKey !== contentKey) return false;
+        if (first.unusable || first.contentKey !== contentKey) return false;
+        let states = first.states;
+        // Untracked, as git lists them (not ignored, and what's in a folder that appeared): asked only of paths the index
+        // hasn't, or that are folders now. Only the outermost: git lists a nested repository as one (its folder) only when
+        // not asked about what's in it.
+        const ask = first.states.filter((st) => (st.unknown && st.kind !== KIND.missing) || st.kind === KIND.dir).map((st) => st.path.replace(/\/$/, ""));
+        let listed = new Set<string>();
+        if (ask.length) {
+            const askSet = new Set(ask);
+            const outermost = [...askSet].filter((p) => !underAny(p, askSet));
+            if (outermost.reduce((n, p) => n + p.length + 1, 0) > NARROW_MAX_ARG_BYTES) return false;
+            const others = await git(root, ["ls-files", "-z", "--others", "--exclude-standard", "--", ...outermost], { maxBytes: 16 * 1024 * 1024, deadline, privateEnv: { GIT_NO_REPLACE_OBJECTS: "1", GIT_LITERAL_PATHSPECS: "1" } });
+            if (others.code || others.cut || others.err.trim()) return false;
+            listed = new Set(others.out.toString("utf-8").split("\0").filter(Boolean));
+            if (listed.size > NARROW_MAX_PATHS) return false;
+            const more = [...listed].filter((p) => !wanted.has(p));
+            if (more.length) {
+                const second = await scanIndexPaths(root, indexPath, hashBytes, more, true, deadline);
+                if (second.unusable || second.contentKey !== contentKey) return false;
+                states = [...states, ...second.states];
+            }
+        }
         inTime();
         const differs = new Map(base.differs), gone = new Set(base.gone);
         const skipped = pathMap(base.skipped), skippedStamps = base.skippedStamps && pathMap(base.skippedStamps);
         const now: Differs[] = [], out: string[] = [], restore: { path: string; mode: string; oid: string }[] = [];
-        for (const st of scanned.states) {
+        for (const st of states) {
             const path = st.path;
             // What the last tree has here is something else than Git's index has now: put in, or taken out, whatever it is.
             const was = differs.get(path) ?? moved.has(path), wasGone = gone.has(path), wasSkipped = path in skipped;
