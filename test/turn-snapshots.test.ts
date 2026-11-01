@@ -1061,9 +1061,10 @@ describe("per-turn snapshots", () => {
             if (whole()) expect(snapshots.list()[1]!.start.incomplete).toBe(true);
             await whole();
         }
+        const before = snapshots.narrowedCount;
         await snapshots.begin(3, "In time");
         // From the one that went on: only what changed was looked at, and found as a whole capture finds it.
-        expect(snapshots.narrowedCount).toBe(1);
+        expect(snapshots.narrowedCount).toBe(before + 1);
         const everything = new TurnSnapshots(join(dirname(dir), "whole"), cwd);
         await everything.begin(1, "Everything");
         expect(snapshots.list().at(-1)!.start.tree).toBe(everything.list()[0]!.start.tree!);

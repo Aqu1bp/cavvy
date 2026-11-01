@@ -5,7 +5,7 @@
 // Git's loose object format is zlib(header + bytes); hashing/compressing in
 // process avoids a subprocess per file and preserves the bytes on disk.
 
-import { appendFileSync, chmodSync, lstatSync, mkdirSync, readFileSync, type Stats } from "fs";
+import { appendFileSync, chmodSync, lstatSync, mkdirSync, readFileSync, writeFileSync, type Stats } from "fs";
 import { chmod, copyFile, lstat, mkdir, open, readdir, readFile, readlink, rename, rm, writeFile } from "fs/promises";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "path";
 import { deflateSync, inflateSync } from "zlib";
@@ -139,6 +139,14 @@ function rememberTree(oid: string, body: Buffer) {
         treeBodies.delete(old);
         treeBytes -= b.length;
     }
+}
+
+/**
+ * How long a capture waits for the events of a change just made, before it takes the watch's count: inotify (Linux)
+ * delivers them within milliseconds; FSEvents (a Mac) later, so a turn's end, which no model waits on, waits longer.
+ */
+function eventWait(ending: boolean): number {
+    return ending && process.platform === "darwin" ? 100 : 30;
 }
 
 /** How many entries Git's index file says it has (0 when it can't be read). */
@@ -696,7 +704,7 @@ export class TurnSnapshots {
         const w = this.watch, last = this.lastFast;
         if (!quiet || !w?.healthy || !last || this.stopped) return undefined;
         // A turn's end waits a little longer (FSEvents, on a Mac, delivers later than inotify): no model waits on it.
-        await new Promise((r) => setTimeout(r, ending ? 100 : 30));
+        await new Promise((r) => setTimeout(r, eventWait(ending)));
         this.settledAt = Date.now();
         if (!w.healthy || w.gen !== last.gen || Date.now() - last.at < 250) return undefined;
         const out = structuredClone(last.result);
@@ -901,8 +909,9 @@ export class TurnSnapshots {
         try {
             this.ensure();
             const at = join(this.storage, "clock");
-            await writeFile(at, "", { mode: 0o600 });
-            return (await lstat(at, { bigint: true })).ctimeNs;
+            // At once: on a busy machine each wait for the event loop's turn is what a turn's start costs.
+            writeFileSync(at, "", { mode: 0o600 });
+            return lstatSync(at, { bigint: true }).ctimeNs;
         } catch {
             return undefined;
         }
@@ -1251,13 +1260,13 @@ export class TurnSnapshots {
         if (!base || !w?.healthy || base.watch !== w || (!given && base.fullMs < (this.options.narrowFromMs ?? NARROW_FROM_MS))) return false;
         if (base.narrowed >= NARROW_MAX || Date.now() - base.fullAt > NARROW_FULL_EVERY_MS) return false;
         if (this.lastTree !== base.tree || !msTimesExact(indexPath)) return false;
-        const stamped = await lstat(indexPath).catch(() => undefined);
+        const stamped = lstatSync(indexPath, { throwIfNoEntry: false });
         if (!stamped) return false;
         // Git's index written since: still the base, if what it records is the same (scanIndexPaths says).
         const indexStamp = stampKey(stamped), rewritten = indexStamp !== base.indexStamp;
         if (ignoreKeyOf(root, indexPath) !== base.ignoreKey || (await this.converts(root, indexPath, base.attributes, deadline))) return false;
         // Events arrive a moment after a change (unchanged waits the same).
-        if (Date.now() - this.settledAt > 10) await new Promise((r) => setTimeout(r, ending ? 100 : 30));
+        if (Date.now() - this.settledAt > 10) await new Promise((r) => setTimeout(r, eventWait(ending)));
         inTime();
         if (!w.healthy) return false;
         // Given (a first capture from what `git status` said): as of when it began, so what changed since is looked at next.
@@ -1408,7 +1417,7 @@ export class TurnSnapshots {
         if (!w?.healthy || !msTimesExact(indexPath)) return false;
         // A small repository's whole capture is quicker here than starting git for it.
         if ((await indexEntries(indexPath)) < (this.options.statusFromEntries ?? STATUS_FROM_ENTRIES)) return false;
-        const before = await lstat(indexPath).catch(() => undefined);
+        const before = lstatSync(indexPath, { throwIfNoEntry: false });
         if (!before) return false;
         const started = Date.now();
         // What changes from here on is looked at by the next capture.
@@ -1421,7 +1430,7 @@ export class TurnSnapshots {
         ]);
         inTime();
         if (status.code || status.cut || status.err.trim() || !scan || scan.unusable || !scan.contentKey || !scan.cacheRoot || scan.specials !== 0) return false;
-        const after = await lstat(indexPath).catch(() => undefined);
+        const after = lstatSync(indexPath, { throwIfNoEntry: false });
         if (!after || stampKey(after) !== stampKey(before)) return false;
         const paths: string[] = [];
         const dirty = new Set<string>();
