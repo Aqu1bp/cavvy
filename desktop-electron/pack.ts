@@ -45,7 +45,7 @@ export async function pack(o: { install?: boolean } = {}): Promise<string> {
     run(["bun", "run", "gui:build"]);
     cpSync(join(repo, "gui", "dist"), join(stage, "gui"), { recursive: true });
     const server = join(stage, "cavvy");
-    run(["bun", "build", "--compile", "--minify", "--sourcemap=none", `--target=bun-darwin-${arch}-v${SERVER_BUN}`, "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--outfile", server, join(repo, "src", "index.ts")]);
+    run(["bun", "build", "--compile", "--minify", "--sourcemap=none", `--target=bun-darwin-${arch}-v${SERVER_BUN}`, "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--outfile", server, join(repo, "src", "index.ts"), join(repo, "src", "agent", "stat-worker.ts")]);
 
     const [out] = await packager({
         dir: here,

@@ -14,7 +14,7 @@
   "scripts": {
     "start": "bun --no-env-file --config=bunfig.toml src/index.ts",
     "dev": "bun --no-env-file --config=bunfig.toml src/index.ts",
-    "build": "bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig --outfile dist/cavvy src/index.ts",
+    "build": "bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig --outfile dist/cavvy src/index.ts src/agent/stat-worker.ts",
     "test": "bun --no-env-file test",
     "typecheck": "tsc --noEmit -p .",
     "gui": "bun --no-env-file --config=bunfig.toml src/index.ts gui",

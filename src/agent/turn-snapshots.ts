@@ -21,6 +21,7 @@ import { changedSince, eachLimited, insideRoot, listWorktrees, nearby, reachedPl
 import { redact } from "../util/redact";
 import { cleanBlob, modeOf, parseIndex, type GitIndex } from "./git-index";
 import { Pace } from "../util/pace";
+import { KIND, statFiles } from "./stat-files";
 
 /** Paths a turn reached that are kept (TurnSnapshots.reach): past this many, the rest go unseen. */
 const MAX_REACHED = 20_000;
@@ -192,10 +193,18 @@ type KnownFile = { path: string; stamp: Stamp; entry: Entry; borrowed?: boolean 
 
 /** A file's stat as compared from one capture to the next: device, inode, mode, size, mtime, ctime. */
 type Stamp = readonly [number, number, number, number, number, number];
-const stampOf = (st: Stats): Stamp => [st.dev, st.ino, st.mode, st.size, st.mtimeMs, st.ctimeMs];
-const sameStamp = (a: Stamp, st: Stats) => a[0] === st.dev && a[1] === st.ino && a[2] === st.mode && a[3] === st.size && a[4] === st.mtimeMs && a[5] === st.ctimeMs;
+/** The fields of a stat a stamp is made of (fs.Stats has them). */
+type StampFields = Pick<Stats, "dev" | "ino" | "mode" | "size" | "mtimeMs" | "ctimeMs">;
+/** A path's stat as stat-files.ts gave it. */
+type FileStat = StampFields & { kind: number };
+const stampOf = (st: StampFields): Stamp => [st.dev, st.ino, st.mode, st.size, st.mtimeMs, st.ctimeMs];
+const sameStamp = (a: Stamp, st: StampFields) => a[0] === st.dev && a[1] === st.ino && a[2] === st.mode && a[3] === st.size && a[4] === st.mtimeMs && a[5] === st.ctimeMs;
+/** Whether a stamp is the one at `o` in stat-files.ts' stamps. */
+const sameAt = (a: Stamp, s: Float64Array, o: number) => a[0] === s[o] && a[1] === s[o + 1] && a[2] === s[o + 2] && a[3] === s[o + 3] && a[4] === s[o + 4] && a[5] === s[o + 5];
+const statAt = (kinds: Uint8Array, s: Float64Array, i: number): FileStat => ({ kind: kinds[i]!, dev: s[i * 6]!, ino: s[i * 6 + 1]!, mode: s[i * 6 + 2]!, size: s[i * 6 + 3]!, mtimeMs: s[i * 6 + 4]!, ctimeMs: s[i * 6 + 5]! });
 /** A file found by its stat, to be read or taken from the index. */
-type Seen = { path: string; st: Stats };
+type Seen = { path: string; st: FileStat; at: number };
+const sameList = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
 /** A path that isn't there (or a file where a folder was): not one that can't be read. */
 const gone = (e: unknown) => ["ENOENT", "ENOTDIR"].includes((e as NodeJS.ErrnoException)?.code ?? "");
 
@@ -249,6 +258,8 @@ export class TurnSnapshots {
     private reached = new Set<string>();
     /** The tree of what's in the private index, while nothing has gone wrong with it. */
     private lastTree: string | undefined;
+    /** The last capture's lists and what it found at each path (stat-files.ts), with what it left out. */
+    private scan?: { trackedId: string; untracked: string[]; kinds: Uint8Array; stamps: Float64Array; recheck: number[]; skipped: Record<string, string>; skippedStamps?: Record<string, string> };
     /** The last capture's files in their folders, with each folder's tree id (treeObjects). */
     private folders?: Folder;
     /** Git's own index for this folder, as last read (fromIndex). */
@@ -771,7 +782,7 @@ export class TurnSnapshots {
             const there = present && new Set(present.out.toString().split("\n").filter((l) => l.endsWith(" blob")).map((l) => l.slice(0, l.indexOf(" "))));
             for (const f of clean) {
                 if (converted.has(f.path) || (there && !there.has(f.oid))) continue;
-                const mode = f.st.isSymbolicLink() ? "120000" : f.st.mode & 0o100 ? "100755" : "100644";
+                const mode = f.st.kind === KIND.link ? "120000" : f.st.mode & 0o100 ? "100755" : "100644";
                 const file: KnownFile = { path: f.path, stamp: stampOf(f.st), entry: { mode, oid: f.oid, size: f.st.size }, borrowed: true };
                 // True of the repository whatever becomes of this capture.
                 this.known.set(f.path, file);
@@ -854,64 +865,75 @@ export class TurnSnapshots {
                 modeAt = (path) => modes.get(path);
             }
             const untracked = others.out.toString("utf-8").split("\0").filter((p) => p && modeAt(p) === undefined);
-            const entries = new Map<string, Entry>();
-            const skip = (path: string, st: Stats, reason: string) => {
+            let entries = new Map<string, Entry>();
+            /** Where in the lists something was left out, or couldn't be read: looked at again next time, whatever its stat. */
+            const recheck: number[] = [];
+            const skip = (path: string, st: FileStat, reason: string, at: number) => {
+                recheck.push(at);
                 result.skipped[path] = reason;
                 (result.skippedStamps ??= pathMap())[path] = stampOf(st).join(":");
             };
             /** Tracked files not known by this stamp: Git's index may already have them. */
             const candidates: Seen[] = [];
             const toRead: Seen[] = [];
-            // Every folder on the way a real folder, not a link that could lead out of the repository (WorkTree.inside).
             const root = this.root;
-            const folders = new Map<string, boolean>();
-            const inside = (rel: string): boolean => {
-                const i = rel.lastIndexOf("/");
-                if (i < 0) return true;
-                const dir = rel.slice(0, i);
-                let ok = folders.get(dir);
-                if (ok === undefined) {
-                    let st: Stats | undefined;
-                    try { st = lstatSync(`${root}/${dir}`, { throwIfNoEntry: false }); } catch (e) { if (!gone(e)) throw e; }
-                    ok = !!st?.isDirectory() && inside(dir);
-                    folders.set(dir, ok);
+            const trackedId = index ? `${root}\0${this.index!.stamp}` : `${root}\0${Date.now()}:${Math.random()}`;
+            const { kinds, stamps } = await statFiles(root, trackedId, tracked, untracked, deadline, inTime);
+            inTime();
+            const n = tracked.length + untracked.length;
+            const pathAt = (i: number) => (i < tracked.length ? tracked[i]! : untracked[i - tracked.length]!);
+            // The same lists as the last capture's: only paths whose stat moved since, or that it left out, are looked
+            // at; the rest are as it found them (its entries and omissions). Unchanged, that's no more than comparing
+            // two arrays.
+            const last = this.scan;
+            let only: number[] | undefined;
+            if (last && this.lastTree && last.trackedId === trackedId && last.kinds.length === n && sameList(last.untracked, untracked)) {
+                only = [...last.recheck];
+                const was = last.stamps;
+                for (let i = 0; i < n; i++) {
+                    const o = i * 6;
+                    if (kinds[i] !== last.kinds[i] || stamps[o] !== was[o] || stamps[o + 1] !== was[o + 1] || stamps[o + 2] !== was[o + 2] || stamps[o + 3] !== was[o + 3] || stamps[o + 4] !== was[o + 4] || stamps[o + 5] !== was[o + 5]) only.push(i);
                 }
-                return ok;
-            };
-            // One stat after another, a few milliseconds at a time: a promise for each of 100,000 files costs more
-            // than the stat, and the event loop gets its turn between runs.
+                only = [...new Set(only)];
+                entries = only.length ? new Map(this.indexEntries) : this.indexEntries;
+                Object.assign(result.skipped, last.skipped);
+                if (last.skippedStamps) result.skippedStamps = pathMap(last.skippedStamps);
+            }
             const pace = new Pace();
-            for (const list of [tracked, untracked]) for (let i = 0; i < list.length; i++) {
-                if ((i & 255) === 255) {
+            for (let k = 0, count = only ? only.length : n; k < count; k++) {
+                if ((k & 1023) === 1023) {
                     inTime();
                     if (pace.due) await pace.rest();
                 }
-                const path = list[i]!;
+                const i = only ? only[k]! : k;
+                const isTracked = i < tracked.length;
+                const path = pathAt(i);
+                if (only) {
+                    entries.delete(path);
+                    delete result.skipped[path];
+                    if (result.skippedStamps) delete result.skippedStamps[path];
+                }
                 const known = this.known.get(path);
                 if (!known && !safePath(path)) throw new Error("A repository path cannot be safely captured.");
-                let st: Stats | undefined;
-                try {
-                    st = inside(path) ? lstatSync(`${root}/${path}`, { throwIfNoEntry: false }) : undefined;
-                } catch (e) {
-                    // Snapshots must distinguish deletion from a path they cannot read.
-                    if (!gone(e)) result.skipped[path] = "Unreadable path; not captured, change unknown.";
-                    continue;
-                }
-                if (!st) continue; // A tracked file deleted from disk.
-                if (!st.isFile() && !st.isSymbolicLink()) {
+                const kind = kinds[i]!, o = i * 6;
+                // Snapshots must distinguish deletion from a path they cannot read.
+                if (kind === KIND.unreadable) { result.skipped[path] = "Unreadable path; not captured, change unknown."; recheck.push(i); continue; }
+                if (kind === KIND.missing) continue; // A tracked file deleted from disk.
+                if (known && sameAt(known.stamp, stamps, o) && (known.borrowed || this.stored.has(known.entry.oid))) { entries.set(known.path, known.entry); continue; }
+                const st = statAt(kinds, stamps, i);
+                if (kind !== KIND.file && kind !== KIND.link) {
                     // A tracked file replaced by a directory is deleted; its new
                     // untracked children are separate entries, not a nested repo.
-                    const mode = list === tracked ? modeAt(path) : undefined;
-                    if (st.isDirectory() && mode !== undefined && mode !== "160000") continue;
-                    if (st.isDirectory() && this.nested.has(path)) continue;
-                    skip(path, st, st.isDirectory() ? "Submodule or nested repository contents are not captured." : "Not a regular file.");
+                    const mode = isTracked ? modeAt(path) : undefined;
+                    if (kind === KIND.dir && mode !== undefined && mode !== "160000") continue;
+                    if (kind === KIND.dir && this.nested.has(path)) continue;
+                    skip(path, st, kind === KIND.dir ? "Submodule or nested repository contents are not captured." : "Not a regular file.", i);
                     continue;
                 }
-                if (known && sameStamp(known.stamp, st) && (known.borrowed || this.stored.has(known.entry.oid))) { entries.set(known.path, known.entry); continue; }
                 // A file of any size can be taken from Git's index; one to read, only up to the limit.
-                if (list === tracked) candidates.push({ path, st });
-                else if (st.size > MAX_SNAPSHOT_BYTES) skip(path, st, "Over 10 MB; not captured, change unknown.");
-                else toRead.push({ path, st });
+                if (isTracked) candidates.push({ path, st, at: i });
+                else if (st.size > MAX_SNAPSHOT_BYTES) skip(path, st, "Over 10 MB; not captured, change unknown.", i);
+                else toRead.push({ path, st, at: i });
             }
             // Files as Git last recorded them have the blob its index names: taken from there, not read and hashed.
             if (candidates.length) {
@@ -919,18 +941,18 @@ export class TurnSnapshots {
                 for (const c of candidates) {
                     const file = taken.get(c.path);
                     if (file) entries.set(c.path, file.entry);
-                    else if (c.st.size > MAX_SNAPSHOT_BYTES) skip(c.path, c.st, "Over 10 MB; not captured, change unknown.");
+                    else if (c.st.size > MAX_SNAPSHOT_BYTES) skip(c.path, c.st, "Over 10 MB; not captured, change unknown.", c.at);
                     else toRead.push(c);
                 }
             }
             for (let k = 0; k < toRead.length; k += READ_AT_ONCE) {
-                const done = await Promise.allSettled(toRead.slice(k, k + READ_AT_ONCE).map(async ({ path, st }) => {
-                    const buf = st.isSymbolicLink() ? await readlink(join(root, path), { encoding: "buffer" }).catch(() => undefined) : (await readRegular(join(root, path), MAX_SNAPSHOT_BYTES))?.buf;
-                    if (!buf) { skip(path, st, "Unreadable, changed while being read, or over 10 MB; not captured."); return; }
+                const done = await Promise.allSettled(toRead.slice(k, k + READ_AT_ONCE).map(async ({ path, st, at }) => {
+                    const buf = st.kind === KIND.link ? await readlink(join(root, path), { encoding: "buffer" }).catch(() => undefined) : (await readRegular(join(root, path), MAX_SNAPSHOT_BYTES))?.buf;
+                    if (!buf) { skip(path, st, "Unreadable, changed while being read, or over 10 MB; not captured.", at); return; }
                     inTime();
                     const after = await lstat(join(root, path)).catch(() => undefined);
-                    if (!after || !sameStamp(stampOf(st), after)) { result.skipped[path] = "Changed while being read; not captured."; return; }
-                    const mode = st.isSymbolicLink() ? "120000" : st.mode & 0o100 ? "100755" : "100644", oid = blobId(buf, this.algo);
+                    if (!after || !sameStamp(stampOf(st), after)) { result.skipped[path] = "Changed while being read; not captured."; recheck.push(at); return; }
+                    const mode = st.kind === KIND.link ? "120000" : st.mode & 0o100 ? "100755" : "100644", oid = blobId(buf, this.algo);
                     // The same as another session knows it: its strings are kept, not a copy of them.
                     const had = this.known.get(path);
                     const same = had?.entry.oid === oid && had.entry.mode === mode && had.entry.size === buf.length;
@@ -946,16 +968,20 @@ export class TurnSnapshots {
             inTime();
             const updates: string[] = [];
             const changed: string[] = [];
-            for (const path of this.indexEntries.keys()) if (!entries.has(path)) {
-                updates.push(`0 ${"0".repeat(this.algo === "sha1" ? 40 : 64)}\t${path}\0`);
+            const compare = (path: string) => {
+                const e = entries.get(path), was = this.indexEntries.get(path);
+                if (!e) {
+                    if (!was) return;
+                    updates.push(`0 ${"0".repeat(this.algo === "sha1" ? 40 : 64)}\t${path}\0`);
+                } else if (was?.oid !== e.oid || was.mode !== e.mode) updates.push(`${e.mode} ${e.oid}\t${path}\0`);
+                else return;
                 changed.push(path);
-            }
-            for (const [path, e] of entries) {
-                const was = this.indexEntries.get(path);
-                if (was?.oid !== e.oid || was.mode !== e.mode) {
-                    updates.push(`${e.mode} ${e.oid}\t${path}\0`);
-                    changed.push(path);
-                }
+            };
+            // Only what was looked at can differ from the last capture.
+            if (only) for (const i of only) compare(pathAt(i));
+            else {
+                for (const path of this.indexEntries.keys()) if (!entries.has(path)) compare(path);
+                for (const path of entries.keys()) compare(path);
             }
             // Nothing changed since the last one: it's the same tree.
             if (updates.length || !this.lastTree) {
@@ -992,6 +1018,7 @@ export class TurnSnapshots {
             }
             await this.writeOut();
             this.indexEntries = entries;
+            this.scan = { trackedId, untracked, kinds, stamps, recheck, skipped: pathMap(result.skipped), skippedStamps: result.skippedStamps && pathMap(result.skippedStamps) };
             result.tree = this.lastTree;
             result.incomplete = Object.keys(result.skipped).length > 0;
         } catch (e) {
@@ -1000,8 +1027,9 @@ export class TurnSnapshots {
             // Out of time before the private index was touched, it's still as the last capture left it: the next one
             // updates what changed, rather than writing all of it again (and running out of time again).
             if (touched) {
-                this.indexEntries.clear();
+                this.indexEntries = new Map();
                 this.lastTree = undefined;
+                this.scan = undefined;
             }
             // Its folders may be partway between two captures: worked out afresh next time.
             if (planning) this.folders = undefined;

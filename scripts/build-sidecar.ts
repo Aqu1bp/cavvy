@@ -36,7 +36,7 @@ const outDir = join(root, "desktop", "src-tauri", "binaries");
 mkdirSync(outDir, { recursive: true });
 const out = join(outDir, `cavvy-${triple}${triple.includes("windows") ? ".exe" : ""}`);
 const build = Bun.spawnSync(
-    ["bun", "build", "--compile", "--minify", "--sourcemap=none", `--target=${bunTarget}`, "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--outfile", out, join(root, "src", "index.ts")],
+    ["bun", "build", "--compile", "--minify", "--sourcemap=none", `--target=${bunTarget}`, "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", "--outfile", out, join(root, "src", "index.ts"), join(root, "src", "agent", "stat-worker.ts")],
     { cwd: root, stdout: "inherit", stderr: "inherit" },
 );
 if (build.exitCode !== 0) process.exit(build.exitCode ?? 1);
