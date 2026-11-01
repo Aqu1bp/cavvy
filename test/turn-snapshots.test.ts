@@ -837,8 +837,8 @@ describe("per-turn snapshots", () => {
         for (let i = 0; i < 400; i++) files[`src/f${i}.txt`] = `file ${i}\n`;
         const { cwd, dir, snapshots } = setup(files);
         await snapshots.begin(1, "Change one of many");
-        // Nothing was read into the store: only the two trees.
-        expect(storedCount(objectsDir(dir))).toBe(2);
+        // Nothing was read into the store, nor a tree made: the files and their trees are the ones Git has.
+        expect(storedCount(objectsDir(dir))).toBe(0);
         write(cwd, "src/f7.txt", "changed\n");
         await snapshots.end();
         const turn = snapshots.list()[0]!;
@@ -875,8 +875,8 @@ describe("per-turn snapshots", () => {
         utimesSync(join(cwd, ".git/index"), at, at);
         const snapshots = new TurnSnapshots(dir, cwd);
         await snapshots.begin(1, "Racily clean");
-        // The tree and the file's own blob.
-        expect(storedCount(objectsDir(dir))).toBe(2);
+        // The file's own blob (its tree, the same as Git's, is Git's).
+        expect(storedCount(objectsDir(dir))).toBe(1);
         expect(snapshots.list()[0]!.start.incomplete).toBe(false);
     });
 

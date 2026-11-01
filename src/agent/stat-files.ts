@@ -4,6 +4,7 @@
 
 import { lstatSync, type Stats } from "fs";
 import { Pace } from "../util/pace";
+import { scanIndex, type IndexScan } from "./index-scan";
 
 /** What's at a path. */
 export const KIND = { missing: 0, file: 1, link: 2, dir: 3, other: 4, unreadable: 5 } as const;
@@ -18,7 +19,17 @@ export interface StatRequest {
     untracked: string[];
 }
 
-export type StatReply = { id: number; kinds?: Uint8Array; stamps?: Float64Array; missing?: boolean; error?: string };
+/** A folder's differences from its Git index (index-scan.ts), worked out on the worker. */
+export interface IndexRequest {
+    id: number;
+    root: string;
+    indexFile: string;
+    hashBytes: number;
+    untracked: string[];
+    msExact: boolean;
+}
+
+export type StatReply = { id: number; kinds?: Uint8Array; stamps?: Float64Array; missing?: boolean; error?: string; scan?: IndexScan };
 
 /** For each path, tracked then untracked: its kind, and six stamp fields (device, inode, mode, size, mtime, ctime). */
 export interface FileStats {
@@ -60,7 +71,7 @@ function started(): Worker | undefined {
     return worker ?? undefined;
 }
 
-function ask(w: Worker, req: Omit<StatRequest, "id">, deadline: number): Promise<StatReply> {
+function ask(w: Worker, req: Omit<StatRequest, "id"> | Omit<IndexRequest, "id">, deadline: number): Promise<StatReply> {
     const id = ++asked;
     return new Promise((resolve) => {
         const timer = setTimeout(() => {
@@ -89,6 +100,17 @@ export async function statFiles(root: string, trackedId: string, tracked: string
         if (r.error === "late") throw new Error("Snapshot exceeded its time budget (2 seconds by default).");
     }
     return statHere(root, tracked, untracked, inTime);
+}
+
+/** `root`'s differences from its Git index (index-scan.ts), on the worker; here, all at once, where there's none. */
+export async function scanIndexFiles(root: string, indexFile: string, hashBytes: number, untracked: string[], msExact: boolean, deadline: number): Promise<IndexScan> {
+    const w = started();
+    if (w) {
+        const r = await ask(w, { root, indexFile, hashBytes, untracked, msExact }, deadline);
+        if (r.scan) return r.scan;
+        if (r.error === "late") throw new Error("Snapshot exceeded its time budget (2 seconds by default).");
+    }
+    return scanIndex(root, indexFile, hashBytes, untracked, msExact);
 }
 
 const gone = (e: unknown) => ["ENOENT", "ENOTDIR"].includes((e as NodeJS.ErrnoException)?.code ?? "");

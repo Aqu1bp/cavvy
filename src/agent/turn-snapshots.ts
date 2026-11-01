@@ -6,9 +6,9 @@
 // process avoids a subprocess per file and preserves the bytes on disk.
 
 import { appendFileSync, chmodSync, lstatSync, mkdirSync, readFileSync, type Stats } from "fs";
-import { chmod, lstat, mkdir, readdir, readFile, readlink, rename, rm, writeFile } from "fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "path";
-import { deflateSync } from "zlib";
+import { chmod, copyFile, lstat, mkdir, readdir, readFile, readlink, rename, rm, writeFile } from "fs/promises";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "path";
+import { deflateSync, inflateSync } from "zlib";
 import { randomBytes } from "crypto";
 import { FileHistory, MAX_SNAPSHOT_BYTES, canonical } from "./checkpoints";
 import type { Session } from "./session";
@@ -21,7 +21,7 @@ import { changedSince, eachLimited, insideRoot, nearby, reachedPlaces, summarize
 import { redact } from "../util/redact";
 import { cleanBlob, cleanBlobMs, modeOf, msTimesExact, parseIndex, type GitIndex } from "./git-index";
 import { Pace } from "../util/pace";
-import { KIND, statFiles } from "./stat-files";
+import { KIND, scanIndexFiles, statFiles } from "./stat-files";
 
 /** Paths a turn reached that are kept (TurnSnapshots.reach): past this many, the rest go unseen. */
 const MAX_REACHED = 20_000;
@@ -253,6 +253,49 @@ function worktreeListOf(root: string): WorktreeList {
     return list;
 }
 
+/** Blobs and trees from the repository's objects, raw (`cat-file --batch`, no filters, no replacements). */
+async function objects(root: string, oids: string[], deadline: number): Promise<Map<string, { type: "blob" | "tree"; buf: Buffer }>> {
+    const out = new Map<string, { type: "blob" | "tree"; buf: Buffer }>();
+    if (!oids.length) return out;
+    const r = await git(root, ["cat-file", "--batch"], { input: oids.join("\n") + "\n", deadline, privateEnv: { GIT_NO_REPLACE_OBJECTS: "1" } });
+    const buf = r.out;
+    for (let pos = 0; pos < buf.length;) {
+        const nl = buf.indexOf(10, pos);
+        if (nl < 0) break;
+        const m = /^([0-9a-f]+) (\w+) (\d+)$/.exec(buf.toString("utf-8", pos, nl));
+        if (!m) { pos = nl + 1; continue; } // "<oid> missing"
+        const size = Number(m[3]);
+        if (nl + 1 + size > buf.length) break;
+        if (m[2] === "blob" || m[2] === "tree") out.set(m[1]!, { type: m[2], buf: buf.subarray(nl + 1, nl + 1 + size) });
+        pos = nl + 1 + size + 1;
+    }
+    return out;
+}
+
+/** An object's id from its type and bytes. */
+function objectId(type: string, buf: Buffer, algo: "sha1" | "sha256"): string {
+    const h = new Bun.CryptoHasher(algo);
+    h.update(`${type} ${buf.length}\0`);
+    h.update(buf);
+    return h.digest("hex");
+}
+
+/** Whether each repository may store files as other bytes than they hold (TurnSnapshots.converts), and what that rests on. */
+const convertsByRoot = new Map<string, { key: string; converts: boolean }>();
+
+/** The common Git dir of the repository whose index is at `index` (its own Git dir, or the one a worktree's names). */
+function commonDirOf(index: string): string {
+    const dir = dirname(index);
+    try {
+        return resolve(dir, readFileSync(join(dir, "commondir"), "utf-8").trim());
+    } catch {
+        return dir;
+    }
+}
+
+/** The repository's objects, as git reads them (its common dir's). */
+const objectsOf = (index: string) => join(commonDirOf(index), "objects");
+
 /** The repository's own attributes file (info/attributes in its common Git dir, found from where its index is), stamped. */
 function infoAttributes(index: string | undefined): string {
     if (!index) return "-";
@@ -321,6 +364,8 @@ export class TurnSnapshots {
     private lastTree: string | undefined;
     /** The last capture's lists and what it found at each path (stat-files.ts), with what it left out. */
     private scan?: { trackedId: string; untracked: string[]; kinds: Uint8Array; stamps: Float64Array; recheck: number[]; skipped: Record<string, string>; skippedStamps?: Record<string, string> };
+    /** The last capture from Git's index (captureIndexed): what it rested on, and what it found. */
+    private lastIndexed?: { key: string; tree?: string; skipped: Record<string, string>; skippedStamps?: Record<string, string> };
     /** The last capture's files in their folders, with each folder's tree id (treeObjects). */
     private folders?: Folder;
 
@@ -509,8 +554,10 @@ export class TurnSnapshots {
         const turn: SnapshotTurn = { ...this.active!, end: captured, endedAt: Date.now() };
         this.active = undefined;
         let changes: Change[] | undefined;
+        /** The trees on the way to what changed, both sides: needed to show it, so kept too. */
+        const trees = new Set<string>();
         try {
-            changes = await this.compare(turn, Date.now() + 2000);
+            changes = await this.compare(turn, Date.now() + 2000, trees);
             turn.changed = changes.map((c) => c.path);
         } catch {
             captured.incomplete = true;
@@ -518,7 +565,7 @@ export class TurnSnapshots {
         }
         if (changes?.length) {
             try {
-                await this.keep(changes, turn.start.root ?? this.root ?? this.cwd, Date.now() + END_BUDGET_MS);
+                await this.keep(changes, turn.start.root ?? this.root ?? this.cwd, Date.now() + END_BUDGET_MS, [...trees, turn.start.tree, turn.end?.tree].filter((t): t is string => !!t));
             } catch (e) {
                 captured.incomplete = true;
                 captured.notes.push((e as Error).message);
@@ -535,11 +582,11 @@ export class TurnSnapshots {
      * taken from the repository's objects (fromIndex): the ones the turn changed are copied in now, while the
      * repository still has them, so its diff doesn't depend on them later.
      */
-    private async keep(changes: Change[], root: string, deadline: number) {
+    private async keep(changes: Change[], root: string, deadline: number, trees: string[] = []) {
         const borrowed = new Set<string>();
-        for (const c of changes) for (const e of [c.old, c.now]) {
-            if (e && e.mode !== "160000" && !this.stored.has(e.oid) && !this.unwritten.has(e.oid) && !this.pack?.oids.has(e.oid)) borrowed.add(e.oid);
-        }
+        const mine = (oid: string) => this.stored.has(oid) || this.unwritten.has(oid) || !!this.pack?.oids.has(oid);
+        for (const c of changes) for (const e of [c.old, c.now]) if (e && e.mode !== "160000" && !mine(e.oid)) borrowed.add(e.oid);
+        for (const t of trees) if (!mine(t)) borrowed.add(t);
         if (!borrowed.size) return;
         let missing = 0;
         let take = [...borrowed];
@@ -552,9 +599,9 @@ export class TurnSnapshots {
             take = [];
             for (const line of sized.out.toString().split("\n")) {
                 const [oid, type, size] = line.split(" ");
-                if (!oid || type !== "blob" || !borrowed.has(oid)) continue;
+                if (!oid || (type !== "blob" && type !== "tree") || !borrowed.has(oid)) continue;
                 found.add(oid);
-                if (Number(size) <= MAX_SNAPSHOT_BYTES) take.push(oid);
+                if (type === "tree" || Number(size) <= MAX_SNAPSHOT_BYTES) take.push(oid);
             }
             missing = borrowed.size - found.size;
             if (!take.length || (await this.packFrom(root, take, deadline).then(() => true, () => false))) {
@@ -572,13 +619,13 @@ export class TurnSnapshots {
         }
         try {
             for (const batch of batches) {
-                const found = await blobs(root, batch, deadline, { GIT_NO_REPLACE_OBJECTS: "1" });
+                const found = await objects(root, batch, deadline);
                 for (const oid of batch) {
-                    const buf = found.get(oid);
+                    const o = found.get(oid);
                     // Its bytes, whatever the repository holds under that name.
-                    if (!buf || blobId(buf, this.algo) !== oid) { missing++; continue; }
-                    if (buf.length > MAX_SNAPSHOT_BYTES) continue;
-                    await this.store(buf, "blob", oid);
+                    if (!o || objectId(o.type, o.buf, this.algo) !== oid) { missing++; continue; }
+                    if (o.type === "blob" && o.buf.length > MAX_SNAPSHOT_BYTES) continue;
+                    await this.store(o.buf, o.type, oid);
                 }
             }
         } finally {
@@ -1011,6 +1058,204 @@ export class TurnSnapshots {
      * `ending`: a turn's end, which no model waits on, has longer (END_BUDGET_MS) than a start (2 s): a turn that
      * changed thousands of files is still read whole, rather than marked incomplete and its diff lost.
      */
+    /**
+     * A capture from Git's index (index-scan.ts): the index's own file, copied, with what differs from it (read, as any
+     * capture reads a file) put in; git works out the trees, reusing the repository's for what didn't change, and the new
+     * ones are moved into this session's objects through the quota. Nothing changed since the last one: its tree again.
+     * False, having changed nothing, where it can't be used (a split or sparse index; attributes or core.autocrlf that
+     * store other bytes than a file's; stat times that can't be compared): the whole capture is taken instead.
+     */
+    private async captureIndexed(result: TurnCapture, read: KnownFile[], listed: Buffer, indexPath: string, deadline: number, inTime: () => void): Promise<boolean> {
+        const root = this.root!;
+        if (!msTimesExact(indexPath)) return false;
+        const untracked = listed.toString("utf-8").split("\0").filter(Boolean);
+        const hashBytes = this.algo === "sha1" ? 20 : 32;
+        const stamped = await lstat(indexPath).catch(() => undefined);
+        if (!stamped) return false;
+        const indexStamp = `${stamped.ino}:${stamped.size}:${stamped.mtimeMs}:${stamped.ctimeMs}`;
+        const scan = await scanIndexFiles(root, indexPath, hashBytes, untracked, true, deadline);
+        if (scan.unusable) return false;
+        inTime();
+        if (await this.converts(root, indexPath, [...scan.attributes, ...untracked.filter((p) => p === ".gitattributes" || p.endsWith("/.gitattributes"))], deadline)) return false;
+        // What differs is as it was at the last capture: so is the tree.
+        const key = `${indexStamp}\0${scan.gone.join("\0")}\0${JSON.stringify(scan.differs)}`;
+        const last = this.lastIndexed;
+        if (last && last.key === key && this.lastTree === last.tree) {
+            Object.assign(result.skipped, last.skipped);
+            if (last.skippedStamps) result.skippedStamps = pathMap(last.skippedStamps);
+            result.tree = last.tree;
+            result.incomplete = Object.keys(result.skipped).length > 0;
+            return true;
+        }
+        const zero = "0".repeat(hashBytes * 2);
+        const lines: string[] = [];
+        /** Out of the copy: with any stages a conflict left, and whatever Git kept aside for it. */
+        const remove = (path: string, special?: string) => {
+            if (special === "entry") for (const stage of [1, 2, 3]) lines.push(`0 ${zero} ${stage}\t${path}\0`);
+            lines.push(`0 ${zero}\t${path}\0`);
+        };
+        const put = (path: string, e: Entry, special?: string) => {
+            if (special === "entry") for (const stage of [1, 2, 3]) lines.push(`0 ${zero} ${stage}\t${path}\0`);
+            lines.push(`${e.mode} ${e.oid}\t${path}\0`);
+        };
+        const skip = (path: string, st: FileStat | undefined, reason: string) => {
+            result.skipped[path] = reason;
+            if (st) (result.skippedStamps ??= pathMap())[path] = stampOf(st).join(":");
+        };
+        for (const g of scan.gone) {
+            if (!safePath(g)) throw new Error("A repository path cannot be safely captured.");
+            remove(g);
+        }
+        const toRead: (Seen & { special?: string })[] = [];
+        for (const [i, d] of scan.differs.entries()) {
+            const path = d.path;
+            if (!safePath(path.replace(/\/$/, ""))) throw new Error("A repository path cannot be safely captured.");
+            const st: FileStat | undefined = d.stamp.length ? { kind: d.kind, dev: d.stamp[0]!, ino: d.stamp[1]!, mode: d.stamp[2]!, size: d.stamp[3]!, mtimeMs: d.stamp[4]!, ctimeMs: d.stamp[5]! } : undefined;
+            if (d.kind === KIND.unreadable) {
+                result.skipped[path] = "Unreadable path; not captured, change unknown.";
+                if (d.tracked) remove(path, d.special);
+                continue;
+            }
+            if (d.kind === KIND.missing) { if (d.tracked) remove(path, d.special); continue; }
+            if (d.special === "gitlink") {
+                if (d.kind === KIND.dir) skip(path, st, "Submodule or nested repository contents are not captured.");
+                remove(path);
+                continue;
+            }
+            if (d.kind === KIND.dir) {
+                // A tracked file replaced by a directory is deleted; its new untracked children are entries of their own.
+                if (d.tracked) { remove(path, d.special); continue; }
+                if (this.nested.has(path)) continue;
+                skip(path, st, "Submodule or nested repository contents are not captured.");
+                continue;
+            }
+            if (d.kind !== KIND.file && d.kind !== KIND.link) {
+                skip(path, st, "Not a regular file.");
+                if (d.tracked) remove(path, d.special);
+                continue;
+            }
+            if (st!.size > MAX_SNAPSHOT_BYTES) {
+                skip(path, st, "Over 10 MB; not captured, change unknown.");
+                if (d.tracked) remove(path, d.special);
+                continue;
+            }
+            const known = this.known.get(path);
+            if (known && sameStamp(known.stamp, st!) && this.stored.has(known.entry.oid)) { put(path, known.entry, d.special); continue; }
+            toRead.push({ path, st: st!, at: i, special: d.special });
+        }
+        for (let k = 0; k < toRead.length; k += READ_AT_ONCE) {
+            const done = await Promise.allSettled(toRead.slice(k, k + READ_AT_ONCE).map(async ({ path, st, special }) => {
+                const buf = st.kind === KIND.link ? await readlink(join(root, path), { encoding: "buffer" }).catch(() => undefined) : (await readRegular(join(root, path), MAX_SNAPSHOT_BYTES))?.buf;
+                const tracked = !untracked.includes(path);
+                if (!buf) { skip(path, st, "Unreadable, changed while being read, or over 10 MB; not captured."); if (tracked) remove(path, special); return; }
+                inTime();
+                const after = await lstat(join(root, path)).catch(() => undefined);
+                if (!after || !sameStamp(stampOf(st), after)) { result.skipped[path] = "Changed while being read; not captured."; if (tracked) remove(path, special); return; }
+                const mode = st.kind === KIND.link ? "120000" : st.mode & 0o100 ? "100755" : "100644", oid = blobId(buf, this.algo);
+                const had = this.known.get(path);
+                const same = had?.entry.oid === oid && had.entry.mode === mode && had.entry.size === buf.length;
+                const file: KnownFile = same ? (sameStamp(had.stamp, st) ? had : { path: had.path, stamp: stampOf(st), entry: had.entry }) : { path, stamp: stampOf(st), entry: { mode, oid, size: buf.length } };
+                await this.store(buf, "blob", file.entry.oid);
+                read.push(file);
+                put(path, file.entry, special);
+            }));
+            for (const d of done) if (d.status === "rejected") throw d.reason;
+            if ((this.pack?.bytes ?? 0) >= PACK_MAX_BYTES) await this.finishPack();
+        }
+        // What was read goes to disk with the trees git makes (adopt), in one pack when there are many: git needs neither
+        // to work the trees out (--missing-ok).
+        inTime();
+        const index = join(this.storage, "index");
+        await copyFile(indexPath, index);
+        await chmod(index, 0o600);
+        // Whatever this session's own index held is gone: the whole capture starts afresh if it's taken next.
+        this.indexEntries = new Map();
+        this.folders = undefined;
+        this.scan = undefined;
+        this.index = undefined;
+        const fresh = join(this.storage, `trees-${randomBytes(6).toString("hex")}`);
+        await mkdir(fresh, { mode: 0o700 });
+        try {
+            const env = { GIT_NO_REPLACE_OBJECTS: "1", GIT_INDEX_FILE: index, GIT_OBJECT_DIRECTORY: fresh, GIT_ALTERNATE_OBJECT_DIRECTORIES: [join(this.storage, "objects"), objectsOf(indexPath)].join(delimiter) };
+            const config = ["-c", "core.hooksPath=/dev/null", "-c", "core.splitIndex=false", "-c", "core.sharedRepository=0600", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false"];
+            if (lines.length) {
+                const update = await git(root, [...config, "update-index", "-z", "--index-info"], { input: lines.join(""), privateEnv: env, deadline });
+                if (update.code || update.cut) throw new Error("Could not update the private snapshot index.");
+            }
+            const tree = await git(root, [...config, "write-tree", "--missing-ok"], { privateEnv: env, deadline });
+            const oid = tree.out.toString().trim();
+            if (tree.code || !OID.test(oid)) throw new Error("Could not write the private snapshot tree.");
+            // The trees git made: this session's own objects, through the quota.
+            await this.adopt(fresh);
+            this.lastTree = oid;
+            result.tree = oid;
+        } finally {
+            await rm(fresh, { recursive: true, force: true }).catch(() => {});
+        }
+        result.incomplete = Object.keys(result.skipped).length > 0;
+        this.lastIndexed = { key, tree: result.tree, skipped: pathMap(result.skipped), skippedStamps: result.skippedStamps && pathMap(result.skippedStamps) };
+        return true;
+    }
+
+    /**
+     * The trees git wrote into `fresh`, into this session's objects the way any capture stores them (store: through
+     * the quota, as one pack when there are many), each checked against its id.
+     */
+    private async adopt(fresh: string) {
+        for (const dir of await readdir(fresh).catch(() => [] as string[])) {
+            if (!/^[0-9a-f]{2}$/.test(dir)) continue;
+            for (const name of await readdir(join(fresh, dir))) {
+                const oid = dir + name;
+                if (this.stored.has(oid)) continue;
+                const raw = inflateSync(await readFile(join(fresh, dir, name)));
+                const nul = raw.indexOf(0);
+                const [type] = raw.toString("latin1", 0, nul).split(" ");
+                const bytes = raw.subarray(nul + 1);
+                if ((type !== "tree" && type !== "blob") || objectId(type, bytes, this.algo) !== oid) throw new Error("Could not write the private snapshot tree.");
+                await this.store(Buffer.from(bytes), type, oid);
+            }
+        }
+        await this.writeOut();
+    }
+
+    /**
+     * Whether Git may store some file as other bytes than it holds (an attribute that converts, or core.autocrlf), so
+     * that what its index records can't be taken for it: the attributes files (the repository's, its info/attributes, the
+     * user's) are read for one; asked again only when one of them, or a config file, changes.
+     */
+    private async converts(root: string, indexPath: string, attributes: string[], deadline: number): Promise<boolean> {
+        const home = process.env.HOME ?? "";
+        const xdg = process.env.XDG_CONFIG_HOME || join(home, ".config");
+        const common = commonDirOf(indexPath);
+        const configs = [join(common, "config"), join(dirname(indexPath), "config.worktree"), join(home, ".gitconfig"), join(xdg, "git", "config"), "/etc/gitconfig"];
+        const files = [...attributes.map((p) => join(root, p)), join(common, "info", "attributes"), join(xdg, "git", "attributes"), "/etc/gitattributes", "/usr/local/etc/gitattributes", "/opt/homebrew/etc/gitattributes"];
+        const key = [...configs, ...files].map((f) => `${f}:${stampAt(f)}`).join("\0");
+        const had = convertsByRoot.get(root);
+        if (had?.key === key) return had.converts;
+        let converts = false;
+        const config = await git(root, ["config", "-z", "--get-regexp", "^(core\\.autocrlf|core\\.attributesfile)$"], { deadline, privateEnv: { GIT_NO_REPLACE_OBJECTS: "1" } });
+        if (config.code > 1 || config.cut) converts = true;
+        for (const rec of config.out.toString("utf-8").split("\0").filter(Boolean)) {
+            const nl = rec.indexOf("\n");
+            const name = rec.slice(0, nl < 0 ? rec.length : nl).toLowerCase(), value = nl < 0 ? "" : rec.slice(nl + 1).trim();
+            if (name === "core.autocrlf" && !["false", "no", "off", "0", ""].includes(value.toLowerCase())) converts = true;
+            if (name === "core.attributesfile" && value) files.push(value.startsWith("~/") ? join(home, value.slice(2)) : value);
+        }
+        for (const f of files) {
+            if (converts) break;
+            const text = await readFile(f, "utf-8").catch(() => "");
+            for (const line of text.split("\n")) {
+                const t = line.trim();
+                if (!t || t.startsWith("#")) continue;
+                // An attribute that converts, set (not unset with -, or ! for unspecified); or a macro defined with one.
+                if (t.split(/\s+/).slice(1).some((tok) => !/^[-!]/.test(tok) && CONVERTING.has(tok.split("=")[0]!)) || (t.startsWith("[attr]") && /\b(text|eol|crlf|filter|ident|working-tree-encoding)\b/.test(t))) { converts = true; break; }
+            }
+        }
+        if (convertsByRoot.size >= 256 && !convertsByRoot.has(root)) convertsByRoot.delete(convertsByRoot.keys().next().value!);
+        convertsByRoot.set(root, { key, converts });
+        return converts;
+    }
+
     private async capture(ending = false): Promise<TurnCapture | undefined> {
         const started = Date.now();
         const deadline = started + (this.options.budgetMs ?? (ending ? END_BUDGET_MS : 2000));
@@ -1060,6 +1305,9 @@ export class TurnSnapshots {
             await this.measureStore(inTime);
             const indexPath = indexAt.code ? undefined : resolve(this.root, indexAt.out.toString().replace(/\n$/, ""));
             if (indexPath) where.index = indexPath;
+            // Git's index as the base: what differs from it is read, and the rest is what it records, so nothing of the
+            // files that haven't changed is held here (index-scan.ts). The whole capture below where that can't be.
+            if (indexPath && (await this.captureIndexed(result, read, others.out, indexPath, deadline, inTime))) return result;
             const index = indexPath ? await this.readIndex(indexPath) : undefined;
             let tracked: string[], modeAt: (path: string) => string | undefined;
             if (index) {
@@ -1309,27 +1557,39 @@ export class TurnSnapshots {
      * The paths whose entries differ between two captured trees, each with both (git diff-tree, raw: no rename
      * detection, no blob read), so a turn's end reads what changed rather than both whole trees.
      */
-    private async differ(start: TurnCapture, end: TurnCapture, deadline: number): Promise<Map<string, { old?: Entry; now?: Entry }>> {
+    private async differ(start: TurnCapture, end: TurnCapture, deadline: number, trees?: Set<string>): Promise<Map<string, { old?: Entry; now?: Entry }>> {
         if (!start.tree || !end.tree) throw new Error("This turn has an incomplete snapshot with no tree.");
-        const r = await git(start.root ?? this.cwd, ["diff-tree", "-r", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", start.tree, end.tree], { privateEnv: this.env(), deadline });
+        // The trees of what didn't change may be the repository's (captureIndexed): read, never written, from there too.
+        const r = await git(start.root ?? this.cwd, ["diff-tree", "-r", "-t", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", start.tree, end.tree], { privateEnv: this.readEnv(), deadline });
         if (r.code || r.cut) throw new Error("Snapshot objects are missing or unreadable; this turn is incomplete.");
         const out = new Map<string, { old?: Entry; now?: Entry }>();
-        // ":<old mode> <new mode> <old id> <new id> <status>" NUL "<path>" NUL, for each.
+        const none = /^0+$/;
+        // ":<old mode> <new mode> <old id> <new id> <status>" NUL "<path>" NUL, for each; the trees on the way (-t) too.
         const fields = r.out.toString("utf-8").split("\0");
         for (let i = 0; i + 1 < fields.length; i += 2) {
             const m = /^:(\d{6}) (\d{6}) ([0-9a-f]+) ([0-9a-f]+) [A-Z]/.exec(fields[i]!);
             const path = fields[i + 1]!;
             if (!m || !safePath(path)) throw new Error("Snapshot contains an unsafe repository path.");
-            const none = /^0+$/;
+            // A folder's line (git lists a file that became one, or the reverse, as a line of each kind).
+            if (m[1] === "040000" || m[2] === "040000") {
+                if (trees) for (const [mode, oid] of [[m[1], m[3]], [m[2], m[4]]]) if (mode === "040000" && !none.test(oid!)) trees.add(oid!);
+                continue;
+            }
             out.set(path, { old: m[1] === "000000" || none.test(m[3]!) ? undefined : { mode: m[1]!, oid: m[3]! }, now: m[2] === "000000" || none.test(m[4]!) ? undefined : { mode: m[2]!, oid: m[4]! } });
         }
         return out;
     }
 
-    private async compare(turn: SnapshotTurn, deadline: number): Promise<Change[]> {
+    /** This session's objects, with the repository's (when its index is known) to read what a capture took from it. */
+    private readEnv(): Record<string, string> {
+        const index = locations.get(this.cwd)?.index;
+        return index ? { ...this.env(), GIT_ALTERNATE_OBJECT_DIRECTORIES: objectsOf(index) } : this.env();
+    }
+
+    private async compare(turn: SnapshotTurn, deadline: number, trees?: Set<string>): Promise<Change[]> {
         if (!turn.end) return [];
         if (turn.start.tree && turn.start.tree === turn.end.tree && !Object.keys(turn.start.skipped).length && !Object.keys(turn.end.skipped).length) return [];
-        const differs = await this.differ(turn.start, turn.end, deadline);
+        const differs = await this.differ(turn.start, turn.end, deadline, trees);
         const skipped = pathMap(turn.start.skipped, turn.end.skipped);
         const changes: Change[] = [];
         // A path left out on one side isn't in that side's tree, so it differs; one left out of both is in neither.
@@ -1346,7 +1606,7 @@ export class TurnSnapshots {
     private async sizes(changes: Change[], root: string, deadline: number) {
         const entries = changes.flatMap((c) => [c.old, c.now]).filter((e): e is Entry => !!e && e.mode !== "160000" && e.size === undefined);
         if (!entries.length) return;
-        const r = await git(root, ["cat-file", "--batch-check=%(objectname) %(objectsize)"], { input: [...new Set(entries.map((e) => e.oid))].join("\n") + "\n", privateEnv: this.env(), deadline });
+        const r = await git(root, ["cat-file", "--batch-check=%(objectname) %(objectsize)"], { input: [...new Set(entries.map((e) => e.oid))].join("\n") + "\n", privateEnv: this.readEnv(), deadline });
         const size = new Map<string, number>();
         for (const line of r.out.toString().split("\n")) {
             const [oid, n] = line.split(" ");

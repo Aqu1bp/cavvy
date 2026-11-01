@@ -111,7 +111,7 @@ In a repository of 30,000 files at this pace the server's memory climbed in step
 |---|---:|---:|
 | Markdown parsed per streamed character | 12.3 | 3, not worth it |
 | Each code line tokenized | 2 | 2 |
-| `git` processes per turn with an edit | 20 | 20 |
+| `git` processes per turn with an edit | 17 | 17 |
 | `git` processes per unchanged turn | 2 | 2 |
 | `git` processes while idle | 0 | 0 |
 
