@@ -943,8 +943,10 @@ describe("per-turn snapshots", () => {
         expect(snapshots.list()[2]!.end!.durationMs).toBeGreaterThan(0);
     }, 30_000);
 
-    test("a capture that looks only at what the watch saw change agrees with one that looks at everything", async () => {
+    for (const version of [2, 4]) test(`a capture that looks only at what the watch saw change agrees with one that looks at everything (index version ${version})`, async () => {
         const { cwd, dir } = setup({ ".gitignore": "*.log\nbuild/\n", "a/b/c.txt": "c\n", "a/d.txt": "d\n", "e.txt": "e\n", "f/g.txt": "g\n", "h/i/j.txt": "j\n", "k.txt": "k\n", "run.sh": "echo\n" });
+        git(cwd, ["config", "index.version", String(version)]);
+        git(cwd, ["update-index", "--index-version", String(version)]);
         const outside = join(dirname(cwd), "outside");
         mkdirSync(outside);
         const snapshots = new TurnSnapshots(dir, cwd, { narrowFromMs: 0 });
@@ -986,9 +988,9 @@ describe("per-turn snapshots", () => {
             await full.stop();
         }
         await snapshots.end();
-        // The rest looked only at what changed: one in nine looks at everything anyway, and so does one after Git's index
-        // records something else (staged); rewritten as it was (git status, a commit), it's no reason to.
-        expect(whole).toEqual(["folder to file", "staged"]);
+        // The rest looked only at what changed. One after Git's index records something else (staged) looks at
+        // everything; rewritten as it was (git status, a commit), it's no reason to.
+        expect(whole).toEqual(["staged"]);
         await snapshots.stop();
     }, 60_000);
 

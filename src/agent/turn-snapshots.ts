@@ -24,6 +24,7 @@ import { Pace } from "../util/pace";
 import { KIND, scanIndexFiles, scanIndexPaths, statFiles } from "./stat-files";
 import type { Differs, IndexScan } from "./index-scan";
 import { acquireWatch, releaseWatch, type FolderWatch } from "./folder-watch";
+import { editTree, ObjectReader, type TreeEdit } from "./tree-edit";
 
 /** Paths a turn reached that are kept (TurnSnapshots.reach): past this many, the rest go unseen. */
 const MAX_REACHED = 20_000;
@@ -81,9 +82,12 @@ const END_BUDGET_MS = 10_000;
  * (ms): below it, looking at everything costs less than waiting for the watch's events.
  */
 const NARROW_FROM_MS = 60;
-/** Captures in a row that look only at what changed, and for how long (ms), before one looks at everything again. */
-const NARROW_MAX = 8;
-const NARROW_FULL_EVERY_MS = 120_000;
+/**
+ * Captures in a row that look only at what changed, and for how long (ms), before one looks at everything again: a
+ * watch that missed something (it says so when it can tell, and everything is looked at then) isn't relied on for long.
+ */
+const NARROW_MAX = 32;
+const NARROW_FULL_EVERY_MS = 10 * 60_000;
 /** Past this many changed paths (or this many bytes of them, as git's arguments), everything is looked at. */
 const NARROW_MAX_PATHS = 2000;
 const NARROW_MAX_ARG_BYTES = 128 * 1024;
@@ -305,6 +309,8 @@ function objectId(type: string, buf: Buffer, algo: "sha1" | "sha256"): string {
 
 /** Whether each repository may store files as other bytes than they hold (TurnSnapshots.converts), and what that rests on. */
 const convertsByRoot = new Map<string, { key: string; converts: boolean; excludes?: string }>();
+/** Cache-tree roots whose every tree git was found to have (fromCacheTree): they aren't looked for again. */
+const treesFound = new Set<string>();
 
 /**
  * What says, outside the folder, which files are ignored (its info/exclude, core.excludesFile, and the config files
@@ -427,7 +433,6 @@ export class TurnSnapshots {
         tree: string;
         skipped: Record<string, string>;
         skippedStamps?: Record<string, string>;
-        privStamp: string;
         narrowed: number;
         fullAt: number;
         fullMs: number;
@@ -1155,11 +1160,10 @@ export class TurnSnapshots {
     /**
      * A capture from the last one from Git's index (captureIndexed), looking only at the paths the folder's watch saw
      * change since (and what Git's index or that capture had under them): each stat'ed, the untracked ones asked of git
-     * (ls-files, for what's ignored), what differs read, and the trees worked out again from this session's copy of the
-     * index as that capture left it. False, having changed nothing, wherever that can't be told for sure: the index, an
-     * ignore or attributes file, or Git's config changed; the watch missed something or saw too much; this session's
-     * copy of the index was written since; or it's been a while (NARROW_MAX, NARROW_FULL_EVERY_MS). The whole folder
-     * is looked at then.
+     * (ls-files, for what's ignored), what differs read, and the last tree edited along those paths (editTrees). False,
+     * having changed nothing, wherever that can't be told for sure: Git's index records something else, an ignore or
+     * attributes file or Git's config changed, the watch missed something or saw too much, or it's been a while
+     * (NARROW_MAX, NARROW_FULL_EVERY_MS). The whole folder is looked at then.
      */
     private async captureNarrowed(result: TurnCapture, read: KnownFile[], indexPath: string, deadline: number, inTime: () => void, ending: boolean): Promise<boolean> {
         const base = this.indexedBase, w = this.watch, root = this.root!;
@@ -1167,7 +1171,7 @@ export class TurnSnapshots {
         if (base.narrowed >= NARROW_MAX || Date.now() - base.fullAt > NARROW_FULL_EVERY_MS) return false;
         if (this.lastTree !== base.tree || !msTimesExact(indexPath)) return false;
         const stamped = await lstat(indexPath).catch(() => undefined);
-        if (!stamped || (await this.privateStamp()) !== base.privStamp) return false;
+        if (!stamped) return false;
         // Git's index written since: still the base, if what it records is the same (scanIndexPaths says).
         const indexStamp = stampKey(stamped), rewritten = indexStamp !== base.indexStamp;
         if (ignoreKeyOf(root, indexPath) !== base.ignoreKey || (await this.converts(root, indexPath, base.attributes, deadline))) return false;
@@ -1248,11 +1252,18 @@ export class TurnSnapshots {
         Object.assign(result.skipped, skipped);
         if (skippedStamps) result.skippedStamps = skippedStamps;
         const lines = await this.applyDiffers(now, out, result, read, inTime, restore);
-        if (lines.length) await this.writeTrees(indexPath, lines, false, result, deadline, inTime);
-        else {
-            result.tree = base.tree;
-            result.incomplete = Object.keys(result.skipped).length > 0;
+        try {
+            result.tree = lines.length ? await this.editTrees(root, base.tree, lines, deadline) : base.tree;
+        } catch (e) {
+            // The edits didn't fit the last tree: the whole capture instead, from nothing this one found.
+            if (Date.now() >= deadline) throw e;
+            for (const p of Object.keys(result.skipped)) delete result.skipped[p];
+            delete result.skippedStamps;
+            this.indexedBase = undefined;
+            return false;
         }
+        this.lastTree = result.tree;
+        result.incomplete = Object.keys(result.skipped).length > 0;
         Object.assign(base, {
             gen,
             indexStamp,
@@ -1261,7 +1272,6 @@ export class TurnSnapshots {
             tree: result.tree!,
             skipped: pathMap(result.skipped),
             skippedStamps: result.skippedStamps && pathMap(result.skippedStamps),
-            privStamp: await this.privateStamp(),
             narrowed: base.narrowed + 1,
         });
         this.narrowedCount++;
@@ -1275,7 +1285,7 @@ export class TurnSnapshots {
      * False, having changed nothing, where it can't be used (a split or sparse index; attributes or core.autocrlf that
      * store other bytes than a file's; stat times that can't be compared): the whole capture is taken instead.
      */
-    private async captureIndexed(result: TurnCapture, read: KnownFile[], listed: Buffer, indexPath: string, deadline: number, inTime: () => void, gen: number): Promise<boolean> {
+    private async captureIndexed(result: TurnCapture, read: KnownFile[], listed: Buffer, indexPath: string, deadline: number, inTime: () => void, gen: number, early?: { stamp: string; scan: Promise<IndexScan> }): Promise<boolean> {
         const root = this.root!;
         if (!msTimesExact(indexPath)) return false;
         const untracked = listed.toString("utf-8").split("\0").filter(Boolean);
@@ -1285,7 +1295,18 @@ export class TurnSnapshots {
         const indexStamp = stampKey(stamped);
         // Whatever the last one found, this looks at everything.
         this.indexedBase = undefined;
-        const scan = await scanIndexFiles(root, indexPath, hashBytes, untracked, true, deadline);
+        let scan: IndexScan;
+        if (early && early.stamp === indexStamp) {
+            // Read alongside the listing, and not written since: the untracked files' stats to add.
+            scan = await early.scan;
+            if (!scan.unusable && untracked.length) {
+                const { kinds, stamps } = await statFiles(root, "untracked", [], untracked, deadline, inTime);
+                untracked.forEach((path, i) => {
+                    if (kinds[i] === KIND.missing) return;
+                    scan.differs.push({ path, tracked: false, kind: kinds[i]!, stamp: kinds[i] === KIND.unreadable ? [] : Array.from(stamps.subarray(i * 6, i * 6 + 6)) });
+                });
+            }
+        } else scan = await scanIndexFiles(root, indexPath, hashBytes, untracked, true, deadline);
         if (scan.unusable) return false;
         inTime();
         if (await this.converts(root, indexPath, [...scan.attributes, ...untracked.filter((p) => p === ".gitattributes" || p.endsWith("/.gitattributes"))], deadline)) return false;
@@ -1301,9 +1322,40 @@ export class TurnSnapshots {
             return true;
         }
         const lines = await this.applyDiffers(scan.differs, scan.gone, result, read, inTime);
-        await this.writeTrees(indexPath, lines, true, result, deadline, inTime);
+        if (!(await this.fromCacheTree(root, scan, lines, result, deadline))) await this.writeTrees(indexPath, lines, true, result, deadline, inTime);
         this.lastIndexed = { key, tree: result.tree, skipped: pathMap(result.skipped), skippedStamps: result.skippedStamps && pathMap(result.skippedStamps) };
         await this.rememberIndexed(root, indexPath, gen, indexStamp, scan, result);
+        return true;
+    }
+
+    /**
+     * The tree from the one Git last worked out for its index (its cache-tree, valid after a checkout or a commit),
+     * edited along what differs (editTrees): no copy of the index to write, and no trees but those to make. False when
+     * there's none, or git doesn't have every tree it names: the trees are worked out from a copy of the index then.
+     */
+    private async fromCacheTree(root: string, scan: IndexScan, lines: string[], result: TurnCapture, deadline: number): Promise<boolean> {
+        const cached = scan.cacheTree;
+        if (!cached) return false;
+        if (!treesFound.has(cached.root)) {
+            const check = await git(root, ["cat-file", "--batch-check=%(objecttype)"], { input: cached.trees.map((t) => `${t}\n`).join(""), privateEnv: this.readEnv(), deadline });
+            if (check.code || check.cut || check.out.toString().split("\n").filter(Boolean).some((t) => t !== "tree")) return false;
+            if (treesFound.size >= 64) treesFound.delete(treesFound.values().next().value!);
+            treesFound.add(cached.root);
+        }
+        let tree: string;
+        try {
+            tree = lines.length ? await this.editTrees(root, cached.root, lines, deadline) : cached.root;
+        } catch (e) {
+            if (Date.now() >= deadline) throw e;
+            return false;
+        }
+        // Whatever this session's own index held is no base for the whole capture's next one.
+        this.indexEntries = new Map();
+        this.folders = undefined;
+        this.scan = undefined;
+        this.index = undefined;
+        this.lastTree = result.tree = tree;
+        result.incomplete = Object.keys(result.skipped).length > 0;
         return true;
     }
 
@@ -1322,7 +1374,6 @@ export class TurnSnapshots {
                 tree: result.tree!,
                 skipped: pathMap(result.skipped),
                 skippedStamps: result.skippedStamps && pathMap(result.skippedStamps),
-                privStamp: await this.privateStamp(),
                 narrowed: 0,
                 fullAt: Date.now(),
                 fullMs: 0,
@@ -1455,11 +1506,32 @@ export class TurnSnapshots {
         result.incomplete = Object.keys(result.skipped).length > 0;
     }
 
-    /** This session's copy of Git's index, as it is now (that nothing else has written it since). */
-    private async privateStamp(): Promise<string> {
-        const st = await lstat(join(this.storage, "index")).catch(() => undefined);
-        // Not its ctime: harden chmods it after each capture. Git writes it anew each time (a lock file, renamed).
-        return st ? `${st.ino}:${st.size}:${st.mtimeMs}` : "-";
+    /**
+     * `base` with what `lines` (as for update-index --index-info) put in or take out: only the trees on the way to
+     * those paths read (this session's objects or the repository's) and made again (tree-edit.ts), into this
+     * session's objects through the quota.
+     */
+    private async editTrees(root: string, base: string, lines: string[], deadline: number): Promise<string> {
+        const edits = new Map<string, TreeEdit>();
+        for (const line of lines) {
+            const tab = line.indexOf("\t");
+            const meta = line.slice(0, tab).split(" "), path = line.slice(tab + 1, -1);
+            // A conflict's other stages are the index's only.
+            if (meta.length !== 2) continue;
+            edits.set(path, meta[0] === "0" ? null : { mode: meta[0]!, oid: meta[1]! });
+        }
+        const reader = new ObjectReader(root, this.readEnv(), deadline);
+        try {
+            const tree = await editTree(base, edits, this.algo === "sha1" ? 20 : 32, (oid) => reader.read(oid, "tree"), async (body) => {
+                const oid = objectId("tree", body, this.algo);
+                await this.store(body, "tree", oid);
+                return oid;
+            });
+            await this.writeOut();
+            return tree;
+        } finally {
+            reader.close();
+        }
     }
 
     /**
@@ -1573,7 +1645,17 @@ export class TurnSnapshots {
             // Only what the folder's watch saw change since the last capture from Git's index, where that's enough.
             if (where.index && (await this.captureNarrowed(result, read, where.index, deadline, inTime, ending))) return result;
             // Untracked files as git lists them (it knows what's ignored); then the tracked ones, from Git's index read
-            // after that, so nothing there before the listing slips between the two.
+            // after that, so nothing there before the listing slips between the two. Where the index is known, it's
+            // read and its files stat'ed alongside the listing, and that's kept if it wasn't written in the meantime.
+            let early: { stamp: string; scan: Promise<IndexScan> } | undefined;
+            const knownIndex = where.index;
+            if (knownIndex && msTimesExact(knownIndex)) {
+                const st = await lstat(knownIndex).catch(() => undefined);
+                if (st) {
+                    early = { stamp: stampKey(st), scan: scanIndexFiles(this.root, knownIndex, where.algo === "sha1" ? 20 : 32, [], true, deadline) };
+                    early.scan.catch(() => {});
+                }
+            }
             const [others, indexAt] = await Promise.all([
                 git(this.root, ["ls-files", "-z", "--others", "--exclude-standard"], { maxBytes: 16 * 1024 * 1024, deadline, privateEnv: metadataEnv }),
                 where.index ? { code: 0, out: Buffer.from(where.index) } : git(this.root, ["rev-parse", "--git-path", "index"], { deadline, privateEnv: metadataEnv }),
@@ -1586,7 +1668,7 @@ export class TurnSnapshots {
             if (indexPath) where.index = indexPath;
             // Git's index as the base: what differs from it is read, and the rest is what it records, so nothing of the
             // files that haven't changed is held here (index-scan.ts). The whole capture below where that can't be.
-            if (indexPath && (await this.captureIndexed(result, read, others.out, indexPath, deadline, inTime, genAtStart ?? -1))) {
+            if (indexPath && (await this.captureIndexed(result, read, others.out, indexPath, deadline, inTime, genAtStart ?? -1, indexPath === knownIndex ? early : undefined))) {
                 if (this.indexedBase) this.indexedBase.fullMs = Date.now() - started;
                 return result;
             }

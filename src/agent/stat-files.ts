@@ -3,6 +3,8 @@
 // left it out, or CAVVY_STAT_WORKER=0), here, a few milliseconds at a time.
 
 import { lstatSync, type Stats } from "fs";
+import { open } from "fs/promises";
+import { loadavg } from "os";
 import { Pace } from "../util/pace";
 import { scanIndex, scanPaths, type IndexScan } from "./index-scan";
 
@@ -27,6 +29,8 @@ export interface IndexRequest {
     hashBytes: number;
     untracked: string[];
     msExact: boolean;
+    /** Only the `k`th of `n` runs of its entries (index-scan.ts scanIndex). */
+    part?: { k: number; n: number };
 }
 
 /** Only some paths of a folder against its Git index (index-scan.ts scanPaths). */
@@ -49,13 +53,20 @@ export interface FileStats {
 
 /** undefined: not started yet; null: none to be had. */
 let worker: Worker | null | undefined;
+/** More workers, for a big index's scan to run side by side (scanIndexFiles); let go when idle (HELPERS_IDLE_MS). */
+let helpers: Worker[] = [];
+let helpersIdle: ReturnType<typeof setTimeout> | undefined;
+const HELPERS_IDLE_MS = 30_000;
+/** Index entries for each worker a scan runs on, at least, and at most this many workers. */
+const ENTRIES_PER_WORKER = 25_000;
+const MAX_WORKERS = 4;
 const waiting = new Map<number, (r: StatReply) => void>();
 /** Tracked lists the worker was sent (it can let one go: it then says so, and is sent it again). */
 const sent = new Set<string>();
 let asked = 0;
 
-function started(): Worker | undefined {
-    if (worker !== undefined || process.env.CAVVY_STAT_WORKER === "0") return worker ?? undefined;
+/** A stat worker; `gone` when it stops (whatever it was asked is answered here instead). */
+function spawn(gone: (w: Worker) => void): Worker | undefined {
     try {
         // Built into one binary (bun build --compile, with the worker as an entry point of its own), this module's url
         // is the binary's, at the root of src/; run from source, it's this file's.
@@ -68,17 +79,40 @@ function started(): Worker | undefined {
             waiting.delete(e.data.id);
         };
         w.onerror = (e) => {
-            // Gone (or never there): whatever it was asked is answered here instead, and so is the rest.
-            worker = null;
+            gone(w);
             w.terminate();
             for (const [id, answer] of waiting) answer({ id, error: e.message || "The stat worker stopped." });
             waiting.clear();
         };
-        worker = w;
+        return w;
     } catch {
-        worker = null;
+        return undefined;
     }
+}
+
+function started(): Worker | undefined {
+    if (worker !== undefined || process.env.CAVVY_STAT_WORKER === "0") return worker ?? undefined;
+    worker = spawn(() => { worker = null; }) ?? null;
     return worker ?? undefined;
+}
+
+/** Up to `n` workers to run side by side (the first is the one every capture uses), as many as could be started. */
+function pool(n: number): Worker[] {
+    const first = started();
+    if (!first) return [];
+    while (helpers.length < n - 1) {
+        const w = spawn((gone) => { helpers = helpers.filter((h) => h !== gone); });
+        if (!w) break;
+        helpers.push(w);
+    }
+    if (helpersIdle) clearTimeout(helpersIdle);
+    helpersIdle = setTimeout(() => {
+        for (const h of helpers) h.terminate();
+        helpers = [];
+        helpersIdle = undefined;
+    }, HELPERS_IDLE_MS);
+    helpersIdle.unref?.();
+    return [first, ...helpers.slice(0, n - 1)];
 }
 
 function ask(w: Worker, req: Omit<StatRequest, "id"> | Omit<IndexRequest, "id"> | Omit<PathsRequest, "id">, deadline: number): Promise<StatReply> {
@@ -112,13 +146,41 @@ export async function statFiles(root: string, trackedId: string, tracked: string
     return statHere(root, tracked, untracked, inTime);
 }
 
-/** `root`'s differences from its Git index (index-scan.ts), on the worker; here, all at once, where there's none. */
+/** Entries Git's index file says it has (0 when it can't be read). */
+async function entriesIn(indexFile: string): Promise<number> {
+    try {
+        const f = await open(indexFile, "r");
+        try {
+            const head = Buffer.alloc(12);
+            const { bytesRead } = await f.read(head, 0, 12, 0);
+            return bytesRead === 12 ? head.readUInt32BE(8) : 0;
+        } finally {
+            await f.close();
+        }
+    } catch {
+        return 0;
+    }
+}
+
+/**
+ * `root`'s differences from its Git index (index-scan.ts), on the worker, or for a big index on several side by side
+ * while the machine has cores to spare, each taking a run of its entries (stat calls are most of it, and the system
+ * takes them in parallel); here, all at once, where there's none.
+ */
 export async function scanIndexFiles(root: string, indexFile: string, hashBytes: number, untracked: string[], msExact: boolean, deadline: number): Promise<IndexScan> {
-    const w = started();
-    if (w) {
-        const r = await ask(w, { root, indexFile, hashBytes, untracked, msExact }, deadline);
-        if (r.scan) return r.scan;
-        if (r.error === "late") throw new Error("Snapshot exceeded its time budget (2 seconds by default).");
+    // Side by side only with cores to spare: run so, stat calls cost a little more each, which a busy machine pays for.
+    const spare = Math.floor(navigator.hardwareConcurrency - (loadavg()[0] ?? 0));
+    const want = Math.min(MAX_WORKERS, Math.max(1, spare), Math.ceil((await entriesIn(indexFile)) / ENTRIES_PER_WORKER));
+    const ws = want > 1 ? pool(want) : [started()].filter((w): w is Worker => !!w);
+    if (ws.length) {
+        const n = ws.length;
+        const replies = await Promise.all(ws.map((w, k) => ask(w, { root, indexFile, hashBytes, untracked: k === n - 1 ? untracked : [], msExact, part: { k, n } }, deadline)));
+        if (replies.some((r) => r.error === "late")) throw new Error("Snapshot exceeded its time budget (2 seconds by default).");
+        if (replies.every((r) => r.scan)) {
+            const scans = replies.map((r) => r.scan!);
+            const unusable = scans.find((sc) => sc.unusable)?.unusable;
+            return { ...(unusable ? { unusable } : {}), differs: scans.flatMap((sc) => sc.differs), gone: scans.flatMap((sc) => sc.gone), attributes: scans.flatMap((sc) => sc.attributes), contentKey: scans[0]!.contentKey, cacheTree: scans[0]!.cacheTree };
+        }
     }
     return scanIndex(root, indexFile, hashBytes, untracked, msExact);
 }

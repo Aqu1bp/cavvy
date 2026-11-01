@@ -68,7 +68,7 @@ self.onmessage = (e: MessageEvent<StatRequest | IndexRequest | PathsRequest>) =>
     try {
         const r = e.data;
         reply = "paths" in r ? { id: r.id, paths: scanPaths(r.root, r.indexFile, r.hashBytes, r.paths, r.msExact) }
-            : "indexFile" in r ? { id: r.id, scan: scanIndex(r.root, r.indexFile, r.hashBytes, r.untracked, r.msExact) } : stat(r);
+            : "indexFile" in r ? { id: r.id, scan: scanIndex(r.root, r.indexFile, r.hashBytes, r.untracked, r.msExact, r.part) } : stat(r);
     } catch (err) {
         reply = { id: e.data.id, error: String((err as Error)?.message ?? err) };
     }

@@ -29,6 +29,32 @@ export interface IndexScan {
     attributes: string[];
     /** What the index records (contentKey), not when or how it was written. */
     contentKey?: string;
+    /** The trees of what the index records, as Git last worked them out (its cache-tree), when they're all still so. */
+    cacheTree?: { root: string; trees: string[] };
+}
+
+/**
+ * The index's cache-tree extension: each folder's path, its entry count (-1 when something in it changed since its
+ * tree was worked out) and its subtrees' count, then its tree's id when it's valid. Only when the root's is.
+ */
+function cacheTreeOf(data: Buffer, hashBytes: number): { root: string; trees: string[] } | undefined {
+    const trees: string[] = [];
+    let pos = 0;
+    while (pos < data.length) {
+        const nul = data.indexOf(0, pos);
+        const nl = data.indexOf(10, nul);
+        if (nul < 0 || nl < 0) return undefined;
+        const [entries] = data.toString("latin1", nul + 1, nl).split(" ");
+        pos = nl + 1;
+        if (Number(entries) < 0) {
+            if (!trees.length) return undefined;
+            continue;
+        }
+        if (pos + hashBytes > data.length) return undefined;
+        trees.push(data.toString("hex", pos, pos + hashBytes));
+        pos += hashBytes;
+    }
+    return trees.length ? { root: trees[0]!, trees } : undefined;
 }
 
 /**
@@ -36,13 +62,27 @@ export interface IndexScan {
  * device or inode, which Git rewrites the index to refresh (git status does) though no file's content changed.
  */
 class ContentKey {
-    private parts: Buffer[] = [];
-    add(buf: Buffer, start: number, end: number) {
-        this.parts.push(buf.subarray(start + 24, end));
+    private words: Int32Array;
+    /** Blanks each entry's stat fields (its first 24 bytes) in `bytes`, once nothing else reads them. */
+    constructor(private bytes: Buffer) {
+        this.words = new Int32Array(bytes.buffer, 0, bytes.buffer.byteLength >> 2);
     }
-    get key(): string {
-        return Bun.hash(Buffer.concat(this.parts)).toString(36);
+    add(start: number) {
+        const at = this.bytes.byteOffset + start;
+        if (at & 3) return void this.bytes.fill(0, start, start + 24);
+        const w = at >> 2;
+        this.words[w] = this.words[w + 1] = this.words[w + 2] = this.words[w + 3] = this.words[w + 4] = this.words[w + 5] = 0;
     }
+    /** Of the entries, up to `end` (not the extensions after them: a commit rewrites the cached trees). */
+    key(end: number): string {
+        return Bun.hash(this.bytes.subarray(0, end)).toString(36);
+    }
+}
+
+/** Where an entry's path ends (its NUL): its length is in its flags, unless it's 4095 bytes or more. */
+function pathEnd(buf: Buffer, flags: number, from: number): number {
+    const length = flags & 0xfff;
+    return length < 0xfff && buf[from + length] === 0 ? from + length : buf.indexOf(0, from);
 }
 
 const MAGIC = 0x44495243;
@@ -67,8 +107,10 @@ const stampOf = (st: Stats) => [st.dev, st.ino, st.mode, st.size, st.mtimeMs, st
 /**
  * `root`'s differences from its index (`indexFile`, ids of `hashBytes`). `msExact`: fs.Stats' millisecond times are
  * seconds × 1000 + nanoseconds / 1e6 here (git-index.ts msTimesExact); if not, every tracked file counts as differing.
+ * `part`: the `k`th of `n` runs of the index's entries only (stat-files.ts runs them side by side, as git's
+ * preload-index does): the first works out the content key, the last looks at the untracked paths.
  */
-export function scanIndex(root: string, indexFile: string, hashBytes: number, untracked: readonly string[], msExact: boolean): IndexScan {
+export function scanIndex(root: string, indexFile: string, hashBytes: number, untracked: readonly string[], msExact: boolean, part: { k: number; n: number } = { k: 0, n: 1 }): IndexScan {
     const out: IndexScan = { differs: [], gone: [], attributes: [] };
     let buf: Buffer, written: Stats;
     try {
@@ -106,12 +148,17 @@ export function scanIndex(root: string, indexFile: string, hashBytes: number, un
     };
     const count = buf.readUInt32BE(8);
     const end = buf.length - hashBytes;
-    const content = new ContentKey();
+    const content = part.k === 0 ? new ContentKey(buf) : undefined;
+    const from = Math.floor((count * part.k) / part.n), to = Math.floor((count * (part.k + 1)) / part.n);
     let pos = 12;
-    let prev: Buffer = Buffer.alloc(0);
+    // A version 4 index's path is the last one's, cut and added to: built here, in place.
+    let built = Buffer.alloc(4096), builtLength = 0;
     let last = "";
+    let before = -1;
     for (let n = 0; n < count; n++) {
-        const start = pos;
+        // The last entry's stat fields are read: blanked for the content key.
+        if (before >= 0) content?.add(before);
+        const start = (before = pos);
         if (start + 40 + hashBytes + 2 > end) return { ...out, unusable: "unreadable" };
         const flags = buf.readUInt16BE(start + 40 + hashBytes);
         pos = start + 42 + hashBytes;
@@ -122,29 +169,36 @@ export function scanIndex(root: string, indexFile: string, hashBytes: number, un
             pos += 2;
         }
         let path: string;
+        const mine = n >= from - 1 && n < to;
         if (version === 4) {
             const [strip, next] = varint(buf, pos);
-            if (strip > prev.length) return { ...out, unusable: "unreadable" };
             const nul = buf.indexOf(0, next);
-            if (nul < 0 || nul >= end) return { ...out, unusable: "unreadable" };
-            prev = Buffer.concat([prev.subarray(0, prev.length - strip), buf.subarray(next, nul)]);
-            path = prev.toString("utf-8");
+            if (strip > builtLength || nul < 0 || nul >= end) return { ...out, unusable: "unreadable" };
+            const length = builtLength - strip + nul - next;
+            if (built.length < length) {
+                const bigger = Buffer.alloc(length * 2);
+                built.copy(bigger, 0, 0, builtLength - strip);
+                built = bigger;
+            }
+            buf.copy(built, builtLength - strip, next, nul);
+            builtLength = length;
+            // Only this part's paths (and the one before, for a conflict's stages) are made strings.
+            path = mine ? built.toString("utf-8", 0, length) : "";
             pos = nul + 1;
         } else {
-            const nul = buf.indexOf(0, pos);
+            const nul = pathEnd(buf, flags, pos);
             if (nul < 0 || nul >= end) return { ...out, unusable: "unreadable" };
-            path = buf.toString("utf-8", pos, nul);
+            path = mine ? buf.toString("utf-8", pos, nul) : "";
             pos = start + Math.floor((nul - start + 8) / 8) * 8;
         }
-        content.add(buf, start, pos);
         // A conflict's stages are next to each other: the path once.
         const again = path === last;
         last = path;
-        if (again) continue;
         const mode = buf.readUInt32BE(start + 24);
         const kind = mode >>> 12;
         // A sparse index's folder entry stands for files that aren't listed.
         if (kind === 0o04) return { ...out, unusable: "sparse" };
+        if (again || n < from || n >= to) continue;
         if (path === ".gitattributes" || path.endsWith("/.gitattributes")) out.attributes.push(path);
         const st = statOf(path);
         const special = kind === 0o16 ? "gitlink" : flags & (ASSUME_VALID | STAGE) || extended & (SKIP_WORKTREE | INTENT_TO_ADD) ? "entry" : undefined;
@@ -164,12 +218,16 @@ export function scanIndex(root: string, indexFile: string, hashBytes: number, un
             && st.mtimeMs < indexMs;
         if (!same) out.differs.push({ path, tracked: true, kind: kindOf(st), stamp: stampOf(st) });
     }
+    if (before >= 0) content?.add(before);
     // A split index keeps its entries in a shared file: what's here isn't all of them.
     for (let p = pos; p + 8 <= end;) {
-        if (buf.toString("latin1", p, p + 4) === "link") return { ...out, unusable: "split" };
-        p += 8 + buf.readUInt32BE(p + 4);
+        const signature = buf.toString("latin1", p, p + 4), size = buf.readUInt32BE(p + 4);
+        if (signature === "link") return { ...out, unusable: "split" };
+        if (signature === "TREE" && part.k === 0) out.cacheTree = cacheTreeOf(buf.subarray(p + 8, p + 8 + size), hashBytes);
+        p += 8 + size;
     }
-    out.contentKey = content.key;
+    out.contentKey = content?.key(pos);
+    if (part.k !== part.n - 1) return out;
     for (const path of untracked) {
         const st = statOf(path);
         if (st === null) out.differs.push({ path, tracked: false, kind: AT.unreadable, stamp: [] });
@@ -205,17 +263,26 @@ export function scanPaths(root: string, indexFile: string, hashBytes: number, pa
     const version = buf.readUInt32BE(4);
     if (version < 2 || version > 4) return { unusable: "version", states: [] };
     const wanted = new Set(paths);
-    const entries = new Map<string, number>();
+    /** Each one's entry, up to its flags (its stat fields are blanked in the index's bytes for the content key). */
+    const entries = new Map<string, Buffer>();
     /** Entries under a wanted path, in order. */
     const under: string[] = [];
-    // Entries come sorted, a folder's together: whether a folder is under a wanted path is worked out once for each.
-    let lastDir = "", lastDirUnder = false;
-    const isUnder = (path: string): boolean => {
-        const cut = path.lastIndexOf("/");
-        if (cut < 0) return false;
-        const dir = path.slice(0, cut);
-        if (dir === lastDir) return lastDirUnder;
-        lastDir = dir;
+    // Most entries are none of these, told without making a string of their path: by its length and first and last
+    // bytes (a wanted one has the same), and by its folder, worked out once for each (a folder's entries come together).
+    const sig = (b: Buffer, from: number, to: number) => (to - from) * 65536 + b[from]! * 256 + b[to - 1]!;
+    const sigs = new Set<number>();
+    for (const p of wanted) {
+        const b = Buffer.from(p, "utf-8");
+        if (b.length) sigs.add(sig(b, 0, b.length));
+    }
+    let lastDir = Buffer.alloc(256), lastDirLength = -1, lastDirUnder = false;
+    const dirUnder = (src: Buffer, from: number, to: number): boolean => {
+        const length = to - from;
+        if (length === lastDirLength && src.compare(lastDir, 0, length, from, to) === 0) return lastDirUnder;
+        if (lastDir.length < length) lastDir = Buffer.alloc(length * 2);
+        src.copy(lastDir, 0, from, to);
+        lastDirLength = length;
+        const dir = src.toString("utf-8", from, to);
         lastDirUnder = false;
         for (let i = dir.length; i > 0; i = dir.lastIndexOf("/", i - 1)) {
             if (wanted.has(dir.slice(0, i))) { lastDirUnder = true; break; }
@@ -224,39 +291,53 @@ export function scanPaths(root: string, indexFile: string, hashBytes: number, pa
     };
     const count = buf.readUInt32BE(8);
     const end = buf.length - hashBytes;
-    const content = new ContentKey();
+    const content = new ContentKey(buf);
     let pos = 12;
-    let prev: Buffer = Buffer.alloc(0);
+    // A version 4 index's path is the last one's, cut and added to: built here, in place.
+    let built = Buffer.alloc(4096), builtLength = 0;
     for (let n = 0; n < count; n++) {
         const start = pos;
         if (start + 42 + hashBytes > end) return { unusable: "unreadable", states: [] };
         const flags = buf.readUInt16BE(start + 40 + hashBytes);
         pos = start + 42 + hashBytes + (flags & EXTENDED ? 2 : 0);
-        let path: string;
+        let src: Buffer, from: number, to: number;
         if (version === 4) {
             const [strip, next] = varint(buf, pos);
             const nul = buf.indexOf(0, next);
-            if (strip > prev.length || nul < 0 || nul >= end) return { unusable: "unreadable", states: [] };
-            prev = Buffer.concat([prev.subarray(0, prev.length - strip), buf.subarray(next, nul)]);
-            path = prev.toString("utf-8");
+            if (strip > builtLength || nul < 0 || nul >= end) return { unusable: "unreadable", states: [] };
+            const length = builtLength - strip + nul - next;
+            if (built.length < length) {
+                const bigger = Buffer.alloc(length * 2);
+                built.copy(bigger, 0, 0, builtLength - strip);
+                built = bigger;
+            }
+            buf.copy(built, builtLength - strip, next, nul);
+            builtLength = length;
+            [src, from, to] = [built, 0, length];
             pos = nul + 1;
         } else {
-            const nul = buf.indexOf(0, pos);
+            const nul = pathEnd(buf, flags, pos);
             if (nul < 0 || nul >= end) return { unusable: "unreadable", states: [] };
-            path = buf.toString("utf-8", pos, nul);
+            [src, from, to] = [buf, pos, nul];
             pos = start + Math.floor((nul - start + 8) / 8) * 8;
         }
-        content.add(buf, start, pos);
         if (buf.readUInt32BE(start + 24) >>> 12 === 0o04) return { unusable: "sparse", states: [] };
-        // The first stage of a conflict is enough: any stage but 0 makes it special.
-        if (entries.has(path)) continue;
-        if (wanted.has(path)) entries.set(path, start);
-        else if (isUnder(path)) {
-            if (under.length >= maxUnder) return { unusable: "wide", states: [] };
-            entries.set(path, start);
-            under.push(path);
+        const slash = to > from ? src.lastIndexOf(0x2f, to - 1) : -1;
+        const inside = slash >= from && dirUnder(src, from, slash);
+        if (inside || (to > from && sigs.has(sig(src, from, to)))) {
+            const path = src.toString("utf-8", from, to);
+            // The first stage of a conflict is enough: any stage but 0 makes it special.
+            if (!entries.has(path) && (inside || wanted.has(path))) {
+                if (!wanted.has(path)) {
+                    if (under.length >= maxUnder) return { unusable: "wide", states: [] };
+                    under.push(path);
+                }
+                entries.set(path, Buffer.from(buf.subarray(start, start + 44 + hashBytes)));
+            }
         }
+        content.add(start);
     }
+    const contentKey = content.key(pos);
     for (let p = pos; p + 8 <= end;) {
         if (buf.toString("latin1", p, p + 4) === "link") return { unusable: "split", states: [] };
         p += 8 + buf.readUInt32BE(p + 4);
@@ -276,21 +357,21 @@ export function scanPaths(root: string, indexFile: string, hashBytes: number, pa
         } catch (e) {
             st = gone(e) ? undefined : null;
         }
-        const o = entries.get(path);
+        const e = entries.get(path), o = 0;
         const stamp = st ? stampOf(st) : [];
         const kind = st === null ? AT.unreadable : !st ? AT.missing : kindOf(st);
-        if (o === undefined) { states.push({ path, tracked: false, kind, stamp, unknown: true }); continue; }
-        const flags = buf.readUInt16BE(o + 40 + hashBytes);
-        const extended = flags & EXTENDED ? buf.readUInt16BE(o + 42 + hashBytes) : 0;
-        const mode = buf.readUInt32BE(o + 24);
+        if (e === undefined) { states.push({ path, tracked: false, kind, stamp, unknown: true }); continue; }
+        const flags = e.readUInt16BE(o + 40 + hashBytes);
+        const extended = flags & EXTENDED ? e.readUInt16BE(o + 42 + hashBytes) : 0;
+        const mode = e.readUInt32BE(o + 24);
         const special = mode >>> 12 === 0o16 ? "gitlink" : flags & (ASSUME_VALID | STAGE) || extended & (SKIP_WORKTREE | INTENT_TO_ADD) ? "entry" : undefined;
         const same = !special && st && msExact
             && (mode >>> 12 === 0o10 ? st.isFile() && ((mode & 0o100) !== 0) === ((st.mode & 0o100) !== 0) : mode >>> 12 === 0o12 && st.isSymbolicLink())
-            && buf.readUInt32BE(o + 8) * 1000 + buf.readUInt32BE(o + 12) / 1e6 === st.mtimeMs
-            && buf.readUInt32BE(o) * 1000 + buf.readUInt32BE(o + 4) / 1e6 === st.ctimeMs
-            && buf.readUInt32BE(o + 20) === st.ino % 2 ** 32 && buf.readUInt32BE(o + 36) === st.size % 2 ** 32
+            && e.readUInt32BE(o + 8) * 1000 + e.readUInt32BE(o + 12) / 1e6 === st.mtimeMs
+            && e.readUInt32BE(o) * 1000 + e.readUInt32BE(o + 4) / 1e6 === st.ctimeMs
+            && e.readUInt32BE(o + 20) === st.ino % 2 ** 32 && e.readUInt32BE(o + 36) === st.size % 2 ** 32
             && st.mtimeMs < written.mtimeMs;
-        states.push({ path, tracked: true, kind, stamp, special, clean: same ? { mode: mode.toString(8).padStart(6, "0"), oid: buf.toString("hex", o + 40, o + 40 + hashBytes) } : undefined });
+        states.push({ path, tracked: true, kind, stamp, special, clean: same ? { mode: mode.toString(8).padStart(6, "0"), oid: e.toString("hex", o + 40, o + 40 + hashBytes) } : undefined });
     }
-    return { states, contentKey: content.key };
+    return { states, contentKey };
 }
