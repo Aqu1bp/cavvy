@@ -7,11 +7,18 @@
 import { watch, type FSWatcher } from "fs";
 import { relative } from "path";
 
+/** Paths kept, at most, between captures: past this many, the next capture looks at everything. */
+const MAX_KEPT = 20_000;
+
 export class FolderWatch {
     /** Changes seen so far: a capture notes it, and a later one finds it moved if anything changed in between. */
     gen = 0;
     /** When the last change was seen (ms): events can arrive a moment after the change. */
     lastAt = 0;
+    /** Each path that changed (relative to the folder), with the count when it last did. */
+    private changes = new Map<string, number>();
+    /** Changes before this count weren't kept (too many): a capture from before it looks at everything. */
+    private floor = 0;
     private watchers: FSWatcher[] = [];
     private failed = false;
     users = 0;
@@ -39,11 +46,28 @@ export class FolderWatch {
             return;
         }
         this.bump();
+        // A change with no name says nothing of where: everything from here is looked at.
+        if (!file) return this.forget();
+        this.changes.set(file, this.gen);
+        if (this.changes.size > MAX_KEPT) this.forget();
     }
 
     private bump() {
         this.gen++;
         this.lastAt = Date.now();
+    }
+
+    private forget() {
+        this.changes.clear();
+        this.floor = this.gen;
+    }
+
+    /** The paths that changed after count `gen`; undefined when that can't be told (too many, or one with no name). */
+    changedSince(gen: number): string[] | undefined {
+        if (gen < this.floor) return undefined;
+        const out: string[] = [];
+        for (const [path, at] of this.changes) if (at > gen) out.push(path);
+        return out;
     }
 
     private fail() {

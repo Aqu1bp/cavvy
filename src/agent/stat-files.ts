@@ -4,7 +4,7 @@
 
 import { lstatSync, type Stats } from "fs";
 import { Pace } from "../util/pace";
-import { scanIndex, type IndexScan } from "./index-scan";
+import { scanIndex, scanPaths, type IndexScan } from "./index-scan";
 
 /** What's at a path. */
 export const KIND = { missing: 0, file: 1, link: 2, dir: 3, other: 4, unreadable: 5 } as const;
@@ -29,7 +29,17 @@ export interface IndexRequest {
     msExact: boolean;
 }
 
-export type StatReply = { id: number; kinds?: Uint8Array; stamps?: Float64Array; missing?: boolean; error?: string; scan?: IndexScan };
+/** Only some paths of a folder against its Git index (index-scan.ts scanPaths). */
+export interface PathsRequest {
+    id: number;
+    root: string;
+    indexFile: string;
+    hashBytes: number;
+    paths: string[];
+    msExact: boolean;
+}
+
+export type StatReply = { id: number; kinds?: Uint8Array; stamps?: Float64Array; missing?: boolean; error?: string; scan?: IndexScan; paths?: ReturnType<typeof scanPaths> };
 
 /** For each path, tracked then untracked: its kind, and six stamp fields (device, inode, mode, size, mtime, ctime). */
 export interface FileStats {
@@ -71,7 +81,7 @@ function started(): Worker | undefined {
     return worker ?? undefined;
 }
 
-function ask(w: Worker, req: Omit<StatRequest, "id"> | Omit<IndexRequest, "id">, deadline: number): Promise<StatReply> {
+function ask(w: Worker, req: Omit<StatRequest, "id"> | Omit<IndexRequest, "id"> | Omit<PathsRequest, "id">, deadline: number): Promise<StatReply> {
     const id = ++asked;
     return new Promise((resolve) => {
         const timer = setTimeout(() => {
@@ -111,6 +121,17 @@ export async function scanIndexFiles(root: string, indexFile: string, hashBytes:
         if (r.error === "late") throw new Error("Snapshot exceeded its time budget (2 seconds by default).");
     }
     return scanIndex(root, indexFile, hashBytes, untracked, msExact);
+}
+
+/** Only `paths` against the index (scanPaths), on the worker; here where there's none. */
+export async function scanIndexPaths(root: string, indexFile: string, hashBytes: number, paths: string[], msExact: boolean, deadline: number): Promise<ReturnType<typeof scanPaths>> {
+    const w = started();
+    if (w) {
+        const r = await ask(w, { root, indexFile, hashBytes, paths, msExact }, deadline);
+        if (r.paths) return r.paths;
+        if (r.error === "late") throw new Error("Snapshot exceeded its time budget (2 seconds by default).");
+    }
+    return scanPaths(root, indexFile, hashBytes, paths, msExact);
 }
 
 const gone = (e: unknown) => ["ENOENT", "ENOTDIR"].includes((e as NodeJS.ErrnoException)?.code ?? "");

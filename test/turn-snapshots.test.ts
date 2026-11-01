@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { isolate } from "./helpers/isolate";
 
@@ -942,6 +942,55 @@ describe("per-turn snapshots", () => {
         await snapshots.end();
         expect(snapshots.list()[2]!.end!.durationMs).toBeGreaterThan(0);
     }, 30_000);
+
+    test("a capture that looks only at what the watch saw change agrees with one that looks at everything", async () => {
+        const { cwd, dir } = setup({ ".gitignore": "*.log\nbuild/\n", "a/b/c.txt": "c\n", "a/d.txt": "d\n", "e.txt": "e\n", "f/g.txt": "g\n", "h/i/j.txt": "j\n", "k.txt": "k\n", "run.sh": "echo\n" });
+        const outside = join(dirname(cwd), "outside");
+        mkdirSync(outside);
+        const snapshots = new TurnSnapshots(dir, cwd, { narrowFromMs: 0 });
+        const steps: [string, () => void][] = [
+            ["edit", () => write(cwd, "a/d.txt", "d again\n")],
+            ["new folders", () => write(cwd, "n/o/p.txt", "p\n")],
+            ["ignored", () => { write(cwd, "x.log", "log\n"); write(cwd, "build/out.js", "js\n"); }],
+            ["move a folder within", () => renameSync(join(cwd, "h"), join(cwd, "h2"))],
+            ["move a folder out", () => renameSync(join(cwd, "n"), join(outside, "n"))],
+            ["move a folder in", () => renameSync(join(outside, "n"), join(cwd, "m"))],
+            ["remove a folder", () => rmSync(join(cwd, "f"), { recursive: true })],
+            ["file to folder", () => { rmSync(join(cwd, "e.txt")); write(cwd, "e.txt/inside.txt", "now a folder\n"); }],
+            ["folder to file", () => { rmSync(join(cwd, "a/b"), { recursive: true }); write(cwd, "a/b", "now a file\n"); }],
+            ["mode and link", () => { chmodSync(join(cwd, "run.sh"), 0o755); symlinkSync("k.txt", join(cwd, "link")); }],
+            ["revert an edit", () => write(cwd, "a/d.txt", "d\n")],
+            ["untracked gone", () => rmSync(join(cwd, "m"), { recursive: true })],
+            ["nested repository", () => { mkdirSync(join(cwd, "nest")); git(join(cwd, "nest"), ["init", "-q"]); write(cwd, "nest/inner.txt", "inner\n"); }],
+            ["inside the nested one", () => write(cwd, "nest/inner.txt", "inner again\n")],
+            ["staged", () => { write(cwd, "k.txt", "k staged\n"); git(cwd, ["add", "k.txt"]); }],
+            ["after staging", () => write(cwd, "k.txt", "k again\n")],
+            ["git status rewrites the index", () => { utimesSync(join(cwd, "h2/i/j.txt"), new Date(), new Date()); git(cwd, ["status", "--porcelain"]); }],
+            ["committed", () => git(cwd, ["commit", "-q", "-m", "Two"])],
+            ["after the commit", () => write(cwd, "a/d.txt", "d at last\n")],
+        ];
+        await snapshots.begin(1, "start");
+        /** The steps whose capture looked at everything. */
+        const whole: string[] = [];
+        for (const [i, [name, step]] of steps.entries()) {
+            await Bun.sleep(60);
+            step();
+            await Bun.sleep(60);
+            const before = snapshots.narrowedCount;
+            await snapshots.begin(i + 2, name);
+            if (snapshots.narrowedCount === before) whole.push(name);
+            const full = new TurnSnapshots(join(dirname(dir), `full-${i}`), cwd);
+            await full.begin(1, name);
+            const [mine, theirs] = [snapshots.list().at(-1)!.start, full.list()[0]!.start];
+            expect([name, mine.incomplete, mine.tree, Object.keys(mine.skipped).sort()]).toEqual([name, theirs.incomplete, theirs.tree, Object.keys(theirs.skipped).sort()]);
+            await full.stop();
+        }
+        await snapshots.end();
+        // The rest looked only at what changed: one in nine looks at everything anyway, and so does one after Git's index
+        // records something else (staged); rewritten as it was (git status, a commit), it's no reason to.
+        expect(whole).toEqual(["folder to file", "staged"]);
+        await snapshots.stop();
+    }, 60_000);
 
     test("snapshots are pruned with file history after thirty days", async () => {
         const { cwd } = setup({ "a.txt": "a\n" });

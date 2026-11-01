@@ -5,8 +5,8 @@
 // by id), and answers with each path's kind and stamp, in arrays handed over rather than copied.
 
 import { lstatSync, type Stats } from "fs";
-import { KIND, type StatRequest, type StatReply, type IndexRequest } from "./stat-files";
-import { scanIndex } from "./index-scan";
+import { KIND, type StatRequest, type StatReply, type IndexRequest, type PathsRequest } from "./stat-files";
+import { scanIndex, scanPaths } from "./index-scan";
 
 declare const self: Worker;
 
@@ -63,11 +63,12 @@ function stat(req: StatRequest): StatReply {
     return { id: req.id, kinds, stamps };
 }
 
-self.onmessage = (e: MessageEvent<StatRequest | IndexRequest>) => {
+self.onmessage = (e: MessageEvent<StatRequest | IndexRequest | PathsRequest>) => {
     let reply: StatReply;
     try {
         const r = e.data;
-        reply = "indexFile" in r ? { id: r.id, scan: scanIndex(r.root, r.indexFile, r.hashBytes, r.untracked, r.msExact) } : stat(r);
+        reply = "paths" in r ? { id: r.id, paths: scanPaths(r.root, r.indexFile, r.hashBytes, r.paths, r.msExact) }
+            : "indexFile" in r ? { id: r.id, scan: scanIndex(r.root, r.indexFile, r.hashBytes, r.untracked, r.msExact) } : stat(r);
     } catch (err) {
         reply = { id: e.data.id, error: String((err as Error)?.message ?? err) };
     }
