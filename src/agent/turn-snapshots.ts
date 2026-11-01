@@ -6,7 +6,7 @@
 // process avoids a subprocess per file and preserves the bytes on disk.
 
 import { appendFileSync, chmodSync, lstatSync, mkdirSync, readFileSync, type Stats } from "fs";
-import { chmod, copyFile, lstat, mkdir, readdir, readFile, readlink, rename, rm, writeFile } from "fs/promises";
+import { chmod, copyFile, lstat, mkdir, open, readdir, readFile, readlink, rename, rm, writeFile } from "fs/promises";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "path";
 import { deflateSync, inflateSync } from "zlib";
 import { randomBytes } from "crypto";
@@ -83,6 +83,8 @@ const END_BUDGET_MS = 10_000;
  * up would only be started again by the next turn.
  */
 const WHOLE_BUDGET_MS = 10 * 60_000;
+/** Git's index has this many entries at least: a capture that can't look only at what changed asks `git status` (captureFromStatus). */
+const STATUS_FROM_ENTRIES = 5000;
 /** How long a capture waits for such a whole capture still going before it's taken as out of time. */
 const WHOLE_WAIT_MS = 100;
 
@@ -119,6 +121,22 @@ function underAny(path: string, dirs: ReadonlySet<string>): boolean {
     if (!dirs.size) return false;
     for (let i = path.lastIndexOf("/"); i > 0; i = path.lastIndexOf("/", i - 1)) if (dirs.has(path.slice(0, i))) return true;
     return false;
+}
+
+/** How many entries Git's index file says it has (0 when it can't be read). */
+async function indexEntries(path: string): Promise<number> {
+    try {
+        const f = await open(path, "r");
+        try {
+            const head = Buffer.alloc(12);
+            const { bytesRead } = await f.read(head, 0, 12, 0);
+            return bytesRead === 12 ? head.readUInt32BE(8) : 0;
+        } finally {
+            await f.close();
+        }
+    } catch {
+        return 0;
+    }
 }
 
 const instances = new WeakMap<FileHistory, WeakMap<Session, TurnSnapshots>>();
@@ -431,6 +449,8 @@ export class TurnSnapshots {
     private watchTried = 0;
     /** The last whole capture and the watch's count when it began (unchanged). */
     private lastFast?: { gen: number; at: number; result: TurnCapture };
+    /** Captures taken from what `git status` said differs (captureFromStatus): for tests. */
+    statusCount = 0;
     /**
      * The last capture from Git's index, whole or from what changed (captureNarrowed): the watch's count when it began,
      * the index it rested on, what differed from it, and this session's copy of the index as it left it.
@@ -474,7 +494,7 @@ export class TurnSnapshots {
     private readonly storage: string;
     private readonly journal: string;
 
-    constructor(readonly dir: string, readonly cwd: string, private options: { budgetMs?: number; maxStoreBytes?: number; /** NARROW_FROM_MS, for tests. */ narrowFromMs?: number; /** How long a turn waits for a capture, which goes on past it (capture): for tests. */ turnBudgetMs?: number } = {}) {
+    constructor(readonly dir: string, readonly cwd: string, private options: { budgetMs?: number; maxStoreBytes?: number; /** NARROW_FROM_MS, for tests. */ narrowFromMs?: number; /** How long a turn waits for a capture, which goes on past it (capture): for tests. */ turnBudgetMs?: number; /** STATUS_FROM_ENTRIES, for tests. */ statusFromEntries?: number } = {}) {
         this.storage = join(dir, "turn-snapshots");
         this.journal = join(dir, "turn-snapshots.jsonl");
         let lines: string;
@@ -1208,9 +1228,9 @@ export class TurnSnapshots {
      * attributes file or Git's config changed, the watch missed something or saw too much, or it's been a while
      * (NARROW_MAX, NARROW_FULL_EVERY_MS). The whole folder is looked at then.
      */
-    private async captureNarrowed(result: TurnCapture, read: KnownFile[], indexPath: string, deadline: number, inTime: () => void, ending: boolean): Promise<boolean> {
+    private async captureNarrowed(result: TurnCapture, read: KnownFile[], indexPath: string, deadline: number, inTime: () => void, ending: boolean, given?: { paths: string[]; gen: number; dirty: ReadonlySet<string> }): Promise<boolean> {
         const base = this.indexedBase, w = this.watch, root = this.root!;
-        if (!base || !w?.healthy || base.watch !== w || base.fullMs < (this.options.narrowFromMs ?? NARROW_FROM_MS)) return false;
+        if (!base || !w?.healthy || base.watch !== w || (!given && base.fullMs < (this.options.narrowFromMs ?? NARROW_FROM_MS))) return false;
         if (base.narrowed >= NARROW_MAX || Date.now() - base.fullAt > NARROW_FULL_EVERY_MS) return false;
         if (this.lastTree !== base.tree || !msTimesExact(indexPath)) return false;
         const stamped = await lstat(indexPath).catch(() => undefined);
@@ -1222,8 +1242,9 @@ export class TurnSnapshots {
         if (Date.now() - this.settledAt > 10) await new Promise((r) => setTimeout(r, ending ? 100 : 30));
         inTime();
         if (!w.healthy) return false;
-        const gen = w.gen, genAt = Date.now();
-        const seen = w.changedSince(base.gen);
+        // Given (a first capture from what `git status` said): as of when it began, so what changed since is looked at next.
+        const gen = given ? given.gen : w.gen, genAt = Date.now();
+        const seen = given ? given.paths : w.changedSince(base.gen);
         if (!seen || seen.length > NARROW_MAX_PATHS) return false;
         // What changes inside another worktree or a nested repository isn't captured here.
         const nested = new Set([...this.nested].map((p) => p.replace(/\/$/, "")));
@@ -1309,8 +1330,9 @@ export class TurnSnapshots {
             if (skippedStamps) delete skippedStamps[path];
             const d: Differs = { path, tracked: st.tracked, kind: st.kind, stamp: st.stamp, ...(st.special ? { special: st.special } : {}) };
             if (st.tracked) {
-                // As Git's index has it: its entry back, where the last capture had changed it.
-                if (st.clean) { if (was || wasGone || wasSkipped) restore.push({ path, ...st.clean }); continue; }
+                // As Git's index has it: its entry back, where the last capture had changed it. Not one `git status` says
+                // differs, whatever its stat says (written within the index's own second, say).
+                if (st.clean && !given?.dirty.has(path)) { if (was || wasGone || wasSkipped) restore.push({ path, ...st.clean }); continue; }
                 if (st.kind === KIND.missing && !st.special) { gone.add(path); out.push(path); continue; }
                 differs.set(path, d);
                 now.push(d);
@@ -1352,6 +1374,91 @@ export class TurnSnapshots {
         this.narrowedCount++;
         this.rememberFast(gen, genAt, result);
         return true;
+    }
+
+    /**
+     * A capture from what `git status` says differs from Git's index, on the tree Git last worked out for the index (its
+     * cache-tree): what a later capture does with the watch's paths (captureNarrowed), with git's list instead. `git status`
+     * is a process of its own, as the agents' are (on a busy machine it isn't queued behind every session's work here),
+     * and it compares a hundred thousand files in less CPU than a scan here does. False, having kept nothing, where it
+     * can't say plainly what's on disk: an entry it reports otherwise (a conflict, a submodule, assume-unchanged,
+     * skip-worktree, intent-to-add), no tree worked out for the index, the index written meanwhile, more than
+     * NARROW_MAX_PATHS paths, or attributes that store other bytes than a file's. The whole capture is taken then.
+     */
+    private async captureFromStatus(result: TurnCapture, read: KnownFile[], indexPath: string, deadline: number, inTime: () => void, ending: boolean): Promise<boolean> {
+        const w = this.watch, root = this.root!;
+        if (!w?.healthy || !msTimesExact(indexPath)) return false;
+        // A small repository's whole capture is quicker here than starting git for it.
+        if ((await indexEntries(indexPath)) < (this.options.statusFromEntries ?? STATUS_FROM_ENTRIES)) return false;
+        const before = await lstat(indexPath).catch(() => undefined);
+        if (!before) return false;
+        const started = Date.now();
+        // What changes from here on is looked at by the next capture.
+        const gen = w.gen;
+        const hashBytes = this.algo === "sha1" ? 20 : 32;
+        const [status, scan] = await Promise.all([
+            // Not writing the index (a refresh it would otherwise save), nor looking into submodules (none, below).
+            git(root, ["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all", "--no-renames", "--ignore-submodules=all"], { maxBytes: 16 * 1024 * 1024, deadline, privateEnv: { GIT_NO_REPLACE_OBJECTS: "1" } }),
+            scanIndexPaths(root, indexPath, hashBytes, [], true, deadline).catch(() => undefined),
+        ]);
+        inTime();
+        if (status.code || status.cut || status.err.trim() || !scan || scan.unusable || !scan.contentKey || !scan.cacheRoot || scan.specials !== 0) return false;
+        const after = await lstat(indexPath).catch(() => undefined);
+        if (!after || stampKey(after) !== stampKey(before)) return false;
+        const paths: string[] = [];
+        const dirty = new Set<string>();
+        for (const record of status.out.toString("utf-8").split("\0")) {
+            if (!record) continue;
+            // Untracked (a nested repository's folder ends in a slash).
+            if (record.startsWith("? ")) paths.push(record.slice(2).replace(/\/$/, ""));
+            else if (record.startsWith("1 ")) {
+                // "1 XY sub mH mI mW hH hI path": only what differs on disk from the index (Y); staged alone, the index's tree has it.
+                const fields = record.split(" ");
+                if (fields.length < 9 || fields[1]!.length !== 2) return false;
+                if (fields[1]![1] === ".") continue;
+                const path = fields.slice(8).join(" ");
+                paths.push(path);
+                dirty.add(path);
+            } else return false;
+        }
+        if (paths.length > NARROW_MAX_PATHS) return false;
+        if (!treesFound.has(scan.cacheRoot)) {
+            const check = await git(root, ["cat-file", "--batch-check=%(objecttype)"], { input: `${scan.cacheRoot}\n`, privateEnv: this.readEnv(), deadline });
+            if (check.code || check.cut || check.out.toString().trim() !== "tree") return false;
+            if (treesFound.size >= 64) treesFound.delete(treesFound.values().next().value!);
+            treesFound.add(scan.cacheRoot);
+        }
+        const base: NonNullable<typeof this.indexedBase> = {
+            watch: w,
+            gen,
+            indexStamp: stampKey(before),
+            contentKey: scan.contentKey,
+            cacheRoot: scan.cacheRoot,
+            ignoreKey: ignoreKeyOf(root, indexPath),
+            attributes: scan.attributes ?? [],
+            differs: new Map(),
+            gone: new Set(),
+            tree: scan.cacheRoot,
+            skipped: pathMap(),
+            narrowed: 0,
+            fullAt: Date.now(),
+            fullMs: 0,
+        };
+        // Whatever this session's own index held is no base for the whole capture's next one (fromCacheTree).
+        this.indexedBase = base;
+        this.indexEntries = new Map();
+        this.folders = undefined;
+        this.scan = undefined;
+        this.index = undefined;
+        this.lastTree = scan.cacheRoot;
+        if (await this.captureNarrowed(result, read, indexPath, deadline, inTime, ending, { paths, gen, dirty })) {
+            Object.assign(base, { narrowed: 0, fullMs: Date.now() - started });
+            this.statusCount++;
+            return true;
+        }
+        this.indexedBase = undefined;
+        this.lastTree = undefined;
+        return false;
     }
 
     /**
@@ -1752,6 +1859,11 @@ export class TurnSnapshots {
             await this.measureStore(inTime);
             // Only what the folder's watch saw change since the last capture from Git's index, where that's enough.
             if (where.index && (await this.captureNarrowed(result, read, where.index, deadline, inTime, ending))) {
+                narrowed = true;
+                return result;
+            }
+            // Else from what `git status` says differs, where it can say: the first capture, and a refresh.
+            if (where.index && (await this.captureFromStatus(result, read, where.index, deadline, inTime, ending))) {
                 narrowed = true;
                 return result;
             }

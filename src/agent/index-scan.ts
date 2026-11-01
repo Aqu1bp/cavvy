@@ -247,7 +247,7 @@ export function scanIndex(root: string, indexFile: string, hashBytes: number, un
  * binary search, a few small reads each, not by reading and parsing all of it again. Not for version 4 (each path is
  * written as a change to the last one's, so one can't be read alone), a split index or a sparse one.
  */
-const offsetsByIndex = new Map<string, { stamp: string; offsets: Uint32Array; contentKey: string; cacheRoot?: string }>();
+const offsetsByIndex = new Map<string, { stamp: string; offsets: Uint32Array; contentKey: string; cacheRoot?: string; specials: number; attributes: string[] }>();
 const MAX_OFFSET_TABLES = 32;
 const statStamp = (st: Stats) => `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
 
@@ -324,7 +324,13 @@ export interface PathState extends Differs {
  * index is read whole, but only these paths are stat'ed: a turn that changed a few files of a 100,000-file repository
  * looks at those.
  */
-export function scanPaths(root: string, indexFile: string, hashBytes: number, paths: readonly string[], msExact: boolean, maxUnder = 5000): { unusable?: string; states: PathState[]; contentKey?: string; cacheRoot?: string } {
+/**
+ * `paths` (and what's under those that are folders in the index) against Git's index: each one's state. Also what the
+ * whole index records (its content key), the tree Git last worked out for it, its .gitattributes files, and how many
+ * entries are of a kind `git status` doesn't tell plainly (a conflict, a submodule, assume-unchanged, skip-worktree,
+ * intent-to-add): read once whole, then by offset.
+ */
+export function scanPaths(root: string, indexFile: string, hashBytes: number, paths: readonly string[], msExact: boolean, maxUnder = 5000): { unusable?: string; states: PathState[]; contentKey?: string; cacheRoot?: string; specials?: number; attributes?: string[] } {
     let buf: Buffer, written: Stats;
     const wanted = new Set(paths);
     /** Each one's entry, up to its flags (its stat fields are blanked in the index's bytes for the content key). */
@@ -341,7 +347,7 @@ export function scanPaths(root: string, indexFile: string, hashBytes: number, pa
             if (statStamp(st) === table.stamp) {
                 const found = entriesByOffset(fd, table, hashBytes, wanted, maxUnder);
                 if (found === "wide") return { unusable: "wide", states: [] };
-                if (found) return { states: pathStates(root, hashBytes, [...wanted, ...found.under], found.entries, st.mtimeMs, msExact), contentKey: table.contentKey, ...(table.cacheRoot ? { cacheRoot: table.cacheRoot } : {}) };
+                if (found) return { states: pathStates(root, hashBytes, [...wanted, ...found.under], found.entries, st.mtimeMs, msExact), contentKey: table.contentKey, ...(table.cacheRoot ? { cacheRoot: table.cacheRoot } : {}), specials: table.specials, attributes: table.attributes };
             }
         } catch {
             // Read whole, below.
@@ -388,11 +394,16 @@ export function scanPaths(root: string, indexFile: string, hashBytes: number, pa
     let pos = 12;
     // A version 4 index's path is the last one's, cut and added to: built here, in place.
     let built = Buffer.alloc(4096), builtLength = 0;
+    let specials = 0;
+    const attributes: string[] = [];
+    const GITATTRIBUTES = Buffer.from(".gitattributes");
     for (let n = 0; n < count; n++) {
         const start = pos;
         if (offsets) offsets[n] = start;
         if (start + 42 + hashBytes > end) return { unusable: "unreadable", states: [] };
         const flags = buf.readUInt16BE(start + 40 + hashBytes);
+        const extended = flags & EXTENDED ? buf.readUInt16BE(start + 42 + hashBytes) : 0;
+        if (buf.readUInt32BE(start + 24) >>> 12 === 0o16 || flags & (ASSUME_VALID | STAGE) || extended & (SKIP_WORKTREE | INTENT_TO_ADD)) specials++;
         pos = start + 42 + hashBytes + (flags & EXTENDED ? 2 : 0);
         let src: Buffer, from: number, to: number;
         if (version === 4) {
@@ -416,6 +427,7 @@ export function scanPaths(root: string, indexFile: string, hashBytes: number, pa
             pos = start + Math.floor((nul - start + 8) / 8) * 8;
         }
         if (buf.readUInt32BE(start + 24) >>> 12 === 0o04) return { unusable: "sparse", states: [] };
+        if (to - from >= 14 && src.compare(GITATTRIBUTES, 0, 14, to - 14, to) === 0 && (to - from === 14 || src[to - 15] === 0x2f)) attributes.push(src.toString("utf-8", from, to));
         const slash = to > from ? src.lastIndexOf(0x2f, to - 1) : -1;
         const inside = slash >= from && dirUnder(src, from, slash);
         if (inside || (to > from && sigs.has(sig(src, from, to)))) {
@@ -441,9 +453,9 @@ export function scanPaths(root: string, indexFile: string, hashBytes: number, pa
     }
     if (offsets && buf.length < 2 ** 32) {
         if (offsetsByIndex.size >= MAX_OFFSET_TABLES) offsetsByIndex.delete(offsetsByIndex.keys().next().value!);
-        offsetsByIndex.set(indexFile, { stamp: statStamp(written), offsets, contentKey, ...(cacheRoot ? { cacheRoot } : {}) });
+        offsetsByIndex.set(indexFile, { stamp: statStamp(written), offsets, contentKey, ...(cacheRoot ? { cacheRoot } : {}), specials, attributes });
     }
-    return { states: pathStates(root, hashBytes, [...wanted, ...under], entries, written.mtimeMs, msExact), contentKey, ...(cacheRoot ? { cacheRoot } : {}) };
+    return { states: pathStates(root, hashBytes, [...wanted, ...under], entries, written.mtimeMs, msExact), contentKey, ...(cacheRoot ? { cacheRoot } : {}), specials, attributes };
 }
 
 /** Each path stat'ed, against its entry in the index (`entries`, by path), if it has one. */

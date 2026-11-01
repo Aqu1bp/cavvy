@@ -977,6 +977,8 @@ describe("per-turn snapshots", () => {
         await snapshots.begin(1, "start");
         /** The steps whose capture looked at everything. */
         const whole: string[] = [];
+        /** The steps whose first capture couldn't take what `git status` said. */
+        const notFromStatus: string[] = [];
         for (const [i, [name, step]] of steps.entries()) {
             await Bun.sleep(60);
             step();
@@ -988,12 +990,21 @@ describe("per-turn snapshots", () => {
             await full.begin(1, name);
             const [mine, theirs] = [snapshots.list().at(-1)!.start, full.list()[0]!.start];
             expect([name, mine.incomplete, mine.tree, Object.keys(mine.skipped).sort()]).toEqual([name, theirs.incomplete, theirs.tree, Object.keys(theirs.skipped).sort()]);
+            // A first capture from what `git status` says differs, as a big repository's is: the same.
+            const status = new TurnSnapshots(join(dirname(dir), `status-${i}`), cwd, { statusFromEntries: 0 });
+            await status.begin(1, name);
+            const fromStatus = status.list()[0]!.start;
+            expect([name, fromStatus.incomplete, fromStatus.tree, Object.keys(fromStatus.skipped).sort()]).toEqual([name, theirs.incomplete, theirs.tree, Object.keys(theirs.skipped).sort()]);
+            if (!status.statusCount) notFromStatus.push(name);
+            await status.stop();
             await full.stop();
         }
         await snapshots.end();
         // The rest looked only at what changed. Staged with no tree Git worked out for it, Git's index is looked at
         // whole; rewritten as it was (git status), or committed (both trees there to compare), it isn't.
         expect(whole).toEqual(["staged"]);
+        // Staged, Git has no tree worked out for its index until the commit: there's none to start from till then.
+        expect(notFromStatus).toEqual(["staged", "after staging", "git status rewrites the index"]);
         await snapshots.stop();
     }, 60_000);
 
