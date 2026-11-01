@@ -1,7 +1,7 @@
 // The other worktrees of a session's repository that a turn works in: an agent that entered one, sub-agents
 // that each made their own. A turn's snapshot covers only the session's own folder (turn-snapshots.ts), so
 // as a turn starts every worktree inside the main checkout's folder (.claude/worktrees, say) gets a token: its
-// HEAD and branch and what its index stages, without reading its files. As it ends, a worktree the turn reached
+// HEAD, branch and index file's stamp, without reading its files or its index. As it ends, a worktree the turn reached
 // whose token changed, that appeared, or with a file changed since it began (by ctime) was worked in; it's summed
 // up as the diff reader shows another worktree (git-changes.ts, branch scope): its branch against the main
 // branch, committed or not. Only reached worktrees have their files read, so many sessions in many worktrees of
@@ -19,7 +19,6 @@ import { git, gitChanges } from "../server/git-changes";
 import type { GitChangesInfo, TurnPlace } from "../server/protocol";
 import { sameFolder } from "../server/session-worktrees";
 import { normalPath, worktreeOf } from "../server/worktree-agents";
-import { stagedDigest } from "./git-index";
 
 /** Worktrees marked and summed up per turn, at most: past this many, the rest go unseen. */
 export const MAX_PLACES = 16;
@@ -245,14 +244,11 @@ function canonical(path: string): string {
     }
 }
 
-/** What each worktree's index stages (stagedDigest), by the index file's stamp: read again only once it's rewritten. */
-const stagedByIndex = new Map<string, { stamp: string; digest: string }>();
-
 /**
- * A worktree's HEAD, branch and what its index stages, in a hash: what a turn's start needs to know of a worktree it
- * may yet work in, without reading its files (changedSince does that at the turn's end, for the ones it reached).
- * The index is read directly and only when it's been rewritten, by whichever session asks first. UNKNOWN when it
- * can't all be read in time.
+ * A worktree's HEAD, branch and index (its file's stamp), in a hash: what a turn's start needs to know of a worktree
+ * it may yet work in, without reading its files or its index (with a session in each of many worktrees, their indexes
+ * change all the time). At the end, a reached worktree whose token changed counts as worked in: a `git status` alone
+ * rewrites the index too, but it's read-only, so it doesn't reach one. UNKNOWN when it can't all be read in time.
  */
 export async function token(w: Checked, deadline: number): Promise<string> {
     try {
@@ -264,23 +260,9 @@ export async function token(w: Checked, deadline: number): Promise<string> {
             read ? { out: Buffer.from(read.ref) } : run(w.real, ["symbolic-ref", "-q", "HEAD"], { deadline, pin: w }),
             lstat(index, { bigint: true }).catch(() => undefined),
         ]);
-        const stamp = st ? `${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}` : "-";
-        let digest = stagedByIndex.get(index)?.stamp === stamp ? stagedByIndex.get(index)!.digest : undefined;
-        if (digest === undefined) {
-            const buf = st ? await readFile(index).catch(() => undefined) : undefined;
-            const format = await run(w.real, ["rev-parse", "--show-object-format"], { deadline, pin: w });
-            digest = buf ? await stagedDigest(buf, format.out.toString().trim() === "sha256" ? 32 : 20) : st ? undefined : "";
-            if (digest === undefined) {
-                // A split index, or one this can't read: as git lists it.
-                const staged = await run(w.real, ["ls-files", "-z", "--stage"], { deadline, maxBytes: 32 * 1024 * 1024, pin: w });
-                if (staged.code || staged.cut) return UNKNOWN;
-                digest = createHash("sha256").update(staged.out).digest("hex");
-            }
-            if (stagedByIndex.size >= 256) stagedByIndex.delete(stagedByIndex.keys().next().value!);
-            stagedByIndex.set(index, { stamp, digest });
-        }
         if (Date.now() >= deadline) return UNKNOWN;
-        return createHash("sha256").update(`${head.out.toString().trim()}\0${ref.out.toString().trim()}\0${digest}`).digest("hex");
+        const stamp = st ? `${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}` : "-";
+        return createHash("sha256").update(`${head.out.toString().trim()}\0${ref.out.toString().trim()}\0${stamp}`).digest("hex");
     } catch {
         return UNKNOWN;
     }

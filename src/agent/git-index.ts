@@ -102,56 +102,6 @@ export function modeOf(index: GitIndex, path: string): string | undefined {
     return o === undefined ? undefined : index.buf.readUInt32BE(o + 24).toString(8).padStart(6, "0");
 }
 
-/**
- * What an index stages, as a digest: each entry's mode, blob, stage and path (`ls-files --stage`), not the stat
- * cache any `git status` rewrites. Undefined for a split index or anything unexpected.
- */
-export async function stagedDigest(buf: Buffer, hashBytes: number): Promise<string | undefined> {
-    const pace = new Pace();
-    if (buf.length < 12 + hashBytes || buf.readUInt32BE(0) !== MAGIC) return undefined;
-    const version = buf.readUInt32BE(4);
-    if (version < 2 || version > 4) return undefined;
-    const count = buf.readUInt32BE(8);
-    const end = buf.length - hashBytes;
-    const h = new Bun.CryptoHasher("sha256");
-    let pos = 12;
-    let prev: Buffer = Buffer.alloc(0);
-    for (let i = 0; i < count; i++) {
-        if ((i & 1023) === 1023 && pace.due) await pace.rest();
-        const start = pos;
-        const fixed = 40 + hashBytes;
-        if (start + fixed + 2 > end) return undefined;
-        const flags = buf.readUInt16BE(start + fixed);
-        pos = start + fixed + 2 + (flags & EXTENDED ? 2 : 0);
-        let path: Buffer;
-        if (version === 4) {
-            const [strip, next] = varint(buf, pos);
-            if (strip > prev.length) return undefined;
-            const nul = buf.indexOf(0, next);
-            if (nul < 0 || nul >= end) return undefined;
-            path = Buffer.concat([prev.subarray(0, prev.length - strip), buf.subarray(next, nul)]);
-            pos = nul + 1;
-        } else {
-            const nul = buf.indexOf(0, pos);
-            if (nul < 0 || nul >= end) return undefined;
-            path = buf.subarray(pos, nul);
-            pos = start + Math.floor((nul - start + 8) / 8) * 8;
-        }
-        prev = path;
-        // The entry's mode (after six stat fields), its blob, its stage and its path.
-        h.update(buf.subarray(start + 24, start + 28));
-        h.update(buf.subarray(start + 40, start + 40 + hashBytes));
-        h.update(String((flags & STAGE) >> 12));
-        h.update(path);
-        h.update("\0");
-    }
-    for (let p = pos; p + 8 <= end;) {
-        if (buf.toString("latin1", p, p + 4) === "link") return undefined;
-        p += 8 + buf.readUInt32BE(p + 4);
-    }
-    return h.digest("hex");
-}
-
 const u32 = (n: bigint) => Number(n & 0xffffffffn);
 
 /** A stat as a capture has it (stat-files.ts): times in milliseconds, as fs.Stats gives them. */
