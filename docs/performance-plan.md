@@ -18,15 +18,15 @@ Every target must hold under all of this at once. Where it can't run on a real 1
 
 | # | Target | Today | |
 |---|---|---|---|
-| 1 | **Breaking point.** Add sessions in steps under the workload until the machine gives out, once in Cavvy and once with the bare CLIs. Cavvy fits within 5% as many sessions; what ran out is RAM or CPU used by the agents and their processes, and Cavvy can still stop sessions then. | Bare CLIs on a 4-core, 16 GB Linux VM: CPU runs out at about 20 sessions (memory never does). Cavvy: being measured | |
-| 2 | **Scaling.** Cost per session stays flat from 1 to 30 sessions; one session running a big build or flooding output doesn't slow the others. | Not measured yet | |
+| 1 | **Breaking point.** Add sessions in steps under the workload until the machine gives out, once in Cavvy and once with the bare CLIs. Cavvy fits within 5% as many sessions; what ran out is RAM or CPU used by the agents and their processes, and Cavvy can still stop sessions then. | 4-core, 16 GB Linux VM, Sonnet, 100,000-file worktrees: CPU runs out at about 20 sessions either way (memory never does). Turns finished in 4 minutes at 5 / 10 / 20 / 30 sessions: Cavvy 66 / 87 / 100 / 101, bare CLIs 149 / 225 / 315 / 277 | Fails |
+| 2 | **Scaling.** Cost per session stays flat from 1 to 30 sessions; one session running a big build or flooding output doesn't slow the others. | Same runs: Cavvy's server 678 MB at 5 sessions, 1,282 MB at 30; its answers to the GUI 31 ms (p95) at 5, 2.6 s at 30 | Fails |
 | 3 | **Streaming.** A streaming reply costs no more than the same CLI printing it in a terminal, with 10 streaming at once. | 2 sessions: Cavvy's server 34% of a core, both CLIs 19% | Fails |
 | 4 | **Idle**, or waiting on a model: within measurement noise of Cavvy not running. | Not measured yet | |
 | 5 | **Hidden sessions:** no drawing or layout cost. | | Needs a Mac run |
 | 6 | **Snapshots.** The first one of a repository is no slower than `git status` on it. A turn that changed files costs about what `git add` of those files costs. An unchanged turn starts no processes and reads no repository files. | Unchanged turn: 2 gits and a stat of every file. 5,000 changed files: 1.3 s, `git add` 0.8 s | Fails |
 | 7 | **No dropped frames** while typing or scrolling with 10 replies streaming (8 ms a frame at 120 Hz). | | Needs a Mac run |
 | 8 | **Size doesn't show.** Opening a 2,000-turn session is as fast as opening a new one. Startup with 30 sessions restored is as fast as with 1. Lists and search with 1,000 sessions in history are as fast as with 10. A 50 MB tool output shows without freezing anything. | Not measured yet | |
-| 9 | **Memory.** All of Cavvy uses less than one of the agent CLIs it runs, at any session count, and stays flat over an hours-long soak (the end matches the start). | 2 sessions in 100,000-file worktrees: Cavvy 304 MB, one Claude Code CLI about 250 MB | Fails |
+| 9 | **Memory.** All of Cavvy uses less than one of the agent CLIs it runs, at any session count, and stays flat over an hours-long soak (the end matches the start). | 2 sessions in 100,000-file worktrees: Cavvy 304 MB, one Claude Code CLI about 250 MB. 30 sessions: Cavvy 1,282 MB, a CLI about 120 MB | Fails |
 | 10 | **Failures** with 20 live sessions: a crashed CLI, a server restart, a network drop, out of memory or a full disk loses no work, and the other sessions carry on. | Not measured yet | |
 
 ## How it's measured
