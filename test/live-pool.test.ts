@@ -162,7 +162,7 @@ afterEach(async () => {
 function setup(o: PoolOptions = {}) {
     const clock = new ManualClock();
     const fake = new FakeAdapter();
-    const pool = new LiveCliPool(() => fake, { clock, idleMs: 1000, interruptMs: 500, stopConfirmMs: 300, stopGraceMs: 2000, ...o });
+    const pool = new LiveCliPool(() => fake, { clock, idleMs: 1000, interruptMs: 500, stopConfirmMs: 300, stopGraceMs: 2000, keepRecentMs: 0, memoryShort: () => false, ...o });
     pools.push(pool);
     return { clock, fake, pool };
 }
@@ -255,6 +255,36 @@ test("past maxIdle idle processes, the least recently used go; background work p
     await until(() => d.quiet());
     clock.advance(1000);
     await until(() => d.state === "dead");
+});
+
+test("past maxIdle, a process is stopped only once it's been idle a while: sessions in use aren't restarted between turns", async () => {
+    const { clock, pool } = setup({ maxIdle: 1, keepRecentMs: 60_000, idleMs: 10 * 60_000 });
+    const [a, b, c] = ["a", "b", "c"].map((k) => pool.session(k, "fake")) as [LiveCliSession, LiveCliSession, LiveCliSession];
+    for (const s of [a, b, c]) {
+        clock.advance(10_000);
+        await turn(s, "hi");
+    }
+    // Three idle, one allowed: none has been idle a minute, so all stay.
+    clock.advance(30_000);
+    expect([a.state, b.state, c.state]).toEqual(["idle", "idle", "idle"]);
+    // A minute after its turn, the oldest goes; then the next; the last is the one kept.
+    clock.advance(15_000);
+    await until(() => a.state === "dead");
+    expect([b.state, c.state]).toEqual(["idle", "idle"]);
+    clock.advance(10_000);
+    await until(() => b.state === "dead");
+    clock.advance(60_000);
+    expect(c.state).toBe("idle");
+});
+
+test("past maxIdle, with the machine short of memory, the cap doesn't wait", async () => {
+    const { clock, pool } = setup({ maxIdle: 1, keepRecentMs: 60_000, idleMs: 10 * 60_000, memoryShort: () => true });
+    const [a, b] = ["a", "b"].map((k) => pool.session(k, "fake")) as [LiveCliSession, LiveCliSession];
+    await turn(a, "hi");
+    clock.advance(10);
+    await turn(b, "hi");
+    await until(() => a.state === "dead");
+    expect(b.state).toBe("idle");
 });
 
 test("new spawn settings restart an idle process, and wait while background work runs", async () => {
