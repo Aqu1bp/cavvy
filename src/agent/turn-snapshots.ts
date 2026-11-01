@@ -5,7 +5,7 @@
 // Git's loose object format is zlib(header + bytes); hashing/compressing in
 // process avoids a subprocess per file and preserves the bytes on disk.
 
-import { appendFileSync, chmodSync, mkdirSync, readFileSync, type BigIntStats } from "fs";
+import { appendFileSync, chmodSync, lstatSync, mkdirSync, readFileSync, type Stats } from "fs";
 import { chmod, lstat, mkdir, readdir, readFile, readlink, rename, rm, writeFile } from "fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "path";
 import { deflateSync } from "zlib";
@@ -19,7 +19,7 @@ import { MAX_DIFF_INPUT } from "../server/diffs";
 import type { GitChangesInfo, GitScope, TurnPlace } from "../server/protocol";
 import { changedSince, eachLimited, insideRoot, listWorktrees, nearby, reachedPlaces, summarize, token, UNKNOWN, WorktreeChecks, type Checked, type Worktree } from "./turn-places";
 import { redact } from "../util/redact";
-import { cleanBlob, parseIndex, type GitIndex } from "./git-index";
+import { cleanBlob, modeOf, parseIndex, type GitIndex } from "./git-index";
 
 /** Paths a turn reached that are kept (TurnSnapshots.reach): past this many, the rest go unseen. */
 const MAX_REACHED = 20_000;
@@ -150,11 +150,21 @@ function packIndexOids(index: Buffer, hashBytes: number): string[] {
  * as Git last recorded it), so it's in the repository's objects and not, until a turn changes the file, this
  * session's own.
  */
-type KnownFile = { path: string; stamp: string; entry: Entry; borrowed?: boolean };
+type KnownFile = { path: string; stamp: Stamp; entry: Entry; borrowed?: boolean };
 
-const bigStamp = (st: BigIntStats) => `${st.dev}:${st.ino}:${st.mode}:${st.size}:${st.mtimeNs}:${st.ctimeNs}`;
+/** A file's stat as compared from one capture to the next: device, inode, mode, size, mtime, ctime. */
+type Stamp = readonly [number, number, number, number, number, number];
+const stampOf = (st: Stats): Stamp => [st.dev, st.ino, st.mode, st.size, st.mtimeMs, st.ctimeMs];
+const sameStamp = (a: Stamp, st: Stats) => a[0] === st.dev && a[1] === st.ino && a[2] === st.mode && a[3] === st.size && a[4] === st.mtimeMs && a[5] === st.ctimeMs;
+/** A file found by its stat, to be read or taken from the index. */
+type Seen = { path: string; st: Stats };
+/** A path that isn't there (or a file where a folder was): not one that can't be read. */
+const gone = (e: unknown) => ["ENOENT", "ENOTDIR"].includes((e as NodeJS.ErrnoException)?.code ?? "");
 
 /** Attributes that make Git store something other than a file's bytes, and the values that leave them alone. */
+/** Tracked files looked up in Git's index (and its attributes asked for) at a time. */
+const INDEX_CHUNK = 16384;
+
 const CONVERTING = new Set(["text", "eol", "crlf", "filter", "ident", "working-tree-encoding"]);
 
 /**
@@ -413,11 +423,20 @@ export class TurnSnapshots {
      * repository still has them, so its diff doesn't depend on them later.
      */
     private async keep(changes: Change[], root: string, deadline: number) {
-        const wanted = new Map<string, number>();
+        const borrowed = new Set<string>();
         for (const c of changes) for (const e of [c.old, c.now]) {
-            if (e && e.mode !== "160000" && !this.stored.has(e.oid) && !this.unwritten.has(e.oid) && !this.pack?.oids.has(e.oid)) wanted.set(e.oid, e.size ?? 0);
+            if (e && e.mode !== "160000" && !this.stored.has(e.oid) && !this.unwritten.has(e.oid) && !this.pack?.oids.has(e.oid)) borrowed.add(e.oid);
         }
-        if (!wanted.size) return;
+        if (!borrowed.size) return;
+        // Up to the size a file is read to (a bigger one was only ever taken from the index, and isn't shown as a diff).
+        const sizes = await git(root, ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"], { input: [...borrowed].join("\n") + "\n", deadline, privateEnv: { GIT_NO_REPLACE_OBJECTS: "1" } });
+        const wanted = new Map<string, number>();
+        for (const line of sizes.out.toString().split("\n")) {
+            const [oid, type, size] = line.split(" ");
+            if (oid && type === "blob" && borrowed.has(oid) && Number(size) <= MAX_SNAPSHOT_BYTES) wanted.set(oid, Number(size));
+        }
+        let missing = [...borrowed].filter((oid) => !sizes.out.includes(`${oid} blob `)).length;
+        if (!wanted.size && !missing) return;
         // A batch at a time, each well within what one read takes.
         const batches: string[][] = [[]];
         let bytes = 0;
@@ -426,7 +445,6 @@ export class TurnSnapshots {
             batches.at(-1)!.push(oid);
             bytes += size;
         }
-        let missing = 0;
         try {
             for (const batch of batches) {
                 const found = await blobs(root, batch, deadline, { GIT_NO_REPLACE_OBJECTS: "1" });
@@ -657,6 +675,8 @@ export class TurnSnapshots {
     private async harden(trees: Set<string>) {
         await chmod(join(this.storage, "index"), 0o600).catch(() => {});
         for (const oid of trees) {
+            // In a pack: private already (finishPack), and there's no file of its own to look for.
+            if (this.stored.get(oid) === "pack") continue;
             const folder = join(this.storage, "objects", oid.slice(0, 2));
             const abs = join(folder, oid.slice(2));
             if (this.hardened.has(abs)) continue;
@@ -673,40 +693,53 @@ export class TurnSnapshots {
 
     /**
      * Of `files` (tracked, stat taken), those Git's index has as they are on disk, each with the blob it names: the
-     * stat it recorded still matches (git-index.ts), no attribute or core.autocrlf makes Git store anything but the
-     * file's bytes, and, in a partial clone, the object is there. The rest are read as any other file.
+     * stat it recorded still matches (git-index.ts, to the nanosecond), no attribute or core.autocrlf makes Git store
+     * anything but the file's bytes, and, in a partial clone, the object is there. The rest are read as any other file.
      */
-    private async fromIndex(files: { path: string; st: BigIntStats; stamp: string }[], deadline: number): Promise<Map<string, KnownFile>> {
+    private async fromIndex(index: GitIndex, files: Seen[], deadline: number): Promise<Map<string, KnownFile>> {
         const out = new Map<string, KnownFile>();
         const env = { GIT_NO_REPLACE_OBJECTS: "1" };
-        const [where, autocrlf, partial] = await Promise.all([
-            git(this.root!, ["rev-parse", "--git-path", "index"], { deadline, privateEnv: env }),
+        const [autocrlf, partial] = await Promise.all([
             git(this.root!, ["config", "--get", "core.autocrlf"], { deadline, privateEnv: env }),
             git(this.root!, ["config", "--get", "extensions.partialclone"], { deadline, privateEnv: env }),
         ]);
-        if (where.code) return out;
         // Any value but false converts some text files (true, input), and which can't be told from the index.
         if (autocrlf.code === 0 && !["false", "no", "off", "0", ""].includes(autocrlf.out.toString().trim().toLowerCase())) return out;
-        const index = await this.readIndex(resolve(this.root!, where.out.toString().replace(/\n$/, "")));
-        if (!index) return out;
-        const clean = files.flatMap((f) => {
-            const oid = cleanBlob(index, f.path, f.st);
-            return oid ? [{ ...f, oid }] : [];
-        });
-        if (!clean.length) return out;
-        const [attrs, present] = await Promise.all([
-            git(this.root!, ["check-attr", "-z", "--stdin", "--all"], { input: clean.map((f) => f.path).join("\0") + "\0", deadline, privateEnv: env }),
-            partial.code === 0 ? git(this.root!, ["cat-file", "--batch-check=%(objectname) %(objecttype)"], { input: [...new Set(clean.map((f) => f.oid))].join("\n") + "\n", deadline, privateEnv: env }) : undefined,
-        ]);
-        if (attrs.code || attrs.cut || present?.code || present?.cut) return out;
-        const converted = new Set<string>();
-        const fields = attrs.out.toString("utf-8").split("\0");
-        for (let i = 0; i + 2 < fields.length; i += 3) if (CONVERTING.has(fields[i + 1]!) && fields[i + 2] !== "unset" && fields[i + 2] !== "unspecified") converted.add(fields[i]!);
-        const there = present && new Set(present.out.toString().split("\n").filter((l) => l.endsWith(" blob")).map((l) => l.slice(0, l.indexOf(" "))));
-        for (const f of clean) {
-            if (converted.has(f.path) || (there && !there.has(f.oid))) continue;
-            const mode = f.st.isSymbolicLink() ? "120000" : Number(f.st.mode) & 0o100 ? "100755" : "100644";
-            out.set(f.path, { path: f.path, stamp: f.stamp, entry: { mode, oid: f.oid, size: Number(f.st.size) }, borrowed: true });
+        // A chunk at a time, each kept as soon as it's known: a first capture of a large repository that runs out of
+        // time leaves the next one less to do, rather than all of it again.
+        let yielded = performance.now();
+        for (let at = 0; at < files.length && Date.now() < deadline; at += INDEX_CHUNK) {
+            const clean: (Seen & { oid: string })[] = [];
+            for (const f of files.slice(at, at + INDEX_CHUNK)) {
+                if (performance.now() - yielded > 8) {
+                    await new Promise((r) => setImmediate(r));
+                    yielded = performance.now();
+                }
+                let big;
+                try { big = lstatSync(`${this.root}/${f.path}`, { bigint: true, throwIfNoEntry: false }); } catch { continue; }
+                // The same file the scan saw (else it changed meanwhile, and is read), as the index recorded it.
+                if (!big || Number(big.ino) !== f.st.ino || Number(big.size) !== f.st.size) continue;
+                const oid = cleanBlob(index, f.path, big);
+                if (oid) clean.push({ ...f, oid });
+            }
+            if (!clean.length) continue;
+            const [attrs, present] = await Promise.all([
+                git(this.root!, ["check-attr", "-z", "--stdin", "--all"], { input: clean.map((f) => f.path).join("\0") + "\0", deadline, privateEnv: env }),
+                partial.code === 0 ? git(this.root!, ["cat-file", "--batch-check=%(objectname) %(objecttype)"], { input: [...new Set(clean.map((f) => f.oid))].join("\n") + "\n", deadline, privateEnv: env }) : undefined,
+            ]);
+            if (attrs.code || attrs.cut || present?.code || present?.cut) return out;
+            const converted = new Set<string>();
+            const fields = attrs.out.toString("utf-8").split("\0");
+            for (let i = 0; i + 2 < fields.length; i += 3) if (CONVERTING.has(fields[i + 1]!) && fields[i + 2] !== "unset" && fields[i + 2] !== "unspecified") converted.add(fields[i]!);
+            const there = present && new Set(present.out.toString().split("\n").filter((l) => l.endsWith(" blob")).map((l) => l.slice(0, l.indexOf(" "))));
+            for (const f of clean) {
+                if (converted.has(f.path) || (there && !there.has(f.oid))) continue;
+                const mode = f.st.isSymbolicLink() ? "120000" : f.st.mode & 0o100 ? "100755" : "100644";
+                const file: KnownFile = { path: f.path, stamp: stampOf(f.st), entry: { mode, oid: f.oid, size: f.st.size }, borrowed: true };
+                // True of the repository whatever becomes of this capture.
+                this.known.set(f.path, file);
+                out.set(f.path, file);
+            }
         }
         return out;
     }
@@ -715,7 +748,7 @@ export class TurnSnapshots {
     private async readIndex(path: string): Promise<GitIndex | undefined> {
         const st = await lstat(path, { bigint: true }).catch(() => undefined);
         if (!st?.isFile()) return undefined;
-        const stamp = `${path}\0${bigStamp(st)}`;
+        const stamp = `${path}\0${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}`;
         if (this.index?.stamp === stamp) return this.index.parsed;
         const buf = await readFile(path).catch(() => undefined);
         const parsed = buf && parseIndex(buf, this.algo === "sha1" ? 20 : 32, st.mtimeNs);
@@ -728,6 +761,7 @@ export class TurnSnapshots {
         const deadline = started + (this.options.budgetMs ?? 2000);
         const result: TurnCapture = { incomplete: false, notes: [], skipped: pathMap(), durationMs: 0 };
         let plannedTrees = new Set<string>();
+        let touched = false;
         /** What's been read; known once its objects are on disk. */
         const read: KnownFile[] = [];
         const inTime = () => {
@@ -750,85 +784,121 @@ export class TurnSnapshots {
             this.worktreesListed = listed !== undefined;
             this.worktrees = listed ? nearby(listed, this.root) : [];
             this.nested = insideRoot(this.worktrees, this.root);
-            const listing = await git(this.root, ["ls-files", "-z", "-t", "--stage", "--cached", "--others", "--exclude-standard"], { maxBytes: 16 * 1024 * 1024, deadline, privateEnv: metadataEnv });
-            if (listing.code || listing.cut) throw new Error("The repository file list is unavailable or exceeds the snapshot budget.");
+            // Untracked files as git lists them (it knows what's ignored); then the tracked ones, from Git's index read
+            // after that, so nothing there before the listing slips between the two.
+            const [others, where] = await Promise.all([
+                git(this.root, ["ls-files", "-z", "--others", "--exclude-standard"], { maxBytes: 16 * 1024 * 1024, deadline, privateEnv: metadataEnv }),
+                git(this.root, ["rev-parse", "--git-path", "index"], { deadline, privateEnv: metadataEnv }),
+            ]);
+            if (others.code || others.cut) throw new Error("The repository file list is unavailable or exceeds the snapshot budget.");
             // ls-files can succeed while warning that an untracked directory
             // could not be opened. That list cannot establish deletions.
-            if (listing.err.trim()) throw new Error(`The repository file list is incomplete: ${redact(listing.err.trim())}`);
+            if (others.err.trim()) throw new Error(`The repository file list is incomplete: ${redact(others.err.trim())}`);
             this.algo = asked.slice(cut + 1).trim() === "sha256" ? "sha256" : "sha1";
             this.ensure();
             await this.measureStore(inTime);
-            const wt = new WorkTree(this.root, this.algo, true, inTime, deadline);
+            const index = where.code ? undefined : await this.readIndex(resolve(this.root, where.out.toString().replace(/\n$/, "")));
+            let tracked: string[], modeAt: (path: string) => string | undefined;
+            if (index) {
+                tracked = index.paths;
+                modeAt = (path) => modeOf(index, path);
+            } else {
+                // A split or sparse index: as git lists it.
+                const listing = await git(this.root, ["ls-files", "-z", "--stage", "--cached"], { maxBytes: 16 * 1024 * 1024, deadline, privateEnv: metadataEnv });
+                if (listing.code || listing.cut) throw new Error("The repository file list is unavailable or exceeds the snapshot budget.");
+                const modes = new Map<string, string>();
+                for (const record of listing.out.toString("utf-8").split("\0")) {
+                    if (!record) continue;
+                    const staged = /^(\d{6}) [0-9a-f]+ \d\t/.exec(record);
+                    if (!staged) throw new Error("Unrecognized repository file entry.");
+                    modes.set(record.slice(staged[0].length), staged[1]!);
+                }
+                tracked = [...modes.keys()];
+                modeAt = (path) => modes.get(path);
+            }
+            const untracked = others.out.toString("utf-8").split("\0").filter((p) => p && modeAt(p) === undefined);
             const entries = new Map<string, Entry>();
-            const modes = new Map<string, string>();
-            const paths = [...new Set(listing.out.toString("utf-8").split("\0").filter(Boolean).map((record) => {
-                if (record.startsWith("? ")) return record.slice(2);
-                const staged = /^\S (\d{6}) [0-9a-f]+ \d\t/.exec(record);
-                if (!staged) throw new Error("Unrecognized repository file entry.");
-                const path = record.slice(staged[0].length);
-                modes.set(path, staged[1]!);
-                return path;
-            }))];
-            type Seen = { path: string; st: BigIntStats; stamp: string };
-            const skip = ({ path, stamp }: Seen, reason: string) => {
+            const skip = (path: string, st: Stats, reason: string) => {
                 result.skipped[path] = reason;
-                (result.skippedStamps ??= pathMap())[path] = stamp;
+                (result.skippedStamps ??= pathMap())[path] = stampOf(st).join(":");
             };
             /** Tracked files not known by this stamp: Git's index may already have them. */
-            const tracked: Seen[] = [];
+            const candidates: Seen[] = [];
             const toRead: Seen[] = [];
-            // Looked up together: one by one, each is a trip to another thread and back, and a large repository runs out of time on that alone.
-            for (let at = 0; at < paths.length; at += STAT_BATCH) {
-                const batch = paths.slice(at, at + STAT_BATCH);
-                const stats = await Promise.all(batch.map((path) => {
-                    if (!safePath(path)) throw new Error("A repository path cannot be safely captured.");
-                    return wt.statBig(path, true).catch(() => {
-                        result.skipped[path] = "Unreadable path; not captured, change unknown.";
-                        return undefined;
-                    });
-                }));
-                for (let i = 0; i < batch.length; i++) {
-                    inTime();
-                    const path = batch[i]!, st = stats[i];
-                    if (!st) continue; // A tracked file deleted from disk.
-                    const seen: Seen = { path, st, stamp: bigStamp(st) };
-                    if (!st.isFile() && !st.isSymbolicLink()) {
-                        // A tracked file replaced by a directory is deleted; its new
-                        // untracked children are separate entries, not a nested repo.
-                        if (st.isDirectory() && modes.has(path) && modes.get(path) !== "160000") continue;
-                        if (st.isDirectory() && this.nested.has(path)) continue;
-                        skip(seen, st.isDirectory() ? "Submodule or nested repository contents are not captured." : "Not a regular file.");
-                        continue;
-                    }
-                    if (st.size > MAX_SNAPSHOT_BYTES) { skip(seen, "Over 10 MB; not captured, change unknown."); continue; }
-                    const known = this.known.get(path);
-                    if (known?.stamp === seen.stamp && (known.borrowed || this.stored.has(known.entry.oid))) { entries.set(known.path, known.entry); continue; }
-                    (modes.has(path) ? tracked : toRead).push(seen);
+            // Every folder on the way a real folder, not a link that could lead out of the repository (WorkTree.inside).
+            const root = this.root;
+            const folders = new Map<string, boolean>();
+            const inside = (rel: string): boolean => {
+                const i = rel.lastIndexOf("/");
+                if (i < 0) return true;
+                const dir = rel.slice(0, i);
+                let ok = folders.get(dir);
+                if (ok === undefined) {
+                    let st: Stats | undefined;
+                    try { st = lstatSync(`${root}/${dir}`, { throwIfNoEntry: false }); } catch (e) { if (!gone(e)) throw e; }
+                    ok = !!st?.isDirectory() && inside(dir);
+                    folders.set(dir, ok);
                 }
+                return ok;
+            };
+            // One stat after another, a few milliseconds at a time: a promise for each of 100,000 files costs more
+            // than the stat, and the event loop gets its turn between runs.
+            let yielded = performance.now();
+            for (const list of [tracked, untracked]) for (let i = 0; i < list.length; i++) {
+                if ((i & 255) === 255) {
+                    inTime();
+                    if (performance.now() - yielded > 8) { await new Promise((r) => setImmediate(r)); yielded = performance.now(); }
+                }
+                const path = list[i]!;
+                const known = this.known.get(path);
+                if (!known && !safePath(path)) throw new Error("A repository path cannot be safely captured.");
+                let st: Stats | undefined;
+                try {
+                    st = inside(path) ? lstatSync(`${root}/${path}`, { throwIfNoEntry: false }) : undefined;
+                } catch (e) {
+                    // Snapshots must distinguish deletion from a path they cannot read.
+                    if (!gone(e)) result.skipped[path] = "Unreadable path; not captured, change unknown.";
+                    continue;
+                }
+                if (!st) continue; // A tracked file deleted from disk.
+                if (!st.isFile() && !st.isSymbolicLink()) {
+                    // A tracked file replaced by a directory is deleted; its new
+                    // untracked children are separate entries, not a nested repo.
+                    const mode = list === tracked ? modeAt(path) : undefined;
+                    if (st.isDirectory() && mode !== undefined && mode !== "160000") continue;
+                    if (st.isDirectory() && this.nested.has(path)) continue;
+                    skip(path, st, st.isDirectory() ? "Submodule or nested repository contents are not captured." : "Not a regular file.");
+                    continue;
+                }
+                if (known && sameStamp(known.stamp, st) && (known.borrowed || this.stored.has(known.entry.oid))) { entries.set(known.path, known.entry); continue; }
+                // A file of any size can be taken from Git's index; one to read, only up to the limit.
+                if (list === tracked) candidates.push({ path, st });
+                else if (st.size > MAX_SNAPSHOT_BYTES) skip(path, st, "Over 10 MB; not captured, change unknown.");
+                else toRead.push({ path, st });
             }
             // Files as Git last recorded them have the blob its index names: taken from there, not read and hashed.
-            if (tracked.length) {
-                const taken = await this.fromIndex(tracked, deadline);
-                for (const t of tracked) {
-                    const file = taken.get(t.path);
-                    if (!file) { toRead.push(t); continue; }
-                    this.known.set(t.path, file);
-                    entries.set(t.path, file.entry);
+            if (candidates.length) {
+                const taken = index ? await this.fromIndex(index, candidates, deadline) : new Map<string, KnownFile>();
+                for (const c of candidates) {
+                    const file = taken.get(c.path);
+                    if (file) entries.set(c.path, file.entry);
+                    else if (c.st.size > MAX_SNAPSHOT_BYTES) skip(c.path, c.st, "Over 10 MB; not captured, change unknown.");
+                    else toRead.push(c);
                 }
             }
             for (let k = 0; k < toRead.length; k += READ_AT_ONCE) {
-                const done = await Promise.allSettled(toRead.slice(k, k + READ_AT_ONCE).map(async (seen) => {
-                    const { path, st, stamp } = seen;
-                    const buf = st.isSymbolicLink() ? await readlink(join(this.root!, path), { encoding: "buffer" }).catch(() => undefined) : (await readRegular(join(this.root!, path), MAX_SNAPSHOT_BYTES))?.buf;
-                    if (!buf) { skip(seen, "Unreadable, changed while being read, or over 10 MB; not captured."); return; }
+                const done = await Promise.allSettled(toRead.slice(k, k + READ_AT_ONCE).map(async ({ path, st }) => {
+                    const buf = st.isSymbolicLink() ? await readlink(join(root, path), { encoding: "buffer" }).catch(() => undefined) : (await readRegular(join(root, path), MAX_SNAPSHOT_BYTES))?.buf;
+                    if (!buf) { skip(path, st, "Unreadable, changed while being read, or over 10 MB; not captured."); return; }
                     inTime();
-                    const after = await wt.statBig(path, true).catch(() => undefined);
-                    if (!after || bigStamp(after) !== stamp) { result.skipped[path] = "Changed while being read; not captured."; return; }
-                    const mode = st.isSymbolicLink() ? "120000" : Number(st.mode) & 0o100 ? "100755" : "100644", oid = blobId(buf, this.algo);
+                    const after = await lstat(join(root, path)).catch(() => undefined);
+                    if (!after || !sameStamp(stampOf(st), after)) { result.skipped[path] = "Changed while being read; not captured."; return; }
+                    const mode = st.isSymbolicLink() ? "120000" : st.mode & 0o100 ? "100755" : "100644", oid = blobId(buf, this.algo);
                     // The same as another session knows it: its strings are kept, not a copy of them.
                     const had = this.known.get(path);
                     const same = had?.entry.oid === oid && had.entry.mode === mode && had.entry.size === buf.length;
-                    const file: KnownFile = same ? (had.stamp === stamp && !had.borrowed ? had : { path: had.path, stamp, entry: had.entry }) : { path, stamp, entry: { mode, oid, size: buf.length } };
+                    const stamp = stampOf(st);
+                    const file: KnownFile = same ? (sameStamp(had.stamp, st) && !had.borrowed ? had : { path: had.path, stamp, entry: had.entry }) : { path, stamp, entry: { mode, oid, size: buf.length } };
                     await this.store(buf, "blob", file.entry.oid);
                     read.push(file);
                     entries.set(file.path, file.entry);
@@ -854,6 +924,8 @@ export class TurnSnapshots {
                 await this.writeOut();
                 // Reset only on first use/reopen or after a failed index update.
                 // Afterwards update just changed paths; object/stat caches avoid rehashing.
+                // From here the private index may not be what indexEntries says: a failure has it written afresh.
+                touched = true;
                 if (!this.indexEntries.size) {
                     const reset = await this.run(["read-tree", "--empty"], deadline);
                     if (reset.code) throw new Error("Could not initialize the private snapshot index.");
@@ -875,8 +947,12 @@ export class TurnSnapshots {
         } catch (e) {
             result.incomplete = true;
             result.notes.push((e as Error).message);
-            this.indexEntries.clear();
-            this.lastTree = undefined;
+            // Out of time before the private index was touched, it's still as the last capture left it: the next one
+            // updates what changed, rather than writing all of it again (and running out of time again).
+            if (touched) {
+                this.indexEntries.clear();
+                this.lastTree = undefined;
+            }
             // What it read in the time it had isn't read again next time.
             await this.writeOut().catch(() => {});
         } finally {

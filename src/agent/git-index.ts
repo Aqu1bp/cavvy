@@ -2,8 +2,8 @@
 // recorded for it when it last read the file. A file whose stat still matches has exactly that blob, the rule
 // `git status` itself uses, so a snapshot can take its id without reading or hashing the file.
 //
-// Versions 2, 3 and 4 (path compression). A split index (its entries live in another file) or anything unexpected
-// reads as no index at all: the caller then reads files as it would without one.
+// Versions 2, 3 and 4 (path compression). A split index (its entries live in another file), a sparse one, or
+// anything unexpected reads as no index at all: the caller then asks git, and reads files as it would without one.
 
 import type { BigIntStats } from "fs";
 
@@ -12,8 +12,10 @@ const ASSUME_VALID = 0x8000, EXTENDED = 0x4000, STAGE = 0x3000;
 const SKIP_WORKTREE = 0x4000, INTENT_TO_ADD = 0x2000;
 
 export interface GitIndex {
-    /** Each stage-0 path's entry, by its offset into `buf`. */
+    /** Each path's entry, by its offset into `buf` (a path in conflict: its last stage's). */
     readonly at: Map<string, number>;
+    /** Every path once, in the index's order: what `ls-files --cached` lists. */
+    readonly paths: string[];
     readonly buf: Buffer;
     readonly hashBytes: number;
     /** When the index was written, in nanoseconds: an entry stamped at or after it may be racily clean. */
@@ -32,34 +34,39 @@ function varint(buf: Buffer, pos: number): [number, number] {
     return [val, pos];
 }
 
+/** Undefined for a split index, a sparse one (folders as entries) or anything unexpected. */
 export function parseIndex(buf: Buffer, hashBytes: number, writtenNs: bigint): GitIndex | undefined {
     if (buf.length < 12 + hashBytes || buf.readUInt32BE(0) !== MAGIC) return undefined;
     const version = buf.readUInt32BE(4);
     if (version < 2 || version > 4) return undefined;
     const count = buf.readUInt32BE(8);
     const at = new Map<string, number>();
+    const paths: string[] = [];
     const end = buf.length - hashBytes;
     let pos = 12;
-    let prev = "";
+    // v4 strips a number of bytes (not characters) from the path before.
+    let prev: Buffer = Buffer.alloc(0);
+    let last = "";
     for (let i = 0; i < count; i++) {
         const start = pos;
         const fixed = 40 + hashBytes; // ten 32-bit stat fields, the id
         if (start + fixed + 2 > end) return undefined;
         const flags = buf.readUInt16BE(start + fixed);
         pos = start + fixed + 2;
-        let extended = 0;
         if (flags & EXTENDED) {
             if (version < 3) return undefined;
-            extended = buf.readUInt16BE(pos);
             pos += 2;
         }
+        // A sparse index's folder entry stands for files that aren't listed.
+        if (buf.readUInt32BE(start + 24) >>> 12 === 0o04) return undefined;
         let path: string;
         if (version === 4) {
             const [strip, next] = varint(buf, pos);
             if (strip > prev.length) return undefined;
             const nul = buf.indexOf(0, next);
             if (nul < 0 || nul >= end) return undefined;
-            path = prev.slice(0, prev.length - strip) + buf.toString("utf-8", next, nul);
+            prev = Buffer.concat([prev.subarray(0, prev.length - strip), buf.subarray(next, nul)]);
+            path = prev.toString("utf-8");
             pos = nul + 1;
         } else {
             const nul = buf.indexOf(0, pos);
@@ -68,9 +75,10 @@ export function parseIndex(buf: Buffer, hashBytes: number, writtenNs: bigint): G
             // Padded with 1–8 NULs to a multiple of 8 bytes from the entry's start.
             pos = start + Math.floor((nul - start + 8) / 8) * 8;
         }
-        prev = path;
-        // Only plain stage-0 entries git keeps current: not conflicts, assume-unchanged, skip-worktree or intent-to-add.
-        if (!(flags & (ASSUME_VALID | STAGE)) && !(extended & (SKIP_WORKTREE | INTENT_TO_ADD))) at.set(path, start);
+        // A conflict's stages are next to each other: the path once.
+        if (path !== last) paths.push(path);
+        last = path;
+        at.set(path, start);
     }
     // A split index keeps its entries in a shared file: what's here isn't all of them.
     for (let p = pos; p + 8 <= end;) {
@@ -79,7 +87,13 @@ export function parseIndex(buf: Buffer, hashBytes: number, writtenNs: bigint): G
         if (sig === "link") return undefined;
         p += 8 + size;
     }
-    return { at, buf, hashBytes, writtenNs };
+    return { at, paths, buf, hashBytes, writtenNs };
+}
+
+/** The mode an entry stages, as `ls-files --stage` writes it ("100644"). */
+export function modeOf(index: GitIndex, path: string): string | undefined {
+    const o = index.at.get(path);
+    return o === undefined ? undefined : index.buf.readUInt32BE(o + 24).toString(8).padStart(6, "0");
 }
 
 /**
@@ -140,6 +154,10 @@ export function cleanBlob(index: GitIndex, path: string, st: BigIntStats): strin
     const o = index.at.get(path);
     if (o === undefined) return undefined;
     const b = index.buf;
+    // Only plain stage-0 entries Git keeps current: not conflicts, assume-unchanged, skip-worktree or intent-to-add.
+    const flags = b.readUInt16BE(o + 40 + index.hashBytes);
+    if (flags & (ASSUME_VALID | STAGE)) return undefined;
+    if (flags & EXTENDED && b.readUInt16BE(o + 42 + index.hashBytes) & (SKIP_WORKTREE | INTENT_TO_ADD)) return undefined;
     const mode = b.readUInt32BE(o + 24);
     const kind = mode >>> 12;
     // Regular files and symlinks only (not gitlinks), of the same kind and executable bit as on disk.
