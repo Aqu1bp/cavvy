@@ -70,6 +70,10 @@ export interface SnapshotTurn {
 }
 
 export const MAX_SNAPSHOT_STORE_BYTES = 256 * 1024 * 1024;
+/** Past this many versions to keep from the repository's objects, they're copied as one pack (keep). */
+const PACK_KEEP_FROM = 64;
+/** How long a turn's end capture may take (a start has 2 s: the model waits on it). */
+const END_BUDGET_MS = 10_000;
 
 const instances = new WeakMap<FileHistory, WeakMap<Session, TurnSnapshots>>();
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
@@ -480,7 +484,7 @@ export class TurnSnapshots {
         return this.record(async () => {
             if (!this.active || this.stopped) return;
             // No turn starts here: only the worktrees this one reached are looked at.
-            const captured = await this.marks(await this.capture(), reached, false);
+            const captured = await this.marks(await this.capture(true), reached, false);
             if (this.stopped) return;
             await this.finish(captured ?? { incomplete: true, notes: ["The repository is no longer available."], skipped: pathMap(), durationMs: 0 });
         });
@@ -514,7 +518,7 @@ export class TurnSnapshots {
         }
         if (changes?.length) {
             try {
-                await this.keep(changes, turn.start.root ?? this.root ?? this.cwd, Date.now() + 5000);
+                await this.keep(changes, turn.start.root ?? this.root ?? this.cwd, Date.now() + END_BUDGET_MS);
             } catch (e) {
                 captured.incomplete = true;
                 captured.notes.push((e as Error).message);
@@ -537,15 +541,33 @@ export class TurnSnapshots {
             if (e && e.mode !== "160000" && !this.stored.has(e.oid) && !this.unwritten.has(e.oid) && !this.pack?.oids.has(e.oid)) borrowed.add(e.oid);
         }
         if (!borrowed.size) return;
-        // Sizes aren't known (a borrowed blob isn't in this session's objects): read in batches, each bounded, and only
-        // what's up to the size a file is read to kept (a bigger one was only ever taken from the index, and isn't
-        // shown as a diff).
-        const wanted = new Map([...borrowed].map((oid) => [oid, 0]));
         let missing = 0;
+        let take = [...borrowed];
+        // Many: one pack made by git from the repository's own objects, checked as it's indexed (a turn that changed
+        // 12,000 files: three processes, not one read for every few files). Up to the size a file is read to (a bigger
+        // one was only ever taken from the index, and isn't shown as a diff).
+        if (borrowed.size > PACK_KEEP_FROM) {
+            const sized = await git(root, ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"], { input: take.join("\n") + "\n", deadline, privateEnv: { GIT_NO_REPLACE_OBJECTS: "1" } });
+            const found = new Set<string>();
+            take = [];
+            for (const line of sized.out.toString().split("\n")) {
+                const [oid, type, size] = line.split(" ");
+                if (!oid || type !== "blob" || !borrowed.has(oid)) continue;
+                found.add(oid);
+                if (Number(size) <= MAX_SNAPSHOT_BYTES) take.push(oid);
+            }
+            missing = borrowed.size - found.size;
+            if (!take.length || (await this.packFrom(root, take, deadline).then(() => true, () => false))) {
+                if (missing) throw new Error(`${missing} of this turn's file versions could not be kept; their diffs may be unavailable.`);
+                return;
+            }
+        }
+        // Else read and stored here, a batch at a time.
+        const wanted = new Map(take.map((oid) => [oid, 0]));
         // A batch at a time, each well within what one read takes.
         const batches: string[][] = [[]];
         for (const [oid] of wanted) {
-            if (batches.at(-1)!.length >= 16) batches.push([]);
+            if (batches.at(-1)!.length >= 64) batches.push([]);
             batches.at(-1)!.push(oid);
         }
         try {
@@ -563,6 +585,46 @@ export class TurnSnapshots {
             await this.writeOut();
         }
         if (missing) throw new Error(`${missing} of this turn's file versions could not be kept; their diffs may be unavailable.`);
+    }
+
+    /**
+     * `oids` from the repository's objects into this session's own, as one pack: `git pack-objects` writes it (no delta
+     * search: it's done once), `index-pack` checks every object against its id as it indexes it, and its bytes count
+     * toward the quota. Throws, leaving nothing behind, when any of that fails.
+     */
+    private async packFrom(root: string, oids: string[], deadline: number) {
+        const folder = join(this.storage, "objects", "pack");
+        await mkdir(folder, { recursive: true, mode: 0o700 });
+        await chmod(folder, 0o700);
+        const tmp = join(folder, `keep-${randomBytes(6).toString("hex")}`);
+        const tmpPack = `${tmp}.pack.tmp`, tmpIndex = `${tmp}.idx.tmp`;
+        let reserved = 0;
+        try {
+            const proc = Bun.spawn(gitArgv(["-c", "pack.writeReverseIndex=false", "pack-objects", "-q", "--stdout", "--window=0", "--depth=0"]), {
+                cwd: root, env: gitEnvironment({ privateEnv: { GIT_NO_REPLACE_OBJECTS: "1" } }), stdin: new TextEncoder().encode(oids.join("\n") + "\n"), stdout: Bun.file(tmpPack), stderr: "ignore",
+            });
+            const timer = setTimeout(() => proc.kill(), Math.max(0, deadline - Date.now()));
+            const code = await proc.exited.finally(() => clearTimeout(timer));
+            if (code !== 0) throw new Error("git pack-objects failed");
+            await chmod(tmpPack, 0o600);
+            const { size } = await lstat(tmpPack);
+            const hashBytes = this.algo === "sha1" ? 20 : 32;
+            const bytes = size + oids.length * (hashBytes + 8) + 8 + 256 * 4 + 2 * hashBytes;
+            this.reserve(bytes);
+            reserved = bytes;
+            const made = await this.run(["-c", "pack.writeReverseIndex=false", "index-pack", "--index-version=2", "-o", tmpIndex, tmpPack], deadline);
+            if (made.code) throw new Error("Could not index the kept versions' pack.");
+            const name = join(folder, `pack-${made.out.toString().trim().split(/\s+/).pop()}`);
+            await chmod(tmpIndex, 0o600);
+            await rename(tmpPack, `${name}.pack`);
+            await rename(tmpIndex, `${name}.idx`);
+        } catch (e) {
+            await rm(tmpPack, { force: true }).catch(() => {});
+            await rm(tmpIndex, { force: true }).catch(() => {});
+            this.objectBytes! -= reserved;
+            throw e;
+        }
+        for (const oid of oids) this.stored.set(oid, "pack");
     }
 
     /**
@@ -945,9 +1007,13 @@ export class TurnSnapshots {
         return parsed;
     }
 
-    private async capture(): Promise<TurnCapture | undefined> {
+    /**
+     * `ending`: a turn's end, which no model waits on, has longer (END_BUDGET_MS) than a start (2 s): a turn that
+     * changed thousands of files is still read whole, rather than marked incomplete and its diff lost.
+     */
+    private async capture(ending = false): Promise<TurnCapture | undefined> {
         const started = Date.now();
-        const deadline = started + (this.options.budgetMs ?? 2000);
+        const deadline = started + (this.options.budgetMs ?? (ending ? END_BUDGET_MS : 2000));
         const result: TurnCapture = { incomplete: false, notes: [], skipped: pathMap(), durationMs: 0 };
         let plannedTrees = new Set<string>();
         let touched = false, planning = false;

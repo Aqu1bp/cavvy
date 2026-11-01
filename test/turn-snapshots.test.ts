@@ -451,7 +451,10 @@ describe("per-turn snapshots", () => {
         const objects = objectsDir(dir);
         const tree = snapshots.list()[0]!.start.tree!;
         const oid = git(cwd, ["rev-parse", `${tree}:a.txt`], { GIT_OBJECT_DIRECTORY: objects }).toString().trim();
-        rmSync(join(objects, oid.slice(0, 2), oid.slice(2)));
+        // Loose, or (kept at the turn's end from the repository's objects) in a pack of its own.
+        const loose = join(objects, oid.slice(0, 2), oid.slice(2));
+        if (existsSync(loose)) rmSync(loose);
+        else rmSync(join(objects, "pack"), { recursive: true });
         const reopened = new TurnSnapshots(dir, cwd);
         for (const path of [undefined, "a.txt"]) {
             const result = await reopened.changes({ scope: "last-turn", path });
@@ -896,6 +899,24 @@ describe("per-turn snapshots", () => {
         for (const turn of snapshots.list()) expect([turn.start.incomplete, turn.end?.incomplete]).toEqual([false, false]);
         expect(snapshots.list().map((t) => t.changed)).toEqual([["a/b/new/deep.txt"], ["f/g.txt"], ["e.txt", "e.txt/inside.txt"], ["a/d.txt"], ["a/b/c.txt", "a/b/new/deep.txt", "a/d.txt"], []]);
     });
+
+    test("a turn that changes thousands of committed files ends whole, with every version kept in one pack", async () => {
+        const files: Record<string, string> = {};
+        for (let i = 0; i < 3000; i++) files[`d${i % 30}/f${i}.txt`] = `line ${i}\n`;
+        const { cwd, dir, snapshots } = setup(files);
+        await snapshots.begin(1, "Change them all");
+        for (let i = 0; i < 3000; i++) write(cwd, `d${i % 30}/f${i}.txt`, `line ${i} changed\n`);
+        await snapshots.end();
+        const turn = snapshots.list()[0]!;
+        expect([turn.start.incomplete, turn.end!.incomplete]).toEqual([false, false]);
+        expect(turn.changed!.length).toBe(3000);
+        // The versions it started from, taken from the index, are the session's own now: the diff outlives the repository's objects.
+        rmSync(join(cwd, ".git/objects"), { recursive: true });
+        mkdirSync(join(cwd, ".git/objects"));
+        const shown = await new TurnSnapshots(dir, cwd).changes({ scope: "last-turn", path: "d7/f7.txt" });
+        expect(shown.files.map((f) => [f.path, f.added, f.removed])).toEqual([["d7/f7.txt", 1, 1]]);
+        expectPrivate(dir);
+    }, 60_000);
 
     test("snapshots are pruned with file history after thirty days", async () => {
         const { cwd } = setup({ "a.txt": "a\n" });
