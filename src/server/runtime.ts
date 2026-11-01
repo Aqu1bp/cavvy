@@ -119,6 +119,8 @@ import { SecretStore, secretValueError } from "../agent/secrets";
 const FLUSH_MS = 24;
 /** Words in a session no window has on screen: the session and its row go on as they are, and this wakes the window less. */
 const HIDDEN_FLUSH_MS = 500;
+/** A tool call still under way is written to the UI log this often at most (its end at once): ops come every flush. */
+const LIVE_STEP_MS = 2000;
 
 interface Pending {
     interaction: Interaction;
@@ -762,6 +764,9 @@ export class Runtime {
         return at;
     }
 
+    /** When each tool call still under way was last written to the UI log (syncTurn). */
+    private liveStepAt = new Map<string, number>();
+
     private syncTurn(turnId: string, all = false) {
         const ids = this.stepsDirty.get(turnId);
         if (!ids) return;
@@ -779,6 +784,13 @@ export class Runtime {
             const i = turn.blocks.findIndex((b) => b.id === id);
             const b = turn.blocks[i];
             if (b && !all && (b.id === this.openText || b.id === this.openThinking || (b.t === "tool" && b.status === "streaming"))) continue;
+            // Under way: each flush's progress would be serialized again (and compared); once logged, again only a while
+            // later. It stays to write: its end goes at once.
+            const live = b?.t === "tool" && (b.status === "queued" || b.status === "running" || b.status === "awaiting");
+            const wrote = this.liveStepAt.get(id);
+            if (live && !all && wrote !== undefined && Date.now() - wrote < LIVE_STEP_MS) continue;
+            if (live) this.liveStepAt.set(id, Date.now());
+            else this.liveStepAt.delete(id);
             ids.delete(id);
             if (!b) {
                 if (logged.delete(id)) this.ui.write({ t: "step", ...at, drop: id });
