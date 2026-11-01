@@ -778,9 +778,10 @@ export class Engine {
     }
 
     private remember(path: string) {
-        // Already the most recent, a moment ago: nothing to write (it's asked on every message sent).
-        const top = readStore().recent?.[0];
-        if (top?.path === path && Date.now() - top.at < 60_000 && top.at <= Date.now()) return;
+        // Used a moment ago: nothing to write (it's asked on every message sent, and sessions in different folders
+        // take turns). The list's order can be a minute behind.
+        const had = readStore().recent?.find((r) => r.path === path);
+        if (had && Date.now() - had.at < 60_000 && had.at <= Date.now()) return;
         updateStore((s) => {
             s.recent = [{ path, at: Date.now() }, ...(s.recent ?? []).filter((r) => r.path !== path)].slice(0, 30);
         });
