@@ -997,6 +997,35 @@ describe("per-turn snapshots", () => {
         await snapshots.stop();
     }, 60_000);
 
+    test("a turn that starts with nothing changed since the last one's end starts from that end, without looking again", async () => {
+        const { cwd, dir } = setup({ "a.txt": "a\n", "b/c.txt": "c\n" });
+        const snapshots = new TurnSnapshots(dir, cwd, { narrowFromMs: 0 });
+        await snapshots.begin(1, "first");
+        await Bun.sleep(60);
+        write(cwd, "b/c.txt", "c changed\n");
+        snapshots.reach([cwd]);
+        await snapshots.end();
+        const ended = snapshots.list()[0]!.end!;
+        expect(snapshots.narrowedCount).toBe(1);
+        // As a next prompt does once its turn's end is in.
+        await Bun.sleep(300);
+        await snapshots.begin(2, "second");
+        const started = snapshots.list().at(-1)!.start;
+        expect([started.tree, started.durationMs, snapshots.narrowedCount]).toEqual([ended.tree, 0, 1]);
+        // Something changed meanwhile: looked at again.
+        write(cwd, "a.txt", "a changed\n");
+        await Bun.sleep(60);
+        snapshots.reach([cwd]);
+        await snapshots.end();
+        await Bun.sleep(300);
+        write(cwd, "d.txt", "new\n");
+        await Bun.sleep(60);
+        await snapshots.begin(3, "third");
+        expect(snapshots.narrowedCount).toBe(3);
+        expect(snapshots.list().at(-1)!.start.tree).not.toBe(snapshots.list().at(-2)!.end!.tree);
+        await snapshots.stop();
+    }, 30_000);
+
     test("a whole capture a turn can't wait for goes on, and the next turns start from it", async () => {
         const files: Record<string, string> = {};
         for (let i = 0; i < 3000; i++) files[`d${i % 30}/f${i}.txt`] = `line ${i}\n`;

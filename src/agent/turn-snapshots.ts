@@ -1203,7 +1203,7 @@ export class TurnSnapshots {
         if (Date.now() - this.settledAt > 10) await new Promise((r) => setTimeout(r, ending ? 100 : 30));
         inTime();
         if (!w.healthy) return false;
-        const gen = w.gen;
+        const gen = w.gen, genAt = Date.now();
         const seen = w.changedSince(base.gen);
         if (!seen || seen.length > NARROW_MAX_PATHS) return false;
         // What changes inside another worktree or a nested repository isn't captured here.
@@ -1244,6 +1244,7 @@ export class TurnSnapshots {
             result.incomplete = Object.keys(result.skipped).length > 0;
             Object.assign(base, { gen, indexStamp, contentKey, cacheRoot });
             this.narrowedCount++;
+            this.rememberFast(gen, genAt, result);
             return true;
         }
         if (changed.reduce((n, p) => n + p.length + 1, 0) > NARROW_MAX_ARG_BYTES) return false;
@@ -1330,7 +1331,16 @@ export class TurnSnapshots {
             narrowed: base.narrowed + 1,
         });
         this.narrowedCount++;
+        this.rememberFast(gen, genAt, result);
         return true;
+    }
+
+    /**
+     * What a capture that finds nothing changed takes again (unchanged): this one, as of `gen`, the watch's count when
+     * it looked (`at`). A turn's start right after the last one's end, with nothing changed between, is that end.
+     */
+    private rememberFast(gen: number, at: number, result: TurnCapture) {
+        this.lastFast = result.tree && !result.notes.length && this.watch?.healthy ? { gen, at, result: structuredClone(result) } : undefined;
     }
 
     /**
@@ -1682,7 +1692,7 @@ export class TurnSnapshots {
         const started = Date.now();
         const result: TurnCapture = { incomplete: false, notes: [], skipped: pathMap(), durationMs: 0 };
         let plannedTrees = new Set<string>();
-        let touched = false, planning = false;
+        let touched = false, planning = false, narrowed = false;
         /** What's been read; known once its objects are on disk. */
         const read: KnownFile[] = [];
         const inTime = () => {
@@ -1722,7 +1732,10 @@ export class TurnSnapshots {
             this.ensure();
             await this.measureStore(inTime);
             // Only what the folder's watch saw change since the last capture from Git's index, where that's enough.
-            if (where.index && (await this.captureNarrowed(result, read, where.index, deadline, inTime, ending))) return result;
+            if (where.index && (await this.captureNarrowed(result, read, where.index, deadline, inTime, ending))) {
+                narrowed = true;
+                return result;
+            }
             // Untracked files as git lists them (it knows what's ignored); then the tracked ones, from Git's index read
             // after that, so nothing there before the listing slips between the two. Where the index is known, it's
             // read and its files stat'ed alongside the listing, and that's kept if it wasn't written in the meantime.
@@ -1993,8 +2006,11 @@ export class TurnSnapshots {
                 result.notes.push("Snapshot exceeded its time budget while finalizing storage.");
             }
             result.durationMs = Date.now() - started;
-            // What a capture that finds nothing changed takes again (unchanged).
-            this.lastFast = genAtStart !== undefined && result.tree && !result.notes.length && this.watch?.healthy ? { gen: genAtStart, at: Date.now(), result: structuredClone(result) } : undefined;
+            // What a capture that finds nothing changed takes again (unchanged). A narrowed one says as of when it looked.
+            if (!narrowed) {
+                if (genAtStart !== undefined) this.rememberFast(genAtStart, Date.now(), result);
+                else this.lastFast = undefined;
+            }
         }
         return result;
     }
