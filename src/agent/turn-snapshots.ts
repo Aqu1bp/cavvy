@@ -123,6 +123,24 @@ function underAny(path: string, dirs: ReadonlySet<string>): boolean {
     return false;
 }
 
+/**
+ * Trees read or written by editTrees, by id: a tree's id names its bytes, whichever repository it's in. A turn's
+ * capture edits the last one's trees along a few paths, so most it reads are here, and no git is started for them.
+ */
+const treeBodies = new Map<string, Buffer>();
+let treeBytes = 0;
+const TREE_CACHE_BYTES = 32 * 1024 * 1024;
+function rememberTree(oid: string, body: Buffer) {
+    if (treeBodies.has(oid) || body.length > TREE_CACHE_BYTES / 8) return;
+    treeBodies.set(oid, body);
+    treeBytes += body.length;
+    for (const [old, b] of treeBodies) {
+        if (treeBytes <= TREE_CACHE_BYTES) break;
+        treeBodies.delete(old);
+        treeBytes -= b.length;
+    }
+}
+
 /** How many entries Git's index file says it has (0 when it can't be read). */
 async function indexEntries(path: string): Promise<number> {
     try {
@@ -1712,17 +1730,25 @@ export class TurnSnapshots {
             if (meta.length !== 2) continue;
             edits.set(path, meta[0] === "0" ? null : { mode: meta[0]!, oid: meta[1]! });
         }
-        const reader = new ObjectReader(root, this.readEnv(), deadline);
+        // Started only for a tree not read or written before (most of a turn's are: the last capture's own).
+        let reader: ObjectReader | undefined;
         try {
-            const tree = await editTree(base, edits, this.algo === "sha1" ? 20 : 32, (oid) => reader.read(oid, "tree"), async (body) => {
+            const tree = await editTree(base, edits, this.algo === "sha1" ? 20 : 32, async (oid) => {
+                const known = treeBodies.get(oid);
+                if (known) return known;
+                const body = await (reader ??= new ObjectReader(root, this.readEnv(), deadline)).read(oid, "tree");
+                rememberTree(oid, body);
+                return body;
+            }, async (body) => {
                 const oid = objectId("tree", body, this.algo);
                 await this.store(body, "tree", oid);
+                rememberTree(oid, body);
                 return oid;
             });
             await this.writeOut();
             return tree;
         } finally {
-            reader.close();
+            reader?.close();
         }
     }
 
