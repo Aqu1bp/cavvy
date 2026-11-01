@@ -19,7 +19,7 @@ import { MAX_DIFF_INPUT } from "../server/diffs";
 import type { GitChangesInfo, GitScope, TurnPlace } from "../server/protocol";
 import { changedSince, eachLimited, insideRoot, nearby, reachedPlaces, summarize, token, UNKNOWN, WorktreeChecks, WorktreeList, type Checked, type Worktree } from "./turn-places";
 import { redact } from "../util/redact";
-import { cleanBlob, modeOf, parseIndex, type GitIndex } from "./git-index";
+import { cleanBlob, cleanBlobMs, modeOf, msTimesExact, parseIndex, type GitIndex } from "./git-index";
 import { Pace } from "../util/pace";
 import { KIND, statFiles } from "./stat-files";
 
@@ -217,6 +217,20 @@ const stampAt = (path: string) => {
     }
 };
 /**
+ * Each repository's files known to be stored as they are (no attribute or core.autocrlf converts them), so a file
+ * Git's index has as it is can be taken from it without asking again; let go of when its attributes files change.
+ */
+const asIsByRoot = new Map<string, { attrs?: string; paths: Set<string> }>();
+function storedAsIsIn(root: string) {
+    let known = asIsByRoot.get(root);
+    if (!known) {
+        if (asIsByRoot.size >= 256) asIsByRoot.delete(asIsByRoot.keys().next().value!);
+        asIsByRoot.set(root, (known = { paths: new Set() }));
+    }
+    return known;
+}
+
+/**
  * The repository a folder is in, as git said: its top folder, object format and index, with the stamps of what
  * decides that (each folder from there up to it, and its .git), to know it's still so without asking again. Kept
  * for every session in the folder.
@@ -233,6 +247,18 @@ function worktreeListOf(root: string): WorktreeList {
         worktreeLists.set(root, (list = new WorktreeList()));
     }
     return list;
+}
+
+/** The repository's own attributes file (info/attributes in its common Git dir, found from where its index is), stamped. */
+function infoAttributes(index: string | undefined): string {
+    if (!index) return "-";
+    let common = dirname(index);
+    try {
+        common = resolve(common, readFileSync(join(common, "commondir"), "utf-8").trim());
+    } catch {
+        // The main worktree's: its Git dir is the common one.
+    }
+    return `info/attributes:${stampAt(join(common, "info", "attributes"))}`;
 }
 
 const sameList = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
@@ -806,6 +832,49 @@ export class TurnSnapshots {
     }
 
     /**
+     * Of `paths` (files as Git's index has them), the ones Git stores as they are: no attribute converts them
+     * (check-attr) and core.autocrlf doesn't; in a partial clone, only ones whose objects are there (asked of the
+     * index's entries in the capture, `blobs`). A chunk at a time, each kept as it's known (storedAsIsIn), so a
+     * first capture of a large repository that runs out of time leaves the next one less to do.
+     */
+    private async storedAsIs(paths: string[], deadline: number, oids?: Map<string, string>): Promise<Set<string>> {
+        const out = new Set<string>();
+        const env = { GIT_NO_REPLACE_OBJECTS: "1" };
+        const config = await git(this.root!, ["config", "-z", "--get-regexp", "^(core\\.autocrlf|extensions\\.partialclone)$"], { deadline, privateEnv: env });
+        // Exit 1: neither is set.
+        if (config.code > 1 || config.cut) return out;
+        const set = new Map(config.out.toString("utf-8").split("\0").filter(Boolean).map((rec) => {
+            const nl = rec.indexOf("\n");
+            return [rec.slice(0, nl < 0 ? rec.length : nl).toLowerCase(), nl < 0 ? "" : rec.slice(nl + 1).trim().toLowerCase()] as const;
+        }));
+        // Any autocrlf but false converts some text files (true, input), and which can't be told from the index.
+        const crlf = set.get("core.autocrlf");
+        if (crlf !== undefined && !["false", "no", "off", "0", ""].includes(crlf)) return out;
+        const partial = set.has("extensions.partialclone");
+        for (let at = 0; at < paths.length; at += INDEX_CHUNK) {
+            if (Date.now() >= deadline) throw new Error("Snapshot exceeded its time budget (2 seconds by default).");
+            const chunk = paths.slice(at, at + INDEX_CHUNK);
+            const [attrs, present] = await Promise.all([
+                git(this.root!, ["check-attr", "-z", "--stdin", "--all"], { input: chunk.join("\0") + "\0", deadline, privateEnv: env }),
+                partial && oids ? git(this.root!, ["cat-file", "--batch-check=%(objectname) %(objecttype)"], { input: [...new Set(chunk.map((p) => oids.get(p)!))].join("\n") + "\n", deadline, privateEnv: env }) : undefined,
+            ]);
+            if (attrs.code || attrs.cut || present?.code || present?.cut) return out;
+            const converted = new Set<string>();
+            const fields = attrs.out.toString("utf-8").split("\0");
+            for (let i = 0; i + 2 < fields.length; i += 3) if (CONVERTING.has(fields[i + 1]!) && fields[i + 2] !== "unset" && fields[i + 2] !== "unspecified") converted.add(fields[i]!);
+            const there = present && new Set(present.out.toString().split("\n").filter((l) => l.endsWith(" blob")).map((l) => l.slice(0, l.indexOf(" "))));
+            const known = storedAsIsIn(this.root!).paths;
+            for (const p of chunk) {
+                if (converted.has(p) || (there && oids && !there.has(oids.get(p)!))) continue;
+                out.add(p);
+                // True of the repository whatever becomes of this capture.
+                known.add(p);
+            }
+        }
+        return out;
+    }
+
+    /**
      * Of `files` (tracked, stat taken), those Git's index has as they are on disk, each with the blob it names: the
      * stat it recorded still matches (git-index.ts, to the nanosecond), no attribute or core.autocrlf makes Git store
      * anything but the file's bytes, and, in a partial clone, the object is there. The rest are read as any other file.
@@ -956,12 +1025,27 @@ export class TurnSnapshots {
             /** Tracked files not known by this stamp: Git's index may already have them. */
             const candidates: Seen[] = [];
             const toRead: Seen[] = [];
+            /** Files as Git's index has them, whose attributes are yet to be asked about. */
+            const unverified: (Seen & { entry: Entry })[] = [];
             const root = this.root;
+            const msExact = index ? msTimesExact(indexPath!) : false;
+            const asIs = storedAsIsIn(root);
             const trackedId = index ? `${root}\0${this.index!.stamp}` : `${root}\0${Date.now()}:${Math.random()}`;
             const { kinds, stamps } = await statFiles(root, trackedId, tracked, untracked, deadline, inTime);
             inTime();
             const n = tracked.length + untracked.length;
             const pathAt = (i: number) => (i < tracked.length ? tracked[i]! : untracked[i - tracked.length]!);
+            // What's known to be stored as it is holds while the attributes files are as they were.
+            const attrs: string[] = [infoAttributes(indexPath)];
+            for (let i = 0; i < n; i++) {
+                const p = pathAt(i);
+                if (p === ".gitattributes" || p.endsWith("/.gitattributes")) attrs.push(`${p}:${kinds[i]}:${stamps.subarray(i * 6, i * 6 + 6).join(":")}`);
+            }
+            const attrsKey = attrs.join("\0");
+            if (asIs.attrs !== attrsKey) {
+                asIs.paths.clear();
+                asIs.attrs = attrsKey;
+            }
             // The same lists as the last capture's: only paths whose stat moved since, or that it left out, are looked
             // at; the rest are as it found them (its entries and omissions). Unchanged, that's no more than comparing
             // two arrays.
@@ -1011,13 +1095,37 @@ export class TurnSnapshots {
                     continue;
                 }
                 // A file of any size can be taken from Git's index; one to read, only up to the limit.
-                if (isTracked) candidates.push({ path, st, at: i });
-                else if (st.size > MAX_SNAPSHOT_BYTES) skip(path, st, "Over 10 MB; not captured, change unknown.", i);
+                if (isTracked && index && msExact) {
+                    // As Git last recorded it: its blob is the one the index names, once its attributes are known to
+                    // store it as it is.
+                    const oid = cleanBlobMs(index, path, { kind: kind === KIND.link ? "link" : "file", mode: st.mode, ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs });
+                    if (oid) {
+                        const entry: Entry = { mode: kind === KIND.link ? "120000" : st.mode & 0o100 ? "100755" : "100644", oid, size: st.size };
+                        if (asIs.paths.has(path)) entries.set(path, entry);
+                        else unverified.push({ path, st, at: i, entry });
+                        continue;
+                    }
+                } else if (isTracked && index) {
+                    candidates.push({ path, st, at: i });
+                    continue;
+                }
+                if (st.size > MAX_SNAPSHOT_BYTES) skip(path, st, "Over 10 MB; not captured, change unknown.", i);
                 else toRead.push({ path, st, at: i });
+            }
+            // Ones whose attributes haven't been asked about yet: asked now, and known for this repository from then.
+            if (unverified.length) {
+                const stored = await this.storedAsIs(unverified.map((u) => u.path), deadline, new Map(unverified.map((u) => [u.path, u.entry.oid])));
+                for (const u of unverified) {
+                    if (stored.has(u.path)) {
+                        asIs.paths.add(u.path);
+                        entries.set(u.path, u.entry);
+                    } else if (u.st.size > MAX_SNAPSHOT_BYTES) skip(u.path, u.st, "Over 10 MB; not captured, change unknown.", u.at);
+                    else toRead.push(u);
+                }
             }
             // Files as Git last recorded them have the blob its index names: taken from there, not read and hashed.
             if (candidates.length) {
-                const taken = index ? await this.fromIndex(index, candidates, deadline) : new Map<string, KnownFile>();
+                const taken = await this.fromIndex(index!, candidates, deadline);
                 for (const c of candidates) {
                     const file = taken.get(c.path);
                     if (file) entries.set(c.path, file.entry);

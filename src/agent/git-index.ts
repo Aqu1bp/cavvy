@@ -5,7 +5,7 @@
 // Versions 2, 3 and 4 (path compression). A split index (its entries live in another file), a sparse one, or
 // anything unexpected reads as no index at all: the caller then asks git, and reads files as it would without one.
 
-import type { BigIntStats } from "fs";
+import { lstatSync, type BigIntStats } from "fs";
 import { Pace } from "../util/pace";
 
 const MAGIC = 0x44495243; // "DIRC"
@@ -21,6 +21,9 @@ export interface GitIndex {
     readonly hashBytes: number;
     /** When the index was written, in nanoseconds: an entry stamped at or after it may be racily clean. */
     readonly writtenNs: bigint;
+    /** The same, as seconds and the nanoseconds past them. */
+    readonly writtenS: number;
+    readonly writtenNsPart: number;
 }
 
 /** v4's offset-encoded varint (git's varint.c). */
@@ -90,7 +93,7 @@ export async function parseIndex(buf: Buffer, hashBytes: number, writtenNs: bigi
         if (sig === "link") return undefined;
         p += 8 + size;
     }
-    return { at, paths, buf, hashBytes, writtenNs };
+    return { at, paths, buf, hashBytes, writtenNs, writtenS: Number(writtenNs / 1_000_000_000n), writtenNsPart: Number(writtenNs % 1_000_000_000n) };
 }
 
 /** The mode an entry stages, as `ls-files --stage` writes it ("100644"). */
@@ -150,6 +153,53 @@ export async function stagedDigest(buf: Buffer, hashBytes: number): Promise<stri
 }
 
 const u32 = (n: bigint) => Number(n & 0xffffffffn);
+
+/** A stat as a capture has it (stat-files.ts): times in milliseconds, as fs.Stats gives them. */
+export interface MsStat { kind: "file" | "link" | "other"; mode: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }
+
+/**
+ * Whether fs.Stats' millisecond times are exactly seconds × 1000 + nanoseconds / 1e6 here (so an index's recorded
+ * times can be compared with them as they are), checked once on a real file; if not, cleanBlob's nanoseconds are used.
+ */
+let msExact: boolean | undefined;
+export function msTimesExact(sample: string): boolean {
+    if (msExact !== undefined) return msExact;
+    try {
+        const ms = lstatSync(sample), ns = lstatSync(sample, { bigint: true });
+        const at = (t: bigint) => Number(t / 1_000_000_000n) * 1000 + Number(t % 1_000_000_000n) / 1e6;
+        msExact = at(ns.mtimeNs) === ms.mtimeMs && at(ns.ctimeNs) === ms.ctimeMs;
+    } catch {
+        msExact = false;
+    }
+    return msExact;
+}
+
+/**
+ * cleanBlob, from a stat in milliseconds (where msTimesExact): the same fields compared, but owner (which can't
+ * change what a file holds), with each of the index's times as fs.Stats would have it.
+ */
+export function cleanBlobMs(index: GitIndex, path: string, st: MsStat): string | undefined {
+    const o = index.at.get(path);
+    if (o === undefined) return undefined;
+    const b = index.buf;
+    const flags = b.readUInt16BE(o + 40 + index.hashBytes);
+    if (flags & (ASSUME_VALID | STAGE)) return undefined;
+    if (flags & EXTENDED && b.readUInt16BE(o + 42 + index.hashBytes) & (SKIP_WORKTREE | INTENT_TO_ADD)) return undefined;
+    const mode = b.readUInt32BE(o + 24);
+    const kind = mode >>> 12;
+    if (kind === 0o10) {
+        if (st.kind !== "file" || ((mode & 0o100) !== 0) !== ((st.mode & 0o100) !== 0)) return undefined;
+    } else if (kind === 0o12) {
+        if (st.kind !== "link") return undefined;
+    } else return undefined;
+    const mtimeS = b.readUInt32BE(o + 8), mtimeNs = b.readUInt32BE(o + 12);
+    if (mtimeS * 1000 + mtimeNs / 1e6 !== st.mtimeMs) return undefined;
+    if (b.readUInt32BE(o) * 1000 + b.readUInt32BE(o + 4) / 1e6 !== st.ctimeMs) return undefined;
+    if (b.readUInt32BE(o + 20) !== st.ino % 2 ** 32 || b.readUInt32BE(o + 36) !== st.size % 2 ** 32) return undefined;
+    // Racily clean: written in the same instant as the index, the file could have changed without its stat showing it.
+    if (mtimeS > index.writtenS || (mtimeS === index.writtenS && mtimeNs >= index.writtenNsPart)) return undefined;
+    return b.toString("hex", o + 40, o + 40 + index.hashBytes);
+}
 
 /**
  * The blob id Git recorded for `path` if the file on disk is still the one it recorded (every stat field it keeps
