@@ -109,19 +109,27 @@ export interface MsStat { kind: "file" | "link" | "other"; mode: number; ino: nu
 
 /**
  * Whether fs.Stats' millisecond times are exactly seconds × 1000 + nanoseconds / 1e6 here (so an index's recorded
- * times can be compared with them as they are), checked once on a real file; if not, cleanBlob's nanoseconds are used.
+ * times can be compared with them as they are), checked on a real file; if not, cleanBlob's nanoseconds are used.
+ * Known once a file was looked at whole: not from one that isn't there (a new repository has no index yet), nor
+ * one written between the two looks at it.
  */
 let msExact: boolean | undefined;
 export function msTimesExact(sample: string): boolean {
     if (msExact !== undefined) return msExact;
-    try {
-        const ms = lstatSync(sample), ns = lstatSync(sample, { bigint: true });
-        const at = (t: bigint) => Number(t / 1_000_000_000n) * 1000 + Number(t % 1_000_000_000n) / 1e6;
-        msExact = at(ns.mtimeNs) === ms.mtimeMs && at(ns.ctimeNs) === ms.ctimeMs;
-    } catch {
-        msExact = false;
+    const at = (t: bigint) => Number(t / 1_000_000_000n) * 1000 + Number(t % 1_000_000_000n) / 1e6;
+    for (let tries = 0; tries < 3; tries++) {
+        let before, ms, after;
+        try {
+            before = lstatSync(sample, { bigint: true });
+            ms = lstatSync(sample);
+            after = lstatSync(sample, { bigint: true });
+        } catch {
+            return false;
+        }
+        if (before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) continue;
+        return (msExact = at(after.mtimeNs) === ms.mtimeMs && at(after.ctimeNs) === ms.ctimeMs);
     }
-    return msExact;
+    return false;
 }
 
 /**

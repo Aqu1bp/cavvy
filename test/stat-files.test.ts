@@ -95,3 +95,11 @@ for (const version of [2, 4]) {
         expect(scanIndex(repo, index, 20, [], true).contentKey).not.toBe(settled);
     });
 }
+
+test("a missing file doesn't decide how this system's file times compare (a new repository has no index yet)", async () => {
+    const { msTimesExact } = await import("../src/agent/git-index");
+    msTimesExact(join(root, "no-index-yet"));
+    writeFileSync(join(root, "an-index"), "x");
+    // Asked of a file that is there, it's looked at: Bun's millisecond times are exact.
+    expect(msTimesExact(join(root, "an-index"))).toBe(true);
+});
