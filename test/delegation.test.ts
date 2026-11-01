@@ -655,7 +655,7 @@ describe("Claude Code as the main agent", () => {
 
         // The server went over stdin, before the prompt, with its tools allowed and a timeout past the longest wait.
         const set = setServers()[0].request.servers.cavvy;
-        expect(set).toMatchObject({ type: "http", alwaysLoad: true, timeout: TOOL_TIMEOUT_SEC * 1000 });
+        expect(set).toMatchObject({ type: "http", alwaysLoad: false, timeout: TOOL_TIMEOUT_SEC * 1000 });
         expect(set.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
         expect(set.tools).toEqual(TOOLS.map((name) => ({ name, permission_policy: "always_allow" })));
         const order = received().flatMap((m) => (m.type === "user" ? ["prompt"] : m.type === "control_request" ? [m.request.subtype] : []));
