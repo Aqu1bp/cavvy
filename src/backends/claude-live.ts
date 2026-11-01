@@ -1187,7 +1187,10 @@ export class ClaudeConnection implements CliConnection {
             if (this.liveAgents.has(id) && !this.backgroundAgents.has(id)) this.endAgent(id, this.stopping.has(ref) ? "aborted" : "error");
             this.endTool(id, p, this.stopping.has(ref) ? "Interrupted by user" : `${this.def.name} stopped before this finished.`, true);
         }
-        const reason: TurnEndReason = this.stopping.has(ref) ? "aborted" : m.subtype === "error_max_turns" ? "max_turns" : m.subtype !== "success" || m.is_error ? "error" : "done";
+        // Cut by a message of ours written "now" (steerOnce), not stopped: it goes on with that message. Cut before the model
+        // said anything, 2.1.316 calls it error_during_execution, with an [ede_diagnostic] error that isn't one.
+        const cut = m.terminal_reason === "aborted_streaming" && !this.stopping.has(ref);
+        const reason: TurnEndReason = this.stopping.has(ref) ? "aborted" : m.subtype === "error_max_turns" ? "max_turns" : !cut && (m.subtype !== "success" || m.is_error) ? "error" : "done";
         const answered = this.answeredBy.get(ref) ?? [];
         const pending = this.outstanding.get(ref);
         if (pending) {
@@ -1209,13 +1212,15 @@ export class ClaudeConnection implements CliConnection {
             }
         } else answered.push(...ids);
         this.answeredBy.set(ref, answered);
-        // A steering message written as its own turn ended, taken into a turn Claude Code started meanwhile (a wake's):
-        // answered there, so its own turn has nothing more to wait for.
+        // A steering message written as its own turn ended, or a prompt written while Claude Code ran a turn of its own
+        // (2.1.316 takes it into that turn, whose result names it), answered in another turn: its own has nothing more
+        // to wait for.
         for (const id of ids) {
             const p = this.prompts.get(id);
-            if (!p || p.ref === ref || p.kind !== "steer" || p.state === "done" || p.state === "cancelled") continue;
+            if (!p || p.ref === ref || p.kind === "carrier" || p.state === "done" || p.state === "cancelled") continue;
             p.state = "done";
             this.outstanding.get(p.ref)?.delete(id);
+            if (p.kind === "prompt") this.answeredBy.set(p.ref, [...(this.answeredBy.get(p.ref) ?? []), id]);
             this.settleWaiting(p.ref);
         }
         // A steering message Claude Code runs as a turn of its own after this one: still this Cavvy turn.

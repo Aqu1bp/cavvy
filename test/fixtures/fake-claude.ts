@@ -88,6 +88,9 @@
 // FAKE_INTERRUPT_ANSWER_MS  an interrupt stops the turn at once, but its control answer comes this late
 // FAKE_CANCEL_REFUSE=1  answers cancel_async_message with an error (FAKE_CANCEL_ANSWER_MS late), and withdraws nothing
 // FAKE_INITIALIZE_MS  answers initialize this late, reading nothing after it meanwhile (as Claude Code takes no prompt before)
+// FAKE_LIVE_FIRST_MS  steer-live: the first turn waits this long before it says anything (the model's first request). A
+//                    "now" message meanwhile cuts it as 2.1.316 does: error_during_execution, aborted_streaming, an
+//                    [ede_diagnostic] error (cutprobe, 2.1.316); it runs next
 // FAKE_LIVE_WAKE_MS  steer-live: this long after the first turn's result, a turn of its own starts (a background
 //                    report's, say), run as the first was; its result names none of what was written to it
 // FAKE_CLAUDE_ENV_FILE  a JSON file of FAKE_* settings, read again with each prompt (as fake-codex's FAKE_ENV_FILE):
@@ -1312,7 +1315,7 @@ function enqueue(m: any, queued: boolean) {
 }
 
 /** steer-live: the turn under way, and the messages written to it while a call ran (taken with its result). */
-let liveTurn: { phase: "tool" | "writing"; folded: { uuid?: string; synthetic: boolean; text: string; content: any[] }[]; cut: boolean; end?: boolean; poke?: () => void } | undefined;
+let liveTurn: { phase: "starting" | "tool" | "writing"; folded: { uuid?: string; synthetic: boolean; text: string; content: any[] }[]; cut: boolean; end?: boolean; poke?: () => void } | undefined;
 let liveTurns = 0;
 
 /**
@@ -1332,7 +1335,7 @@ async function steerLive(content: any[], uuid?: string) {
         text(`Took: ${said}`);
         return result("success", { result: `Took: ${said}` });
     }
-    const st: NonNullable<typeof liveTurn> = { phase: "tool", folded: [], cut: false };
+    const st: NonNullable<typeof liveTurn> = { phase: process.env.FAKE_LIVE_FIRST_MS ? "starting" : "tool", folded: [], cut: false };
     liveTurn = st;
     const pause = (ms: number) => new Promise<void>((r) => {
         const timer = setTimeout(r, ms);
@@ -1343,6 +1346,16 @@ async function steerLive(content: any[], uuid?: string) {
         liveTurn = undefined;
         for (const m of st.folded.splice(0)) enqueue({ uuid: m.uuid, message: { content: m.content } }, false);
     };
+    if (st.phase === "starting") {
+        const first = Date.now() + Number(process.env.FAKE_LIVE_FIRST_MS);
+        while (Date.now() < first && !interrupted && !st.cut) await pause(first - Date.now());
+        // Cut before the model said anything: 2.1.316 calls it an error, though the "now" message runs next.
+        if (st.cut) {
+            keepWaiting();
+            return result("error_during_execution", { terminal_reason: "aborted_streaming", errors: ["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"] });
+        }
+        st.phase = "tool";
+    }
     text("Working on it.");
     toolUse("toolu_live", "Bash", { command: "sleep 1" });
     const until = Date.now() + Number(process.env.FAKE_TOOL_MS ?? 600);
