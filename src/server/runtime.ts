@@ -3090,7 +3090,9 @@ export class Runtime {
 
         let reason: TurnEndReason | undefined;
         try {
-            if (!this.session.meta.system) await this.freezeSystemPrompt(ac.signal);
+            // An agent CLI (Claude Code, Codex) has its own, with its own git status: Cavvy's is built (git read for it,
+            // MCP servers waited for) once a turn goes to a model Cavvy prompts itself.
+            if (!this.session.meta.system && !isAgentBackend(this.client)) await this.freezeSystemPrompt(ac.signal);
             if (ac.signal.aborted) {
                 // Nothing was sent: a message goes back to the input box; events go back in their queue.
                 if (opts.wakes) this.toolState.wakes?.requeue(opts.wakes);
