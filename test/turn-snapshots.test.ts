@@ -877,6 +877,26 @@ describe("per-turn snapshots", () => {
         expect(snapshots.list()[0]!.start.incomplete).toBe(false);
     });
 
+    test("trees worked out again only where something changed agree with Git's, capture after capture", async () => {
+        const { cwd, snapshots } = setup({ "a/b/c.txt": "c\n", "a/d.txt": "d\n", "e.txt": "e\n", "f/g.txt": "g\n" });
+        const steps: (() => void)[] = [
+            () => write(cwd, "a/b/new/deep.txt", "deep\n"),
+            () => rmSync(join(cwd, "f"), { recursive: true }),
+            () => { rmSync(join(cwd, "e.txt")); write(cwd, "e.txt/inside.txt", "now a folder\n"); },
+            () => write(cwd, "a/d.txt", "d again\n"),
+            () => rmSync(join(cwd, "a"), { recursive: true }),
+        ];
+        await snapshots.begin(1, "start");
+        for (const [i, step] of steps.entries()) {
+            step();
+            await snapshots.begin(i + 2, `step ${i}`);
+        }
+        await snapshots.end();
+        // Each capture's planned root matched git write-tree's, or it would be incomplete.
+        for (const turn of snapshots.list()) expect([turn.start.incomplete, turn.end?.incomplete]).toEqual([false, false]);
+        expect(snapshots.list().map((t) => t.changed)).toEqual([["a/b/new/deep.txt"], ["f/g.txt"], ["e.txt", "e.txt/inside.txt"], ["a/d.txt"], ["a/b/c.txt", "a/b/new/deep.txt", "a/d.txt"], []]);
+    });
+
     test("snapshots are pruned with file history after thirty days", async () => {
         const { cwd } = setup({ "a.txt": "a\n" });
         const dir = join(paths.projectsDir(), `snapshot-prune-${next++}`, "file-history", "old-session");

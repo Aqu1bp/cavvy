@@ -6,6 +6,7 @@
 // anything unexpected reads as no index at all: the caller then asks git, and reads files as it would without one.
 
 import type { BigIntStats } from "fs";
+import { Pace } from "../util/pace";
 
 const MAGIC = 0x44495243; // "DIRC"
 const ASSUME_VALID = 0x8000, EXTENDED = 0x4000, STAGE = 0x3000;
@@ -35,7 +36,8 @@ function varint(buf: Buffer, pos: number): [number, number] {
 }
 
 /** Undefined for a split index, a sparse one (folders as entries) or anything unexpected. */
-export function parseIndex(buf: Buffer, hashBytes: number, writtenNs: bigint): GitIndex | undefined {
+export async function parseIndex(buf: Buffer, hashBytes: number, writtenNs: bigint): Promise<GitIndex | undefined> {
+    const pace = new Pace();
     if (buf.length < 12 + hashBytes || buf.readUInt32BE(0) !== MAGIC) return undefined;
     const version = buf.readUInt32BE(4);
     if (version < 2 || version > 4) return undefined;
@@ -48,6 +50,7 @@ export function parseIndex(buf: Buffer, hashBytes: number, writtenNs: bigint): G
     let prev: Buffer = Buffer.alloc(0);
     let last = "";
     for (let i = 0; i < count; i++) {
+        if ((i & 1023) === 1023 && pace.due) await pace.rest();
         const start = pos;
         const fixed = 40 + hashBytes; // ten 32-bit stat fields, the id
         if (start + fixed + 2 > end) return undefined;
@@ -100,7 +103,8 @@ export function modeOf(index: GitIndex, path: string): string | undefined {
  * What an index stages, as a digest: each entry's mode, blob, stage and path (`ls-files --stage`), not the stat
  * cache any `git status` rewrites. Undefined for a split index or anything unexpected.
  */
-export function stagedDigest(buf: Buffer, hashBytes: number): string | undefined {
+export async function stagedDigest(buf: Buffer, hashBytes: number): Promise<string | undefined> {
+    const pace = new Pace();
     if (buf.length < 12 + hashBytes || buf.readUInt32BE(0) !== MAGIC) return undefined;
     const version = buf.readUInt32BE(4);
     if (version < 2 || version > 4) return undefined;
@@ -110,6 +114,7 @@ export function stagedDigest(buf: Buffer, hashBytes: number): string | undefined
     let pos = 12;
     let prev: Buffer = Buffer.alloc(0);
     for (let i = 0; i < count; i++) {
+        if ((i & 1023) === 1023 && pace.due) await pace.rest();
         const start = pos;
         const fixed = 40 + hashBytes;
         if (start + fixed + 2 > end) return undefined;

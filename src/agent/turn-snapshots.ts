@@ -20,6 +20,7 @@ import type { GitChangesInfo, GitScope, TurnPlace } from "../server/protocol";
 import { changedSince, eachLimited, insideRoot, listWorktrees, nearby, reachedPlaces, summarize, token, UNKNOWN, WorktreeChecks, type Checked, type Worktree } from "./turn-places";
 import { redact } from "../util/redact";
 import { cleanBlob, modeOf, parseIndex, type GitIndex } from "./git-index";
+import { Pace } from "../util/pace";
 
 /** Paths a turn reached that are kept (TurnSnapshots.reach): past this many, the rest go unseen. */
 const MAX_REACHED = 20_000;
@@ -84,40 +85,77 @@ const safePath = (p: string) => p.length > 0 && !p.includes("\0") && !isAbsolute
 const pathMap = (...sources: Record<string, string>[]): Record<string, string> => Object.assign(Object.create(null), ...sources);
 const own = (map: Record<string, string> | undefined, path: string) => map && Object.hasOwn(map, path) ? map[path] : undefined;
 
+/** A folder of the tree a capture plans: its files and folders, and its tree's id while nothing under it has changed. */
+interface Folder { files: Map<string, Entry>; dirs: Map<string, Folder>; oid?: string }
+const folder = (): Folder => ({ files: new Map(), dirs: new Map() });
+
 /**
- * Build the trees before write-tree so their compressed bytes pass through
- * the same quota as blobs. Git then reuses these private objects.
+ * The capture's files into `root`'s folders: each path's entry set, or (gone from `entries`) removed with any folder
+ * it leaves empty; the folders above each one lose their tree id, to be worked out again (treeObjects).
  */
-function treeObjects(entries: Map<string, Entry>, algo: "sha1" | "sha256", inTime: () => void): { root: string; objects: Map<string, Buffer> } {
-    interface Directory { files: Map<string, Entry>; dirs: Map<string, Directory> }
-    const directory = (): Directory => ({ files: new Map(), dirs: new Map() });
-    const root = directory();
-    for (const [path, entry] of entries) {
-        inTime();
+async function placeFiles(root: Folder, paths: Iterable<string>, entries: Map<string, Entry>, inTime: () => void, pace: Pace) {
+    let n = 0;
+    for (const path of paths) {
+        if ((++n & 255) === 0) {
+            inTime();
+            if (pace.due) await pace.rest();
+        }
         const parts = path.split("/");
-        let node = root;
-        for (const part of parts.slice(0, -1)) {
-            let next = node.dirs.get(part);
-            if (!next) node.dirs.set(part, (next = directory()));
+        const name = parts.pop()!;
+        const entry = entries.get(path);
+        const chain = [root];
+        let node: Folder | undefined = root;
+        for (const part of parts) {
+            let next: Folder | undefined = node.dirs.get(part);
+            if (!next) {
+                if (!entry) { node = undefined; break; }
+                node.dirs.set(part, (next = folder()));
+            }
+            chain.push(next);
             node = next;
         }
-        node.files.set(parts.at(-1)!, entry);
+        if (!node) continue;
+        for (const f of chain) f.oid = undefined;
+        if (entry) { node.files.set(name, entry); continue; }
+        node.files.delete(name);
+        // Git keeps no empty folders.
+        for (let i = chain.length - 1; i > 0 && !chain[i]!.files.size && !chain[i]!.dirs.size; i--) chain[i - 1]!.dirs.delete(parts[i - 1]!);
     }
+}
+
+/**
+ * The tree ids of `root`'s folders, worked out again only where something under them changed (placeFiles), and the
+ * new tree objects, before write-tree, so their compressed bytes pass through the same quota as blobs. Git then
+ * reuses these private objects.
+ */
+async function treeObjects(root: Folder, algo: "sha1" | "sha256", inTime: () => void, pace: Pace): Promise<{ root: string; objects: Map<string, Buffer> }> {
     const objects = new Map<string, Buffer>();
-    const tree = (node: Directory): string => {
-        inTime();
+    // The folders to work out, each before the ones in it; then taken from the end, each after the ones in it.
+    const order: Folder[] = [];
+    const stack = [root];
+    while (stack.length) {
+        const node = stack.pop()!;
+        if (node.oid) continue;
+        order.push(node);
+        for (const dir of node.dirs.values()) if (!dir.oid) stack.push(dir);
+    }
+    for (let i = order.length - 1; i >= 0; i--) {
+        if ((i & 63) === 0) {
+            inTime();
+            if (pace.due) await pace.rest();
+        }
+        const node = order[i]!;
         const children = [...node.files].map(([name, e]) => ({ name, mode: e.mode, oid: e.oid, order: Buffer.from(name) }));
-        for (const [name, dir] of node.dirs) children.push({ name, mode: "40000", oid: tree(dir), order: Buffer.from(name + "/") });
+        for (const [name, dir] of node.dirs) children.push({ name, mode: "40000", oid: dir.oid!, order: Buffer.from(name + "/") });
         children.sort((a, b) => Buffer.compare(a.order, b.order));
         const bytes = Buffer.concat(children.flatMap((e) => [Buffer.from(`${e.mode} ${e.name}\0`), Buffer.from(e.oid, "hex")]));
         const hash = new Bun.CryptoHasher(algo);
         hash.update(`tree ${bytes.length}\0`);
         hash.update(bytes);
-        const oid = hash.digest("hex");
-        objects.set(oid, bytes);
-        return oid;
-    };
-    return { root: tree(root), objects };
+        node.oid = hash.digest("hex");
+        objects.set(node.oid, bytes);
+    }
+    return { root: root.oid!, objects };
 }
 
 /** An object as a pack holds it: its type and size, then its bytes compressed, with no header. */
@@ -211,6 +249,8 @@ export class TurnSnapshots {
     private reached = new Set<string>();
     /** The tree of what's in the private index, while nothing has gone wrong with it. */
     private lastTree: string | undefined;
+    /** The last capture's files in their folders, with each folder's tree id (treeObjects). */
+    private folders?: Folder;
     /** Git's own index for this folder, as last read (fromIndex). */
     private index?: { stamp: string; parsed: GitIndex };
     private readonly storage: string;
@@ -707,14 +747,11 @@ export class TurnSnapshots {
         if (autocrlf.code === 0 && !["false", "no", "off", "0", ""].includes(autocrlf.out.toString().trim().toLowerCase())) return out;
         // A chunk at a time, each kept as soon as it's known: a first capture of a large repository that runs out of
         // time leaves the next one less to do, rather than all of it again.
-        let yielded = performance.now();
+        const pace = new Pace();
         for (let at = 0; at < files.length && Date.now() < deadline; at += INDEX_CHUNK) {
             const clean: (Seen & { oid: string })[] = [];
             for (const f of files.slice(at, at + INDEX_CHUNK)) {
-                if (performance.now() - yielded > 8) {
-                    await new Promise((r) => setImmediate(r));
-                    yielded = performance.now();
-                }
+                if (pace.due) await pace.rest();
                 let big;
                 try { big = lstatSync(`${this.root}/${f.path}`, { bigint: true, throwIfNoEntry: false }); } catch { continue; }
                 // The same file the scan saw (else it changed meanwhile, and is read), as the index recorded it.
@@ -751,7 +788,7 @@ export class TurnSnapshots {
         const stamp = `${path}\0${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}`;
         if (this.index?.stamp === stamp) return this.index.parsed;
         const buf = await readFile(path).catch(() => undefined);
-        const parsed = buf && parseIndex(buf, this.algo === "sha1" ? 20 : 32, st.mtimeNs);
+        const parsed = buf && await parseIndex(buf, this.algo === "sha1" ? 20 : 32, st.mtimeNs);
         this.index = parsed ? { stamp, parsed } : undefined;
         return parsed;
     }
@@ -761,7 +798,7 @@ export class TurnSnapshots {
         const deadline = started + (this.options.budgetMs ?? 2000);
         const result: TurnCapture = { incomplete: false, notes: [], skipped: pathMap(), durationMs: 0 };
         let plannedTrees = new Set<string>();
-        let touched = false;
+        let touched = false, planning = false;
         /** What's been read; known once its objects are on disk. */
         const read: KnownFile[] = [];
         const inTime = () => {
@@ -843,11 +880,11 @@ export class TurnSnapshots {
             };
             // One stat after another, a few milliseconds at a time: a promise for each of 100,000 files costs more
             // than the stat, and the event loop gets its turn between runs.
-            let yielded = performance.now();
+            const pace = new Pace();
             for (const list of [tracked, untracked]) for (let i = 0; i < list.length; i++) {
                 if ((i & 255) === 255) {
                     inTime();
-                    if (performance.now() - yielded > 8) { await new Promise((r) => setImmediate(r)); yielded = performance.now(); }
+                    if (pace.due) await pace.rest();
                 }
                 const path = list[i]!;
                 const known = this.known.get(path);
@@ -908,14 +945,27 @@ export class TurnSnapshots {
             }
             inTime();
             const updates: string[] = [];
-            for (const path of this.indexEntries.keys()) if (!entries.has(path)) updates.push(`0 ${"0".repeat(this.algo === "sha1" ? 40 : 64)}\t${path}\0`);
+            const changed: string[] = [];
+            for (const path of this.indexEntries.keys()) if (!entries.has(path)) {
+                updates.push(`0 ${"0".repeat(this.algo === "sha1" ? 40 : 64)}\t${path}\0`);
+                changed.push(path);
+            }
             for (const [path, e] of entries) {
                 const was = this.indexEntries.get(path);
-                if (was?.oid !== e.oid || was.mode !== e.mode) updates.push(`${e.mode} ${e.oid}\t${path}\0`);
+                if (was?.oid !== e.oid || was.mode !== e.mode) {
+                    updates.push(`${e.mode} ${e.oid}\t${path}\0`);
+                    changed.push(path);
+                }
             }
             // Nothing changed since the last one: it's the same tree.
             if (updates.length || !this.lastTree) {
-                const planned = treeObjects(entries, this.algo, inTime);
+                // The folders as the last capture left them, and what's changed since; or, the first time or after a
+                // failure, all of them afresh.
+                planning = true;
+                const fresh = !this.folders || !this.lastTree;
+                if (fresh) this.folders = folder();
+                await placeFiles(this.folders!, fresh ? entries.keys() : changed, entries, inTime, pace);
+                const planned = await treeObjects(this.folders!, this.algo, inTime, pace);
                 plannedTrees = new Set(planned.objects.keys());
                 for (const [oid, bytes] of planned.objects) {
                     inTime();
@@ -953,6 +1003,8 @@ export class TurnSnapshots {
                 this.indexEntries.clear();
                 this.lastTree = undefined;
             }
+            // Its folders may be partway between two captures: worked out afresh next time.
+            if (planning) this.folders = undefined;
             // What it read in the time it had isn't read again next time.
             await this.writeOut().catch(() => {});
         } finally {

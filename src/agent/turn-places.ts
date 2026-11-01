@@ -209,7 +209,7 @@ export async function token(w: Checked, deadline: number): Promise<string> {
         if (digest === undefined) {
             const buf = st ? await readFile(index).catch(() => undefined) : undefined;
             const format = await run(w.real, ["rev-parse", "--show-object-format"], { deadline, pin: w });
-            digest = buf ? stagedDigest(buf, format.out.toString().trim() === "sha256" ? 32 : 20) : st ? undefined : "";
+            digest = buf ? await stagedDigest(buf, format.out.toString().trim() === "sha256" ? 32 : 20) : st ? undefined : "";
             if (digest === undefined) {
                 // A split index, or one this can't read: as git lists it.
                 const staged = await run(w.real, ["ls-files", "-z", "--stage"], { deadline, maxBytes: 32 * 1024 * 1024, pin: w });
