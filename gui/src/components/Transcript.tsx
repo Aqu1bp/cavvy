@@ -2,7 +2,7 @@ import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Sh
 import { ArrowDown, ArrowUpLeft, GitFork } from "lucide-solid";
 import type { Turn } from "@shared/protocol";
 import { fork, forkAnchor } from "../state/actions";
-import { activate, app, toast, type SessionHandle } from "../state/app";
+import { activate, app, loadEarlier, toast, type SessionHandle } from "../state/app";
 import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setFollowing, setJumpTarget, setRewindOpen, takeDockGlide } from "../state/ui";
 import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
@@ -120,8 +120,11 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         const t = turns();
         return t.slice(Math.max(0, t.length - shown()), t.length - trimmed());
     });
-    /** Turns above the page, for "Show earlier" (not those still going in at first: grow, in onMount). */
-    const hidden = () => Math.max(0, turns().length - Math.max(shown(), target));
+    /** Turns above the page here, not those still going in at first (grow, in onMount). */
+    const hiddenHere = () => Math.max(0, turns().length - Math.max(shown(), target));
+    /** Turns above the page, for "Show earlier": those here, and those the session opened without (loadEarlier). */
+    const hidden = () => hiddenHere() + (p.handle.view.earlier ?? 0);
+    const [loadingEarlier, setLoadingEarlier] = createSignal(false);
 
     /**
      * A jump down ("Latest", a send from further up) is ours, a step a frame toward wherever the end is in that frame,
@@ -492,7 +495,14 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         });
     });
 
-    const earlier = () => {
+    const earlier = async () => {
+        // Fewer here than a page: the next ones come from the server first (put in above, out of sight).
+        if (hiddenHere() < PAGE && p.handle.view.earlier) {
+            if (loadingEarlier()) return;
+            setLoadingEarlier(true);
+            const ok = await loadEarlier(p.handle, { count: PAGE }).finally(() => setLoadingEarlier(false));
+            if (!ok && p.handle.view.earlier) return void toast("Couldn't load earlier turns.");
+        }
         reading = capture();
         smoothScroll = false;
         setStick(false);
@@ -555,12 +565,12 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         glides = inSight(Math.abs(from)).map((el) => ({ el, from, anim: el.animate([{ transform: `translateY(${from}px)` }, { transform: "none" }], { duration: ms, easing: GROW_EASE }) }));
     }));
 
-    // Sending a prompt jumps back down.
+    // Sending a prompt jumps back down: a new turn at the end, not earlier ones put in above (loadEarlier).
     createEffect(
         on(
-            () => turns().length,
-            (n, prev) => {
-                if (prev !== undefined && n > prev && turns()[n - 1]?.prompt) {
+            () => [turns().length, turns()[turns().length - 1]?.id] as const,
+            ([n, last], prev) => {
+                if (prev !== undefined && n > prev[0] && last !== prev[1] && turns()[n - 1]?.prompt) {
                     setTrimmed(0);
                     setStick(true);
                     afterLayout(() => toBottom(true));
@@ -705,30 +715,40 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         setStick(false);
     };
 
+    // Find counts what's in the whole session: opened, it has the turns the session opened without.
+    createEffect(on(findOpen, (open) => {
+        if (open && p.handle.view.earlier) void loadEarlier(p.handle, { all: true });
+    }));
+
     // A message found from ⌘K: its turn, briefly marked, with the find bar on what was searched.
     const [anchor, setAnchor] = createSignal<FindAnchor>();
+    const jump = (j: { role: FindAnchor["role"]; query: string }, turn: Turn | undefined) => {
+        if (!turn) return toast("That message isn't here any more.");
+        show(turn.id);
+        setAnchor({ turnId: turn.id, role: j.role });
+        setFindQuery(j.query);
+        openFind();
+        afterLayout(() => {
+            const el = turnEls.get(turn.id);
+            if (!el || !scroller) return;
+            scroller.scrollTop += el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - BAR_ROOM;
+            wrote();
+            reading = capture();
+            el.classList.remove("flash");
+            void el.offsetWidth;
+            el.classList.add("flash");
+            setTimeout(() => el.classList.remove("flash"), 1800);
+        });
+    };
     createEffect(() => {
         const j = jumpTarget();
         if (!j || j.sessionId !== p.handle.id || !turns().length) return;
         untrack(() => {
             setJumpTarget(undefined);
-            const turn = turnAt(turns(), j.seg, j.index);
-            if (!turn) return toast("That message isn't here any more.");
-            show(turn.id);
-            setAnchor({ turnId: turn.id, role: j.role });
-            setFindQuery(j.query);
-            openFind();
-            afterLayout(() => {
-                const el = turnEls.get(turn.id);
-                if (!el || !scroller) return;
-                scroller.scrollTop += el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - BAR_ROOM;
-                wrote();
-                reading = capture();
-                el.classList.remove("flash");
-                void el.offsetWidth;
-                el.classList.add("flash");
-                setTimeout(() => el.classList.remove("flash"), 1800);
-            });
+            const found = turnAt(turns(), j.seg, j.index);
+            if (found || !p.handle.view.earlier) return jump(j, found);
+            // Before the turns the session opened with: those back to it come first.
+            void loadEarlier(p.handle, { through: { seg: j.seg, index: j.index } }).then(() => untrack(() => jump(j, turnAt(turns(), j.seg, j.index))));
         });
     });
 
@@ -799,7 +819,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                         )}
                     </For>
                     <Show when={hidden()}>
-                        <button class="earlier" onClick={earlier}>
+                        <button class="earlier" onClick={() => void earlier()} disabled={loadingEarlier()}>
                             Show {Math.min(PAGE, hidden())} earlier {hidden() === 1 ? "turn" : "turns"}
                         </button>
                     </Show>

@@ -99,6 +99,7 @@ import type {
     RewindTargetInfo,
     SessionOp,
     SessionSnapshot,
+    SessionTurnsPage,
     SessionState,
     WorkingIn,
     ToolBlock,
@@ -891,9 +892,36 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Sending ops
 
-    snapshot(): SessionSnapshot {
+    /** `last`: only that many turns, the latest (a long session opens with what's on screen; session.turns has the rest). */
+    snapshot(last?: number): SessionSnapshot {
         this.flush();
-        return { state: structuredClone(this.view.state), turns: structuredClone(this.view.turns), agents: structuredClone(this.view.agents), seq: this.batch };
+        const all = this.view.turns;
+        const from = last !== undefined && last >= 0 && all.length > last ? all.length - last : 0;
+        return { state: structuredClone(this.view.state), turns: structuredClone(from ? all.slice(from) : all), agents: structuredClone(this.view.agents), seq: this.batch, ...(from ? { earlier: from } : {}) };
+    }
+
+    /**
+     * Turns before `before` (session.turns), as they are now: what's been sent of them so far is in them (flushed first),
+     * and what changes after goes as ops, in order after this. Undefined when the window's turns aren't this view's.
+     */
+    turnsBefore(before: string, o: { count?: number; through?: { seg: number; index: number }; all?: boolean }): SessionTurnsPage | undefined {
+        this.flush();
+        const all = this.view.turns;
+        const at = all.findIndex((t) => t.id === before);
+        if (at < 0) return undefined;
+        let from = Math.max(0, at - Math.max(1, Math.min(o.count ?? 40, 1000)));
+        if (o.all) from = 0;
+        else if (o.through) {
+            // Back to the turn holding that message: the last one placed at or before it, as the window finds it (turnAt).
+            const { seg, index } = o.through;
+            let holder = -1;
+            for (let i = 0; i < at; i++) {
+                const p = all[i]!.pos;
+                if (p && (p.seg < seg || (p.seg === seg && p.index <= index))) holder = i;
+            }
+            if (holder >= 0) from = Math.min(from, holder);
+        }
+        return { turns: structuredClone(all.slice(from, at)), earlier: from, seq: this.batch };
     }
 
     private op(o: SessionOp) {

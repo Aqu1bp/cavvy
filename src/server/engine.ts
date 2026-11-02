@@ -2176,7 +2176,16 @@ export class Engine {
                 }
                 // Search can open a session beyond the sidebar list window.
                 client.send({ type: "sessions.upsert", session: this.summaryOf(rt) });
-                return rt.snapshot();
+                return rt.snapshot(typeof p.last === "number" && Number.isInteger(p.last) && p.last >= 0 ? p.last : undefined);
+            }
+            case "session.turns": {
+                const rt = this.runtimes.get(str(p.id, "id"));
+                // Only a session this window has open: its ops come to it, so what it's sent stays right.
+                if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");
+                const through = p.through && typeof p.through === "object" && Number.isInteger(p.through.seg) && Number.isInteger(p.through.index) ? { seg: p.through.seg as number, index: p.through.index as number } : undefined;
+                const page = rt.turnsBefore(str(p.before, "before"), { count: typeof p.count === "number" ? p.count : undefined, through, all: p.all === true });
+                if (!page) throw new RpcError("Those turns were replaced.", "gone");
+                return page;
             }
             case "cliSessions.list":
                 return this.cliSessionsList(str(p.cwd, "cwd"));

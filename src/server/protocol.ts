@@ -729,6 +729,16 @@ export interface SessionSnapshot {
     turns: Turn[];
     agents: AgentRun[];
     seq: number;
+    /** Turns before these that weren't sent (session.open's `last`): session.turns has them. */
+    earlier?: number;
+}
+
+/** Turns before one a window has (session.turns), as they are when sent: later ops apply to them too. */
+export interface SessionTurnsPage {
+    turns: Turn[];
+    /** Turns before these, still not sent. */
+    earlier: number;
+    seq: number;
 }
 
 /** A change to a session's timeline or state. Applied identically on both sides (applyOp). */
@@ -1778,7 +1788,13 @@ export interface Methods {
     /** Search is about to be used (its box opened): what it reads is read meanwhile. Answered at once. */
     "sessions.searchWarm": { params: Record<string, never>; result: null };
     "session.create": { params: { cwd: string; model?: string; mode?: PermissionModeId }; result: SessionSnapshot };
-    "session.open": { params: { id: string }; result: SessionSnapshot };
+    /** `last`: only the last that many turns (the rest are counted in `earlier`); all without it. */
+    "session.open": { params: { id: string; last?: number }; result: SessionSnapshot };
+    /**
+     * The turns before `before` (a turn the window has): `count` of them (40 by default), or all back to the one holding
+     * message `through`, or all of them with `all`. Fails with `gone` when the window's turns were replaced (a rewind).
+     */
+    "session.turns": { params: { id: string; before: string; count?: number; through?: { seg: number; index: number }; all?: boolean }; result: SessionTurnsPage };
     "session.close": { params: { id: string }; result: null };
     /** The session this window has on screen, or none: the others' words can come less often. */
     "session.shown": { params: { id?: string }; result: null };
