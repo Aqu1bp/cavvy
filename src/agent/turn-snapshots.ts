@@ -407,6 +407,12 @@ async function readChanged(abs: string, st: { kind: number; size: number }): Pro
     return { buf, after: await lstat(abs).catch(() => undefined) };
 }
 
+function sameSet<T>(a: ReadonlySet<T>, b: ReadonlySet<T>): boolean {
+    if (a.size !== b.size) return false;
+    for (const x of a) if (!b.has(x)) return false;
+    return true;
+}
+
 /** An object's id from its type and bytes. */
 function objectId(type: string, buf: Buffer, algo: "sha1" | "sha256"): string {
     const h = new Bun.CryptoHasher(algo);
@@ -1393,8 +1399,19 @@ export class TurnSnapshots {
         let contentKey = base.contentKey, cacheRoot = base.cacheRoot;
         /** Paths whose entries in Git's index changed: as the last tree has them, they're the old entries. */
         const moved = new Set<string>();
+        /** What to look up in Git's index for `changed` (and what the last capture had under them). */
+        const wantedFor = (changed: string[]) => {
+            const changedSet = new Set(changed), wanted = new Set(changed);
+            for (const p of [...base.differs.keys(), ...base.gone, ...Object.keys(base.skipped)]) if (underAny(p.replace(/\/$/, ""), changedSet)) wanted.add(p);
+            return wanted;
+        };
+        /** Read with the index's new version: the lookup too, when what it records is the same (it was only refreshed). */
+        let early: { wanted: Set<string>; scan: Awaited<ReturnType<typeof scanIndexPaths>> } | undefined;
         if (rewritten) {
-            const now = await scanIndexPaths(root, indexPath, hashBytes, [], true, deadline);
+            const guess = [...changing].filter((p) => !underAny(p, nested));
+            const wanted = guess.reduce((n, p) => n + p.length + 1, 0) > NARROW_MAX_ARG_BYTES ? new Set<string>() : wantedFor(guess);
+            const now = await scanIndexPaths(root, indexPath, hashBytes, [...wanted], true, deadline);
+            early = { wanted, scan: now };
             if (now.unusable || !now.contentKey) return false;
             if (now.contentKey !== base.contentKey) {
                 if (!base.cacheRoot || !now.cacheRoot) return false;
@@ -1421,10 +1438,9 @@ export class TurnSnapshots {
         }
         if (changed.reduce((n, p) => n + p.length + 1, 0) > NARROW_MAX_ARG_BYTES) return false;
         // What the last capture had under a changed path (a folder moved away names only itself) is looked at again.
-        const changedSet = new Set(changed), wanted = new Set(changed);
-        for (const p of [...base.differs.keys(), ...base.gone, ...Object.keys(base.skipped)]) if (underAny(p.replace(/\/$/, ""), changedSet)) wanted.add(p);
+        const wanted = wantedFor(changed);
         // As Git's index has them, first: most turns only change files it tracks, and those need no listing.
-        const first = await scanIndexPaths(root, indexPath, hashBytes, [...wanted], true, deadline);
+        const first = early && !moved.size && sameSet(early.wanted, wanted) ? early.scan : await scanIndexPaths(root, indexPath, hashBytes, [...wanted], true, deadline);
         // Written again meanwhile: everything.
         if (first.unusable || first.contentKey !== contentKey) return false;
         let states = first.states;
