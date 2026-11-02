@@ -107,6 +107,11 @@ export function CommandPalette() {
         }),
     );
     onCleanup(() => clearTimeout(wait));
+    // Opened: the server reads what search looks through while the query's typed (the first search after a start
+    // would otherwise read every session then).
+    createEffect(on(paletteOpen, (open) => {
+        if (open) void rpc.call("sessions.searchWarm", {}).catch(() => undefined);
+    }));
     const openHit = (h: SessionSearchHit, query: string) => {
         // Back to the conversation, from wherever the palette was opened over.
         setSettingsTab(undefined);

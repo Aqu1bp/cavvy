@@ -59,7 +59,7 @@ import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validC
 import { cavvyLinks, importModel, linkKey, writeImportedSession, type CavvyLinks } from "./cli-import";
 import { CODEX_CLIENT_NAME } from "../backends/codex";
 import { checkId, claimForDelete, listTrash, locateSession, purgeTrash, restoreSession, trashSession, type SessionFlags } from "./session-delete";
-import { searchSessions } from "./search";
+import { searchSessions, warmSearch } from "./search";
 import { usageDays, usageSummary } from "./usage";
 import type {
     ArchiveOffer,
@@ -844,6 +844,9 @@ export class Engine {
     }
 
     /** What was said in every session (archived ones marked), read from their files; see search.ts. */
+    /** Search's files being read ahead (sessions.searchWarm). */
+    private searchWarming?: Promise<unknown>;
+
     async searchSessions(client: EngineClient, query: string, limit = 50, archived?: boolean): Promise<SessionSearchResult> {
         if (query.length > 200) throw new RpcError("The search is longer than 200 characters.");
         const seq = (this.searches.get(client) ?? 0) + 1;
@@ -2148,6 +2151,10 @@ export class Engine {
                 return this.listSessions(num(p.limit, 200), Boolean(p.archived));
             case "sessions.trash":
                 return listTrash().map((s) => ({ ...s, title: redact(s.title), ...(s.cwd ? { projectName: basename(s.cwd) || s.cwd } : {}) }));
+            case "sessions.searchWarm":
+                // Not waited for: the first search finds what's been read by then, and reads the rest itself.
+                this.searchWarming ??= warmSearch().catch(() => 0).finally(() => (this.searchWarming = undefined));
+                return null;
             case "sessions.search":
                 // Awaited: it can reject before its first await (see providers.setKey below).
                 return await this.searchSessions(client, str(p.query, "query"), num(p.limit, 50), typeof p.archived === "boolean" ? p.archived : undefined);

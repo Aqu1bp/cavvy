@@ -8,7 +8,7 @@ import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
-const { searchSessions, snippetAround, clearSearchCache, searchCacheSize, SEARCH_LIMITS } = await import("../src/server/search");
+const { searchSessions, snippetAround, clearSearchCache, searchCacheSize, SEARCH_LIMITS, warmSearch } = await import("../src/server/search");
 const { paths, projectStateDir } = await import("../src/config/paths");
 const { readSegments, replay, STEERING, UiLog, promptKey } = await import("../src/server/history");
 const { registerSecret, unregisterSecret, knownSecrets } = await import("../src/util/redact");
@@ -56,6 +56,22 @@ function turnFor(file: string, seg: number, index: number, ui = new UiLog(file, 
 }
 
 describe("searching session files", () => {
+    test("read ahead as search opens: the first search reads nothing more, and what changed since is read again", async () => {
+        clearSearchCache();
+        const a = write([prompt("warm the cache please"), reply("warmed up")], { age: 20 });
+        write([prompt("another older one"), reply("ok")], { age: 30 });
+        const read = await warmSearch();
+        expect(read).toBeGreaterThanOrEqual(2);
+        const docs = searchCacheSize().docs;
+        // Read again only what changed since: nothing.
+        expect(await warmSearch()).toBe(0);
+        expect((await searchSessions("warmed up")).hits.map((h) => h.id)).toContain(a.id);
+        expect(searchCacheSize().docs).toBe(docs);
+        appendFileSync(a.file, JSON.stringify(prompt("a later word: zephyr")) + "\n");
+        expect(await warmSearch()).toBe(1);
+        expect((await searchSessions("zephyr")).hits.map((h) => h.id)).toEqual([a.id]);
+    });
+
     test.each(["claude-code", "codex"] as const)("%s imports keep searchable message positions without enabling rewind", async (source) => {
         const cwd = tempDir("cavvy-search-import-");
         const title = `Imported ${source} conversation`;

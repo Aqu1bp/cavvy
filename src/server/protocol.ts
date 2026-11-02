@@ -1775,6 +1775,8 @@ export interface Methods {
     "sessions.list": { params: { limit?: number; archived?: boolean }; result: SessionSummary[] };
     /** Prompts and replies in every session containing `query` (literal, any case, 2–200 characters). `archived` limits it to archived (true) or other (false) sessions. */
     "sessions.search": { params: { query: string; limit?: number; archived?: boolean }; result: SessionSearchResult };
+    /** Search is about to be used (its box opened): what it reads is read meanwhile. Answered at once. */
+    "sessions.searchWarm": { params: Record<string, never>; result: null };
     "session.create": { params: { cwd: string; model?: string; mode?: PermissionModeId }; result: SessionSnapshot };
     "session.open": { params: { id: string }; result: SessionSnapshot };
     "session.close": { params: { id: string }; result: null };
