@@ -78,6 +78,15 @@ type WatchRequest = { watch: "open"; wid: number; root: string; gitDir?: string 
 const MARK = "cavvy-watch-sync-";
 /** A marker's event not come by then: the watch isn't relied on (what it saw may be incomplete). */
 const MARK_LIMIT_MS = 2000;
+/**
+ * On a Mac a watch's stream comes alive a moment after it's made, and what changes before then is never told: not
+ * late, gone (measured on Bun 1.4.4: a write just after the watch is made is never reported in about one start in ten,
+ * though the watch reports what comes after). A watch is ready once a marker's event shows it's live, or, with nowhere
+ * to put one, this long after it's made.
+ */
+const LIVE_WAIT_MS = 250;
+/** A marker written before the stream was live may never be told either: another this often until one is. */
+const LIVE_RETRY_MS = 50;
 type Watch = { watchers: FSWatcher[]; seen: (string | null)[]; markDir?: string; marks: Map<string, () => void> };
 const watches = new Map<number, Watch>();
 let flushing: ReturnType<typeof setTimeout> | undefined;
@@ -164,7 +173,36 @@ function onWatch(r: WatchRequest) {
     } catch {
         return failed();
     }
-    self.postMessage({ wid: r.wid, ready: true });
+    const ready = () => {
+        if (watches.has(r.wid)) self.postMessage({ wid: r.wid, ready: true });
+    };
+    if (process.platform !== "darwin") return ready();
+    if (!w.markDir) return void setTimeout(ready, LIVE_WAIT_MS);
+    const started = Date.now(), names: string[] = [];
+    let done = false;
+    const finish = (then: () => void) => {
+        if (done) return;
+        done = true;
+        for (const name of names) {
+            w.marks.delete(name);
+            try { unlinkSync(join(w.markDir!, name)); } catch {}
+        }
+        then();
+    };
+    const mark = () => {
+        if (done || !watches.has(r.wid)) return;
+        if (Date.now() - started > MARK_LIMIT_MS) return finish(failed);
+        const name = `${MARK}${process.pid}-${r.wid}-live-${names.length}`;
+        names.push(name);
+        w.marks.set(name, () => finish(ready));
+        try {
+            writeFileSync(join(w.markDir!, name), "");
+        } catch {
+            return finish(() => setTimeout(ready, LIVE_WAIT_MS));
+        }
+        setTimeout(mark, LIVE_RETRY_MS);
+    };
+    mark();
 }
 
 self.onmessage = (e: MessageEvent<StatRequest | IndexRequest | PathsRequest | WatchRequest>) => {
