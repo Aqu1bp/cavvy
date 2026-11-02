@@ -21,7 +21,9 @@ test("a watch kept on its worker is relied on once it's started, and has what ch
         // What was before it started isn't told apart: looked at whole.
         expect(w.changedSince(gen - 1)).toBeUndefined();
         writeFileSync(join(root, "a/b/file.txt"), "x");
-        await w.settle(30);
+        // No Git dir to mark in: settling waits a fixed moment, which an event can outlast (one in hundreds, just
+        // after a watch starts, on a Mac). It comes in a later one: what's checked is that it comes, not when.
+        for (let i = 0; i < 40 && !w.changedSince(gen)?.includes("a/b/file.txt"); i++) await w.settle(50);
         expect(w.gen).toBeGreaterThan(gen);
         expect(w.changedSince(gen)).toContain("a/b/file.txt");
         // The same watch for the same folder.
