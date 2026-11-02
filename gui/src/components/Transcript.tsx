@@ -276,11 +276,13 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     };
 
     // Experiment (VITE_FOLLOW=runway): a reply writes down into room kept under it, the conversation holding still,
-    // and glides up once the room is used, by a room's worth: one glide every few lines, not one a line. The room goes
-    // when the reply ends, the conversation settling down onto its end.
+    // and glides up once the room is used, by a room's worth: one glide every few lines, not one a line. When the reply
+    // ends nothing moves: the room stays, and what comes next writes into it. It goes only where it can't be seen.
     let endEl: HTMLDivElement | undefined;
     let runwayPx = 0;
     let runwayBase: number | undefined;
+    /** The column's height (without the room) when it was last followed or held. */
+    let runwayLast: number | undefined;
     const setRunway = (px: number) => {
         runwayPx = px;
         endEl?.style.setProperty("--runway", `${px}px`);
@@ -289,23 +291,41 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         if (!scroller || !content) return;
         const room = Math.min(GLIDE_MAX, Math.round(scroller.clientHeight / 3));
         const h = content.offsetHeight - runwayPx;
+        // Room left from before (a reply that ended): taken up from where it is, not filled again.
+        if (runwayBase === undefined && runwayPx > 0) runwayBase = h - (room - Math.min(room, runwayPx));
         const used = runwayBase === undefined ? -1 : h - runwayBase;
         if (used >= 0 && used < room) setRunway(room - used);
         else {
             runwayBase = h;
             setRunway(room);
         }
+        runwayLast = h;
         pin();
     };
-    const collapse = (glide: boolean) => {
-        if (!scroller || !runwayPx) return false;
-        const before = scroller.scrollTop;
+    /**
+     * After the reply: what's added at its end (its footer) is taken from the room, so nothing on screen moves. False
+     * when it can't (too little room, or something taken away): the view goes to the end as before.
+     */
+    const holdStill = () => {
+        if (!scroller || !content || !runwayPx || runwayLast === undefined) return false;
+        const h = content.offsetHeight - runwayPx;
+        const grew = h - runwayLast;
+        // Taken away above (the work folding): that has its own glide (fold), from the end as today.
+        if (grew < 0 || grew > runwayPx) {
+            runwayLast = h;
+            return false;
+        }
+        setRunway(runwayPx - grew);
+        runwayLast = h;
+        return true;
+    };
+    /** The room let go of where nothing on screen moves for it: wholly below the view. */
+    const collapseUnseen = () => {
+        if (!scroller || !runwayPx) return;
+        if (scroller.scrollTop + scroller.clientHeight > scroller.scrollHeight - runwayPx - 1) return;
         setRunway(0);
         runwayBase = undefined;
-        if (!glide) return true;
-        void scroller.scrollHeight;
-        pin(before);
-        return true;
+        runwayLast = undefined;
     };
 
     /**
@@ -467,10 +487,14 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             else if (stick()) {
                 const live = (running || revealing()) && !above;
                 if (FOLLOW_RUNWAY && live) follow();
-                else if (!(FOLLOW_RUNWAY && collapse(true))) live ? pin() : toBottom();
+                else {
+                    // The reply's done: following stops where it is (the room stays; see `follow`).
+                    if (FOLLOW_RUNWAY) runwayBase = undefined;
+                    if (!(FOLLOW_RUNWAY && !live && holdStill())) live ? pin() : toBottom();
+                }
             }
             else {
-                if (FOLLOW_RUNWAY && !(running || revealing())) collapse(false);
+                if (FOLLOW_RUNWAY && !(running || revealing())) collapseUnseen();
                 restore();
                 // Nothing left to scroll (something folded until it all fits): no scroll event will come to say the
                 // end is in view, so it's followed again here.
