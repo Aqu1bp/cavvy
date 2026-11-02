@@ -2,7 +2,8 @@
 // work can be run under Cavvy and in a bare terminal: every reply depends only on the prompt and how far into it the
 // turn is. A prompt "workday file=<abs path> cmd=<base64 shell command> out=<KB> words=<n>" goes: read the file, append a
 // line to it with Bash, run the command (a build, a test suite), print `out` KB if asked, then a reply of `words` words
-// streamed at about a model's pace. Anything else gets a short reply.
+// streamed at about a model's pace. "longreply words=<n>" is a markdown reply of about n words at that pace, no tools.
+// Anything else gets a short reply.
 //
 // For scripts/bench-ramp.ts --mock <url>: the CLIs get ANTHROPIC_BASE_URL=<url> and a dummy key.
 //
@@ -27,11 +28,37 @@ function textOf(c: unknown): string {
     return "";
 }
 
+/**
+ * A long reply as a model writes one, about `n` words: paragraphs, headings, a list and a code block, over and over. The
+ * same text in a terminal and in Cavvy, for what drawing it costs each (desktop-electron/bench-terminal.ts).
+ */
+export function longReply(n: number): string {
+    const parts: string[] = [];
+    let count = 0;
+    for (let i = 0; count < n; i++) {
+        const para = words(40 + (i % 3) * 15);
+        const piece = [
+            `## Part ${i + 1}`,
+            `${para[0]!.toUpperCase()}${para.slice(1)}.`,
+            `- ${words(9)}\n- ${words(12)}\n- ${words(7)}`,
+            "```ts\nexport function step" + i + "(input: string): string {\n    return input.trim().toLowerCase();\n}\n```",
+            `${words(30)}.`,
+        ].join("\n\n");
+        parts.push(piece);
+        count += piece.split(/\s+/).length;
+    }
+    return parts.join("\n\n");
+}
+
 /** The step of the turn: assistant messages since the user's last message with text (not tool results). */
 function plan(body: any): Block[] {
     // Auto mode's check of a tool call (it stops at </severity>, below 50 allows): the mock's calls are routine.
     if (Array.isArray(body.stop_sequences) && body.stop_sequences.includes("</severity>")) return [{ type: "text", text: "<severity>5" }];
     const msgs: any[] = body.messages ?? [];
+    // "longreply words=<n>": that reply and nothing else, no tools.
+    const last = textOf(msgs.at(-1)?.content);
+    const long = /\blongreply words=(\d+)/.exec(last);
+    if (long && msgs.at(-1)?.role === "user") return [{ type: "text", text: longReply(Number(long[1])) }];
     let at = msgs.length - 1;
     while (at >= 0 && !(msgs[at].role === "user" && /\bworkday\b/.test(textOf(msgs[at].content)))) at--;
     if (at < 0 || !body.tools?.length) return [{ type: "text", text: "Done." }];
