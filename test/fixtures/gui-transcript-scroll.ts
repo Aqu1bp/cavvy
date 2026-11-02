@@ -4,6 +4,7 @@ import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { all, component, node, renderer, text, type Node } from "../helpers/gui-render";
 import { anchoredTop, atBottom, FAR, firstBelow, firstShown, firstWindow, lazyHeights, MORE_TURNS, restoredShown, positionCache, turnHeight, TURN_PAGE } from "../../gui/src/lib/transcript-scroll";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../../gui/src/lib/live-line";
+import { cubicBezier, glideKeyframes } from "../../gui/src/lib/glide-steps";
 import { DrawnAgain } from "../../gui/src/lib/reveal";
 
 // Real Solid effects/reconciliation; deterministic layout and browser scheduling
@@ -136,7 +137,7 @@ const onFolds = new Map<string, (el: any, fold: () => void) => void>();
 const scope = {
     setFollowing() {},
     renderer: { ...solid, ...renderer, createElement: create },
-    anchoredTop, atBottom, FAR, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, turnHeight, window: { innerHeight: 500 }, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow, DrawnAgain,
+    anchoredTop, atBottom, FAR, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, turnHeight, window: { innerHeight: 500 }, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow, REPLY_GLIDES: true, cubicBezier, glideKeyframes, DrawnAgain,
     LiveLine: () => node("live-line"), Spinner: () => node("spinner"),
     // A running move draws what it's on shiftNow down; anything else isn't moved.
     getComputedStyle: (el?: any) => ({ transform: `matrix(1, 0, 0, 1, 0, ${glides.some((g) => g.el === el && g.anim.playState === "running") ? shiftNow : 0})`, overflowY: el?.overflowY ?? "visible" }),

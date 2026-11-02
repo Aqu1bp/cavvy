@@ -10,6 +10,7 @@ import { anchoredTop, atBottom, FAR, firstBelow, firstWindow, lazyHeights, MORE_
 import { turnAt } from "../lib/find";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
 import { DrawnAgain, REPLY_GLIDES, revealing } from "../lib/reveal";
+import { cubicBezier, glideKeyframes } from "../lib/glide-steps";
 import { observeWorkRendering } from "../lib/work-rendering";
 import { TurnView } from "./TurnView";
 import { LiveLine, motionMs } from "./LiveLine";
@@ -27,6 +28,7 @@ const MUTATION_MS = 40;
 /** A third scroll up within this of two taken for the engine's is the reader's (a scrollbar dragged). */
 const REPIN_MS = 300;
 const GLIDE_EASE = "cubic-bezier(0.2, 0.8, 0.2, 1)";
+const glideCurve = cubicBezier(0.2, 0.8, 0.2, 1);
 /** How much of what's left a jump down covers each frame: a few thousand pixels in about half a second. */
 const JUMP_STEP = 0.2;
 
@@ -253,13 +255,13 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         // A row farther than `from` from the view never comes into it. A row already moving goes on in the animation it
         // has: a transform taken off and put back lays the column out again, each time.
         const rows = inSight(Math.abs(from));
-        const steps = [{ transform: `translateY(${from}px)` }, { transform: "none" }];
+        const { keyframes: steps, easing } = glideKeyframes(from, ms, GLIDE_EASE, glideCurve);
         for (const g of glides) if (!rows.includes(g.el)) g.anim.cancel();
         glides = rows.map((el) => {
             const anim = glides.find((g) => g.el === el && g.anim.playState === "running")?.anim;
-            if (!anim) return { el, from, anim: el.animate(steps, { duration: ms, easing: GLIDE_EASE }) };
+            if (!anim) return { el, from, anim: el.animate(steps, { duration: ms, easing }) };
             const effect = anim.effect as KeyframeEffect;
-            effect.updateTiming({ duration: ms, easing: GLIDE_EASE });
+            effect.updateTiming({ duration: ms, easing });
             effect.setKeyframes(steps);
             anim.currentTime = 0;
             return { el, from, anim };
@@ -300,7 +302,9 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             const glide = glides.find((g) => g.el === el);
             glide?.anim.cancel();
             const from = glideFrom(moved, glide ? running : 0, max);
-            if (from !== undefined) folds.push({ el, anim: el.animate([{ transform: `translateY(${from}px)` }, { transform: "none" }], { duration: ms, easing: GLIDE_EASE }) });
+            if (from === undefined) continue;
+            const { keyframes, easing } = glideKeyframes(from, ms, GLIDE_EASE, glideCurve);
+            folds.push({ el, anim: el.animate(keyframes, { duration: ms, easing }) });
         }
     };
 
