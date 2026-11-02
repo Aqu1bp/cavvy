@@ -10,7 +10,7 @@
 // kernel's process accounting, short-lived ones too, by command and by role. Linux only.
 //
 //   bun scripts/bench-ramp.ts --mode cavvy|bare --repo <repo> --steps 10,30 [--per-session 15 | --minutes 6]
-//       [--model sonnet] [--cavvy <checkout>] [--label x] [--mock <url>] [--acct] [--profile]
+//       [--model sonnet] [--cavvy <checkout>] [--label x] [--mock <url>] [--acct] [--profile] [--shown first|none|all]
 //       [--debug <file>] [--times <file>] [--hold <seconds>]
 //
 // --mock: the CLIs talk to bench-claude-api.ts instead of Anthropic, for the same work to the byte in both modes.
@@ -37,6 +37,7 @@ const DEBUG = arg("--debug");
 /** --hold <s>: after the last turn, everything stays up this long, idle, and what it costs then is reported. */
 const HOLD = Number(arg("--hold") ?? 0);
 const TIMES = arg("--times");
+const SHOWN = arg("--shown") ?? "first";
 /** --mock <url>: the CLIs talk to mock-agent-api.ts instead of Anthropic: the same work, to the byte, in both modes. */
 const MOCK = arg("--mock");
 /** The step's worktrees, for the mock's prompts (they name files by path). */
@@ -207,7 +208,10 @@ async function cavvyDriver(n: number, dirs: string[], home: string): Promise<Dri
         ids.push(s.result.state.id);
         await call("session.open", { id: s.result.state.id });
     }
-    console.error(`cavvy: ${n} sessions on ${ref}`);
+    // As a window says which session it has on screen (the others' words come less often): the first, unless
+    // `--shown all` (every one, as a client that never says) or `--shown none` (a window on Home).
+    if (SHOWN !== "all") await call("session.shown", SHOWN === "none" ? {} : { id: ids[0] });
+    console.error(`cavvy: ${n} sessions on ${ref}${SHOWN === "all" ? "" : `, shown: ${SHOWN}`}`);
     return {
         serverPid: server.pid,
         async turn(i, k) {
