@@ -21,8 +21,8 @@ test("a watch kept on its worker is relied on once it's started, and has what ch
         // What was before it started isn't told apart: looked at whole.
         expect(w.changedSince(gen - 1)).toBeUndefined();
         writeFileSync(join(root, "a/b/file.txt"), "x");
-        // No Git dir to mark in: settling waits a fixed moment, which an event can outlast (one in hundreds, just
-        // after a watch starts, on a Mac). It comes in a later one: what's checked is that it comes, not when.
+        // No Git dir to mark in: settling waits a fixed moment, which an event can outlast. What's checked is that a
+        // change made as soon as the watch is ready is told at all (on a Mac, before its stream is live, it never is).
         for (let i = 0; i < 40 && !w.changedSince(gen)?.includes("a/b/file.txt"); i++) await w.settle(50);
         expect(w.gen).toBeGreaterThan(gen);
         expect(w.changedSince(gen)).toContain("a/b/file.txt");
@@ -64,6 +64,30 @@ test("in a repository, settling waits for the watch to have seen everything unti
         releaseWatch(w);
     }
 });
+
+test("a process's first watch is ready only once it's live: a change made at once is told", async () => {
+    // Fresh processes, as the app's first watch after a launch: on a Mac, a change made before a new watch's stream is
+    // live is never told, so ready waits for it to be (a marker in a repository, a moment elsewhere).
+    const script = (root: string) => `
+        const { mkdirSync, writeFileSync } = require("fs");
+        const { join } = require("path");
+        const { acquireWatch, releaseWatch } = await import(${JSON.stringify(join(import.meta.dir, "../src/agent/folder-watch"))});
+        const w = acquireWatch(${JSON.stringify(root)});
+        await w.ready;
+        const gen = w.gen;
+        writeFileSync(join(${JSON.stringify(root)}, "now.txt"), "x");
+        let seen = false;
+        for (let i = 0; i < 40 && !seen; i++) { await w.settle(50); seen = !!w.changedSince(gen)?.includes("now.txt"); }
+        releaseWatch(w);
+        console.log(JSON.stringify({ seen }));
+        process.exit(0);`;
+    for (const kind of ["repo", "plain", "repo", "plain", "repo", "plain"]) {
+        const root = join(realpathSync(iso.home), `first-${kind}-${Math.random().toString(36).slice(2)}`);
+        mkdirSync(join(root, kind === "repo" ? ".git" : "src"), { recursive: true });
+        const run = Bun.spawnSync([process.execPath, "-e", script(root)], { timeout: 20_000, stdout: "pipe", stderr: "pipe" });
+        expect({ kind, out: run.stdout.toString().trim(), err: run.stderr.toString().slice(0, 300) }).toEqual({ kind, out: JSON.stringify({ seen: true }), err: "" });
+    }
+}, 120_000);
 
 test("a folder that can't be watched says so, and is let go of for one started afresh", async () => {
     const w = acquireWatch(join(iso.home, "not-there"));

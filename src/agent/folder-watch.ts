@@ -94,8 +94,6 @@ export class FolderWatch {
             worker.postMessage({ watch: "open", wid: this.wid, root, gitDir });
             return;
         }
-        this.started = true;
-        this.readied();
         try {
             this.watchers.push(watch(root, { recursive: true }, (_event, file) => this.seen(file ? String(file) : undefined)));
             // A linked worktree's Git dir is elsewhere: its index is what changes there.
@@ -104,7 +102,16 @@ export class FolderWatch {
             for (const w of this.watchers) { w.on("error", () => this.fail()); w.unref?.(); }
         } catch {
             this.fail();
+            return;
         }
+        // On a Mac its stream comes alive a moment after (stat-worker.ts, LIVE_WAIT_MS): relied on from then.
+        const live = () => {
+            if (this.failed) return;
+            this.started = true;
+            this.readied();
+        };
+        if (process.platform === "darwin") setTimeout(live, 250).unref?.();
+        else live();
     }
 
     /** It's started and saw everything since: no change can have gone unseen. */
@@ -194,6 +201,8 @@ export class FolderWatch {
     private fail() {
         this.failed = true;
         this.close();
+        // Nothing waits on one that won't start (ready settles once it's started, or has failed).
+        this.readied();
     }
 
     close() {
