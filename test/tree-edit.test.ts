@@ -60,3 +60,24 @@ test("a tree edited along the changed paths is the one git writes for the same f
         reader.close();
     }
 });
+
+test("several objects read together come back whole, by id, without the ones the repository doesn't have", async () => {
+    const cwd = join(realpathSync(iso.home), "read-all");
+    mkdirSync(cwd, { recursive: true });
+    git(cwd, ["init", "-q"]);
+    // Big enough to come in many pieces; one ends in a newline, one is empty.
+    const big = Buffer.alloc(3 * 1024 * 1024 + 7, "ab\n");
+    const bodies = [big, Buffer.from("small\n"), Buffer.alloc(0)];
+    const oids = bodies.map((b) => git(cwd, ["hash-object", "-w", "--stdin"], b).trim());
+    const absent = "1".repeat(40);
+    const reader = new ObjectReader(cwd, {}, Date.now() + 60_000);
+    try {
+        const got = await reader.readAll([oids[0]!, absent, oids[1]!, oids[2]!]);
+        expect([...got.keys()]).toEqual([oids[0]!, oids[1]!, oids[2]!]);
+        for (const [k, oid] of oids.entries()) expect([k, got.get(oid)!.type, got.get(oid)!.buf.equals(bodies[k]!)]).toEqual([k, "blob", true]);
+        // And it goes on reading afterwards.
+        expect((await reader.read(oids[1]!, "blob")).toString()).toBe("small\n");
+    } finally {
+        reader.close();
+    }
+});

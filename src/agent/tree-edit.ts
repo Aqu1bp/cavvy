@@ -93,7 +93,9 @@ export async function editTree(base: string, edits: Map<string, TreeEdit>, hashB
 export class ObjectReader {
     private proc: ReturnType<typeof Bun.spawn>;
     private reader: { read(): Promise<{ value?: Uint8Array; done: boolean }> };
-    private buf = Buffer.alloc(0);
+    /** What's come in and not yet taken, in the pieces it came in (joined once, when taken). */
+    private chunks: Buffer[] = [];
+    private have = 0;
     private timer: ReturnType<typeof setTimeout>;
 
     constructor(cwd: string, env: Record<string, string>, deadline: number) {
@@ -105,23 +107,65 @@ export class ObjectReader {
     private async more() {
         const { value, done } = await this.reader.read();
         if (done || !value) throw new Error("Snapshot objects are missing or unreadable.");
-        this.buf = this.buf.length ? Buffer.concat([this.buf, value]) : Buffer.from(value);
+        this.chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+        this.have += value.byteLength;
+    }
+
+    /** The next `n` bytes, waited for. */
+    private async take(n: number): Promise<Buffer> {
+        while (this.have < n) await this.more();
+        const all = this.chunks.length === 1 ? this.chunks[0]! : Buffer.concat(this.chunks, this.have);
+        const out = Buffer.from(all.subarray(0, n));
+        this.chunks = all.length > n ? [all.subarray(n)] : [];
+        this.have -= n;
+        return out;
+    }
+
+    /** The next line, without its newline. */
+    private async line(): Promise<string> {
+        for (let seen = 0, k = 0; ; ) {
+            for (; k < this.chunks.length; k++) {
+                const nl = this.chunks[k]!.indexOf(10);
+                if (nl >= 0) {
+                    const line = await this.take(seen + nl + 1);
+                    return line.toString("latin1", 0, line.length - 1);
+                }
+                seen += this.chunks[k]!.length;
+            }
+            await this.more();
+        }
+    }
+
+    /** One object's header and body; undefined when the repository doesn't have it. */
+    private async next(oid: string): Promise<{ type: string; buf: Buffer } | undefined> {
+        const [id, kind, size] = (await this.line()).split(" ");
+        if (id !== oid) throw new Error("Snapshot objects are missing or unreadable.");
+        if (kind === "missing" || size === undefined) return undefined;
+        const body = await this.take(Number(size) + 1);
+        return { type: kind!, buf: body.subarray(0, body.length - 1) };
     }
 
     async read(oid: string, type: string): Promise<Buffer> {
         const stdin = this.proc.stdin as import("bun").FileSink;
         stdin.write(`${oid}\n`);
         await stdin.flush();
-        let nl: number;
-        while ((nl = this.buf.indexOf(10)) < 0) await this.more();
-        const [id, kind, size] = this.buf.toString("latin1", 0, nl).split(" ");
-        this.buf = this.buf.subarray(nl + 1);
-        if (id !== oid || kind !== type) throw new Error("Snapshot objects are missing or unreadable.");
-        const n = Number(size);
-        while (this.buf.length < n + 1) await this.more();
-        const body = Buffer.from(this.buf.subarray(0, n));
-        this.buf = this.buf.subarray(n + 1);
-        return body;
+        const o = await this.next(oid);
+        if (!o || o.type !== type) throw new Error("Snapshot objects are missing or unreadable.");
+        return o.buf;
+    }
+
+    /** Several at once, asked for together: those the repository has, by id. */
+    async readAll(oids: readonly string[]): Promise<Map<string, { type: string; buf: Buffer }>> {
+        const out = new Map<string, { type: string; buf: Buffer }>();
+        if (!oids.length) return out;
+        const stdin = this.proc.stdin as import("bun").FileSink;
+        stdin.write(oids.map((o) => `${o}\n`).join(""));
+        await stdin.flush();
+        for (const oid of oids) {
+            const o = await this.next(oid);
+            if (o) out.set(oid, o);
+        }
+        return out;
     }
 
     /** Waiting to be asked again (kept between captures): it doesn't keep the process running by itself. */

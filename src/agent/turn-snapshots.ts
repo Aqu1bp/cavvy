@@ -5,14 +5,14 @@
 // Git's loose object format is zlib(header + bytes); hashing/compressing in
 // process avoids a subprocess per file and preserves the bytes on disk.
 
-import { appendFileSync, chmodSync, lstatSync, mkdirSync, readFileSync, writeFileSync, type Stats } from "fs";
+import { appendFileSync, chmodSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync, type Stats } from "fs";
 import { chmod, copyFile, lstat, mkdir, open, readdir, readFile, readlink, rename, rm, writeFile } from "fs/promises";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "path";
 import { deflateSync, inflateSync } from "zlib";
 import { randomBytes } from "crypto";
 import { FileHistory, MAX_SNAPSHOT_BYTES, canonical } from "./checkpoints";
 import type { Session } from "./session";
-import { blobId, blobs, git, gitEnvironment, readRegular, render, WorkTree, type Change, type Entry } from "../server/git-changes";
+import { blobId, blobs, git, gitEnvironment, readRegular, readRegularSync, render, WorkTree, type Change, type Entry } from "../server/git-changes";
 import { gitArgv } from "../util/git";
 import { coalesce, type Slot } from "../server/coalesce";
 import { MAX_DIFF_INPUT } from "../server/diffs";
@@ -348,23 +348,63 @@ function worktreeListOf(root: string): WorktreeList {
     return list;
 }
 
-/** Blobs and trees from the repository's objects, raw (`cat-file --batch`, no filters, no replacements). */
-async function objects(root: string, oids: string[], deadline: number): Promise<Map<string, { type: "blob" | "tree"; buf: Buffer }>> {
-    const out = new Map<string, { type: "blob" | "tree"; buf: Buffer }>();
-    if (!oids.length) return out;
-    const r = await git(root, ["cat-file", "--batch"], { input: oids.join("\n") + "\n", deadline, privateEnv: { GIT_NO_REPLACE_OBJECTS: "1" } });
-    const buf = r.out;
-    for (let pos = 0; pos < buf.length;) {
-        const nl = buf.indexOf(10, pos);
-        if (nl < 0) break;
-        const m = /^([0-9a-f]+) (\w+) (\d+)$/.exec(buf.toString("utf-8", pos, nl));
-        if (!m) { pos = nl + 1; continue; } // "<oid> missing"
-        const size = Number(m[3]);
-        if (nl + 1 + size > buf.length) break;
-        if (m[2] === "blob" || m[2] === "tree") out.set(m[1]!, { type: m[2], buf: buf.subarray(nl + 1, nl + 1 + size) });
-        pos = nl + 1 + size + 1;
+/**
+ * The repository `cwd` is in (`git rev-parse --show-toplevel`), asked of git once for each folder while it stays the
+ * same: its `.git` as it was, and no other on the way up to it. Opening a session waits for it (list() is synchronous):
+ * 30 sessions in one repository start one git, not 30.
+ */
+const tops = new Map<string, { root: string; stamp: string }>();
+export function topOf(cwd: string): string | undefined {
+    const stamp = (root: string) => {
+        try {
+            const st = lstatSync(join(root, ".git"), { throwIfNoEntry: false });
+            return st ? `${st.dev}:${st.ino}:${st.mode}:${st.ctimeMs}` : undefined;
+        } catch { return undefined; }
+    };
+    let real: string;
+    try { real = realpathSync(cwd); } catch { return undefined; }
+    const had = tops.get(cwd);
+    if (had && stamp(had.root) === had.stamp) {
+        let nearer = false;
+        for (let dir = real; dir !== had.root && !nearer; dir = dirname(dir)) {
+            if (dirname(dir) === dir) { nearer = true; break; }
+            try { nearer = !!lstatSync(join(dir, ".git"), { throwIfNoEntry: false }); } catch { nearer = true; }
+        }
+        if (!nearer) return had.root;
     }
-    return out;
+    tops.delete(cwd);
+    try {
+        const top = Bun.spawnSync(gitArgv(["rev-parse", "--show-toplevel"]), { cwd, env: gitEnvironment({ privateEnv: { GIT_NO_REPLACE_OBJECTS: "1" } }), timeout: 2000, stdout: "pipe", stderr: "ignore" });
+        if (top.exitCode !== 0) return undefined;
+        const root = top.stdout.toString().replace(/\n$/, "");
+        const st = stamp(root);
+        // Under the repository only (not a worktree's folder taken from elsewhere): what the check above walks.
+        if (st && (real === root || real.startsWith(`${root}/`))) {
+            if (tops.size >= 256) tops.delete(tops.keys().next().value!);
+            tops.set(cwd, { root, stamp: st });
+        }
+        return root;
+    } catch { return undefined; }
+}
+
+/**
+ * Up to this size a file is read, and an object written, without waiting on each step: a few syscalls on what's
+ * in memory anyway, where each step's wait for its turn on a busy machine (tens of ms each, at 30 sessions on 4
+ * cores) costs far more. Bigger ones go a step at a time, so the server's thread isn't held for long.
+ */
+const AT_ONCE_BYTES = 256 * 1024;
+
+/** A changed file's bytes (a link's target), and how it stats after: undefined when it can't be read. */
+async function readChanged(abs: string, st: { kind: number; size: number }): Promise<{ buf?: Buffer; after?: Stats }> {
+    if (st.size <= AT_ONCE_BYTES) {
+        let buf: Buffer | undefined;
+        try { buf = st.kind === KIND.link ? readlinkSync(abs, { encoding: "buffer" }) : readRegularSync(abs, MAX_SNAPSHOT_BYTES)?.buf; } catch { return {}; }
+        if (!buf) return {};
+        try { return { buf, after: lstatSync(abs, { throwIfNoEntry: false }) }; } catch { return { buf }; }
+    }
+    const buf = st.kind === KIND.link ? await readlink(abs, { encoding: "buffer" }).catch(() => undefined) : (await readRegular(abs, MAX_SNAPSHOT_BYTES))?.buf;
+    if (!buf) return {};
+    return { buf, after: await lstat(abs).catch(() => undefined) };
 }
 
 /** An object's id from its type and bytes. */
@@ -485,6 +525,8 @@ export class TurnSnapshots {
     private warmTimer?: ReturnType<typeof setTimeout>;
     private warming = false;
     /** This session's reader of objects (readTree): kept between captures, while it's used. */
+    /** changedPaths(), until a turn's added. */
+    private changed?: string[];
     private reader?: { key: string; reader: ObjectReader; queue: Promise<unknown>; idle?: ReturnType<typeof setTimeout> };
     /** Captures taken from what `git status` said differs (captureFromStatus): for tests. */
     statusCount = 0;
@@ -538,11 +580,8 @@ export class TurnSnapshots {
         try { lines = readFileSync(this.journal, "utf-8"); } catch { return; }
         // list()/changedPaths() are synchronous: validate against cwd's actual
         // repository before exposing any saved path, never against a journal-supplied cwd.
-        try {
-            const top = Bun.spawnSync(gitArgv(["rev-parse", "--show-toplevel"]), { cwd, env: gitEnvironment({ privateEnv: { GIT_NO_REPLACE_OBJECTS: "1" } }), timeout: 2000, stdout: "pipe", stderr: "ignore" });
-            if (top.exitCode !== 0) return;
-            this.root = top.stdout.toString().replace(/\n$/, "");
-        } catch { return; }
+        this.root = topOf(cwd);
+        if (!this.root) return;
         for (const line of lines.split("\n")) {
             try {
                 const r = JSON.parse(line);
@@ -593,8 +632,10 @@ export class TurnSnapshots {
         return [...this.turns.values()].sort((a, b) => a.id - b.id);
     }
 
+    /** Every path a turn changed (worked out again only when a turn's been added: it's asked after every edit). */
     changedPaths(): string[] {
-        return [...new Set(this.list().flatMap((t) => (t.changed ?? []).map((path) => join(t.start.root ?? this.cwd, path))))];
+        this.changed ??= [...new Set(this.list().flatMap((t) => (t.changed ?? []).map((path) => join(t.start.root ?? this.cwd, path))))];
+        return [...this.changed];
     }
 
     private ensure() {
@@ -608,6 +649,7 @@ export class TurnSnapshots {
 
     private persist(turn: SnapshotTurn) {
         this.turns.set(turn.id, turn);
+        this.changed = undefined;
         try {
             this.ensure();
             appendFileSync(this.journal, JSON.stringify(turn) + "\n", { mode: 0o600 });
@@ -815,13 +857,21 @@ export class TurnSnapshots {
         }
         try {
             for (const batch of batches) {
-                const found = await objects(root, batch, deadline);
+                // Trees read on the way to what changed are known already; the rest from this session's reader.
+                const found = new Map<string, { type: string; buf: Buffer }>();
+                const ask: string[] = [];
                 for (const oid of batch) {
-                    const o = found.get(oid);
+                    const tree = treeBodies.get(oid);
+                    if (tree) found.set(oid, { type: "tree", buf: tree });
+                    else ask.push(oid);
+                }
+                if (ask.length) for (const [oid, o] of await this.withReader(root, deadline, (r) => r.readAll(ask))) found.set(oid, o);
+                for (const oid of batch) {
+                    const o = found.get(oid), type = o?.type;
                     // Its bytes, whatever the repository holds under that name.
-                    if (!o || objectId(o.type, o.buf, this.algo) !== oid) { missing++; continue; }
-                    if (o.type === "blob" && o.buf.length > MAX_SNAPSHOT_BYTES) continue;
-                    await this.store(o.buf, o.type, oid);
+                    if (!o || (type !== "blob" && type !== "tree") || objectId(type, o.buf, this.algo) !== oid) { missing++; continue; }
+                    if (type === "blob" && o.buf.length > MAX_SNAPSHOT_BYTES) continue;
+                    await this.store(o.buf, type, oid);
                 }
             }
         } finally {
@@ -1061,9 +1111,23 @@ export class TurnSnapshots {
         const path = join(folder, oid.slice(2));
         const compressed = deflateSync(Buffer.concat([Buffer.from(`${type} ${raw.length}\0`), raw]), { level: 1 });
         this.reserve(compressed.length);
+        const tmp = `${path}.${randomBytes(4).toString("hex")}.tmp`;
+        if (compressed.length <= AT_ONCE_BYTES) {
+            try {
+                mkdirSync(folder, { recursive: true, mode: 0o700 });
+                chmodSync(folder, 0o700);
+                writeFileSync(tmp, compressed, { mode: 0o600 });
+                renameSync(tmp, path);
+            } catch (e) {
+                try { rmSync(tmp, { force: true }); this.objectBytes! -= compressed.length; } catch {}
+                throw e;
+            }
+            this.stored.set(oid, "loose");
+            this.hardened.add(path);
+            return;
+        }
         await mkdir(folder, { recursive: true, mode: 0o700 });
         await chmod(folder, 0o700);
-        const tmp = `${path}.${randomBytes(4).toString("hex")}.tmp`;
         try {
             await writeFile(tmp, compressed, { mode: 0o600 });
             await rename(tmp, path);
@@ -1689,10 +1753,9 @@ export class TurnSnapshots {
         }
         for (let k = 0; k < toRead.length; k += READ_AT_ONCE) {
             const done = await Promise.allSettled(toRead.slice(k, k + READ_AT_ONCE).map(async ({ path, st, special, tracked }) => {
-                const buf = st.kind === KIND.link ? await readlink(join(root, path), { encoding: "buffer" }).catch(() => undefined) : (await readRegular(join(root, path), MAX_SNAPSHOT_BYTES))?.buf;
+                const { buf, after } = await readChanged(join(root, path), st);
                 if (!buf) { skip(path, st, "Unreadable, changed while being read, or over 10 MB; not captured."); if (tracked) remove(path, special); return; }
                 inTime();
-                const after = await lstat(join(root, path)).catch(() => undefined);
                 if (!after || !sameStamp(stampOf(st), after)) { result.skipped[path] = "Changed while being read; not captured."; if (tracked) remove(path, special); return; }
                 const mode = st.kind === KIND.link ? "120000" : st.mode & 0o100 ? "100755" : "100644", oid = blobId(buf, this.algo);
                 const had = this.known.get(path);
@@ -2083,10 +2146,9 @@ export class TurnSnapshots {
             }
             for (let k = 0; k < toRead.length; k += READ_AT_ONCE) {
                 const done = await Promise.allSettled(toRead.slice(k, k + READ_AT_ONCE).map(async ({ path, st, at }) => {
-                    const buf = st.kind === KIND.link ? await readlink(join(root, path), { encoding: "buffer" }).catch(() => undefined) : (await readRegular(join(root, path), MAX_SNAPSHOT_BYTES))?.buf;
+                    const { buf, after } = await readChanged(join(root, path), st);
                     if (!buf) { skip(path, st, "Unreadable, changed while being read, or over 10 MB; not captured.", at); return; }
                     inTime();
-                    const after = await lstat(join(root, path)).catch(() => undefined);
                     if (!after || !sameStamp(stampOf(st), after)) { result.skipped[path] = "Changed while being read; not captured."; recheck.push(at); return; }
                     const mode = st.kind === KIND.link ? "120000" : st.mode & 0o100 ? "100755" : "100644", oid = blobId(buf, this.algo);
                     // The same as another session knows it: its strings are kept, not a copy of them.
@@ -2247,6 +2309,13 @@ export class TurnSnapshots {
     private async readTree(root: string, oid: string, deadline: number): Promise<Buffer> {
         const known = treeBodies.get(oid);
         if (known) return known;
+        const body = await this.withReader(root, deadline, (r) => r.read(oid, "tree"));
+        rememberTree(oid, body);
+        return body;
+    }
+
+    /** `f` with this session's reader (started if there's none for `root`), after whatever it's reading already. */
+    private async withReader<T>(root: string, deadline: number, f: (r: ObjectReader) => Promise<T>): Promise<T> {
         const env = this.readEnv();
         const key = `${root}\0${JSON.stringify(env)}`;
         let r = this.reader;
@@ -2261,7 +2330,7 @@ export class TurnSnapshots {
             if (Date.now() >= deadline) throw new Error("Snapshot exceeded its time budget (2 seconds by default).");
             let timer: ReturnType<typeof setTimeout> | undefined;
             return Promise.race([
-                mine.reader.read(oid, "tree"),
+                f(mine.reader),
                 new Promise<never>((_, fail) => (timer = setTimeout(() => fail(new Error("Snapshot exceeded its time budget (2 seconds by default).")), deadline - Date.now()))),
             ]).finally(() => clearTimeout(timer));
         });
@@ -2271,9 +2340,7 @@ export class TurnSnapshots {
             if (this.reader === mine) this.reader = undefined;
         };
         try {
-            const body = await job;
-            rememberTree(oid, body);
-            return body;
+            return await job;
         } catch (e) {
             // Out of time or broken: what it was reading is unknown; the next read starts another.
             letGo();
