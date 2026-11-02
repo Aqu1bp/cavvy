@@ -1,0 +1,9 @@
+# The performance guards (AGENTS.md, Performance): a change to any of them needs the owner's review, so a budget or a
+# check isn't loosened to get a change through.
+/test/perf-budgets.json @Aqu1bp
+/test/perf-rules.test.ts @Aqu1bp
+/test/perf-work.test.ts @Aqu1bp
+/test/perf-gui.test.ts @Aqu1bp
+/test/helpers/perf-budget.ts @Aqu1bp
+/scripts/perf-budgets.ts @Aqu1bp
+/.github/CODEOWNERS @Aqu1bp
