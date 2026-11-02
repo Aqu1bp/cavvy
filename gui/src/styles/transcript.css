@@ -59,8 +59,9 @@
     flex-direction: column;
 }
 
+/* --room: room a streaming reply writes into (Transcript.tsx's follow, lib/follow.ts). */
 .transcript-end {
-    height: calc(var(--dock-h) + 28 * var(--sp));
+    height: calc(var(--dock-h) + 28 * var(--sp) + var(--room, 0px));
     flex: none;
 }
 
