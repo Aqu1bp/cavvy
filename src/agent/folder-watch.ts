@@ -21,7 +21,14 @@ export class FolderWatch {
     private floor = 0;
     private watchers: FSWatcher[] = [];
     private failed = false;
+    private listeners = new Set<() => void>();
     users = 0;
+
+    /** `f` after each change it sees (it should only take note: it's called for every event); undone by what it returns. */
+    onChange(f: () => void): () => void {
+        this.listeners.add(f);
+        return () => void this.listeners.delete(f);
+    }
 
     constructor(readonly root: string, gitDir?: string) {
         try {
@@ -55,6 +62,7 @@ export class FolderWatch {
     private bump() {
         this.gen++;
         this.lastAt = Date.now();
+        for (const f of this.listeners) f();
     }
 
     private forget() {

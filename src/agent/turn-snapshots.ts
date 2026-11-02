@@ -132,6 +132,8 @@ let treeBytes = 0;
 const TREE_CACHE_BYTES = 32 * 1024 * 1024;
 /** A session's object reader goes after this long unused, and is started again after this long at most. */
 const READER_IDLE_MS = 60_000;
+/** A turn's trees are read ahead (warmTrees) along this many changed paths at most. */
+const WARM_MAX_PATHS = 200;
 const READER_MAX_MS = 60 * 60_000;
 function rememberTree(oid: string, body: Buffer) {
     if (treeBodies.has(oid) || body.length > TREE_CACHE_BYTES / 8) return;
@@ -478,6 +480,10 @@ export class TurnSnapshots {
     private watchTried = 0;
     /** The last whole capture and the watch's count when it began (unchanged). */
     private lastFast?: { gen: number; at: number; result: TurnCapture };
+    /** While a turn is open: undoes its listening to the watch for the trees to read ahead (warmTrees). */
+    private stopWarming?: () => void;
+    private warmTimer?: ReturnType<typeof setTimeout>;
+    private warming = false;
     /** This session's reader of objects (readTree): kept between captures, while it's used. */
     private reader?: { key: string; reader: ObjectReader; queue: Promise<unknown>; idle?: ReturnType<typeof setTimeout> };
     /** Captures taken from what `git status` said differs (captureFromStatus): for tests. */
@@ -673,6 +679,7 @@ export class TurnSnapshots {
         delete captured.worked;
         this.active = { version: 2, id, prompt: redact(prompt).slice(0, 2000), startedAt: Date.now(), start: captured };
         this.persist(this.active);
+        this.listenForWarming();
     }
 
     /** Once the captures asked for so far are in (a turn's end goes on after the turn). */
@@ -695,6 +702,9 @@ export class TurnSnapshots {
     async stop(): Promise<void> {
         this.stopped = true;
         this.active = undefined;
+        this.stopWarming?.();
+        this.stopWarming = undefined;
+        clearTimeout(this.warmTimer);
         await Promise.allSettled([...this.pending]);
         if (this.reader) {
             clearTimeout(this.reader.idle);
@@ -734,6 +744,9 @@ export class TurnSnapshots {
     }
 
     private async finish(captured: TurnCapture) {
+        this.stopWarming?.();
+        this.stopWarming = undefined;
+        clearTimeout(this.warmTimer);
         const turn: SnapshotTurn = { ...this.active!, end: captured, endedAt: Date.now() };
         this.active = undefined;
         let changes: Change[] | undefined;
@@ -2183,6 +2196,50 @@ export class TurnSnapshots {
      * The paths whose entries differ between two captured trees, each with both (git diff-tree, raw: no rename
      * detection, no blob read), so a turn's end reads what changed rather than both whole trees.
      */
+    /**
+     * While a turn runs, the trees on the way to what it changes are read ahead, a second after a change: at its end
+     * they're known, and the capture the next prompt waits for edits them without asking git (on a busy machine, a
+     * second or more for each). Only along the paths the watch saw change, at most WARM_MAX_PATHS of them.
+     */
+    private listenForWarming() {
+        this.stopWarming?.();
+        const w = this.watch;
+        if (!w?.healthy) return;
+        this.stopWarming = w.onChange(() => {
+            if (this.warmTimer) return;
+            this.warmTimer = setTimeout(() => {
+                this.warmTimer = undefined;
+                void this.warmTrees();
+            }, 1000);
+            this.warmTimer.unref?.();
+        });
+    }
+
+    private async warmTrees() {
+        const base = this.indexedBase, w = this.watch, root = this.root;
+        if (this.warming || this.stopped || !this.active || !base || !w?.healthy || !root || base.watch !== w) return;
+        const paths = w.changedSince(base.gen);
+        if (!paths || paths.length > WARM_MAX_PATHS) return;
+        this.warming = true;
+        const hashBytes = this.algo === "sha1" ? 20 : 32;
+        const deadline = Date.now() + 30_000;
+        try {
+            for (const path of paths) {
+                let tree = base.tree;
+                const parts = path.split("/");
+                for (let i = 0; i < parts.length - 1 && !this.stopped; i++) {
+                    const e = parseTree(await this.readTree(root, tree, deadline), hashBytes).get(Buffer.from(parts[i]!, "utf-8").toString("latin1"));
+                    if (e?.mode !== "40000") break;
+                    tree = e.oid.toString("hex");
+                }
+            }
+        } catch {
+            // Read again at the turn's end, as without this.
+        } finally {
+            this.warming = false;
+        }
+    }
+
     /**
      * A tree's bytes: known (treeBodies), or read by this session's `git cat-file --batch`, kept between captures (a
      * turn's end reads the trees of the folders it changed, most of them new to it) and let go of after a minute idle.
