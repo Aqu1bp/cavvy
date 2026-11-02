@@ -8,6 +8,7 @@ import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
 import { anchoredTop, atBottom, FAR, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
 import { turnAt } from "../lib/find";
+import { cubicBezier, glideKeyframes, glideOffset } from "../lib/glide-steps";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
 import { DrawnAgain, revealing } from "../lib/reveal";
 import { observeWorkRendering } from "../lib/work-rendering";
@@ -26,7 +27,8 @@ const ENGINE_MS = 250;
 const MUTATION_MS = 40;
 /** A third scroll up within this of two taken for the engine's is the reader's (a scrollbar dragged). */
 const REPIN_MS = 300;
-const GLIDE_EASE = "cubic-bezier(0.2, 0.8, 0.2, 1)";
+/** The glide's curve (cubic-bezier(0.2, 0.8, 0.2, 1)), drawn in steps (lib/glide-steps.ts). */
+const glideCurve = cubicBezier(0.2, 0.8, 0.2, 1);
 /** How much of what's left a jump down covers each frame: a few thousand pixels in about half a second. */
 const JUMP_STEP = 0.2;
 
@@ -171,14 +173,18 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     // running is. Scrolling runs no script of ours. Only what's in sight (or glides into it) moves, not the whole
     // column: a long conversation costs no more to glide.
     /** The running glide: the same translate, from `from`, on each of the column's rows in sight. */
-    let glides: { el: HTMLElement; anim: Animation; from: number }[] = [];
+    // `eased`: drawn on every refresh with its easing, as the composer's edge it moves with is (the dock's glide), not in steps.
+    let glides: { el: HTMLElement; anim: Animation; from: number; eased?: boolean }[] = [];
     /** A fold's moves (fold()): what's above an answer, coming down. */
     let folds: { el: HTMLElement; anim: Animation }[] = [];
     const translate = (el: Element) => new DOMMatrixReadOnly(getComputedStyle(el).transform).m42;
     /** How far a running glide has the rows in sight drawn from their place (px), worked out: asked of the page, it lays out. */
     const shift = () => {
         const g = glides[0];
-        return g?.anim.playState === "running" ? g.from * (1 - (g.anim.effect?.getComputedTiming().progress ?? 0)) : 0;
+        if (g?.anim.playState !== "running") return 0;
+        const timing = g.anim.effect?.getComputedTiming();
+        if (g.eased) return g.from * (1 - (timing?.progress ?? 0));
+        return glideOffset(g.from, Number(timing?.duration) || 0, timing?.progress ?? 0, glideCurve);
     };
     const cancelGlide = () => {
         for (const g of glides) g.anim.cancel();
@@ -253,13 +259,13 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         // A row farther than `from` from the view never comes into it. A row already moving goes on in the animation it
         // has: a transform taken off and put back lays the column out again, each time.
         const rows = inSight(Math.abs(from));
-        const steps = [{ transform: `translateY(${from}px)` }, { transform: "none" }];
+        const steps = glideKeyframes(from, ms, glideCurve);
         for (const g of glides) if (!rows.includes(g.el)) g.anim.cancel();
         glides = rows.map((el) => {
             const anim = glides.find((g) => g.el === el && g.anim.playState === "running")?.anim;
-            if (!anim) return { el, from, anim: el.animate(steps, { duration: ms, easing: GLIDE_EASE }) };
+            if (!anim) return { el, from, anim: el.animate(steps, { duration: ms, easing: "linear" }) };
             const effect = anim.effect as KeyframeEffect;
-            effect.updateTiming({ duration: ms, easing: GLIDE_EASE });
+            effect.updateTiming({ duration: ms, easing: "linear" });
             effect.setKeyframes(steps);
             anim.currentTime = 0;
             return { el, from, anim };
@@ -300,7 +306,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             const glide = glides.find((g) => g.el === el);
             glide?.anim.cancel();
             const from = glideFrom(moved, glide ? running : 0, max);
-            if (from !== undefined) folds.push({ el, anim: el.animate([{ transform: `translateY(${from}px)` }, { transform: "none" }], { duration: ms, easing: GLIDE_EASE }) });
+            if (from !== undefined) folds.push({ el, anim: el.animate(glideKeyframes(from, ms, glideCurve), { duration: ms, easing: "linear" }) });
         }
     };
 
@@ -562,7 +568,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         const from = now - was;
         if (!ms || Math.abs(from) < 1 || !content || typeof content.animate !== "function") return;
         pinned = { at: performance.now(), from: scroller.scrollTop - from };
-        glides = inSight(Math.abs(from)).map((el) => ({ el, from, anim: el.animate([{ transform: `translateY(${from}px)` }, { transform: "none" }], { duration: ms, easing: GROW_EASE }) }));
+        glides = inSight(Math.abs(from)).map((el) => ({ el, from, eased: true, anim: el.animate([{ transform: `translateY(${from}px)` }, { transform: "none" }], { duration: ms, easing: GROW_EASE }) }));
     }));
 
     // Sending a prompt jumps back down: a new turn at the end, not earlier ones put in above (loadEarlier).
