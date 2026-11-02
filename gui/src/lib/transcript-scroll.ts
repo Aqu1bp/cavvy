@@ -20,16 +20,33 @@ export function turnHeight(turn: { prompt?: { text: string }; blocks?: readonly 
     return 60 + lines * 22 + (tools ? 32 : 0);
 }
 
+/** Each turn's height, looked up as it's needed (opening a long session needs only its last few): an array, or a turn's by index. */
+export type Heights = { readonly length: number; at(i: number): number | undefined };
+const heightAt = (h: Heights, i: number) => h.at(i) ?? 0;
+
+/** turnHeight of each of `turns`, worked out only for those asked about. */
+export function lazyHeights(turns: readonly Parameters<typeof turnHeight>[0][]): Heights {
+    const known = new Map<number, number>();
+    return {
+        length: turns.length,
+        at(i) {
+            let h = known.get(i);
+            if (h === undefined) known.set(i, (h = turnHeight(turns[i]!)));
+            return h;
+        },
+    };
+}
+
 /**
  * How many turns to mount at first: opening at the end, the last ones that fill `screen` (px) twice over (at least
  * FIRST_TURNS_MIN, at most `shown`); elsewhere all `shown`.
  */
-export function firstShown(heights: readonly number[], shown: number, atEnd: boolean, screen: number): number {
+export function firstShown(heights: Heights, shown: number, atEnd: boolean, screen: number): number {
     if (!atEnd) return shown;
     let n = 0;
     let filled = 0;
     for (let i = heights.length - 1; i >= 0 && n < shown && (n < FIRST_TURNS_MIN || filled < 2 * screen); i--) {
-        filled += heights[i]!;
+        filled += heightAt(heights, i);
         n++;
     }
     return Math.max(Math.min(shown, FIRST_TURNS_MIN), n);
@@ -103,12 +120,12 @@ export function atBottom(top: number, height: number, viewport: number) {
  * after, below first, then above. `read` is how far into that turn the view's top was: the two screens count from there, so a
  * turn taller than them, read near its end, still brings the turns below it in view.
  */
-export function firstWindow(heights: readonly number[], shown: number, anchor: number | undefined, screen: number, read = 0): { shown: number; trimmed: number } {
+export function firstWindow(heights: Heights, shown: number, anchor: number | undefined, screen: number, read = 0): { shown: number; trimmed: number } {
     const n = heights.length;
     if (anchor === undefined || anchor < 0 || anchor >= n) return { shown: firstShown(heights, shown, true, screen), trimmed: 0 };
     const start = Math.max(n - shown, Math.min(anchor, Math.max(0, anchor - 1)));
     let end = anchor + 1;
-    let filled = Math.max(0, (heights[anchor] ?? 0) - Math.max(0, read));
-    while (end < n && filled < 2 * screen) filled += heights[end++]!;
+    let filled = Math.max(0, heightAt(heights, anchor) - Math.max(0, read));
+    while (end < n && filled < 2 * screen) filled += heightAt(heights, end++);
     return { shown: n - start, trimmed: n - end };
 }
