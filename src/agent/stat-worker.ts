@@ -4,7 +4,7 @@
 // It's sent a root and the lists of paths to look at (the tracked ones once per version of Git's index, kept here
 // by id), and answers with each path's kind and stamp, in arrays handed over rather than copied.
 
-import { lstatSync, unlinkSync, watch, writeFileSync, type FSWatcher, type Stats } from "fs";
+import { lstatSync, readdirSync, unlinkSync, watch, writeFileSync, type FSWatcher, type Stats } from "fs";
 import { join, relative } from "path";
 import { KIND, type StatRequest, type StatReply, type IndexRequest, type PathsRequest } from "./stat-files";
 import { LATE, scanIndex, scanPaths } from "./index-scan";
@@ -126,7 +126,15 @@ function onWatch(r: WatchRequest) {
     }
     const w: Watch = { watchers: [], seen: [], marks: new Map() };
     try {
-        if (lstatSync(join(r.root, ".git"), { throwIfNoEntry: false })?.isDirectory()) w.markDir = join(r.root, ".git");
+        if (lstatSync(join(r.root, ".git"), { throwIfNoEntry: false })?.isDirectory()) {
+            w.markDir = join(r.root, ".git");
+            // One a stopped process left (it ended between writing and removing it): gone, as it would have been.
+            for (const f of readdirSync(w.markDir)) {
+                if (!f.startsWith(MARK)) continue;
+                const st = lstatSync(join(w.markDir, f), { throwIfNoEntry: false });
+                if (st && Date.now() - st.mtimeMs > MARK_LIMIT_MS) try { unlinkSync(join(w.markDir, f)); } catch {}
+            }
+        }
     } catch {}
     watches.set(r.wid, w);
     const saw = (file: string | null) => {
