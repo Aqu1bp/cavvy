@@ -60,7 +60,7 @@
 }
 
 .transcript-end {
-    height: calc(var(--dock-h) + 28 * var(--sp));
+    height: calc(var(--dock-h) + 28 * var(--sp) + var(--runway, 0px));
     flex: none;
 }
 

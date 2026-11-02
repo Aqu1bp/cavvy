@@ -29,6 +29,8 @@ const MUTATION_MS = 40;
 const REPIN_MS = 300;
 /** The glide's curve (cubic-bezier(0.2, 0.8, 0.2, 1)), drawn in steps (lib/glide-steps.ts). */
 const glideCurve = cubicBezier(0.2, 0.8, 0.2, 1);
+/** Experiment: how the conversation follows a reply (VITE_FOLLOW=runway: in room kept under it, see `follow`). */
+const FOLLOW_RUNWAY = (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_FOLLOW === "runway";
 /** How much of what's left a jump down covers each frame: a few thousand pixels in about half a second. */
 const JUMP_STEP = 0.2;
 
@@ -244,9 +246,10 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         else seen.top = top;
         return moved;
     };
-    const pin = () => {
+    /** `was`: where the view was before a change already laid out (the room under a reply let go of, below). */
+    const pin = (was?: number) => {
         if (!scroller || !stick() || smoothScroll) return;
-        const before = scroller.scrollTop;
+        const before = was ?? scroller.scrollTop;
         const end = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
         if (Math.abs(end - before) <= 0.5) return;
         scroller.scrollTop = end;
@@ -270,6 +273,39 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             anim.currentTime = 0;
             return { el, from, anim };
         });
+    };
+
+    // Experiment (VITE_FOLLOW=runway): a reply writes down into room kept under it, the conversation holding still,
+    // and glides up once the room is used, by a room's worth: one glide every few lines, not one a line. The room goes
+    // when the reply ends, the conversation settling down onto its end.
+    let endEl: HTMLDivElement | undefined;
+    let runwayPx = 0;
+    let runwayBase: number | undefined;
+    const setRunway = (px: number) => {
+        runwayPx = px;
+        endEl?.style.setProperty("--runway", `${px}px`);
+    };
+    const follow = () => {
+        if (!scroller || !content) return;
+        const room = Math.min(GLIDE_MAX, Math.round(scroller.clientHeight / 3));
+        const h = content.offsetHeight - runwayPx;
+        const used = runwayBase === undefined ? -1 : h - runwayBase;
+        if (used >= 0 && used < room) setRunway(room - used);
+        else {
+            runwayBase = h;
+            setRunway(room);
+        }
+        pin();
+    };
+    const collapse = (glide: boolean) => {
+        if (!scroller || !runwayPx) return false;
+        const before = scroller.scrollTop;
+        setRunway(0);
+        runwayBase = undefined;
+        if (!glide) return true;
+        void scroller.scrollHeight;
+        pin(before);
+        return true;
     };
 
     /**
@@ -428,8 +464,13 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             else if (smoothScroll) toBottom(true);
             // Glides only while a turn is running, or its reply's last words are still coming out: the end of a
             // turn (its footer, the composer settling) lands at once. Its work folding away glides (fold()).
-            else if (stick()) (running || revealing()) && !above ? pin() : toBottom();
+            else if (stick()) {
+                const live = (running || revealing()) && !above;
+                if (FOLLOW_RUNWAY && live) follow();
+                else if (!(FOLLOW_RUNWAY && collapse(true))) live ? pin() : toBottom();
+            }
             else {
+                if (FOLLOW_RUNWAY && !(running || revealing())) collapse(false);
                 restore();
                 // Nothing left to scroll (something folded until it all fits): no scroll event will come to say the
                 // end is in view, so it's followed again here.
@@ -846,7 +887,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                             </div>
                         </div>
                     </Show>
-                    <div class="transcript-end" style={{ "--dock-h": dock() }} />
+                    <div class="transcript-end" ref={endEl} style={{ "--dock-h": dock() }} />
                 </div>
                 </div>
             </div>
