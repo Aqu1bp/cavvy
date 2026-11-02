@@ -4,8 +4,8 @@
 // It's sent a root and the lists of paths to look at (the tracked ones once per version of Git's index, kept here
 // by id), and answers with each path's kind and stamp, in arrays handed over rather than copied.
 
-import { lstatSync, watch, type FSWatcher, type Stats } from "fs";
-import { relative } from "path";
+import { lstatSync, unlinkSync, watch, writeFileSync, type FSWatcher, type Stats } from "fs";
+import { join, relative } from "path";
 import { KIND, type StatRequest, type StatReply, type IndexRequest, type PathsRequest } from "./stat-files";
 import { LATE, scanIndex, scanPaths } from "./index-scan";
 
@@ -70,7 +70,16 @@ function stat(req: StatRequest): StatReply {
  * and everything seen before a `sync` is sent before its answer.
  */
 type WatchRequest = { watch: "open"; wid: number; root: string; gitDir?: string } | { watch: "close"; wid: number } | { watch: "sync"; wid: number; seq: number; waitMs: number };
-const watches = new Map<number, { watchers: FSWatcher[]; seen: (string | null)[] }>();
+/**
+ * A sync's marker: a file put in the folder's own Git dir, seen by its watch like any change, and after everything
+ * changed before it (a watch's events come in order). Its event is the sync's answer, rather than a wait that may be
+ * too short for a busy Mac's FSEvents. Gone again at once.
+ */
+const MARK = "cavvy-watch-sync-";
+/** A marker's event not come by then: the watch isn't relied on (what it saw may be incomplete). */
+const MARK_LIMIT_MS = 2000;
+type Watch = { watchers: FSWatcher[]; seen: (string | null)[]; markDir?: string; marks: Map<string, () => void> };
+const watches = new Map<number, Watch>();
 let flushing: ReturnType<typeof setTimeout> | undefined;
 
 function flushSeen(only?: number) {
@@ -88,17 +97,47 @@ function onWatch(r: WatchRequest) {
         return;
     }
     if (r.watch === "sync") {
-        // As long as the server's thread would have waited for events to arrive: what's arrived by then goes first.
-        setTimeout(() => {
+        const w = watches.get(r.wid);
+        const answer = (late = false) => {
             flushSeen(r.wid);
-            self.postMessage({ wid: r.wid, synced: r.seq });
-        }, r.waitMs);
+            self.postMessage({ wid: r.wid, synced: r.seq, ...(late ? { late: true } : {}) });
+        };
+        // No Git dir of its own to mark in (a linked worktree, a plain folder): as long as the server's thread would
+        // have waited for events to arrive, and what's arrived by then goes first.
+        if (!w?.markDir) return void setTimeout(answer, r.waitMs);
+        const name = `${MARK}${process.pid}-${r.wid}-${r.seq}`;
+        const limit = setTimeout(() => {
+            if (w.marks.delete(name)) answer(true);
+            try { unlinkSync(join(w.markDir!, name)); } catch {}
+        }, MARK_LIMIT_MS);
+        w.marks.set(name, () => {
+            clearTimeout(limit);
+            try { unlinkSync(join(w.markDir!, name)); } catch {}
+            answer();
+        });
+        try {
+            writeFileSync(join(w.markDir, name), "");
+        } catch {
+            clearTimeout(limit);
+            w.marks.delete(name);
+            setTimeout(answer, r.waitMs);
+        }
         return;
     }
-    const w = { watchers: [] as FSWatcher[], seen: [] as (string | null)[] };
+    const w: Watch = { watchers: [], seen: [], marks: new Map() };
+    try {
+        if (lstatSync(join(r.root, ".git"), { throwIfNoEntry: false })?.isDirectory()) w.markDir = join(r.root, ".git");
+    } catch {}
     watches.set(r.wid, w);
     const saw = (file: string | null) => {
         if (!watches.has(r.wid)) return;
+        const mark = file?.startsWith(`.git/${MARK}`) ? file.slice(5) : undefined;
+        if (mark !== undefined) {
+            // Everything before it has been seen: the sync waiting on it is answered (its removal is let pass).
+            w.marks.get(mark)?.();
+            w.marks.delete(mark);
+            return;
+        }
         w.seen.push(file);
         flushing ??= setTimeout(() => {
             flushing = undefined;

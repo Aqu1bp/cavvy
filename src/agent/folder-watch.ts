@@ -21,7 +21,8 @@ export function watchTrusted(version = Bun.version): boolean {
     return Bun.semver.order(version, WATCH_FROM_BUN) >= 0;
 }
 
-type WatchReply = { wid: number; seen?: (string | null)[]; ready?: true; failed?: true; synced?: number };
+/** `late`: a sync's marker wasn't seen in time, so what the watch saw may be incomplete (stat-worker.ts). */
+type WatchReply = { wid: number; seen?: (string | null)[]; ready?: true; failed?: true; synced?: number; late?: true };
 
 /** The worker the watches are kept on; null: none to be had (they're kept on this thread then). */
 let host: Worker | null | undefined;
@@ -128,6 +129,8 @@ export class FolderWatch {
         }
         if (m.failed) this.fail();
         if (m.synced !== undefined) {
+            // Not sure it has everything: not relied on (a capture looks at the folder itself).
+            if (m.late) this.fail();
             this.syncs.get(m.synced)?.();
             this.syncs.delete(m.synced);
         }

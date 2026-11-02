@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, realpathSync, writeFileSync } from "fs";
+import { mkdirSync, readdirSync, realpathSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate } from "./helpers/isolate";
 
@@ -28,6 +28,32 @@ test("a watch kept on its worker is relied on once it's started, and has what ch
         const again = acquireWatch(root);
         expect(again).toBe(w);
         releaseWatch(again);
+    } finally {
+        releaseWatch(w);
+    }
+});
+
+test("in a repository, settling waits for the watch to have seen everything until now, not for a guessed time", async () => {
+    const root = join(realpathSync(iso.home), "repo");
+    mkdirSync(join(root, ".git"), { recursive: true });
+    mkdirSync(join(root, "src"), { recursive: true });
+    const w = acquireWatch(root);
+    try {
+        await w.ready;
+        expect(w.healthy).toBe(true);
+        for (let i = 0; i < 20; i++) {
+            const gen = w.gen;
+            writeFileSync(join(root, "src", `f${i}.ts`), String(i));
+            // No time allowed for the event to come: the sync's own marker, seen after it, is what it waits for.
+            await w.settle(0);
+            expect(w.changedSince(gen)).toContain(`src/f${i}.ts`);
+        }
+        expect(w.healthy).toBe(true);
+        // The markers are gone again, and none of them was taken for a change.
+        expect(readdirSync(join(root, ".git"))).toEqual([]);
+        const gen = w.gen;
+        await w.settle(0);
+        expect(w.gen).toBe(gen);
     } finally {
         releaseWatch(w);
     }
