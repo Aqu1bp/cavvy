@@ -35,3 +35,13 @@ export function glideKeyframes(from: number, ms: number, easing: string, curve: 
     for (let k = 0; k <= n; k++) keyframes.push({ offset: k / n, easing: "step-end", transform: k === n ? "none" : `translateY(${from * (1 - curve(k / n))}px)` });
     return { keyframes, easing: "linear" };
 }
+
+/**
+ * Where a glide from `from` over `ms` draws its element at `progress` (its effect's computed progress): as eased by its
+ * timing, or, in steps, the step it's on.
+ */
+export function glideOffset(from: number, ms: number, progress: number, curve: (t: number) => number): number {
+    if (!GLIDE_HZ) return from * (1 - progress);
+    const n = Math.max(1, Math.round((ms * GLIDE_HZ) / 1000));
+    return from * (1 - curve(Math.min(n, Math.floor(progress * n)) / n));
+}

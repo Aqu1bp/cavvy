@@ -10,7 +10,7 @@ import { anchoredTop, atBottom, FAR, firstBelow, firstWindow, lazyHeights, MORE_
 import { turnAt } from "../lib/find";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
 import { DrawnAgain, REPLY_GLIDES, revealing } from "../lib/reveal";
-import { cubicBezier, glideKeyframes } from "../lib/glide-steps";
+import { cubicBezier, glideKeyframes, glideOffset } from "../lib/glide-steps";
 import { observeWorkRendering } from "../lib/work-rendering";
 import { TurnView } from "./TurnView";
 import { LiveLine, motionMs } from "./LiveLine";
@@ -180,7 +180,9 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     /** How far a running glide has the rows in sight drawn from their place (px), worked out: asked of the page, it lays out. */
     const shift = () => {
         const g = glides[0];
-        return g?.anim.playState === "running" ? g.from * (1 - (g.anim.effect?.getComputedTiming().progress ?? 0)) : 0;
+        if (g?.anim.playState !== "running") return 0;
+        const timing = g.anim.effect?.getComputedTiming();
+        return glideOffset(g.from, Number(timing?.duration) || 0, timing?.progress ?? 0, glideCurve);
     };
     const cancelGlide = () => {
         for (const g of glides) g.anim.cancel();
