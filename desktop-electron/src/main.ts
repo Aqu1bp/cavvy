@@ -50,6 +50,7 @@ const CSP = [
 // Checks only (scripts drive the window over DevTools, in a data folder of their own so they run beside the app):
 // never set in normal use.
 if (process.env.CAVVY_ELECTRON_TEST_PORT) app.commandLine.appendSwitch("remote-debugging-port", process.env.CAVVY_ELECTRON_TEST_PORT);
+const OPAQUE = process.env.CAVVY_ELECTRON_WINDOW === "opaque";
 if (process.env.CAVVY_ELECTRON_USER_DATA) app.setPath("userData", process.env.CAVVY_ELECTRON_USER_DATA);
 
 // codeCache: V8 keeps the UI's compiled scripts between launches (with v8CacheOptions below), as for http(s) pages.
@@ -159,11 +160,17 @@ function createWindow() {
         titleBarStyle: "hidden",
         // The lights' centre on the GUI's --top-line (34px), as the Tauri shell puts them.
         trafficLightPosition: { x: 18, y: 27 },
-        transparent: true,
-        backgroundColor: "#00000000",
-        // Liquid Glass where macOS has it (added below; Electron's vibrancy would cover it), else the sidebar
-        // material, as the Tauri shell does.
-        ...(glass ? {} : { vibrancy: "sidebar" as const, visualEffectState: "followWindow" as const }),
+        // Experiment (CAVVY_ELECTRON_WINDOW=opaque): no material behind the page, to measure what the glass costs
+        // WindowServer.
+        ...(OPAQUE
+            ? { transparent: false, backgroundColor: nativeTheme.shouldUseDarkColors ? "#1e1e1e" : "#f5f5f5" }
+            : {
+                  transparent: true,
+                  backgroundColor: "#00000000",
+                  // Liquid Glass where macOS has it (added below; Electron's vibrancy would cover it), else the sidebar
+                  // material, as the Tauri shell does.
+                  ...(glass ? {} : { vibrancy: "sidebar" as const, visualEffectState: "followWindow" as const }),
+              }),
         webPreferences: {
             preload: join(APP, "dist/preload.cjs"),
             contextIsolation: true,
@@ -183,7 +190,7 @@ function createWindow() {
         const w = win;
         w.webContents.once("did-finish-load", () => glass.addView(w.getNativeWindowHandle()));
     }
-    console.error(`[cavvy] window material: ${glass ? "Liquid Glass" : "sidebar vibrancy"}`);
+    console.error(`[cavvy] window material: ${OPAQUE ? "none (opaque)" : glass ? "Liquid Glass" : "sidebar vibrancy"}`);
     win.webContents.on("preload-error", (_e, path, error) => console.error(`[cavvy] preload ${path} failed: ${error.stack ?? error}`));
     win.webContents.on("console-message", (e) => {
         if (e.level === "error" || e.level === "warning") console.error(`[gui ${e.level}] ${e.message}`);
@@ -305,7 +312,7 @@ interface LiquidGlass {
 
 /** macOS 26's Liquid Glass (Apple's NSGlassEffectView, through electron-liquid-glass), where there is one. */
 function liquidGlass(): LiquidGlass | undefined {
-    if (process.platform !== "darwin" || process.env.CAVVY_ELECTRON_GLASS === "0") return undefined;
+    if (process.platform !== "darwin" || process.env.CAVVY_ELECTRON_GLASS === "0" || OPAQUE) return undefined;
     try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const glass = require("electron-liquid-glass") as LiquidGlass;
