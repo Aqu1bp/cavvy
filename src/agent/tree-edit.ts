@@ -92,7 +92,9 @@ export async function editTree(base: string, edits: Map<string, TreeEdit>, hashB
 /** Objects read one after another from one `git cat-file --batch`, each asked for once the last is in. */
 export class ObjectReader {
     private proc: ReturnType<typeof Bun.spawn>;
-    private reader: { read(): Promise<{ value?: Uint8Array; done: boolean }> };
+    private reader: { read(): Promise<{ value?: Uint8Array; done: boolean }>; releaseLock(): void };
+    /** Whether `reader` holds its stdout (let go while idle). */
+    private held = true;
     /** What's come in and not yet taken, in the pieces it came in (joined once, when taken). */
     private chunks: Buffer[] = [];
     private have = 0;
@@ -105,6 +107,7 @@ export class ObjectReader {
     }
 
     private async more() {
+        if (!this.held) this.busy();
         const { value, done } = await this.reader.read();
         if (done || !value) throw new Error("Snapshot objects are missing or unreadable.");
         this.chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
@@ -172,11 +175,23 @@ export class ObjectReader {
     idle() {
         this.timer.unref?.();
         this.proc.unref();
+        // Its pipes would keep the process alive too: a script's query is done, and it exits. What's been read and not
+        // taken stays here (chunks); the stream is held again when it's next read.
+        (this.proc.stdin as import("bun").FileSink).unref?.();
+        if (this.held) {
+            this.reader.releaseLock();
+            this.held = false;
+        }
     }
 
     /** Asked again: kept to while it reads. */
     busy() {
         this.proc.ref();
+        (this.proc.stdin as import("bun").FileSink).ref?.();
+        if (!this.held) {
+            this.reader = (this.proc.stdout as ReadableStream<Uint8Array>).getReader() as unknown as ObjectReader["reader"];
+            this.held = true;
+        }
     }
 
     close() {

@@ -45,3 +45,13 @@ test("a folder that can't be watched says so, and is let go of for one started a
     releaseWatch(next);
     releaseWatch(w);
 });
+
+test("a Bun whose watch can leave changes out isn't relied on", async () => {
+    const { watchTrusted, WATCH_FROM_BUN } = await import("../src/agent/folder-watch");
+    expect(watchTrusted(WATCH_FROM_BUN)).toBe(true);
+    expect(watchTrusted("1.5.0")).toBe(true);
+    expect(watchTrusted("1.3.14")).toBe(false);
+    expect(watchTrusted("1.4.3")).toBe(false);
+    // The one running the tests (CI's, the packaged app's) is relied on: what's above tests the watch itself.
+    expect(watchTrusted()).toBe(true);
+});

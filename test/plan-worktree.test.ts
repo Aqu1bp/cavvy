@@ -202,7 +202,9 @@ describe("implementing a plan in a new worktree", () => {
         expect(status(main)).toBe("");
         expect(readFileSync(join(main, "src", "auth", "index.ts"), "utf8")).toBe("export const strategies = [emailStrategy];\n");
 
-        // The links survive closing and reopening both sessions.
+        // The links survive closing and reopening both sessions. Interrupted once its prompt has gone to the model: one
+        // stopped before that goes back to the input box, and a session with nothing sent isn't kept.
+        await c.until(next, (v) => done(v) || (lastTurn(v)?.blocks.length ?? 0) > 0);
         await c.call("session.interrupt", { id: next });
         await c.until(next, done);
         c.close();
