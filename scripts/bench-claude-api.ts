@@ -55,10 +55,11 @@ function plan(body: any): Block[] {
     // Auto mode's check of a tool call (it stops at </severity>, below 50 allows): the mock's calls are routine.
     if (Array.isArray(body.stop_sequences) && body.stop_sequences.includes("</severity>")) return [{ type: "text", text: "<severity>5" }];
     const msgs: any[] = body.messages ?? [];
-    // "longreply words=<n>": that reply and nothing else, no tools.
-    const last = textOf(msgs.at(-1)?.content);
-    const long = /\blongreply words=(\d+)/.exec(last);
-    if (long && msgs.at(-1)?.role === "user") return [{ type: "text", text: longReply(Number(long[1])) }];
+    // "longreply words=<n>": that reply and nothing else, no tools. The user's last message, not the last message: a CLI
+    // can send a system one after it.
+    const lastUser = [...msgs].reverse().find((m) => m.role === "user");
+    const long = /\blongreply words=(\d+)/.exec(textOf(lastUser?.content));
+    if (long) return [{ type: "text", text: longReply(Number(long[1])) }];
     let at = msgs.length - 1;
     while (at >= 0 && !(msgs[at].role === "user" && /\bworkday\b/.test(textOf(msgs[at].content)))) at--;
     if (at < 0 || !body.tools?.length) return [{ type: "text", text: "Done." }];
