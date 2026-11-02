@@ -199,6 +199,8 @@ export interface SessionHost {
     emitSession?(e: SessionEvent): void;
     /** The CLI started a turn by itself: the host starts a wake turn that adopts it (BackendTurn.adopt). */
     onWake?(w: BackendWake): void;
+    /** Whether the session is on screen: what only shows there can be looked at less often while it isn't. */
+    onScreen?(): boolean;
 }
 
 /** Where one turn's events go, and what the turn takes in while it runs (messages to steer with). */

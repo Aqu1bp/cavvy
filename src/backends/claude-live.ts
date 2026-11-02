@@ -96,8 +96,9 @@ export const liveTiming = {
     wakeDueMs: 15_000,
     /** A background shell or monitor that leaves Claude Code's list without a word on how it ended: ended after this. */
     unlistedMs: 3000,
-    /** How often a turn's /goal is looked at in its transcript. */
+    /** How often a turn's /goal is looked at in its transcript: on screen, and while the session isn't. */
     goalPollMs: 400,
+    goalHiddenPollMs: 5000,
     /** A session's process with nothing running or in the background: stopped after this (resumed at the next turn). */
     idleMs: 15 * 60_000,
     /** A stopped background task: confirmed by Claude Code's notification within this, or the stop timed out. */
@@ -359,7 +360,7 @@ export class ClaudeConnection implements CliConnection {
     private hookCallbacks = new Map<string, { event: HookEvent; hook: HookConfig }>();
     private mcpKey?: string;
     private goals?: ClaudeGoalWatch;
-    private goalTimer?: ReturnType<typeof setInterval>;
+    private goalTimer?: ReturnType<typeof setTimeout>;
     private sessionId?: string;
 
     // Per CLI turn.
@@ -760,7 +761,7 @@ export class ClaudeConnection implements CliConnection {
         } finally {
             this.ended = true;
             this.hookAbort.abort();
-            clearInterval(this.goalTimer);
+            clearTimeout(this.goalTimer);
             for (const d of this.dues) clearTimeout(d.timer);
             for (const t of this.unlisted.values()) clearTimeout(t);
             for (const resolve of [...this.controls.values()]) resolve(undefined);
@@ -1135,7 +1136,7 @@ export class ClaudeConnection implements CliConnection {
     }
 
     private startGoalWatch() {
-        clearInterval(this.goalTimer);
+        clearTimeout(this.goalTimer);
         const env = (() => {
             try {
                 return accountEnv(this.def.id, this.cfg.accountId, this.cfg.cwd);
@@ -1145,11 +1146,18 @@ export class ClaudeConnection implements CliConnection {
         })();
         const cwd = this.cfg.cwd;
         this.goals = new ClaudeGoalWatch(() => (this.sessionId ? claudeTranscriptFile(env.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR, cwd, this.sessionId) : undefined), Date.now(), (goal) => this.emit({ type: "goal", goal }));
-        this.goalTimer = setInterval(() => this.goals?.poll(), liveTiming.goalPollMs);
+        // Off screen, less often (each look reads what the CLI wrote since): its end is looked at as the turn ends.
+        const next = () => {
+            this.goalTimer = setTimeout(() => {
+                this.goals?.poll();
+                next();
+            }, this.host.onScreen?.() === false ? liveTiming.goalHiddenPollMs : liveTiming.goalPollMs);
+        };
+        next();
     }
 
     private onResult(m: Record<string, any>) {
-        clearInterval(this.goalTimer);
+        clearTimeout(this.goalTimer);
         this.goals?.poll();
         this.reportFastMode(m);
         const turn = this.cur;

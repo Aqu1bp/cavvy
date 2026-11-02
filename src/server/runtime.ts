@@ -1552,6 +1552,7 @@ export class Runtime {
                     this.ws.reload();
                 },
                 ui: {
+                    onScreen: () => this.engine.sessionShown(this.id),
                     askQuestion: (q, options, multi) => this.askQuestion(q, options, multi),
                     approvePlan: (plan) => this.approvePlan(plan),
                     requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),

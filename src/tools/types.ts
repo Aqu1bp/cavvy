@@ -114,6 +114,8 @@ export interface Watcher {
 }
 
 export interface UiBridge {
+    /** Whether the session is on screen in a window (undefined: no window says, so taken as on screen). */
+    onScreen?(): boolean;
     /** Ask the user a multiple-choice question (AskUserQuestion tool). */
     askQuestion?(question: string, options: { label: string; description?: string }[], multi: boolean): Promise<string[] | undefined>;
     /**

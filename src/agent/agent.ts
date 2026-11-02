@@ -2313,6 +2313,7 @@ export class Agent {
             ...this.backendHooks(sessionSignal),
             mode: () => this.o.mode.get(),
             fastMode: () => this.fastMode(),
+            onScreen: () => this.o.host.ui.onScreen?.() ?? true,
             permission: async (req) => {
                 // A background sub-agent's goes on past the turn (and Esc): only the session's end, or the backend
                 // saying it no longer matters (req.signal: its sub-agent's turn ended), withdraws it.
