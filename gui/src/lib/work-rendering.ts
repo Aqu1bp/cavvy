@@ -2,6 +2,8 @@
 // browser skip the layout and paint of distant work. Measure each row before it can be skipped:
 // guessed heights in a long running turn move the end while the reader is clicking or scrolling.
 
+import { finishEntrances } from "./entrances";
+
 const ROW = ".worklog > :not(.steps), .steps > *, .reply > .md > *";
 const TRACKED = "data-work-row";
 const FAR = "data-work-far";
@@ -57,6 +59,8 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
         // Content-box size: padding and borders remain the element's own. `auto` remembers later
         // natural sizes too. It also lets native find, focus and selection reveal skipped content.
         el.style.containIntrinsicBlockSize = `auto ${row.height}px`;
+        // Skipped from here: what it was still bringing in is over now, not left part way (lib/entrances.ts).
+        finishEntrances(el);
         el.setAttribute(FAR, "");
     };
     const start = () => {
