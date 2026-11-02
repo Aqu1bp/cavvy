@@ -4,8 +4,8 @@
 // refresh is a frame for the GPU; at 60 a second, a 60 Hz screen draws what it drew before, and a 120 Hz one half
 // the frames, of moves of a few pixels each.
 
-/** Steps a second: the most a glide is drawn. */
-export const GLIDE_HZ = 60;
+/** Steps a second: the most a glide is drawn. (Experiment: VITE_GLIDE_HZ at build time, 120 for every refresh of a ProMotion screen.) */
+export const GLIDE_HZ = Number((import.meta as { env?: Record<string, string | undefined> }).env?.VITE_GLIDE_HZ) || 60;
 
 /** A CSS cubic-bezier(x1, y1, x2, y2) as a function of time (0..1). */
 export function cubicBezier(x1: number, y1: number, x2: number, y2: number): (t: number) => number {
