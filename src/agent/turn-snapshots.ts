@@ -715,7 +715,7 @@ export class TurnSnapshots {
 
     private async open(id: number, prompt: string, captured: TurnCapture | undefined) {
         if (!captured || this.stopped) return; // Not a repository, or this session was let go.
-        if (this.active) await this.finish(structuredClone(captured));
+        if (this.active) await this.finish(this.close(structuredClone(captured)));
         if (this.stopped) return;
         // What the turn before worked in is that turn's, not part of this one's start.
         delete captured.worked;
@@ -725,19 +725,30 @@ export class TurnSnapshots {
     }
 
     /** Once the captures asked for so far are in (a turn's end goes on after the turn). */
-    settled(): Promise<void> {
-        return this.last.then(() => undefined);
+    async settled(): Promise<void> {
+        // A turn's end queues its comparing as its capture ends: waited for too.
+        for (let last = this.last; ; last = this.last) {
+            await last;
+            if (last === this.last) return;
+        }
     }
 
+    /**
+     * The turn's end, captured; then compared with its start and kept. A next turn's start asked for meanwhile goes
+     * before the comparing: that reads nothing of the worktree, and the next turn waits for what it's queued behind.
+     */
     end(): Promise<void> {
         const reached = this.takeReached();
+        let finished: Promise<void> | undefined;
         return this.record(async () => {
             if (!this.active || this.stopped) return;
             // No turn starts here: only the worktrees this one reached are looked at.
             const captured = await this.marks(await this.capture(true, reached.size === 0), reached, false);
             if (this.stopped) return;
-            await this.finish(captured ?? { incomplete: true, notes: ["The repository is no longer available."], skipped: pathMap(), durationMs: 0 });
-        });
+            const ended = this.close(captured ?? { incomplete: true, notes: ["The repository is no longer available."], skipped: pathMap(), durationMs: 0 });
+            // Queued now, before this resolves: settled() finds it.
+            finished = this.record(() => this.finish(ended));
+        }).then(() => finished);
     }
 
     /** Retire before releasing the session lock: no late end, or index writes alongside a reopened session. */
@@ -785,12 +796,19 @@ export class TurnSnapshots {
         return pending.finally(() => { this.pending.delete(pending); });
     }
 
-    private async finish(captured: TurnCapture) {
+    /** The open turn, ended at `captured`: no longer the one that's open, compared and kept by `finish`. */
+    private close(captured: TurnCapture): SnapshotTurn {
         this.stopWarming?.();
         this.stopWarming = undefined;
         clearTimeout(this.warmTimer);
         const turn: SnapshotTurn = { ...this.active!, end: captured, endedAt: Date.now() };
         this.active = undefined;
+        return turn;
+    }
+
+    private async finish(turn: SnapshotTurn) {
+        const captured = turn.end!;
+        if (this.stopped) return;
         let changes: Change[] | undefined;
         /** The trees on the way to what changed, both sides: needed to show it, so kept too. */
         const trees = new Set<string>();

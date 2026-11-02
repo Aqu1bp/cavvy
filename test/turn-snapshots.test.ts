@@ -107,6 +107,26 @@ describe("per-turn snapshots", () => {
         expect(snapshots.list()[1]!.start).toEqual(captured!);
     });
 
+    test("a next turn asked for while one ends starts before that one's comparing, and both come out whole", async () => {
+        const { cwd, dir, snapshots } = setup({ "a.txt": "a\n" });
+        await snapshots.begin(1, "first");
+        write(cwd, "a.txt", "changed\n");
+        const order: string[] = [];
+        const ended = snapshots.end().then(() => order.push("end"));
+        const started = snapshots.begin(2, "second").then(() => order.push("begin"));
+        // Both asked; what's settled is both, compared and kept.
+        await snapshots.settled();
+        expect(snapshots.list().map((t) => [t.id, Boolean(t.end)])).toEqual([[1, true], [2, false]]);
+        await Promise.all([ended, started]);
+        expect(order).toEqual(["begin", "end"]);
+        const [first, second] = snapshots.list();
+        expect(second!.start.tree).toBe(first!.end!.tree);
+        expect((await snapshots.changes({ scope: "turn", turnId: 1 })).files.map((f) => [f.path, f.added, f.removed])).toEqual([["a.txt", 1, 1]]);
+        // And as saved.
+        const reopened = new TurnSnapshots(dir, cwd);
+        expect(reopened.list().map((t) => [t.id, Boolean(t.end), t.changed])).toEqual([[1, true, ["a.txt"]], [2, false, undefined]]);
+    });
+
     test("the object quota degrades capture gracefully and survives reopening", async () => {
         const { cwd, dir, snapshots } = setup({ "a.txt": "before\n" });
         await snapshots.begin(1, "saved");
