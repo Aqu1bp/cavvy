@@ -8,6 +8,7 @@ import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
 import { anchoredTop, atBottom, FAR, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
 import { turnAt } from "../lib/find";
+import { FOLLOW_ROOM, ROOM_KEPT, roomFor } from "../lib/follow";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
 import { DrawnAgain, revealing } from "../lib/reveal";
 import { observeWorkRendering } from "../lib/work-rendering";
@@ -230,9 +231,10 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         else seen.top = top;
         return moved;
     };
-    const pin = () => {
+    /** `was`: where the view was, before a change already laid out. */
+    const pin = (was?: number) => {
         if (!scroller || !stick() || smoothScroll) return;
-        const before = scroller.scrollTop;
+        const before = was ?? scroller.scrollTop;
         const end = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
         if (Math.abs(end - before) <= 0.5) return;
         scroller.scrollTop = end;
@@ -258,12 +260,66 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         });
     };
 
+    // Room under a reply as it streams (lib/follow.ts): the reply writes down into it and the conversation holds
+    // still, and once it's used, the conversation glides up by a room's worth and the room is there again.
+    const [room, setRoom] = createSignal(0);
+    /** The column's height, without the room, when the room was last made (undefined: none being written into). */
+    let roomBase: number | undefined;
+    /** The room's size when it was last made (or taken up, left from before). */
+    let roomMade = 0;
+    /** When work last folded into "Worked for" (fold): that has its own glide. */
+    let foldedAt = -Infinity;
+    /** The column's height, without the room, when it was last followed or held. */
+    let roomLast: number | undefined;
+    const follow = () => {
+        if (!scroller || !content) return;
+        const h = content.offsetHeight - room();
+        // Room left from a reply that ended: written into from where it is, not made again.
+        if (roomBase === undefined && room() > 0) {
+            roomBase = h;
+            roomMade = room();
+        }
+        const used = roomBase === undefined ? -1 : h - roomBase;
+        if (used >= 0 && roomMade - used >= ROOM_KEPT) setRoom(roomMade - used);
+        else {
+            roomBase = h;
+            roomMade = roomFor(scroller.clientHeight, GLIDE_MAX);
+            setRoom(roomMade);
+        }
+        roomLast = h;
+        pin();
+    };
+    /**
+     * After the reply, what changes at its end (its footer landing, the working line going) is taken from the room or
+     * given to it, so nothing on screen moves. False when it can't (more than the room holds, or work folding into
+     * "Worked for", which has its own glide): the view goes to the end as before.
+     */
+    const holdStill = () => {
+        roomBase = undefined;
+        if (!scroller || !content || !room() || roomLast === undefined) return false;
+        const h = content.offsetHeight - room();
+        const grew = h - roomLast;
+        roomLast = h;
+        if (grew > room()) return false;
+        if (grew < 0 && (-grew > roomFor(scroller.clientHeight, GLIDE_MAX) || performance.now() - foldedAt < 1000)) return false;
+        setRoom(room() - grew);
+        return true;
+    };
+    /** Read elsewhere, the room goes where nothing on screen moves for it: wholly below the view. */
+    const dropRoomUnseen = () => {
+        if (!scroller || !room()) return;
+        if (scroller.scrollTop + scroller.clientHeight > scroller.scrollHeight - room() - 1) return;
+        setRoom(0);
+        roomBase = roomLast = undefined;
+    };
+
     /**
      * A finished turn's work folds into "Worked for" (TurnView, once it has faded out). Following the end, the answer
      * stays put and what's above it comes down by what folded away: drawn from where it was, it glides down rather
      * than jumping, as growth glides up.
      */
     const fold = (turn: HTMLElement, run: () => void) => {
+        foldedAt = performance.now();
         const ms = motionMs(GLIDE_MS);
         if (!scroller || !content || !turn.isConnected || !stick() || smoothScroll || !ms || typeof content.animate !== "function") return run();
         // The turn's top (its prompt): where it was, and where it is once the work has folded.
@@ -418,8 +474,14 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             else if (smoothScroll) toBottom(true);
             // Glides only while a turn is running, or its reply's last words are still coming out: the end of a
             // turn (its footer, the composer settling) lands at once. Its work folding away glides (fold()).
-            else if (stick()) (running || revealing()) && !above ? pin() : toBottom();
+            else if (stick()) {
+                const live = (running || revealing()) && !above;
+                if (FOLLOW_ROOM && live) follow();
+                // The reply's done: nothing moves for what lands at its end (see holdStill).
+                else if (!(FOLLOW_ROOM && !live && holdStill())) live ? pin() : toBottom();
+            }
             else {
+                if (FOLLOW_ROOM && !(running || revealing())) dropRoomUnseen();
                 restore();
                 // Nothing left to scroll (something folded until it all fits): no scroll event will come to say the
                 // end is in view, so it's followed again here.
@@ -837,7 +899,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                             </div>
                         </div>
                     </Show>
-                    <div class="transcript-end" style={{ "--dock-h": dock() }} />
+                    <div class="transcript-end" style={{ "--dock-h": dock(), "--room": room() ? `${room()}px` : undefined }} />
                 </div>
                 </div>
             </div>
