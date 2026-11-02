@@ -8,7 +8,7 @@ import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
 import { anchoredTop, atBottom, FAR, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
 import { turnAt } from "../lib/find";
-import { cubicBezier, glideKeyframes, glideOffset } from "../lib/glide-steps";
+import { cubicBezier, FOLLOW_RUNWAY, glideKeyframes, glideOffset } from "../lib/glide-steps";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
 import { DrawnAgain, revealing } from "../lib/reveal";
 import { observeWorkRendering } from "../lib/work-rendering";
@@ -30,8 +30,7 @@ const MUTATION_MS = 40;
 const REPIN_MS = 300;
 /** The glide's curve (cubic-bezier(0.2, 0.8, 0.2, 1)), drawn in steps (lib/glide-steps.ts). */
 const glideCurve = cubicBezier(0.2, 0.8, 0.2, 1);
-/** Experiment: how the conversation follows a reply (VITE_FOLLOW=runway: in room kept under it, see `follow`). */
-const FOLLOW_RUNWAY = (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_FOLLOW === "runway";
+
 /** How much of what's left a jump down covers each frame: a few thousand pixels in about half a second. */
 const JUMP_STEP = 0.2;
 

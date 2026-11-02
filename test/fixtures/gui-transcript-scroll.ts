@@ -138,7 +138,7 @@ const onFolds = new Map<string, (el: any, fold: () => void) => void>();
 const scope = {
     setFollowing() {},
     renderer: { ...solid, ...renderer, createElement: create },
-    anchoredTop, atBottom, FAR, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, turnHeight, window: { innerHeight: 500 }, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow, cubicBezier, glideKeyframes,
+    anchoredTop, atBottom, FAR, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, turnHeight, window: { innerHeight: 500 }, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow, cubicBezier, glideKeyframes, FOLLOW_RUNWAY: false,
     // A running move is where the fake's progress puts it (getComputedTiming above), on a straight line: the steps' own
     // curve is test/glide-steps.test.ts's.
     glideOffset: (from: number, _ms: number, progress: number) => from * (1 - progress), finishEntrances, DrawnAgain,

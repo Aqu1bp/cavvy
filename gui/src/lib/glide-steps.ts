@@ -43,3 +43,6 @@ export function glideOffset(from: number, ms: number, progress: number, curve: (
     const n = stepsIn(ms);
     return from * (1 - curve(Math.min(n, Math.floor(progress * n)) / n));
 }
+
+/** Experiment: how the conversation follows a reply (VITE_FOLLOW=runway: in room kept under it, Transcript's `follow`). */
+export const FOLLOW_RUNWAY = (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_FOLLOW === "runway";
