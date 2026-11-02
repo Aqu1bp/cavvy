@@ -79,7 +79,7 @@ export function revealEnd(text: string, pos: number, n: number): number {
  */
 export function createReveal(text: Accessor<string>, streaming: Accessor<boolean>, again = false): [Accessor<string>, Accessor<boolean>] {
     if (REPLY_MOTION === "steps") return createSteps(text, streaming);
-    if (REPLY_MOTION === "whole") return createWhole(text, streaming);
+    if (REPLY_MOTION === "whole" || REPLY_MOTION === "whole-still") return createWhole(text, streaming);
     let target = untrack(text);
     // New while the reply streams (not a block drawn again mid-reply): from its start, as the rest of it will come.
     const fresh = !again && untrack(streaming) && target.length <= MAX_FRESH && typeof requestAnimationFrame !== "undefined";
@@ -152,10 +152,25 @@ export function createReveal(text: Accessor<string>, streaming: Accessor<boolean
  * "stream": word by word at an even pace (createReveal). "steps": what has arrived, at most every STEPS_MS.
  * "whole": finished paragraphs only, each fading in (md-enter in markdown.css); the rest when the reply ends.
  */
-export const REPLY_MOTION: "stream" | "steps" | "whole" = ((): "stream" | "steps" | "whole" => {
+export const REPLY_MOTION: "stream" | "steps" | "whole" | "whole-still" = ((): "stream" | "steps" | "whole" | "whole-still" => {
     const m = (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_REPLY_MOTION;
-    return m === "steps" || m === "whole" ? m : "stream";
+    return m === "steps" || m === "whole" || m === "whole-still" ? m : "stream";
 })();
+/** "whole-still": the conversation moves up at once as a paragraph comes, rather than gliding (Transcript). */
+export const REPLY_GLIDES = REPLY_MOTION !== "whole-still";
+
+/** While a reply streams, words are coming: as with createReveal, the open session's spinner holds still. */
+function holdWhileLive(live: Accessor<boolean>) {
+    let held = false;
+    const hold = (on: boolean) => {
+        if (on === held) return;
+        held = on;
+        pending += on ? 1 : -1;
+        markFlowing();
+    };
+    createComputed(() => hold(live()));
+    onCleanup(() => hold(false));
+}
 const STEPS_MS = 250;
 
 function createSteps(text: Accessor<string>, streaming: Accessor<boolean>): [Accessor<string>, Accessor<boolean>] {
@@ -176,6 +191,7 @@ function createSteps(text: Accessor<string>, streaming: Accessor<boolean>): [Acc
         }, STEPS_MS);
     });
     onCleanup(() => clearTimeout(timer));
+    holdWhileLive(streaming);
     return [shown, () => false];
 }
 
@@ -196,5 +212,6 @@ function createWhole(text: Accessor<string>, streaming: Accessor<boolean>): [Acc
         const t = text();
         setShown(streaming() && typeof document !== "undefined" && !document.hidden ? finishedPart(t) : t);
     });
+    holdWhileLive(streaming);
     return [shown, () => false];
 }

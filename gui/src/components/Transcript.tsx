@@ -9,7 +9,7 @@ import { prefs } from "../state/prefs";
 import { anchoredTop, atBottom, FAR, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
 import { turnAt } from "../lib/find";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
-import { DrawnAgain, revealing } from "../lib/reveal";
+import { DrawnAgain, REPLY_GLIDES, revealing } from "../lib/reveal";
 import { observeWorkRendering } from "../lib/work-rendering";
 import { TurnView } from "./TurnView";
 import { LiveLine, motionMs } from "./LiveLine";
@@ -422,7 +422,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             else if (smoothScroll) toBottom(true);
             // Glides only while a turn is running, or its reply's last words are still coming out: the end of a
             // turn (its footer, the composer settling) lands at once. Its work folding away glides (fold()).
-            else if (stick()) (running || revealing()) && !above ? pin() : toBottom();
+            else if (stick()) (running || revealing()) && !above && REPLY_GLIDES ? pin() : toBottom();
             else {
                 restore();
                 // Nothing left to scroll (something folded until it all fits): no scroll event will come to say the

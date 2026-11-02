@@ -88,7 +88,7 @@ export function Markdown(p: { text: string; streaming?: boolean; class?: string;
 
 /** One rendered block. While the reply streams it's updated in place (see lib/stream-dom.ts); the last one carries the writing mark. */
 function HtmlBlock(p: { html: string; live: boolean; last: boolean; enter?: boolean }) {
-    if (REPLY_MOTION === "whole") {
+    if (REPLY_MOTION === "whole" || REPLY_MOTION === "whole-still") {
         // Experiment: whole paragraphs, each put in after the reply was first drawn fading in.
         return <div class={`md-block${p.enter ? " md-enter" : ""}`} ref={(el) => createRenderEffect(() => paint(el, p.html, false, false))} />;
     }
