@@ -11,6 +11,16 @@
 import { watch, type FSWatcher } from "fs";
 import { relative } from "path";
 
+/**
+ * The Bun a watch is relied on from: what it says changed is taken as all that did. Bun 1.3's macOS watch leaves out
+ * some names (a folder moved within the folder watched), which would leave changes out of a capture; 1.4.4 is the
+ * oldest checked (the packaged app's). Before it, there's no watch: every capture looks at everything.
+ */
+export const WATCH_FROM_BUN = "1.4.4";
+export function watchTrusted(version = Bun.version): boolean {
+    return Bun.semver.order(version, WATCH_FROM_BUN) >= 0;
+}
+
 type WatchReply = { wid: number; seen?: (string | null)[]; ready?: true; failed?: true; synced?: number };
 
 /** The worker the watches are kept on; null: none to be had (they're kept on this thread then). */
@@ -71,6 +81,11 @@ export class FolderWatch {
 
     constructor(readonly root: string, gitDir?: string) {
         this.ready = new Promise((r) => (this.readied = r));
+        if (!watchTrusted()) {
+            this.failed = true;
+            this.readied();
+            return;
+        }
         const worker = watchHost();
         if (worker) {
             this.wid = ++nextId;
