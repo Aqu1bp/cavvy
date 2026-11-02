@@ -49,8 +49,40 @@ interface SecretSpan {
     label: string;
 }
 
+/**
+ * Long texts redacted lately, by text, while the secrets are the same: the same tool output is redacted again each
+ * time what holds it is written (a step's status changes; the session file, the UI log and the model each take it).
+ * Bounded by length; the texts are kept alive by it, so it stays small.
+ */
+const CACHE_FROM = 1024;
+const CACHE_CHARS = 2 * 1024 * 1024;
+const cached = new Map<string, string>();
+let cachedChars = 0;
+let cachedRevision = -1;
+
 export function redact(text: string): string {
-    return redactThrough(text, text.length);
+    if (text.length < CACHE_FROM) return redactThrough(text, text.length);
+    if (cachedRevision !== revision) {
+        cached.clear();
+        cachedChars = 0;
+        cachedRevision = revision;
+    }
+    const had = cached.get(text);
+    if (had !== undefined) {
+        cached.delete(text);
+        cached.set(text, had);
+        return had;
+    }
+    const out = redactThrough(text, text.length);
+    if (text.length + out.length > CACHE_CHARS / 4) return out;
+    cached.set(text, out);
+    cachedChars += text.length + (out === text ? 0 : out.length);
+    for (const [k, v] of cached) {
+        if (cachedChars <= CACHE_CHARS) break;
+        cached.delete(k);
+        cachedChars -= k.length + (v === k ? 0 : v.length);
+    }
+    return out;
 }
 
 /** Match the full text, but show only original positions before the limit.
@@ -64,7 +96,10 @@ export function redactPrefix(text: string, sourceLimit: number): string {
 function* exactSpans(text: string, secret: string, label: string, prefix?: Uint32Array): Generator<SecretSpan> {
     function* starts() {
         if (prefix) {
-            for (let i = 0, j = 0; i < text.length; i++) {
+            // Where it first is, found natively (most texts have none); from there one pass, overlaps and all.
+            const first = text.indexOf(secret);
+            if (first < 0) return;
+            for (let i = first, j = 0; i < text.length; i++) {
                 while (j && text[i] !== secret[j]) j = prefix[j - 1]!;
                 if (text[i] === secret[j]) j++;
                 if (j === secret.length) {
