@@ -359,3 +359,17 @@
         animation: none;
     }
 }
+
+/* Experiment (VITE_REPLY_MOTION=whole): a finished paragraph fades in once, on the compositor. */
+@media (prefers-reduced-motion: no-preference) {
+    .md-block.md-enter {
+        animation: md-enter 180ms ease-out both;
+    }
+}
+
+@keyframes md-enter {
+    from {
+        opacity: 0;
+        transform: translateY(4px);
+    }
+}

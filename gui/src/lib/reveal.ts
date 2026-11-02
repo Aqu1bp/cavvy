@@ -78,6 +78,8 @@ export function revealEnd(text: string, pos: number, n: number): number {
  * `again`: drawn again (DrawnAgain), so what has come shows at once.
  */
 export function createReveal(text: Accessor<string>, streaming: Accessor<boolean>, again = false): [Accessor<string>, Accessor<boolean>] {
+    if (REPLY_MOTION === "steps") return createSteps(text, streaming);
+    if (REPLY_MOTION === "whole") return createWhole(text, streaming);
     let target = untrack(text);
     // New while the reply streams (not a block drawn again mid-reply): from its start, as the rest of it will come.
     const fresh = !again && untrack(streaming) && target.length <= MAX_FRESH && typeof requestAnimationFrame !== "undefined";
@@ -143,4 +145,56 @@ export function createReveal(text: Accessor<string>, streaming: Accessor<boolean
     });
     onCleanup(() => run(false));
     return [shown, behind];
+}
+
+/**
+ * Experiment (VITE_REPLY_MOTION at build time): how a reply comes out while it streams.
+ * "stream": word by word at an even pace (createReveal). "steps": what has arrived, at most every STEPS_MS.
+ * "whole": finished paragraphs only, each fading in (md-enter in markdown.css); the rest when the reply ends.
+ */
+export const REPLY_MOTION: "stream" | "steps" | "whole" = ((): "stream" | "steps" | "whole" => {
+    const m = (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_REPLY_MOTION;
+    return m === "steps" || m === "whole" ? m : "stream";
+})();
+const STEPS_MS = 250;
+
+function createSteps(text: Accessor<string>, streaming: Accessor<boolean>): [Accessor<string>, Accessor<boolean>] {
+    const [shown, setShown] = createSignal(untrack(text));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let latest = untrack(text);
+    createComputed(() => {
+        latest = text();
+        if (!streaming() || !latest.startsWith(untrack(shown)) || typeof document === "undefined" || document.hidden) {
+            clearTimeout(timer);
+            timer = undefined;
+            setShown(latest);
+            return;
+        }
+        timer ??= setTimeout(() => {
+            timer = undefined;
+            setShown(latest);
+        }, STEPS_MS);
+    });
+    onCleanup(() => clearTimeout(timer));
+    return [shown, () => false];
+}
+
+/** Up to the last paragraph break: what's finished. Inside an open code fence, up to where the fence started. */
+export function finishedPart(t: string): string {
+    const cut = t.lastIndexOf("\n\n");
+    if (cut < 0) return "";
+    const done = t.slice(0, cut);
+    const fences = done.match(/^ {0,3}(```|~~~)/gm)?.length ?? 0;
+    if (fences % 2 === 0) return done;
+    const open = done.search(/^ {0,3}(```|~~~)(?![\s\S]*^ {0,3}(```|~~~))/m);
+    return open > 0 ? done.slice(0, open).replace(/\n+$/, "") : "";
+}
+
+function createWhole(text: Accessor<string>, streaming: Accessor<boolean>): [Accessor<string>, Accessor<boolean>] {
+    const [shown, setShown] = createSignal(untrack(text));
+    createComputed(() => {
+        const t = text();
+        setShown(streaming() && typeof document !== "undefined" && !document.hidden ? finishedPart(t) : t);
+    });
+    return [shown, () => false];
 }

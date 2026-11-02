@@ -1,7 +1,7 @@
 import { RenderBoundary } from "../ui/ErrorBoundary";
-import { createEffect, createMemo, createRenderEffect, Index, Match, onCleanup, Switch, useContext } from "solid-js";
+import { createEffect, createMemo, createRenderEffect, Index, Match, onCleanup, onMount, Switch, useContext } from "solid-js";
 import { MarkdownRenderer } from "../../lib/markdown";
-import { createReveal, DrawnAgain } from "../../lib/reveal";
+import { createReveal, DrawnAgain, REPLY_MOTION } from "../../lib/reveal";
 import { paint } from "../../lib/stream-dom";
 import { openExternal } from "../../lib/platform";
 import { openInEditor } from "../../state/actions";
@@ -87,7 +87,11 @@ export function Markdown(p: { text: string; streaming?: boolean; class?: string;
 }
 
 /** One rendered block. While the reply streams it's updated in place (see lib/stream-dom.ts); the last one carries the writing mark. */
-function HtmlBlock(p: { html: string; live: boolean; last: boolean }) {
+function HtmlBlock(p: { html: string; live: boolean; last: boolean; enter?: boolean }) {
+    if (REPLY_MOTION === "whole") {
+        // Experiment: whole paragraphs, each put in after the reply was first drawn fading in.
+        return <div class={`md-block${p.enter ? " md-enter" : ""}`} ref={(el) => createRenderEffect(() => paint(el, p.html, false, false))} />;
+    }
     return <div class="md-block" ref={(el) => createRenderEffect(() => paint(el, p.html, p.live, p.live && p.last))} />;
 }
 
@@ -98,6 +102,8 @@ function MarkdownContent(p: { text: string; streaming?: boolean; class?: string;
     const [text, behind] = createReveal(() => p.text, () => Boolean(p.streaming), useContext(DrawnAgain)());
     const live = () => Boolean(p.streaming) || behind();
     let root: HTMLDivElement | undefined;
+    let drawn = false;
+    onMount(() => (drawn = true));
     const images = createMemo(() => {
         if (!p.sessionId) return undefined;
         const r = replyImages(p.sessionId, p.find);
@@ -141,7 +147,7 @@ function MarkdownContent(p: { text: string; streaming?: boolean; class?: string;
                     const last = createMemo(() => i === segments().length - 1);
                     return <Switch>
                         <Match when={code()}>{(c) => <CodeBlock code={c().code} lang={c().lang} streaming={c().open} />}</Match>
-                        <Match when={html()}>{(h) => <HtmlBlock html={h().html} live={live()} last={last()} />}</Match>
+                        <Match when={html()}>{(h) => <HtmlBlock html={h().html} live={live()} last={last()} enter={drawn} />}</Match>
                     </Switch>;
                 }}
             </Index>
