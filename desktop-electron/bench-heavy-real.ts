@@ -1,13 +1,13 @@
-// A heavy user's day, compressed, on a packaged app with real models: N sessions started together, each in a scratch
+// A heavy user's day, compressed, on a packaged app with real models (bench-heavy.ts does heavy use on the mock model): N sessions started together, each in a scratch
 // clone of its own, working the way people do (searching and reading code, running a test file, editing, looking at
 // the diff, undoing it), the next prompt sent whenever a session is idle, for --minutes. Through it: CPU and memory by
 // process every 2 s; how long the server takes to answer the window every 10 s; every 30 s a frame trace, and another
 // session put on screen (the others go on hidden). At the end: what each session did, every turn that didn't finish,
 // every question asked (denied), notices about limits. The app runs on its own: a fresh CAVVY_HOME and Electron
 // profile, its own server, quit by its own PID at the end. The real HOME stays, so the CLIs use the login they have.
-// Writes bench-results/bench-heavy-<label>.json.
+// Writes bench-results/bench-heavy-real-<label>.json.
 //
-//   bun desktop-electron/bench-heavy.ts --app <…>/Cavvy.app --repo <scratch clone> --label new --models <ref>[,<ref>…] [--sessions 10] [--minutes 15] [--mode auto]
+//   bun desktop-electron/bench-heavy-real.ts --app <…>/Cavvy.app --repo <scratch clone> --label new --models <ref>[,<ref>…] [--sessions 10] [--minutes 15] [--mode auto]
 //
 // Every change a session makes is to its own clone, under a temporary folder; nothing else is written.
 
@@ -20,7 +20,7 @@ const arg = (n: string) => (args.includes(n) ? args[args.indexOf(n) + 1] : undef
 const label = arg("--label") ?? "run";
 const appPath = arg("--app");
 const repo = arg("--repo");
-if (!appPath || !repo) throw new Error("usage: bench-heavy.ts --app <Cavvy.app> --repo <scratch repository> --models ref[,ref…] [--sessions 10] [--minutes 15] [--label x] [--mode auto]");
+if (!appPath || !repo) throw new Error("usage: bench-heavy-real.ts --app <Cavvy.app> --repo <scratch repository> --models ref[,ref…] [--sessions 10] [--minutes 15] [--label x] [--mode auto]");
 const N = Number(arg("--sessions") ?? 10);
 const RUN_MS = Number(arg("--minutes") ?? 15) * 60_000;
 const CAP_MS = RUN_MS + 6 * 60_000;
@@ -298,7 +298,7 @@ try {
         try { process.kill(pid, 0); process.kill(pid, "SIGKILL"); } catch {}
     }
     mkdirSync(join(import.meta.dir, "bench-results"), { recursive: true });
-    await Bun.write(join(import.meta.dir, "bench-results", `bench-heavy-${label}.json`), JSON.stringify(report, null, 1));
+    await Bun.write(join(import.meta.dir, "bench-results", `bench-heavy-real-${label}.json`), JSON.stringify(report, null, 1));
     const { samples: _s, ...brief } = report;
     console.log(JSON.stringify(brief, null, 1));
     process.exit(0);
