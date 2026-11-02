@@ -12,6 +12,7 @@ import { cubicBezier, glideKeyframes, glideOffset } from "../lib/glide-steps";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
 import { DrawnAgain, revealing } from "../lib/reveal";
 import { observeWorkRendering } from "../lib/work-rendering";
+import { finishEntrances } from "../lib/entrances";
 import { TurnView } from "./TurnView";
 import { LiveLine, motionMs } from "./LiveLine";
 import { CardFoldsProvider } from "./blocks/Activity";
@@ -41,15 +42,6 @@ function relay(to: { fn?: IntersectionObserverCallback }): IntersectionObserverC
     return (entries, observer) => to.fn?.(entries, observer);
 }
 
-/**
- * The entrances rows play as they first come in (a step rising into the work, "Worked for" fading in), over at once:
- * a conversation drawn again (a session switched back to) shows them where they are rather than bringing all of them
- * in a second time. Endless ones (a spinner, the writing dot) go on.
- */
-function finishEntrances(el: HTMLElement) {
-    if (typeof el.getAnimations !== "function") return;
-    for (const a of el.getAnimations({ subtree: true })) if (a.effect?.getComputedTiming().iterations !== Infinity) a.finish();
-}
 
 /** `dock`: the composer dock's height (undefined until it's measured). */
 export function Transcript(p: { handle: SessionHandle; dock?: number }) {
@@ -389,7 +381,11 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                     const box = e.target.getBoundingClientRect();
                     return { el: e.target, was: box.bottom <= top ? box.height : undefined };
                 });
-                for (const e of entries) e.target.toggleAttribute(FAR, !e.isIntersecting);
+                for (const e of entries) {
+                    // Skipped from here: what it was still bringing in is over now, not left part way (lib/entrances.ts).
+                    if (!e.isIntersecting && !e.target.hasAttribute(FAR)) finishEntrances(e.target);
+                    e.target.toggleAttribute(FAR, !e.isIntersecting);
+                }
                 if (stick() || smoothScroll) return;
                 let moved = 0;
                 for (const n of near) if (n.was !== undefined) moved += n.el.getBoundingClientRect().height - n.was;
@@ -453,7 +449,8 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             if (stick()) toBottom();
             else { scroller!.scrollTop = saved?.top ?? 0; restore(); }
         });
-        // Its first frame shows the conversation as it is: what was drawn for it lands, rather than coming in again.
+        // Its first frame shows the conversation as it is: what was drawn for it lands, rather than coming in again
+        // (a session switched back to doesn't bring its rows in a second time).
         const settle = requestAnimationFrame(() => {
             settling = false;
             finishEntrances(content!);
