@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, readdirSync, realpathSync, writeFileSync } from "fs";
+import { mkdirSync, readdirSync, realpathSync, utimesSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate } from "./helpers/isolate";
 
@@ -37,10 +37,14 @@ test("in a repository, settling waits for the watch to have seen everything unti
     const root = join(realpathSync(iso.home), "repo");
     mkdirSync(join(root, ".git"), { recursive: true });
     mkdirSync(join(root, "src"), { recursive: true });
+    // A marker a stopped process left behind (it ended between writing and removing it).
+    writeFileSync(join(root, ".git", "cavvy-watch-sync-1-1-1"), "");
+    utimesSync(join(root, ".git", "cavvy-watch-sync-1-1-1"), new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
     const w = acquireWatch(root);
     try {
         await w.ready;
         expect(w.healthy).toBe(true);
+        expect(readdirSync(join(root, ".git")), "a stale marker is cleared as the watch starts").toEqual([]);
         for (let i = 0; i < 20; i++) {
             const gen = w.gen;
             writeFileSync(join(root, "src", `f${i}.ts`), String(i));

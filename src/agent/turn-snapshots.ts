@@ -147,11 +147,14 @@ function rememberTree(oid: string, body: Buffer) {
 }
 
 /**
- * How long a capture waits for the events of a change just made, before it takes the watch's count: inotify (Linux)
- * delivers them within milliseconds; FSEvents (a Mac) later, so a turn's end, which no model waits on, waits longer.
+ * How long a capture waits for the events of a change just made, where the watch can't be asked to report a marker
+ * (stat-worker.ts: a linked worktree, a folder without its own .git): inotify (Linux) delivers them within
+ * milliseconds; FSEvents (a Mac) up to about 30 ms after (measured on Bun 1.4.4, quiet, loaded and in a 100,000-file
+ * folder alike), so twice that, and a turn's end, which no model waits on, longer still.
  */
 function eventWait(ending: boolean): number {
-    return ending && process.platform === "darwin" ? 100 : 30;
+    if (process.platform !== "darwin") return 30;
+    return ending ? 100 : 60;
 }
 
 /** How many entries Git's index file says it has (0 when it can't be read). */
