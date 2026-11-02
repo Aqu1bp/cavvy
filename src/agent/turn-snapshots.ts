@@ -779,11 +779,16 @@ export class TurnSnapshots {
      * calls but read-only ones, nor a sub-agent's), and the folder's watch saw no change since that capture began. Events
      * arrive a moment after a change: a capture within a quarter of a second of the last isn't taken for one.
      */
+    /** Once the folder's watch has what changed up to now (events arrive a moment after a change). */
+    private settle(ending: boolean): Promise<void> {
+        return this.watch ? this.watch.settle(eventWait(ending)) : new Promise((r) => setTimeout(r, eventWait(ending)));
+    }
+
     private async unchanged(quiet: boolean, ending: boolean): Promise<TurnCapture | undefined> {
         const w = this.watch, last = this.lastFast;
         if (!quiet || !w?.healthy || !last || this.stopped) return undefined;
         // A turn's end waits a little longer (FSEvents, on a Mac, delivers later than inotify): no model waits on it.
-        await new Promise((r) => setTimeout(r, eventWait(ending)));
+        await this.settle(ending);
         this.settledAt = Date.now();
         if (!w.healthy || w.gen !== last.gen || Date.now() - last.at < 250) return undefined;
         const out = structuredClone(last.result);
@@ -1377,7 +1382,7 @@ export class TurnSnapshots {
         const indexStamp = stampKey(stamped), rewritten = indexStamp !== base.indexStamp;
         if (ignoreKeyOf(root, indexPath) !== base.ignoreKey || (await this.converts(root, indexPath, base.attributes, deadline))) return false;
         // Events arrive a moment after a change (unchanged waits the same).
-        if (Date.now() - this.settledAt > 10) await new Promise((r) => setTimeout(r, eventWait(ending)));
+        if (Date.now() - this.settledAt > 10) await this.settle(ending);
         inTime();
         if (!w.healthy) return false;
         // Given (a first capture from what `git status` said): as of when it began, so what changed since is looked at next.
@@ -1985,11 +1990,14 @@ export class TurnSnapshots {
             this.root = where.root;
             this.known = knownIn(this.root);
             // The folder's watch (folder-watch.ts): taken once, again a while after one fails.
-            if (this.watch && (!this.watch.healthy || this.watch.root !== this.root)) { releaseWatch(this.watch); this.watch = undefined; }
+            if (this.watch && (this.watch.broken || this.watch.root !== this.root)) { releaseWatch(this.watch); this.watch = undefined; }
             if (!this.watch && Date.now() - this.watchTried > 5 * 60_000) {
                 this.watchTried = Date.now();
                 this.watch = acquireWatch(this.root, where.index ? dirname(where.index) : undefined);
             }
+            // Started on its worker (it walks every folder): what's read from here is what later captures go on from,
+            // so a change can't come before it's watched. A first capture runs on past the turn's budget anyway.
+            if (this.watch && !this.watch.healthy && !this.watch.broken) await settlesBy(this.watch.ready, deadline);
             genAtStart = this.watch?.healthy ? this.watch.gen : undefined;
             result.root = this.root;
             // The repository's other worktrees in its folder are places of their own (turn-places.ts), not contents left out.

@@ -4,7 +4,8 @@
 // It's sent a root and the lists of paths to look at (the tracked ones once per version of Git's index, kept here
 // by id), and answers with each path's kind and stamp, in arrays handed over rather than copied.
 
-import { lstatSync, type Stats } from "fs";
+import { lstatSync, watch, type FSWatcher, type Stats } from "fs";
+import { relative } from "path";
 import { KIND, type StatRequest, type StatReply, type IndexRequest, type PathsRequest } from "./stat-files";
 import { LATE, scanIndex, scanPaths } from "./index-scan";
 
@@ -63,7 +64,64 @@ function stat(req: StatRequest): StatReply {
     return { id: req.id, kinds, stamps };
 }
 
-self.onmessage = (e: MessageEvent<StatRequest | IndexRequest | PathsRequest>) => {
+/**
+ * Folder watches (folder-watch.ts), on a worker of their own: starting a recursive one walks every folder (seconds in
+ * a big repository, on Linux), which the server's thread would otherwise spend. What each sees is sent in batches,
+ * and everything seen before a `sync` is sent before its answer.
+ */
+type WatchRequest = { watch: "open"; wid: number; root: string; gitDir?: string } | { watch: "close"; wid: number } | { watch: "sync"; wid: number; seq: number; waitMs: number };
+const watches = new Map<number, { watchers: FSWatcher[]; seen: (string | null)[] }>();
+let flushing: ReturnType<typeof setTimeout> | undefined;
+
+function flushSeen(only?: number) {
+    for (const [wid, w] of watches) {
+        if ((only !== undefined && wid !== only) || !w.seen.length) continue;
+        self.postMessage({ wid, seen: w.seen });
+        w.seen = [];
+    }
+}
+
+function onWatch(r: WatchRequest) {
+    if (r.watch === "close") {
+        for (const x of watches.get(r.wid)?.watchers ?? []) try { x.close(); } catch {}
+        watches.delete(r.wid);
+        return;
+    }
+    if (r.watch === "sync") {
+        // As long as the server's thread would have waited for events to arrive: what's arrived by then goes first.
+        setTimeout(() => {
+            flushSeen(r.wid);
+            self.postMessage({ wid: r.wid, synced: r.seq });
+        }, r.waitMs);
+        return;
+    }
+    const w = { watchers: [] as FSWatcher[], seen: [] as (string | null)[] };
+    watches.set(r.wid, w);
+    const saw = (file: string | null) => {
+        if (!watches.has(r.wid)) return;
+        w.seen.push(file);
+        flushing ??= setTimeout(() => {
+            flushing = undefined;
+            flushSeen();
+        }, 20);
+    };
+    const failed = () => {
+        for (const x of w.watchers) try { x.close(); } catch {}
+        if (watches.delete(r.wid)) self.postMessage({ wid: r.wid, failed: true });
+    };
+    try {
+        w.watchers.push(watch(r.root, { recursive: true }, (_event, file) => saw(file ? String(file) : null)));
+        // A linked worktree's Git dir is elsewhere: its index and HEAD are what change there (sent as the folder's own).
+        if (r.gitDir && relative(r.root, r.gitDir).startsWith("..")) w.watchers.push(watch(r.gitDir, (_event, file) => { if (String(file) === "index" || String(file) === "HEAD") saw(".git/index"); }));
+        for (const x of w.watchers) x.on("error", failed);
+    } catch {
+        return failed();
+    }
+    self.postMessage({ wid: r.wid, ready: true });
+}
+
+self.onmessage = (e: MessageEvent<StatRequest | IndexRequest | PathsRequest | WatchRequest>) => {
+    if ("watch" in e.data) return onWatch(e.data);
     let reply: StatReply;
     try {
         const r = e.data;
