@@ -99,7 +99,8 @@ export class FolderWatch {
             this.watchers.push(watch(root, { recursive: true }, (_event, file) => this.seen(file ? String(file) : undefined)));
             // A linked worktree's Git dir is elsewhere: its index is what changes there.
             if (gitDir && relative(root, gitDir).startsWith("..")) this.watchers.push(watch(gitDir, (_event, file) => { if (String(file) === "index" || String(file) === "HEAD") this.bump(); }));
-            for (const w of this.watchers) w.on("error", () => this.fail());
+            // Watching never keeps the process alive by itself (a script using the SDK exits once its query is done).
+            for (const w of this.watchers) { w.on("error", () => this.fail()); w.unref?.(); }
         } catch {
             this.fail();
         }
