@@ -198,3 +198,17 @@ test("rows of far turns are let go of only while parkFar says so (many turns dra
     expect(rows[0]!.hasAttribute("data-work-far")).toBe(true);
     f.dispose();
 });
+
+test("a row skipped from here ends what it was still bringing in; what goes on for good goes on", () => {
+    const f = fixture(); const row = f.rows[0]!;
+    const fade = { finished: false, effect: { getComputedTiming: () => ({ iterations: 1 }) }, finish() { this.finished = true; } };
+    const spin = { finished: false, effect: { getComputedTiming: () => ({ iterations: Infinity }) }, finish() { this.finished = true; } };
+    (row as any).getAnimations = () => [fade, spin];
+    f.near(row, false);
+    f.measure(row, 40);
+    expect(row.hasAttribute("data-work-far")).toBe(true);
+    // Left part way in a skipped box, an entrance would never end: the page would pay for it on every frame.
+    expect(fade.finished).toBe(true);
+    expect(spin.finished).toBe(false);
+    f.dispose();
+});
