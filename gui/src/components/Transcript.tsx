@@ -285,7 +285,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         if (!scroller || !content) return;
         // Where it was, read before the room changes (a smaller room brings the view back within the column).
         const before = scroller.scrollTop;
-        const h = content.offsetHeight - room();
+        const h = content.offsetHeight;
         const now = performance.now();
         const column = h - (p.dock ?? 0);
         // Words are what grew while the turn ends in its text (not a row landing after them).
@@ -314,7 +314,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     /** What grew above the view isn't written into the room, or written by the words. */
     const roomAbove = () => {
         if (!content) return;
-        const h = content.offsetHeight - room();
+        const h = content.offsetHeight;
         if (roomBase !== undefined && roomLast !== undefined) roomBase += h - roomLast;
         roomLast = h;
         if (columnWas !== undefined) columnWas = h - (p.dock ?? 0);
@@ -931,8 +931,10 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                             </div>
                         </div>
                     </Show>
-                    <div class="transcript-end" style={{ "--dock-h": dock(), "--room": room() ? `${room()}px` : undefined }} />
+                    <div class="transcript-end" style={{ "--dock-h": dock() }} />
                 </div>
+                {/* The room a reply writes into (follow): outside the column, so making it doesn't resize what's observed. */}
+                <div class="transcript-room" style={{ height: room() ? `${room()}px` : undefined }} />
                 </div>
             </div>
             </div>
