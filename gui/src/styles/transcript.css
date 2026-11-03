@@ -41,6 +41,9 @@
     overflow-anchor: none;
     overscroll-behavior: contain;
     scrollbar-width: thin;
+    /* The scrollbar's room kept from the start (where it takes room): the column doesn't narrow and wrap again when
+       the conversation first overflows. */
+    scrollbar-gutter: stable;
 }
 
 /* The column glides (a translate, Transcript.tsx pin): clipped here, vertically only, so a glide never adds
