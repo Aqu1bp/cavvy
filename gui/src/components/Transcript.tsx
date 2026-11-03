@@ -10,7 +10,7 @@ import { anchoredTop, atBottom, FAR, firstBelow, firstWindow, lazyHeights, MORE_
 import { turnAt } from "../lib/find";
 import { FOLLOW_ROOM, ROOM_KEPT, roomFor } from "../lib/follow";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
-import { DrawnAgain, revealing } from "../lib/reveal";
+import { DrawnAgain, revealing, wordsFlowing } from "../lib/reveal";
 import { observeWorkRendering } from "../lib/work-rendering";
 import { finishEntrances } from "../lib/entrances";
 import { TurnView } from "./TurnView";
@@ -267,8 +267,6 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     let roomBase: number | undefined;
     /** The room's size when it was last made (or taken up, left from before). */
     let roomMade = 0;
-    /** When work last folded into "Worked for" (fold): that has its own glide. */
-    let foldedAt = -Infinity;
     /** The column's height, without the room, when it was last followed or held. */
     let roomLast: number | undefined;
     const follow = () => {
@@ -289,20 +287,25 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         roomLast = h;
         pin();
     };
+    /** When the room last went (settleRoom): what lands at the end while it settles carries on in its glide. */
+    let settledAt = -Infinity;
     /**
-     * After the reply, what changes at its end (its footer landing, the working line going) is taken from the room or
-     * given to it, so nothing on screen moves. False when it can't (more than the room holds, or work folding into
-     * "Worked for", which has its own glide): the view goes to the end as before.
+     * The words stopped (a tool, the reply's end): the room goes, and the conversation settles onto the end in one
+     * glide (with what lands at the end as it does), so nothing stands empty under it. False with no room to let go of.
      */
-    const holdStill = () => {
-        roomBase = undefined;
-        if (!scroller || !content || !room() || roomLast === undefined) return false;
-        const h = content.offsetHeight - room();
-        const grew = h - roomLast;
-        roomLast = h;
-        if (grew > room()) return false;
-        if (grew < 0 && (-grew > roomFor(scroller.clientHeight, GLIDE_MAX) || performance.now() - foldedAt < 1000)) return false;
-        setRoom(room() - grew);
+    const settleRoom = () => {
+        roomBase = roomLast = undefined;
+        if (!scroller || smoothScroll) return false;
+        if (room()) {
+            // Where it was, read before the room goes (the browser brings the view back within the column once it has).
+            const before = scroller.scrollTop;
+            setRoom(0);
+            settledAt = performance.now();
+            pin(before);
+            return true;
+        }
+        if (performance.now() - settledAt >= GLIDE_MS) return false;
+        pin();
         return true;
     };
     /** Read elsewhere, the room goes where nothing on screen moves for it: wholly below the view. */
@@ -319,7 +322,6 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
      * than jumping, as growth glides up.
      */
     const fold = (turn: HTMLElement, run: () => void) => {
-        foldedAt = performance.now();
         const ms = motionMs(GLIDE_MS);
         if (!scroller || !content || !turn.isConnected || !stick() || smoothScroll || !ms || typeof content.animate !== "function") return run();
         // The turn's top (its prompt): where it was, and where it is once the work has folded.
@@ -476,9 +478,11 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             // turn (its footer, the composer settling) lands at once. Its work folding away glides (fold()).
             else if (stick()) {
                 const live = (running || revealing()) && !above;
-                if (FOLLOW_ROOM && live) follow();
-                // The reply's done: nothing moves for what lands at its end (see holdStill).
-                else if (!(FOLLOW_ROOM && !live && holdStill())) live ? pin() : toBottom();
+                // Room only while words come out: what lands between them (a tool's row) glides in, and the room
+                // isn't left standing empty under a wait.
+                if (FOLLOW_ROOM && live && (revealing() || wordsFlowing())) follow();
+                // The words stopped, or the reply's done: the room goes, in one glide.
+                else if (!(FOLLOW_ROOM && settleRoom())) live ? pin() : toBottom();
             }
             else {
                 if (FOLLOW_ROOM && !(running || revealing())) dropRoomUnseen();
@@ -610,6 +614,12 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     // The composer opening or closing its large size (Composer.tsx): following the end, the end stays just above it,
     // gliding with its edge from where it was drawn. Here, as the dock's new height is set: before it's drawn.
     createEffect(() => setFollowing(stick()));
+    // The words stop (a tool, the reply's end): the room goes, whether or not anything at the end changes size. Once
+    // this update is drawn into the page (inside it, the room's going isn't yet, and the glide would be measured from
+    // the wrong place).
+    createEffect(on(wordsFlowing, (flowing, was) => {
+        if (FOLLOW_ROOM && was && !flowing) queueMicrotask(() => ready && stick() && !revealing() && settleRoom());
+    }, { defer: true }));
     onCleanup(() => setFollowing(false));
 
     createEffect(on(() => p.dock, (now, was) => {
