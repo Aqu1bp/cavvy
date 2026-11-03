@@ -962,6 +962,10 @@ for (const mode of ["prose", "tool"] as const) {
         const full = roomFor(viewportHeight, GLIDE_MAX);
         let h = 200;
         const grow = (by: number) => { h += by; turnHeights.set("turn-44", h); resize(); flush(); };
+        // Words coming out (lib/reveal.ts revealing(), wordsFlowing(), the turn ending in its text), or stopped.
+        const ends = (t: string) => { (reply.view.turns[44] as any).blocks = [{ t, id: t }]; };
+        const words = (on: boolean) => { revealingNow = flowingNow = on; ends(on ? "text" : "tool"); };
+        words(true);
         glides.forEach((g) => g.anim.cancel());
         // A reply's first words: no room yet; they glide in as any line.
         grow(24);
@@ -988,7 +992,7 @@ for (const mode of ["prose", "tool"] as const) {
         glides.forEach((g) => g.anim.cancel());
         scroller().props.onScroll();
         // The words stop for a tool: the room goes, in a glide; the tool's row glides in.
-        flowingNow = false;
+        words(false);
         const waiting = glides.length;
         grow(30);
         assert.equal(roomOf(), 0, "no room stands empty under a wait");
@@ -996,12 +1000,18 @@ for (const mode of ["prose", "tool"] as const) {
         assert.ok(glides.length > waiting, "gliding there");
         glides.forEach((g) => g.anim.cancel());
         // A sentence before the next tool: it glides in, and no room opens to go again when it stops.
-        flowingNow = true;
+        words(true);
         grow(24);
         assert.equal(roomOf(), 0, "no room for a sentence");
         assert.equal(top, bottom(), "it glides in");
         glides.forEach((g) => g.anim.cancel());
-        flowingNow = false;
+        // Rows landing just after it (the words a moment ago) aren't words: still no room.
+        revealingNow = false; ends("tool");
+        grow(full);
+        assert.equal(roomOf(), 0, "rows landing between words open no room");
+        assert.equal(top, bottom(), "they glide in");
+        glides.forEach((g) => g.anim.cancel());
+        words(false);
         const sentence = [top, glides.length];
         grow(30);
         assert.equal(roomOf(), 0, "(none to go)");
@@ -1009,13 +1019,14 @@ for (const mode of ["prose", "tool"] as const) {
         assert.ok(top > sentence[0]! && glides.length > sentence[1]!, "up, as any row: nothing comes back down");
         glides.forEach((g) => g.anim.cancel());
         // The words again, steadily: room again.
-        flowingNow = true;
+        words(true);
         grow(20); grow(full);
         assert.equal(roomOf(), full, "words again, room again");
         glides.forEach((g) => g.anim.cancel());
         scroller().props.onScroll();
         // The reply ends (its working line goes): the room goes, and the conversation settles onto the end in a glide.
         reply.view.turns[44]!.status = "done";
+        words(false);
         const settled = glides.length, was = top;
         grow(-20);
         assert.equal(roomOf(), 0, "a finished reply keeps no room under it");
@@ -1031,9 +1042,11 @@ for (const mode of ["prose", "tool"] as const) {
         glides.forEach((g) => g.anim.cancel());
         // The room again with the next reply.
         reply.view.turns[44]!.status = "running";
+        words(true);
         grow(30); grow(full);
         assert.equal(roomOf(), full, "the next reply makes room again");
         reply.view.turns[44]!.status = "done";
+        words(false);
         // Read elsewhere, the room goes only where it can't be seen.
         scroll(0); resize(); flush();
         assert.equal(roomOf(), 0, "below the view, the room goes");
