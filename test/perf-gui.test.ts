@@ -19,6 +19,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  */
 const COUNT_GLIDES = `(() => {
     window.__glides = 0;
+    // Layout changed inside a resize observer's callback, for what it observes: the browser lays out again.
+    window.__resizeLoops = 0;
+    window.addEventListener("error", (e) => { if (String(e.message).includes("ResizeObserver loop")) window.__resizeLoops++; });
     const isEnd = (el) => !!(el && el.classList && el.classList.contains("transcript-end"));
     const animate = Element.prototype.animate;
     Element.prototype.animate = function (...args) {
@@ -139,6 +142,7 @@ test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen an
         await watchDown();
         await until("the reply to finish", 120_000, finished);
         expect(await js(`window.__down`)).toEqual([]);
+        expect(await js(`window.__resizeLoops`)).toBe(0);
         const { glides, replyHeight, viewHeight } = await js(`(() => {
             const turn = [...document.querySelectorAll(".transcript [data-turn]")].at(-1);
             return { glides: window.__glides, replyHeight: turn.getBoundingClientRect().height, viewHeight: document.querySelector(".transcript").clientHeight };
