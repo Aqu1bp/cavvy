@@ -275,15 +275,23 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     /** The column's height, without the room, when it was last followed or held. */
     let roomLast: number | undefined;
     /**
-     * The column's height, without the room or the composer's space under it, as the words came (since they started,
-     * over ROOM_WRITTEN_MS at most): what they wrote, not a card opening over the composer.
+     * How far the words have written down the column since they started, as they came (over ROOM_WRITTEN_MS at most):
+     * growth of the turn's text only, not rows landing between words or a card opening over the composer.
      */
-    let written: { at: number; h: number }[] = [];
+    let written: { at: number; px: number }[] = [];
+    let wordsPx = 0;
+    let columnWas: number | undefined;
     const follow = () => {
         if (!scroller || !content) return;
+        // Where it was, read before the room changes (a smaller room brings the view back within the column).
+        const before = scroller.scrollTop;
         const h = content.offsetHeight - room();
         const now = performance.now();
-        written.push({ at: now, h: h - (p.dock ?? 0) });
+        const column = h - (p.dock ?? 0);
+        // Words are what grew while the turn ends in its text (not a row landing after them).
+        if (columnWas !== undefined && turns().at(-1)?.blocks.at(-1)?.t === "text") wordsPx += Math.max(0, column - columnWas);
+        columnWas = column;
+        written.push({ at: now, px: wordsPx });
         while (written.length > 1 && written[1]!.at <= now - ROOM_WRITTEN_MS) written.shift();
         // Room left from a reply that ended: written into from where it is, not made again.
         if (roomBase === undefined && room() > 0) {
@@ -293,12 +301,23 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         const used = roomBase === undefined ? -1 : h - roomBase;
         if (used >= 0 && roomMade - used >= ROOM_KEPT) setRoom(roomMade - used);
         else {
+            // What's left of the room stays, and what went from the column is given to it: none taken away while the
+            // words come (the conversation would move down).
+            const left = roomBase === undefined ? 0 : Math.max(0, roomMade - used);
             roomBase = h;
-            roomMade = roomFor(scroller.clientHeight, GLIDE_MAX, written.at(-1)!.h - written[0]!.h);
+            roomMade = Math.max(left, roomFor(scroller.clientHeight, GLIDE_MAX, wordsPx - written[0]!.px));
             setRoom(roomMade);
         }
         roomLast = h;
-        pin();
+        pin(before);
+    };
+    /** What grew above the view isn't written into the room, or written by the words. */
+    const roomAbove = () => {
+        if (!content) return;
+        const h = content.offsetHeight - room();
+        if (roomBase !== undefined && roomLast !== undefined) roomBase += h - roomLast;
+        roomLast = h;
+        if (columnWas !== undefined) columnWas = h - (p.dock ?? 0);
     };
     /** When the room last went (settleRoom): what lands at the end while it settles carries on in its glide. */
     let settledAt = -Infinity;
@@ -309,6 +328,8 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     const settleRoom = () => {
         roomBase = roomLast = undefined;
         written = [];
+        wordsPx = 0;
+        columnWas = undefined;
         if (!scroller || smoothScroll) return false;
         if (room()) {
             // Where it was, read before the room goes (the browser brings the view back within the column once it has).
@@ -329,6 +350,8 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         setRoom(0);
         roomBase = roomLast = undefined;
         written = [];
+        wordsPx = 0;
+        columnWas = undefined;
     };
 
     /**
@@ -492,6 +515,11 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                 // Room only while words come out: what lands between them (a tool's row) glides in, and the room
                 // isn't left standing empty under a wait.
                 if (FOLLOW_ROOM && live && (revealing() || wordsFlowing())) follow();
+                // Growth above the view as a reply runs: the end stays where it is, and the room is still all there.
+                else if (FOLLOW_ROOM && above && (running || revealing())) {
+                    roomAbove();
+                    toBottom();
+                }
                 // The words stopped, or the reply's done: the room goes, in one glide.
                 else if (!(FOLLOW_ROOM && settleRoom())) live ? pin() : toBottom();
             }
