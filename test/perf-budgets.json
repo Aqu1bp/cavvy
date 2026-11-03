@@ -7,5 +7,9 @@
     "codeTokenizedPerLine": 2,
     "streamClockWakesPerSecond": 21,
     "guiEagerJsBytes": 1290000,
-    "guiEagerCssBytes": 295000
+    "guiEagerCssBytes": 295000,
+    "glidesPerScreenOfReply": 3.5,
+    "idleLayoutsAfterReply": 2,
+    "idleStyleUpdatesAfterReply": 2,
+    "idleEntrancesRunningAfterReply": 0
 }

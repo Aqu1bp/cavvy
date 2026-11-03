@@ -746,8 +746,14 @@ try {
     assert.equal(io.targets.size, 80, "a page shown earlier is watched too");
     assert.ok(articles().every((n) => n.props[FAR] === undefined), "and drawn before any of it is skipped");
     // turn-50 is at the top of the view; turn-10 to turn-45 are more than a screen above it.
+    // A turn still bringing something in (a "Worked for" fading in) when it's skipped: the browser would stop that where
+    // it is, never to end, and the page pays for it on every frame. It's ended first; what goes on for good goes on.
+    const ended: string[] = [];
+    const animation = (name: string, iterations: number) => ({ effect: { getComputedTiming: () => ({ iterations }) }, finish: () => ended.push(name) });
+    (turn("turn-12") as any).getAnimations = () => [animation("fade", 1), animation("spin", Infinity)];
     report(Array.from({ length: 36 }, (_, i) => `turn-${10 + i}`), false);
     assert.equal(articles().filter((n) => n.props[FAR] !== undefined).length, 36, "those far from the view are marked far");
+    assert.deepEqual(ended, ["fade"], "a turn skipped from here ends what it was bringing in, and only that");
     // turn-45, skipped at 200px, is drawn at 320 when it comes near: what's in view doesn't move.
     skippedAt.set("turn-45", 200); turnHeights.set("turn-45", 320);
     const reading = turn("turn-50").getBoundingClientRect().top;
