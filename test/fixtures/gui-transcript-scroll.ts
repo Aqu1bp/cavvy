@@ -5,7 +5,7 @@ import { all, component, node, renderer, text, type Node } from "../helpers/gui-
 import { anchoredTop, atBottom, FAR, firstBelow, firstShown, firstWindow, lazyHeights, MORE_TURNS, restoredShown, positionCache, turnHeight, TURN_PAGE } from "../../gui/src/lib/transcript-scroll";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../../gui/src/lib/live-line";
 import { finishEntrances } from "../../gui/src/lib/entrances";
-import { ROOM_KEPT, roomFor } from "../../gui/src/lib/follow";
+import { ROOM_KEPT, ROOM_WRITTEN_MS, roomFor } from "../../gui/src/lib/follow";
 import { DrawnAgain } from "../../gui/src/lib/reveal";
 
 // Real Solid effects/reconciliation; deterministic layout and browser scheduling
@@ -142,7 +142,7 @@ const scope = {
     renderer: { ...solid, ...renderer, createElement: create },
     anchoredTop, atBottom, FAR, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, turnHeight, window: { innerHeight: 500 }, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow, wordsFlowing: () => flowingNow, finishEntrances, DrawnAgain,
     // The glide for each new line, as before (lib/follow.ts); the room it follows in is tried below, on its own.
-    FOLLOW_ROOM: false, roomFor, ROOM_KEPT,
+    FOLLOW_ROOM: false, roomFor, ROOM_KEPT, ROOM_WRITTEN_MS,
     LiveLine: () => node("live-line"), Spinner: () => node("spinner"),
     // A running move draws what it's on shiftNow down; anything else isn't moved.
     getComputedStyle: (el?: any) => ({ transform: `matrix(1, 0, 0, 1, 0, ${glides.some((g) => g.el === el && g.anim.playState === "running") ? shiftNow : 0})`, overflowY: el?.overflowY ?? "visible" }),
@@ -950,8 +950,8 @@ for (const mode of ["prose", "tool"] as const) {
     } finally { dispose(); rowAnchors = undefined; rowShift = 0; }
 }
 
-// Following a reply in room kept under it (lib/follow.ts): the reply writes into the room and nothing moves; the room
-// used, one glide up and the room again; the reply ended, the room goes and the conversation settles onto the end.
+// Following a reply in room kept under it (lib/follow.ts): once words come steadily the reply writes into the room and
+// nothing moves; the room used, one glide up and the room again; the words stopped, the room goes in a glide.
 {
     viewportHeight = 500;
     const reply = { id: "room", view: { state: {}, turns: turns(45).map((t, i) => ({ ...t, status: i === 44 ? "running" : "done" })) } };
@@ -960,42 +960,64 @@ for (const mode of ["prose", "tool"] as const) {
         const bottom = () => height(scroller()) - viewportHeight;
         const roomOf = () => parseFloat(button("transcript-end").props.style?.["--room"] ?? "0");
         const full = roomFor(viewportHeight, GLIDE_MAX);
+        let h = 200;
+        const grow = (by: number) => { h += by; turnHeights.set("turn-44", h); resize(); flush(); };
         glides.forEach((g) => g.anim.cancel());
-        turnHeights.set("turn-44", 260); resize(); flush();
-        assert.equal(roomOf(), full, "the reply's first growth makes room under it");
-        assert.equal(top, bottom(), "and the view goes to the end");
+        // A reply's first words: no room yet; they glide in as any line.
+        grow(24);
+        assert.equal(roomOf(), 0, "no room for a reply's first words");
+        assert.equal(top, bottom(), "the view goes to the end");
         assert.ok(glides.length > 0, "gliding there");
+        glides.forEach((g) => g.anim.cancel());
+        // Words coming steadily: room for what they write in a while (here more than a third of the view's worth).
+        grow(full);
+        assert.equal(roomOf(), full, "room under a reply writing steadily");
+        assert.equal(top, bottom(), "and the view goes to the end");
         glides.forEach((g) => g.anim.cancel());
         scroller().props.onScroll();
         const writes = scrollWrites, glided = glides.length, at = top;
-        for (const grown of [280, 300, 340]) { turnHeights.set("turn-44", grown); resize(); flush(); }
+        for (let i = 0; i < 3; i++) grow(i === 2 ? 40 : 20);
         assert.deepEqual([scrollWrites, glides.length, top], [writes, glided, at], "lines written into the room move nothing");
         assert.equal(roomOf(), full - 80, "what's left of the room");
         // All but what's always kept used: the room again, and one glide up to the end.
         assert.ok(full - 80 >= ROOM_KEPT, "(still more than what's kept)");
-        turnHeights.set("turn-44", 340 + full); resize(); flush();
+        grow(full);
         assert.equal(roomOf(), full, "used, the room is made again");
         assert.equal(top, bottom(), "the view at the end");
         assert.ok(glides.length > glided, "gliding there");
         glides.forEach((g) => g.anim.cancel());
         scroller().props.onScroll();
-        // The words stop for a tool: the room goes, in a glide; the tool's row glides in; the words again, room again.
+        // The words stop for a tool: the room goes, in a glide; the tool's row glides in.
         flowingNow = false;
         const waiting = glides.length;
-        turnHeights.set("turn-44", 340 + full + 30); resize(); flush();
+        grow(30);
         assert.equal(roomOf(), 0, "no room stands empty under a wait");
         assert.equal(top, bottom(), "the end in view");
         assert.ok(glides.length > waiting, "gliding there");
         glides.forEach((g) => g.anim.cancel());
+        // A sentence before the next tool: it glides in, and no room opens to go again when it stops.
         flowingNow = true;
-        turnHeights.set("turn-44", 340 + full + 40); resize(); flush();
+        grow(24);
+        assert.equal(roomOf(), 0, "no room for a sentence");
+        assert.equal(top, bottom(), "it glides in");
+        glides.forEach((g) => g.anim.cancel());
+        flowingNow = false;
+        const sentence = [top, glides.length];
+        grow(30);
+        assert.equal(roomOf(), 0, "(none to go)");
+        assert.equal(top, bottom(), "the tool's row glides in");
+        assert.ok(top > sentence[0]! && glides.length > sentence[1]!, "up, as any row: nothing comes back down");
+        glides.forEach((g) => g.anim.cancel());
+        // The words again, steadily: room again.
+        flowingNow = true;
+        grow(20); grow(full);
         assert.equal(roomOf(), full, "words again, room again");
         glides.forEach((g) => g.anim.cancel());
         scroller().props.onScroll();
         // The reply ends (its working line goes): the room goes, and the conversation settles onto the end in a glide.
         reply.view.turns[44]!.status = "done";
         const settled = glides.length, was = top;
-        turnHeights.set("turn-44", 340 + full + 20); resize(); flush();
+        grow(-20);
         assert.equal(roomOf(), 0, "a finished reply keeps no room under it");
         assert.equal(top, bottom(), "it rests on the end");
         assert.ok(top < was, "(come down by what the room was)");
@@ -1003,13 +1025,13 @@ for (const mode of ["prose", "tool"] as const) {
         assert.equal(glides.at(-1)!.from, Math.max(-GLIDE_MAX, top - was), "from where it was");
         // Its footer lands while it settles: the same glide goes on to the new end.
         const landing = glides.length;
-        turnHeights.set("turn-44", 340 + full + 50); resize(); flush();
+        grow(30);
         assert.equal(top, bottom(), "what lands at its end is followed");
         assert.ok(glides.length > landing, "in the glide");
         glides.forEach((g) => g.anim.cancel());
         // The room again with the next reply.
         reply.view.turns[44]!.status = "running";
-        turnHeights.set("turn-44", 340 + full + 80); resize(); flush();
+        grow(30); grow(full);
         assert.equal(roomOf(), full, "the next reply makes room again");
         reply.view.turns[44]!.status = "done";
         // Read elsewhere, the room goes only where it can't be seen.
