@@ -70,7 +70,7 @@ async function devtools(profile: string, browser: { exitCode: number | null }) {
     return { page, js, close: () => ws.close() };
 }
 
-test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen, and once it's done the page does nothing", async () => {
+test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen and never back down, and once it's done the page does nothing", async () => {
     const scratch = mkdtempSync(join(tmpdir(), "cavvy-perf-gui-"));
     const profile = join(scratch, "chrome");
     let demo: ReturnType<typeof Bun.spawn> | undefined;
@@ -104,21 +104,41 @@ test.skipIf(!chrome)("a reply streaming on screen glides a few times a screen, a
         // The app settles (its model and project known) before it takes a prompt.
         await sleep(1500);
 
-        // A long reply (the demo's: headings, lists, code, a table) at a model's pace, on screen.
-        const PROMPT = "perfstream text 3 80";
-        await js(`document.querySelector("textarea").focus()`);
-        await page("Input.insertText", { text: PROMPT });
-        await until("the prompt in the composer", 10_000, () => js(`document.querySelector("textarea")?.value === ${JSON.stringify(PROMPT)}`));
         const enter = async () => { for (const type of ["keyDown", "keyUp"]) await page("Input.dispatchKeyEvent", { type, key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, ...(type === "keyDown" ? { text: "\r" } : {}) }); };
-        await enter();
-        await until("the reply to start", 45_000, async () => {
-            if (await js(`!!document.querySelector(".md.streaming")`)) return true;
-            // Not taken (the composer wasn't ready for it): the prompt is still there to send.
-            if (await js(`document.querySelector("textarea")?.value === ${JSON.stringify(PROMPT)}`)) await enter();
-            return false;
-        });
+        const send = async (prompt: string) => {
+            await js(`document.querySelector("textarea").focus()`);
+            await page("Input.insertText", { text: prompt });
+            await until("the prompt in the composer", 10_000, () => js(`document.querySelector("textarea")?.value === ${JSON.stringify(prompt)}`));
+            await enter();
+            await until("the reply to start", 45_000, async () => {
+                if (await js(`!!document.querySelector(".md.streaming")`)) return true;
+                // Not taken (the composer wasn't ready for it): the prompt is still there to send.
+                if (await js(`document.querySelector("textarea")?.value === ${JSON.stringify(prompt)}`)) await enter();
+                return false;
+            });
+        };
+        // Where the reply is on screen each frame while it streams: following it, the conversation only ever moves up
+        // (a downward move is room under it taken back, or growth above it taken for the reply's).
+        const watchDown = () => js(`(() => {
+            window.__down = [];
+            let last;
+            const frame = () => {
+                if (!document.querySelector(".md.streaming")) return;
+                const top = [...document.querySelectorAll(".transcript [data-turn]")].at(-1)?.getBoundingClientRect().top;
+                if (last !== undefined && top !== undefined && top > last + 1) window.__down.push(Math.round(top - last));
+                last = top;
+                requestAnimationFrame(frame);
+            };
+            requestAnimationFrame(frame);
+        })()`);
+        const finished = () => js(`!document.querySelector(".md.streaming") && !document.querySelector('[aria-busy="true"]')`);
+
+        // A long reply (the demo's: headings, lists, code, a table) at a model's pace, on screen.
+        await send("perfstream text 3 80");
         await js(`window.__glides = 0`);
-        await until("the reply to finish", 120_000, () => js(`!document.querySelector(".md.streaming") && !document.querySelector('[aria-busy="true"]')`));
+        await watchDown();
+        await until("the reply to finish", 120_000, finished);
+        expect(await js(`window.__down`)).toEqual([]);
         const { glides, replyHeight, viewHeight } = await js(`(() => {
             const turn = [...document.querySelectorAll(".transcript [data-turn]")].at(-1);
             return { glides: window.__glides, replyHeight: turn.getBoundingClientRect().height, viewHeight: document.querySelector(".transcript").clientHeight };
