@@ -8,7 +8,7 @@ import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
 import { anchoredTop, atBottom, FAR, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
 import { turnAt } from "../lib/find";
-import { FOLLOW_ROOM, ROOM_KEPT, roomFor } from "../lib/follow";
+import { FOLLOW_ROOM, ROOM_KEPT, ROOM_WRITTEN_MS, roomFor } from "../lib/follow";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
 import { DrawnAgain, revealing, wordsFlowing } from "../lib/reveal";
 import { observeWorkRendering } from "../lib/work-rendering";
@@ -269,9 +269,17 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     let roomMade = 0;
     /** The column's height, without the room, when it was last followed or held. */
     let roomLast: number | undefined;
+    /**
+     * The column's height, without the room or the composer's space under it, as the words came (since they started,
+     * over ROOM_WRITTEN_MS at most): what they wrote, not a card opening over the composer.
+     */
+    let written: { at: number; h: number }[] = [];
     const follow = () => {
         if (!scroller || !content) return;
         const h = content.offsetHeight - room();
+        const now = performance.now();
+        written.push({ at: now, h: h - (p.dock ?? 0) });
+        while (written.length > 1 && written[1]!.at <= now - ROOM_WRITTEN_MS) written.shift();
         // Room left from a reply that ended: written into from where it is, not made again.
         if (roomBase === undefined && room() > 0) {
             roomBase = h;
@@ -281,7 +289,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         if (used >= 0 && roomMade - used >= ROOM_KEPT) setRoom(roomMade - used);
         else {
             roomBase = h;
-            roomMade = roomFor(scroller.clientHeight, GLIDE_MAX);
+            roomMade = roomFor(scroller.clientHeight, GLIDE_MAX, written.at(-1)!.h - written[0]!.h);
             setRoom(roomMade);
         }
         roomLast = h;
@@ -295,6 +303,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
      */
     const settleRoom = () => {
         roomBase = roomLast = undefined;
+        written = [];
         if (!scroller || smoothScroll) return false;
         if (room()) {
             // Where it was, read before the room goes (the browser brings the view back within the column once it has).
@@ -314,6 +323,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         if (scroller.scrollTop + scroller.clientHeight > scroller.scrollHeight - room() - 1) return;
         setRoom(0);
         roomBase = roomLast = undefined;
+        written = [];
     };
 
     /**
@@ -611,15 +621,16 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         reading = capture();
     };
 
-    // The composer opening or closing its large size (Composer.tsx): following the end, the end stays just above it,
-    // gliding with its edge from where it was drawn. Here, as the dock's new height is set: before it's drawn.
-    createEffect(() => setFollowing(stick()));
     // The words stop (a tool, the reply's end): the room goes, whether or not anything at the end changes size. Once
     // this update is drawn into the page (inside it, the room's going isn't yet, and the glide would be measured from
     // the wrong place).
     createEffect(on(wordsFlowing, (flowing, was) => {
         if (FOLLOW_ROOM && was && !flowing) queueMicrotask(() => ready && stick() && !revealing() && settleRoom());
     }, { defer: true }));
+
+    // The composer opening or closing its large size (Composer.tsx): following the end, the end stays just above it,
+    // gliding with its edge from where it was drawn. Here, as the dock's new height is set: before it's drawn.
+    createEffect(() => setFollowing(stick()));
     onCleanup(() => setFollowing(false));
 
     createEffect(on(() => p.dock, (now, was) => {
