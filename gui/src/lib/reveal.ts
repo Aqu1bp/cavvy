@@ -40,6 +40,9 @@ let pending = 0;
 export const revealing = () => pending > 0;
 
 let flowing = false;
+/** Words are coming out, or were a moment ago (a gap between chunks): false once they wait (a tool, the reply's end). */
+const [wordsFlowing, setWordsFlowing] = createSignal(false);
+export { wordsFlowing };
 let flowEnd: ReturnType<typeof setTimeout> | undefined;
 /** `data-flowing` on the page while words come out: the open session's spinner holds still then (sidebar.css), the words say it's working. */
 function markFlowing() {
@@ -47,9 +50,11 @@ function markFlowing() {
     if (pending > 0) {
         if (!flowing) globalThis.document?.documentElement?.setAttribute("data-flowing", "");
         flowing = true;
+        setWordsFlowing(true);
     } else {
         flowEnd = setTimeout(() => {
             flowing = false;
+            setWordsFlowing(false);
             globalThis.document?.documentElement?.removeAttribute("data-flowing");
         }, FLOW_GAP_MS);
     }

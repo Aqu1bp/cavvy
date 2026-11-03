@@ -2,15 +2,17 @@ import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Sh
 import { ArrowDown, ArrowUpLeft, GitFork } from "lucide-solid";
 import type { Turn } from "@shared/protocol";
 import { fork, forkAnchor } from "../state/actions";
-import { activate, app, toast, type SessionHandle } from "../state/app";
+import { activate, app, loadEarlier, toast, type SessionHandle } from "../state/app";
 import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setFollowing, setJumpTarget, setRewindOpen, takeDockGlide } from "../state/ui";
 import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
-import { anchoredTop, atBottom, FAR, firstBelow, firstWindow, MORE_TURNS, restoredShown, turnHeight, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
+import { anchoredTop, atBottom, FAR, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
 import { turnAt } from "../lib/find";
+import { FOLLOW_ROOM, ROOM_KEPT, ROOM_WRITTEN_MS, roomFor } from "../lib/follow";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
-import { DrawnAgain, revealing } from "../lib/reveal";
+import { DrawnAgain, revealing, wordsFlowing } from "../lib/reveal";
 import { observeWorkRendering } from "../lib/work-rendering";
+import { finishEntrances } from "../lib/entrances";
 import { TurnView } from "./TurnView";
 import { LiveLine, motionMs } from "./LiveLine";
 import { CardFoldsProvider } from "./blocks/Activity";
@@ -39,15 +41,6 @@ function relay(to: { fn?: IntersectionObserverCallback }): IntersectionObserverC
     return (entries, observer) => to.fn?.(entries, observer);
 }
 
-/**
- * The entrances rows play as they first come in (a step rising into the work, "Worked for" fading in), over at once:
- * a conversation drawn again (a session switched back to) shows them where they are rather than bringing all of them
- * in a second time. Endless ones (a spinner, the writing dot) go on.
- */
-function finishEntrances(el: HTMLElement) {
-    if (typeof el.getAnimations !== "function") return;
-    for (const a of el.getAnimations({ subtree: true })) if (a.effect?.getComputedTiming().iterations !== Infinity) a.finish();
-}
 
 /** `dock`: the composer dock's height (undefined until it's measured). */
 export function Transcript(p: { handle: SessionHandle; dock?: number }) {
@@ -70,7 +63,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     const anchorIndex = !opensAtEnd && saved?.anchor ? ids.indexOf(saved.anchor.turnId) : -1;
     const first = !opensAtEnd && anchorIndex < 0
         ? { shown: target, trimmed: 0 }
-        : firstWindow(p.handle.view.turns.map(turnHeight), target, opensAtEnd ? undefined : anchorIndex, window.innerHeight, -(saved?.anchor?.offset ?? 0));
+        : firstWindow(lazyHeights(p.handle.view.turns), target, opensAtEnd ? undefined : anchorIndex, window.innerHeight, -(saved?.anchor?.offset ?? 0));
     const [shown, setShown] = createSignal(first.shown);
     /** Turns at the very end not mounted yet (reopened mid-way: those below the place read go in first). */
     const [trimmed, setTrimmed] = createSignal(first.trimmed);
@@ -120,8 +113,11 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         const t = turns();
         return t.slice(Math.max(0, t.length - shown()), t.length - trimmed());
     });
-    /** Turns above the page, for "Show earlier" (not those still going in at first: grow, in onMount). */
-    const hidden = () => Math.max(0, turns().length - Math.max(shown(), target));
+    /** Turns above the page here, not those still going in at first (grow, in onMount). */
+    const hiddenHere = () => Math.max(0, turns().length - Math.max(shown(), target));
+    /** Turns above the page, for "Show earlier": those here, and those the session opened without (loadEarlier). */
+    const hidden = () => hiddenHere() + (p.handle.view.earlier ?? 0);
+    const [loadingEarlier, setLoadingEarlier] = createSignal(false);
 
     /**
      * A jump down ("Latest", a send from further up) is ours, a step a frame toward wherever the end is in that frame,
@@ -235,9 +231,10 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         else seen.top = top;
         return moved;
     };
-    const pin = () => {
+    /** `was`: where the view was, before a change already laid out. */
+    const pin = (was?: number) => {
         if (!scroller || !stick() || smoothScroll) return;
-        const before = scroller.scrollTop;
+        const before = was ?? scroller.scrollTop;
         const end = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
         if (Math.abs(end - before) <= 0.5) return;
         scroller.scrollTop = end;
@@ -261,6 +258,95 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             anim.currentTime = 0;
             return { el, from, anim };
         });
+    };
+
+    // Room under a reply as it streams (lib/follow.ts): the reply writes down into it and the conversation holds
+    // still, and once it's used, the conversation glides up by a room's worth and the room is there again.
+    const [room, setRoom] = createSignal(0);
+    /** The column's height, without the room, when the room was last made (undefined: none being written into). */
+    let roomBase: number | undefined;
+    /** The room's size when it was last made (or taken up, left from before). */
+    let roomMade = 0;
+    /** The column's height, without the room, when it was last followed or held. */
+    let roomLast: number | undefined;
+    /**
+     * How far the words have written down the column since they started, as they came (over ROOM_WRITTEN_MS at most):
+     * growth of the turn's text only, not rows landing between words or a card opening over the composer.
+     */
+    let written: { at: number; px: number }[] = [];
+    let wordsPx = 0;
+    let columnWas: number | undefined;
+    const follow = () => {
+        if (!scroller || !content) return;
+        // Where it was, read before the room changes (a smaller room brings the view back within the column).
+        const before = scroller.scrollTop;
+        const h = content.offsetHeight;
+        const now = performance.now();
+        const column = h - (p.dock ?? 0);
+        // Words are what grew while the turn ends in its text (not a row landing after them).
+        if (columnWas !== undefined && turns().at(-1)?.blocks.at(-1)?.t === "text") wordsPx += Math.max(0, column - columnWas);
+        columnWas = column;
+        written.push({ at: now, px: wordsPx });
+        while (written.length > 1 && written[1]!.at <= now - ROOM_WRITTEN_MS) written.shift();
+        // Room left from a reply that ended: written into from where it is, not made again.
+        if (roomBase === undefined && room() > 0) {
+            roomBase = h;
+            roomMade = room();
+        }
+        const used = roomBase === undefined ? -1 : h - roomBase;
+        if (used >= 0 && roomMade - used >= ROOM_KEPT) setRoom(roomMade - used);
+        else {
+            // What's left of the room stays, and what went from the column is given to it: none taken away while the
+            // words come (the conversation would move down).
+            const left = roomBase === undefined ? 0 : Math.max(0, roomMade - used);
+            roomBase = h;
+            roomMade = Math.max(left, roomFor(scroller.clientHeight, GLIDE_MAX, wordsPx - written[0]!.px));
+            setRoom(roomMade);
+        }
+        roomLast = h;
+        pin(before);
+    };
+    /** What grew above the view isn't written into the room, or written by the words. */
+    const roomAbove = () => {
+        if (!content) return;
+        const h = content.offsetHeight;
+        if (roomBase !== undefined && roomLast !== undefined) roomBase += h - roomLast;
+        roomLast = h;
+        if (columnWas !== undefined) columnWas = h - (p.dock ?? 0);
+    };
+    /** When the room last went (settleRoom): what lands at the end while it settles carries on in its glide. */
+    let settledAt = -Infinity;
+    /**
+     * The words stopped (a tool, the reply's end): the room goes, and the conversation settles onto the end in one
+     * glide (with what lands at the end as it does), so nothing stands empty under it. False with no room to let go of.
+     */
+    const settleRoom = () => {
+        roomBase = roomLast = undefined;
+        written = [];
+        wordsPx = 0;
+        columnWas = undefined;
+        if (!scroller || smoothScroll) return false;
+        if (room()) {
+            // Where it was, read before the room goes (the browser brings the view back within the column once it has).
+            const before = scroller.scrollTop;
+            setRoom(0);
+            settledAt = performance.now();
+            pin(before);
+            return true;
+        }
+        if (performance.now() - settledAt >= GLIDE_MS) return false;
+        pin();
+        return true;
+    };
+    /** Read elsewhere, the room goes where nothing on screen moves for it: wholly below the view. */
+    const dropRoomUnseen = () => {
+        if (!scroller || !room()) return;
+        if (scroller.scrollTop + scroller.clientHeight > scroller.scrollHeight - room() - 1) return;
+        setRoom(0);
+        roomBase = roomLast = undefined;
+        written = [];
+        wordsPx = 0;
+        columnWas = undefined;
     };
 
     /**
@@ -380,7 +466,11 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                     const box = e.target.getBoundingClientRect();
                     return { el: e.target, was: box.bottom <= top ? box.height : undefined };
                 });
-                for (const e of entries) e.target.toggleAttribute(FAR, !e.isIntersecting);
+                for (const e of entries) {
+                    // Skipped from here: what it was still bringing in is over now, not left part way (lib/entrances.ts).
+                    if (!e.isIntersecting && !e.target.hasAttribute(FAR)) finishEntrances(e.target);
+                    e.target.toggleAttribute(FAR, !e.isIntersecting);
+                }
                 if (stick() || smoothScroll) return;
                 let moved = 0;
                 for (const n of near) if (n.was !== undefined) moved += n.el.getBoundingClientRect().height - n.was;
@@ -419,8 +509,21 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             else if (smoothScroll) toBottom(true);
             // Glides only while a turn is running, or its reply's last words are still coming out: the end of a
             // turn (its footer, the composer settling) lands at once. Its work folding away glides (fold()).
-            else if (stick()) (running || revealing()) && !above ? pin() : toBottom();
+            else if (stick()) {
+                const live = (running || revealing()) && !above;
+                // Room only while words come out: what lands between them (a tool's row) glides in, and the room
+                // isn't left standing empty under a wait.
+                if (FOLLOW_ROOM && live && (revealing() || wordsFlowing())) follow();
+                // Growth above the view as a reply runs: the end stays where it is, and the room is still all there.
+                else if (FOLLOW_ROOM && above && (running || revealing())) {
+                    roomAbove();
+                    toBottom();
+                }
+                // The words stopped, or the reply's done: the room goes, in one glide.
+                else if (!(FOLLOW_ROOM && settleRoom())) live ? pin() : toBottom();
+            }
             else {
+                if (FOLLOW_ROOM && !(running || revealing())) dropRoomUnseen();
                 restore();
                 // Nothing left to scroll (something folded until it all fits): no scroll event will come to say the
                 // end is in view, so it's followed again here.
@@ -444,7 +547,8 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             if (stick()) toBottom();
             else { scroller!.scrollTop = saved?.top ?? 0; restore(); }
         });
-        // Its first frame shows the conversation as it is: what was drawn for it lands, rather than coming in again.
+        // Its first frame shows the conversation as it is: what was drawn for it lands, rather than coming in again
+        // (a session switched back to doesn't bring its rows in a second time).
         const settle = requestAnimationFrame(() => {
             settling = false;
             finishEntrances(content!);
@@ -492,7 +596,14 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         });
     });
 
-    const earlier = () => {
+    const earlier = async () => {
+        // Fewer here than a page: the next ones come from the server first (put in above, out of sight).
+        if (hiddenHere() < PAGE && p.handle.view.earlier) {
+            if (loadingEarlier()) return;
+            setLoadingEarlier(true);
+            const ok = await loadEarlier(p.handle, { count: PAGE }).finally(() => setLoadingEarlier(false));
+            if (!ok && p.handle.view.earlier) return void toast("Couldn't load earlier turns.");
+        }
         reading = capture();
         smoothScroll = false;
         setStick(false);
@@ -538,6 +649,13 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         reading = capture();
     };
 
+    // The words stop (a tool, the reply's end): the room goes, whether or not anything at the end changes size. Once
+    // this update is drawn into the page (inside it, the room's going isn't yet, and the glide would be measured from
+    // the wrong place).
+    createEffect(on(wordsFlowing, (flowing, was) => {
+        if (FOLLOW_ROOM && was && !flowing) queueMicrotask(() => ready && stick() && !revealing() && settleRoom());
+    }, { defer: true }));
+
     // The composer opening or closing its large size (Composer.tsx): following the end, the end stays just above it,
     // gliding with its edge from where it was drawn. Here, as the dock's new height is set: before it's drawn.
     createEffect(() => setFollowing(stick()));
@@ -555,12 +673,12 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         glides = inSight(Math.abs(from)).map((el) => ({ el, from, anim: el.animate([{ transform: `translateY(${from}px)` }, { transform: "none" }], { duration: ms, easing: GROW_EASE }) }));
     }));
 
-    // Sending a prompt jumps back down.
+    // Sending a prompt jumps back down: a new turn at the end, not earlier ones put in above (loadEarlier).
     createEffect(
         on(
-            () => turns().length,
-            (n, prev) => {
-                if (prev !== undefined && n > prev && turns()[n - 1]?.prompt) {
+            () => [turns().length, turns()[turns().length - 1]?.id] as const,
+            ([n, last], prev) => {
+                if (prev !== undefined && n > prev[0] && last !== prev[1] && turns()[n - 1]?.prompt) {
                     setTrimmed(0);
                     setStick(true);
                     afterLayout(() => toBottom(true));
@@ -705,30 +823,40 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         setStick(false);
     };
 
+    // Find counts what's in the whole session: opened, it has the turns the session opened without.
+    createEffect(on(findOpen, (open) => {
+        if (open && p.handle.view.earlier) void loadEarlier(p.handle, { all: true });
+    }));
+
     // A message found from ⌘K: its turn, briefly marked, with the find bar on what was searched.
     const [anchor, setAnchor] = createSignal<FindAnchor>();
+    const jump = (j: { role: FindAnchor["role"]; query: string }, turn: Turn | undefined) => {
+        if (!turn) return toast("That message isn't here any more.");
+        show(turn.id);
+        setAnchor({ turnId: turn.id, role: j.role });
+        setFindQuery(j.query);
+        openFind();
+        afterLayout(() => {
+            const el = turnEls.get(turn.id);
+            if (!el || !scroller) return;
+            scroller.scrollTop += el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - BAR_ROOM;
+            wrote();
+            reading = capture();
+            el.classList.remove("flash");
+            void el.offsetWidth;
+            el.classList.add("flash");
+            setTimeout(() => el.classList.remove("flash"), 1800);
+        });
+    };
     createEffect(() => {
         const j = jumpTarget();
         if (!j || j.sessionId !== p.handle.id || !turns().length) return;
         untrack(() => {
             setJumpTarget(undefined);
-            const turn = turnAt(turns(), j.seg, j.index);
-            if (!turn) return toast("That message isn't here any more.");
-            show(turn.id);
-            setAnchor({ turnId: turn.id, role: j.role });
-            setFindQuery(j.query);
-            openFind();
-            afterLayout(() => {
-                const el = turnEls.get(turn.id);
-                if (!el || !scroller) return;
-                scroller.scrollTop += el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - BAR_ROOM;
-                wrote();
-                reading = capture();
-                el.classList.remove("flash");
-                void el.offsetWidth;
-                el.classList.add("flash");
-                setTimeout(() => el.classList.remove("flash"), 1800);
-            });
+            const found = turnAt(turns(), j.seg, j.index);
+            if (found || !p.handle.view.earlier) return jump(j, found);
+            // Before the turns the session opened with: those back to it come first.
+            void loadEarlier(p.handle, { through: { seg: j.seg, index: j.index } }).then(() => untrack(() => jump(j, turnAt(turns(), j.seg, j.index))));
         });
     });
 
@@ -799,7 +927,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                         )}
                     </For>
                     <Show when={hidden()}>
-                        <button class="earlier" onClick={earlier}>
+                        <button class="earlier" onClick={() => void earlier()} disabled={loadingEarlier()}>
                             Show {Math.min(PAGE, hidden())} earlier {hidden() === 1 ? "turn" : "turns"}
                         </button>
                     </Show>
@@ -822,6 +950,8 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                     </Show>
                     <div class="transcript-end" style={{ "--dock-h": dock() }} />
                 </div>
+                {/* The room a reply writes into (follow): outside the column, so making it doesn't resize what's observed. */}
+                <div class="transcript-room" style={{ height: room() ? `${room()}px` : undefined }} />
                 </div>
             </div>
             </div>

@@ -99,6 +99,7 @@ import type {
     RewindTargetInfo,
     SessionOp,
     SessionSnapshot,
+    SessionTurnsPage,
     SessionState,
     WorkingIn,
     ToolBlock,
@@ -113,12 +114,15 @@ import { applyOp, coalesce, findBlock, findTurn, type SessionView } from "./time
 import { planTitle } from "./plans";
 import type { Engine, Workspace } from "./engine";
 import { MCP_SERVER_NAME } from "../agent/delegation";
+import { numberedTitles, titlesByNumber } from "./title-queue";
 import { SecretStore, secretValueError } from "../agent/secrets";
 
 /** How often streamed output goes out to the GUI. */
 const FLUSH_MS = 24;
 /** Words in a session no window has on screen: the session and its row go on as they are, and this wakes the window less. */
 const HIDDEN_FLUSH_MS = 500;
+/** A tool call still under way is written to the UI log this often at most (its end at once): ops come every flush. */
+const LIVE_STEP_MS = 2000;
 
 interface Pending {
     interaction: Interaction;
@@ -403,6 +407,13 @@ export class Runtime {
         opts: { mode?: PermissionMode; resumed: boolean },
     ) {
         this.session = session;
+        // Saving stopped working (a full disk): said once, and once more when it works again (what waited is saved then).
+        session.onSaving = (error) => queueMicrotask(() => {
+            if (!error) return this.notice("Saved again.", "info");
+            const code = (error as NodeJS.ErrnoException).code;
+            const why = code === "ENOSPC" ? "the disk is full" : code === "EDQUOT" ? "the disk quota is used up" : code === "EACCES" || code === "EPERM" ? "its file can't be written" : redact(error.message).slice(0, 200);
+            this.notice(`This session can't be saved: ${why}.`, "warn");
+        });
         // Opened from disk: last active when it last worked, not now. Opening it isn't work: it keeps its place in the sidebar.
         if (opts.resumed) this.lastActive = session.workedAt ?? session.writtenAt ?? this.lastActive;
         // Capture new-session defaults so changing Home settings cannot change an open chat’s speed.
@@ -755,6 +766,9 @@ export class Runtime {
         return at;
     }
 
+    /** When each tool call still under way was last written to the UI log (syncTurn). */
+    private liveStepAt = new Map<string, number>();
+
     private syncTurn(turnId: string, all = false) {
         const ids = this.stepsDirty.get(turnId);
         if (!ids) return;
@@ -772,6 +786,13 @@ export class Runtime {
             const i = turn.blocks.findIndex((b) => b.id === id);
             const b = turn.blocks[i];
             if (b && !all && (b.id === this.openText || b.id === this.openThinking || (b.t === "tool" && b.status === "streaming"))) continue;
+            // Under way: each flush's progress would be serialized again (and compared); once logged, again only a while
+            // later. It stays to write: its end goes at once.
+            const live = b?.t === "tool" && (b.status === "queued" || b.status === "running" || b.status === "awaiting");
+            const wrote = this.liveStepAt.get(id);
+            if (live && !all && wrote !== undefined && Date.now() - wrote < LIVE_STEP_MS) continue;
+            if (live) this.liveStepAt.set(id, Date.now());
+            else this.liveStepAt.delete(id);
             ids.delete(id);
             if (!b) {
                 if (logged.delete(id)) this.ui.write({ t: "step", ...at, drop: id });
@@ -871,13 +892,42 @@ export class Runtime {
     // -----------------------------------------------------------------------
     // Sending ops
 
-    snapshot(): SessionSnapshot {
+    /** `last`: only that many turns, the latest (a long session opens with what's on screen; session.turns has the rest). */
+    snapshot(last?: number): SessionSnapshot {
         this.flush();
-        return { state: structuredClone(this.view.state), turns: structuredClone(this.view.turns), agents: structuredClone(this.view.agents), seq: this.batch };
+        const all = this.view.turns;
+        const from = last !== undefined && last >= 0 && all.length > last ? all.length - last : 0;
+        return { state: structuredClone(this.view.state), turns: structuredClone(from ? all.slice(from) : all), agents: structuredClone(this.view.agents), seq: this.batch, ...(from ? { earlier: from } : {}) };
+    }
+
+    /**
+     * Turns before `before` (session.turns), as they are now: what's been sent of them so far is in them (flushed first),
+     * and what changes after goes as ops, in order after this. Undefined when the window's turns aren't this view's.
+     */
+    turnsBefore(before: string, o: { count?: number; through?: { seg: number; index: number }; all?: boolean }): SessionTurnsPage | undefined {
+        this.flush();
+        const all = this.view.turns;
+        const at = all.findIndex((t) => t.id === before);
+        if (at < 0) return undefined;
+        let from = Math.max(0, at - Math.max(1, Math.min(o.count ?? 40, 1000)));
+        if (o.all) from = 0;
+        else if (o.through) {
+            // Back to the turn holding that message: the last one placed at or before it, as the window finds it (turnAt).
+            const { seg, index } = o.through;
+            let holder = -1;
+            for (let i = 0; i < at; i++) {
+                const p = all[i]!.pos;
+                if (p && (p.seg < seg || (p.seg === seg && p.index <= index))) holder = i;
+            }
+            if (holder >= 0) from = Math.min(from, holder);
+        }
+        return { turns: structuredClone(all.slice(from, at)), earlier: from, seq: this.batch };
     }
 
     private op(o: SessionOp) {
-        applyOp(this.view, structuredClone(o));
+        // The view mustn't share objects with what's still to be sent (it changes them); text appended to a block is
+        // only read (most ops while a reply streams), so it isn't copied.
+        applyOp(this.view, o.op === "append" || o.op === "agent.append" ? o : structuredClone(o));
         this.noteStep(o);
         this.outbox.push(o);
         const waits = (o.op === "append" || o.op === "agent.append") && !this.engine.sessionShown(this.id);
@@ -1530,6 +1580,7 @@ export class Runtime {
                     this.ws.reload();
                 },
                 ui: {
+                    onScreen: () => this.engine.sessionShown(this.id),
                     askQuestion: (q, options, multi) => this.askQuestion(q, options, multi),
                     approvePlan: (plan) => this.approvePlan(plan),
                     requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),
@@ -3068,7 +3119,9 @@ export class Runtime {
 
         let reason: TurnEndReason | undefined;
         try {
-            if (!this.session.meta.system) await this.freezeSystemPrompt(ac.signal);
+            // An agent CLI (Claude Code, Codex) has its own, with its own git status: Cavvy's is built (git read for it,
+            // MCP servers waited for) once a turn goes to a model Cavvy prompts itself.
+            if (!this.session.meta.system && !isAgentBackend(this.client)) await this.freezeSystemPrompt(ac.signal);
             if (ac.signal.aborted) {
                 // Nothing was sent: a message goes back to the input box; events go back in their queue.
                 if (opts.wakes) this.toolState.wakes?.requeue(opts.wakes);
@@ -3101,6 +3154,11 @@ export class Runtime {
             // Nothing the run steered in comes back once it's over (AgentHost.unsteered).
             this.steeredTurns.clear();
             this.setState({ busy: false, filesChanged: this.filesChanged(), activity: undefined, persisted: existsSync(this.session.path), todos: this.toolState.todos.map((t) => ({ ...t })) });
+            // The turn's closing snapshot comes a moment later: what it found changed counts then.
+            void TurnSnapshots.for(this.session, this.ws.cwd)?.settled().then(() => {
+                const filesChanged = this.filesChanged();
+                if (filesChanged !== this.view?.state.filesChanged) this.setState({ filesChanged });
+            });
             this.setStatus(reason === "error" ? "error" : this.pending.size ? "waiting" : "idle");
             // A CLI's goal shows as waiting for the user once its turn is over.
             if (this.nativeGoal) this.goalChanged();
@@ -3425,17 +3483,32 @@ export class Runtime {
         // Redacted before it's cut or capitalized: then a key in it no longer looks like one.
         this.titleFrom ??= redact(prompt);
         let title: string | undefined;
-        // Claude Code and Codex answer it as a one-off (backends/one-off.ts), on their light model.
+        const RULES = "2 to 6 words, sentence case, no quotes, no trailing punctuation. Describe the task, not the user.";
+        // Claude Code and Codex answer it as a one-off (backends/one-off.ts), on their light model: a CLI process of its
+        // own each time. Sessions asking while one runs are asked about together after it (title-queue.ts).
         try {
-            const raw = await this.complete(
-                "You name coding-assistant sessions for a sidebar. Reply with only the title: 2 to 6 words, sentence case, no quotes, no trailing punctuation. Describe the task, not the user.",
-                // Cut after redacting, so a registered value crossing the cut can't leave a prefix.
-                redactPrefix(prompt, 3000),
-                // A CLI starts a process of its own for it: a few seconds more than an API call.
-                AbortSignal.any([AbortSignal.timeout(45_000), (this.titleAbort = new AbortController()).signal]),
-            );
+            const target = await this.smallTarget();
+            const key = `${target.model.provider}\0${target.model.id}\0${this.session.accountId(target.model.provider) ?? ""}`;
+            const mine = (this.titleAbort = new AbortController()).signal;
+            const raw = await this.engine.titles.title(key, prompt, async (prompts) => {
+                // A CLI starts a process of its own for it: a few seconds more than an API call. Asked for others too, it
+                // isn't stopped with this session.
+                const signal = prompts.length > 1 ? AbortSignal.timeout(60_000) : AbortSignal.any([AbortSignal.timeout(45_000), mine]);
+                if (prompts.length === 1) {
+                    // Cut after redacting, so a registered value crossing the cut can't leave a prefix.
+                    return [await this.complete(`You name coding-assistant sessions for a sidebar. Reply with only the title: ${RULES}`, redactPrefix(prompts[0]!, 3000), signal, { target })];
+                }
+                const reply = await this.complete(
+                    `You name coding-assistant sessions for a sidebar. Each session's first request is below, numbered. Reply with one line per session, in order, each its number, a period and its title: ${RULES}`,
+                    numberedTitles(prompts.map((p) => redactPrefix(p, 1000))),
+                    signal,
+                    { target, maxTokens: 64 * prompts.length + 256 },
+                );
+                return titlesByNumber(reply, prompts.length);
+            });
+            mine.throwIfAborted();
             title = raw
-                .replace(/<[^>]*>/g, "")
+                ?.replace(/<[^>]*>/g, "")
                 .split("\n")
                 .map((l) => l.trim())
                 .find(Boolean)

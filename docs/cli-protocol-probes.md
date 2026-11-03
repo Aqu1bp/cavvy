@@ -162,6 +162,15 @@ Fixture: `claude-steer-immediate.jsonl` (probe `claude-steer-immediate.ts`, haik
 
 Design meaning (src/backends/claude-live.ts `steerOnce`): a message to steer with is written as it's sent. While a call of the turn's runs, plain: it goes in with that call's result, in the same turn (a). Otherwise `priority:"now"`, so the model reads it at once instead of after its reply (b, f), the reply cut where it was and kept; Cavvy takes the turn that follows as the same Cavvy turn. Not "now" while a call runs (c ends the turn after the call). A plain interrupt keeps messages Claude Code hasn't taken and runs them after the stop (d), so Esc withdraws them first (`cancel_async_message`), and Cavvy takes them out of its history and hands them back to the composer.
 
+Re-probed on 2.1.316 (haiku, `--permission-mode auto`, a scratch folder of its own; one run each, not recorded as fixtures):
+
+| Case | Written | When | What Claude Code did |
+|---|---|---|---|
+| g | `priority:"now"` | at the turn's `system/init`, before the model said anything | the turn's result 100 ms later: `error_during_execution`, `is_error:true`, `terminal_reason:"aborted_streaming"`, `errors:["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"]`, naming the prompt; the message then ran as a turn of its own. Once text streams, the same cut is still `success` (b) |
+| h | a plain prompt (not a steer) | the turn running a foreground `sleep 15` | taken into that turn with the command's result; the result named both prompts. A turn Claude Code starts itself (a background task's report) does the same: its result names the prompts it took (seen with 30 live sessions) |
+
+So `aborted_streaming` is the sign of a cut whatever the subtype: Cavvy reads it as the turn going on with the message, not as an error (g). A prompt of Cavvy's that another turn's result names was answered there: its own turn ends then, rather than waiting for a turn of its own that never comes (h).
+
 ## Codex
 
 ### Q5: two turns, one connection, thread stays loaded: YES

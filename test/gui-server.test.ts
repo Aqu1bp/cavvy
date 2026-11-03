@@ -440,6 +440,8 @@ describe("connecting", () => {
                 return { role: "assistant", provider: "mock", model: "mock-opus", stopReason: "end_turn", content: [{ type: "text", text: "Done" }] };
             } } as any);
             await rt.startTurn("make the first change");
+            // The turn's closing snapshot goes on after it: the badge counts what it found once it's in.
+            await (await import("../src/agent/turn-snapshots")).TurnSnapshots.for(rt.session, cwd)!.settled();
             const live = rt.snapshot();
             const promptTurns = live.turns.filter((t) => t.prompt);
             expect(promptTurns.map((t) => t.prompt!.text)).toEqual(["make the first change", "and make the second change"]);
@@ -3338,7 +3340,12 @@ describe("reopening a Claude Code session", () => {
                 const turns = c2.view(id).turns.filter((t) => t.prompt);
                 expect(turns[0]).toMatchObject({ status: "aborted", snapshotId: checkpoint });
                 expect(turns[1]!.snapshotId).toBeGreaterThan(checkpoint);
-                const continued = await snapshotRecords(id);
+                // The turn's closing snapshot is written a moment after it ends.
+                let continued = await snapshotRecords(id);
+                for (let i = 0; i < 100 && !continued.at(-1)?.end; i++) {
+                    await Bun.sleep(50);
+                    continued = await snapshotRecords(id);
+                }
                 expect(continued.filter((r) => r.id === checkpoint)).toEqual(records);
                 expect(continued.at(-1)).toMatchObject({ id: turns[1]!.snapshotId });
                 expect(continued.at(-1)!.end?.tree).toBeString();

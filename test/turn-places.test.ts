@@ -94,6 +94,20 @@ test("a file edited again in a worktree that was already dirty still counts as w
     expect(info.places?.map((p) => [p.branch, p.files, p.added])).toEqual([["agent/dirty", 1, 2]]);
 });
 
+for (const packed of [false, true])
+    test(`a reached worktree whose branch only moved (no file changed) is worked in, its start not read beforehand (branch ${packed ? "packed" : "loose"} before)`, async () => {
+        const { cwd, wt, snapshots } = setup(["moved", "still"]);
+        if (packed) git(cwd, ["pack-refs", "--all"]);
+        await snapshots.begin(1, "commit nothing new");
+        // Its start marks the worktrees as there, without reading their HEADs, branches or indexes.
+        expect(Object.values(snapshots.list()[0]!.start.places ?? {})).toEqual(["+", "+"]);
+        await Bun.sleep(20);
+        snapshots.reach([wt("moved"), wt("still")]);
+        git(wt("moved"), ["commit", "-q", "--allow-empty", "-m", "Empty"]);
+        await snapshots.end();
+        expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places?.map((p) => p.branch)).toEqual(["agent/moved"]);
+    });
+
 test("a worktree that changed while the turn ran, but that it never reached, isn't its place: another session works there", async () => {
     const { wt, snapshots } = setup(["ours", "theirs"]);
     await snapshots.begin(1, "trim the copy");
@@ -238,10 +252,10 @@ test("a file swapped in by rename, the same size and time, still counts (its ino
     expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places?.map((p) => p.branch)).toEqual(["agent/swap"]);
 });
 
-test("out of time, a worktree's fingerprint is unknown, and a listing git can't give is unknown, not empty", async () => {
+test("out of time, a worktree's token is unknown, and a listing git can't give is unknown, not empty", async () => {
     const { wt } = setup(["late"]);
-    const { fingerprint, listWorktrees, UNKNOWN } = await import("../src/agent/turn-places");
-    expect(await fingerprint({ path: wt("late"), main: false }, Date.now() - 1)).toBe(UNKNOWN);
+    const { token, listWorktrees, UNKNOWN } = await import("../src/agent/turn-places");
+    expect(await token({ path: wt("late"), main: false, real: wt("late"), gitDir: join(wt("late"), ".git") }, Date.now() - 1)).toBe(UNKNOWN);
     const notRepo = join(realpathSync(iso.home), `not-a-repo-${next++}`);
     mkdirSync(notRepo, { recursive: true });
     expect(await listWorktrees(notRepo, Date.now() + 2000)).toBeUndefined();
@@ -286,7 +300,7 @@ test("reading a worktree runs none of the repository's programs: a clean filter 
     expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places?.map((p) => p.branch)).toEqual(["agent/filtered"]);
 });
 
-test("a worktree's folder swapped for a link to another repository isn't read", async () => {
+for (const reach of [false, true]) test(`a worktree's folder swapped for a link to another repository isn't read (${reach ? "reached" : "not reached"})`, async () => {
     const { base, cwd, wt, snapshots } = setup(["swapped"]);
     const other = join(base, "other-repo");
     mkdirSync(other, { recursive: true });
@@ -299,6 +313,7 @@ test("a worktree's folder swapped for a link to another repository isn't read", 
     rmSync(wt("swapped"), { recursive: true, force: true });
     symlinkSync(other, wt("swapped"));
     write(other, "more.txt", "changed\n");
+    if (reach) snapshots.reach([join(wt("swapped"), "more.txt")]);
     await snapshots.end();
     const info = await snapshots.changes({ scope: "turn", turnId: 1 });
     expect(JSON.stringify(info.places ?? [])).not.toContain("private.txt");
@@ -330,4 +345,44 @@ test("a turn's places are kept: reopened, the session shows them as they were", 
     const reopened = new TurnSnapshots(dir, cwd);
     const info = await reopened.changes({ scope: "turn", turnId: 1 });
     expect(info.places?.map((p) => [p.branch, p.files, p.commits])).toEqual([["agent/home", 2, 1]]);
+});
+
+test("a tracked file deleted in a reached worktree during the turn counts as work in it", async () => {
+    const { wt, snapshots } = setup(["trim"]);
+    await snapshots.begin(1, "delete a file");
+    snapshots.reach([join(wt("trim"), "a.txt")]);
+    rmSync(join(wt("trim"), "a.txt"));
+    await snapshots.end();
+    expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places?.map((p) => [p.branch, p.files])).toEqual([["agent/trim", 1]]);
+});
+
+test("a reached worktree that changed only before the turn began isn't worked in by it", async () => {
+    const { wt, snapshots } = setup(["earlier"]);
+    write(wt("earlier"), "a.txt", "one\ntwo\nbefore\n");
+    write(wt("earlier"), "new.txt", "made before\n");
+    await Bun.sleep(20);
+    await snapshots.begin(1, "only look");
+    snapshots.reach([wt("earlier")]);
+    await snapshots.end();
+    expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places).toBeUndefined();
+});
+
+test("a worktree's HEAD read from its files is what git says: on a branch, detached, packed, and with no commits yet", async () => {
+    const { headOf } = await import("../src/agent/turn-places");
+    const { cwd, wt } = setup(["side"]);
+    const said = (dir: string) => {
+        let oid = "", ref = "";
+        try { oid = git(dir, ["rev-parse", "--verify", "-q", "HEAD"]).trim(); } catch {}
+        try { ref = git(dir, ["symbolic-ref", "-q", "HEAD"]).trim(); } catch {}
+        return { oid, ref };
+    };
+    const gitDir = (dir: string) => git(dir, ["rev-parse", "--absolute-git-dir"]).trim();
+    expect(await headOf(gitDir(cwd))).toEqual(said(cwd));
+    expect(await headOf(gitDir(wt("side")))).toEqual(said(wt("side")));
+    git(cwd, ["pack-refs", "--all"]);
+    expect(await headOf(gitDir(wt("side")))).toEqual(said(wt("side")));
+    git(wt("side"), ["checkout", "-q", "--detach"]);
+    expect(await headOf(gitDir(wt("side")))).toEqual(said(wt("side")));
+    git(cwd, ["checkout", "-q", "--orphan", "empty"]);
+    expect(await headOf(gitDir(cwd))).toEqual(said(cwd));
 });

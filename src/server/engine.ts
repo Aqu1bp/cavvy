@@ -21,7 +21,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "pat
 import { homedir, hostname, userInfo } from "os";
 import { APP_VERSION, cavvyHome, paths } from "../config/paths";
 import { LEGACY } from "../config/legacy";
-import { JsonFileError, loadScope, loadSettings, readJson, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
+import { JsonFileError, loadScope, loadSettings, readJson, readJsonCached, updateSettings, writeJson, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { isTrusted, projectConfigSummary, trustedByUser, trustFolder, trustForSession } from "../config/trust";
 import { fireHooks } from "../agent/hooks";
 import { findSessionAnywhere, heldSessionFolders, listAllSessions, Session, SessionInUseError, sessionFolder, sessionHolder } from "../agent/session";
@@ -59,7 +59,7 @@ import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validC
 import { cavvyLinks, importModel, linkKey, writeImportedSession, type CavvyLinks } from "./cli-import";
 import { CODEX_CLIENT_NAME } from "../backends/codex";
 import { checkId, claimForDelete, listTrash, locateSession, purgeTrash, restoreSession, trashSession, type SessionFlags } from "./session-delete";
-import { searchSessions } from "./search";
+import { searchSessions, warmSearch } from "./search";
 import { usageDays, usageSummary } from "./usage";
 import type {
     ArchiveOffer,
@@ -112,6 +112,7 @@ import { modelRef, type AttachedPart, type ImagePart } from "../providers/types"
 import { checkFiles, checkMedia, toWire } from "./attachments";
 import { BrowserError } from "../browser/page";
 import { SimulatorError } from "../simulator/simctl";
+import { TitleQueue } from "./title-queue";
 
 export interface EngineOptions {
     /** --dangerously-skip-permissions: bypass mode may be chosen. */
@@ -200,13 +201,14 @@ const storeFile = () => join(cavvyHome(), "gui.json");
 /** The store's lists of session ids. */
 const STORE_FLAGS = ["pinned", "archived", "settled"] as const;
 
+/** As it is on disk, read again only once it's changed: it's read for every session's summary. Frozen: updateStore changes it. */
 function readStore(): GuiStore {
-    return readJson<GuiStore>(storeFile()) ?? {};
+    return readJsonCached<GuiStore>(storeFile()) ?? {};
 }
 
 /** Best effort: false when it couldn't be saved. */
 function updateStore(fn: (s: GuiStore) => void): boolean {
-    const s = readStore();
+    const s = readJson<GuiStore>(storeFile()) ?? {};
     fn(s);
     try {
         writeJson(storeFile(), s, 0o600);
@@ -341,6 +343,8 @@ export class Engine {
     private openingTerminals = new Map<string, { window: string | EngineClient; cancelled: boolean }>();
     /** Setup runs that a window may start, once, in the worktree it just created (see setup.ts). */
     readonly setups = new SetupTickets();
+    /** Session titles, asked of one model together when several come at once (title-queue.ts). */
+    readonly titles = new TitleQueue();
     readonly clients = new Set<EngineClient>();
     readonly workspaces = new Map<string, Workspace>();
     readonly runtimes = new Map<string, Runtime>();
@@ -767,6 +771,7 @@ export class Engine {
     private recentProjects(): ProjectInfo[] {
         const seen = new Map<string, number>();
         for (const r of readStore().recent ?? []) seen.set(r.path, Math.max(seen.get(r.path) ?? 0, r.at));
+        for (const [path, at] of this.usedAt) seen.set(path, Math.max(seen.get(path) ?? 0, at));
         // Projects you've used from the terminal show up too.
         for (const s of listAllSessions(60)) if (!seen.has(s.cwd)) seen.set(s.cwd, s.updatedAt);
         return [...seen]
@@ -776,7 +781,18 @@ export class Engine {
             .filter((p) => p.exists);
     }
 
+    /** When each project was last used here: the recent list's order, between the store's writes. */
+    private usedAt = new Map<string, number>();
+
     private remember(path: string) {
+        const now = Date.now();
+        this.usedAt.delete(path);
+        this.usedAt.set(path, now);
+        if (this.usedAt.size > 64) this.usedAt.delete(this.usedAt.keys().next().value!);
+        // Written a while ago: nothing to write (it's asked on every message sent, and many sessions in different
+        // folders take turns). Saved, the order can be ten minutes behind; while this runs, it isn't.
+        const had = readStore().recent?.find((r) => r.path === path);
+        if (had && now - had.at < 10 * 60_000 && had.at <= now) return;
         updateStore((s) => {
             s.recent = [{ path, at: Date.now() }, ...(s.recent ?? []).filter((r) => r.path !== path)].slice(0, 30);
         });
@@ -828,6 +844,9 @@ export class Engine {
     }
 
     /** What was said in every session (archived ones marked), read from their files; see search.ts. */
+    /** Search's files being read ahead (sessions.searchWarm). */
+    private searchWarming?: Promise<unknown>;
+
     async searchSessions(client: EngineClient, query: string, limit = 50, archived?: boolean): Promise<SessionSearchResult> {
         if (query.length > 200) throw new RpcError("The search is longer than 200 characters.");
         const seq = (this.searches.get(client) ?? 0) + 1;
@@ -2132,6 +2151,10 @@ export class Engine {
                 return this.listSessions(num(p.limit, 200), Boolean(p.archived));
             case "sessions.trash":
                 return listTrash().map((s) => ({ ...s, title: redact(s.title), ...(s.cwd ? { projectName: basename(s.cwd) || s.cwd } : {}) }));
+            case "sessions.searchWarm":
+                // Not waited for: the first search finds what's been read by then, and reads the rest itself.
+                this.searchWarming ??= warmSearch().catch(() => 0).finally(() => (this.searchWarming = undefined));
+                return null;
             case "sessions.search":
                 // Awaited: it can reject before its first await (see providers.setKey below).
                 return await this.searchSessions(client, str(p.query, "query"), num(p.limit, 50), typeof p.archived === "boolean" ? p.archived : undefined);
@@ -2153,7 +2176,16 @@ export class Engine {
                 }
                 // Search can open a session beyond the sidebar list window.
                 client.send({ type: "sessions.upsert", session: this.summaryOf(rt) });
-                return rt.snapshot();
+                return rt.snapshot(typeof p.last === "number" && Number.isInteger(p.last) && p.last >= 0 ? p.last : undefined);
+            }
+            case "session.turns": {
+                const rt = this.runtimes.get(str(p.id, "id"));
+                // Only a session this window has open: its ops come to it, so what it's sent stays right.
+                if (!rt || !client.subs.has(rt.id)) throw new RpcError("The session isn't open.", "not_open");
+                const through = p.through && typeof p.through === "object" && Number.isInteger(p.through.seg) && Number.isInteger(p.through.index) ? { seg: p.through.seg as number, index: p.through.index as number } : undefined;
+                const page = rt.turnsBefore(str(p.before, "before"), { count: typeof p.count === "number" ? p.count : undefined, through, all: p.all === true });
+                if (!page) throw new RpcError("Those turns were replaced.", "gone");
+                return page;
             }
             case "cliSessions.list":
                 return this.cliSessionsList(str(p.cwd, "cwd"));

@@ -88,6 +88,32 @@ describe("Session persistence", () => {
         expect(shapes).toContain("start | still working | next one");
     });
 
+    test("what a full disk kept from being saved is saved with the next write that works: in order, none twice, and it says so", () => {
+        const s = Session.create(project());
+        const told: (string | undefined)[] = [];
+        s.onSaving = (e) => told.push(e?.message);
+        s.push(user("before"));
+        // Full: each append writes a few bytes, then fails.
+        const spy = spyOn(fs, "appendFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, data: string | Uint8Array, opts?: fs.WriteFileOptions) => {
+            realAppend(file, String(data).slice(0, 7), opts);
+            throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+        }) as typeof fs.appendFileSync);
+        try {
+            s.push(assistant("while full 1"));
+            s.push(user("while full 2"));
+            s.push(assistant("while full 3"));
+        } finally {
+            spy.mockRestore();
+        }
+        expect(told).toEqual(["ENOSPC: no space left on device"]);
+        // Room again: the next write takes what waited, then itself.
+        s.push(user("after"));
+        expect(told).toEqual(["ENOSPC: no space left on device", undefined]);
+        s.release();
+        const said = Session.load(s.path, { persist: false }).messages.map((m) => (m.content[0] as { text: string }).text);
+        expect(said).toEqual(["before", "while full 1", "while full 2", "while full 3", "after"]);
+    });
+
     test("background tasks are kept as bgtask lines: the last for an id wins, bad ones are skipped, and a fork doesn't take them", () => {
         const s = Session.create(project());
         s.push(user("hi"));

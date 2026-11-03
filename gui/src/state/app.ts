@@ -326,6 +326,10 @@ export interface SessionHandle {
 }
 
 const handles = new Map<string, SessionHandle>();
+/** A session opens with its last this many turns; the rest come as they're asked for (loadEarlier). */
+export const OPEN_TURNS = 100;
+/** Each handle's fetch of earlier turns under way: one at a time, so a page is never put in twice. */
+const loadingEarlier = new Map<string, Promise<boolean>>();
 const [handleVersion, setHandleVersion] = createSignal(0);
 const KEEP_OPEN = 8;
 
@@ -347,13 +351,13 @@ function adopt(snap: SessionSnapshot): SessionHandle {
         existing.seq = snap.seq;
         existing.queue = [];
         batch(() => {
-            existing.set(reconcile({ state, turns: snap.turns, agents: snap.agents ?? [] }, { key: "id", merge: false }));
+            existing.set(reconcile({ state, turns: snap.turns, agents: snap.agents ?? [], earlier: snap.earlier ?? 0 }, { key: "id", merge: false }));
             existing.setReady(true);
         });
         return existing;
     }
     const h = createRoot(() => {
-        const [view, set] = createStore<SessionView>({ state, turns: snap.turns, agents: snap.agents ?? [] });
+        const [view, set] = createStore<SessionView>({ state, turns: snap.turns, agents: snap.agents ?? [], earlier: snap.earlier ?? 0 });
         const [draft, setDraft] = createSignal<Draft | undefined>();
         const [ready, setReady] = createSignal(true);
         // While no input box has taken it (the session isn't shown), another draft adds to it rather than replacing it.
@@ -410,8 +414,36 @@ export async function openSession(id: string): Promise<SessionHandle> {
         h.lastUsed = Date.now();
         return h;
     }
-    const snap = await rpc.call("session.open", { id });
+    const snap = await rpc.call("session.open", { id, last: OPEN_TURNS });
     return adopt(snap);
+}
+
+/**
+ * Turns before those the window has (it opened with its last OPEN_TURNS), put in before them: `count` more, back to
+ * the turn holding message `through`, or `all` of them. False when they couldn't be had (the session's turns were
+ * replaced meanwhile, as by a rewind: then it has them all already) or the server didn't answer.
+ */
+export function loadEarlier(h: SessionHandle, how: { count?: number; through?: { seg: number; index: number }; all?: boolean } = {}): Promise<boolean> {
+    const going = loadingEarlier.get(h.id);
+    // One at a time: the next asks from where that one left off.
+    const run = (going ?? Promise.resolve(true)).then(async () => {
+        if (!h.view.earlier) return true;
+        const first = h.view.turns[0]?.id;
+        if (!first) return false;
+        const page = await rpc.call("session.turns", { id: h.id, before: first, ...how });
+        // Ops sent before this answer are in it: those still queued go first, to the turns already here.
+        flush(h);
+        if (h.view.turns[0]?.id !== first) return false;
+        batch(() => h.set(produce((v) => {
+            v.turns.unshift(...page.turns);
+            v.earlier = page.earlier;
+        })));
+        return true;
+    });
+    const settled = run.catch(() => false);
+    loadingEarlier.set(h.id, settled);
+    void settled.finally(() => { if (loadingEarlier.get(h.id) === settled) loadingEarlier.delete(h.id); });
+    return settled;
 }
 
 /** A Claude Code or Codex session of this folder, as a Cavvy session (a new one, or the one that already holds it). */
@@ -734,7 +766,7 @@ function onEvent(ev: ServerEvent) {
             return;
         case "session.reload":
             // A delete that failed closed it: a fresh snapshot into the same handle, so the view and draft stay.
-            if (handles.has(ev.sessionId)) void rpc.call("session.open", { id: ev.sessionId }).then(adopt, (e) => reopenFailed(ev.sessionId, e));
+            if (handles.has(ev.sessionId)) void rpc.call("session.open", { id: ev.sessionId, last: OPEN_TURNS }).then(adopt, (e) => reopenFailed(ev.sessionId, e));
             return;
         case "draft":
             handles.get(ev.sessionId)?.addDraft({ text: ev.text, images: ev.images, files: ev.files, after: ev.after });
@@ -850,7 +882,7 @@ export function start() {
                 // A server from before app.update.get has nothing to say: no update state, no button.
                 void refreshUpdate().then(recheckUpdate, () => undefined);
                 // After a reconnect, the open sessions start over from fresh snapshots.
-                for (const h of [...handles.values()]) if (!h.ready()) await rpc.call("session.open", { id: h.id }).then(adopt, (e) => reopenFailed(h.id, e));
+                for (const h of [...handles.values()]) if (!h.ready()) await rpc.call("session.open", { id: h.id, last: OPEN_TURNS }).then(adopt, (e) => reopenFailed(h.id, e));
                 await restoreActiveSession();
                 // Path lookups that failed while it was down are asked again.
                 paths.retryFailed();

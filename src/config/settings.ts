@@ -283,6 +283,36 @@ export function readJson<T>(file: string): T | undefined {
     }
 }
 
+const cachedJson = new Map<string, { stamp: string; value: unknown }>();
+
+const frozen = <T>(v: T): T => {
+    if (v && typeof v === "object" && !Object.isFrozen(v)) {
+        Object.freeze(v);
+        for (const x of Object.values(v)) frozen(x);
+    }
+    return v;
+};
+
+/**
+ * readJson, kept while the file's stat stays the same: for a file read on every request or session update
+ * (providers.json, the GUI's store), a stat instead of a read and a parse. What it returns is frozen: to change it,
+ * read the file afresh (readJson, readJsonForUpdate).
+ */
+export function readJsonCached<T>(file: string): T | undefined {
+    let st;
+    try {
+        st = statSync(file, { throwIfNoEntry: false });
+    } catch {
+        st = undefined;
+    }
+    const stamp = st ? `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}` : "-";
+    const had = cachedJson.get(file);
+    if (had?.stamp === stamp) return had.value as T | undefined;
+    const value = frozen(readJson<T>(file));
+    cachedJson.set(file, { stamp, value });
+    return value;
+}
+
 /**
  * One read of a settings file: what it holds (nothing when it's missing, empty or broken); whether it exists but
  * can't be relied on (unreadable, not JSON, not an object, or with a rejection list that isn't a list); and whether

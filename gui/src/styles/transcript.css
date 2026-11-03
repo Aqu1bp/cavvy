@@ -41,6 +41,9 @@
     overflow-anchor: none;
     overscroll-behavior: contain;
     scrollbar-width: thin;
+    /* The scrollbar's room kept from the start (where it takes room): the column doesn't narrow and wrap again when
+       the conversation first overflows. */
+    scrollbar-gutter: stable;
 }
 
 /* The column glides (a translate, Transcript.tsx pin): clipped here, vertically only, so a glide never adds
@@ -59,9 +62,14 @@
     flex-direction: column;
 }
 
+/* --room: room a streaming reply writes into (Transcript.tsx's follow, lib/follow.ts). */
 .transcript-end {
     height: calc(var(--dock-h) + 28 * var(--sp));
     flex: none;
+}
+
+.transcript-room {
+    height: 0;
 }
 
 /* "Show 20 earlier turns": a quiet pill, like the mockup's ghost buttons. */

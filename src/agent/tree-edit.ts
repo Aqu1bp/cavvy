@@ -1,0 +1,202 @@
+// A tree with some paths changed, worked out from the tree it was: only the trees on the way to a changed path are read
+// and written again, the rest are the old tree's. A capture that looked at a few changed files (turn-snapshots.ts
+// captureNarrowed) makes its tree this way, without a copy of Git's index to write.
+
+import { gitEnvironment } from "../server/git-changes";
+import { gitArgv } from "../util/git";
+
+/** An entry to put at a path, or null to take it out. */
+export type TreeEdit = { mode: string; oid: string } | null;
+
+type Entry = { mode: string; oid: Buffer };
+
+const TREE = "40000";
+
+/** A tree's entries by name (as bytes, in a latin1 string: one char for each byte, so they sort as Git sorts them). */
+export function parseTree(body: Buffer, hashBytes: number): Map<string, Entry> {
+    const out = new Map<string, Entry>();
+    let pos = 0;
+    while (pos < body.length) {
+        const sp = body.indexOf(0x20, pos);
+        const nul = body.indexOf(0, sp);
+        if (sp < 0 || nul < 0 || nul + 1 + hashBytes > body.length) throw new Error("Unrecognized tree object.");
+        out.set(body.toString("latin1", sp + 1, nul), { mode: body.toString("latin1", pos, sp), oid: body.subarray(nul + 1, nul + 1 + hashBytes) });
+        pos = nul + 1 + hashBytes;
+    }
+    return out;
+}
+
+/** A tree object's bytes, its entries in Git's order: by name, a tree's as if it ended in "/". */
+export function formatTree(entries: Map<string, Entry>): Buffer {
+    const key = (name: string, e: Entry) => name + (e.mode === TREE ? "/" : "\0");
+    const sorted = [...entries].sort(([a, x], [b, y]) => (key(a, x) < key(b, y) ? -1 : 1));
+    return Buffer.concat(sorted.flatMap(([name, e]) => [Buffer.from(`${e.mode} ${name}\0`, "latin1"), e.oid]));
+}
+
+/**
+ * `base` with `edits` made (paths as Git has them, utf-8). `read` gives a tree's bytes; `write` stores new ones and
+ * says their id. Throws where the edits don't fit the tree (a file put where a folder stays): the caller works the
+ * tree out another way.
+ */
+export async function editTree(base: string, edits: Map<string, TreeEdit>, hashBytes: number, read: (oid: string) => Promise<Buffer>, write: (body: Buffer) => Promise<string>): Promise<string> {
+    /** Each folder's direct edits, and its folders on the way to one. */
+    const folders = new Map<string, { files: Map<string, TreeEdit>; dirs: Set<string> }>();
+    const folder = (dir: string) => {
+        let f = folders.get(dir);
+        if (!f) folders.set(dir, (f = { files: new Map(), dirs: new Set() }));
+        return f;
+    };
+    for (const [path, edit] of edits) {
+        const bytes = Buffer.from(path, "utf-8").toString("latin1");
+        const cut = bytes.lastIndexOf("/");
+        let dir = cut < 0 ? "" : bytes.slice(0, cut);
+        folder(dir).files.set(bytes.slice(cut + 1), edit);
+        while (dir) {
+            const up = dir.lastIndexOf("/");
+            const parent = up < 0 ? "" : dir.slice(0, up);
+            folder(parent).dirs.add(dir.slice(up + 1));
+            dir = parent;
+        }
+    }
+    /** The folder's tree again: its id, or undefined when nothing's left in it. */
+    const build = async (dir: string, oid: Buffer | undefined): Promise<Buffer | undefined> => {
+        const was = oid ? await read(oid.toString("hex")) : undefined;
+        const entries = was ? parseTree(was, hashBytes) : new Map<string, Entry>();
+        const f = folders.get(dir)!;
+        // Files out first (a folder can take a file's place), then the folders, then files in.
+        for (const [name, edit] of f.files) if (!edit && entries.get(name)?.mode !== TREE) entries.delete(name);
+        for (const name of f.dirs) {
+            const had = entries.get(name);
+            const made = await build(dir ? `${dir}/${name}` : name, had?.mode === TREE ? had.oid : undefined);
+            if (had && had.mode !== TREE) {
+                if (made) throw new Error("A file and a folder at one path.");
+                continue;
+            }
+            if (made) entries.set(name, { mode: TREE, oid: made });
+            else entries.delete(name);
+        }
+        for (const [name, edit] of f.files) {
+            if (!edit) continue;
+            if (entries.get(name)?.mode === TREE) throw new Error("A file and a folder at one path.");
+            entries.set(name, { mode: edit.mode.replace(/^0+/, ""), oid: Buffer.from(edit.oid, "hex") });
+        }
+        if (!entries.size && dir) return undefined;
+        const body = formatTree(entries);
+        // The same as it was (what was put in was already there): that tree, not written again.
+        if (was && oid && body.equals(was)) return oid;
+        return Buffer.from(await write(body), "hex");
+    };
+    return (await build("", Buffer.from(base, "hex")))!.toString("hex");
+}
+
+/** Objects read one after another from one `git cat-file --batch`, each asked for once the last is in. */
+export class ObjectReader {
+    private proc: ReturnType<typeof Bun.spawn>;
+    private reader: { read(): Promise<{ value?: Uint8Array; done: boolean }>; releaseLock(): void };
+    /** Whether `reader` holds its stdout (let go while idle). */
+    private held = true;
+    /** What's come in and not yet taken, in the pieces it came in (joined once, when taken). */
+    private chunks: Buffer[] = [];
+    private have = 0;
+    private timer: ReturnType<typeof setTimeout>;
+
+    constructor(cwd: string, env: Record<string, string>, deadline: number) {
+        this.proc = Bun.spawn(gitArgv(["cat-file", "--batch"]), { cwd, env: gitEnvironment({ privateEnv: env }), stdin: "pipe", stdout: "pipe", stderr: "ignore" });
+        this.reader = (this.proc.stdout as ReadableStream<Uint8Array>).getReader() as unknown as ObjectReader["reader"];
+        this.timer = setTimeout(() => this.close(), Math.max(0, deadline - Date.now()));
+    }
+
+    private async more() {
+        if (!this.held) this.busy();
+        const { value, done } = await this.reader.read();
+        if (done || !value) throw new Error("Snapshot objects are missing or unreadable.");
+        this.chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+        this.have += value.byteLength;
+    }
+
+    /** The next `n` bytes, waited for. */
+    private async take(n: number): Promise<Buffer> {
+        while (this.have < n) await this.more();
+        const all = this.chunks.length === 1 ? this.chunks[0]! : Buffer.concat(this.chunks, this.have);
+        const out = Buffer.from(all.subarray(0, n));
+        this.chunks = all.length > n ? [all.subarray(n)] : [];
+        this.have -= n;
+        return out;
+    }
+
+    /** The next line, without its newline. */
+    private async line(): Promise<string> {
+        for (let seen = 0, k = 0; ; ) {
+            for (; k < this.chunks.length; k++) {
+                const nl = this.chunks[k]!.indexOf(10);
+                if (nl >= 0) {
+                    const line = await this.take(seen + nl + 1);
+                    return line.toString("latin1", 0, line.length - 1);
+                }
+                seen += this.chunks[k]!.length;
+            }
+            await this.more();
+        }
+    }
+
+    /** One object's header and body; undefined when the repository doesn't have it. */
+    private async next(oid: string): Promise<{ type: string; buf: Buffer } | undefined> {
+        const [id, kind, size] = (await this.line()).split(" ");
+        if (id !== oid) throw new Error("Snapshot objects are missing or unreadable.");
+        if (kind === "missing" || size === undefined) return undefined;
+        const body = await this.take(Number(size) + 1);
+        return { type: kind!, buf: body.subarray(0, body.length - 1) };
+    }
+
+    async read(oid: string, type: string): Promise<Buffer> {
+        const stdin = this.proc.stdin as import("bun").FileSink;
+        stdin.write(`${oid}\n`);
+        await stdin.flush();
+        const o = await this.next(oid);
+        if (!o || o.type !== type) throw new Error("Snapshot objects are missing or unreadable.");
+        return o.buf;
+    }
+
+    /** Several at once, asked for together: those the repository has, by id. */
+    async readAll(oids: readonly string[]): Promise<Map<string, { type: string; buf: Buffer }>> {
+        const out = new Map<string, { type: string; buf: Buffer }>();
+        if (!oids.length) return out;
+        const stdin = this.proc.stdin as import("bun").FileSink;
+        stdin.write(oids.map((o) => `${o}\n`).join(""));
+        await stdin.flush();
+        for (const oid of oids) {
+            const o = await this.next(oid);
+            if (o) out.set(oid, o);
+        }
+        return out;
+    }
+
+    /** Waiting to be asked again (kept between captures): it doesn't keep the process running by itself. */
+    idle() {
+        this.timer.unref?.();
+        this.proc.unref();
+        // Its pipes would keep the process alive too: a script's query is done, and it exits. What's been read and not
+        // taken stays here (chunks); the stream is held again when it's next read.
+        (this.proc.stdin as import("bun").FileSink).unref?.();
+        if (this.held) {
+            this.reader.releaseLock();
+            this.held = false;
+        }
+    }
+
+    /** Asked again: kept to while it reads. */
+    busy() {
+        this.proc.ref();
+        (this.proc.stdin as import("bun").FileSink).ref?.();
+        if (!this.held) {
+            this.reader = (this.proc.stdout as ReadableStream<Uint8Array>).getReader() as unknown as ObjectReader["reader"];
+            this.held = true;
+        }
+    }
+
+    close() {
+        clearTimeout(this.timer);
+        try { (this.proc.stdin as import("bun").FileSink).end(); } catch {}
+        this.proc.kill();
+    }
+}

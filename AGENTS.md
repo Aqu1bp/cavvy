@@ -47,8 +47,12 @@ A change that makes a reply, a turn or startup cost more has to say so and why. 
 - `test/perf-budgets.json` holds what things may cost, counted rather than timed: `test/perf-work.test.ts` and `bun run perf:budgets` (after `gui:build`) check them. Over budget fails. More than 10% under fails too, so a saving lowers the budget in the same PR.
 - CI refuses a raised budget unless the PR has the `perf-budget-raise` label and says why.
 - `test/perf-rules.test.ts` reads the source: endless animations are stepped and compositor-only, no new always-on timers in the GUI, no new `spawnSync` under `src/server` or `src/agent`.
+- `test/perf-gui.test.ts` runs the built GUI in Chrome: how often the conversation glides while a reply streams, and that once it's done nothing is laid out, restyled or left animating.
+- These guards are the owner's. Never raise a budget, loosen a check, or skip, delete or retry a performance test to get CI green: make the change cheaper, or stop and say what it costs and why. `.github/CODEOWNERS` asks for the owner's review on any change to them.
 
 For a change to what runs while a session streams or waits, put a `Perf:` line in the PR with before and after from `bun run perf:bench --app <new>/Cavvy.app --compare <old>/Cavvy.app` on a quiet Mac. Use its instruction counts: CPU% moves with which cores macOS picks, and WindowServer's share includes every other app. `desktop-electron/bench-real.ts` does the same with real models.
+
+Before a release, run the same `perf:bench` for the new build against the last release, on a quiet Mac. A phase more than 10% worse, in instructions or WindowServer's share, holds the release until it's fixed or explained.
 
 ## It's public
 

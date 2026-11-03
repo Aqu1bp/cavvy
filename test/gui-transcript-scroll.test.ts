@@ -107,3 +107,15 @@ test("a session reopened where it was being read mounts the place read and about
     // The place read at the page's first turn: not the turn above it, which isn't in the page.
     expect(firstWindow(heights, 40, 20, 800).shown).toBe(40);
 });
+
+test("a long session opening at its end estimates only the turns that fill the first screens", async () => {
+    const { firstWindow, lazyHeights, turnHeight } = await import("../gui/src/lib/transcript-scroll");
+    const turns = Array.from({ length: 2000 }, (_, i) => ({ prompt: { text: `step ${i}` }, blocks: [{ t: "text", text: "a short answer" }] }));
+    const read = new Set<number>();
+    const watched = new Proxy(turns, { get: (t, k) => (typeof k === "string" && /^\d+$/.test(k) && read.add(Number(k)), Reflect.get(t, k)) });
+    const lazy = firstWindow(lazyHeights(watched), 40, undefined, 800);
+    // The same answer as from every height, from the last few.
+    expect(lazy).toEqual(firstWindow(turns.map(turnHeight), 40, undefined, 800));
+    expect(read.size).toBe(lazy.shown);
+    expect(Math.min(...read)).toBe(2000 - lazy.shown);
+});

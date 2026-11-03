@@ -3,7 +3,7 @@
 // "rewind" record cuts it back (/rewind).
 // Everything is passed through the redactor before it touches disk.
 
-import { appendFileSync, existsSync, openSync, readSync, closeSync, readdirSync, readFileSync, statSync, chmodSync, linkSync, unlinkSync, writeFileSync, writeSync } from "fs";
+import { appendFileSync, existsSync, openSync, readSync, closeSync, fstatSync, readdirSync, readFileSync, renameSync, statSync, chmodSync, linkSync, unlinkSync, writeFileSync, writeSync } from "fs";
 import { join, resolve } from "path";
 import { randomBytes } from "crypto";
 import { ensureDir, paths, projectStateDir, APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
@@ -407,6 +407,10 @@ export class Session {
     private pending: Line[] = [];
     /** An append failed, maybe half way: the next one starts on a line of its own (blank lines are skipped on load). */
     private torn = false;
+    /** Saving failed, and hasn't worked since. */
+    private failing = false;
+    /** Told when saving stops working (and why), and when it works again (undefined). */
+    onSaving?: (error: Error | undefined) => void;
 
     /** Whether it's on disk now. */
     private write(line: Line): boolean {
@@ -421,26 +425,39 @@ export class Session {
             this.workedAt = this.savedWorkedAt = this.writtenAt;
             this.pending.push({ t: "worked", at: this.writtenAt });
         }
+        const lines = [...this.pending.splice(0), line];
+        let saved = 0;
         try {
             if (!this.started) {
                 ensureDir(projectStateDir(this.meta.cwd));
                 this.claim();
-                this.started = true;
                 if (!existsSync(this.file)) {
                     appendFileSync(this.file, redactedJson({ t: "meta", ...this.meta }) + "\n", { mode: 0o600 });
                     chmodSync(this.file, 0o600);
                 }
+                this.started = true;
             }
-            const lines = [...this.pending.splice(0), line];
-            // Not joined to what a failed one left, or both would be unreadable (and this one said to be saved).
-            appendFileSync(this.file, (this.torn ? "\n" : "") + lines.map((l) => redactedJson(l) + "\n").join(""));
-            this.torn = false;
+            // A line at a time: where one fails (a full disk), it and the ones after are written with the next, in order,
+            // and none twice. Not joined to what a failed one left, or both would be unreadable.
+            for (; saved < lines.length; saved++) {
+                appendFileSync(this.file, (this.torn ? "\n" : "") + redactedJson(lines[saved]!) + "\n");
+                this.torn = false;
+            }
+            if (this.failing) {
+                this.failing = false;
+                this.onSaving?.(undefined);
+            }
             return true;
         } catch (error) {
             // Imports must stop on a failed write before recording completion.
             if (this.strictWrites) throw error;
-            // Persistence is best effort; the session keeps working in memory.
+            // The session keeps working in memory; what isn't saved goes with the next write.
             this.torn = true;
+            this.pending.unshift(...lines.slice(saved));
+            if (!this.failing) {
+                this.failing = true;
+                this.onSaving?.(error as Error);
+            }
             return false;
         }
     }
@@ -1335,55 +1352,129 @@ interface SessionHead {
  * rewinds and compactions count, but only those records, the meta line and
  * messages up to the first prompt are parsed; other messages are only counted.
  */
+/** What sessionHead found, by file: kept while the file is the same one, and taken on from where it left off when it's grown. */
+const heads = new Map<string, { ino: number; size: number; mtimeMs: number; scanned: number; tail: Buffer; head: SessionHead }>();
+const TAIL_BYTES = 64;
+/**
+ * The same, on disk (cache/session-heads.json): a list of a thousand sessions after a restart reads one file and stats
+ * each session's, rather than reading every one. Read once; written when it changed, after a list (saveSessionHeads).
+ */
+const headsFile = () => join(paths.home(), "cache", "session-heads.json");
+let headsLoaded = false;
+let headsDirty = false;
+
+function loadHeads() {
+    if (headsLoaded) return;
+    headsLoaded = true;
+    try {
+        const saved = JSON.parse(readFileSync(headsFile(), "utf-8")) as { version?: number; heads?: Record<string, { ino: number; size: number; mtimeMs: number; scanned: number; tail: string; head: SessionHead }> };
+        if (saved.version !== 1 || !saved.heads) return;
+        for (const [file, h] of Object.entries(saved.heads)) {
+            if (heads.size >= 4096) break;
+            if (typeof h?.size !== "number" || typeof h.scanned !== "number" || typeof h.head?.count !== "number") continue;
+            if (!heads.has(file)) heads.set(file, { ...h, tail: Buffer.from(String(h.tail), "base64") });
+        }
+    } catch {
+        // None yet, or unreadable: each session's file is read, as without it.
+    }
+}
+
+/** sessionHead's findings, written if they changed (a cache: not synced, and lost harmlessly). */
+export function saveSessionHeads() {
+    if (!headsDirty) return;
+    headsDirty = false;
+    try {
+        const out: Record<string, unknown> = {};
+        // A title comes from a first prompt's start: a long one is kept as that much (a reminder block first, which a
+        // title leaves out, taken out before it's cut).
+        const short = (t: string | undefined) => (t && t.length > 2000 ? t.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").slice(0, 2000) : t);
+        for (const [file, h] of heads) out[file] = { ...h, tail: h.tail.toString("base64"), head: { ...h.head, first: short(h.head.first) } };
+        const file = headsFile();
+        ensureDir(join(paths.home(), "cache"));
+        const tmp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}`;
+        writeFileSync(tmp, JSON.stringify({ version: 1, heads: out }), { mode: 0o600 });
+        renameSync(tmp, file);
+    } catch {
+        // Next time.
+    }
+}
+
 function sessionHead(file: string): SessionHead {
-    const head: SessionHead = { count: 0 };
+    loadHeads();
     const fd = openSync(file, "r");
     try {
-        const chunk = Buffer.alloc(CHUNK_BYTES);
-        let parts: Buffer[] = [];
-        let len = 0;
-        // The line's last two bytes: a whole message record ends with "}}".
-        let end = "";
-        // Whether the current line is parsed; undefined until its record type is visible.
-        let wanted: boolean | undefined;
-        const decide = () => {
-            const prefix = Buffer.concat(parts).subarray(0, PREFIX_BYTES).toString("latin1");
-            wanted = prefix.startsWith(MSG_PREFIX) ? !head.first : !/^\{"t":"(usage|backend|notice|import|subagent|plan|planLink)"/.test(prefix);
-            if (!wanted) parts = [Buffer.from(prefix, "latin1")];
-        };
-        for (let pos = 0, n: number; (n = readSync(fd, chunk, 0, chunk.length, pos)) > 0; pos += n) {
-            const c = chunk.subarray(0, n);
-            for (let start = 0; start < n; ) {
-                const nl = c.indexOf(10, start);
-                const piece = c.subarray(start, nl < 0 ? n : nl);
-                end = (end + piece.subarray(Math.max(0, piece.length - 2)).toString("latin1")).slice(-2);
-                if (wanted !== false) {
-                    parts.push(Buffer.from(piece)); // chunk is reused
-                    len += piece.length;
-                }
-                if (wanted === undefined && len >= PREFIX_BYTES) decide();
-                // Too big to parse: still counted if it's a message.
-                if (wanted && len > MAX_LINE_BYTES) {
-                    parts = [Buffer.concat(parts).subarray(0, PREFIX_BYTES)];
-                    wanted = false;
-                }
-                if (nl < 0) break;
-                if (wanted === undefined) decide();
-                if (wanted) readHeadLine(Buffer.concat(parts).toString("utf-8"), head);
-                // A torn line, which load() skipped (and ended), isn't counted.
-                else if (end === "}}" && Buffer.concat(parts).toString("latin1").startsWith(MSG_PREFIX)) head.count++;
-                parts = [];
-                len = 0;
-                end = "";
-                wanted = undefined;
-                start = nl + 1;
+        const st = fstatSync(fd);
+        const had = heads.get(file);
+        if (had && had.ino === st.ino && had.size === st.size && had.mtimeMs === st.mtimeMs) return { ...had.head };
+        // Sessions are appended to: one that's only grown since is read from the end of its last whole line. One
+        // replaced, cut or rewritten (the bytes before that point aren't the same) is read again from the start.
+        let from = 0;
+        let head: SessionHead = { count: 0 };
+        if (had && had.ino === st.ino && st.size >= had.scanned) {
+            const tail = Buffer.alloc(had.tail.length);
+            if (readSync(fd, tail, 0, tail.length, had.scanned - tail.length) === tail.length && tail.equals(had.tail)) {
+                from = had.scanned;
+                head = { ...had.head };
             }
         }
-        // A torn last line (no newline yet) is ignored, as load() does.
+        const scanned = scanHead(fd, from, head);
+        const tail = Buffer.alloc(Math.min(TAIL_BYTES, scanned));
+        readSync(fd, tail, 0, tail.length, scanned - tail.length);
+        if (heads.size >= 4096 && !heads.has(file)) heads.delete(heads.keys().next().value!);
+        heads.set(file, { ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, scanned, tail, head: { ...head } });
+        headsDirty = true;
+        return head;
     } finally {
         closeSync(fd);
     }
-    return head;
+}
+
+/** sessionHead's scan from `from` (the start of a line) into `head`: where its last whole line ends. */
+function scanHead(fd: number, from: number, head: SessionHead): number {
+    let scanned = from;
+    const chunk = Buffer.alloc(CHUNK_BYTES);
+    let parts: Buffer[] = [];
+    let len = 0;
+    // The line's last two bytes: a whole message record ends with "}}".
+    let end = "";
+    // Whether the current line is parsed; undefined until its record type is visible.
+    let wanted: boolean | undefined;
+    const decide = () => {
+        const prefix = Buffer.concat(parts).subarray(0, PREFIX_BYTES).toString("latin1");
+        wanted = prefix.startsWith(MSG_PREFIX) ? !head.first : !/^\{"t":"(usage|backend|notice|import|subagent|plan|planLink)"/.test(prefix);
+        if (!wanted) parts = [Buffer.from(prefix, "latin1")];
+    };
+    for (let pos = from, n: number; (n = readSync(fd, chunk, 0, chunk.length, pos)) > 0; pos += n) {
+        const c = chunk.subarray(0, n);
+        for (let start = 0; start < n; ) {
+            const nl = c.indexOf(10, start);
+            const piece = c.subarray(start, nl < 0 ? n : nl);
+            end = (end + piece.subarray(Math.max(0, piece.length - 2)).toString("latin1")).slice(-2);
+            if (wanted !== false) {
+                parts.push(Buffer.from(piece)); // chunk is reused
+                len += piece.length;
+            }
+            if (wanted === undefined && len >= PREFIX_BYTES) decide();
+            // Too big to parse: still counted if it's a message.
+            if (wanted && len > MAX_LINE_BYTES) {
+                parts = [Buffer.concat(parts).subarray(0, PREFIX_BYTES)];
+                wanted = false;
+            }
+            if (nl < 0) break;
+            if (wanted === undefined) decide();
+            if (wanted) readHeadLine(Buffer.concat(parts).toString("utf-8"), head);
+            // A torn line, which load() skipped (and ended), isn't counted.
+            else if (end === "}}" && Buffer.concat(parts).toString("latin1").startsWith(MSG_PREFIX)) head.count++;
+            parts = [];
+            len = 0;
+            end = "";
+            wanted = undefined;
+            start = nl + 1;
+            scanned = pos + start;
+        }
+    }
+    // A torn last line (no newline yet) is ignored, as load() does: read again once it's whole.
+    return scanned;
 }
 
 function readHeadLine(raw: string, head: SessionHead) {
@@ -1510,6 +1601,7 @@ export function listSessions(cwd: string, limit = 50): SessionSummary[] {
         };
     });
     out.sort((a, b) => b.updatedAt - a.updatedAt);
+    saveSessionHeads();
     return out.slice(0, limit);
 }
 
@@ -1594,7 +1686,7 @@ export function listAllSessions(limit = 200): SessionSummary[] {
             }
         }
     }
-    return newestByWork(files, limit, ({ f, file, mtimeMs, createdAt }) => {
+    const out = newestByWork(files, limit, ({ f, file, mtimeMs, createdAt }) => {
         const head = sessionHead(file);
         if (!head.count || !head.cwd) return;
         return {
@@ -1608,6 +1700,8 @@ export function listAllSessions(limit = 200): SessionSummary[] {
             model: head.model,
         };
     });
+    saveSessionHeads();
+    return out;
 }
 
 /** When it last worked: never after its file was last written (a clock set back since), so newestByWork can stop early. */

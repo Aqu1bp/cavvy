@@ -66,7 +66,7 @@ const received = () => (existsSync(LOG) ? readFileSync(LOG, "utf-8").trim().spli
  * `live`: Codex keeps one app-server for the session (#219), and the turns it starts by itself are wakes the host
  * adopts (`wakes`); off, an app-server per run waits through them in the run (agentCli.liveSessions false).
  */
-async function makeAgent(provider: "claude-code" | "codex", session = Session.create(cwd, { persist: false }), queue: string[] = [], o: { live?: boolean } = {}) {
+async function makeAgent(provider: "claude-code" | "codex", session = Session.create(cwd, { persist: false }), queue: string[] = [], o: { live?: boolean; onScreen?: () => boolean } = {}) {
     const settings = { agentCli: { liveSessions: o.live === true } };
     const wakes: import("../src/backends/types").BackendWake[] = [];
     const events: AgentEvent[] = [];
@@ -82,7 +82,7 @@ async function makeAgent(provider: "claude-code" | "codex", session = Session.cr
         tools: BUILTIN_TOOLS,
         mode: { get: () => mode, set: (m) => (mode = m) },
         toolState: { cwd, projectRoot: cwd, fileState: new Map(), todos: [], shells: new Map() },
-        host: { drainQueued: () => queue.splice(0), emit: (e) => events.push(e), ui: {}, wake: (w) => void wakes.push(w) },
+        host: { drainQueued: () => queue.splice(0), emit: (e) => events.push(e), ui: o.onScreen ? { onScreen: o.onScreen } : {}, wake: (w) => void wakes.push(w) },
     });
     const run = (text: string, signal = new AbortController().signal) => {
         fakeEnv.write();
@@ -184,6 +184,40 @@ describe("Claude Code", () => {
             delete process.env.CLAUDE_CODE_REMOTE;
         }
     });
+
+    test("a live session's goal is followed as it goes while it's on screen; off screen, less often", async () => {
+        const { liveTiming } = await import("../src/backends/claude-live");
+        const had = { ...liveTiming };
+        process.env.FAKE_GOAL_HOLD = "1";
+        let onScreen = false;
+        try {
+            Object.assign(liveTiming, { goalPollMs: 50, goalHiddenPollMs: 60_000 });
+            const a = await makeAgent("claude-code", undefined, [], { live: true, onScreen: () => onScreen });
+            const ac = new AbortController();
+            const running = a.run("/goal the tests pass", ac.signal);
+            // Held after its first check: off screen, that isn't read yet.
+            await Bun.sleep(1500);
+            expect(a.goals().some((g) => g?.turns === 1)).toBe(false);
+            // On screen: read at the next look (the one waiting is let go of at the turn's end, as before).
+            onScreen = true;
+            const run2 = makeAgent("claude-code", undefined, [], { live: true, onScreen: () => true });
+            ac.abort();
+            expect(await running).toBe("aborted");
+            // Read as the turn ended.
+            expect(a.goals().some((g) => g?.turns === 1)).toBe(true);
+            const b = await run2;
+            const bc = new AbortController();
+            const going = b.run("/goal the docs build", bc.signal);
+            const until = Date.now() + 5000;
+            while (!b.goals().some((g) => g?.turns === 1) && Date.now() < until) await Bun.sleep(10);
+            expect(b.goals().some((g) => g?.turns === 1)).toBe(true);
+            bc.abort();
+            expect(await going).toBe("aborted");
+        } finally {
+            Object.assign(liveTiming, had);
+            delete process.env.FAKE_GOAL_HOLD;
+        }
+    }, 30_000);
 
     test("a resumed session's goal still set is reported once at the start; one met before isn't", async () => {
         process.env.FAKE_GOAL_HOLD = "1";

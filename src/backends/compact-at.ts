@@ -1,17 +1,31 @@
 // Where a session compacts on its own, in tokens of context: what the composer's context card and ring
 // measure against. An agent CLI's own trigger, worked out the way the CLI does; Cavvy's for its own sessions.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { listAccounts } from "../providers/accounts";
 
+/** Each file as last read, by its stamp: it's asked for each session's state, which changes all through a turn. */
+const read = new Map<string, { stamp: string; value: Record<string, unknown> | undefined }>();
+
 function readJson(file: string): Record<string, unknown> | undefined {
+    let stamp = "-";
     try {
-        const v = JSON.parse(readFileSync(file, "utf8"));
-        return v && typeof v === "object" ? v : undefined;
+        const st = statSync(file, { throwIfNoEntry: false });
+        if (st) stamp = `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
+    } catch {}
+    const had = read.get(file);
+    if (had?.stamp === stamp) return had.value;
+    let value: Record<string, unknown> | undefined;
+    try {
+        const v = stamp === "-" ? undefined : JSON.parse(readFileSync(file, "utf8"));
+        value = v && typeof v === "object" ? v : undefined;
     } catch {
-        return undefined;
+        value = undefined;
     }
+    if (read.size > 64) read.delete(read.keys().next().value!);
+    read.set(file, { stamp, value });
+    return value;
 }
 
 const tokenCount = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : undefined);

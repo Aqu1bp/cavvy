@@ -12,7 +12,7 @@
 // writes the index, refs or objects.
 
 import { AsyncLocalStorage } from "async_hooks";
-import { constants, type Stats } from "fs";
+import { closeSync, constants, fstatSync, openSync, readSync, type Stats } from "fs";
 import type { BigIntStats } from "fs";
 import { lstat, open, readlink } from "fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "path";
@@ -284,6 +284,32 @@ export async function readRegular(abs: string, max: number): Promise<{ buf?: Buf
     }
 }
 
+/** readRegular, without waiting: for a small file, where each step's wait on a busy machine costs more than reading it. */
+export function readRegularSync(abs: string, max: number): { buf?: Buffer; size: number } | undefined {
+    let fd: number;
+    try { fd = openSync(abs, OPEN_FLAGS); } catch { return undefined; }
+    try {
+        const st = fstatSync(fd);
+        if (!st.isFile()) return undefined;
+        if (st.size > max) return { size: st.size };
+        const chunks: Buffer[] = [];
+        let total = 0;
+        for (;;) {
+            const chunk = Buffer.allocUnsafe(Math.min(Math.min(256 * 1024, total < st.size ? st.size + 1 - total : 4096), max + 1 - total));
+            const n = readSync(fd, chunk, 0, chunk.length, null);
+            if (!n) break;
+            chunks.push(chunk.subarray(0, n));
+            total += n;
+            if (total > max) return { size: total };
+        }
+        return { buf: chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks), size: total };
+    } catch {
+        return undefined;
+    } finally {
+        try { closeSync(fd); } catch {}
+    }
+}
+
 /** A big file's blob id, read in chunks, within the request's time. */
 async function streamId(abs: string, algo: Algo, inTime: () => void): Promise<ContentId | undefined> {
     const fh = await open(abs, OPEN_FLAGS).catch(() => undefined);
@@ -464,6 +490,15 @@ export class WorkTree {
         if (!(await this.inside(rel, strict))) return undefined;
         return lstat(join(this.root, rel)).catch((e: NodeJS.ErrnoException) => {
             // Snapshots must distinguish deletion from a path they cannot read.
+            if (strict && e.code !== "ENOENT" && e.code !== "ENOTDIR") throw e;
+            return undefined;
+        });
+    }
+
+    /** As `stat`, in full precision: nanosecond times, as Git's index records them. */
+    async statBig(rel: string, strict = false): Promise<BigIntStats | undefined> {
+        if (!(await this.inside(rel, strict))) return undefined;
+        return lstat(join(this.root, rel), { bigint: true }).catch((e: NodeJS.ErrnoException) => {
             if (strict && e.code !== "ENOENT" && e.code !== "ENOTDIR") throw e;
             return undefined;
         });

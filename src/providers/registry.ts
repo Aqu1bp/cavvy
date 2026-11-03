@@ -1,6 +1,6 @@
 // Built-in provider catalog. Adding an OpenAI-compatible provider is one entry.
 
-import { readJson, readJsonForUpdate, writeJson, type Effort } from "../config/settings";
+import { readJsonCached, readJsonForUpdate, writeJson, type Effort } from "../config/settings";
 import { isAbsolute } from "path";
 import { paths } from "../config/paths";
 
@@ -401,8 +401,9 @@ interface ProvidersFile {
     agents?: Record<string, AgentCliConfig>;
 }
 
+/** As it is on disk, read again only once it's changed (readJsonCached): frozen, so change a copy (readProvidersFileForUpdate). */
 export function readProvidersFile(): ProvidersFile {
-    return readJson<ProvidersFile>(paths.providers()) ?? {};
+    return readJsonCached<ProvidersFile>(paths.providers()) ?? {};
 }
 
 /** Read before writing back: throws on a broken file rather than losing its custom providers. */
@@ -494,8 +495,25 @@ export function vertexBaseUrl(cfg: VertexConfig): string {
     return `https://${vertexHost(cfg.location)}/v1/projects/${cfg.project}/locations/${cfg.location}/endpoints/openapi`;
 }
 
-export function customProviders(): ProviderDef[] {
-    return (readProvidersFile().custom ?? []).map((c) => ({
+/** The providers as of the providers file they came from (readProvidersFile keeps it while it's unchanged). */
+let listed: { file: ProvidersFile; custom: readonly ProviderDef[]; all: readonly ProviderDef[] } | undefined;
+
+function providersNow() {
+    const file = readProvidersFile();
+    if (listed?.file !== file) {
+        const custom = Object.freeze(customProvidersOf(file));
+        listed = { file, custom, all: Object.freeze([...BUILTIN_PROVIDERS, ...custom]) };
+    }
+    return listed;
+}
+
+/** Worked out again only once the providers file has changed: every process Cavvy starts asks (secretEnvVarNames). */
+export function customProviders(): readonly ProviderDef[] {
+    return providersNow().custom;
+}
+
+function customProvidersOf(file: ProvidersFile): ProviderDef[] {
+    return (file.custom ?? []).map((c) => ({
         id: c.id,
         name: c.name,
         kind: c.kind ?? "openai",
@@ -516,8 +534,8 @@ export function customProviderModels(id: string): string[] {
     return readProvidersFile().custom?.find((c) => c.id === id)?.models ?? [];
 }
 
-export function allProviders(): ProviderDef[] {
-    return [...BUILTIN_PROVIDERS, ...customProviders()];
+export function allProviders(): readonly ProviderDef[] {
+    return providersNow().all;
 }
 
 export function getProvider(id: string): ProviderDef | undefined {

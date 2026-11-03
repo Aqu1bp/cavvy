@@ -15,7 +15,15 @@ const realGit = Bun.which("git")!;
 writeFileSync(join(shim, "git"), `#!/bin/sh\necho "$*" >> "${gitLog}"\nexec "${realGit}" "$@"\n`);
 chmodSync(join(shim, "git"), 0o755);
 process.env.PATH = `${shim}:${process.env.PATH}`;
-const gitSpawns = () => (existsSync(gitLog) ? readFileSync(gitLog, "utf8").split("\n").filter(Boolean).length : 0);
+const gitRuns = () => (existsSync(gitLog) ? readFileSync(gitLog, "utf8").split("\n").filter(Boolean) : []);
+const gitSpawns = () => gitRuns().length;
+const budgets = JSON.parse(readFileSync(join(import.meta.dir, "../perf-budgets.json"), "utf8")) as Record<string, number>;
+/** Over budget, which gits ran is said too: the count alone doesn't say which one was new. */
+function gitsWithin(name: string, since: number) {
+    const ran = gitRuns().slice(since);
+    if (ran.length > budgets[name]!) console.error(`${name}: ${ran.length} gits ran\n${ran.map((r) => `  git ${r}`).join("\n")}`);
+    withinBudget(name, ran.length);
+}
 
 const { startServer } = await import("../../src/server/server");
 const { startMockLlm, STREAM_DEMO } = await import("../../scripts/mock-llm");
@@ -92,17 +100,21 @@ test("a turn that changes nothing starts fewer gits: the tree it has is still th
     const before = gitSpawns();
     await turn(cwd, "hello", id);
     await sleep(1000);
-    withinBudget("gitSpawnsUnchangedTurn", gitSpawns() - before);
+    gitsWithin("gitSpawnsUnchangedTurn", before);
 }, 120_000);
 
 test("a turn starts few gits, and an idle session none", async () => {
     const cwd = createDemoProject(tempDir("cavvy-perf-git-"), { git: true });
+    // A repository changed in the moment the turn's worktree listing starts isn't trusted to stay as listed, and is
+    // listed again (turn-places.ts WorktreeList): one created just now is, on a fast machine. A turn begins in one
+    // that's settled.
+    await sleep(200);
     const before = gitSpawns();
     await turn(cwd, "sso");
     await sleep(1000);
-    withinBudget("gitSpawnsPerTurn", gitSpawns() - before);
+    gitsWithin("gitSpawnsPerTurn", before);
     const settled = gitSpawns();
     await sleep(5000);
-    withinBudget("gitSpawnsIdle", gitSpawns() - settled);
+    gitsWithin("gitSpawnsIdle", settled);
 }, 120_000);
 

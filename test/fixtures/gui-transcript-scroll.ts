@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { all, component, node, renderer, text, type Node } from "../helpers/gui-render";
-import { anchoredTop, atBottom, FAR, firstBelow, firstShown, firstWindow, MORE_TURNS, restoredShown, positionCache, turnHeight, TURN_PAGE } from "../../gui/src/lib/transcript-scroll";
+import { anchoredTop, atBottom, FAR, firstBelow, firstShown, firstWindow, lazyHeights, MORE_TURNS, restoredShown, positionCache, turnHeight, TURN_PAGE } from "../../gui/src/lib/transcript-scroll";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../../gui/src/lib/live-line";
+import { finishEntrances } from "../../gui/src/lib/entrances";
+import { ROOM_KEPT, ROOM_WRITTEN_MS, roomFor } from "../../gui/src/lib/follow";
 import { DrawnAgain } from "../../gui/src/lib/reveal";
 
 // Real Solid effects/reconciliation; deterministic layout and browser scheduling
@@ -44,8 +46,10 @@ let rowShift = 0;
 let dockGlide = false;
 /** Some streamed text is still coming out (lib/reveal.ts revealing()). */
 let revealingNow = false;
+/** Words came out a moment ago (lib/reveal.ts wordsFlowing()). */
+let flowingNow = true;
 const has = (n: Node, cls: string) => n.props.class?.split(" ").includes(cls);
-const height = (n: Node): number => n.props["data-turn"] ? (n.props["data-far"] !== undefined ? skippedAt.get(n.props["data-turn"]) : undefined) ?? turnHeights.get(n.props["data-turn"]) ?? 200 : has(n, "earlier") ? 50 : has(n, "transcript-end") ? (n.props.style?.["--dock-h"] ? parseFloat(n.props.style["--dock-h"]) + 28 : 500) : n.children.reduce((sum, child) => sum + height(child), 0);
+const height = (n: Node): number => n.props["data-turn"] ? (n.props["data-far"] !== undefined ? skippedAt.get(n.props["data-turn"]) : undefined) ?? turnHeights.get(n.props["data-turn"]) ?? 200 : has(n, "earlier") ? 50 : has(n, "transcript-end") ? (n.props.style?.["--dock-h"] ? parseFloat(n.props.style["--dock-h"]) + 28 : 500) : has(n, "transcript-room") ? parseFloat(n.props.style?.height ?? "0") : n.children.reduce((sum, child) => sum + height(child), 0);
 /** Where a running glide draws a row of the column (and what's in it): shiftNow down, if it's one the glide moves. */
 const drawn = (n: Node): number => {
     for (let x: Node | undefined = n; x && !has(x, "transcript-col"); x = x.parent) if (glides.some((g) => g.el === x && g.anim.playState === "running")) return shiftNow;
@@ -136,7 +140,9 @@ const onFolds = new Map<string, (el: any, fold: () => void) => void>();
 const scope = {
     setFollowing() {},
     renderer: { ...solid, ...renderer, createElement: create },
-    anchoredTop, atBottom, FAR, firstBelow, firstWindow, MORE_TURNS, restoredShown, turnHeight, window: { innerHeight: 500 }, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow, DrawnAgain,
+    anchoredTop, atBottom, FAR, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, turnHeight, window: { innerHeight: 500 }, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow, wordsFlowing: () => flowingNow, finishEntrances, DrawnAgain,
+    // The glide for each new line, as before (lib/follow.ts); the room it follows in is tried below, on its own.
+    FOLLOW_ROOM: false, roomFor, ROOM_KEPT, ROOM_WRITTEN_MS,
     LiveLine: () => node("live-line"), Spinner: () => node("spinner"),
     // A running move draws what it's on shiftNow down; anything else isn't moved.
     getComputedStyle: (el?: any) => ({ transform: `matrix(1, 0, 0, 1, 0, ${glides.some((g) => g.el === el && g.anim.playState === "running") ? shiftNow : 0})`, overflowY: el?.overflowY ?? "visible" }),
@@ -199,7 +205,10 @@ const scope = {
         return n;
     },
 };
-const Transcript = component(readFileSync(new URL("../../gui/src/components/Transcript.tsx", import.meta.url), "utf8").replace(/^import .*;\n/gm, ""), "Transcript", scope);
+const transcriptSource = readFileSync(new URL("../../gui/src/components/Transcript.tsx", import.meta.url), "utf8").replace(/^import .*;\n/gm, "");
+const Transcript = component(transcriptSource, "Transcript", scope);
+/** Following a reply in room kept under it (lib/follow.ts). */
+const TranscriptInRoom = component(transcriptSource, "Transcript", { ...scope, FOLLOW_ROOM: true });
 const turns = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `turn-${i}`, prompt: { text: `prompt ${i}` } }));
 const [aTurns, setATurns] = solid.createSignal(turns(45));
 const a = { id: "a", view: { state: {}, get turns() { return aTurns(); } } };
@@ -207,10 +216,10 @@ const b = { id: "b", view: { state: {}, turns: turns(90) } };
 /** Turns mounted in the first painted frame of the last mount (the rest come after: Transcript's grow), and its "Show earlier". */
 let firstFrameTurns = 0;
 let firstFrameEarlier: string | undefined;
-const mount = (handle: any, runFrame = true) => {
+const mount = (handle: any, runFrame = true, View = Transcript) => {
     top = 0;
     root = node("root");
-    const dispose = renderer.render(() => Transcript({ handle }), root);
+    const dispose = renderer.render(() => View({ handle }), root);
     if (runFrame) {
         flush();
         firstFrameTurns = all(root).filter((n) => n.tag === "article").length;
@@ -737,8 +746,14 @@ try {
     assert.equal(io.targets.size, 80, "a page shown earlier is watched too");
     assert.ok(articles().every((n) => n.props[FAR] === undefined), "and drawn before any of it is skipped");
     // turn-50 is at the top of the view; turn-10 to turn-45 are more than a screen above it.
+    // A turn still bringing something in (a "Worked for" fading in) when it's skipped: the browser would stop that where
+    // it is, never to end, and the page pays for it on every frame. It's ended first; what goes on for good goes on.
+    const ended: string[] = [];
+    const animation = (name: string, iterations: number) => ({ effect: { getComputedTiming: () => ({ iterations }) }, finish: () => ended.push(name) });
+    (turn("turn-12") as any).getAnimations = () => [animation("fade", 1), animation("spin", Infinity)];
     report(Array.from({ length: 36 }, (_, i) => `turn-${10 + i}`), false);
     assert.equal(articles().filter((n) => n.props[FAR] !== undefined).length, 36, "those far from the view are marked far");
+    assert.deepEqual(ended, ["fade"], "a turn skipped from here ends what it was bringing in, and only that");
     // turn-45, skipped at 200px, is drawn at 320 when it comes near: what's in view doesn't move.
     skippedAt.set("turn-45", 200); turnHeights.set("turn-45", 320);
     const reading = turn("turn-50").getBoundingClientRect().top;
@@ -933,4 +948,108 @@ for (const mode of ["prose", "tool"] as const) {
     try {
         assert.equal(top, 175, `${mode}: reopening at a different row position restores the saved reading point`);
     } finally { dispose(); rowAnchors = undefined; rowShift = 0; }
+}
+
+// Following a reply in room kept under it (lib/follow.ts): once words come steadily the reply writes into the room and
+// nothing moves; the room used, one glide up and the room again; the words stopped, the room goes in a glide.
+{
+    viewportHeight = 500;
+    const reply = { id: "room", view: { state: {}, turns: turns(45).map((t, i) => ({ ...t, status: i === 44 ? "running" : "done" })) } };
+    dispose = mount(reply, true, TranscriptInRoom);
+    try {
+        const bottom = () => height(scroller()) - viewportHeight;
+        const roomOf = () => parseFloat(button("transcript-room").props.style?.height ?? "0");
+        const full = roomFor(viewportHeight, GLIDE_MAX);
+        let h = 200;
+        const grow = (by: number) => { h += by; turnHeights.set("turn-44", h); resize(); flush(); };
+        // Words coming out (lib/reveal.ts revealing(), wordsFlowing(), the turn ending in its text), or stopped.
+        const ends = (t: string) => { (reply.view.turns[44] as any).blocks = [{ t, id: t }]; };
+        const words = (on: boolean) => { revealingNow = flowingNow = on; ends(on ? "text" : "tool"); };
+        words(true);
+        glides.forEach((g) => g.anim.cancel());
+        // A reply's first words: no room yet; they glide in as any line.
+        grow(24);
+        assert.equal(roomOf(), 0, "no room for a reply's first words");
+        assert.equal(top, bottom(), "the view goes to the end");
+        assert.ok(glides.length > 0, "gliding there");
+        glides.forEach((g) => g.anim.cancel());
+        // Words coming steadily: room for what they write in a while (here more than a third of the view's worth).
+        grow(full);
+        assert.equal(roomOf(), full, "room under a reply writing steadily");
+        assert.equal(top, bottom(), "and the view goes to the end");
+        glides.forEach((g) => g.anim.cancel());
+        scroller().props.onScroll();
+        const writes = scrollWrites, glided = glides.length, at = top;
+        for (let i = 0; i < 3; i++) grow(i === 2 ? 40 : 20);
+        assert.deepEqual([scrollWrites, glides.length, top], [writes, glided, at], "lines written into the room move nothing");
+        assert.equal(roomOf(), full - 80, "what's left of the room");
+        // All but what's always kept used: the room again, and one glide up to the end.
+        assert.ok(full - 80 >= ROOM_KEPT, "(still more than what's kept)");
+        grow(full);
+        assert.equal(roomOf(), full, "used, the room is made again");
+        assert.equal(top, bottom(), "the view at the end");
+        assert.ok(glides.length > glided, "gliding there");
+        glides.forEach((g) => g.anim.cancel());
+        scroller().props.onScroll();
+        // The words stop for a tool: the room goes, in a glide; the tool's row glides in.
+        words(false);
+        const waiting = glides.length;
+        grow(30);
+        assert.equal(roomOf(), 0, "no room stands empty under a wait");
+        assert.equal(top, bottom(), "the end in view");
+        assert.ok(glides.length > waiting, "gliding there");
+        glides.forEach((g) => g.anim.cancel());
+        // A sentence before the next tool: it glides in, and no room opens to go again when it stops.
+        words(true);
+        grow(24);
+        assert.equal(roomOf(), 0, "no room for a sentence");
+        assert.equal(top, bottom(), "it glides in");
+        glides.forEach((g) => g.anim.cancel());
+        // Rows landing just after it (the words a moment ago) aren't words: still no room.
+        revealingNow = false; ends("tool");
+        grow(full);
+        assert.equal(roomOf(), 0, "rows landing between words open no room");
+        assert.equal(top, bottom(), "they glide in");
+        glides.forEach((g) => g.anim.cancel());
+        words(false);
+        const sentence = [top, glides.length];
+        grow(30);
+        assert.equal(roomOf(), 0, "(none to go)");
+        assert.equal(top, bottom(), "the tool's row glides in");
+        assert.ok(top > sentence[0]! && glides.length > sentence[1]!, "up, as any row: nothing comes back down");
+        glides.forEach((g) => g.anim.cancel());
+        // The words again, steadily: room again.
+        words(true);
+        grow(20); grow(full);
+        assert.equal(roomOf(), full, "words again, room again");
+        glides.forEach((g) => g.anim.cancel());
+        scroller().props.onScroll();
+        // The reply ends (its working line goes): the room goes, and the conversation settles onto the end in a glide.
+        reply.view.turns[44]!.status = "done";
+        words(false);
+        const settled = glides.length, was = top;
+        grow(-20);
+        assert.equal(roomOf(), 0, "a finished reply keeps no room under it");
+        assert.equal(top, bottom(), "it rests on the end");
+        assert.ok(top < was, "(come down by what the room was)");
+        assert.ok(glides.length > settled, "gliding there");
+        assert.equal(glides.at(-1)!.from, Math.max(-GLIDE_MAX, top - was), "from where it was");
+        // Its footer lands while it settles: the same glide goes on to the new end.
+        const landing = glides.length;
+        grow(30);
+        assert.equal(top, bottom(), "what lands at its end is followed");
+        assert.ok(glides.length > landing, "in the glide");
+        glides.forEach((g) => g.anim.cancel());
+        // The room again with the next reply.
+        reply.view.turns[44]!.status = "running";
+        words(true);
+        grow(30); grow(full);
+        assert.equal(roomOf(), full, "the next reply makes room again");
+        reply.view.turns[44]!.status = "done";
+        words(false);
+        // Read elsewhere, the room goes only where it can't be seen.
+        scroll(0); resize(); flush();
+        assert.equal(roomOf(), 0, "below the view, the room goes");
+        assert.equal(top, 0, "and what's read doesn't move");
+    } finally { dispose(); }
 }
