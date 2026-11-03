@@ -105,6 +105,10 @@ test("a turn that changes nothing starts fewer gits: the tree it has is still th
 
 test("a turn starts few gits, and an idle session none", async () => {
     const cwd = createDemoProject(tempDir("cavvy-perf-git-"), { git: true });
+    // A repository changed in the moment the turn's worktree listing starts isn't trusted to stay as listed, and is
+    // listed again (turn-places.ts WorktreeList): one created just now is, on a fast machine. A turn begins in one
+    // that's settled.
+    await sleep(200);
     const before = gitSpawns();
     await turn(cwd, "sso");
     await sleep(1000);
