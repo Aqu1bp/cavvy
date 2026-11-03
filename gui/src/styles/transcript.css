@@ -61,8 +61,12 @@
 
 /* --room: room a streaming reply writes into (Transcript.tsx's follow, lib/follow.ts). */
 .transcript-end {
-    height: calc(var(--dock-h) + 28 * var(--sp) + var(--room, 0px));
+    height: calc(var(--dock-h) + 28 * var(--sp));
     flex: none;
+}
+
+.transcript-room {
+    height: 0;
 }
 
 /* "Show 20 earlier turns": a quiet pill, like the mockup's ghost buttons. */

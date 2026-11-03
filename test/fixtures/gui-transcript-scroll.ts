@@ -49,7 +49,7 @@ let revealingNow = false;
 /** Words came out a moment ago (lib/reveal.ts wordsFlowing()). */
 let flowingNow = true;
 const has = (n: Node, cls: string) => n.props.class?.split(" ").includes(cls);
-const height = (n: Node): number => n.props["data-turn"] ? (n.props["data-far"] !== undefined ? skippedAt.get(n.props["data-turn"]) : undefined) ?? turnHeights.get(n.props["data-turn"]) ?? 200 : has(n, "earlier") ? 50 : has(n, "transcript-end") ? (n.props.style?.["--dock-h"] ? parseFloat(n.props.style["--dock-h"]) + 28 : 500) + parseFloat(n.props.style?.["--room"] ?? "0") : n.children.reduce((sum, child) => sum + height(child), 0);
+const height = (n: Node): number => n.props["data-turn"] ? (n.props["data-far"] !== undefined ? skippedAt.get(n.props["data-turn"]) : undefined) ?? turnHeights.get(n.props["data-turn"]) ?? 200 : has(n, "earlier") ? 50 : has(n, "transcript-end") ? (n.props.style?.["--dock-h"] ? parseFloat(n.props.style["--dock-h"]) + 28 : 500) : has(n, "transcript-room") ? parseFloat(n.props.style?.height ?? "0") : n.children.reduce((sum, child) => sum + height(child), 0);
 /** Where a running glide draws a row of the column (and what's in it): shiftNow down, if it's one the glide moves. */
 const drawn = (n: Node): number => {
     for (let x: Node | undefined = n; x && !has(x, "transcript-col"); x = x.parent) if (glides.some((g) => g.el === x && g.anim.playState === "running")) return shiftNow;
@@ -958,7 +958,7 @@ for (const mode of ["prose", "tool"] as const) {
     dispose = mount(reply, true, TranscriptInRoom);
     try {
         const bottom = () => height(scroller()) - viewportHeight;
-        const roomOf = () => parseFloat(button("transcript-end").props.style?.["--room"] ?? "0");
+        const roomOf = () => parseFloat(button("transcript-room").props.style?.height ?? "0");
         const full = roomFor(viewportHeight, GLIDE_MAX);
         let h = 200;
         const grow = (by: number) => { h += by; turnHeights.set("turn-44", h); resize(); flush(); };
