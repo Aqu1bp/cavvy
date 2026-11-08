@@ -1,6 +1,6 @@
 // Agent CLIs run a step below the server (backends/cli.ts cliPriority), so the server isn't queued behind them.
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, symlinkSync } from "fs";
+import { chmodSync, mkdtempSync, readdirSync, rmSync, symlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { JsonLinesProcess, cliPriority } from "../src/backends/cli";
@@ -66,3 +66,30 @@ test("a CLI that isn't there, or whose folder isn't, fails to start with its own
     expect(() => new JsonLinesProcess("/nonexistent/fake-cli", [], { cwd: tmpdir() })).toThrow(/ENOENT.*fake-cli/);
     expect(() => new JsonLinesProcess("/bin/sh", ["-c", "true"], { cwd: "/nonexistent/session-folder" })).toThrow(/ENOENT.*\/bin\/sh/);
 });
+
+/** A folder with no permissions, and whether this user can still enter it (root can). */
+function lockedFolder(): { dir: string; enterable: boolean } {
+    const dir = mkdtempSync(join(tmpdir(), "cavvy-nice-"));
+    chmodSync(dir, 0o000);
+    try {
+        readdirSync(dir);
+        return { dir, enterable: true };
+    } catch {
+        return { dir, enterable: false };
+    }
+}
+
+const locked = lockedFolder();
+test.skipIf(locked.enterable)("a CLI whose folder can't be entered fails with its own error, as without the priority", () => {
+    const { dir } = locked;
+    try {
+        expect(() => new JsonLinesProcess("/bin/sh", ["-c", "true"], { cwd: dir })).toThrow(/EACCES.*\/bin\/sh/);
+    } finally {
+        chmodSync(dir, 0o700);
+        rmSync(dir, { recursive: true, force: true });
+    }
+});
+if (locked.enterable) {
+    chmodSync(locked.dir, 0o700);
+    rmSync(locked.dir, { recursive: true, force: true });
+}

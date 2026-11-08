@@ -118,14 +118,6 @@ export function cliPriority(env: Record<string, string | undefined> = process.en
     return nice ? [nice, "-n", String(Math.min(n, 19))] : [];
 }
 
-function isDirectory(path: string): boolean {
-    try {
-        return statSync(path).isDirectory();
-    } catch {
-        return false;
-    }
-}
-
 /** A long-running CLI speaking JSON lines on stdin/stdout. */
 export class JsonLinesProcess {
     private proc: Subprocess<"pipe", "pipe", "pipe">;
@@ -141,12 +133,18 @@ export class JsonLinesProcess {
 
     constructor(bin: string, args: string[], opts: { cwd: string; env?: Record<string, string> }) {
         const env = { ...childEnv(), ...opts.env };
-        // `nice` runs the CLI in its own place (exec), so its pid is the CLI's. Only for a CLI that's there to run, in a
-        // folder that's there: `nice` would start where the CLI can't, and fail naming itself; without it, the spawn's
-        // error names the CLI (ENOENT).
-        const runnable = Bun.which(bin, { PATH: env.PATH ?? "", cwd: opts.cwd }) && isDirectory(opts.cwd);
-        const priority = runnable ? cliPriority(env) : [];
-        this.proc = Bun.spawn([...priority, bin, ...args], { cwd: opts.cwd, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+        // `nice` runs the CLI in its own place (exec), so its pid is the CLI's. Only for a CLI that's there to run:
+        // `nice` would start where the CLI can't, and fail naming itself. A spawn that fails at once (the folder is
+        // missing or can't be entered) starts nothing; it's tried again without `nice`, so the error names the CLI.
+        const spawn = (prefix: string[]) =>
+            Bun.spawn([...prefix, bin, ...args], { cwd: opts.cwd, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+        const priority = Bun.which(bin, { PATH: env.PATH ?? "", cwd: opts.cwd }) ? cliPriority(env) : [];
+        try {
+            this.proc = spawn(priority);
+        } catch (e) {
+            if (!priority.length) throw e;
+            this.proc = spawn([]);
+        }
         this.exited = this.proc.exited;
         this.pid = this.proc.pid;
         void this.exited.then(() => (this.gone = true));
