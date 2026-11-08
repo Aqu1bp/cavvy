@@ -5,6 +5,17 @@ third-party material below, each under its own license. Dependencies installed
 by `bun install` (and the desktop app's Rust crates) carry their own licenses
 in their packages.
 
+## cavvy-native's Rust crates
+
+`cavvy-native` (`native/`), which the desktop app ships beside the server and
+`bun run build` puts beside `dist/cavvy`, is compiled from 71 Rust crates
+(gitoxide's object database and what it uses), under MIT, Apache-2.0, zlib and
+Unicode-3.0 licenses; a crate offered under MIT among others is used under MIT.
+Each one's license, with its copyright notice, is in
+`native/THIRD-PARTY-LICENSES.md` (generated from `native/Cargo.lock` by
+`bun scripts/native-licenses.ts`), which the desktop app carries as
+`Contents/Resources/cavvy-native-licenses.md`.
+
 ## OpenAI Codex (Apache License 2.0)
 
 The risk rules in `src/permissions/classifier.ts` adapt OpenAI Codex's

@@ -85,6 +85,12 @@ jobs:
         run: bun run native:build
       - name: Run this shard's test files
         run: bun scripts/test-shard.ts ${{ matrix.shard }} 4 --reporter=junit --reporter-outfile=junit-${{ matrix.shard }}.xml
+      # The tests above read Git objects through cavvy-native; the snapshot tests again without it, as where it isn't built.
+      - name: Snapshot tests without cavvy-native
+        if: matrix.shard == 1
+        env:
+          CAVVY_NATIVE: "0"
+        run: bun test ./test/turn-snapshots.test.ts ./test/tree-edit.test.ts ./test/turn-snapshot-agent.test.ts ./test/checkpoints.test.ts
       # Feeds `bun scripts/test-shard.ts --timings`, which rebalances the shards.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()

@@ -1,0 +1,5 @@
+# The toolchain CI and builds use, so a new Rust release (and its new lints) changes nothing until this does.
+[toolchain]
+channel = "1.97.0"
+components = ["clippy"]
+profile = "minimal"

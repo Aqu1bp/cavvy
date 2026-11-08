@@ -14,8 +14,8 @@
   "scripts": {
     "start": "bun --no-env-file --config=bunfig.toml src/index.ts",
     "dev": "bun --no-env-file --config=bunfig.toml src/index.ts",
-    "native:build": "cd native && cargo build --release --locked",
-    "build": "bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig --outfile dist/cavvy src/index.ts src/agent/stat-worker.ts",
+    "native:build": "bun scripts/native-build.ts",
+    "build": "bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig --outfile dist/cavvy src/index.ts src/agent/stat-worker.ts && bun scripts/native-build.ts --into dist --optional",
     "test": "bun --no-env-file test",
     "typecheck": "tsc --noEmit -p .",
     "gui": "bun --no-env-file --config=bunfig.toml src/index.ts gui",

@@ -75,14 +75,12 @@ export async function pack(o: { install?: boolean } = {}): Promise<string> {
     const bundled = join(app, "Contents", "MacOS", "cavvy");
     copyFileSync(server, bundled);
     chmodSync(bundled, 0o755);
-    // cavvy-native (native/), beside the server, which finds it there. Without Rust it's left out, and the server reads
-    // Git objects with git as it did before it.
-    if (Bun.which("cargo")) {
-        run(["cargo", "build", "--release", "--locked"], join(repo, "native"));
-        const helper = join(app, "Contents", "MacOS", "cavvy-native");
-        copyFileSync(join(repo, "native", "target", "release", "cavvy-native"), helper);
-        chmodSync(helper, 0o755);
-    } else console.warn("No cargo: Cavvy.app is built without cavvy-native (install Rust from rustup.rs to include it).");
+    // cavvy-native (native/), for the app's architecture, beside the server, which finds it there, and its crates'
+    // licenses with the app's resources. Without Rust it's left out, and the server reads Git objects with git as it
+    // did before it.
+    const triple = arch === "arm64" ? "aarch64-apple-darwin" : "x86_64-apple-darwin";
+    run(["bun", join(repo, "scripts", "native-build.ts"), "--target", triple, "--into", join(app, "Contents", "MacOS"), "--optional"]);
+    if (existsSync(join(app, "Contents", "MacOS", "cavvy-native"))) copyFileSync(join(repo, "native", "THIRD-PARTY-LICENSES.md"), join(app, "Contents", "Resources", "cavvy-native-licenses.md"));
     if (!existsSync(join(app, "Contents", "MacOS", "cavvy-desktop"))) throw new Error(`${app} has no Contents/MacOS/cavvy-desktop`);
     // The bundle changed after Electron signed its binaries: signed again, ad hoc, so macOS runs it on this machine.
     run(["codesign", "--force", "--deep", "--sign", "-", app]);

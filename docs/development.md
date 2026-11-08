@@ -29,7 +29,7 @@ bun run test ./test/foo.test.ts    # the test files for what you changed; CI run
 
 ## cavvy-native
 
-`bun run native:build` builds it (Rust from [rustup.rs](https://rustup.rs)) into `native/target/release`, where the server finds it when it runs from this checkout; the desktop app carries it beside the server. Without it, or with `CAVVY_NATIVE=0`, the server reads Git objects with git, as before it. `test/native-objects.test.ts` checks it against `git cat-file`.
+`bun run native:build` builds it (Rust from [rustup.rs](https://rustup.rs); `native/rust-toolchain.toml` pins the version) into cargo's target folder, where the server finds it when it runs from this checkout; `bun run build` puts it beside `dist/cavvy`, and the desktop app carries it beside the server. After changing `native/Cargo.lock`, `bun scripts/native-licenses.ts` writes its crates' licenses again. Without it, or with `CAVVY_NATIVE=0`, the server reads Git objects with git, as before it. `test/native-objects.test.ts` checks it against `git cat-file`.
 
 ## Adding features
 
