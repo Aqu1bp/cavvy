@@ -1,8 +1,7 @@
 ---
 name: review-change
-description: Review a finished change (feature, bug fix, UI) before it merges. Fresh-context reviewers read the diff against the repo and the change's intent, a vote of verifiers keeps only real findings, and on your own branch it fixes them over at most three rounds. Use after implementing something, or on a pull request.
+description: Review a finished change (feature, bug fix, UI) before it merges. Fresh-context reviewers read the diff against the repo and the change's intent, a vote of verifiers keeps only real findings, and on your own branch it fixes them over at most three rounds. When you finish implementing a change, offer to run it in one line, and run it only when the user says yes or asks for it. Also run it when asked to review a branch or pull request.
 argument-hint: "[quick|standard|deep] [PR number | branch] [--no-fix]"
-disable-model-invocation: true
 ---
 
 # Review a change
