@@ -429,7 +429,7 @@ export class Page {
             this.fullFrames++;
             // The frame's CSS dimensions: its own label, right for a frame already in flight during a resize, unless its
             // picture is the current stream's size, which Chrome sometimes mislabels (frame-size.ts).
-            this.o.hooks.frame(this, { data: p.data, ...frameSize(p.metadata, pictureSize(p.data), this.viewport) });
+            this.o.hooks.frame(this, { data: p.data, ...frameSize(p.metadata, this.viewport, () => pictureSize(p.data)) });
             this.paced(Date.now());
         });
     }

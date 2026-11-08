@@ -44,26 +44,47 @@ describe("pictureSize", () => {
 
 describe("frameSize", () => {
     const viewport = { width: 360, height: 622, scale: 1 };
+    const at = (scale: number) => ({ ...viewport, scale });
+    /** A picture of `size`, and whether it was read. */
+    const pictureOf = (size: { width: number; height: number } | undefined) => {
+        const read = { count: 0 };
+        return { read, picture: () => (read.count++, size) };
+    };
 
-    test("a frame Chrome labels with half its size, its picture the stream's size, is the viewport (what made clicks land at half their place)", () => {
-        expect(frameSize({ deviceWidth: 180, deviceHeight: 311 }, { width: 360, height: 622 }, viewport)).toEqual({ width: 360, height: 622 });
+    test("the labels Chrome gets wrong, at each scale but its own, are the viewport (clicks landed off by scale ÷ 2)", () => {
+        // As captured from Chromium streaming a 360×622 page: the label is the picture's size ÷ 2.
+        // Now and then the picture is drawn at the browser's scale (2) instead: still the page, at 720×1244.
+        for (const [scale, label, picture] of [[1, [180, 311], [360, 622]], [1.5, [270, 466], [540, 933]], [3, [540, 933], [1080, 1866]], [3, [540, 933], [720, 1244]], [1, [180, 311], [720, 1244]]] as const) {
+            const p = pictureOf({ width: picture[0], height: picture[1] });
+            expect(frameSize({ deviceWidth: label[0], deviceHeight: label[1] }, at(scale), p.picture)).toEqual({ width: 360, height: 622 });
+            expect(p.read.count).toBe(1);
+        }
+    });
+
+    test("a frame labelled with the viewport is taken as it is, without reading its picture", () => {
+        for (const scale of [1, 1.5, 2, 3]) {
+            const p = pictureOf({ width: 1, height: 1 });
+            expect(frameSize({ deviceWidth: 360, deviceHeight: 622 }, at(scale), p.picture)).toEqual({ width: 360, height: 622 });
+            expect(p.read.count).toBe(0);
+        }
+    });
+
+    test("at the browser's own scale, ÷ 2 is the right size: nothing is relabelled or read", () => {
+        const p = pictureOf({ width: 720, height: 1244 });
+        expect(frameSize({ deviceWidth: 720, deviceHeight: 1244 }, at(2), p.picture)).toEqual({ width: 720, height: 1244 });
+        expect(p.read.count).toBe(0);
     });
 
     test("a frame of the old size, still arriving after a resize, keeps its own label", () => {
-        expect(frameSize({ deviceWidth: 500, deviceHeight: 400 }, { width: 500, height: 400 }, viewport)).toEqual({ width: 500, height: 400 });
-        // Size and scale changed together: the old frame's picture is the new stream's size, its label its own.
-        expect(frameSize({ deviceWidth: 720, deviceHeight: 1244 }, { width: 720, height: 1244 }, { ...viewport, scale: 2 })).toEqual({ width: 720, height: 1244 });
+        // Its label looks like the new size's mislabel, but its picture is its own size, not the stream's.
+        expect(frameSize({ deviceWidth: 180, deviceHeight: 311 }, viewport, pictureOf({ width: 180, height: 311 }).picture)).toEqual({ width: 180, height: 311 });
+        expect(frameSize({ deviceWidth: 500, deviceHeight: 400 }, viewport, pictureOf({ width: 500, height: 400 }).picture)).toEqual({ width: 500, height: 400 });
+        expect(frameSize({ deviceWidth: 270, deviceHeight: 466 }, at(1.5), pictureOf({ width: 270, height: 466 }).picture)).toEqual({ width: 270, height: 466 });
     });
 
-    test("at scale 2, the picture is twice the viewport and the label is the viewport", () => {
-        expect(frameSize({ deviceWidth: 360, deviceHeight: 622 }, { width: 720, height: 1244 }, { ...viewport, scale: 2 })).toEqual({ width: 360, height: 622 });
-        expect(frameSize({ deviceWidth: 180, deviceHeight: 311 }, { width: 720, height: 1244 }, { ...viewport, scale: 2 })).toEqual({ width: 360, height: 622 });
-    });
-
-    test("a picture a pixel off from rounding still counts; without a picture size, the label stands", () => {
-        expect(frameSize({ deviceWidth: 180, deviceHeight: 311 }, { width: 361, height: 621 }, viewport)).toEqual({ width: 360, height: 622 });
-        // Odd sizes: half of 361×623 is labelled 180×311 (rounded down).
-        expect(frameSize({ deviceWidth: 180, deviceHeight: 311 }, { width: 361, height: 623 }, { width: 361, height: 623, scale: 1 })).toEqual({ width: 361, height: 623 });
-        expect(frameSize({ deviceWidth: 180, deviceHeight: 311 }, undefined, viewport)).toEqual({ width: 180, height: 311 });
+    test("rounding: a label or picture a pixel or two off still counts; without a picture size, the label stands", () => {
+        expect(frameSize({ deviceWidth: 180, deviceHeight: 311 }, { width: 361, height: 623, scale: 1 }, pictureOf({ width: 361, height: 623 }).picture)).toEqual({ width: 361, height: 623 });
+        expect(frameSize({ deviceWidth: 180, deviceHeight: 311 }, viewport, pictureOf({ width: 362, height: 620 }).picture)).toEqual({ width: 360, height: 622 });
+        expect(frameSize({ deviceWidth: 180, deviceHeight: 311 }, viewport, pictureOf(undefined).picture)).toEqual({ width: 180, height: 311 });
     });
 });

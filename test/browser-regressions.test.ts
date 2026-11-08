@@ -201,9 +201,10 @@ describe.skipIf(!chromePath)("browser regressions with Chrome", () => {
     }, 30_000);
 
     test("every streamed frame is labelled with the pane's size, at scale 1 and 2, however often the page repaints", async () => {
-        // At scale 1 Chrome now and then labels a frame with half the size (frame-size.ts): the pane mapped clicks with
-        // that, and they landed at half their place. It's rare (about one frame in a hundred), so many repaints.
-        for (const scale of [1, 2]) {
+        // At scales other than its own (2), Chrome now and then labels a frame with the picture's size ÷ 2 (frame-size.ts):
+        // the pane mapped clicks with that, and they landed off by scale ÷ 2. It's rare (about one frame in a hundred),
+        // so many repaints, at each scale a screen has.
+        for (const scale of [1, 1.5, 2, 3]) {
             const b = session();
             const p = await b.page();
             await p.evaluate(`document.body.innerHTML = '<div id=n style="font:40px sans-serif">0</div>'`);
@@ -220,7 +221,7 @@ describe.skipIf(!chromePath)("browser regressions with Chrome", () => {
                 expect({ scale, wrong: sizes.filter((s) => s !== "360x622") }).toEqual({ scale, wrong: [] });
             } finally { b.unwatch(key); }
         }
-    }, 60_000);
+    }, 120_000);
 
     test("the demo form submits in Chrome and renders the search text", async () => {
         const demo = startDemoSite();
