@@ -25,7 +25,7 @@ import { KIND, scanIndexFiles, scanIndexPaths, statFiles } from "./stat-files";
 import type { Differs, IndexScan } from "./index-scan";
 import { acquireWatch, releaseWatch, type FolderWatch } from "./folder-watch";
 import { editTree, ObjectReader, parseTree, type TreeEdit } from "./tree-edit";
-import { helperGone, NativeReader, nativeObjects, placeOf, type ObjectSource } from "./native-objects";
+import { NativeReader, nativeObjects, placeOf, type ObjectSource } from "./native-objects";
 
 /** Paths a turn reached that are kept (TurnSnapshots.reach): past this many, the rest go unseen. */
 const MAX_REACHED = 20_000;
@@ -2376,8 +2376,9 @@ export class TurnSnapshots {
             try {
                 return await f(new NativeReader(native, place, deadline));
             } catch (e) {
-                // Gone mid-read: git, as without it.
-                if (!helperGone(e)) throw e;
+                // Out of time throws, as git's runner does. Anything else (the helper gone, an object it couldn't read, a
+                // store it couldn't open): git, as without it, which reads what it can and says why it can't.
+                if (Date.now() >= deadline) throw e;
             }
         }
         const key = `${root}\0${JSON.stringify(env)}`;
@@ -2468,11 +2469,8 @@ export class TurnSnapshots {
             try {
                 return await native.header(place, oids, deadline);
             } catch (e) {
-                // Out of time throws, as git's runner does; anything else is a lookup that failed.
-                if (!helperGone(e)) {
-                    if (Date.now() >= deadline) throw e;
-                    return undefined;
-                }
+                // Out of time throws, as git's runner does; anything else is looked up with git, as without the helper.
+                if (Date.now() >= deadline) throw e;
             }
         }
         const r = await git(root, ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"], { input: oids.join("\n") + "\n", privateEnv: env, deadline });

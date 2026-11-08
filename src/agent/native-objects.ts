@@ -41,7 +41,11 @@ export class NativeObjects {
     private proc: ReturnType<typeof Bun.spawn>;
     private pending = new Map<number, { resolve: (b: Buffer) => void; reject: (e: Error) => void }>();
     private nextId = 1;
-    private buf = Buffer.alloc(0);
+    /** What's come in and not yet taken, in the pieces it came in: each reply is joined once, when it's all there. */
+    private chunks: Buffer[] = [];
+    private have = 0;
+    /** The reply being read, once its header is in: its id and length. */
+    private reply?: { id: number; length: number };
     private dead = false;
     readonly exited: Promise<number>;
 
@@ -64,23 +68,54 @@ export class NativeObjects {
     private async pump() {
         try {
             for await (const chunk of this.proc.stdout as ReadableStream<Uint8Array>) {
-                this.buf = this.buf.length ? Buffer.concat([this.buf, chunk]) : Buffer.from(chunk);
-                while (this.buf.length >= 8) {
-                    const id = this.buf.readUInt32LE(0), len = this.buf.readUInt32LE(4);
-                    if (this.buf.length < 8 + len) break;
-                    const body = this.buf.subarray(8, 8 + len);
-                    this.buf = this.buf.subarray(8 + len);
-                    const p = this.pending.get(id);
-                    if (!p) continue;
-                    this.pending.delete(id);
-                    if (!this.pending.size) this.idle();
-                    if (body[0] === 0) p.resolve(Buffer.from(body.subarray(1)));
-                    else p.reject(new Error(body.subarray(1).toString("utf-8")));
+                this.chunks.push(Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+                this.have += chunk.byteLength;
+                for (;;) {
+                    if (!this.reply) {
+                        if (this.have < 8) break;
+                        const head = this.take(8);
+                        this.reply = { id: head.readUInt32LE(0), length: head.readUInt32LE(4) };
+                    }
+                    if (this.have < this.reply.length) break;
+                    const { id, length } = this.reply;
+                    this.reply = undefined;
+                    this.answered(id, this.take(length));
                 }
             }
         } catch {
             // it went away: exited settles the rest
         }
+    }
+
+    /** The next `n` bytes: a piece of one chunk, or the chunks they span joined once. */
+    private take(n: number): Buffer {
+        this.have -= n;
+        const first = this.chunks[0]!;
+        if (first.length >= n) {
+            if (first.length === n) this.chunks.shift();
+            else this.chunks[0] = first.subarray(n);
+            return first.subarray(0, n);
+        }
+        const out = Buffer.allocUnsafe(n);
+        let at = 0;
+        while (at < n) {
+            const c = this.chunks[0]!;
+            const part = Math.min(c.length, n - at);
+            c.copy(out, at, 0, part);
+            at += part;
+            if (part === c.length) this.chunks.shift();
+            else this.chunks[0] = c.subarray(part);
+        }
+        return out;
+    }
+
+    private answered(id: number, body: Buffer) {
+        const p = this.pending.get(id);
+        if (!p) return;
+        this.pending.delete(id);
+        if (!this.pending.size) this.idle();
+        if (body[0] === 0) p.resolve(body.subarray(1));
+        else p.reject(new Error(body.subarray(1).toString("utf-8")));
     }
 
     /** Nothing asked: it doesn't keep the server (or a script) running by itself. */
@@ -101,8 +136,10 @@ export class NativeObjects {
         return new Promise<Buffer>((res, rej) => {
             const timer = setTimeout(() => {
                 if (this.pending.delete(id)) {
-                    if (!this.pending.size) this.idle();
                     rej(new Error("Snapshot exceeded its time budget (2 seconds by default)."));
+                    // Not answering in time may be its being stuck: the next read starts another (nativeObjects), and
+                    // what this one was still answering goes to git.
+                    this.close();
                 }
             }, Math.max(0, deadline - Date.now()));
             this.pending.set(id, { resolve: (b) => (clearTimeout(timer), res(b)), reject: (e) => (clearTimeout(timer), rej(e)) });
@@ -153,6 +190,7 @@ export class NativeObjects {
     }
 
     close() {
+        this.dead = true;
         try { (this.proc.stdin as import("bun").FileSink).end(); } catch {}
         this.proc.kill();
     }

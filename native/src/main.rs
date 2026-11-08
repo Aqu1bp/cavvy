@@ -22,7 +22,13 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
-use gix_odb::{store::init::Options, Header as _, HandleArc, Store};
+use gix_odb::{
+    store::{
+        init::{Options, Slots},
+        RefreshMode,
+    },
+    Header as _, HandleArc, Store,
+};
 use gix_object::{Find as _, Kind};
 use serde::Deserialize;
 
@@ -65,7 +71,10 @@ impl Stores {
             *used = now;
             return Ok(s.clone());
         }
-        let store = Arc::new(Store::at_opts(key.0.clone(), key.1, &mut std::iter::empty(), Options::default())?);
+        // Room for many more packs than are there now: a session's store gains one each time a turn writes a lot, and
+        // a store runs out of room, not slower, past what it was opened with (then it's opened again: forget).
+        let options = Options { slots: Slots::AsNeededByDiskState { multiplier: 2.0, minimum: 1024 }, ..Options::default() };
+        let store = Arc::new(Store::at_opts(key.0.clone(), key.1, &mut std::iter::empty(), options)?);
         if map.len() >= MAX_STORES {
             if let Some(oldest) = map.iter().min_by_key(|(_, (_, u))| *u).map(|(k, _)| k.clone()) {
                 map.remove(&oldest);
@@ -76,13 +85,20 @@ impl Stores {
     }
 }
 
+impl Stores {
+    /// Let a store go, so the next use opens it again (sized to what's on disk then).
+    fn forget(&self, key: &StoreKey) {
+        self.open.lock().unwrap().0.remove(key);
+    }
+}
+
 /// A thread's handles, by store; dropped with the store's entry when there are too many.
 struct Handles {
     by_key: HashMap<StoreKey, (Arc<Store>, HandleArc)>,
 }
 
 impl Handles {
-    fn handle(&mut self, stores: &Stores, key: &StoreKey) -> std::io::Result<&HandleArc> {
+    fn handle(&mut self, stores: &Stores, key: &StoreKey) -> std::io::Result<&mut HandleArc> {
         let store = stores.get(key)?;
         let stale = self.by_key.get(key).is_some_and(|(s, _)| !Arc::ptr_eq(s, &store));
         if stale || !self.by_key.contains_key(key) {
@@ -92,7 +108,7 @@ impl Handles {
             let handle = store.to_cache_arc();
             self.by_key.insert(key.clone(), (store, handle));
         }
-        Ok(&self.by_key.get(key).unwrap().1)
+        Ok(&mut self.by_key.get_mut(key).unwrap().1)
     }
 }
 
@@ -103,6 +119,24 @@ fn kind_code(k: Kind) -> u8 {
         Kind::Blob => 3,
         Kind::Tag => 4,
     }
+}
+
+/// One object, as found: its kind and size (header), or its kind and bytes (read).
+enum Found {
+    Header(u8, u64),
+    Body(u8, Vec<u8>),
+}
+
+/// The object in this store, if it's there.
+fn find(h: &HandleArc, id: &gix_hash::oid, header_only: bool, buf: &mut Vec<u8>) -> Result<Option<Found>, String> {
+    let Some(hd) = h.try_header(id).map_err(|e| e.to_string())? else { return Ok(None) };
+    if header_only {
+        return Ok(Some(Found::Header(kind_code(hd.kind()), hd.size())));
+    }
+    if hd.size() > MAX_OBJECT_BYTES {
+        return Err(format!("object {id} is too large to read"));
+    }
+    Ok(h.try_find(id, buf).map_err(|e| e.to_string())?.map(|data| Found::Body(kind_code(data.kind), data.data.to_vec())))
 }
 
 fn answer(req: &Request, stores: &Stores, handles: &mut Handles) -> Result<Vec<u8>, String> {
@@ -118,48 +152,74 @@ fn answer(req: &Request, stores: &Stores, handles: &mut Handles) -> Result<Vec<u
         .chain(req.alternates.iter().filter(|a| !a.is_empty()))
         .map(|d| (PathBuf::from(d), hash))
         .collect();
-    let mut out = vec![0u8];
-    let mut buf = Vec::new();
+    let mut ids = Vec::with_capacity(req.oids.len());
     for hex in &req.oids {
         let id = gix_hash::ObjectId::from_hex(hex.as_bytes()).map_err(|e| format!("bad object id {hex}: {e}"))?;
         if id.kind() != hash {
             return Err(format!("object id {hex} isn't {:?}", hash));
         }
-        let mut found = false;
+        ids.push(id);
+    }
+    let header_only = req.op == "header";
+    let mut found: Vec<Option<Found>> = (0..ids.len()).map(|_| None).collect();
+    let mut buf = Vec::new();
+    // Every store as it's known first; then, for what none of them had, each looks at its folder again for packs
+    // written since. Looking again for each miss costs a scan of the folder: the session's own store misses every
+    // object that's only in the repository's.
+    for refresh in [RefreshMode::Never, RefreshMode::AfterAllIndicesLoaded] {
         for key in &keys {
-            // A store that can't be opened (a folder gone) has nothing: as git, the next one is asked.
-            let Ok(h) = handles.handle(stores, key) else { continue };
-            if req.op == "header" {
-                if let Some(hd) = h.try_header(&id).map_err(|e| e.to_string())? {
-                    out.push(kind_code(hd.kind()));
-                    out.extend_from_slice(&hd.size().to_le_bytes());
-                    found = true;
-                    break;
-                }
-            } else {
-                if let Some(hd) = h.try_header(&id).map_err(|e| e.to_string())? {
-                    if hd.size() > MAX_OBJECT_BYTES {
-                        return Err(format!("object {hex} is too large to read"));
-                    }
-                } else {
+            if found.iter().all(Option::is_some) {
+                break;
+            }
+            for (i, id) in ids.iter().enumerate() {
+                if found[i].is_some() {
                     continue;
                 }
-                if let Some(data) = h.try_find(&id, &mut buf).map_err(|e| e.to_string())? {
-                    out.push(kind_code(data.kind));
-                    out.extend_from_slice(&(data.data.len() as u32).to_le_bytes());
-                    out.extend_from_slice(data.data);
-                    found = true;
-                    break;
+                let mut attempt = 0;
+                // A store that can't be opened (a folder gone) has nothing: as git, the next one is asked.
+                while let Ok(h) = handles.handle(stores, key) {
+                    h.refresh = refresh;
+                    match find(h, id, header_only, &mut buf) {
+                        Ok(f) => {
+                            found[i] = f;
+                            break;
+                        }
+                        // More packs than the store was opened with room for: opened again, once.
+                        Err(e) if attempt == 0 && e.contains("too few index slots") => {
+                            stores.forget(key);
+                            handles.by_key.remove(key);
+                            attempt += 1;
+                        }
+                        Err(e) => return Err(e),
+                    }
                 }
             }
         }
-        if !found {
-            out.push(0);
-            if req.op == "header" {
-                out.extend_from_slice(&0u64.to_le_bytes());
-            } else {
-                out.extend_from_slice(&0u32.to_le_bytes());
+    }
+    let mut out = vec![0u8];
+    for f in found {
+        match f {
+            Some(Found::Header(kind, size)) => {
+                out.push(kind);
+                out.extend_from_slice(&size.to_le_bytes());
             }
+            Some(Found::Body(kind, data)) => {
+                out.push(kind);
+                out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+                out.extend_from_slice(&data);
+            }
+            None => {
+                out.push(0);
+                if header_only {
+                    out.extend_from_slice(&0u64.to_le_bytes());
+                } else {
+                    out.extend_from_slice(&0u32.to_le_bytes());
+                }
+            }
+        }
+        // The reply's length is 32 bits.
+        if out.len() > u32::MAX as usize {
+            return Err("the objects asked for are too large to send at once".into());
         }
     }
     Ok(out)

@@ -150,6 +150,82 @@ describe.skipIf(!bin)("cavvy-native", () => {
         }
     });
 
+    /** A new pack holding exactly `ids`, their loose copies dropped (as a snapshot's large capture writes one). */
+    const packOf = (cwd: string, objects: string, ids: string[]) => {
+        git(cwd, ["pack-objects", "-q", join(objects, "pack", "pack")], ids.join("\n") + "\n");
+        git(cwd, ["prune-packed"]);
+    };
+
+    test("a store keeps reading as packs are added to it, well past the 32 it had room for when first opened", async () => {
+        const root = mkdtempSync(join(tmpdir(), "cavvy-native-packs-"));
+        dirs.push(root);
+        git(root, ["init", "-q"]);
+        const objects = join(root, ".git", "objects");
+        const place: ObjectPlace = { objects, alternates: [], hash: "sha1" };
+        const ids: string[] = [];
+        for (let i = 0; i < 70; i++) {
+            const id = git(root, ["hash-object", "-w", "--stdin"], `pack ${i}\n`).toString().trim();
+            packOf(root, objects, [id]);
+            ids.push(id);
+            // Read as it grows, so the store is open (and sized) before most of them exist.
+            if (i === 2 || i === 69) expect((await helper().read(place, ids, soon())).size).toBe(ids.length);
+        }
+    }, 60_000);
+
+    test("a large object comes back whole, without holding up the server's thread", async () => {
+        const root = mkdtempSync(join(tmpdir(), "cavvy-native-big-"));
+        dirs.push(root);
+        git(root, ["init", "-q"]);
+        const big = Buffer.alloc(64 * 1024 * 1024, "x");
+        writeFileSync(join(root, "big.bin"), big);
+        const id = git(root, ["hash-object", "-w", "big.bin"]).toString().trim();
+        const place: ObjectPlace = { objects: join(root, ".git", "objects"), alternates: [], hash: "sha1" };
+        let longest = 0, last = performance.now();
+        const tick = setInterval(() => { const now = performance.now(); longest = Math.max(longest, now - last); last = now; }, 5);
+        const started = performance.now();
+        const got = (await helper().read(place, [id], soon())).get(id);
+        clearInterval(tick);
+        expect(got?.buf.equals(big)).toBe(true);
+        // Joined once it's all in: a copy of what had come for every piece took 8 s for 72 MB, and held the thread.
+        expect(performance.now() - started).toBeLessThan(4000);
+        expect(longest).toBeLessThan(500);
+    }, 60_000);
+
+    test("objects that are only in the alternates don't make it look through the store's own packs again for each", async () => {
+        const root = mkdtempSync(join(tmpdir(), "cavvy-native-alt-"));
+        dirs.push(root);
+        git(root, ["init", "-q"]);
+        const repoObjects = join(root, ".git", "objects");
+        const ids = git(root, ["hash-object", "-w", "--stdin-paths"], Array.from({ length: 3000 }, (_, i) => { const f = join(root, `f${i}`); writeFileSync(f, `content ${i}\n`); return f; }).join("\n") + "\n").toString().trim().split("\n");
+        packOf(root, repoObjects, ids);
+        // The session's own store, with a pack for each of 25 turns.
+        const own = mkdtempSync(join(tmpdir(), "cavvy-native-own-"));
+        dirs.push(own);
+        git(own, ["init", "-q", "--bare"]);
+        for (let i = 0; i < 25; i++) packOf(own, join(own, "objects"), [git(own, ["hash-object", "-w", "--stdin"], `turn ${i}\n`).toString().trim()]);
+        const place: ObjectPlace = { objects: join(own, "objects"), alternates: [repoObjects], hash: "sha1" };
+        await helper().header(place, ids.slice(0, 1), soon());
+        const started = performance.now();
+        let found = 0;
+        for (let i = 0; i < ids.length; i += 64) found += (await helper().header(place, ids.slice(i, i + 64), soon())).size;
+        expect(found).toBe(ids.length);
+        // Each miss in its own store looked through its pack folder again: about 450 ms for these, 20 now.
+        expect(performance.now() - started).toBeLessThan(250);
+    }, 60_000);
+
+    test("one that doesn't answer in time is let go, and the next read starts another", async () => {
+        const { root, oids } = repo("sha1");
+        const place: ObjectPlace = { objects: join(root, ".git", "objects"), alternates: [], hash: "sha1" };
+        const stuck = helper();
+        // A deadline already past: the read can't be answered in time.
+        await expect(stuck.read(place, oids, Date.now())).rejects.toThrow(/time budget/);
+        await stuck.exited;
+        expect(stuck.alive).toBe(false);
+        const next = helper();
+        expect(next).not.toBe(stuck);
+        expect((await next.read(place, oids, soon())).size).toBe(oids.length);
+    });
+
     test("a request it can't answer is an error for that request alone", async () => {
         const place: ObjectPlace = { objects: "/nonexistent/objects", alternates: [], hash: "sha1" };
         expect((await helper().read(place, ["0123456789abcdef0123456789abcdef01234567"], soon())).size).toBe(0);

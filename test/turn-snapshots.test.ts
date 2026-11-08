@@ -1169,3 +1169,38 @@ describe("per-turn snapshots", () => {
         expect(existsSync(dir)).toBe(false);
     });
 });
+
+describe("with a cavvy-native that answers only errors", () => {
+    test("snapshots read their objects with git instead, and none of its errors reach the turn", async () => {
+        const { resetNativeObjects } = await import("../src/agent/native-objects");
+        // A helper that answers every request with an error naming a path, as a store it couldn't open would.
+        const bin = join(realpathSync(iso.home), "broken-native");
+        writeFileSync(`${bin}.ts`, `for await (const line of console) { const id = JSON.parse(line).id; const msg = Buffer.from("\\u0001couldn't open /private/store/objects"); const head = Buffer.alloc(8); head.writeUInt32LE(id, 0); head.writeUInt32LE(msg.length, 4); process.stdout.write(Buffer.concat([head, msg])); }\n`);
+        writeFileSync(bin, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(`${bin}.ts`)}\n`);
+        chmodSync(bin, 0o755);
+        const was = process.env.CAVVY_NATIVE_BIN;
+        process.env.CAVVY_NATIVE_BIN = bin;
+        resetNativeObjects();
+        try {
+            const { cwd, dir } = setup({ "a.txt": "a\n", "deep/er/b.txt": "b\n" });
+            const snapshots = new TurnSnapshots(dir, cwd, { narrowFromMs: 0 });
+            await snapshots.begin(1, "first");
+            write(cwd, "a.txt", "a changed\n");
+            await snapshots.end();
+            await snapshots.begin(2, "second");
+            write(cwd, "deep/er/b.txt", "b changed\n");
+            await snapshots.end();
+            for (const [turn, path] of [[1, "a.txt"], [2, "deep/er/b.txt"]] as const) {
+                const info = await snapshots.changes({ scope: "turn", turnId: turn });
+                expect(info.files.map((f) => f.path)).toEqual([path]);
+                expect(info.incomplete).toBeFalsy();
+                expect(JSON.stringify(info)).not.toContain("/private/store");
+            }
+            await snapshots.stop();
+        } finally {
+            if (was === undefined) delete process.env.CAVVY_NATIVE_BIN;
+            else process.env.CAVVY_NATIVE_BIN = was;
+            resetNativeObjects();
+        }
+    }, 30_000);
+});
