@@ -540,6 +540,8 @@ export class TurnSnapshots {
     private reader?: { key: string; reader: ObjectReader; queue: Promise<unknown>; idle?: ReturnType<typeof setTimeout> };
     /** Captures taken from what `git status` said differs (captureFromStatus): for tests. */
     statusCount = 0;
+    /** Trees read from the repository or this session's objects, not already known (readTree): for tests. */
+    treesFetched = 0;
     /**
      * The last capture from Git's index, whole or from what changed (captureNarrowed): the watch's count when it began,
      * the index it rested on, what differed from it, and this session's copy of the index as it left it.
@@ -1585,7 +1587,7 @@ export class TurnSnapshots {
             if (treesFound.size >= 64) treesFound.delete(treesFound.values().next().value!);
             treesFound.add(scan.cacheRoot);
         }
-        const base: NonNullable<typeof this.indexedBase> = {
+        const base: NonNullable<TurnSnapshots["indexedBase"]> = {
             watch: w,
             gen,
             indexStamp: stampKey(before),
@@ -2356,6 +2358,7 @@ export class TurnSnapshots {
         const known = treeBodies.get(oid);
         if (known) return known;
         const body = await this.withReader(root, deadline, (r) => r.read(oid, "tree"));
+        this.treesFetched++;
         rememberTree(oid, body);
         return body;
     }

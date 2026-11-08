@@ -1033,13 +1033,13 @@ describe("per-turn snapshots", () => {
         const snapshots = new TurnSnapshots(dir, cwd, { narrowFromMs: 0 });
         await snapshots.begin(1, "first");
         await snapshots.end();
-        const reader = () => (snapshots as unknown as { reader?: unknown }).reader;
         await snapshots.begin(2, "edit deep");
+        const before = snapshots.treesFetched;
         await Bun.sleep(60);
         write(cwd, "deep/er/still/a.txt", "a changed\n");
         // Read ahead a second after the change, before the turn ends.
-        for (let i = 0; i < 60 && !reader(); i++) await Bun.sleep(50);
-        expect(reader()).toBeDefined();
+        for (let i = 0; i < 60 && snapshots.treesFetched === before; i++) await Bun.sleep(50);
+        expect(snapshots.treesFetched).toBeGreaterThan(before);
         snapshots.reach([cwd]);
         await snapshots.end();
         expect(snapshots.list().at(-1)!.changed).toEqual(["deep/er/still/a.txt"]);
