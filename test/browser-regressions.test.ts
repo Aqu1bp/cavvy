@@ -200,6 +200,27 @@ describe.skipIf(!chromePath)("browser regressions with Chrome", () => {
         } finally { a.unwatch(ka); b.unwatch(kb); }
     }, 30_000);
 
+    test("every streamed frame is labelled with the pane's size, at scale 1 and 2, however often the page repaints", async () => {
+        // At scale 1 Chrome now and then labels a frame with half the size (frame-size.ts): the pane mapped clicks with
+        // that, and they landed at half their place. It's rare (about one frame in a hundred), so many repaints.
+        for (const scale of [1, 2]) {
+            const b = session();
+            const p = await b.page();
+            await p.evaluate(`document.body.innerHTML = '<div id=n style="font:40px sans-serif">0</div>'`);
+            const key = {}, sizes: string[] = [];
+            b.watch(key, (f, frameId) => { sizes.push(`${f.width}x${f.height}`); queueMicrotask(() => b.ack(key, frameId)); }, { width: 360, height: 622, scale });
+            try {
+                await until(() => sizes.length > 0, "the first frame");
+                for (let i = 0; i < 120; i++) {
+                    await p.evaluate(`document.getElementById('n').textContent = '${i}'`);
+                    await Bun.sleep(25);
+                }
+                await until(() => sizes.length >= 60, "frames of the repaints");
+                expect({ scale, wrong: sizes.filter((s) => s !== "360x622") }).toEqual({ scale, wrong: [] });
+            } finally { b.unwatch(key); }
+        }
+    }, 60_000);
+
     test("the demo form submits in Chrome and renders the search text", async () => {
         const demo = startDemoSite();
         const b = session();
