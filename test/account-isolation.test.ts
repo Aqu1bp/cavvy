@@ -96,6 +96,7 @@ if (!scenario) {
     const { saveAgentConfig, getProvider } = await import("../src/providers/registry");
     const { createBackend } = await import("../src/backends/index");
     const { accountEnv } = await import("../src/providers/accounts");
+    const { cliPriority } = await import("../src/backends/cli");
     const providers = ["claude-code", "codex"] as const;
     for (const provider of providers) saveAgentConfig(provider, {});
     writeFileSync(join(process.env.CAVVY_HOME!, "settings.json"), JSON.stringify({ delegation: false }));
@@ -134,7 +135,10 @@ if (!scenario) {
         const unexpected: string[] = [];
         const spawn = Bun.spawn;
         const spawnSpy = spyOn(Bun, "spawn").mockImplementation(((argv: any, opts: any) => {
-            const provider = Array.isArray(argv) ? argv[0] === join(bin, "claude") ? "claude-code" : argv[0] === join(bin, "codex") ? "codex" : undefined : undefined;
+            // An agent CLI starts after `nice` (backends/cli.ts cliPriority): the program is what follows it.
+            const prefix = cliPriority();
+            const program = Array.isArray(argv) ? (prefix.length && prefix.every((a, i) => argv[i] === a) ? argv[prefix.length] : argv[0]) : undefined;
+            const provider = program === join(bin, "claude") ? "claude-code" : program === join(bin, "codex") ? "codex" : undefined;
             if (provider) {
                 const planned = pending[provider];
                 const intendedAccount = typeof planned === "string" ? planned : planned?.shift();
