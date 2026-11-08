@@ -70,6 +70,8 @@ The change sets the depth, not the author. Use the first that applies:
 3. **Quick:** the diff only touches docs, copy or tests, or changes fewer than 40 lines and none of them in the core (AGENTS.md's list).
 4. Otherwise **Standard**.
 
+Then ask whether this particular change needs more than its tier, whatever its paths and size. Examples: it starts a process, makes a network call, deletes or overwrites files, touches credentials, or changes what runs at install or update. If it does, raise the depth one level and say why. Never lower it below what the rules gave, and never go below the depth the user typed.
+
 | | Reviewers in round 1 | Reviewers may run code | Voters per finding | A finding is kept when |
 |---|---|---|---|---|
 | Quick | 1, all lenses | no | 1 | the voter confirms it |
