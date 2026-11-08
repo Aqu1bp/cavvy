@@ -13,7 +13,7 @@ import { TabControl, type Owner } from "./control";
 import { ConsoleLog, NetworkLog, type ConsoleLevel } from "./logs";
 import { RefTable } from "./refs";
 import { allowedPage, checkUrl, displayUrl, hostOf, type BrowserApproval } from "./url-policy";
-import { frameSize, jpegSize } from "./frame-size";
+import { frameSize, pictureSize } from "./frame-size";
 
 /** A failure the agent can act on: its message says what to do. */
 export class BrowserError extends Error {}
@@ -429,7 +429,7 @@ export class Page {
             this.fullFrames++;
             // The frame's CSS dimensions: its own label, right for a frame already in flight during a resize, unless its
             // picture is the current stream's size, which Chrome sometimes mislabels (frame-size.ts).
-            this.o.hooks.frame(this, { data: p.data, ...frameSize(p.metadata, jpegSize(p.data), this.viewport) });
+            this.o.hooks.frame(this, { data: p.data, ...frameSize(p.metadata, pictureSize(p.data), this.viewport) });
             this.paced(Date.now());
         });
     }
