@@ -4,7 +4,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { NativeObjects, nativeBinary, nativeObjects, resetNativeObjects, type ObjectPlace } from "../src/agent/native-objects";
+import { helperGone, NativeObjects, nativeBinary, nativeObjects, resetNativeObjects, type ObjectPlace } from "../src/agent/native-objects";
 
 const bin = nativeBinary();
 const dirs: string[] = [];
@@ -123,6 +123,30 @@ describe.skipIf(!bin)("cavvy-native", () => {
         for (const { r, pick, got } of await Promise.all(asks)) {
             const want = catFile(r.root, pick);
             for (const [oid, o] of want) expect(Buffer.compare(got.get(oid)!.buf, o.buf)).toBe(0);
+        }
+    });
+
+    test("one that stops is started again for the next read, and a read it was answering says it went", async () => {
+        const { root, oids } = repo("sha1");
+        const place: ObjectPlace = { objects: join(root, ".git", "objects"), alternates: [], hash: "sha1" };
+        const first = helper();
+        first.close();
+        await first.exited;
+        const gone = await first.read(place, oids, soon()).then(() => undefined, (e: unknown) => e);
+        expect(helperGone(gone)).toBe(true);
+        const second = helper();
+        expect(second).not.toBe(first);
+        expect((await second.read(place, oids, soon())).size).toBe(oids.length);
+    });
+
+    test("CAVVY_NATIVE=0 turns it off", () => {
+        const was = process.env.CAVVY_NATIVE;
+        process.env.CAVVY_NATIVE = "0";
+        try {
+            expect(nativeBinary()).toBeUndefined();
+        } finally {
+            if (was === undefined) delete process.env.CAVVY_NATIVE;
+            else process.env.CAVVY_NATIVE = was;
         }
     });
 

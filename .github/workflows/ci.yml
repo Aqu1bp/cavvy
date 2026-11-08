@@ -42,6 +42,9 @@ jobs:
       - run: bun install --frozen-lockfile --ignore-scripts
         working-directory: desktop-electron
       - run: bun run typecheck
+      - name: cavvy-native lints
+        working-directory: native
+        run: cargo clippy --release --locked -- -D warnings
       - run: bun run gui:typecheck
       - run: bun run desktop:typecheck
       - run: bun run gui:build
@@ -77,6 +80,9 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun install --frozen-lockfile
         working-directory: gui
+      # cavvy-native (native/): the runner's Rust. Snapshot tests then read Git objects through it, as the app does.
+      - name: Build cavvy-native
+        run: bun run native:build
       - name: Run this shard's test files
         run: bun scripts/test-shard.ts ${{ matrix.shard }} 4 --reporter=junit --reporter-outfile=junit-${{ matrix.shard }}.xml
       # Feeds `bun scripts/test-shard.ts --timings`, which rebalances the shards.

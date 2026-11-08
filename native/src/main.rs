@@ -47,9 +47,12 @@ const MAX_OBJECT_BYTES: u64 = 512 * 1024 * 1024;
 
 type StoreKey = (PathBuf, gix_hash::Kind);
 
+/// Each store open, with when it was last used (a count of uses), and that count.
+type Open = (HashMap<StoreKey, (Arc<Store>, u64)>, u64);
+
 /// Every store opened, shared by the threads; each thread keeps its own handle (with its own caches) to each.
 struct Stores {
-    open: Mutex<(HashMap<StoreKey, (Arc<Store>, u64)>, u64)>,
+    open: Mutex<Open>,
 }
 
 impl Stores {
