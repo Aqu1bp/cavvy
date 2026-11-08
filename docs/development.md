@@ -25,6 +25,11 @@ bun run test ./test/foo.test.ts    # the test files for what you changed; CI run
 | `desktop-electron` | The desktop app (Electron): its window, the Browser pane's pages, packaging and benchmarks |
 | `desktop` | The app's icons, and the Tauri shell it replaces |
 | `scripts` | Mock model and demo project (`gui:demo`), sidecar build |
+| `native` | `cavvy-native`, in Rust: Git object reads for turn snapshots, one process for the whole server |
+
+## cavvy-native
+
+`bun run native:build` builds it (Rust from [rustup.rs](https://rustup.rs)) into `native/target/release`, where the server finds it when it runs from this checkout; the desktop app carries it beside the server. Without it, or with `CAVVY_NATIVE=0`, the server reads Git objects with git, as before it. `test/native-objects.test.ts` checks it against `git cat-file`.
 
 ## Adding features
 
