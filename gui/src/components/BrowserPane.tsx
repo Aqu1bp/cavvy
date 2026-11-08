@@ -2,7 +2,7 @@
 // (src/browser); the page arrives as frames drawn on a canvas, and clicks, keys and scrolls on the canvas go back to
 // it. A person using the page takes the tab from the agent (until they hand it back). The page is sized to the pane.
 
-import { createEffect, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
 import { ArrowLeft, ArrowRight, Globe, Plus, RotateCw, X } from "lucide-solid";
 import type { BrowserCommand, BrowserInput } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
@@ -226,10 +226,13 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         });
     }
 
-    // The tab changed: what was drawn belongs to the one before.
+    // The tab changed: what was drawn belongs to the one before. Its id alone, kept: `on` runs again whenever what it
+    // read changes, and finding the tab reads the whole list, so another tab opening or closing would clear this one's
+    // picture, which an idle page doesn't send again.
+    const shownTab = createMemo(() => tab()?.id);
     createEffect(
         on(
-            () => tab()?.id,
+            shownTab,
             () => {
                 generation++;
                 cancelInput();
