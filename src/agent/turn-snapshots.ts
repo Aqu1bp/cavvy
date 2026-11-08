@@ -25,6 +25,7 @@ import { KIND, scanIndexFiles, scanIndexPaths, statFiles } from "./stat-files";
 import type { Differs, IndexScan } from "./index-scan";
 import { acquireWatch, releaseWatch, type FolderWatch } from "./folder-watch";
 import { editTree, ObjectReader, parseTree, type TreeEdit } from "./tree-edit";
+import { helperGone, NativeReader, nativeObjects, placeOf, type ObjectSource } from "./native-objects";
 
 /** Paths a turn reached that are kept (TurnSnapshots.reach): past this many, the rest go unseen. */
 const MAX_REACHED = 20_000;
@@ -1579,8 +1580,8 @@ export class TurnSnapshots {
         }
         if (paths.length > NARROW_MAX_PATHS) return false;
         if (!treesFound.has(scan.cacheRoot)) {
-            const check = await git(root, ["cat-file", "--batch-check=%(objecttype)"], { input: `${scan.cacheRoot}\n`, privateEnv: this.readEnv(), deadline });
-            if (check.code || check.cut || check.out.toString().trim() !== "tree") return false;
+            const check = await this.objectHeaders(root, this.readEnv(), [scan.cacheRoot], deadline);
+            if (check?.get(scan.cacheRoot)?.type !== "tree") return false;
             if (treesFound.size >= 64) treesFound.delete(treesFound.values().next().value!);
             treesFound.add(scan.cacheRoot);
         }
@@ -1684,8 +1685,8 @@ export class TurnSnapshots {
         const cached = scan.cacheTree;
         if (!cached) return false;
         if (!treesFound.has(cached.root)) {
-            const check = await git(root, ["cat-file", "--batch-check=%(objecttype)"], { input: cached.trees.map((t) => `${t}\n`).join(""), privateEnv: this.readEnv(), deadline });
-            if (check.code || check.cut || check.out.toString().split("\n").filter(Boolean).some((t) => t !== "tree")) return false;
+            const check = await this.objectHeaders(root, this.readEnv(), cached.trees, deadline);
+            if (!check || cached.trees.some((t) => check.get(t)?.type !== "tree")) return false;
             if (treesFound.size >= 64) treesFound.delete(treesFound.values().next().value!);
             treesFound.add(cached.root);
         }
@@ -2359,9 +2360,23 @@ export class TurnSnapshots {
         return body;
     }
 
-    /** `f` with this session's reader (started if there's none for `root`), after whatever it's reading already. */
-    private async withReader<T>(root: string, deadline: number, f: (r: ObjectReader) => Promise<T>): Promise<T> {
+    /**
+     * `f` with the server's cavvy-native (native-objects.ts), where there is one; else with this session's reader
+     * (started if there's none for `root`), after whatever it's reading already.
+     */
+    private async withReader<T>(root: string, deadline: number, f: (r: ObjectSource) => Promise<T>): Promise<T> {
         const env = this.readEnv();
+        const native = nativeObjects();
+        const place = native && placeOf(env, this.algo);
+        if (native && place) {
+            if (Date.now() >= deadline) throw new Error("Snapshot exceeded its time budget (2 seconds by default).");
+            try {
+                return await f(new NativeReader(native, place, deadline));
+            } catch (e) {
+                // Gone mid-read: git, as without it.
+                if (!helperGone(e)) throw e;
+            }
+        }
         const key = `${root}\0${JSON.stringify(env)}`;
         let r = this.reader;
         if (!r || r.key !== key) {
@@ -2438,6 +2453,35 @@ export class TurnSnapshots {
     }
 
     /** This session's objects, with the repository's (when its index is known) to read what a capture took from it. */
+    /**
+     * Each object's kind and size, those there are (as `git cat-file --batch-check`): from cavvy-native where there is
+     * one, else from git. Undefined when they couldn't be looked up.
+     */
+    private async objectHeaders(root: string, env: Record<string, string>, oids: string[], deadline: number): Promise<Map<string, { type: string; size: number }> | undefined> {
+        if (!oids.length) return new Map();
+        const native = nativeObjects();
+        const place = native && placeOf(env, this.algo);
+        if (native && place) {
+            try {
+                return await native.header(place, oids, deadline);
+            } catch (e) {
+                // Out of time throws, as git's runner does; anything else is a lookup that failed.
+                if (!helperGone(e)) {
+                    if (Date.now() >= deadline) throw e;
+                    return undefined;
+                }
+            }
+        }
+        const r = await git(root, ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"], { input: oids.join("\n") + "\n", privateEnv: env, deadline });
+        if (r.code || r.cut) return undefined;
+        const out = new Map<string, { type: string; size: number }>();
+        for (const line of r.out.toString().split("\n")) {
+            const [oid, type, size] = line.split(" ");
+            if (oid && type && size && /^\d+$/.test(size)) out.set(oid, { type, size: Number(size) });
+        }
+        return out;
+    }
+
     private readEnv(): Record<string, string> {
         const index = locations.get(this.cwd)?.index;
         return index ? { ...this.env(), GIT_ALTERNATE_OBJECT_DIRECTORIES: objectsOf(index) } : this.env();
@@ -2463,13 +2507,8 @@ export class TurnSnapshots {
     private async sizes(changes: Change[], root: string, deadline: number) {
         const entries = changes.flatMap((c) => [c.old, c.now]).filter((e): e is Entry => !!e && e.mode !== "160000" && e.size === undefined);
         if (!entries.length) return;
-        const r = await git(root, ["cat-file", "--batch-check=%(objectname) %(objectsize)"], { input: [...new Set(entries.map((e) => e.oid))].join("\n") + "\n", privateEnv: this.readEnv(), deadline });
-        const size = new Map<string, number>();
-        for (const line of r.out.toString().split("\n")) {
-            const [oid, n] = line.split(" ");
-            if (oid && n && /^\d+$/.test(n)) size.set(oid, Number(n));
-        }
-        for (const e of entries) e.size = size.get(e.oid);
+        const found = await this.objectHeaders(root, this.readEnv(), [...new Set(entries.map((e) => e.oid))], deadline);
+        for (const e of entries) e.size = found?.get(e.oid)?.size;
     }
 
     changes(req: { scope: GitScope; turnId?: number; path?: string }): Promise<GitChangesInfo> {
