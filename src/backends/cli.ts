@@ -107,14 +107,23 @@ const EXIT_SEEN_MS = 100;
 /**
  * How much less of the CPU an agent CLI gets than the server (its niceness), and what it starts with it. The server
  * needs a few milliseconds now and then, the CLIs and their builds as much as they can get: at the same priority, with
- * many sessions busy, the server waits behind them, and so does every click in the window. CAVVY_CLI_NICE sets it; 0
- * runs them as the server is. Where there's no `nice` (Windows), they run as the server is.
+ * many sessions busy, the server waits behind them, and so does every click in the window. CAVVY_CLI_NICE sets it (up
+ * to 19, the most there is); 0 runs them as the server is. `nice` is found on `env`'s PATH, the one the CLI starts
+ * with. Where there's none (Windows), they run as the server is.
  */
 export function cliPriority(env: Record<string, string | undefined> = process.env): string[] {
     const n = Number(env.CAVVY_CLI_NICE ?? 5);
-    if (!Number.isInteger(n) || n <= 0 || n > 19 || process.platform === "win32") return [];
-    const nice = Bun.which("nice");
-    return nice ? [nice, "-n", String(n)] : [];
+    if (!Number.isInteger(n) || n <= 0 || process.platform === "win32") return [];
+    const nice = Bun.which("nice", { PATH: env.PATH ?? "" });
+    return nice ? [nice, "-n", String(Math.min(n, 19))] : [];
+}
+
+function isDirectory(path: string): boolean {
+    try {
+        return statSync(path).isDirectory();
+    } catch {
+        return false;
+    }
 }
 
 /** A long-running CLI speaking JSON lines on stdin/stdout. */
@@ -132,9 +141,11 @@ export class JsonLinesProcess {
 
     constructor(bin: string, args: string[], opts: { cwd: string; env?: Record<string, string> }) {
         const env = { ...childEnv(), ...opts.env };
-        // `nice` runs the CLI in its own place (exec), so its pid is the CLI's. Only for a CLI that's there to run: `nice`
-        // would start where the CLI can't, and say so in its own words; without it, the spawn's error says why (ENOENT).
-        const priority = Bun.which(bin, { PATH: env.PATH ?? "", cwd: opts.cwd }) ? cliPriority() : [];
+        // `nice` runs the CLI in its own place (exec), so its pid is the CLI's. Only for a CLI that's there to run, in a
+        // folder that's there: `nice` would start where the CLI can't, and fail naming itself; without it, the spawn's
+        // error names the CLI (ENOENT).
+        const runnable = Bun.which(bin, { PATH: env.PATH ?? "", cwd: opts.cwd }) && isDirectory(opts.cwd);
+        const priority = runnable ? cliPriority(env) : [];
         this.proc = Bun.spawn([...priority, bin, ...args], { cwd: opts.cwd, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
         this.exited = this.proc.exited;
         this.pid = this.proc.pid;
