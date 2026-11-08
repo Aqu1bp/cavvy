@@ -151,6 +151,8 @@ export class NativeObjects {
         return new Promise<Buffer>((res, rej) => {
             const timer = setTimeout(() => {
                 if (this.pending.delete(id)) {
+                    // Nothing else asked: it doesn't keep a script running while its late answer comes, or never does.
+                    if (!this.pending.size) this.idle();
                     rej(new Error("Snapshot exceeded its time budget (2 seconds by default)."));
                     // Out of time is this read's (the server busy, the read big); the helper goes on answering the rest.
                     // A ping it doesn't answer, or reads it never answers, is its being stuck (stuck()).

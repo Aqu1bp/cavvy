@@ -285,6 +285,53 @@ process.stdin.on("data", (d) => {
         }
     });
 
+    test("a script whose read ran out of time still ends on its own", async () => {
+        const { root, oids } = repo("sha1");
+        const dir = mkdtempSync(join(tmpdir(), "cavvy-native-exit-"));
+        dirs.push(dir);
+        const script = join(dir, "late.ts");
+        writeFileSync(
+            script,
+            `import { NativeObjects } from ${JSON.stringify(join(import.meta.dir, "..", "src", "agent", "native-objects.ts"))};
+const helper = new NativeObjects(${JSON.stringify(standIn(-1))});
+await helper.read({ objects: ${JSON.stringify(join(root, ".git", "objects"))}, alternates: [], hash: "sha1" }, ${JSON.stringify(oids)}, Date.now() + 20).catch(() => {});
+console.log("done");
+`,
+        );
+        const started = Date.now();
+        const proc = Bun.spawn([process.execPath, script], { stdout: "pipe", stderr: "pipe" });
+        const killer = setTimeout(() => proc.kill(), 10_000);
+        const code = await proc.exited;
+        clearTimeout(killer);
+        expect(await new Response(proc.stdout).text()).toContain("done");
+        expect(code).toBe(0);
+        expect(Date.now() - started).toBeLessThan(10_000);
+    }, 20_000);
+
+    test("after the helper stops four times, the server reads with git until it restarts", () => {
+        const was = process.env.CAVVY_NATIVE_BIN;
+        process.env.CAVVY_NATIVE_BIN = standIn(-1);
+        resetNativeObjects();
+        try {
+            const seen = new Set<NativeObjects>();
+            for (let i = 0; i < 4; i++) {
+                const h = nativeObjects();
+                expect(h).not.toBeNull();
+                seen.add(h!);
+                h!.close();
+            }
+            expect(seen.size).toBe(4);
+            expect(nativeObjects()).toBeNull();
+            expect(nativeObjects()).toBeNull();
+            resetNativeObjects();
+            expect(nativeObjects()).not.toBeNull();
+        } finally {
+            if (was === undefined) delete process.env.CAVVY_NATIVE_BIN;
+            else process.env.CAVVY_NATIVE_BIN = was;
+            resetNativeObjects();
+        }
+    });
+
     test("a request it can't answer is an error for that request alone", async () => {
         const place: ObjectPlace = { objects: "/nonexistent/objects", alternates: [], hash: "sha1" };
         expect((await helper().read(place, ["0123456789abcdef0123456789abcdef01234567"], soon())).size).toBe(0);
