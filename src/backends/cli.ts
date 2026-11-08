@@ -104,6 +104,19 @@ export const stopTiming = {
 /** How long after a write that waited on the pipe its process's exit, if that's why it settled, is reported (JsonLinesProcess.send). */
 const EXIT_SEEN_MS = 100;
 
+/**
+ * How much less of the CPU an agent CLI gets than the server (its niceness), and what it starts with it. The server
+ * needs a few milliseconds now and then, the CLIs and their builds as much as they can get: at the same priority, with
+ * many sessions busy, the server waits behind them, and so does every click in the window. CAVVY_CLI_NICE sets it; 0
+ * runs them as the server is. Where there's no `nice` (Windows), they run as the server is.
+ */
+export function cliPriority(env: Record<string, string | undefined> = process.env): string[] {
+    const n = Number(env.CAVVY_CLI_NICE ?? 5);
+    if (!Number.isInteger(n) || n <= 0 || n > 19 || process.platform === "win32") return [];
+    const nice = Bun.which("nice");
+    return nice ? [nice, "-n", String(n)] : [];
+}
+
 /** A long-running CLI speaking JSON lines on stdin/stdout. */
 export class JsonLinesProcess {
     private proc: Subprocess<"pipe", "pipe", "pipe">;
@@ -118,7 +131,8 @@ export class JsonLinesProcess {
     readonly stderrEnded: Promise<void>;
 
     constructor(bin: string, args: string[], opts: { cwd: string; env?: Record<string, string> }) {
-        this.proc = Bun.spawn([bin, ...args], { cwd: opts.cwd, env: { ...childEnv(), ...opts.env }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+        // `nice` runs the CLI in its own place (exec), so its pid is the CLI's.
+        this.proc = Bun.spawn([...cliPriority(), bin, ...args], { cwd: opts.cwd, env: { ...childEnv(), ...opts.env }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
         this.exited = this.proc.exited;
         this.pid = this.proc.pid;
         void this.exited.then(() => (this.gone = true));
