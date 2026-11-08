@@ -29,3 +29,7 @@ test("CAVVY_CLI_NICE sets it, and 0 or nonsense runs CLIs as the server is", () 
         expect(cliPriority({}).slice(1)).toEqual(["-n", "5"]);
     }
 });
+
+test("a CLI that isn't there fails to start with its own error, as without the priority", () => {
+    expect(() => new JsonLinesProcess("/nonexistent/fake-cli", [], { cwd: tmpdir() })).toThrow(/ENOENT/);
+});

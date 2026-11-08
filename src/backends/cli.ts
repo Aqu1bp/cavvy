@@ -131,8 +131,11 @@ export class JsonLinesProcess {
     readonly stderrEnded: Promise<void>;
 
     constructor(bin: string, args: string[], opts: { cwd: string; env?: Record<string, string> }) {
-        // `nice` runs the CLI in its own place (exec), so its pid is the CLI's.
-        this.proc = Bun.spawn([...cliPriority(), bin, ...args], { cwd: opts.cwd, env: { ...childEnv(), ...opts.env }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+        const env = { ...childEnv(), ...opts.env };
+        // `nice` runs the CLI in its own place (exec), so its pid is the CLI's. Only for a CLI that's there to run: `nice`
+        // would start where the CLI can't, and say so in its own words; without it, the spawn's error says why (ENOENT).
+        const priority = Bun.which(bin, { PATH: env.PATH ?? "", cwd: opts.cwd }) ? cliPriority() : [];
+        this.proc = Bun.spawn([...priority, bin, ...args], { cwd: opts.cwd, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
         this.exited = this.proc.exited;
         this.pid = this.proc.pid;
         void this.exited.then(() => (this.gone = true));
