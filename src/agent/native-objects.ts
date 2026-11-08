@@ -36,6 +36,14 @@ export function nativeBinary(): string | undefined {
 
 class Failed extends Error {}
 
+/**
+ * When a helper is taken as stuck: this many reads that ran out of time still unanswered this long after. A busy
+ * machine answers late; stuck workers (a pack it loops on, a filesystem that hangs) never do. Pings don't tell: the
+ * helper answers them ahead of its workers.
+ */
+const STUCK_READS = 3;
+const STUCK_MS = 5000;
+
 /** One running helper. Requests are answered in any order, matched by id. */
 export class NativeObjects {
     private proc: ReturnType<typeof Bun.spawn>;
@@ -47,9 +55,13 @@ export class NativeObjects {
     /** The reply being read, once its header is in: its id and length. */
     private reply?: { id: number; length: number };
     private dead = false;
+    /** Reads that ran out of time, by id, and when: each goes once its answer comes, however late. */
+    private late = new Map<number, number>();
+    private readonly stuckMs: number;
     readonly exited: Promise<number>;
 
-    constructor(bin: string) {
+    constructor(bin: string, opts: { stuckMs?: number } = {}) {
+        this.stuckMs = opts.stuckMs ?? STUCK_MS;
         this.proc = Bun.spawn([bin], { stdin: "pipe", stdout: "pipe", stderr: "ignore", env: { PATH: process.env.PATH ?? "" } });
         this.exited = this.proc.exited.then((code) => {
             this.dead = true;
@@ -111,7 +123,10 @@ export class NativeObjects {
 
     private answered(id: number, body: Buffer) {
         const p = this.pending.get(id);
-        if (!p) return;
+        if (!p) {
+            this.late.delete(id);
+            return;
+        }
         this.pending.delete(id);
         if (!this.pending.size) this.idle();
         if (body[0] === 0) p.resolve(body.subarray(1));
@@ -137,9 +152,13 @@ export class NativeObjects {
             const timer = setTimeout(() => {
                 if (this.pending.delete(id)) {
                     rej(new Error("Snapshot exceeded its time budget (2 seconds by default)."));
-                    // Not answering in time may be its being stuck: the next read starts another (nativeObjects), and
-                    // what this one was still answering goes to git.
-                    this.close();
+                    // Out of time is this read's (the server busy, the read big); the helper goes on answering the rest.
+                    // A ping it doesn't answer, or reads it never answers, is its being stuck (stuck()).
+                    if (op === "ping") this.close();
+                    else {
+                        this.late.set(id, Date.now());
+                        setTimeout(() => this.stuck(), this.stuckMs + 1).unref?.();
+                    }
                 }
             }, Math.max(0, deadline - Date.now()));
             this.pending.set(id, { resolve: (b) => (clearTimeout(timer), res(b)), reject: (e) => (clearTimeout(timer), rej(e)) });
@@ -187,6 +206,14 @@ export class NativeObjects {
 
     async ping(deadline = Date.now() + 5000): Promise<void> {
         await this.ask("ping", undefined, [], deadline);
+    }
+
+    /** Stuck: let go, so the next read starts another (nativeObjects), and what it was still answering goes to git. */
+    private stuck() {
+        const since = Date.now() - this.stuckMs;
+        let unanswered = 0;
+        for (const at of this.late.values()) if (at <= since) unanswered++;
+        if (unanswered >= STUCK_READS) this.close();
     }
 
     close() {

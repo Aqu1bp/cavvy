@@ -1,7 +1,8 @@
 // Builds cavvy-native (native/) and copies it where a server will look for it: beside the server's own executable.
 //
-//   bun scripts/native-build.ts                              this machine; the server run from this checkout finds it
-//   bun scripts/native-build.ts --into dist --optional       and beside dist/cavvy; without cargo, says so and goes on
+//   bun scripts/native-build.ts                              this machine, into native/target/release, where the server
+//                                                            run from this checkout looks
+//   bun scripts/native-build.ts --into dist --optional       and beside dist/cavvy; if it can't be built, says so and goes on
 //   bun scripts/native-build.ts --target aarch64-apple-darwin --into <App>/Contents/MacOS
 //
 // The target's standard library is added with rustup where there is one; where cargo puts what it builds is asked of
@@ -23,23 +24,35 @@ function run(cmd: string[]): string {
     return r.stdout.toString();
 }
 
-if (!Bun.which("cargo")) {
-    const message = "No cargo: cavvy-native isn't built (install Rust from rustup.rs to include it); Cavvy reads Git objects with git.";
-    if (args.includes("--optional")) {
-        console.warn(message);
-        process.exit(0);
-    }
-    console.error(message);
-    process.exit(1);
+/** Puts the built helper at `dir`. */
+function place(built: string, dir: string): string {
+    mkdirSync(dir, { recursive: true });
+    copyFileSync(built, join(dir, exe));
+    chmodSync(join(dir, exe), 0o755);
+    return join(resolve(dir), exe);
 }
-if (target && Bun.which("rustup")) run(["rustup", "target", "add", target]);
-const r = Bun.spawnSync(["cargo", "build", "--release", "--locked", ...(target ? ["--target", target] : [])], { cwd: native, stdout: "inherit", stderr: "inherit" });
-if (r.exitCode !== 0) process.exit(r.exitCode ?? 1);
-const targetDir = (JSON.parse(run(["cargo", "metadata", "--format-version", "1", "--no-deps", "--locked"])) as { target_directory: string }).target_directory;
-const built = join(targetDir, ...(target ? [target] : []), "release", exe);
-if (into) {
-    mkdirSync(into, { recursive: true });
-    copyFileSync(built, join(into, exe));
-    chmodSync(join(into, exe), 0o755);
-    console.log(`cavvy-native: ${join(resolve(into), exe)}`);
-} else console.log(`cavvy-native: ${built}`);
+
+function build(): string {
+    if (!Bun.which("cargo")) throw new Error("no cargo: install Rust from rustup.rs to include it");
+    if (target && Bun.which("rustup")) run(["rustup", "target", "add", target]);
+    const r = Bun.spawnSync(["cargo", "build", "--release", "--locked", ...(target ? ["--target", target] : [])], { cwd: native, stdout: "inherit", stderr: "inherit" });
+    if (r.exitCode !== 0) throw new Error(`cargo build failed (${r.exitCode})`);
+    const targetDir = (JSON.parse(run(["cargo", "metadata", "--format-version", "1", "--no-deps", "--locked"])) as { target_directory: string }).target_directory;
+    const built = join(targetDir, ...(target ? [target] : []), "release", exe);
+    if (into) return place(built, into);
+    // Where the server run from this checkout looks, wherever CARGO_TARGET_DIR or .cargo/config put the build.
+    const home = join(native, "target", "release");
+    return resolve(built) === resolve(home, exe) ? built : place(built, home);
+}
+
+try {
+    console.log(`cavvy-native: ${build()}`);
+} catch (e) {
+    const message = `cavvy-native isn't built (${(e as Error).message.replace(/\.$/, "")}); Cavvy reads Git objects with git.`;
+    // Optional (bun run build, the desktop app): the rest builds without it, as before there was one.
+    if (args.includes("--optional")) console.warn(message);
+    else {
+        console.error(message);
+        process.exit(1);
+    }
+}

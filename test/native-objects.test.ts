@@ -213,17 +213,76 @@ describe.skipIf(!bin)("cavvy-native", () => {
         expect(performance.now() - started).toBeLessThan(250);
     }, 60_000);
 
-    test("one that doesn't answer in time is let go, and the next read starts another", async () => {
+    /**
+     * A stand-in helper: it answers pings at once and every read `delay` ms later (with an error, which counts as an
+     * answer), or never answers a read (`delay` -1), as when its workers are stuck.
+     */
+    function standIn(delay: number): string {
+        const dir = mkdtempSync(join(tmpdir(), "cavvy-native-stand-in-"));
+        dirs.push(dir);
+        writeFileSync(
+            join(dir, "stand-in.js"),
+            `const delay = ${delay};
+const frame = (id, body) => {
+    const f = Buffer.alloc(8 + body.length);
+    f.writeUInt32LE(id, 0);
+    f.writeUInt32LE(body.length, 4);
+    body.copy(f, 8);
+    process.stdout.write(f);
+};
+let buf = "";
+process.stdin.on("data", (d) => {
+    buf += d;
+    for (let i; (i = buf.indexOf("\\n")) >= 0; buf = buf.slice(i + 1)) {
+        const m = JSON.parse(buf.slice(0, i));
+        if (m.op === "ping") frame(m.id, Buffer.from([0]));
+        else if (delay >= 0) setTimeout(() => frame(m.id, Buffer.concat([Buffer.from([1]), Buffer.from("late")])), delay);
+    }
+});
+`,
+        );
+        const bin = join(dir, "cavvy-native");
+        writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "${join(dir, "stand-in.js")}"\n`, { mode: 0o755 });
+        return bin;
+    }
+
+    test("one whose reads run out of time but are answered later stays, however often", async () => {
         const { root, oids } = repo("sha1");
         const place: ObjectPlace = { objects: join(root, ".git", "objects"), alternates: [], hash: "sha1" };
-        const stuck = helper();
-        // A deadline already past: the read can't be answered in time.
-        await expect(stuck.read(place, oids, Date.now())).rejects.toThrow(/time budget/);
+        const slow = new NativeObjects(standIn(150), { stuckMs: 400 });
+        try {
+            for (let i = 0; i < 6; i++) await expect(slow.read(place, oids, Date.now() + 20)).rejects.toThrow(/time budget/);
+            // Past the time it's given to answer them: it did, late.
+            await Bun.sleep(700);
+            expect(slow.alive).toBe(true);
+        } finally {
+            slow.close();
+        }
+    });
+
+    test("one that never answers its reads is let go, though it answers pings, and what it was answering goes to git", async () => {
+        const { root, oids } = repo("sha1");
+        const place: ObjectPlace = { objects: join(root, ".git", "objects"), alternates: [], hash: "sha1" };
+        const stuck = new NativeObjects(standIn(-1), { stuckMs: 200 });
+        const waiting = stuck.read(place, oids, Date.now() + 60_000);
+        for (let i = 0; i < 3; i++) await expect(stuck.read(place, oids, Date.now() + 20)).rejects.toThrow(/time budget/);
+        await stuck.ping();
         await stuck.exited;
         expect(stuck.alive).toBe(false);
-        const next = helper();
-        expect(next).not.toBe(stuck);
-        expect((await next.read(place, oids, soon())).size).toBe(oids.length);
+        expect(helperGone(await waiting.catch((e: unknown) => e))).toBe(true);
+    });
+
+    test("two late reads it never answers aren't enough to let it go", async () => {
+        const { root, oids } = repo("sha1");
+        const place: ObjectPlace = { objects: join(root, ".git", "objects"), alternates: [], hash: "sha1" };
+        const helperWithTwo = new NativeObjects(standIn(-1), { stuckMs: 200 });
+        try {
+            for (let i = 0; i < 2; i++) await expect(helperWithTwo.read(place, oids, Date.now() + 20)).rejects.toThrow(/time budget/);
+            await Bun.sleep(400);
+            expect(helperWithTwo.alive).toBe(true);
+        } finally {
+            helperWithTwo.close();
+        }
     });
 
     test("a request it can't answer is an error for that request alone", async () => {

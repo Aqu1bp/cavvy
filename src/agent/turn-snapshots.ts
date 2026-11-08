@@ -2466,6 +2466,7 @@ export class TurnSnapshots {
         const native = nativeObjects();
         const place = native && placeOf(env, this.algo);
         if (native && place) {
+            if (Date.now() >= deadline) throw new Error("Snapshot exceeded its time budget (2 seconds by default).");
             try {
                 return await native.header(place, oids, deadline);
             } catch (e) {

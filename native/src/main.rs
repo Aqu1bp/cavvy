@@ -71,9 +71,10 @@ impl Stores {
             *used = now;
             return Ok(s.clone());
         }
-        // Room for many more packs than are there now: a session's store gains one each time a turn writes a lot, and
-        // a store runs out of room, not slower, past what it was opened with (then it's opened again: forget).
-        let options = Options { slots: Slots::AsNeededByDiskState { multiplier: 2.0, minimum: 1024 }, ..Options::default() };
+        // Room for twice the packs there are now: a session's store gains one each time a turn writes a lot, and a store
+        // runs out of room, not slower, past what it was opened with; then it's opened again (forget), sized anew. Each
+        // slot costs memory, so not more than that.
+        let options = Options { slots: Slots::AsNeededByDiskState { multiplier: 2.0, minimum: 32 }, ..Options::default() };
         let store = Arc::new(Store::at_opts(key.0.clone(), key.1, &mut std::iter::empty(), options)?);
         if map.len() >= MAX_STORES {
             if let Some(oldest) = map.iter().min_by_key(|(_, (_, u))| *u).map(|(k, _)| k.clone()) {
