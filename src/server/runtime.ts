@@ -2999,7 +2999,7 @@ export class Runtime {
         const cwd = this.ws.cwd;
         if (trustedByUser(cwd)) return this.notice(`You've trusted ${cwd}.`);
         await this.engine.trustProject(cwd, true);
-        this.notice(trustedByUser(cwd) ? `Trusted ${cwd}. Diagnostics after edits are on for it.` : `Trusted ${cwd} for this run only.`, trustedByUser(cwd) ? "info" : "warn");
+        this.notice(trustedByUser(cwd) ? `Trusted ${cwd}. Edits are checked for errors now.` : `Trusted ${cwd} for this run only.`, trustedByUser(cwd) ? "info" : "warn");
     }
 
     /** `admitted`: its UserPromptSubmit hooks went already, with what they added (Queued.admitted). */

@@ -916,6 +916,8 @@ export interface ProjectInfo {
     trusted: boolean;
     /** Configuration that trusting the folder would turn on. */
     needsTrust: string[];
+    /** Nothing to turn on, but the user hasn't said they trust it: edits aren't checked for errors until they do. */
+    askTrust?: boolean;
     branch?: string;
     git: boolean;
     openedAt?: number;

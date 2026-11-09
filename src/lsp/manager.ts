@@ -606,7 +606,7 @@ export class LspManager {
         // Language servers run the project's own code (its TypeScript install, build scripts, its interpreter):
         // only in a folder the user trusted themselves, not one trusted for the session because it had nothing to protect.
         if (!(this.o.trusted?.() ?? true)) {
-            if (!this.toldUntrusted && !this.parent) this.notice("info", "Diagnostics after edits are off in this folder until you trust it (/trust): language servers run the project's own code.");
+            if (!this.toldUntrusted && !this.parent) this.notice("info", "Edits aren't checked for errors until you /trust this folder.");
             this.toldUntrusted = true;
             return undefined;
         }

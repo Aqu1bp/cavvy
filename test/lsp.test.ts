@@ -682,7 +682,7 @@ describe("review fixes", () => {
         expect(await m.afterEdit(join(root, "a.ts"), "ERROR: x")).toBeUndefined();
         expect(await m.afterEdit(join(root, "b.ts"), "ERROR: x")).toBeUndefined();
         expect(m.status()).toEqual([]);
-        expect(notices).toEqual(["Diagnostics after edits are off in this folder until you trust it (/trust): language servers run the project's own code."]);
+        expect(notices).toEqual(["Edits aren't checked for errors until you /trust this folder."]);
     });
 
     test("each session sharing a pool is told about a missing server", async () => {
