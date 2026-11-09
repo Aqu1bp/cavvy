@@ -5,6 +5,7 @@
 // waits is on the same grid (alignAnimations): each one out of step with the others is a window drawn again.
 
 import { batch } from "solid-js";
+import { renderDetails } from "./render-error";
 
 /** How often. A word out sooner can't be seen; each step lays the column out, paints and draws the window. */
 export const STEP_MS = 50;
@@ -22,10 +23,20 @@ function fire(now: number) {
     last = now;
     const fns = [...due];
     due.clear();
-    batch(() => {
-        for (const fn of fns) fn(now);
-    });
-    arm();
+    try {
+        batch(() => {
+            // One that throws doesn't keep the others from their step.
+            for (const fn of fns) {
+                try {
+                    fn(now);
+                } catch (e) {
+                    console.error(renderDetails(e));
+                }
+            }
+        });
+    } finally {
+        arm();
+    }
 }
 
 /** The next step of the grid at least half a step after `t`. */
