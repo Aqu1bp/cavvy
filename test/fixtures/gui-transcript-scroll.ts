@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { all, component, node, renderer, text, type Node } from "../helpers/gui-render";
-import { anchoredTop, atBottom, FAR, firstBelow, firstShown, firstWindow, lazyHeights, MORE_TURNS, restoredShown, positionCache, turnHeight, TURN_PAGE } from "../../gui/src/lib/transcript-scroll";
+import { anchoredTop, atBottom, FAR, firstBelow, firstShown, firstWindow, keyed, lazyHeights, MORE_TURNS, placedAgain, restoredShown, positionCache, turnHeight, TURN_PAGE, type TurnKey } from "../../gui/src/lib/transcript-scroll";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../../gui/src/lib/live-line";
 import { finishEntrances } from "../../gui/src/lib/entrances";
 import { ROOM_KEPT, ROOM_WRITTEN_MS, roomFor } from "../../gui/src/lib/follow";
@@ -139,10 +139,16 @@ const workToggles = new Map<string, (el: any, toggle: () => void) => void>();
 const onFolds = new Map<string, (el: any, fold: () => void) => void>();
 /** state/app.ts loadEarlier and loadEarlierTo: what a test has them do. */
 let loadMore: (h: any, how: any) => Promise<boolean> = async () => false;
-let loadTo: (h: any, turnId: string) => Promise<boolean> = async () => false;
+let loadTo: (h: any, key: TurnKey) => Promise<boolean> | undefined = () => undefined;
+/** state/app.ts onRenew: what each mounted conversation does when its session comes again, by session id. */
+const renews = new Map<string, () => (() => void) | void>();
+/** The work log each turn was last drawn with open or not (TurnView's workOpen), by turn id. */
+const workOpen = new Map<string, boolean>();
 const scope = {
     loadEarlier: (h: any, how: any) => loadMore(h, how),
-    loadEarlierTo: (h: any, turnId: string) => loadTo(h, turnId),
+    loadEarlierTo: (h: any, key: TurnKey) => loadTo(h, key),
+    onRenew: (h: any, fn: () => (() => void) | void) => (renews.set(h.id, fn), () => renews.delete(h.id)),
+    keyed, placedAgain,
     setFollowing() {},
     renderer: { ...solid, ...renderer, createElement: create },
     anchoredTop, atBottom, FAR, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, turnHeight, window: { innerHeight: 500 }, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow, wordsFlowing: () => flowingNow, finishEntrances, DrawnAgain,
@@ -187,6 +193,7 @@ const scope = {
     HTMLElement: { [Symbol.hasInstance]: (x: any) => !!x?.props },
     TurnView: (p: any) => {
         restoredOpen ||= p.workOpen;
+        workOpen.set(p.turn.id, p.workOpen);
         workToggles.set(p.turn.id, p.onToggleWork);
         const n = create("article"); n.props["data-turn"] = p.turn.id;
         p.onElement?.(n, p.turn.id);
@@ -955,28 +962,50 @@ for (const mode of ["prose", "tool"] as const) {
     } finally { dispose(); rowAnchors = undefined; rowShift = 0; }
 }
 
-// Opened again where a turn was read that the session didn't come with this time (new turns pushed it out of those
-// sent): the turns back to it come first, and it opens there, not further down.
+// Opened again (a session the window let go of, or the server did), its turns numbered anew: ids that went to notices
+// and prompts in between live don't when it's read in again, so an id the window saved is another turn's now, or none.
+// It opens on the turn read, found by its place in the session; where that's a turn the session didn't come with this
+// time (new turns pushed it out), the turns back to it come first, in one request.
 {
-    const [sent, setSent] = solid.createSignal(turns(130).slice(30));
+    /** A session's turns: each prompt's place in it, and when it started; live, a turn of notices only after `notice`. */
+    const placed = (n: number, from: number, notice?: number) => {
+        const out: any[] = [];
+        let id = from;
+        for (let i = 0; i < n; i++) {
+            out.push({ id: `turn-${id++}`, prompt: { text: `prompt ${i}` }, pos: { seg: 0, index: 2 * i }, startedAt: 1000 + i, blocks: [] });
+            if (i === notice) out.push({ id: `turn-${id++}`, startedAt: 1000 + i + 0.5, blocks: [{ t: "notice", id: `turn-${id++}` }] });
+        }
+        return out;
+    };
+    const prompt = (id: string) => (all(root).find((n) => n.props["data-turn"] === id) as any) && placedTurns().find((t) => t.id === id)?.prompt?.text;
+    let placedTurns = () => [] as any[];
+
+    // Pushed out: the turns back to it, then there.
+    const live = placed(130, 0, 5);
+    const read = live.find((t) => t.prompt?.text === "prompt 20")!;
+    assert.equal(read.id, "turn-22");
+    const [sent, setSent] = solid.createSignal(placed(130, 0).slice(30));
     const [earlier, setEarlier] = solid.createSignal(30);
+    placedTurns = sent;
     const handle = { id: "paged", view: { state: {}, get turns() { return sent(); }, get earlier() { return earlier(); } } };
-    cache.set(handle.id, { bottom: false, top: 0, anchor: { turnId: "turn-20", offset: -50 }, openWork: [] });
-    let asked: string | undefined;
+    cache.set(handle.id, keyed(live, { bottom: false, top: 0, anchor: { turnId: read.id, offset: -50 }, openWork: [read.id] }));
+    let asked: TurnKey | undefined;
     let land: (() => void) | undefined;
-    loadTo = (_h, turnId) => {
-        asked = turnId;
-        return new Promise((r) => (land = () => { setSent(turns(130)); setEarlier(0); r(true); }));
+    loadTo = (_h, key) => {
+        asked = key;
+        return new Promise((r) => (land = () => { setSent(placed(130, 0)); setEarlier(0); r(true); }));
     };
     dispose = mount(handle);
     try {
-        assert.equal(asked, "turn-20", "the turns back to the place read are asked for");
+        assert.deepEqual(asked?.near, { seg: 0, index: 40 }, "the turns back to the place read are asked for");
         assert.equal(all(root).filter((n) => n.tag === "article").length, 0, "nothing shown further down meanwhile");
         land!();
         for (let i = 0; i < 5; i++) await Promise.resolve();
         settle();
-        assert.ok(turn("turn-20"), "the turn read is there");
+        assert.equal(prompt("turn-20"), "prompt 20", "the turn read is there, under its id now");
         assert.equal(turn("turn-20").getBoundingClientRect().top, -50, "where it was read");
+        assert.equal(workOpen.get("turn-20"), true, "its work log open, as it was");
+        assert.equal(workOpen.get("turn-22"), false, "not the one that has its old id");
         // Find open, and a reconnect comes with fewer turns than it had: the rest are asked for again.
         const more: unknown[] = [];
         loadMore = async (_h, how) => (more.push(how), true);
@@ -985,7 +1014,60 @@ for (const mode of ["prose", "tool"] as const) {
         setEarlier(3);
         assert.deepEqual(more, [{ all: true }], "find counts every turn again");
         setFindShown(false);
-    } finally { dispose(); loadTo = async () => false; loadMore = async () => false; }
+    } finally { dispose(); loadTo = () => undefined; loadMore = async () => false; }
+
+    // Came with it, its old id now another turn's: on the turn read all the same, nothing asked for.
+    const [all130, setAll130] = solid.createSignal(placed(130, 0));
+    placedTurns = all130;
+    const whole = { id: "renumbered", view: { state: {}, get turns() { return all130(); }, earlier: 0 } };
+    cache.set(whole.id, keyed(live, { bottom: false, top: 0, anchor: { turnId: read.id, offset: -50 }, openWork: [] }));
+    asked = undefined;
+    loadTo = (_h, key) => ((asked = key), undefined);
+    dispose = mount(whole);
+    try {
+        assert.equal(prompt("turn-22"), "prompt 22", "the turn read's old id is another turn's now");
+        assert.equal(turn("turn-20").getBoundingClientRect().top, -50, "it opens on the turn read, not on the one that has its id");
+    } finally { dispose(); loadTo = () => undefined; }
+
+    // The turn read gone (the notices' turn, gone with the session read in anew): at the end, nothing more loaded.
+    const notices = live.find((t) => !t.prompt)!;
+    cache.set(whole.id, keyed(live, { bottom: false, top: 0, anchor: { turnId: notices.id, offset: -50 }, openWork: [] }));
+    asked = undefined;
+    loadTo = (_h, key) => ((asked = key), undefined);
+    dispose = mount(whole);
+    try {
+        assert.equal(button("jump"), undefined, "it follows the end");
+        assert.equal(top, height(scroller()) - viewportHeight, "at the end");
+    } finally { dispose(); loadTo = () => undefined; }
+
+    // Shown while its session comes again from the server, which read it in anew: the place read stays on its turn.
+    setAll130(placed(130, 0, 120));
+    dispose = mount(whole);
+    try {
+        const at = all130().find((t) => t.prompt?.text === "prompt 125")!;
+        assert.equal(at.id, "turn-127");
+        scroll(top + turn(at.id).getBoundingClientRect().top + 20);
+        assert.equal(turn(at.id).getBoundingClientRect().top, -20);
+        const after = renews.get(whole.id)!();
+        setAll130(placed(130, 0));
+        after?.();
+        resize();
+        settle();
+        assert.equal(prompt("turn-125"), "prompt 125");
+        assert.equal(turn("turn-125").getBoundingClientRect().top, -20, "the place read is on the same turn");
+        // Again, the turn read gone: to the end.
+        setAll130(placed(130, 0, 126));
+        settle();
+        assert.equal(all130().find((t) => t.id === "turn-127")?.prompt, undefined, "the notices' turn");
+        scroll(top + turn("turn-127").getBoundingClientRect().top + 20);
+        const gone = renews.get(whole.id)!();
+        setAll130(placed(130, 0));
+        gone?.();
+        resize();
+        settle();
+        assert.equal(button("jump"), undefined, "it follows the end");
+        assert.equal(top, height(scroller()) - viewportHeight, "at the end");
+    } finally { dispose(); }
 }
 
 // Following a reply in room kept under it (lib/follow.ts): once words come steadily the reply writes into the room and

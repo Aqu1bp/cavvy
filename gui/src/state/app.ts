@@ -25,7 +25,7 @@ import { orderSessions } from "../lib/session-order";
 import { composerStorage } from "../lib/drafts";
 import { composerDrafts } from "../lib/composer-draft";
 import { onStep } from "../lib/stream-clock";
-import { TURN_PAGE } from "../lib/transcript-scroll";
+import { keyedTurn, placeBefore, type TurnKey } from "../lib/transcript-scroll";
 
 export const rpc = new Rpc(credentials, windowKey);
 rpc.retriesCredentials = isDesktop;
@@ -362,10 +362,12 @@ function adopt(snap: SessionSnapshot): SessionHandle {
     if (existing) {
         existing.seq = snap.seq;
         existing.queue = [];
+        const after = [...(renewing.get(id) ?? [])].map((fn) => fn());
         batch(() => {
             existing.set(reconcile({ state, turns: snap.turns, agents: snap.agents ?? [], earlier: snap.earlier ?? 0 }, { key: "id", merge: false }));
             existing.setReady(true);
         });
+        for (const fn of after) fn?.();
         return existing;
     }
     const h = createRoot(() => {
@@ -380,6 +382,24 @@ function adopt(snap: SessionSnapshot): SessionHandle {
     trim();
     setHandleVersion((v) => v + 1);
     return h;
+}
+
+/** What's shown of each session, told when it comes again (adopt): read with the turns it had, it returns what to do with those it has now. */
+const renewing = new Map<string, Set<() => (() => void) | void>>();
+
+/**
+ * `fn` runs as `h` comes again from the server (a reconnect, a reload), with its turns as they were; what it returns,
+ * with them as they are now. They may be numbered anew: the server may have read the session in again meanwhile.
+ * Returns what stops it.
+ */
+export function onRenew(h: SessionHandle, fn: () => (() => void) | void): () => void {
+    let set = renewing.get(h.id);
+    if (!set) renewing.set(h.id, (set = new Set()));
+    set.add(fn);
+    return () => {
+        set.delete(fn);
+        if (!set.size && renewing.get(h.id) === set) renewing.delete(h.id);
+    };
 }
 
 /** No longer open here: how many turns it had is kept for when it's opened again. */
@@ -465,15 +485,15 @@ export function loadEarlier(h: SessionHandle, how: { count?: number; through?: {
 }
 
 /**
- * Earlier turns, a page at a time, back to turn `turnId` (where the session was being read before it was opened again,
- * with fewer turns than the window had). False when it isn't there, or they couldn't be had.
+ * The turns back to `key`'s, in one request: where the session was being read, opened again with fewer turns than that
+ * (new ones pushed it out). Undefined, with nothing asked, when it's here already or would be here if it still were.
  */
-export async function loadEarlierTo(h: SessionHandle, turnId: string): Promise<boolean> {
-    while (!h.view.turns.some((t) => t.id === turnId)) {
-        const had = h.view.turns.length;
-        if (!h.view.earlier || !(await loadEarlier(h, { count: TURN_PAGE })) || h.view.turns.length === had) return false;
-    }
-    return true;
+export function loadEarlierTo(h: SessionHandle, key: TurnKey): Promise<boolean> | undefined {
+    const near = key.near;
+    if (!near || !h.view.earlier || keyedTurn(h.view.turns, key)) return undefined;
+    const first = h.view.turns.find((t) => t.pos)?.pos;
+    if (first && !placeBefore(near, first)) return undefined;
+    return loadEarlier(h, { through: near, count: 1 });
 }
 
 /** A Claude Code or Codex session of this folder, as a Cavvy session (a new one, or the one that already holds it). */

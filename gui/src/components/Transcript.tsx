@@ -2,11 +2,11 @@ import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Sh
 import { ArrowDown, ArrowUpLeft, GitFork } from "lucide-solid";
 import type { Turn } from "@shared/protocol";
 import { fork, forkAnchor } from "../state/actions";
-import { activate, app, loadEarlier, loadEarlierTo, toast, type SessionHandle } from "../state/app";
+import { activate, app, loadEarlier, loadEarlierTo, onRenew, toast, type SessionHandle } from "../state/app";
 import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setFollowing, setJumpTarget, setRewindOpen, takeDockGlide } from "../state/ui";
 import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
-import { anchoredTop, atBottom, FAR, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
+import { anchoredTop, atBottom, FAR, firstBelow, firstWindow, keyed, lazyHeights, MORE_TURNS, placedAgain, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor, type TranscriptPosition } from "../lib/transcript-scroll";
 import { turnAt } from "../lib/find";
 import { FOLLOW_ROOM, ROOM_KEPT, ROOM_WRITTEN_MS, roomFor } from "../lib/follow";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
@@ -43,26 +43,28 @@ function relay(to: { fn?: IntersectionObserverCallback }): IntersectionObserverC
 
 
 /**
- * `dock`: the composer dock's height (undefined until it's measured). Opened again where a turn was being read that the
- * session didn't come with this time (new turns pushed it out): the turns back to it come first, then it opens there.
+ * `dock`: the composer dock's height (undefined until it's measured). Opened again where a turn was being read, it opens
+ * on that turn, found by its place in the session (its id may be another turn's now); if the session didn't come with
+ * it this time (new turns pushed it out), the turns back to it come first, in one request. Not there: at the end.
  */
 export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     const saved = transcriptPositions.get(p.handle.id);
-    const read = !saved?.bottom ? saved?.anchor?.turnId : undefined;
-    if (!read || !p.handle.view.earlier || p.handle.view.turns.some((t) => t.id === read)) return <TranscriptView handle={p.handle} dock={p.dock} />;
-    const [placed, setPlaced] = createSignal(false);
-    void loadEarlierTo(p.handle, read).finally(() => setPlaced(true));
-    return <Show when={placed()}><TranscriptView handle={p.handle} dock={p.dock} /></Show>;
+    const key = !saved?.bottom ? saved?.keys?.anchor : undefined;
+    const loading = key && loadEarlierTo(p.handle, key);
+    if (!loading) return <TranscriptView handle={p.handle} dock={p.dock} saved={saved && placedAgain(p.handle.view.turns, saved)} />;
+    const [placed, setPlaced] = createSignal<TranscriptPosition>();
+    void loading.finally(() => setPlaced(placedAgain(p.handle.view.turns, saved!)));
+    return <Show when={placed()} keyed>{(s) => <TranscriptView handle={p.handle} dock={p.dock} saved={s} />}</Show>;
 }
 
-function TranscriptView(p: { handle: SessionHandle; dock?: number }) {
+function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: TranscriptPosition }) {
     // --dock-h goes on each box that reads it (stage.css): not inherited, and not passed down with `inherit`.
     const dock = () => (p.dock === undefined ? undefined : `${p.dock}px`);
     let scroller: HTMLDivElement | undefined;
     let content: HTMLDivElement | undefined;
     // SessionView is keyed by handle; save on disposal, restore on the next mount.
     const id = p.handle.id;
-    const saved = transcriptPositions.get(id);
+    const saved = p.saved;
     const openWork = new Set(saved?.openWork);
     const [stick, setStick] = createSignal(saved?.bottom ?? true);
     /** Scrolled all the way down: "Latest" has nothing to jump to, following the end or not. */
@@ -602,10 +604,10 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number }) {
         stopGlide();
         // A running log can finish while this keyed view is unmounted.
         if (!stick()) for (const turn of visible()) if (turn.status === "running") openWork.add(turn.id);
-        transcriptPositions.set(id, {
+        transcriptPositions.set(id, keyed(turns(), {
             bottom: stick(), top: (ready ? scroller?.scrollTop : saved?.top) ?? 0,
             anchor: reading, openWork: [...openWork],
-        });
+        }));
     });
 
     const earlier = async () => {
@@ -834,6 +836,43 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number }) {
         smoothScroll = false;
         setStick(false);
     };
+
+    // The session come again from the server (a reconnect, a reload), which may have read it in anew and numbered its
+    // turns anew: the place read stays on its turn (the turns back to it first, if it didn't come with them), and the
+    // work logs open stay open on theirs. The turn gone, the view goes to the end.
+    let disposed = false;
+    onCleanup(() => (disposed = true));
+    const placeAgain = async (was: TranscriptPosition) => {
+        const key = !was.bottom ? was.keys?.anchor : undefined;
+        const loading = key && loadEarlierTo(p.handle, key);
+        if (loading) {
+            // Not restored meanwhile to the turn that has its id now.
+            reading = undefined;
+            await loading;
+            if (disposed) return;
+        }
+        const now = placedAgain(turns(), was);
+        openWork.clear();
+        for (const w of now.openWork) openWork.add(w);
+        // Following the end, or the reader went there meanwhile.
+        if (stick()) return;
+        if (now.bottom) {
+            setTrimmed(0);
+            setStick(true);
+            toBottom();
+            return;
+        }
+        if (!now.anchor) return;
+        reading = now.anchor;
+        const need = turns().length - turns().findIndex((t) => t.id === now.anchor!.turnId);
+        setTrimmed(0);
+        if (shown() < need) setShown(Math.ceil(need / PAGE) * PAGE);
+        restore();
+    };
+    onCleanup(onRenew(p.handle, () => {
+        const was = keyed(turns(), { bottom: stick(), top: 0, anchor: reading, openWork: [...openWork] });
+        return () => void placeAgain(was);
+    }));
 
     // Find counts what's in the whole session: opened, it has the turns the session opened without (again after a
     // reconnect that came with fewer).
