@@ -86,6 +86,15 @@ async function run() {
         adoptBrowserState(id, state(1));
         await tick();
 
+        // Another tab closing, or opening, leaves the one shown as it is. It used to be cleared as if switched away from,
+        // and an idle page sends no new frame: the pane said "Loading page…" until reloaded.
+        adoptBrowserState(id, { ...state(1), tabs: state(1).tabs.filter(t => t.id === 1) });
+        await tick();
+        check(centre()[0] > 240 && !root.querySelector(".br-connection"), `the shown tab's picture went when another tab closed: ${centre()}`);
+        adoptBrowserState(id, state(1));
+        await tick();
+        check(centre()[0] > 240 && !root.querySelector(".br-connection"), `the shown tab's picture went when another tab opened: ${centre()}`);
+
         // Pause decoding across a tab change and then across unmount.
         const decode = window.createImageBitmap.bind(window);
         let resolve!: (b: ImageBitmap) => void;
