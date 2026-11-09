@@ -137,7 +137,16 @@ const READER_IDLE_MS = 60_000;
  * reader was let go starts another when it next reads (a couple of milliseconds).
  */
 const READERS_MAX = 2;
-type SessionReader = { key: string; reader: ObjectReader; queue: Promise<unknown>; idle?: ReturnType<typeof setTimeout>; jobs: number };
+type SessionReader = {
+    key: string;
+    reader: ObjectReader;
+    queue: Promise<unknown>;
+    idle?: ReturnType<typeof setTimeout>;
+    /** Reads running or waiting their turn: one with any isn't let go. */
+    jobs: number;
+    /** When its last read ended. */
+    readAt?: number;
+};
 /** Every session's open reader, the one used longest ago first. */
 const openReaders = new Set<SessionReader>();
 function readerUsed(r: SessionReader) {
@@ -146,13 +155,33 @@ function readerUsed(r: SessionReader) {
 }
 /**
  * At most `room` readers open: the ones used longest ago that aren't reading (or waiting to) are let go. While every
- * reader is reading, more stay open, and they go as their reads end.
+ * reader is reading, more stay open, and trimReaders lets them go once they've been idle a moment.
  */
 function keepReaders(room: number) {
     for (const r of [...openReaders]) {
         if (openReaders.size <= room) return;
         if (!r.jobs) r.reader.close();
     }
+}
+/**
+ * Readers past the limit (opened while every other one was reading) go once they've been idle this long. Not at once:
+ * a session walking trees reads one after another, and its reader is idle between two of its reads for a moment.
+ */
+const READERS_GRACE_MS = 1000;
+let trimming: ReturnType<typeof setTimeout> | undefined;
+/** Back to the limit, by the readers used longest ago that have been idle for READERS_GRACE_MS, checked again until it is. */
+function trimReaders() {
+    if (trimming || openReaders.size <= READERS_MAX) return;
+    trimming = setTimeout(() => {
+        trimming = undefined;
+        const now = Date.now();
+        for (const r of [...openReaders]) {
+            if (openReaders.size <= READERS_MAX) break;
+            if (!r.jobs && now - (r.readAt ?? 0) >= READERS_GRACE_MS) r.reader.close();
+        }
+        trimReaders();
+    }, READERS_GRACE_MS);
+    trimming.unref?.();
 }
 /** How many readers are open now, every session's together: for tests. */
 export function openReaderCount(): number {
@@ -2420,13 +2449,14 @@ export class TurnSnapshots {
             throw e;
         } finally {
             mine.jobs--;
+            mine.readAt = Date.now();
             if (this.reader === mine && !mine.jobs) {
                 mine.reader.idle();
                 mine.idle = setTimeout(() => mine.reader.close(), READER_IDLE_MS);
                 mine.idle.unref?.();
             }
-            // Over the limit only while every reader was reading: back to it as reads end.
-            keepReaders(READERS_MAX);
+            // Over the limit only while every reader was reading: back to it once they've been idle a moment.
+            trimReaders();
         }
     }
 

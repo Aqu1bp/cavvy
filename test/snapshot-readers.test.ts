@@ -1,5 +1,5 @@
 // The server keeps at most 2 `git cat-file` readers open for snapshots, every session's together (turn-snapshots.ts).
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, spyOn, test } from "bun:test";
 import { mkdirSync, realpathSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate } from "./helpers/isolate";
@@ -40,6 +40,27 @@ async function setup(n: number) {
     return { cwd, tree, body, sessions };
 }
 
+/** `cat-file --batch` readers started while `f` runs. */
+async function startsDuring(f: () => Promise<unknown>): Promise<number> {
+    let starts = 0;
+    const spawn = Bun.spawn;
+    const spy = spyOn(Bun, "spawn").mockImplementation(((argv: any, opts: any) => {
+        if (Array.isArray(argv) && argv.includes("cat-file") && argv.includes("--batch")) starts++;
+        return spawn(argv, opts);
+    }) as typeof Bun.spawn);
+    try {
+        await f();
+    } finally {
+        spy.mockRestore();
+    }
+    return starts;
+}
+
+/** Waits until `ok` holds, for at most `ms`. */
+async function until(ok: () => boolean, ms = 5000) {
+    for (const end = Date.now() + ms; !ok() && Date.now() < end; ) await Bun.sleep(20);
+}
+
 /** A read of the root tree with session `s`'s reader, after `wait` if given (the reader is busy until then). */
 function read(s: InstanceType<typeof TurnSnapshots>, cwd: string, tree: string, wait?: Promise<void>): Promise<Buffer> {
     return (s as any).withReader(cwd, Date.now() + 10_000, async (r: { read(oid: string, type: string): Promise<Buffer> }) => {
@@ -72,6 +93,8 @@ test("a reader that's reading is never let go: another session gets one more, an
         expect(await read(sessions[2]!, cwd, tree)).toEqual(body);
         release();
         for (const b of busy) expect(await b).toEqual(body);
+        // Once they've been idle a moment (READERS_GRACE_MS), back to 2.
+        await until(() => openReaderCount() <= 2);
         expect(openReaderCount()).toBeLessThanOrEqual(2);
     } finally {
         await Promise.all(sessions.map((s) => s.stop()));
@@ -91,6 +114,25 @@ test("a reader closed some other way (its own deadline, say) is no longer counte
         expect(openReaderCount()).toBe(1);
     } finally {
         await s.stop();
+    }
+    expect(openReaderCount()).toBe(0);
+});
+
+test("sessions reading at the same time keep their readers: a walk's reads don't each start a git", async () => {
+    const { cwd, tree, body, sessions } = await setup(3);
+    try {
+        // Each walks 40 trees one after another, all at once, as turns ending together do. Between two of a session's
+        // reads its reader is idle for a moment: it isn't let go for that.
+        const starts = await startsDuring(() =>
+            Promise.all(sessions.map(async (s) => {
+                for (let i = 0; i < 40; i++) expect(await read(s, cwd, tree)).toEqual(body);
+            })),
+        );
+        expect(starts).toBeLessThanOrEqual(sessions.length);
+        await until(() => openReaderCount() <= 2);
+        expect(openReaderCount()).toBeLessThanOrEqual(2);
+    } finally {
+        await Promise.all(sessions.map((s) => s.stop()));
     }
     expect(openReaderCount()).toBe(0);
 });
