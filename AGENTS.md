@@ -32,6 +32,8 @@ Unit tests and reviews aren't enough to call a user-facing change done. Build th
 - Work in your own git worktree, on a branch from the current `origin/main`. Every change reaches `main` through a pull request.
 - Keep a pull request to one kind of change, such as a feature, a bug fix or UI work, not a mix. Something unrelated you find on the way gets its own pull request.
 - When `main` moves, merge it into your branch and push. Rebase only a branch nobody else has pulled: it needs a force-push, which breaks other checkouts and may be refused.
+- Commits and pull request titles (a squash merge makes the title the commit): `type(scope): summary`. Lower case, imperative, no full stop, about 60 characters at most. Types: `feat`, `fix`, `perf`, `refactor`, `test`, `docs`, `build`, `ci`, `chore`. The scope is the area: `gui`, `desktop`, `tui`, `server`, `snapshots`, `backends`, `permissions`, `tools`, `providers`, `mcp`, `browser`. For example `fix(snapshots): skip repository filters on first capture`.
+- The subject is usually enough. Add a body only when the diff doesn't show why: what broke, why this way, a measurement. A few lines, wrapped at 72.
 - A large effort can gather its pull requests on an integration branch instead of `main`. Each change still goes into it through its own pull request, after CI. Before the branch goes to `main`: review it as a whole, test it in the app against `main`, fix what that finds through pull requests into the branch, and merge it with a merge commit so each pull request stays visible in `main`'s history.
 
 ## Tests
