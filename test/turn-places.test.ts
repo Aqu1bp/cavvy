@@ -1,5 +1,6 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "fs";
+import { closeSync, constants, mkdirSync, openSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "fs";
+import { readFile } from "fs/promises";
 import { dirname, join } from "path";
 import { isolate } from "./helpers/isolate";
 
@@ -386,3 +387,54 @@ test("a worktree's HEAD read from its files is what git says: on a branch, detac
     git(cwd, ["checkout", "-q", "--orphan", "empty"]);
     expect(await headOf(gitDir(cwd))).toEqual(said(cwd));
 });
+
+/**
+ * A pipe at `path`. With `ms`, its other end is opened from another process that long after (a read here that waits
+ * on it may have stopped this one). Disposed: whatever still waits on it is let go of, and it's gone.
+ */
+function pipeAt(path: string, ms?: number) {
+    rmSync(path, { force: true });
+    expect(Bun.spawnSync(["mkfifo", path]).exitCode).toBe(0);
+    const release = ms === undefined ? undefined : Bun.spawn(["sh", "-c", `sleep ${ms / 1000}; exec 3<>"$0"`, path]);
+    return {
+        [Symbol.dispose]: () => {
+            release?.kill();
+            for (let i = 0; i < 16; i++) try { closeSync(openSync(path, constants.O_WRONLY | constants.O_NONBLOCK)); } catch {}
+            rmSync(path, { force: true });
+        },
+    };
+}
+
+const within = (work: Promise<unknown>, ms: number) => Promise.race([work.then(() => "done"), Bun.sleep(ms).then(() => "stuck")]);
+
+for (const [what, at] of [["HEAD", (gitDir: string, common: string) => join(gitDir, "HEAD")], ["branch", (_: string, common: string) => join(common, "refs/heads/agent/side")], ["commondir", (gitDir: string) => join(gitDir, "commondir")], ["packed-refs", (_: string, common: string) => join(common, "packed-refs")]] as const) {
+    test(`a pipe where a worktree's ${what} file should be: its HEAD isn't read from the files, and other reads aren't held up`, async () => {
+        if (process.platform === "win32") return;
+        const { headOf, movedSince, token } = await import("../src/agent/turn-places");
+        const { cwd, wt } = setup(["side"]);
+        const gitDir = git(wt("side"), ["rev-parse", "--absolute-git-dir"]).trim(), common = join(cwd, ".git");
+        // Packed: the branch's own file is gone, and packed-refs is read for it.
+        if (what === "packed-refs") git(cwd, ["pack-refs", "--all"]);
+        using _ = pipeAt(at(gitDir, common));
+        const w = { path: wt("side"), main: false, real: wt("side"), gitDir };
+        // More than the threads that read files for the whole server.
+        expect(await within(Promise.all([1, 2, 3, 4, 5, 6].map(() => headOf(gitDir))), 2000)).toBe("done");
+        expect(await headOf(gitDir)).toBeUndefined();
+        expect(await within(Promise.all([1, 2, 3, 4, 5, 6].map(() => movedSince(w, 0n))), 2000)).toBe("done");
+        // Git's asked instead, within the token's time.
+        expect(await within(Promise.all([1, 2, 3, 4, 5, 6].map(() => token(w, Date.now() + 1500))), 4000)).toBe("done");
+        expect(await within(readFile(join(cwd, "a.txt")), 2000)).toBe("done");
+    }, 30_000);
+}
+
+test("a pipe where a linked worktree's .git file should be doesn't stop the server while the worktrees are listed", async () => {
+    if (process.platform === "win32") return;
+    const { WorktreeList } = await import("../src/agent/turn-places");
+    const { cwd, wt } = setup(["side"]);
+    using _ = pipeAt(join(wt("side"), ".git"), 3000);
+    const started = Date.now();
+    const list = await new WorktreeList().get(cwd, Date.now() + 5000);
+    expect(list?.map((w) => w.path)).toEqual([cwd, wt("side")]);
+    // Waiting on the pipe, nothing else in the server would run until it's let go of.
+    expect(Date.now() - started).toBeLessThan(2000);
+}, 30_000);

@@ -505,14 +505,14 @@ function ignoreKeyOf(root: string, indexPath: string): string {
     return files.map((f) => `${f}:${stampAt(f)}`).join("\0");
 }
 
-/** The common Git dir of the repository whose index is at `index` (its own Git dir, or the one a worktree's names). */
+/**
+ * The common Git dir of the repository whose index is at `index` (its own Git dir, or the one a worktree's names).
+ * Its commondir file is read without waiting or following a link: a pipe there would stop the server.
+ */
 function commonDirOf(index: string): string {
     const dir = dirname(index);
-    try {
-        return resolve(dir, readFileSync(join(dir, "commondir"), "utf-8").trim());
-    } catch {
-        return dir;
-    }
+    const named = readRegularSync(join(dir, "commondir"), 64 * 1024)?.buf;
+    return named ? resolve(dir, named.toString("utf-8").trim()) : dir;
 }
 
 /** The repository's objects, as git reads them (its common dir's). */
@@ -530,13 +530,7 @@ function alternates(dirs: string[]): string {
 /** The repository's own attributes file (info/attributes in its common Git dir, found from where its index is), stamped. */
 function infoAttributes(index: string | undefined): string {
     if (!index) return "-";
-    let common = dirname(index);
-    try {
-        common = resolve(common, readFileSync(join(common, "commondir"), "utf-8").trim());
-    } catch {
-        // The main worktree's: its Git dir is the common one.
-    }
-    return `info/attributes:${stampAt(join(common, "info", "attributes"))}`;
+    return `info/attributes:${stampAt(join(commonDirOf(index), "info", "attributes"))}`;
 }
 
 const sameList = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
@@ -1310,7 +1304,9 @@ export class TurnSnapshots {
             const dotGit = lstatSync(join(root, ".git"));
             if (dotGit.isDirectory()) index = join(root, ".git", "index");
             else if (dotGit.isFile()) {
-                const named = /^gitdir: (.+)\n?$/.exec(readFileSync(join(root, ".git"), "utf-8"))?.[1];
+                // Not waiting on a pipe put there since (this runs on the server's only thread for JavaScript).
+                const file = readRegularSync(join(root, ".git"), 64 * 1024)?.buf;
+                const named = file && /^gitdir: (.+)\n?$/.exec(file.toString("utf-8"))?.[1];
                 if (named) index = join(resolve(root, named), "index");
             }
         } catch {
