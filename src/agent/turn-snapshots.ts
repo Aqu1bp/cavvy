@@ -133,23 +133,30 @@ const TREE_CACHE_BYTES = 32 * 1024 * 1024;
 /** A session's object reader goes after this long unused, and is started again after this long at most. */
 const READER_IDLE_MS = 60_000;
 /**
- * Readers kept open across the whole server, every session's together: past this many, the one used longest ago
- * that isn't reading is let go (its session starts another when it next reads). Each holds a `git cat-file`.
+ * Readers kept open across the whole server, every session's together. Each holds a `git cat-file`; a session whose
+ * reader was let go starts another when it next reads (a couple of milliseconds).
  */
-const READERS_MAX = Number(process.env.CAVVY_READERS_MAX) || 2;
-type SessionReader = { key: string; reader: ObjectReader; queue: Promise<unknown>; idle?: ReturnType<typeof setTimeout>; jobs: number; letGo: () => void };
+const READERS_MAX = 2;
+type SessionReader = { key: string; reader: ObjectReader; queue: Promise<unknown>; idle?: ReturnType<typeof setTimeout>; jobs: number };
 /** Every session's open reader, the one used longest ago first. */
 const openReaders = new Set<SessionReader>();
 function readerUsed(r: SessionReader) {
     openReaders.delete(r);
     openReaders.add(r);
 }
-/** Room for one more reader: the oldest that aren't reading are let go. Past the limit only while all are reading. */
-function readerRoom() {
+/**
+ * At most `room` readers open: the ones used longest ago that aren't reading (or waiting to) are let go. While every
+ * reader is reading, more stay open, and they go as their reads end.
+ */
+function keepReaders(room: number) {
     for (const r of [...openReaders]) {
-        if (openReaders.size < READERS_MAX) return;
-        if (!r.jobs) r.letGo();
+        if (openReaders.size <= room) return;
+        if (!r.jobs) r.reader.close();
     }
+}
+/** How many readers are open now, every session's together: for tests. */
+export function openReaderCount(): number {
+    return openReaders.size;
 }
 /** A turn's trees are read ahead (warmTrees) along this many changed paths at most. */
 const WARM_MAX_PATHS = 200;
@@ -787,7 +794,7 @@ export class TurnSnapshots {
         this.stopWarming = undefined;
         clearTimeout(this.warmTimer);
         await Promise.allSettled([...this.pending]);
-        this.reader?.letGo();
+        this.reader?.reader.close();
         if (this.watch) releaseWatch(this.watch);
         this.watch = undefined;
     }
@@ -2380,19 +2387,14 @@ export class TurnSnapshots {
         const key = `${root}\0${JSON.stringify(env)}`;
         let r = this.reader;
         if (!r || r.key !== key) {
-            r?.letGo();
-            readerRoom();
-            const made: SessionReader = {
-                key,
-                reader: new ObjectReader(root, env, Date.now() + READER_MAX_MS),
-                queue: Promise.resolve(),
-                jobs: 0,
-                letGo: () => {
-                    clearTimeout(made.idle);
-                    made.reader.close();
-                    openReaders.delete(made);
-                    if (this.reader === made) this.reader = undefined;
-                },
+            r?.reader.close();
+            keepReaders(READERS_MAX - 1);
+            const made: SessionReader = { key, reader: new ObjectReader(root, env, Date.now() + READER_MAX_MS), queue: Promise.resolve(), jobs: 0 };
+            // However it's closed (let go, out of time, its own deadline, the session stopping), it's no longer open.
+            made.reader.onClose = () => {
+                clearTimeout(made.idle);
+                openReaders.delete(made);
+                if (this.reader === made) this.reader = undefined;
             };
             r = this.reader = made;
         }
@@ -2414,15 +2416,17 @@ export class TurnSnapshots {
             return await job;
         } catch (e) {
             // Out of time or broken: what it was reading is unknown; the next read starts another.
-            mine.letGo();
+            mine.reader.close();
             throw e;
         } finally {
             mine.jobs--;
             if (this.reader === mine && !mine.jobs) {
                 mine.reader.idle();
-                mine.idle = setTimeout(mine.letGo, READER_IDLE_MS);
+                mine.idle = setTimeout(() => mine.reader.close(), READER_IDLE_MS);
                 mine.idle.unref?.();
             }
+            // Over the limit only while every reader was reading: back to it as reads end.
+            keepReaders(READERS_MAX);
         }
     }
 

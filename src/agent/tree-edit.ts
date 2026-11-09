@@ -99,6 +99,8 @@ export class ObjectReader {
     private chunks: Buffer[] = [];
     private have = 0;
     private timer: ReturnType<typeof setTimeout>;
+    /** Called once it's closed, by whoever closed it (its deadline included). */
+    onClose?: () => void;
 
     constructor(cwd: string, env: Record<string, string>, deadline: number) {
         this.proc = Bun.spawn(gitArgv(["cat-file", "--batch"]), { cwd, env: gitEnvironment({ privateEnv: env }), stdin: "pipe", stdout: "pipe", stderr: "ignore" });
@@ -198,5 +200,6 @@ export class ObjectReader {
         clearTimeout(this.timer);
         try { (this.proc.stdin as import("bun").FileSink).end(); } catch {}
         this.proc.kill();
+        this.onClose?.();
     }
 }
