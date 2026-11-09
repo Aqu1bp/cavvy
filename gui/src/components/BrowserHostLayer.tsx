@@ -59,8 +59,8 @@ function HostedWebview(p: { tab: HostedTab }) {
             const targetId = hostedTargets()[p.tab.key];
             const shown = s && targetId && s.targetId === targetId ? s : undefined;
             const box = shown?.box;
-            // In the pane the page is the box's size (or the one it's keeping for now: lib/page-size.ts); watched in
-            // the floating view, or not shown, it's the agent's.
+            // In the pane the page is the box's size (or the one it's keeping for now: lib/page-size.ts), drawn in
+            // as much of the box as shows; watched in the floating view, or not shown, it's the agent's.
             const size = box && !shown.fit ? (shown.page ?? { width: box.width, height: box.height }) : AGENT_SIZE;
             const scale = box && shown.fit ? Math.min(box.width / size.width, box.height / size.height) : 1;
             wrap.classList.toggle("shown", box !== undefined);
@@ -68,9 +68,7 @@ function HostedWebview(p: { tab: HostedTab }) {
             wrap.classList.toggle("entering", shown?.motion === "enter");
             wrap.classList.toggle("leaving", shown?.motion === "leave");
             wrap.style.transformOrigin = shown?.origin ? `${shown.origin.x}px ${shown.origin.y}px` : "";
-            // A page keeping its size is cut to the box, and the box to it: where the box has grown past the page,
-            // the pane shows through until the page takes the box's size.
-            const frame = box && shown.page ? { width: Math.min(box.width, shown.page.width), height: Math.min(box.height, shown.page.height) } : box;
+            const frame = shown?.frame ?? box;
             Object.assign(wrap.style, box && frame ? { left: `${box.x}px`, top: `${box.y}px`, width: `${frame.width}px`, height: `${frame.height}px` } : { left: "0px", top: "0px", width: "1px", height: "1px" });
             Object.assign(view.style, { width: `${size.width}px`, height: `${size.height}px`, transform: scale === 1 ? "" : `scale(${scale})` });
             const key = `${size.width}x${size.height}`;

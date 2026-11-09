@@ -14,7 +14,7 @@ import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { keepSentImages } from "./images";
 import { prefs, setPrefs } from "./prefs";
-import { railChange, railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, setReview, setRewindOpen, setSettingsTab, setTerminalMax, shellLayout } from "./ui";
+import { railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, setReview, setRewindOpen, setSettingsTab, setTerminalMax, shellLayout } from "./ui";
 import { clientAction, slashName } from "../lib/commands";
 import { forkAnchor } from "../lib/fork";
 import { backgroundOf, stopOutcome, stopTasks } from "../lib/background";
@@ -637,7 +637,6 @@ export function togglePanel() {
 export function toggleSidebar() {
     // Narrow windows: the rail is a drawer over the sheet, opened for the moment.
     if (shellLayout().railMode === "overlay") return void setRailOpen(!railOpen());
-    railChange();
     setPrefs("sidebar", !prefs.sidebar);
 }
 

@@ -37,9 +37,9 @@
     flex-direction: column;
 }
 
-/* With the window's tracks (shell.css), so the group keeps its place in the column as the column slides. Once the
-   column's height has been drawn (Home.tsx): before that the height is the window's, and the group would drift. */
-.home.placed .home-col {
+/* With the window's tracks (shell.css), so the group keeps its place in the column as the column slides. Only then
+   (data-sliding, App.tsx): the window resized or an edge dragged, it's placed at once, as the column is. */
+[data-sliding="on"] .home-col {
     transition: --home-h var(--dur-panel) var(--ease);
 }
 

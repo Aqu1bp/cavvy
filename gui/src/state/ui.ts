@@ -138,16 +138,12 @@ export const [panelHold, setPanelHold] = createSignal<Held & { slide: Animation 
  */
 export const [inspectorDocking, setInspectorDocking] = createSignal(false);
 
-const railChanging = new Set<() => void>();
-/** `fn` runs just before the rail is shown or hidden: what's placed by it (the title bar) reads where it is. */
-export function beforeRailChange(fn: () => void): () => void {
-    railChanging.add(fn);
-    return () => void railChanging.delete(fn);
-}
-/** The rail is about to be shown or hidden (state/actions.ts toggleSidebar). */
-export function railChange() {
-    for (const fn of railChanging) fn();
-}
+/**
+ * The window's tracks are about to slide, or are sliding (App.tsx LayoutKeeper): true from the update that changes
+ * them, before the browser has seen it, so what's placed from a size that changes with them can ease with them
+ * (home.css), and not on any other change of that size (the window resized, an edge dragged).
+ */
+export const [tracksSliding, setTracksSliding] = createSignal(false);
 
 /**
  * The conversation column's height as --column-h, for the few boxes sized by it (what `cqh` measured when

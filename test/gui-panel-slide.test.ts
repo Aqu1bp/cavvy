@@ -6,7 +6,8 @@ import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "fs";
 import { join } from "path";
 import { columnSteps, COLUMN_NARROW, COLUMN_SHORT, heldSizes, tracks, windowLayout } from "../gui/src/lib/layout";
-import { barMove } from "../gui/src/lib/bar-glide";
+import { pageFrame, shownBox } from "../gui/src/lib/page-follow";
+import { INSPECTOR_MOVES } from "../gui/src/lib/layout";
 import { pageSizer, SETTLE_MS } from "../gui/src/lib/page-size";
 import { parseRules } from "./helpers/contrast";
 
@@ -123,36 +124,41 @@ test("hiding the rail takes the sheet to the window's edges, and the conversatio
     expect(heldSizes(undefined, at({ rail: false }), at({})).column).toEqual({ w: 1092, h: base.win.h });
 });
 
-test("the title bar's parts glide to their new places with the rail's slide; new ones stay where they end up", () => {
-    // Before the title: nothing with the rail showing, its two buttons and the project with it hidden.
-    const shown = (left: number) => ({ left, shown: true });
-    const gone = { left: 0, shown: false };
-    // The title, 215px further along the bar once the buttons and the project are before it: drawn from where it was.
-    expect(barMove(shown(16), shown(231), -260)).toBe(-215);
-    expect(barMove(shown(231), shown(16), 260)).toBe(215);
-    // The buttons, new: where they end up in the window from the start (the bar travels 260px to the left under them).
-    expect(barMove(gone, shown(12), -260)).toBe(-260);
-    expect(barMove(undefined, shown(12), -260)).toBe(-260);
-    // Gone, or not moved: left alone.
-    expect(barMove(shown(12), gone, 260)).toBeUndefined();
-    expect(barMove(shown(16), shown(16.2), -260)).toBeUndefined();
-    expect(barMove(gone, shown(12), 0)).toBeUndefined();
-
-    // Read before the rail changes, moved once its slide has begun, and forgotten if no slide comes (animations off).
-    const actions = read("state/actions.ts");
-    expect(actions.indexOf("railChange();")).toBeGreaterThan(0);
-    expect(actions.indexOf("railChange();")).toBeLessThan(actions.indexOf('setPrefs("sidebar", !prefs.sidebar);'));
-    const header = read("components/Header.tsx");
-    expect(header).toContain("onCleanup(beforeRailChange(() => {");
-    expect(header).toContain("forgetting = requestAnimationFrame(() => (was = undefined));");
-    expect(header).toContain("glides = glideBar(bar, parts(), before.parts, slide, left - before.left);");
-    expect(read("lib/bar-glide.ts")).toContain("el.animate([{ transform: `translateX(${dx}px)` }, { transform: \"none\" }], options)");
+test("what the rail's hiding puts before the title opens with the slide, so the title moves to its place in step with it", () => {
+    // Shown and hidden at once, the rail's two buttons and the project pushed the title 215px one way while the bar
+    // slid the other. Each is a box of one column, 0fr while the rail shows, that opens over the slide's time.
+    const header = parseRules(read("styles/header.css"));
+    const decls = (selector: string) => header.filter((r) => r.selectors.includes(selector)).reduce((all, r) => new Map([...all, ...r.decls]), new Map<string, string>());
+    const slide = parseRules(read("styles/shell.css")).find((r) => r.selectors.includes(".win") && r.decls.has("transition"))!.decls.get("transition")!;
+    expect(slide).toContain("grid-template-columns var(--dur-panel) var(--ease)");
+    for (const box of [".bar-rail", ".proj-box"]) {
+        const closed = decls(box);
+        const open = decls(`.header.rail-off ${box}`);
+        expect([box, closed.get("display"), closed.get("grid-template-columns"), open.get("grid-template-columns")]).toEqual([box, "grid", "0fr", "1fr"]);
+        // As a drawer's bar too (below 900px the rail is over the sheet, and its buttons are always in the bar).
+        expect(header.some((r) => r.selectors.includes(`[data-rail="overlay"] .header ${box}`) && r.selectors.includes(`.header.rail-off ${box}`))).toBe(true);
+        // Over the slide's own time and easing; unseen and out of the tab order while closed, but only once it has closed.
+        expect(closed.get("transition")).toBe("grid-template-columns var(--dur-panel) var(--ease), margin-right var(--dur-panel) var(--ease), visibility 0s linear var(--dur-panel)");
+        expect([closed.get("visibility"), open.get("visibility"), open.get("transition-delay")]).toEqual(["hidden", "visible", "0s"]);
+    }
+    // What's in each box keeps its own width and is cut by it: a box of no width takes none.
+    expect([decls(".bar-rail-in").get("min-width"), decls(".bar-rail-in").get("overflow")]).toEqual(["0", "hidden"]);
+    expect([decls(".proj").get("min-width"), decls(".proj").get("overflow"), decls(".proj .truncate").get("flex")]).toEqual(["0", "hidden", "none"]);
+    // Closed, a box takes back the gap that would follow it: the bar's (12px), the crumbs' (10).
+    expect(decls(".header").get("gap")).toBe("12px");
+    expect([decls(".bar-rail").get("margin-right"), decls(".header.rail-off .bar-rail").get("margin-right")]).toEqual(["-12px", "0"]);
+    expect(decls(".crumbs").get("gap")).toBe("calc(10 * var(--sp))");
+    expect([decls(".proj-box").get("margin-right"), decls(".header.rail-off .proj-box").get("margin-right")]).toEqual(["calc(-10 * var(--sp))", "calc(-6 * var(--sp))"]);
+    // The boxes are in the bar whether the rail shows or not.
+    const bar = read("components/Header.tsx");
+    expect(bar).toMatch(/<div class="bar-rail">\s*<div class="bar-rail-in">/);
+    expect(bar).toMatch(/<span class="proj-box">\s*<button class="proj"/);
 });
 
-test("the title bar keeps to the top line through the slide: its top padding eases as the window's inset does", () => {
+test("the title bar keeps to the top line through the slide: its padding eases as the window's inset does", () => {
     // Over --dur (380ms) while the inset closed over --dur-panel (160ms), the title and the tools dipped 3px and came back.
     const header = parseRules(read("styles/header.css")).find((r) => r.selectors.includes(".header") && r.decls.has("transition"));
-    expect(header?.decls.get("transition")).toBe("padding-top var(--dur-panel) var(--ease)");
+    expect(header?.decls.get("transition")).toBe("padding var(--dur-panel) var(--ease)");
     const win = parseRules(read("styles/shell.css")).find((r) => r.selectors.includes(".win") && r.decls.has("transition"));
     expect(win?.decls.get("transition")).toContain("padding var(--dur-panel) var(--ease)");
 });
@@ -172,13 +178,13 @@ test("the Browser pane's page keeps its size while the panels slide, and takes i
     expect(sizer.frame(208, box(354, 640), true)).toEqual(box(354, 762));
     expect(sizer.frame(224, box(354, 502), false)).toEqual(box(354, 502));
 
-    const pane = read("components/BrowserPane.tsx");
-    expect(pane).toContain("const page = sizer.frame(performance.now(), { width: shown.width, height: shown.height }, sliding);");
-    expect(pane).toContain("createEffect(on(() => panelHold()?.slide, (slide) => {\n                sliding = !!slide;\n                follow.kick();");
+    // Drawn in no more of the box than it fills, nor than shows: where the box has grown past the page, the pane shows.
+    expect(pageFrame(box(354, 762), box(354, 746))).toEqual(box(354, 746));
+    expect(pageFrame(box(354, 502), box(354, 746))).toEqual(box(354, 502));
+    expect(pageFrame(box(110, 762), box(354, 762))).toEqual(box(110, 762));
     const host = read("components/BrowserHostLayer.tsx");
     expect(host).toContain("const size = box && !shown.fit ? (shown.page ?? { width: box.width, height: box.height }) : AGENT_SIZE;");
-    // The app hears of a size only when it changes: once per slide.
-    expect(host).toContain("if (key !== reported) {");
+    expect(host).toContain("const frame = shown?.frame ?? box;");
 });
 
 test("a page that keeps up follows its box as an edge is dragged; one that doesn't waits for the box to settle", () => {
@@ -228,5 +234,36 @@ test("the side panel keeps what's in it until it has slid shut", () => {
     const app = read("App.tsx");
     expect(app).toContain("const [panelGone, setPanelGone] = createSignal(!prefs.panel);");
     expect(app).toContain("const panelKept = () => Boolean((prefs.panel || !panelGone()) && stage() && !agent() && !openingScreen());");
-    expect(app).toContain("void Promise.allSettled(moves.map((a) => a.finished)).then(() => { if (!prefs.panel) setPanelGone(true); });");
+    expect(app).toContain('moving([".sheet", ".insp"], (p) => INSPECTOR_MOVES.includes(p))');
+    // What it waits for is what shell.css moves a closing panel by: were one renamed there, nothing would be waited for.
+    const shell = parseRules(read("styles/shell.css"));
+    const transition = (selector: string) => shell.find((r) => r.selectors.includes(selector) && r.decls.has("transition"))?.decls.get("transition") ?? "";
+    expect(INSPECTOR_MOVES).toEqual(["grid-template-columns", "transform"]);
+    expect(transition(".sheet")).toContain(`${INSPECTOR_MOVES[0]} var(--dur-panel)`);
+    expect(transition('[data-inspmode="float"] .insp')).toContain(`${INSPECTOR_MOVES[1]} var(--dur-panel)`);
+});
+
+test("the Browser page is drawn no further than what shows of its box, and sized by the whole box", () => {
+    // The page isn't inside the sheet (it's laid over the window), so nothing cut it as its panel slid: opening or
+    // closing, it was drawn across the window's margin, past the sheet's edge.
+    const sheet = { left: 260, top: 8, right: 1392, bottom: 892 };
+    const box = { left: 1039, top: 126, right: 1393, bottom: 892 };
+    // At rest: the box, in whole pixels, shown as far as the sheet goes.
+    expect(shownBox(box, { within: [{ left: 1032, top: 8, right: 1392, bottom: 892 }, sheet] })).toEqual({ box: { x: 1039, y: 126, width: 354, height: 766 }, seen: { width: 353, height: 766 } });
+    // Opening or closing, docked: the panel's column is narrower than what's in it, which runs past its right edge.
+    // The page keeps the box's size (it isn't laid out for the sliver that shows) and is drawn in the sliver.
+    expect(shownBox({ ...box, left: 1289, right: 1643 }, { within: [{ left: 1282, top: 8, right: 1392, bottom: 892 }, sheet] })).toEqual({ box: { x: 1289, y: 126, width: 354, height: 766 }, seen: { width: 103, height: 766 } });
+    // Floating, the panel itself slides off the sheet: the sheet cuts it.
+    expect(shownBox({ left: 1200, top: 126, right: 1560, bottom: 600 }, { within: [{ left: 1200, top: 62, right: 1560, bottom: 622 }, sheet] })).toEqual({ box: { x: 1200, y: 126, width: 360, height: 474 }, seen: { width: 192, height: 474 } });
+    // None of it shows: not shown at all.
+    expect(shownBox({ ...box, left: 1400, right: 1754 }, { within: [{ left: 1391, top: 8, right: 1392, bottom: 892 }, sheet] })).toBeUndefined();
+    expect(shownBox({ ...box, left: 1039, right: 1039 }, {})).toBeUndefined();
+    // As before: to 8px above a dialog at the box's foot, and right of the panel's edge handle where it's over the box.
+    expect(shownBox(box, { dialogTop: 700 })).toEqual({ box: { x: 1039, y: 126, width: 354, height: 566 }, seen: { width: 354, height: 566 } });
+    expect(shownBox({ ...box, left: 1032 }, { handle: { left: 1032, top: 8, right: 1038, bottom: 892 } })?.box).toEqual({ x: 1038, y: 126, width: 355, height: 766 });
+    expect(shownBox(box, { handle: { left: 700, top: 8, right: 706, bottom: 892 } })?.box.x).toBe(1039);
+    // The pane loads this only where there's a page to place (the desktop app), and tells it when a slide begins or ends.
+    const pane = read("components/BrowserPane.tsx");
+    expect(pane).toContain('void import("../lib/page-follow").then((m) => {');
+    expect(pane).toContain("() => !!panelHold()?.slide");
 });

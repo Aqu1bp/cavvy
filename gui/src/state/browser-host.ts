@@ -29,10 +29,13 @@ export interface Shown {
     targetId: string;
     box: Box;
     /**
-     * The pane's page keeps this size, not the box's (lib/page-size.ts: the panels are sliding, or the page can't
-     * keep up with an edge being dragged): it moves with the box, cut to it where the box is smaller.
+     * The pane's page (lib/page-follow.ts). `page`: its size, which isn't the box's while the panels slide or it can't
+     * keep up with an edge being dragged (lib/page-size.ts). `frame`: how much of the box, from its top left, it's
+     * drawn in: no more than shows of the box while its panel slides open or shut, nor than the page fills.
+     * Without them (the floating view), the page's size and frame are the box's.
      */
     page?: { width: number; height: number };
+    frame?: { width: number; height: number };
     by: "pane" | "float";
     fit?: boolean;
     /**

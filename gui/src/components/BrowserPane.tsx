@@ -10,9 +10,7 @@ import { app, reportError, rpc } from "../state/app";
 import { adoptBrowserState, browserState, loadBrowserState, setBrowserShown, type BrowserFrame } from "../state/browser";
 import { panelHold, settingsTab } from "../state/ui";
 import { electron } from "../lib/platform";
-import { setShownBrowser, unshowBrowser } from "../state/browser-host";
-import { followBox } from "../lib/follow-box";
-import { pageSizer } from "../lib/page-size";
+import type { Follow } from "../lib/follow-box";
 import { addressOf, currentTab, isPasteKey, isReleaseKey, keyInput, mouseInput, pagePoint, paneSize, paneStatus, placeFrame, resized, tabLabel, wheelInput, wheelPixels, type Point, type Size } from "../lib/browser";
 import type { BrowserImageFrame } from "@shared/browser-wire";
 import { Spinner } from "./ui/bits";
@@ -192,48 +190,17 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         }),
     );
 
-    // The tab's own page (BrowserHostLayer) follows the page box every frame: panels slide and resize without the box
-    // resizing. A page's dialog at the foot of the box stays visible above it.
+    // The tab's own page (BrowserHostLayer) is kept over the page box (lib/page-follow.ts, loaded here: only the
+    // desktop app has such a page). What moves or hides it besides the box itself: a panel's slide beginning or
+    // ending, another tab, the pane covered or uncovered.
     if (native) {
-        let placed = "";
-        // The page's size isn't simply its box's on every frame: lib/page-size.ts says when it keeps the one it has.
-        const sizer = pageSizer();
-        let sliding = false;
-        const place = () => {
-            const t = tab();
-            if (!disposed && box && watching() && t?.targetId) {
-                const r = box.getBoundingClientRect();
-                const dialog = box.querySelector(".br-dialog")?.getBoundingClientRect();
-                const height = dialog ? Math.max(0, dialog.top - r.top - 8) : r.height;
-                // Clear of the panel's edge handle: a page drawn over it would take the press that resizes the panel.
-                const edge = document.querySelector(".insp-resizer")?.getBoundingClientRect();
-                const left = edge && edge.right > r.left && edge.left < r.right ? Math.max(r.left, edge.right) : r.left;
-                const shown = { x: Math.round(left), y: Math.round(r.top), width: Math.round(r.right - left), height: Math.round(height) };
-                if (shown.width <= 0 || shown.height <= 0) return;
-                const page = sizer.frame(performance.now(), { width: shown.width, height: shown.height }, sliding);
-                const key = `${t.targetId} ${shown.x} ${shown.y} ${shown.width} ${shown.height} ${page.width} ${page.height}`;
-                if (key !== placed) {
-                    placed = key;
-                    setShownBrowser({ targetId: t.targetId, box: shown, by: "pane", ...(page.width === shown.width && page.height === shown.height ? {} : { page }) });
-                }
-            } else if (placed) {
-                placed = "";
-                sizer.reset();
-                unshowBrowser("pane");
-            }
-        };
         onMount(() => {
-            const follow = followBox(box!, place);
-            createEffect(on(() => panelHold()?.slide, (slide) => {
-                sliding = !!slide;
-                follow.kick();
-            }));
-            // What else moves or hides it: another tab, the pane covered or uncovered.
-            createEffect(on([() => tab()?.targetId, watching], () => follow.kick()));
-            onCleanup(() => {
-                follow.stop();
-                if (placed) unshowBrowser("pane");
-            });
+            let follow: Follow | undefined;
+            void import("../lib/page-follow").then((m) => {
+                if (!disposed) follow = m.followPage(box!, () => (watching() ? tab()?.targetId : undefined), () => !!panelHold()?.slide);
+            }, reportError);
+            createEffect(on([() => panelHold()?.slide, () => tab()?.targetId, watching], () => follow?.kick()));
+            onCleanup(() => follow?.stop());
         });
     }
 

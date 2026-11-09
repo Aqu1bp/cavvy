@@ -113,6 +113,12 @@ export function docksInPlace(from: WindowLayout, to: WindowLayout): boolean {
 }
 
 /**
+ * What a closing inspector moves by (shell.css): its column closing (docked: the sheet's columns), or the inspector
+ * itself sliding off (floating: its transform). What's in it stays until these are over (App.tsx).
+ */
+export const INSPECTOR_MOVES: readonly string[] = ["grid-template-columns", "transform"];
+
+/**
  * A request arriving closes a short floating inspector, which would cover it. Once per request:
  * `request` is a key for the requests showing (none: undefined), `cleared` the one already dealt
  * with. The inspector opened while a request shows stays open for it, and so does one opened

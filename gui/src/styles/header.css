@@ -20,9 +20,8 @@
     user-select: none;
     -webkit-user-select: none;
     /* With the window's tracks (shell.css): the bar's top padding grows as the sheet's inset closes, so what's on the
-       top line stays on it all the way. Its start changes at once: what's in the bar is moved from where it was
-       (lib/bar-glide.ts). */
-    transition: padding-top var(--dur-panel) var(--ease);
+       top line stays on it all the way, and its start moves with what opens before the title (.bar-rail, .proj-box). */
+    transition: padding var(--dur-panel) var(--ease);
 }
 
 .header::before {
@@ -42,15 +41,28 @@
 }
 
 /* The rail's two buttons, here while it's hidden or floating: on the lights'
-   line, a fixed gap after them (macOS), then a hairline before the title. */
+   line, a fixed gap after them (macOS), then a hairline before the title.
+   While the rail shows, a box of no width (its one column 0fr) that takes back the bar's gap after it. It opens and
+   closes with the rail's slide (shell.css), so the title moves to its place in step with the sheet: shown and hidden
+   at once, the title jumped by their width one way and then slid the other. Not seen or focused while closed. */
 .bar-rail {
-    display: none;
-    align-items: center;
-    gap: 2px;
+    display: grid;
+    grid-template-columns: 0fr;
     flex: none;
+    margin-right: -12px;
+    visibility: hidden;
+    transition: grid-template-columns var(--dur-panel) var(--ease), margin-right var(--dur-panel) var(--ease), visibility 0s linear var(--dur-panel);
 }
 
-.bar-rail::after {
+.bar-rail-in {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.bar-rail-in::after {
     content: "";
     width: 1px;
     height: 16px;
@@ -73,7 +85,10 @@
 
 .header.rail-off .bar-rail,
 [data-rail="overlay"] .header .bar-rail {
-    display: flex;
+    grid-template-columns: 1fr;
+    margin-right: 0;
+    visibility: visible;
+    transition-delay: 0s;
 }
 
 /* A session needs you (Header.tsx NeedsYou): an amber dot on Show sidebar. */
@@ -138,13 +153,23 @@
     flex: 0 1 auto;
 }
 
+/* The project, before the title while the rail is hidden: a box that opens and closes as .bar-rail does, taking
+   back the crumbs' gap while it's closed. */
+.proj-box {
+    display: grid;
+    grid-template-columns: 0fr;
+    flex: none;
+    margin-right: calc(-10 * var(--sp));
+    visibility: hidden;
+    transition: grid-template-columns var(--dur-panel) var(--ease), margin-right var(--dur-panel) var(--ease), visibility 0s linear var(--dur-panel);
+}
+
 .proj {
-    display: none;
+    display: inline-flex;
     align-items: baseline;
     min-width: 0;
     max-width: calc(200 * var(--sp));
-    flex: none;
-    margin-right: calc(-6 * var(--sp));
+    overflow: hidden;
     color: var(--fg-3);
     font-weight: 500;
     white-space: nowrap;
@@ -154,14 +179,25 @@
     color: var(--fg);
 }
 
+/* Its name and the stroke keep their own widths (a long name is cut at its own limit), so the box cuts them as it
+   opens and closes, rather than the name squeezing to an ellipsis on the way. */
+.proj .truncate {
+    flex: none;
+    max-width: calc(180 * var(--sp));
+}
+
 .proj .proj-sep {
+    flex: none;
     margin: 0 calc(6 * var(--sp));
     color: var(--fg-4);
 }
 
-.header.rail-off .proj,
-[data-rail="overlay"] .header .proj {
-    display: inline-flex;
+.header.rail-off .proj-box,
+[data-rail="overlay"] .header .proj-box {
+    grid-template-columns: 1fr;
+    margin-right: calc(-6 * var(--sp));
+    visibility: visible;
+    transition-delay: 0s;
 }
 
 .ttl-h {
