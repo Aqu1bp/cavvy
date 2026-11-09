@@ -436,6 +436,8 @@ export interface PermissionInteraction {
     title: string;
     /** What it is, in a few words: "Run a shell command", "Edit file". */
     heading: string;
+    /** Where it acts, under the heading: the page a browser call is on, the MCP server a tool is from. */
+    where?: string;
     command?: string;
     description?: string;
     path?: string;

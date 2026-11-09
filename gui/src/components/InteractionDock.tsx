@@ -6,7 +6,7 @@
 // anything; the number keys and Esc work when you're not typing.
 
 import { createEffect, createResource, createUniqueId, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
-import { AlertTriangle, ClipboardList, Eye, EyeOff, FilePen, FolderGit2, Globe, KeyRound, MessageCircleQuestion, Plug, Radar, Save, ShieldAlert, SquareTerminal, GitCommitHorizontal, ArrowUpFromLine, GitPullRequestArrow } from "lucide-solid";
+import { AlertTriangle, ClipboardList, Eye, EyeOff, FilePen, FolderGit2, Globe, KeyRound, MessageCircleQuestion, Plug, Radar, Save, ShieldAlert, Smartphone, SquareTerminal, GitCommitHorizontal, ArrowUpFromLine, GitPullRequestArrow } from "lucide-solid";
 import type { Interaction, PermissionInteraction, PlanInteraction, QuestionInteraction, SecretInteraction } from "@shared/protocol";
 import { openAgents, respond } from "../state/actions";
 import { handleFor, rpc } from "../state/app";
@@ -123,8 +123,11 @@ function PermIcon(p: { it: PermissionInteraction }) {
             <Match when={p.it.category === "edit"}>
                 <FilePen size={16} />
             </Match>
-            <Match when={p.it.toolName === "WebFetch"}>
+            <Match when={p.it.toolName === "WebFetch" || p.it.toolName.startsWith("Browser")}>
                 <Globe size={16} />
+            </Match>
+            <Match when={p.it.toolName.startsWith("Simulator")}>
+                <Smartphone size={16} />
             </Match>
             <Match when={p.it.category === "mcp"}>
                 <Plug size={16} />
@@ -171,11 +174,24 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
         }
         return false;
     });
-    const order = () => {
-        // On screen: Deny, then the broader choices, then Allow once at the end, where the eye lands.
-        const opts = p.it.options.map((o, i) => ({ o, key: i + 1 }));
-        return [...opts.filter((x) => x.o.id === "no"), ...opts.filter((x) => x.o.id !== "no" && x.o.id !== "yes"), ...opts.filter((x) => x.o.id === "yes")];
-    };
+    // On screen: one row at the trailing edge, Deny first and Allow once last, where the eye lands.
+    const opts = () => p.it.options.map((o, i) => ({ o, key: i + 1 }));
+    const deny = () => opts().filter((x) => x.o.id === "no");
+    const allows = () => [...opts().filter((x) => x.o.id !== "no" && x.o.id !== "yes"), ...opts().filter((x) => x.o.id === "yes")];
+    const Choice = (c: { o: PermissionInteraction["options"][number]; key: number }) => (
+        <button
+            class={`pbtn ${c.o.id === "yes" ? "primary" : c.o.id === "no" ? "quiet" : "outlined"}`}
+            disabled={busy()}
+            title={c.o.label.replaceAll("`", "")}
+            onClick={() => {
+                if (c.o.id === "no" && feedback() === undefined) setFeedback("");
+                else void answer(c.o.id);
+            }}
+        >
+            <FitLabel text={c.o.id === "no" && feedback() !== undefined ? "Deny" : c.o.label} />
+            <kbd>{c.o.id === "no" ? "Esc" : c.key}</kbd>
+        </button>
+    );
     return (
         <>
             <Head
@@ -183,7 +199,9 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                 title={p.it.heading}
                 note={p.it.classifierReason ? `Auto mode asked because: ${p.it.classifierReason}` : undefined}
                 sub={
-                    p.it.agentLabel ? (
+                    p.it.where && !p.it.agentLabel ? (
+                        <span class="truncate">{p.it.where}</span>
+                    ) : p.it.agentLabel ? (
                         <>
                             <AgentMark provider={askerProvider()} size={12} /> Requested by sub-agent ·{" "}
                             <Show when={p.it.agentId} fallback={p.it.agentLabel}>
@@ -236,8 +254,9 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                     <div class="itab-desc selectable">{p.it.title}</div>
                     <pre class="itab-code mono">{p.it.json}</pre>
                 </Show>
-                <Show when={!p.it.command && !p.it.diff && !p.it.path && !p.it.url && !p.it.json}>
-                    <div class="itab-desc selectable">{p.it.title}</div>
+                {/* Nothing more to show: what it does in words, or, for a tool no heading names, its call. */}
+                <Show when={!p.it.command && !p.it.diff && !p.it.path && !p.it.url && !p.it.json && (p.it.description || p.it.heading === "Use a tool")}>
+                    <div class="itab-desc selectable">{p.it.description ?? p.it.title}</div>
                 </Show>
                 <Show when={!p.it.dangerous && p.it.reason && p.it.toolName !== "Bash" && p.it.toolName !== "Monitor"}>
                     <div class="itab-desc why selectable">{p.it.reason}</div>
@@ -263,28 +282,8 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                     />
                 </Show>
             </div>
-            <div class="itab-actions ask-row">
-                <For each={order()}>
-                    {({ o, key }) => (
-                        <>
-                            <button
-                                class={`pbtn ${o.id === "yes" ? "primary" : o.id === "no" ? "quiet" : "outlined"}`}
-                                disabled={busy()}
-                                title={o.label.replaceAll("`", "")}
-                                onClick={() => {
-                                    if (o.id === "no" && feedback() === undefined) setFeedback("");
-                                    else void answer(o.id);
-                                }}
-                            >
-                                <FitLabel text={o.id === "no" && feedback() !== undefined ? "Deny" : o.label} />
-                                <kbd>{o.id === "no" ? "Esc" : key}</kbd>
-                            </button>
-                            <Show when={o.id === "no"}>
-                                <span class="grow" />
-                            </Show>
-                        </>
-                    )}
-                </For>
+            <div class="itab-actions ask-row perm-row">
+                <For each={[...deny(), ...allows()]}>{Choice}</For>
             </div>
         </>
     );

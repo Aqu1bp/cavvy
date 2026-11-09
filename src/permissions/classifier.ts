@@ -59,8 +59,6 @@ export interface ClassifierVerdict {
     reason: string;
     /** One plain-English line on what the action does and what makes it risky, for the popup. */
     summary?: string;
-    /** Something the user should hear about once (the reviewer failing). */
-    warning?: string;
     /** How long the review took. */
     ms?: number;
 }
@@ -278,7 +276,6 @@ export class AutoClassifier {
     private cache = new Map<string, ClassifierVerdict>();
     /** Bumped when the cache is cleared, so a review still running from before isn't stored after. */
     private generation = 0;
-    private warned = false;
     private inARow = 0;
     private total = 0;
 
@@ -287,7 +284,6 @@ export class AutoClassifier {
     setComplete(fn: CompleteFn | undefined) {
         this.complete = fn;
         this.clearCache();
-        this.warned = false;
     }
 
     /** Forget verdicts: they were judged against the user's requests (gone after /rewind) and by one reviewer (another may be chosen). */
@@ -406,14 +402,9 @@ export class AutoClassifier {
         }
     }
 
-    /** The reviewer couldn't decide: the user does. Nothing is cached, so the next action gets a fresh try. */
+    /** The reviewer couldn't decide: the user does, told why in the popup. Nothing is cached, so the next action gets a fresh try. */
     private unavailable(e: unknown): ClassifierVerdict {
         const failure = ((e as Error)?.message ?? String(e)).slice(0, 120);
-        const v: ClassifierVerdict = { decision: "ask", reason: `The reviewer couldn't decide (${failure})` };
-        if (!this.warned) {
-            this.warned = true;
-            v.warning = `Auto mode's reviewer failed (${failure}), so actions it checks come to you until it answers. Set "reviewModel" in settings to pick another reviewer.`;
-        }
-        return v;
+        return { decision: "ask", reason: `The reviewer couldn't decide (${failure})` };
     }
 }

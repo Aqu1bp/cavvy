@@ -445,8 +445,12 @@
     max-width: calc(180 * var(--sp));
 }
 
+/* As tall as the row, as wide as the image's shape (within limits): a strip or a tall page is letterboxed whole,
+   never cropped to its middle, which can be all background. */
 .prompt-image {
-    width: calc(120 * var(--sp));
+    display: inline-grid;
+    place-items: center;
+    min-width: calc(56 * var(--sp));
     height: calc(76 * var(--sp));
     padding: 0;
     border: 0;
@@ -459,9 +463,10 @@
 
 .prompt-image img {
     display: block;
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
+    width: auto;
+    max-width: calc(220 * var(--sp));
+    height: calc(76 * var(--sp));
+    object-fit: contain;
 }
 
 .prompt-image:hover img {
@@ -475,6 +480,8 @@
 
 /* The reply: no avatar, no name. Work, folded once it's done, then what was said. */
 .reply {
+    /* Where the live line's row fades as it steps aside (LiveLine.tsx fadeAway). */
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: calc(8 * var(--sp));
@@ -598,6 +605,13 @@
     margin-top: calc(2 * var(--sp));
 }
 
+/* The line's row fading where it was as it steps aside, over what took its place. */
+.live-line.ghost {
+    position: absolute;
+    margin: 0;
+    pointer-events: none;
+}
+
 .live-stack {
     display: grid;
     height: calc(30 * var(--sp));
@@ -644,7 +658,8 @@
     align-items: center;
     gap: calc(9 * var(--sp));
     min-width: 0;
-    padding: 0 calc(2 * var(--sp));
+    /* Its timer ends where the rows above end what they came to (a command's chevron column, .cmd-h). */
+    padding: 0 calc(31 * var(--sp)) 0 calc(2 * var(--sp));
     font-size: 0.964rem;
     color: var(--fg-3);
     white-space: nowrap;
@@ -1218,7 +1233,8 @@
     min-height: calc(30 * var(--sp));
     width: 100%;
     margin-left: 0;
-    padding: 0 calc(8 * var(--sp)) 0 calc(2 * var(--sp));
+    /* Its result ends where a command's does (.cmd-h: its chevron column), with the Open button's room after it. */
+    padding: 0 calc(5 * var(--sp)) 0 calc(2 * var(--sp));
     font-size: 0.964rem;
     color: var(--fg-2);
     /* Rows that land together come in one after another (lib/live-line.ts enterRow sets --enter). */
@@ -1492,6 +1508,13 @@
     flex: none;
 }
 
+/* How many times a call was made in a row: beside what it acted on, dim like the verb. */
+.tool-times {
+    flex: none;
+    color: var(--fg-3);
+    font-size: 0.857rem;
+}
+
 .tool-tag {
     display: inline-flex;
     align-items: center;
@@ -1716,11 +1739,18 @@
     border-radius: calc(8 * var(--sp));
     font-size: 0.964rem;
     color: var(--fg-2);
+    cursor: default;
+    outline: none;
     transition: background 140ms;
 }
 
-.edit-card > .tcard-h:hover {
+.edit-card > .tcard-h[role="button"]:hover,
+.edit-card > .tcard-h:focus-visible {
     background: var(--hover);
+}
+
+.edit-card > .tcard-h:focus-visible {
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 55%, transparent);
 }
 
 .edit-card .tcard-ic {
@@ -1733,34 +1763,79 @@
     flex: none;
 }
 
-/* What it came to sits at the right, by the row's buttons; those show on hover. */
-.edit-card > .tcard-h > .grow {
-    display: none;
-}
-
-.edit-card > .tcard-h > .tcard-p {
-    margin-right: auto;
-}
-
-.edit-card > .tcard-h > .tcard-btn {
-    opacity: 0;
-    transition: opacity 140ms;
-}
-
-.edit-card > .tcard-h:hover > .tcard-btn,
-.edit-card > .tcard-h > .tcard-btn:focus-visible {
-    opacity: 1;
-}
-
 .edit-card .tcard-p {
     min-width: 0;
     font-size: 0.893rem;
+}
+
+/* Under way: the file in the accent, as a running step's is. */
+.edit-card.live .tcard-p {
+    color: var(--accent);
+}
+
+/* Review and Open come in on hover or focus, after the file; until then they take no room. */
+.tcard-tools {
+    display: none;
+    align-items: center;
+    gap: calc(2 * var(--sp));
+    flex: none;
+}
+
+.edit-card > .tcard-h:hover .tcard-tools,
+.edit-card > .tcard-h:focus-within .tcard-tools {
+    display: flex;
+    animation: cmd-tools-in var(--dur-fast) ease-out;
+}
+
+.tcard-tools .row-open {
+    opacity: 1;
+}
+
+/* What it came to, at the right, where a command's result and a step's summary are. */
+.tcard-end {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    min-width: 0;
+    margin-left: auto;
+    padding-left: calc(8 * var(--sp));
+    font-size: 0.857rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-3);
+}
+
+.tcard-end:empty {
+    display: none;
+}
+
+.edit-card > .tcard-h > .chev-w {
+    margin-left: 0;
+}
+
+.edit-card.open > .tcard-h .chev {
+    transform: rotate(90deg);
 }
 
 .edit-card .tcard-h .stat {
     font-weight: 500;
     font-size: 0.857rem;
     font-variant-numeric: tabular-nums;
+}
+
+/* "Failed", "Declined", "Waiting for approval": in words, as a command's "Exit 1" is. */
+.tstate {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(4 * var(--sp));
+    flex: none;
+}
+
+.tstate.err {
+    color: var(--danger);
+}
+
+.tstate.warn {
+    color: var(--warn);
 }
 
 .edit-card > .tcard-body {
@@ -1918,18 +1993,19 @@
     color: var(--accent);
 }
 
-/* What it's for, in the model's words; or the command, shortened. */
+/* What it's for, in the model's words: said like any row's verb ("Read", "Search"), not brighter. */
 .cmd-l {
     flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
-    color: var(--fg);
+    color: var(--fg-2);
 }
 
-/* No description (Codex): the command is the label. */
+/* No description (Codex): the command is the label, and what it acts on, as a row's file is. */
 .cmd-l.solo {
     font: 0.893rem var(--font-mono);
+    color: var(--fg);
 }
 
 /* More than one line: the first, and a hint there's more. */
@@ -1997,9 +2073,9 @@
     color: var(--warn);
 }
 
+/* A failure is said in the result, in red, at the weight of any result. */
 .cmd-row .exit {
     color: var(--danger);
-    font-weight: 600;
 }
 
 /* Copy (and Stop) come in on hover or focus, at the end of the label; until then they take no room. */
@@ -2053,7 +2129,18 @@
 }
 
 .chev-w .chev {
-    transition: transform var(--dur-panel) var(--ease);
+    opacity: 0;
+    transition: transform var(--dur-panel) var(--ease), opacity 140ms;
+}
+
+/* Shown on hover or focus, and while open: a row that opens says so when it's pointed at, as every row does. */
+.cmd-h:hover .chev-w .chev,
+.cmd-h:focus-visible .chev-w .chev,
+.cmd-row.open .chev-w .chev,
+.edit-card > .tcard-h:hover .chev-w .chev,
+.edit-card > .tcard-h:focus-visible .chev-w .chev,
+.edit-card.open > .tcard-h .chev-w .chev {
+    opacity: 1;
 }
 
 .cmd-row.open .chev-w .chev {
@@ -2070,8 +2157,14 @@
     text-overflow: ellipsis;
 }
 
+/* A failure's last line: the result already says it failed, in red; this says why, quietly. */
 .cmd-tail.err {
-    color: var(--danger);
+    color: var(--fg-3);
+}
+
+/* An edit's refusal is a sentence, not output: in the text's face. */
+.edit-card .cmd-tail {
+    font-family: inherit;
 }
 
 .cmd-body {
@@ -2146,19 +2239,11 @@
     font-family: var(--font-ui);
 }
 
-/* Each block's Copy, in its top-right corner. */
-.cmd-in .cp,
-.cmd-out .cp {
+/* An opened command's one Copy, for the command, in its top-right corner. */
+.cmd-in .cp {
     position: absolute;
     top: calc(6 * var(--sp));
     right: calc(6 * var(--sp));
-    opacity: 0.55;
-}
-
-.cmd-in:hover .cp,
-.cmd-out:hover .cp,
-.cmd-body .cp:focus-visible {
-    opacity: 1;
 }
 
 .cmd-foot {

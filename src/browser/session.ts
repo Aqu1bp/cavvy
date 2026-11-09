@@ -254,6 +254,11 @@ export class BrowserSession implements PoolClient {
         this.announce();
     }
 
+    /** The tab a call would act on, if it's open; never starts a browser (for a call's preview). */
+    peek(id?: number): Page | undefined {
+        return this.disposed ? undefined : this.tabs.get(id ?? this.active ?? -1);
+    }
+
     /** The tab `id`, or the current one; opens one if there is none (unless the browser just went away: `open` says to start it again). */
     async page(id?: number, o: { open?: boolean } = {}): Promise<Page> {
         if (this.disposed) throw new BrowserError("This session's browser was closed.");

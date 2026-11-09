@@ -82,6 +82,33 @@ const short = (text: string, n = 60) => {
     return s.length > n ? `${s.slice(0, n)}…` : s;
 };
 
+/** What a BrowserAct call will do, in words: Click button "Save", Type "hello" into textbox "Name". */
+function actSummary(i: { action: string; key?: string; text?: string; value?: string; selector?: string; accept?: boolean; submit?: boolean }, el: string, quoted: (t: string | undefined) => string): string {
+    const on = el ? ` ${el}` : "";
+    switch (i.action) {
+        case "click":
+            return `Click${on}`;
+        case "double_click":
+            return `Double-click${on}`;
+        case "hover":
+            return `Hover over${on || " the page"}`;
+        case "type":
+            return `Type ${quoted(i.text)}${el ? ` into ${el}` : ""}${i.submit ? " and press Enter" : ""}`;
+        case "press":
+            return `Press ${i.key ?? "a key"}`;
+        case "select":
+            return `Choose ${quoted(i.value)}${el ? ` in ${el}` : ""}`;
+        case "scroll":
+            return `Scroll${on || " the page"}`;
+        case "wait":
+            return i.text ? `Wait for ${quoted(i.text)}` : i.selector ? `Wait for ${i.selector}` : "Wait for the page";
+        case "dialog":
+            return i.accept ? "Accept the dialog" : "Dismiss the dialog";
+        default:
+            return `${i.action}${on}`;
+    }
+}
+
 // ---------------------------------------------------------------------------
 
 interface NavigateInput {
@@ -281,10 +308,14 @@ Returns what changed on the page (or the new outline), including anything the us
                 return undefined;
         }
     },
-    async preview(input) {
-        const where = input.ref ? ` ${input.ref}` : typeof input.x === "number" ? ` at ${Math.round(input.x)},${Math.round(input.y ?? 0)}` : "";
-        const what = input.action === "type" ? ` ${JSON.stringify(short(redact(input.text ?? ""), 200))}` : input.action === "press" ? ` ${input.key}` : "";
-        return { summary: `Browser: ${input.action}${where}${what}` };
+    async preview(input, ctx) {
+        // The element as the last snapshot named it ("button "Save""), from a tab that's open; never starts a browser.
+        const page = ctx?.state?.browser?.peek(input.tab);
+        const found = input.ref ? page?.refs.resolve(input.ref) : undefined;
+        const el = found && "entry" in found ? `${found.entry.role}${found.entry.name ? ` ${JSON.stringify(short(found.entry.name, 60))}` : ""}` : input.ref ? input.ref : typeof input.x === "number" ? `at ${Math.round(input.x)},${Math.round(input.y ?? 0)}` : "";
+        const quoted = (t: string | undefined) => JSON.stringify(short(redact(t ?? ""), 80));
+        const summary = actSummary(input, el, quoted);
+        return { summary, ...(page?.url ? { body: displayUrl(page.url) } : {}) };
     },
     run: (input, ctx) =>
         guarded(ctx, async (b) => {

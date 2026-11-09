@@ -5,7 +5,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
-import { isolate, tempDir } from "./helpers/isolate";
+import { FAKE, isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
 const { startServer } = await import("../src/server/server");
@@ -941,6 +941,28 @@ describe("connecting", () => {
             await whenIdle(rt);
             (rt as any).onEvent({ type: "tool_call_start", id: "call_w", name: "Write" });
             expect(rt.snapshot().state.activity?.label).toBe("Preparing Write");
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("a call still arriving names its file once that much of its input is in", async () => {
+        const { engine, c, id, rt } = await engineWithSession();
+        try {
+            await engine.handle(c, "session.send", { id, text: "Hi" });
+            await whenIdle(rt);
+            const write = () => rt.snapshot().turns.at(-1)!.blocks.find((b): b is ToolBlock => b.t === "tool" && b.id === "call_w")!;
+            (rt as any).onEvent({ type: "tool_call_start", id: "call_w", name: "Write" });
+            (rt as any).onEvent({ type: "tool_call_delta", id: "call_w", partial: '{"file_path": "src/ga' });
+            expect(write().input).toBeUndefined();
+            (rt as any).onEvent({ type: "tool_call_delta", id: "call_w", partial: 'me.gd", "content": "extends' });
+            expect(write()).toMatchObject({ status: "streaming", input: { file_path: "src/game.gd" }, title: "Write(src/game.gd)", receiving: 48 });
+            // A secret in what's arrived is redacted, in the input and the title made from it.
+            const bash = () => rt.snapshot().turns.at(-1)!.blocks.find((b): b is ToolBlock => b.t === "tool" && b.id === "call_b")!;
+            (rt as any).onEvent({ type: "tool_call_start", id: "call_b", name: "Bash" });
+            (rt as any).onEvent({ type: "tool_call_delta", id: "call_b", partial: `{"command": "curl -H 'x-api-key: ${FAKE.anthropic}' https://api.example", "descr` });
+            expect(String(bash().input?.command)).toContain("curl -H");
+            expect(JSON.stringify(bash())).not.toContain(FAKE.anthropic);
         } finally {
             await engine.stop();
         }
