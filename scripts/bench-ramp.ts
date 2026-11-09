@@ -38,7 +38,7 @@ const DEBUG = arg("--debug");
 const HOLD = Number(arg("--hold") ?? 0);
 const TIMES = arg("--times");
 const SHOWN = arg("--shown") ?? "first";
-/** --mock <url>: the CLIs talk to mock-agent-api.ts instead of Anthropic: the same work, to the byte, in both modes. */
+/** --mock <url>: the CLIs talk to bench-claude-api.ts instead of Anthropic: the same work, to the byte, in both modes. */
 const MOCK = arg("--mock");
 /** The step's worktrees, for the mock's prompts (they name files by path). */
 let DIRS: string[] = [];

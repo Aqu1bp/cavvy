@@ -30,7 +30,7 @@ function textOf(c: unknown): string {
 
 /**
  * A long reply as a model writes one, about `n` words: paragraphs, headings, a list and a code block, over and over. The
- * same text in a terminal and in Cavvy, for what drawing it costs each (desktop-electron/bench-terminal.ts).
+ * same text in a terminal and in Cavvy, for what drawing it costs each.
  */
 export function longReply(n: number): string {
     const parts: string[] = [];
