@@ -62,7 +62,7 @@ Before a release, run the same `perf:bench` for the new build against the last r
 
 Anyone can read this repository, and what's pushed to it stays readable for good, even after a force-push: commits, branches, pull requests, comments, issues and CI logs.
 
-- Commit with your GitHub noreply address, not a personal one. Leave out `Claude-Session:` trailers.
+- Commit with your GitHub noreply address, not a personal one. Leave out `Co-Authored-By:` and `Claude-Session:` trailers.
 - Keep out what identifies a person, a machine or an account: home paths (`/Users/<name>`), host names, email addresses, account, organization, installation and session IDs, links to private sessions, keys and tokens. In code, fixtures, commit messages, pull requests and issues alike. Use placeholders: `/Users/me`, `me@example.com`, `<id>`.
 - A fixture recorded from a real CLI (`scripts/probes/`) goes through the scrubber in `scripts/probes/lib.ts`. Read what it wrote before you commit it, and add to the scrubber what it missed.
 - Screenshots come from `bun run gui:demo`, not from a real session.
