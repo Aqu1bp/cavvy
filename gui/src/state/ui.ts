@@ -132,6 +132,12 @@ export const [shellLayout, setShellLayout] = createSignal<WindowLayout>({
 /** The sizes held while the panels slide open or shut (lib/layout.ts heldSizes), and the slide; undefined at rest. */
 export const [panelHold, setPanelHold] = createSignal<Held & { slide: Animation }>();
 
+/**
+ * A floating inspector is docking where it is (the sidebar was hidden, or the window widened, and it now fits beside
+ * the conversation): until the slide that opens its column is over, it's drawn in the column's place (shell.css).
+ */
+export const [inspectorDocking, setInspectorDocking] = createSignal(false);
+
 const railChanging = new Set<() => void>();
 /** `fn` runs just before the rail is shown or hidden: what's placed by it (the title bar) reads where it is. */
 export function beforeRailChange(fn: () => void): () => void {

@@ -29,9 +29,8 @@ export interface Shown {
     targetId: string;
     box: Box;
     /**
-     * The pane's page keeps this size, not the box's, while the panels slide: it moves with the box, cut to it where
-     * the box is smaller, and takes the box's size once the slide is over. A real page resized on every frame of a
-     * slide made the window wait for the page each time, so a busy page made every slide stutter.
+     * The pane's page keeps this size, not the box's (lib/page-size.ts: the panels are sliding, or the page can't
+     * keep up with an edge being dragged): it moves with the box, cut to it where the box is smaller.
      */
     page?: { width: number; height: number };
     by: "pane" | "float";

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
 import {
-    clampInspectorWidth, clampTerminalHeight, closesOnShrink, coversComposer, coversConversation, floatBottom, floatShort, inspectorMode, railMode,
+    clampInspectorWidth, clampTerminalHeight, closesOnShrink, coversComposer, coversConversation, docksInPlace, floatBottom, floatShort, inspectorMode, railMode,
     requestCloses, reviewWidth, sheetSize, terminalHeight, windowLayout,
 } from "../gui/src/lib/layout";
 
@@ -194,4 +194,20 @@ test("a request arriving closes a short floating inspector once, not one opened 
     expect(requestCloses(undefined, true, { mode: "fill", short: true, request: "c:1", open: true }).close).toBe(true);
     expect(requestCloses(undefined, true, { mode: "fill", short: false, request: "c:1", open: true }).close).toBe(false);
     expect(requestCloses(undefined, false, { ...short, request: "c:1", open: false }).close).toBe(false);
+});
+
+test("an open, floating inspector that now fits docks where it is; any other change leaves it to its column", () => {
+    // 1100 wide: beside the rail the sheet leaves a 360px panel 472px of conversation (it floats); with the rail
+    // hidden, 740px (it docks).
+    const mid = { ...base, win: { w: 1100, h: 750 }, panel: true };
+    const [floating, docked] = [windowLayout(mid), windowLayout({ ...mid, rail: false })];
+    expect([floating.inspector.mode, docked.inspector.mode]).toEqual(["float", "dock"]);
+    expect(docksInPlace(floating, docked)).toBe(true);
+    // The window widening does the same.
+    expect(docksInPlace(floating, windowLayout({ ...mid, win: { w: 1360, h: 750 } }))).toBe(true);
+    // Opening docked, closing, or going the other way (which closes it): its column slides as before.
+    expect(docksInPlace(windowLayout({ ...base }), windowLayout({ ...base, panel: true }))).toBe(false);
+    expect(docksInPlace(windowLayout({ ...mid, panel: false }), windowLayout({ ...mid, panel: false, rail: false }))).toBe(false);
+    expect(docksInPlace(docked, floating)).toBe(false);
+    expect(docksInPlace(docked, docked)).toBe(false);
 });

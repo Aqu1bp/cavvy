@@ -104,6 +104,15 @@ export function closesOnShrink(from: InspectorMode | undefined, to: InspectorMod
 }
 
 /**
+ * An open, floating inspector that now fits beside the conversation (the sidebar was hidden, the window widened)
+ * docks where it is: it's at the sheet's right edge already, and takes its column's place at once while the column
+ * opens under it. Left to the column, it went to the sheet's edge and slid back in.
+ */
+export function docksInPlace(from: WindowLayout, to: WindowLayout): boolean {
+    return from.inspector.open && to.inspector.open && from.inspector.mode === "float" && to.inspector.mode === "dock";
+}
+
+/**
  * A request arriving closes a short floating inspector, which would cover it. Once per request:
  * `request` is a key for the requests showing (none: undefined), `cleared` the one already dealt
  * with. The inspector opened while a request shows stays open for it, and so does one opened

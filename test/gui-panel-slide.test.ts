@@ -7,6 +7,7 @@ import { readdirSync, readFileSync } from "fs";
 import { join } from "path";
 import { columnSteps, COLUMN_NARROW, COLUMN_SHORT, heldSizes, tracks, windowLayout } from "../gui/src/lib/layout";
 import { barMove } from "../gui/src/lib/bar-glide";
+import { pageSizer, SETTLE_MS } from "../gui/src/lib/page-size";
 import { parseRules } from "./helpers/contrast";
 
 const gui = join(import.meta.dir, "../gui/src");
@@ -159,11 +160,73 @@ test("the title bar keeps to the top line through the slide: its top padding eas
 test("the Browser pane's page keeps its size while the panels slide, and takes its box's once they've stopped", () => {
     // A real page (the desktop app's) resized on every frame of a slide held the window up each time: with a busy
     // page, three or four stalls of 55 to 80ms in a 160ms slide. One resize, after it.
+    const sizer = pageSizer();
+    const box = (width: number, height: number) => ({ width, height });
+    expect(sizer.frame(0, box(354, 746), false)).toEqual(box(354, 746));
+    // The sidebar hiding: the box grows a little each frame, the page stays as it is.
+    for (let t = 16; t <= 160; t += 16) expect(sizer.frame(t, box(354, 746 + t / 10), true)).toEqual(box(354, 746));
+    // Over: the box's size, in one step.
+    expect(sizer.frame(176, box(354, 762), false)).toEqual(box(354, 762));
+    // A slide that cuts another short keeps the size the page has, not the box's part way.
+    expect(sizer.frame(192, box(354, 700), true)).toEqual(box(354, 762));
+    expect(sizer.frame(208, box(354, 640), true)).toEqual(box(354, 762));
+    expect(sizer.frame(224, box(354, 502), false)).toEqual(box(354, 502));
+
     const pane = read("components/BrowserPane.tsx");
-    expect(pane).toContain("createEffect(on(() => panelHold()?.slide, (slide) => {\n                page = slide ? page ?? last : undefined;\n                follow.kick();");
-    expect(pane).toContain('setShownBrowser({ targetId: t.targetId, box: shown, by: "pane", ...(page ? { page } : {}) });');
+    expect(pane).toContain("const page = sizer.frame(performance.now(), { width: shown.width, height: shown.height }, sliding);");
+    expect(pane).toContain("createEffect(on(() => panelHold()?.slide, (slide) => {\n                sliding = !!slide;\n                follow.kick();");
     const host = read("components/BrowserHostLayer.tsx");
     expect(host).toContain("const size = box && !shown.fit ? (shown.page ?? { width: box.width, height: box.height }) : AGENT_SIZE;");
     // The app hears of a size only when it changes: once per slide.
     expect(host).toContain("if (key !== reported) {");
+});
+
+test("a page that keeps up follows its box as an edge is dragged; one that doesn't waits for the box to settle", () => {
+    const box = (width: number) => ({ width, height: 700 });
+    // Keeping up (a frame every 16ms): the page is the box's size on every frame.
+    const quick = pageSizer();
+    for (let i = 0; i <= 40; i++) expect(quick.frame(i * 16, box(400 + i), false)).toEqual(box(400 + i));
+    // Not keeping up: each frame after a resize comes 70ms late. The second such frame, the page stops following.
+    const slow = pageSizer();
+    expect(slow.frame(0, box(400), false)).toEqual(box(400));
+    expect(slow.frame(16, box(403), false)).toEqual(box(403));
+    expect(slow.frame(16 + 70, box(406), false)).toEqual(box(406));
+    expect(slow.frame(16 + 140, box(409), false)).toEqual(box(406));
+    // The drag goes on, at the window's own pace now: nothing resizes the page.
+    for (let t = 172; t <= 500; t += 16) expect(slow.frame(t, box(409 + t), false)).toEqual(box(406));
+    // Let go (the box unchanged for SETTLE_MS): the page takes the box's size.
+    expect(slow.frame(516, box(909), false)).toEqual(box(406));
+    expect(slow.frame(516 + SETTLE_MS - 1, box(909), false)).toEqual(box(406));
+    expect(slow.frame(516 + SETTLE_MS + 1, box(909), false)).toEqual(box(909));
+    // And follows again from there, until it's late again.
+    expect(slow.frame(700, box(912), false)).toEqual(box(912));
+    // One late frame alone (the window's own work, say) doesn't stop it.
+    const once = pageSizer();
+    once.frame(0, box(400), false);
+    once.frame(16, box(403), false);
+    expect(once.frame(90, box(406), false)).toEqual(box(406));
+    expect(once.frame(106, box(409), false)).toEqual(box(409));
+    // A tab going away starts afresh.
+    slow.reset();
+    expect(slow.frame(1000, box(300), true)).toEqual(box(300));
+});
+
+test("a floating panel that docks is drawn in its column's place while the column opens under it", () => {
+    // Left to the column (0 wide as the slide begins), it went to the sheet's right edge and slid back in.
+    const app = read("App.tsx");
+    expect(app).toContain("setInspectorDocking(docksInPlace(from, to));");
+    expect(app).toContain('data-inspdocking={inspectorDocking() ? "on" : undefined}');
+    // Over with the slide, or at once when nothing slides (animations off).
+    expect(app).toMatch(/const rest = \(\) => \{\s*setPanelHold\(undefined\);\s*setInspectorDocking\(false\);/);
+    expect(app).toContain("if (!sliding.length) return rest();");
+    const rule = parseRules(read("styles/shell.css")).find((r) => r.selectors.includes('[data-inspdocking="on"][data-inspmode="dock"] .insp'));
+    expect([rule?.decls.get("grid-column"), rule?.decls.get("justify-self"), rule?.decls.get("width")]).toEqual(["1 / 3", "end", "var(--insp-w)"]);
+});
+
+test("the side panel keeps what's in it until it has slid shut", () => {
+    // Emptied as it was told to close, a blank panel slid away. And never unmounted and mounted again on the way.
+    const app = read("App.tsx");
+    expect(app).toContain("const [panelGone, setPanelGone] = createSignal(!prefs.panel);");
+    expect(app).toContain("const panelKept = () => Boolean((prefs.panel || !panelGone()) && stage() && !agent() && !openingScreen());");
+    expect(app).toContain("void Promise.allSettled(moves.map((a) => a.finished)).then(() => { if (!prefs.panel) setPanelGone(true); });");
 });

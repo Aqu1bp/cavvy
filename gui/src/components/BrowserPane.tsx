@@ -12,6 +12,7 @@ import { panelHold, settingsTab } from "../state/ui";
 import { electron } from "../lib/platform";
 import { setShownBrowser, unshowBrowser } from "../state/browser-host";
 import { followBox } from "../lib/follow-box";
+import { pageSizer } from "../lib/page-size";
 import { addressOf, currentTab, isPasteKey, isReleaseKey, keyInput, mouseInput, pagePoint, paneSize, paneStatus, placeFrame, resized, tabLabel, wheelInput, wheelPixels, type Point, type Size } from "../lib/browser";
 import type { BrowserImageFrame } from "@shared/browser-wire";
 import { Spinner } from "./ui/bits";
@@ -195,9 +196,9 @@ export function BrowserPane(p: { handle: SessionHandle }) {
     // resizing. A page's dialog at the foot of the box stays visible above it.
     if (native) {
         let placed = "";
-        /** The box's size as last placed, and the size the page keeps while the panels slide (none at rest). */
-        let last: { width: number; height: number } | undefined;
-        let page: { width: number; height: number } | undefined;
+        // The page's size isn't simply its box's on every frame: lib/page-size.ts says when it keeps the one it has.
+        const sizer = pageSizer();
+        let sliding = false;
         const place = () => {
             const t = tab();
             if (!disposed && box && watching() && t?.targetId) {
@@ -208,25 +209,23 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                 const edge = document.querySelector(".insp-resizer")?.getBoundingClientRect();
                 const left = edge && edge.right > r.left && edge.left < r.right ? Math.max(r.left, edge.right) : r.left;
                 const shown = { x: Math.round(left), y: Math.round(r.top), width: Math.round(r.right - left), height: Math.round(height) };
-                const key = `${t.targetId} ${shown.x} ${shown.y} ${shown.width} ${shown.height} ${page ? `${page.width}x${page.height}` : ""}`;
-                if (key !== placed && shown.width > 0 && shown.height > 0) {
+                if (shown.width <= 0 || shown.height <= 0) return;
+                const page = sizer.frame(performance.now(), { width: shown.width, height: shown.height }, sliding);
+                const key = `${t.targetId} ${shown.x} ${shown.y} ${shown.width} ${shown.height} ${page.width} ${page.height}`;
+                if (key !== placed) {
                     placed = key;
-                    last = { width: shown.width, height: shown.height };
-                    setShownBrowser({ targetId: t.targetId, box: shown, by: "pane", ...(page ? { page } : {}) });
+                    setShownBrowser({ targetId: t.targetId, box: shown, by: "pane", ...(page.width === shown.width && page.height === shown.height ? {} : { page }) });
                 }
             } else if (placed) {
                 placed = "";
-                last = undefined;
+                sizer.reset();
                 unshowBrowser("pane");
             }
         };
         onMount(() => {
             const follow = followBox(box!, place);
-            // While the panels slide the box changes size on every frame. The page doesn't: it keeps the size it
-            // has (through a slide that cuts another short, too) and takes the box's once the slide is over, when
-            // nothing is moving for its resize to hold up.
             createEffect(on(() => panelHold()?.slide, (slide) => {
-                page = slide ? page ?? last : undefined;
+                sliding = !!slide;
                 follow.kick();
             }));
             // What else moves or hides it: another tab, the pane covered or uncovered.

@@ -343,6 +343,15 @@
     transform: none;
 }
 
+/* A floating inspector that now fits docks where it is (lib/layout.ts docksInPlace): over the conversation at the
+   sheet's right edge, as it was while floating, until the column opening under it is as wide as it is. */
+[data-inspdocking="on"][data-inspmode="dock"] .insp {
+    grid-column: 1 / 3;
+    justify-self: end;
+    width: var(--insp-w);
+    z-index: 9;
+}
+
 /* A diff reader too wide to dock fills the sheet under the title bar, ending above the composer like a
    floating one. The conversation behind it would show only as a cut-off strip under the title bar, so it's hidden;
    Find and a jump to a message close the reader first (lib/layout.ts coversConversation). */
