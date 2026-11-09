@@ -200,7 +200,7 @@ describe.skipIf(!chromePath)("browser regressions with Chrome", () => {
         } finally { a.unwatch(ka); b.unwatch(kb); }
     }, 30_000);
 
-    test("every streamed frame is labelled with the pane's size, at scale 1 and 2, however often the page repaints", async () => {
+    test("every streamed frame is labelled with the pane's size, at scales 1, 1.5, 2 and 3, however often the page repaints", async () => {
         // At scales other than its own (2), Chrome now and then labels a frame with the picture's size ÷ 2 (frame-size.ts):
         // the pane mapped clicks with that, and they landed off by scale ÷ 2. It's rare (about one frame in a hundred),
         // so many repaints, at each scale a screen has.
