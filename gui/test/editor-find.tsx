@@ -116,10 +116,7 @@ export async function checkEditorFind(root: HTMLElement) {
         readRow.querySelector<HTMLButtonElement>(".tool-line")!.click();
         await settle();
         check(textRanges(readRow, "reader.ts").length === 1, "opening details doesn't duplicate the counted file path");
-        const detailAction = readRow.querySelector<HTMLButtonElement>(".tool-open")!;
-        check(detailAction.hasAttribute("data-find-skip") && textRanges(col, "Open in editor").length === 0, "the editor label isn't searchable tool text");
-        detailAction.click();
-        check(opened.at(-1)?.path === "src/reader.ts", "details editor action still works");
+        check(!readRow.querySelector(".tool-open") && textRanges(col, "Open in editor").length === 0, "opened, the row's own editor action isn't repeated in its details");
 
         setFindQuery("edited.ts");
         await settle();

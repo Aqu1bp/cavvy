@@ -25,6 +25,8 @@
 //   "emptyreply"     a response with no text and no tool calls
 //   "untitled"       the request for the session's title is refused (HTTP 400)
 //   "stubborn"       runs a command that ignores being told to stop (SIGTERM)
+//   "tooldemo"       a turn whose calls arrive slowly (a 4k-character Write, an Edit), between thoughts and a command:
+//                    the states a call goes through, and the moves between them
 //   "livecmd"        runs a command that prints a line every half second for 6s (the live line opens to it)
 //   "cmdrows"        commands as rows: a passing test run, one without a description, a heredoc, a failure, one in the background
 //   "waitcheck"      starts a background command, then waits and checks it in one response
@@ -35,6 +37,8 @@
 //   "ship"           commits, opens a pull request and watches it (GitCommit, CreatePullRequest)
 //   (a wake)         answers a watched pull request's news: failed checks, comments, passing checks
 //   "monitor"        watches a build log with Monitor; its lines wake the agent later
+//   "jsonfail"       a command that works, and one that fails after printing JSON (its last line is "}")
+//   "repeats"        reads the same file three times in a row (one row, counted), then lists files
 //   "browser"        opens the demo site (or the address in the prompt) in the browser, clicks its first button, takes a
 //                    screenshot, and shows it in its reply
 //   "simulator"      starts an iOS simulator, opens Settings by its ref, scrolls, takes a screenshot and shows it in
@@ -56,6 +60,8 @@ interface Step {
     /** Stream reasoning and text at this many tokens a second (about 4 characters each), or "burst": a paragraph at a time. */
     rate?: number | "burst" | { bytes: number; ms: number };
     calls?: { name: string; args: Json }[];
+    /** Stream each call's arguments at this many ms per 40 characters, as a model writing a big file does. */
+    argsMs?: number;
 }
 
 export interface MockOptions {
@@ -144,6 +150,24 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
             { text: "Generated **322** endpoint clients under `gen/`." },
         ];
         return steps[toolRounds];
+    }
+    // A command that works, then one that fails after printing a file ending in "}": no line under its row says why.
+    if (/\bjsonfail\b/.test(p)) {
+        if (toolRounds === 0)
+            return {
+                text: "I'll explore the repo with a batch of read-only calls.",
+                calls: [
+                    { name: "Bash", args: { command: "git log --oneline -n 5; echo; git branch -a", description: "Show recent commits and branches" } },
+                    { name: "Bash", args: { command: `printf '{\\n  "name": "acme-platform"\\n}\\n'; false`, description: "Show top-level directory and package manifest" } },
+                ],
+            };
+        return { text: "That's the layout." };
+    }
+    // The same call three times in a row, then a different one: one row, counted ×3.
+    if (/\brepeats\b/.test(p)) {
+        const read = { name: "Read", args: { file_path: "README.md" } };
+        if (toolRounds === 0) return { text: "Reading the README.", calls: [read, read, read, { name: "Glob", args: { pattern: "src/**/*.ts" } }] };
+        return { text: "The README covers setup; nothing's missing." };
     }
     if (/\bbrowser\b/.test(p)) {
         const url = /https?:\/\/\S+/.exec(prompt)?.[0] ?? demoSite ?? "http://localhost:3000/";
@@ -403,6 +427,36 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         if (perf[1] === "bg") return toolRounds === 0 ? { text: "Starting it.", calls: [{ name: "Bash", args: { command: `for i in $(seq 1 ${Number(perf[2])}); do echo "tick $i"; sleep 1; done`, description: "Start the dev server", run_in_background: true } }] } : { text: "It's running." };
         if (perf[1] === "text") return toolRounds === 0 ? { text: Array.from({ length: Number(perf[2]) }, () => STREAM_DEMO).join("\n\n"), rate: Number(perf[3] ?? 80) } : undefined;
         return toolRounds === 0 ? { text: "Running it.", calls: [{ name: "Bash", args: { command: `for i in $(seq 1 ${Number(perf[2])}); do echo "✓ case $i of the suite passes: signs in, refreshes the token and signs out again"; sleep 0.02; done`, description: "Run the suite" } }] } : { text: "Done." };
+    }
+    if (/\btooldemo\b/.test(p)) {
+        const body = Array.from({ length: 60 }, (_, i) => `    mesh_${i}.material = palette.get(${i % 8})\n`).join("");
+        const steps: Step[] = [
+            {
+                reasoning: "A low-poly look needs flat-shaded materials and simple meshes. I should see how the scene is set up before adding helpers.",
+                text: "I'll look at how the scene is set up first.",
+                calls: [
+                    { name: "Read", args: { file_path: "src/auth/index.ts" } },
+                    { name: "Grep", args: { pattern: "strategy", path: "src" } },
+                    { name: "Read", args: { file_path: "src/auth/types.ts" } },
+                ],
+            },
+            {
+                reasoning: "The scene code is small. A helper for materials and the character models keeps the main script readable.",
+                text: "Next, a small helper for materials and the low-poly character models:",
+                calls: [{ name: "Write", args: { file_path: `src/game/characters-${Date.now().toString(36).slice(-4)}.gd`, content: `extends Node3D\n\nfunc _ready():\n${body}` } }],
+                argsMs: 80,
+            },
+            {
+                calls: [{ name: "Edit", args: { file_path: "src/auth/index.ts", old_string: "export const strategies = [emailStrategy];", new_string: "export const strategies = [emailStrategy, samlStrategy];" } }],
+                argsMs: 80,
+            },
+            {
+                reasoning: "Now check it all still passes.",
+                calls: [{ name: "Bash", args: { command: "for i in 1 2 3 4; do echo \"✓ scene test $i\"; sleep 0.6; done", description: "Run the scene tests" } }],
+            },
+            { text: "The helper is in `src/game/characters.gd`, the strategy list includes SAML, and the 4 scene tests pass." },
+        ];
+        return steps[toolRounds];
     }
     if (/\blivecmd\b/.test(p)) return toolRounds === 0 ? { text: "Running it.", calls: [{ name: "Bash", args: { command: 'for i in $(seq 1 12); do echo "✓ check $i of 12"; sleep 0.5; done', description: "Run the checks" } }] } : { text: "All 12 checks pass." };
     if (/\bstubborn\b/.test(p)) return toolRounds === 0 ? { text: "Running it.", calls: [{ name: "Bash", args: { command: "trap '' TERM; sleep 3", description: "Wait, ignoring SIGTERM" } }] } : { text: "Done." };
@@ -725,11 +779,14 @@ export function startMockLlm(o: MockOptions = {}) {
                                 await wait();
                             }
                         }
-                        (step.calls ?? []).forEach((c, i) => {
+                        for (const [i, c] of (step.calls ?? []).entries()) {
                             const args = JSON.stringify(c.args);
                             delta({ tool_calls: [{ index: i, id: `call_${calls}_${i}`, type: "function", function: { name: c.name, arguments: "" } }] });
-                            for (let k = 0; k < args.length; k += 40) delta({ tool_calls: [{ index: i, function: { arguments: args.slice(k, k + 40) } }] });
-                        });
+                            for (let k = 0; k < args.length; k += 40) {
+                                delta({ tool_calls: [{ index: i, function: { arguments: args.slice(k, k + 40) } }] });
+                                if (step.argsMs && delay) await Bun.sleep(step.argsMs);
+                            }
+                        }
                         delta({}, step.calls?.length ? "tool_calls" : "stop");
                         const out = Math.ceil(((step.reasoning ?? "") + (step.text ?? "") + JSON.stringify(step.calls ?? [])).length / 4);
                         send({ id, object: "chat.completion.chunk", model, choices: [], usage: { prompt_tokens: 1200 + messages.length * 350, completion_tokens: out } });

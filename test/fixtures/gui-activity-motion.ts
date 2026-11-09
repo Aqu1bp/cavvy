@@ -379,8 +379,11 @@ test("commands and edits are cards of their own, kept through output, completion
         const edit = row(h.root, "edit");
         expect(has(edit, "edit-card")).toBe(true);
         expect(text(edit)).toContain("diff src/a.ts");
-        // Folding the card hides the change; the header stays.
-        all(edit).find((n) => n.tag === "button" && n.props["aria-expanded"] === true)!.props.onClick();
+        // Folding the card hides the change; the header stays. The header is the toggle, as a command's is.
+        const header = all(edit).find((n) => has(n, "tcard-h"))!;
+        expect(header.props.role).toBe("button");
+        expect(header.props["aria-expanded"]).toBe(true);
+        header.props.onClick();
         expect(text(edit)).not.toContain("diff src/a.ts");
         expect(text(edit)).toContain("+2");
         // Find opens it again.
@@ -399,8 +402,8 @@ test("an edit with no diff still offers its input and output, as its row did", (
         for (const [id, input, output] of [["nb", "print('kiwi')", "Updated cell kiwi"], ["multi", "mango", "Applied 1 edit to b.ts"]] as const) {
             const card = row(h.root, id);
             expect(has(card, "edit-card")).toBe(true);
-            // Folded at first, as the row was; its button opens the details.
-            const toggle = all(card).find((n) => n.tag === "button" && n.props["aria-expanded"] !== undefined);
+            // Folded at first, as the row was; its header opens the details.
+            const toggle = all(card).find((n) => n.props.role === "button" && n.props["aria-expanded"] !== undefined);
             expect(toggle).toBeDefined();
             if (!toggle!.props["aria-expanded"]) toggle!.props.onClick();
             expect(text(card)).toContain(input);
@@ -408,6 +411,20 @@ test("an edit with no diff still offers its input and output, as its row did", (
         }
         expect(text(row(h.root, "nb"))).toContain("Show full output");
         expect(text(h.root)).not.toContain("Couldn't render");
+    } finally { h.dispose(); }
+});
+
+
+test("an edit refused before it changed anything says Failed, and why under its row, with nothing to open", () => {
+    const write = { t: "tool", id: "w", name: "Write", title: "Write(src/auth/sso.ts)", input: { file_path: "src/auth/sso.ts", content: "export const kiwi = 1;\n" }, status: "error", output: "You must Read src/auth/sso.ts before modifying it." };
+    const h = setup([write], false);
+    try {
+        const card = row(h.root, "w");
+        expect(text(card)).toContain("Failed");
+        expect(text(all(card).find((n) => has(n, "cmd-tail"))!)).toBe("You must Read src/auth/sso.ts before modifying it.");
+        // Not its input: what it would have written isn't shown, and there's no body to open.
+        expect(text(card)).not.toContain("kiwi");
+        expect(all(card).find((n) => n.props["aria-expanded"] !== undefined)).toBeUndefined();
     } finally { h.dispose(); }
 });
 
@@ -493,7 +510,9 @@ test("every command row has the same columns, in order, whatever it shows: so a 
         const cells = (id: string) => head(row(h.root, id)).children.filter((n) => n.tag !== "#text").map((n) => n.props.class?.split(" ")[0]);
         for (const id of ["tally", "quiet", "failed", "denied", "bg"]) expect(cells(id)).toEqual(["cmd-what", "cmd-tags", "cmd-res", "cmd-time", "chev-w"]);
         const cell = (id: string, cls: string) => text(all(head(row(h.root, id))).find((n) => has(n, cls))!);
-        expect(cell("tally", "cmd-tags")).toContain("sandbox");
+        // Run in the sandbox: said on its icon's hover, not as a tag on every row.
+        expect(cell("tally", "cmd-tags")).toBe("");
+        expect(all(head(row(h.root, "tally"))).find((n) => has(n, "ic"))!.props.title).toBe("Ran in the sandbox");
         expect(cell("tally", "cmd-res")).toBe("14 pass");
         expect(cell("tally", "cmd-time")).toBe("2s");
         // What it came to is one column: a summary, an exit, a tally.
@@ -523,13 +542,9 @@ test("opened: the whole command after $, highlighted, over its output (failures 
         const out = all(b).find((n) => has(n, "cmd-out"))!;
         expect(all(out).filter((n) => has(n, "ok")).map(text)).toEqual(["✓ renders"]);
         expect(all(out).filter((n) => has(n, "er")).map(text)).toEqual(["error: one"]);
-        // A Copy for the command on the row, and one each for the command and the output in the body.
+        // Opened, one Copy: the command's.
         const copies = all(card).filter((n) => n.props.copy).map((n) => [n.props.label, n.props.copy()]);
-        expect(copies).toEqual([
-            ["Copy command", "FOO=1 bun test --bail 'a b' | tee out.txt # go"],
-            ["Copy command", "FOO=1 bun test --bail 'a b' | tee out.txt # go"],
-            ["Copy output", "✓ renders\nerror: one\nplain"],
-        ]);
+        expect(copies).toEqual([["Copy command", "FOO=1 bun test --bail 'a b' | tee out.txt # go"]]);
         const foot = all(b).find((n) => has(n, "cmd-foot"))!;
         expect(text(foot)).toContain("Exit 0");
         expect(text(foot)).toContain("2s");
@@ -537,7 +552,7 @@ test("opened: the whole command after $, highlighted, over its output (failures 
     } finally { h.dispose(); }
 });
 
-test("a running command shows its last line under the row; a failed one says Exit N in red, its last line of output under it", () => {
+test("a running command shows its last line under the row; a failed one says Exit N in red, the line saying why under it", () => {
     // With no live line (a turn left running): a running command is a row like the others.
     const h = setup([command("cmd")], false, [], undefined, false);
     try {
@@ -561,6 +576,11 @@ test("a running command shows its last line under the row; a failed one says Exi
         expect(all(body(card)!).filter((n) => has(n, "er")).map(text)).toContain("error: kiwi is undefined");
         expect(text(all(card).find((n) => has(n, "cmd-foot"))!)).toContain("Exit 1");
         expect(tailOf(card)).toBeUndefined();
+        // Folded again with output whose last lines say nothing of why (a file's closing brace): no line under the row.
+        head(card).props.onClick();
+        h.op({ op: "block.patch", blockId: "cmd", patch: { output: '{\n  "name": "acme"\n}\n\nExit code: 1' } });
+        expect(tailOf(card)).toBeUndefined();
+        expect(text(all(card).find((n) => has(n, "exit"))!)).toBe("Exit 1");
     } finally { h.dispose(); }
 });
 

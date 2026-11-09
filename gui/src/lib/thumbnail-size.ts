@@ -1,9 +1,10 @@
 // How big a thumbnail is, shared by the page and the worker that makes them.
 
 /**
- * The box a thumbnail has to cover: the transcript shows a prompt's images at
- * 96×72 and the composer at 44×44, both `object-fit: cover`, so this is the
- * larger at 2.5× (a Retina screen, and some room to zoom).
+ * The box a thumbnail has to cover: the transcript shows a prompt's images 76
+ * tall and the composer 44, each as wide as the image's shape allows (within a
+ * limit, letterboxed past it), so this covers the larger at 2.5× (a Retina
+ * screen, and some room to zoom).
  */
 export const THUMB_BOX = { width: 240, height: 180 };
 

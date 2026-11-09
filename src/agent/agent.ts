@@ -3303,7 +3303,6 @@ export class Agent {
         if (decision.needsClassifier && !decision.dangerous && hookDecision !== "ask" && this.o.classifier) {
             try {
                 const v = await this.o.classifier.classify({ toolName: tool.name, input, cwd: this.state.cwd, context: this.reviewContext(), sandboxed: sandbox, sensitive: decision.sensitive }, signal);
-                if (v.warning) this.emit({ type: "notice", level: "warn", message: v.warning });
                 if (v.decision === "allow") return { tool, input, sandbox, auto: v.ms === undefined ? v.reason : `${v.reason} (reviewed in ${(v.ms / 1000).toFixed(1)}s)` };
                 // Told why, the agent can take a safer way (the user decides once blocks pile up).
                 if (v.decision === "block") {

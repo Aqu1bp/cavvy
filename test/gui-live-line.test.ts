@@ -43,8 +43,9 @@ test("the step under way: its verb and target, a command by its description, an 
     expect(line({ blocks: [{ ...cmd, status: "awaiting" }] })?.title).toBeUndefined();
     // Codex sends no description: "Running" and the command.
     expect(line({ blocks: [{ ...cmd, input: { command: "rg -n x" } }] })).toMatchObject({ label: "Running", detail: "rg -n x" });
-    // Only a running command opens; one still arriving says how much of it has, and one waiting for approval has its card.
-    expect(line({ blocks: [{ ...cmd, status: "streaming", receiving: 1200 }] })).toMatchObject({ label: "Preparing run", meta: "1.2k chars" });
+    // Only a running command opens; one still arriving says only what it is, and one waiting for approval has its card.
+    expect(line({ blocks: [{ ...cmd, status: "streaming", receiving: 1200 }] })).toMatchObject({ label: "Writing command" });
+    expect(line({ blocks: [{ ...cmd, status: "streaming", receiving: 1200 }] })?.meta).toBeUndefined();
     expect(line({ blocks: [{ ...cmd, status: "streaming", receiving: 1200 }] })?.opens).toBeUndefined();
     expect(line({ blocks: [{ ...cmd, status: "awaiting" }] })?.opens).toBeUndefined();
     expect(line({ blocks: [{ ...cmd, status: "queued" }] })?.opens).toBeUndefined();

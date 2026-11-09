@@ -946,6 +946,22 @@ describe("connecting", () => {
         }
     });
 
+    test("a call still arriving names its file once that much of its input is in", async () => {
+        const { engine, c, id, rt } = await engineWithSession();
+        try {
+            await engine.handle(c, "session.send", { id, text: "Hi" });
+            await whenIdle(rt);
+            const write = () => rt.snapshot().turns.at(-1)!.blocks.find((b): b is ToolBlock => b.t === "tool" && b.id === "call_w")!;
+            (rt as any).onEvent({ type: "tool_call_start", id: "call_w", name: "Write" });
+            (rt as any).onEvent({ type: "tool_call_delta", id: "call_w", partial: '{"file_path": "src/ga' });
+            expect(write().input).toBeUndefined();
+            (rt as any).onEvent({ type: "tool_call_delta", id: "call_w", partial: 'me.gd", "content": "extends' });
+            expect(write()).toMatchObject({ status: "streaming", input: { file_path: "src/game.gd" }, title: "Write(src/game.gd)", receiving: 48 });
+        } finally {
+            await engine.stop();
+        }
+    });
+
     test("an untitled session's notification title is one line cut at a word, not the raw prompt with its newlines", async () => {
         const { engine, rt } = await engineWithSession();
         const sent: any[] = [];
