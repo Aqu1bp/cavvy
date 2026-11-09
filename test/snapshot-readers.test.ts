@@ -40,12 +40,12 @@ async function setup(n: number) {
     return { cwd, tree, body, sessions };
 }
 
-/** `cat-file --batch` readers started while `f` runs. */
+/** `cat-file --batch-command` (or `--batch`) readers started while `f` runs. */
 async function startsDuring(f: () => Promise<unknown>): Promise<number> {
     let starts = 0;
     const spawn = Bun.spawn;
     const spy = spyOn(Bun, "spawn").mockImplementation(((argv: any, opts: any) => {
-        if (Array.isArray(argv) && argv.includes("cat-file") && argv.includes("--batch")) starts++;
+        if (Array.isArray(argv) && argv.includes("cat-file") && (argv.includes("--batch") || argv.includes("--batch-command"))) starts++;
         return spawn(argv, opts);
     }) as typeof Bun.spawn);
     try {
@@ -128,6 +128,7 @@ test("sessions reading at the same time keep their readers: a walk's reads don't
                 for (let i = 0; i < 40; i++) expect(await read(s, cwd, tree)).toEqual(body);
             })),
         );
+        expect(starts).toBeGreaterThan(0);
         expect(starts).toBeLessThanOrEqual(sessions.length);
         await until(() => openReaderCount() <= 2);
         expect(openReaderCount()).toBeLessThanOrEqual(2);
