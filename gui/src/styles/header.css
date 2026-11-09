@@ -28,11 +28,14 @@
     inset: 0 0 -18px 0;
     z-index: -1;
     pointer-events: none;
-    background: linear-gradient(var(--sheet) 45%, color-mix(in srgb, var(--sheet) 0%, transparent));
-    -webkit-backdrop-filter: blur(6px);
-    backdrop-filter: blur(6px);
-    -webkit-mask-image: linear-gradient(#000 55%, transparent);
-    mask-image: linear-gradient(#000 55%, transparent);
+    /* A fade drawn with the page: a blur or a mask here would be worked out again on every frame the column moves. */
+    background: linear-gradient(
+        var(--sheet) 45%,
+        color-mix(in srgb, var(--sheet) 82%, transparent) 55%,
+        color-mix(in srgb, var(--sheet) 36%, transparent) 70%,
+        color-mix(in srgb, var(--sheet) 9%, transparent) 85%,
+        color-mix(in srgb, var(--sheet) 0%, transparent)
+    );
 }
 
 /* The rail's two buttons, here while it's hidden or floating: on the lights'
@@ -284,6 +287,11 @@ button.bc:hover {
 :is(.header, .set-top) .needs.glass {
     background-image: linear-gradient(color-mix(in srgb, var(--warn) 10%, transparent), color-mix(in srgb, var(--warn) 5%, transparent));
     box-shadow: 0 0 0 1px color-mix(in srgb, var(--warn) 34%, transparent), inset 0 1px 0 var(--ctl-hi), var(--ctl-shadow);
+}
+
+/* Following the end (base.css): its tint, over the same plain colour as the capsule beside it. */
+[data-following] :is(.header, .set-top) .needs.glass {
+    background-image: linear-gradient(color-mix(in srgb, var(--warn) 10%, transparent), color-mix(in srgb, var(--warn) 5%, transparent)), linear-gradient(var(--ctl), var(--ctl));
 }
 
 .needs:hover,

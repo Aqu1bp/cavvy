@@ -12,7 +12,7 @@
 import { existsSync } from "fs";
 import { homedir } from "os";
 import { join, resolve } from "path";
-import { readJson, readJsonForUpdate, writeJson } from "./settings";
+import { readJsonCached, readJsonForUpdate, writeJson } from "./settings";
 import { cavvyHome, paths } from "./paths";
 import { LEGACY } from "./legacy";
 import { expandPath, isInside } from "../util/files";
@@ -31,7 +31,8 @@ const userTrusted = new Set<string>();
  */
 const emptyTrusted = new Set<string>();
 
-const saved = () => readJson<{ dirs?: string[] }>(file())?.dirs ?? [];
+/** Asked for every turn, MCP server and permission check: read again only once the file has changed. */
+const saved = () => readJsonCached<{ dirs?: string[] }>(file())?.dirs ?? [];
 
 export function isTrusted(dir: string): boolean {
     const d = resolve(dir);

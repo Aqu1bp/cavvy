@@ -482,13 +482,22 @@
     height: calc(9 * var(--sp));
 }
 
-.task .ki .nd.st-running {
-    animation: nd-pulse 1.8s ease-in-out infinite;
+/* The ring is drawn once and only its opacity changes: a box-shadow in a keyframe is painted again for every frame, for
+   as long as a dev server runs. */
+.task .ki .nd.st-running::after {
+    content: "";
+    position: absolute;
+    inset: calc(-2 * var(--sp));
+    border-radius: 50%;
+    pointer-events: none;
+    box-shadow: 0 0 0 calc(2 * var(--sp)) color-mix(in srgb, var(--accent) 25%, transparent);
+    opacity: 0;
+    animation: nd-pulse 1.8s steps(18) infinite;
 }
 
 @keyframes nd-pulse {
     50% {
-        box-shadow: 0 0 0 2px var(--insp-bg), 0 0 0 4px color-mix(in srgb, var(--accent) 25%, transparent);
+        opacity: 1;
     }
 }
 
@@ -726,7 +735,7 @@
         transition: none;
     }
 
-    .task .ki .nd.st-running {
+    .task .ki .nd.st-running::after {
         animation: none;
     }
 }

@@ -2,15 +2,17 @@ import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Sh
 import { ArrowDown, ArrowUpLeft, GitFork } from "lucide-solid";
 import type { Turn } from "@shared/protocol";
 import { fork, forkAnchor } from "../state/actions";
-import { activate, app, toast, type SessionHandle } from "../state/app";
-import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setJumpTarget, setRewindOpen, takeDockGlide } from "../state/ui";
+import { activate, app, loadEarlier, loadEarlierTo, onRenew, toast, type SessionHandle } from "../state/app";
+import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setFollowing, setJumpTarget, setRewindOpen, takeDockGlide } from "../state/ui";
 import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
-import { anchoredTop, atBottom, FAR, firstBelow, firstWindow, MORE_TURNS, restoredShown, turnHeight, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor } from "../lib/transcript-scroll";
+import { anchoredTop, atBottom, FAR, firstBelow, firstWindow, keyed, lazyHeights, MORE_TURNS, placedAgain, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor, type TranscriptPosition } from "../lib/transcript-scroll";
 import { turnAt } from "../lib/find";
+import { FOLLOW_ROOM, ROOM_KEPT, ROOM_WRITTEN_MS, roomFor } from "../lib/follow";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../lib/live-line";
-import { DrawnAgain, revealing } from "../lib/reveal";
+import { DrawnAgain, revealing, wordsFlowing } from "../lib/reveal";
 import { observeWorkRendering } from "../lib/work-rendering";
+import { finishEntrances } from "../lib/entrances";
 import { TurnView } from "./TurnView";
 import { LiveLine, motionMs } from "./LiveLine";
 import { CardFoldsProvider } from "./blocks/Activity";
@@ -39,25 +41,30 @@ function relay(to: { fn?: IntersectionObserverCallback }): IntersectionObserverC
     return (entries, observer) => to.fn?.(entries, observer);
 }
 
+
 /**
- * The entrances rows play as they first come in (a step rising into the work, "Worked for" fading in), over at once:
- * a conversation drawn again (a session switched back to) shows them where they are rather than bringing all of them
- * in a second time. Endless ones (a spinner, the writing dot) go on.
+ * `dock`: the composer dock's height (undefined until it's measured). Opened again where a turn was being read, it opens
+ * on that turn, found by its place in the session (its id may be another turn's now); if the session didn't come with
+ * it this time (new turns pushed it out), the turns back to it come first, in one request. Not there: at the end.
  */
-function finishEntrances(el: HTMLElement) {
-    if (typeof el.getAnimations !== "function") return;
-    for (const a of el.getAnimations({ subtree: true })) if (a.effect?.getComputedTiming().iterations !== Infinity) a.finish();
+export function Transcript(p: { handle: SessionHandle; dock?: number }) {
+    const saved = transcriptPositions.get(p.handle.id);
+    const key = !saved?.bottom ? saved?.keys?.anchor : undefined;
+    const loading = key && loadEarlierTo(p.handle, key);
+    if (!loading) return <TranscriptView handle={p.handle} dock={p.dock} saved={saved && placedAgain(p.handle.view.turns, saved)} />;
+    const [placed, setPlaced] = createSignal<TranscriptPosition>();
+    void loading.finally(() => setPlaced(placedAgain(p.handle.view.turns, saved!)));
+    return <Show when={placed()} keyed>{(s) => <TranscriptView handle={p.handle} dock={p.dock} saved={s} />}</Show>;
 }
 
-/** `dock`: the composer dock's height (undefined until it's measured). */
-export function Transcript(p: { handle: SessionHandle; dock?: number }) {
+function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: TranscriptPosition }) {
     // --dock-h goes on each box that reads it (stage.css): not inherited, and not passed down with `inherit`.
     const dock = () => (p.dock === undefined ? undefined : `${p.dock}px`);
     let scroller: HTMLDivElement | undefined;
     let content: HTMLDivElement | undefined;
     // SessionView is keyed by handle; save on disposal, restore on the next mount.
     const id = p.handle.id;
-    const saved = transcriptPositions.get(id);
+    const saved = p.saved;
     const openWork = new Set(saved?.openWork);
     const [stick, setStick] = createSignal(saved?.bottom ?? true);
     /** Scrolled all the way down: "Latest" has nothing to jump to, following the end or not. */
@@ -70,7 +77,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
     const anchorIndex = !opensAtEnd && saved?.anchor ? ids.indexOf(saved.anchor.turnId) : -1;
     const first = !opensAtEnd && anchorIndex < 0
         ? { shown: target, trimmed: 0 }
-        : firstWindow(p.handle.view.turns.map(turnHeight), target, opensAtEnd ? undefined : anchorIndex, window.innerHeight, -(saved?.anchor?.offset ?? 0));
+        : firstWindow(lazyHeights(p.handle.view.turns), target, opensAtEnd ? undefined : anchorIndex, window.innerHeight, -(saved?.anchor?.offset ?? 0));
     const [shown, setShown] = createSignal(first.shown);
     /** Turns at the very end not mounted yet (reopened mid-way: those below the place read go in first). */
     const [trimmed, setTrimmed] = createSignal(first.trimmed);
@@ -120,8 +127,11 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         const t = turns();
         return t.slice(Math.max(0, t.length - shown()), t.length - trimmed());
     });
-    /** Turns above the page, for "Show earlier" (not those still going in at first: grow, in onMount). */
-    const hidden = () => Math.max(0, turns().length - Math.max(shown(), target));
+    /** Turns above the page here, not those still going in at first (grow, in onMount). */
+    const hiddenHere = () => Math.max(0, turns().length - Math.max(shown(), target));
+    /** Turns above the page, for "Show earlier": those here, and those the session opened without (loadEarlier). */
+    const hidden = () => hiddenHere() + (p.handle.view.earlier ?? 0);
+    const [loadingEarlier, setLoadingEarlier] = createSignal(false);
 
     /**
      * A jump down ("Latest", a send from further up) is ours, a step a frame toward wherever the end is in that frame,
@@ -162,41 +172,40 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         wrote();
     };
 
-    // Pinned to the end while a turn runs, new content glides in rather than jumping: one scrollTop write a
-    // frame (to the end, at once), then a short compositor-only translate from where it was drawn to where it
-    // is, picked up from wherever a glide still running is. Scrolling runs no script of ours. Only what's in
-    // sight (or glides into it) moves, not the whole column: a long conversation costs no more to glide.
-    let pinFrame = 0;
-    /** The running glide: the same translate on each of the column's rows in sight. */
-    let glides: { el: HTMLElement; anim: Animation }[] = [];
+    // Pinned to the end while a turn runs, new content glides in rather than jumping: one scrollTop write with each
+    // growth (to the end, at once, in the frame that grew: a frame of its own costs the page's whole pipeline), then a
+    // short compositor-only translate from where it was drawn to where it is, picked up from wherever a glide still
+    // running is. Scrolling runs no script of ours. Only what's in sight (or glides into it) moves, not the whole
+    // column: a long conversation costs no more to glide.
+    /** The running glide: the same translate, from `from`, on each of the column's rows in sight. */
+    let glides: { el: HTMLElement; anim: Animation; from: number }[] = [];
     /** A fold's moves (fold()): what's above an answer, coming down. */
     let folds: { el: HTMLElement; anim: Animation }[] = [];
     const translate = (el: Element) => new DOMMatrixReadOnly(getComputedStyle(el).transform).m42;
-    /** How far a running glide has the rows in sight drawn from their place (px). */
+    /** How far a running glide has the rows in sight drawn from their place (px), worked out: asked of the page, it lays out. */
     const shift = () => {
         const g = glides[0];
-        return g?.anim.playState === "running" ? translate(g.el) : 0;
+        return g?.anim.playState === "running" ? g.from * (1 - (g.anim.effect?.getComputedTiming().progress ?? 0)) : 0;
     };
     const cancelGlide = () => {
         for (const g of glides) g.anim.cancel();
         glides = [];
     };
     const stopGlide = () => {
-        cancelAnimationFrame(pinFrame);
-        pinFrame = 0;
         cancelGlide();
         for (const f of folds) f.anim.cancel();
         folds = [];
     };
-    /** The column's rows in the view, or within `px` of it, from the end up (where a pin leaves it, a few). */
+    /** The column's rows in the view, or within `px` of it, by layout (not as a glide draws them), from the end up (where a pin leaves it, a few). */
     const inSight = (px: number) => {
         const out: HTMLElement[] = [];
         if (!scroller || !content) return out;
-        const view = scroller.getBoundingClientRect();
+        const top = layoutTop(scroller) + scroller.scrollTop;
+        const bottom = top + scroller.clientHeight;
         for (let el = content.lastElementChild as HTMLElement | null; el; el = el.previousElementSibling as HTMLElement | null) {
-            const box = el.getBoundingClientRect();
-            if (box.bottom < view.top - px) break;
-            if (box.top <= view.bottom + px) out.push(el);
+            const y = layoutTop(el);
+            if (y + el.offsetHeight < top - px) break;
+            if (y <= bottom + px) out.push(el);
         }
         return out;
     };
@@ -205,8 +214,8 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
      * counted). Moved down since it was last looked at, it means what changed is above what the reader sees: an image
      * getting its size, rows drawn again after being skipped, turns going in. Following the end, the view then stays
      * still at once, before the frame is drawn. Only growth in view, or at the end, glides. Asked on every change of
-     * size, every scroll while following and every glide's frame, each acting on what it finds (one only looking would
-     * take growth it saw for where things are).
+     * size and every scroll while following, each acting on what it finds (one only looking would take growth it saw
+     * for where things are).
      */
     let seen: { el: HTMLElement; top: number } | undefined;
     const layoutTop = (el: HTMLElement) => {
@@ -223,32 +232,135 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         if (hit instanceof HTMLElement && content.contains(hit) && hit !== content.lastElementChild) seen = { el: hit, top: layoutTop(hit) - layoutTop(content) };
     };
     const grewAbove = () => {
-        const moved = !!content && seen !== undefined && seen.el.isConnected && layoutTop(seen.el) - layoutTop(content) > seen.top + 0.5;
-        look();
+        if (!scroller || !content || !seen?.el.isConnected) {
+            look();
+            return false;
+        }
+        const y = layoutTop(seen.el);
+        const top = y - layoutTop(content);
+        const moved = top > seen.top + 0.5;
+        // While it's still in the upper part of the view it goes on being what's watched: a look is a hit test.
+        const inView = y - layoutTop(scroller) - scroller.scrollTop;
+        if (moved || inView < 0 || inView > scroller.clientHeight / 2) look();
+        else seen.top = top;
         return moved;
     };
-    const pin = () => {
-        if (pinFrame) return;
-        pinFrame = requestAnimationFrame(() => {
-            pinFrame = 0;
-            if (!scroller || !stick() || smoothScroll) return;
-            // Grown above what's in view since this was asked for (an image in the turns that just went in): no glide.
-            if (grewAbove()) return toBottom();
-            const before = scroller.scrollTop;
-            const end = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-            if (Math.abs(end - before) <= 0.5) return;
-            scroller.scrollTop = end;
-            wrote();
-            pinned = { at: performance.now(), from: before };
-            const ms = motionMs(GLIDE_MS);
-            if (!ms || !content || typeof content.animate !== "function") return;
-            const running = shift();
-            cancelGlide();
-            const from = glideFrom(scroller.scrollTop - before, running);
-            if (from === undefined) return;
-            // Placed with the last glide gone; a row farther than `from` from the view never comes into it.
-            glides = inSight(Math.abs(from)).map((el) => ({ el, anim: el.animate([{ transform: `translateY(${from}px)` }, { transform: "none" }], { duration: ms, easing: GLIDE_EASE }) }));
+    /** `was`: where the view was, before a change already laid out. */
+    const pin = (was?: number) => {
+        if (!scroller || !stick() || smoothScroll) return;
+        const before = was ?? scroller.scrollTop;
+        const end = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+        if (Math.abs(end - before) <= 0.5) return;
+        scroller.scrollTop = end;
+        wrote();
+        pinned = { at: performance.now(), from: before };
+        const ms = motionMs(GLIDE_MS);
+        if (!ms || !content || typeof content.animate !== "function") return;
+        const from = glideFrom(scroller.scrollTop - before, shift());
+        if (from === undefined) return cancelGlide();
+        // A row farther than `from` from the view never comes into it. A row already moving goes on in the animation it
+        // has: a transform taken off and put back lays the column out again, each time.
+        const rows = inSight(Math.abs(from));
+        const steps = [{ transform: `translateY(${from}px)` }, { transform: "none" }];
+        for (const g of glides) if (!rows.includes(g.el)) g.anim.cancel();
+        glides = rows.map((el) => {
+            const anim = glides.find((g) => g.el === el && g.anim.playState === "running")?.anim;
+            if (!anim) return { el, from, anim: el.animate(steps, { duration: ms, easing: GLIDE_EASE }) };
+            const effect = anim.effect as KeyframeEffect;
+            effect.updateTiming({ duration: ms, easing: GLIDE_EASE });
+            effect.setKeyframes(steps);
+            anim.currentTime = 0;
+            return { el, from, anim };
         });
+    };
+
+    // Room under a reply as it streams (lib/follow.ts): the reply writes down into it and the conversation holds
+    // still, and once it's used, the conversation glides up by a room's worth and the room is there again.
+    const [room, setRoom] = createSignal(0);
+    /** The column's height, without the room, when the room was last made (undefined: none being written into). */
+    let roomBase: number | undefined;
+    /** The room's size when it was last made (or taken up, left from before). */
+    let roomMade = 0;
+    /** The column's height, without the room, when it was last followed or held. */
+    let roomLast: number | undefined;
+    /**
+     * How far the words have written down the column since they started, as they came (over ROOM_WRITTEN_MS at most):
+     * growth of the turn's text only, not rows landing between words or a card opening over the composer.
+     */
+    let written: { at: number; px: number }[] = [];
+    let wordsPx = 0;
+    let columnWas: number | undefined;
+    const follow = () => {
+        if (!scroller || !content) return;
+        // Where it was, read before the room changes (a smaller room brings the view back within the column).
+        const before = scroller.scrollTop;
+        const h = content.offsetHeight;
+        const now = performance.now();
+        const column = h - (p.dock ?? 0);
+        // Words are what grew while the turn ends in its text (not a row landing after them).
+        if (columnWas !== undefined && turns().at(-1)?.blocks.at(-1)?.t === "text") wordsPx += Math.max(0, column - columnWas);
+        columnWas = column;
+        written.push({ at: now, px: wordsPx });
+        while (written.length > 1 && written[1]!.at <= now - ROOM_WRITTEN_MS) written.shift();
+        // Room left from a reply that ended: written into from where it is, not made again.
+        if (roomBase === undefined && room() > 0) {
+            roomBase = h;
+            roomMade = room();
+        }
+        const used = roomBase === undefined ? -1 : h - roomBase;
+        if (used >= 0 && roomMade - used >= ROOM_KEPT) setRoom(roomMade - used);
+        else {
+            // What's left of the room stays, and what went from the column is given to it: none taken away while the
+            // words come (the conversation would move down).
+            const left = roomBase === undefined ? 0 : Math.max(0, roomMade - used);
+            roomBase = h;
+            roomMade = Math.max(left, roomFor(scroller.clientHeight, GLIDE_MAX, wordsPx - written[0]!.px));
+            setRoom(roomMade);
+        }
+        roomLast = h;
+        pin(before);
+    };
+    /** What grew above the view isn't written into the room, or written by the words. */
+    const roomAbove = () => {
+        if (!content) return;
+        const h = content.offsetHeight;
+        if (roomBase !== undefined && roomLast !== undefined) roomBase += h - roomLast;
+        roomLast = h;
+        if (columnWas !== undefined) columnWas = h - (p.dock ?? 0);
+    };
+    /** When the room last went (settleRoom): what lands at the end while it settles carries on in its glide. */
+    let settledAt = -Infinity;
+    /**
+     * The words stopped (a tool, the reply's end): the room goes, and the conversation settles onto the end in one
+     * glide (with what lands at the end as it does), so nothing stands empty under it. False with no room to let go of.
+     */
+    const settleRoom = () => {
+        roomBase = roomLast = undefined;
+        written = [];
+        wordsPx = 0;
+        columnWas = undefined;
+        if (!scroller || smoothScroll) return false;
+        if (room()) {
+            // Where it was, read before the room goes (the browser brings the view back within the column once it has).
+            const before = scroller.scrollTop;
+            setRoom(0);
+            settledAt = performance.now();
+            pin(before);
+            return true;
+        }
+        if (performance.now() - settledAt >= GLIDE_MS) return false;
+        pin();
+        return true;
+    };
+    /** Read elsewhere, the room goes where nothing on screen moves for it: wholly below the view. */
+    const dropRoomUnseen = () => {
+        if (!scroller || !room()) return;
+        if (scroller.scrollTop + scroller.clientHeight > scroller.scrollHeight - room() - 1) return;
+        setRoom(0);
+        roomBase = roomLast = undefined;
+        written = [];
+        wordsPx = 0;
+        columnWas = undefined;
     };
 
     /**
@@ -368,7 +480,11 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                     const box = e.target.getBoundingClientRect();
                     return { el: e.target, was: box.bottom <= top ? box.height : undefined };
                 });
-                for (const e of entries) e.target.toggleAttribute(FAR, !e.isIntersecting);
+                for (const e of entries) {
+                    // Skipped from here: what it was still bringing in is over now, not left part way (lib/entrances.ts).
+                    if (!e.isIntersecting && !e.target.hasAttribute(FAR)) finishEntrances(e.target);
+                    e.target.toggleAttribute(FAR, !e.isIntersecting);
+                }
                 if (stick() || smoothScroll) return;
                 let moved = 0;
                 for (const n of near) if (n.was !== undefined) moved += n.el.getBoundingClientRect().height - n.was;
@@ -384,12 +500,15 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                 to.fn = undefined;
             });
         }
+        // The rows of turns far from the view are let go of once more than a page of turns is drawn ("Show earlier"), or once
+        // a turn runs here (they cost on each frame, and a turn is what draws frames). Not as a session opens.
+        let ran = false;
         onCleanup(observeWorkRendering(scroller, content, (moved) => {
             if (stick() || smoothScroll) return;
             scroller!.scrollTop += moved;
             wrote();
             reading = capture();
-        }));
+        }, () => (ran ||= p.handle.view.state.busy) || visible().length > PAGE));
         const ro = new ResizeObserver(() => {
             const above = grewAbove();
             if (!ready) return;
@@ -404,8 +523,21 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             else if (smoothScroll) toBottom(true);
             // Glides only while a turn is running, or its reply's last words are still coming out: the end of a
             // turn (its footer, the composer settling) lands at once. Its work folding away glides (fold()).
-            else if (stick()) (running || revealing()) && !above ? pin() : toBottom();
+            else if (stick()) {
+                const live = (running || revealing()) && !above;
+                // Room only while words come out: what lands between them (a tool's row) glides in, and the room
+                // isn't left standing empty under a wait.
+                if (FOLLOW_ROOM && live && (revealing() || wordsFlowing())) follow();
+                // Growth above the view as a reply runs: the end stays where it is, and the room is still all there.
+                else if (FOLLOW_ROOM && above && (running || revealing())) {
+                    roomAbove();
+                    toBottom();
+                }
+                // The words stopped, or the reply's done: the room goes, in one glide.
+                else if (!(FOLLOW_ROOM && settleRoom())) live ? pin() : toBottom();
+            }
             else {
+                if (FOLLOW_ROOM && !(running || revealing())) dropRoomUnseen();
                 restore();
                 // Nothing left to scroll (something folded until it all fits): no scroll event will come to say the
                 // end is in view, so it's followed again here.
@@ -429,7 +561,8 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             if (stick()) toBottom();
             else { scroller!.scrollTop = saved?.top ?? 0; restore(); }
         });
-        // Its first frame shows the conversation as it is: what was drawn for it lands, rather than coming in again.
+        // Its first frame shows the conversation as it is: what was drawn for it lands, rather than coming in again
+        // (a session switched back to doesn't bring its rows in a second time).
         const settle = requestAnimationFrame(() => {
             settling = false;
             finishEntrances(content!);
@@ -471,13 +604,20 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         stopGlide();
         // A running log can finish while this keyed view is unmounted.
         if (!stick()) for (const turn of visible()) if (turn.status === "running") openWork.add(turn.id);
-        transcriptPositions.set(id, {
+        transcriptPositions.set(id, keyed(turns(), {
             bottom: stick(), top: (ready ? scroller?.scrollTop : saved?.top) ?? 0,
             anchor: reading, openWork: [...openWork],
-        });
+        }));
     });
 
-    const earlier = () => {
+    const earlier = async () => {
+        // Fewer here than a page: the next ones come from the server first (put in above, out of sight).
+        if (hiddenHere() < PAGE && p.handle.view.earlier) {
+            if (loadingEarlier()) return;
+            setLoadingEarlier(true);
+            const ok = await loadEarlier(p.handle, { count: PAGE }).finally(() => setLoadingEarlier(false));
+            if (!ok && p.handle.view.earlier) return void toast("Couldn't load earlier turns.");
+        }
         reading = capture();
         smoothScroll = false;
         setStick(false);
@@ -523,8 +663,18 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         reading = capture();
     };
 
+    // The words stop (a tool, the reply's end): the room goes, whether or not anything at the end changes size. Once
+    // this update is drawn into the page (inside it, the room's going isn't yet, and the glide would be measured from
+    // the wrong place).
+    createEffect(on(wordsFlowing, (flowing, was) => {
+        if (FOLLOW_ROOM && was && !flowing) queueMicrotask(() => ready && stick() && !revealing() && settleRoom());
+    }, { defer: true }));
+
     // The composer opening or closing its large size (Composer.tsx): following the end, the end stays just above it,
     // gliding with its edge from where it was drawn. Here, as the dock's new height is set: before it's drawn.
+    createEffect(() => setFollowing(stick()));
+    onCleanup(() => setFollowing(false));
+
     createEffect(on(() => p.dock, (now, was) => {
         if (!takeDockGlide() || now === undefined || was === undefined || !scroller || !stick() || smoothScroll) return;
         stopGlide();
@@ -534,15 +684,15 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         const from = now - was;
         if (!ms || Math.abs(from) < 1 || !content || typeof content.animate !== "function") return;
         pinned = { at: performance.now(), from: scroller.scrollTop - from };
-        glides = inSight(Math.abs(from)).map((el) => ({ el, anim: el.animate([{ transform: `translateY(${from}px)` }, { transform: "none" }], { duration: ms, easing: GROW_EASE }) }));
+        glides = inSight(Math.abs(from)).map((el) => ({ el, from, anim: el.animate([{ transform: `translateY(${from}px)` }, { transform: "none" }], { duration: ms, easing: GROW_EASE }) }));
     }));
 
-    // Sending a prompt jumps back down.
+    // Sending a prompt jumps back down: a new turn at the end, not earlier ones put in above (loadEarlier).
     createEffect(
         on(
-            () => turns().length,
-            (n, prev) => {
-                if (prev !== undefined && n > prev && turns()[n - 1]?.prompt) {
+            () => [turns().length, turns()[turns().length - 1]?.id] as const,
+            ([n, last], prev) => {
+                if (prev !== undefined && n > prev[0] && last !== prev[1] && turns()[n - 1]?.prompt) {
                     setTrimmed(0);
                     setStick(true);
                     afterLayout(() => toBottom(true));
@@ -597,7 +747,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
             if (!moved) restore();
             reading = capture();
         }
-        // Scroll events come before the frame's glide: growth above seen here lands here, before it's drawn.
+        // Growth above seen here lands here, before it's drawn.
         else if (grewAbove() && !smoothScroll) toBottom();
     };
     /** Find moved to a match: up from the end, it stops following (its scroll may come just after a write of ours). */
@@ -687,30 +837,78 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         setStick(false);
     };
 
+    // The session come again from the server (a reconnect, a reload), which may have read it in anew and numbered its
+    // turns anew: the place read stays on its turn (the turns back to it first, if it didn't come with them), and the
+    // work logs open stay open on theirs. The turn gone, the view goes to the end.
+    let disposed = false;
+    onCleanup(() => (disposed = true));
+    const placeAgain = async (was: TranscriptPosition) => {
+        const key = !was.bottom ? was.keys?.anchor : undefined;
+        const loading = key && loadEarlierTo(p.handle, key);
+        if (loading) {
+            // Not restored meanwhile to the turn that has its id now.
+            reading = undefined;
+            await loading;
+            if (disposed) return;
+        }
+        const now = placedAgain(turns(), was);
+        openWork.clear();
+        for (const w of now.openWork) openWork.add(w);
+        // Following the end, or the reader went there meanwhile.
+        if (stick()) return;
+        if (now.bottom) {
+            setTrimmed(0);
+            setStick(true);
+            toBottom();
+            return;
+        }
+        if (!now.anchor) return;
+        reading = now.anchor;
+        const need = turns().length - turns().findIndex((t) => t.id === now.anchor!.turnId);
+        setTrimmed(0);
+        if (shown() < need) setShown(Math.ceil(need / PAGE) * PAGE);
+        restore();
+    };
+    onCleanup(onRenew(p.handle, () => {
+        const was = keyed(turns(), { bottom: stick(), top: 0, anchor: reading, openWork: [...openWork] });
+        return () => void placeAgain(was);
+    }));
+
+    // Find counts what's in the whole session: opened, it has the turns the session opened without (again after a
+    // reconnect that came with fewer).
+    createEffect(on([findOpen, () => p.handle.view.earlier], ([open, earlier]) => {
+        if (open && earlier) void loadEarlier(p.handle, { all: true });
+    }));
+
     // A message found from ⌘K: its turn, briefly marked, with the find bar on what was searched.
     const [anchor, setAnchor] = createSignal<FindAnchor>();
+    const jump = (j: { role: FindAnchor["role"]; query: string }, turn: Turn | undefined) => {
+        if (!turn) return toast("That message isn't here any more.");
+        show(turn.id);
+        setAnchor({ turnId: turn.id, role: j.role });
+        setFindQuery(j.query);
+        openFind();
+        afterLayout(() => {
+            const el = turnEls.get(turn.id);
+            if (!el || !scroller) return;
+            scroller.scrollTop += el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - BAR_ROOM;
+            wrote();
+            reading = capture();
+            el.classList.remove("flash");
+            void el.offsetWidth;
+            el.classList.add("flash");
+            setTimeout(() => el.classList.remove("flash"), 1800);
+        });
+    };
     createEffect(() => {
         const j = jumpTarget();
         if (!j || j.sessionId !== p.handle.id || !turns().length) return;
         untrack(() => {
             setJumpTarget(undefined);
-            const turn = turnAt(turns(), j.seg, j.index);
-            if (!turn) return toast("That message isn't here any more.");
-            show(turn.id);
-            setAnchor({ turnId: turn.id, role: j.role });
-            setFindQuery(j.query);
-            openFind();
-            afterLayout(() => {
-                const el = turnEls.get(turn.id);
-                if (!el || !scroller) return;
-                scroller.scrollTop += el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - BAR_ROOM;
-                wrote();
-                reading = capture();
-                el.classList.remove("flash");
-                void el.offsetWidth;
-                el.classList.add("flash");
-                setTimeout(() => el.classList.remove("flash"), 1800);
-            });
+            const found = turnAt(turns(), j.seg, j.index);
+            if (found || !p.handle.view.earlier) return jump(j, found);
+            // Before the turns the session opened with: those back to it come first.
+            void loadEarlier(p.handle, { through: { seg: j.seg, index: j.index } }).then(() => untrack(() => jump(j, turnAt(turns(), j.seg, j.index))));
         });
     });
 
@@ -781,7 +979,7 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                         )}
                     </For>
                     <Show when={hidden()}>
-                        <button class="earlier" onClick={earlier}>
+                        <button class="earlier" onClick={() => void earlier()} disabled={loadingEarlier()}>
                             Show {Math.min(PAGE, hidden())} earlier {hidden() === 1 ? "turn" : "turns"}
                         </button>
                     </Show>
@@ -804,6 +1002,8 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
                     </Show>
                     <div class="transcript-end" style={{ "--dock-h": dock() }} />
                 </div>
+                {/* The room a reply writes into (follow): outside the column, so making it doesn't resize what's observed. */}
+                <div class="transcript-room" style={{ height: room() ? `${room()}px` : undefined }} />
                 </div>
             </div>
             </div>

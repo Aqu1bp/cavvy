@@ -217,8 +217,10 @@ test("streaming Markdown retains code host, highlights finished lines at a bound
     let mounts = 0, highlights = 0, trailed = 0;
     const highlighted: string[] = [];
     const Code = component(source("blocks/CodeBlock"), "CodeBlock", {
-        RenderBoundary: boundary(), CopyButton: () => node("copy"), trailBlock: () => trailed++,
+        RenderBoundary: boundary(), CopyButton: () => node("copy"), trailBlock: () => trailed++, CARET_WAIT_MS: 100,
         highlight: async (code: string) => { highlights++; highlighted.push(code); return "highlighted"; },
+        highlightMore: async (_writing: number, lines: string) => { highlights++; highlighted.push(lines); return "highlighted\n"; },
+        newWriting: () => 1, endWriting() {}, growing: (el: Node) => (html: string) => { el.props.innerHTML = html; },
     });
     // The DOM side (lib/stream-dom.ts) is a browser's: here a block just records what it was given.
     const painted: { html: string; live: boolean; caret: boolean }[] = [];
@@ -242,19 +244,27 @@ test("streaming Markdown retains code host, highlights finished lines at a bound
         expect(all(root).find((n) => has(n, "code"))).toBe(code);
         expect(all(root).find((n) => has(n, "md-block"))).toBe(paragraph);
         expect(text(root)).toContain("const v99 = 99;");
+        // Its writing mark is still while code flows.
+        expect(code!.props.class).toContain("writing");
+        expect(code!.props.class).not.toContain("waiting");
         // A finished paragraph above the code was painted once, live, without the writing mark.
         expect(painted).toEqual([{ html: "<p>Finished paragraph.</p>\n", live: true, caret: false }]);
         // While it's written, the finished lines are highlighted once the interval has passed, in one go (the last
         // line may still be being typed: marked drops an open block's final newline).
         await Bun.sleep(300);
         expect(highlights).toBe(1);
-        expect(highlighted[0]!.endsWith("const v98 = 98;")).toBe(true);
+        expect(highlighted[0]!.endsWith("const v98 = 98;\n")).toBe(true);
         const lit = all(root).find((n) => has(n, "code-lit"));
         expect(lit?.props.innerHTML).toBe("highlighted\n");
+        // With no code coming it pulses; more code, and it's still again.
+        expect(code!.props.class).toContain("waiting");
+        setValue(value() + "const more = 1;\n");
+        expect(code!.props.class).not.toContain("waiting");
         highlights = 0;
         setValue(value() + "```\n\nAfter code.");
         setStreaming(false);
         await Promise.resolve();
+        expect(code!.props.class).not.toContain("writing");
         expect(mounts).toBe(1);
         expect(highlights).toBe(1);
         expect(all(root).find((n) => has(n, "code"))).toBe(code);
@@ -275,8 +285,11 @@ test("a streaming reply drawn again (its session switched back to) shows what ha
             dispose();
             return out;
         });
-        // New while the reply streams: from its start, let out as the rest comes.
-        expect(first(false)).toEqual({ text: "", behind: true });
+        // New while the reply streams: from its start, its first words at once, let out as the rest comes.
+        const fresh = first(false);
+        expect(fresh.behind).toBe(true);
+        expect(fresh.text.length).toBeGreaterThan(0);
+        expect(fresh.text.length).toBeLessThan(45);
         // Drawn again: as far as it has come.
         expect(first(true)).toEqual({ text: "Sessions keep running when the window closes.", behind: false });
     } finally {

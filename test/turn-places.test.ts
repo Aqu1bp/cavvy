@@ -1,5 +1,6 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "fs";
+import { closeSync, constants, mkdirSync, openSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "fs";
+import { readFile } from "fs/promises";
 import { dirname, join } from "path";
 import { isolate } from "./helpers/isolate";
 
@@ -93,6 +94,20 @@ test("a file edited again in a worktree that was already dirty still counts as w
     const info = await snapshots.changes({ scope: "turn", turnId: 1 });
     expect(info.places?.map((p) => [p.branch, p.files, p.added])).toEqual([["agent/dirty", 1, 2]]);
 });
+
+for (const packed of [false, true])
+    test(`a reached worktree whose branch only moved (no file changed) is worked in, its start not read beforehand (branch ${packed ? "packed" : "loose"} before)`, async () => {
+        const { cwd, wt, snapshots } = setup(["moved", "still"]);
+        if (packed) git(cwd, ["pack-refs", "--all"]);
+        await snapshots.begin(1, "commit nothing new");
+        // Its start marks the worktrees as there, without reading their HEADs, branches or indexes.
+        expect(Object.values(snapshots.list()[0]!.start.places ?? {})).toEqual(["+", "+"]);
+        await Bun.sleep(20);
+        snapshots.reach([wt("moved"), wt("still")]);
+        git(wt("moved"), ["commit", "-q", "--allow-empty", "-m", "Empty"]);
+        await snapshots.end();
+        expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places?.map((p) => p.branch)).toEqual(["agent/moved"]);
+    });
 
 test("a worktree that changed while the turn ran, but that it never reached, isn't its place: another session works there", async () => {
     const { wt, snapshots } = setup(["ours", "theirs"]);
@@ -238,10 +253,10 @@ test("a file swapped in by rename, the same size and time, still counts (its ino
     expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places?.map((p) => p.branch)).toEqual(["agent/swap"]);
 });
 
-test("out of time, a worktree's fingerprint is unknown, and a listing git can't give is unknown, not empty", async () => {
+test("out of time, a worktree's token is unknown, and a listing git can't give is unknown, not empty", async () => {
     const { wt } = setup(["late"]);
-    const { fingerprint, listWorktrees, UNKNOWN } = await import("../src/agent/turn-places");
-    expect(await fingerprint({ path: wt("late"), main: false }, Date.now() - 1)).toBe(UNKNOWN);
+    const { token, listWorktrees, UNKNOWN } = await import("../src/agent/turn-places");
+    expect(await token({ path: wt("late"), main: false, real: wt("late"), gitDir: join(wt("late"), ".git") }, Date.now() - 1)).toBe(UNKNOWN);
     const notRepo = join(realpathSync(iso.home), `not-a-repo-${next++}`);
     mkdirSync(notRepo, { recursive: true });
     expect(await listWorktrees(notRepo, Date.now() + 2000)).toBeUndefined();
@@ -286,7 +301,7 @@ test("reading a worktree runs none of the repository's programs: a clean filter 
     expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places?.map((p) => p.branch)).toEqual(["agent/filtered"]);
 });
 
-test("a worktree's folder swapped for a link to another repository isn't read", async () => {
+for (const reach of [false, true]) test(`a worktree's folder swapped for a link to another repository isn't read (${reach ? "reached" : "not reached"})`, async () => {
     const { base, cwd, wt, snapshots } = setup(["swapped"]);
     const other = join(base, "other-repo");
     mkdirSync(other, { recursive: true });
@@ -299,6 +314,7 @@ test("a worktree's folder swapped for a link to another repository isn't read", 
     rmSync(wt("swapped"), { recursive: true, force: true });
     symlinkSync(other, wt("swapped"));
     write(other, "more.txt", "changed\n");
+    if (reach) snapshots.reach([join(wt("swapped"), "more.txt")]);
     await snapshots.end();
     const info = await snapshots.changes({ scope: "turn", turnId: 1 });
     expect(JSON.stringify(info.places ?? [])).not.toContain("private.txt");
@@ -331,3 +347,94 @@ test("a turn's places are kept: reopened, the session shows them as they were", 
     const info = await reopened.changes({ scope: "turn", turnId: 1 });
     expect(info.places?.map((p) => [p.branch, p.files, p.commits])).toEqual([["agent/home", 2, 1]]);
 });
+
+test("a tracked file deleted in a reached worktree during the turn counts as work in it", async () => {
+    const { wt, snapshots } = setup(["trim"]);
+    await snapshots.begin(1, "delete a file");
+    snapshots.reach([join(wt("trim"), "a.txt")]);
+    rmSync(join(wt("trim"), "a.txt"));
+    await snapshots.end();
+    expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places?.map((p) => [p.branch, p.files])).toEqual([["agent/trim", 1]]);
+});
+
+test("a reached worktree that changed only before the turn began isn't worked in by it", async () => {
+    const { wt, snapshots } = setup(["earlier"]);
+    write(wt("earlier"), "a.txt", "one\ntwo\nbefore\n");
+    write(wt("earlier"), "new.txt", "made before\n");
+    await Bun.sleep(20);
+    await snapshots.begin(1, "only look");
+    snapshots.reach([wt("earlier")]);
+    await snapshots.end();
+    expect((await snapshots.changes({ scope: "turn", turnId: 1 })).places).toBeUndefined();
+});
+
+test("a worktree's HEAD read from its files is what git says: on a branch, detached, packed, and with no commits yet", async () => {
+    const { headOf } = await import("../src/agent/turn-places");
+    const { cwd, wt } = setup(["side"]);
+    const said = (dir: string) => {
+        let oid = "", ref = "";
+        try { oid = git(dir, ["rev-parse", "--verify", "-q", "HEAD"]).trim(); } catch {}
+        try { ref = git(dir, ["symbolic-ref", "-q", "HEAD"]).trim(); } catch {}
+        return { oid, ref };
+    };
+    const gitDir = (dir: string) => git(dir, ["rev-parse", "--absolute-git-dir"]).trim();
+    expect(await headOf(gitDir(cwd))).toEqual(said(cwd));
+    expect(await headOf(gitDir(wt("side")))).toEqual(said(wt("side")));
+    git(cwd, ["pack-refs", "--all"]);
+    expect(await headOf(gitDir(wt("side")))).toEqual(said(wt("side")));
+    git(wt("side"), ["checkout", "-q", "--detach"]);
+    expect(await headOf(gitDir(wt("side")))).toEqual(said(wt("side")));
+    git(cwd, ["checkout", "-q", "--orphan", "empty"]);
+    expect(await headOf(gitDir(cwd))).toEqual(said(cwd));
+});
+
+/**
+ * A pipe at `path`. With `ms`, its other end is opened from another process that long after (a read here that waits
+ * on it may have stopped this one). Disposed: whatever still waits on it is let go of, and it's gone.
+ */
+function pipeAt(path: string, ms?: number) {
+    rmSync(path, { force: true });
+    expect(Bun.spawnSync(["mkfifo", path]).exitCode).toBe(0);
+    const release = ms === undefined ? undefined : Bun.spawn(["sh", "-c", `sleep ${ms / 1000}; exec 3<>"$0"`, path]);
+    return {
+        [Symbol.dispose]: () => {
+            release?.kill();
+            for (let i = 0; i < 16; i++) try { closeSync(openSync(path, constants.O_WRONLY | constants.O_NONBLOCK)); } catch {}
+            rmSync(path, { force: true });
+        },
+    };
+}
+
+const within = (work: Promise<unknown>, ms: number) => Promise.race([work.then(() => "done"), Bun.sleep(ms).then(() => "stuck")]);
+
+for (const [what, at] of [["HEAD", (gitDir: string, common: string) => join(gitDir, "HEAD")], ["branch", (_: string, common: string) => join(common, "refs/heads/agent/side")], ["commondir", (gitDir: string) => join(gitDir, "commondir")], ["packed-refs", (_: string, common: string) => join(common, "packed-refs")]] as const) {
+    test(`a pipe where a worktree's ${what} file should be: its HEAD isn't read from the files, and other reads aren't held up`, async () => {
+        if (process.platform === "win32") return;
+        const { headOf, movedSince, token } = await import("../src/agent/turn-places");
+        const { cwd, wt } = setup(["side"]);
+        const gitDir = git(wt("side"), ["rev-parse", "--absolute-git-dir"]).trim(), common = join(cwd, ".git");
+        // Packed: the branch's own file is gone, and packed-refs is read for it.
+        if (what === "packed-refs") git(cwd, ["pack-refs", "--all"]);
+        using _ = pipeAt(at(gitDir, common));
+        const w = { path: wt("side"), main: false, real: wt("side"), gitDir };
+        // More than the threads that read files for the whole server.
+        expect(await within(Promise.all([1, 2, 3, 4, 5, 6].map(() => headOf(gitDir))), 2000)).toBe("done");
+        expect(await headOf(gitDir)).toBeUndefined();
+        expect(await within(Promise.all([1, 2, 3, 4, 5, 6].map(() => movedSince(w, 0n))), 2000)).toBe("done");
+        // Git's asked instead, within the token's time.
+        expect(await within(Promise.all([1, 2, 3, 4, 5, 6].map(() => token(w, Date.now() + 1500))), 4000)).toBe("done");
+        expect(await within(readFile(join(cwd, "a.txt")), 2000)).toBe("done");
+    }, 30_000);
+}
+
+test("a pipe where a linked worktree's .git file should be doesn't stop the server while the worktrees are listed", async () => {
+    if (process.platform === "win32") return;
+    const { WorktreeList } = await import("../src/agent/turn-places");
+    const { cwd, wt } = setup(["side"]);
+    using _ = pipeAt(join(wt("side"), ".git"), 3000);
+    const started = Date.now();
+    const list = await new WorktreeList().get(cwd, Date.now() + 5000);
+    expect(list?.map((w) => w.path)).toEqual([cwd, wt("side")]);
+    // Waiting on the pipe, nothing else in the server would run until it's let go of.
+    expect(Date.now() - started).toBeLessThan(2000);
+}, 30_000);

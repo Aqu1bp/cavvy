@@ -504,6 +504,32 @@ async function sessionFiles(ctl: Control): Promise<{ id: string; file: string; s
 }
 
 /**
+ * The session files read into the cache ahead of the first search, newest first, while there's room (what a
+ * search would read anyway, before it's asked): it yields as a search does. The number read; it stops when the
+ * secrets used to redact change, or `stale` says so.
+ */
+export async function warmSearch(o: { stale?: () => boolean } = {}): Promise<number> {
+    const redaction = redactionVersion();
+    const ctl = new Control(() => redaction !== redactionVersion() || Boolean(o.stale?.()), Number.POSITIVE_INFINITY, SEARCH_LIMITS.budgetBytes);
+    let read = 0;
+    for (const f of (await sessionFiles(ctl)) ?? []) {
+        if (cachedChars >= SEARCH_LIMITS.cacheChars * 0.9 || !(await ctl.tick())) break;
+        const had = docs.get(f.file);
+        if (had && had.size === f.size && had.mtimeMs === f.mtimeMs && had.redaction === redaction) continue;
+        let doc: Doc | undefined;
+        try {
+            doc = await readDoc(f.file, f.size, f.mtimeMs, ctl);
+        } catch {
+            continue; // vanished or unreadable
+        }
+        if (!doc) break;
+        remember(f.file, doc);
+        read++;
+    }
+    return read;
+}
+
+/**
  * Messages containing `query` (a literal, in any case), newest sessions
  * first, at most PER_SESSION from one session. Stops early, with what it has
  * (`partial`), when the budget runs out; with nothing (`stale`) when replaced.

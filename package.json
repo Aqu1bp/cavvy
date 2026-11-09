@@ -14,7 +14,7 @@
   "scripts": {
     "start": "bun --no-env-file --config=bunfig.toml src/index.ts",
     "dev": "bun --no-env-file --config=bunfig.toml src/index.ts",
-    "build": "bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig --outfile dist/cavvy src/index.ts",
+    "build": "bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig --outfile dist/cavvy src/index.ts src/agent/stat-worker.ts",
     "test": "bun --no-env-file test",
     "typecheck": "tsc --noEmit -p .",
     "gui": "bun --no-env-file --config=bunfig.toml src/index.ts gui",
@@ -27,6 +27,8 @@
     "desktop:typecheck": "cd desktop-electron && bun run typecheck",
     "desktop:install": "bun --no-env-file --config=bunfig.toml scripts/install-desktop.ts",
     "desktop:update": "bun --no-env-file --config=bunfig.toml scripts/update-desktop.ts",
+    "perf:bench": "bun desktop-electron/perf-bench.ts",
+    "perf:budgets": "bun scripts/perf-budgets.ts bundle",
     "review:eval": "bun --no-env-file --config=bunfig.toml scripts/review-eval.ts",
     "sdk:example": "bun --no-env-file --config=bunfig.toml scripts/sdk-demo.ts",
     "sdk:bench": "bun --no-env-file --config=bunfig.toml scripts/sdk-bench.ts"

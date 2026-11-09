@@ -177,3 +177,28 @@ test("redacted prefixes emit a whole marker for a span crossing the source limit
         unregisterSecret(value);
     }
 });
+
+test("a secret whose start repeats at its end is found wherever it is, overlapping too, in long text", () => {
+    const value = "abXYZ123ab";
+    const long = "x".repeat(5000);
+    try {
+        registerSecret(value, "OVERLAP");
+        expect(redact(`${long}abXYZ123abXYZ123ab${long}`)).toBe(`${long}[REDACTED OVERLAP]${long}`);
+        expect(redact(`${long}abXYZ123a`)).toBe(`${long}abXYZ123a`);
+    } finally {
+        unregisterSecret(value);
+    }
+});
+
+test("a long text redacted before is redacted again once the secrets change", () => {
+    const value = "cache-test-secret-55821";
+    const text = `${"y".repeat(4000)} ${value} ${"z".repeat(4000)}`;
+    expect(redact(text)).toBe(text);
+    try {
+        registerSecret(value, "LATER");
+        expect(redact(text)).toBe(`${"y".repeat(4000)} [REDACTED LATER] ${"z".repeat(4000)}`);
+    } finally {
+        unregisterSecret(value);
+    }
+    expect(redact(text)).toBe(text);
+});

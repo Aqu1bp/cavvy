@@ -26,7 +26,7 @@ Cavvy reads, edits and runs code in your project, asks before doing anything ris
 
 ## Install
 
-Cavvy needs [Bun](https://bun.sh) (it's tested on 1.3) and Git, and a model to talk to: an API key, a local model, or Claude Code or Codex signed in to your plan. The terminal app and the browser GUI run on macOS and Linux; the desktop app needs macOS 13 or later.
+Cavvy needs [Bun](https://bun.sh) (it's tested on 1.4.4) and Git, and a model to talk to: an API key, a local model, or Claude Code or Codex signed in to your plan. The terminal app and the browser GUI run on macOS and Linux; the desktop app needs macOS 13 or later.
 
 ```bash
 git clone https://github.com/Aqu1bp/cavvy.git

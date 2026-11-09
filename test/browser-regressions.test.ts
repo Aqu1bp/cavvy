@@ -200,6 +200,29 @@ describe.skipIf(!chromePath)("browser regressions with Chrome", () => {
         } finally { a.unwatch(ka); b.unwatch(kb); }
     }, 30_000);
 
+    test("every streamed frame is labelled with the pane's size, at scales 1, 1.5, 2 and 3, however often the page repaints", async () => {
+        // At scales other than its own (2), Chrome now and then labels a frame with the picture's size ÷ 2 (frame-size.ts):
+        // the pane mapped clicks with that, and they landed off by scale ÷ 2. It's rare (about one frame in a hundred),
+        // so many repaints, at each scale a screen has.
+        for (const scale of [1, 1.5, 2, 3]) {
+            const b = session();
+            const p = await b.page();
+            await p.evaluate(`document.body.innerHTML = '<div id=n style="font:40px sans-serif">0</div>'`);
+            const key = {}, sizes: string[] = [];
+            b.watch(key, (f, frameId) => { sizes.push(`${f.width}x${f.height}`); queueMicrotask(() => b.ack(key, frameId)); }, { width: 360, height: 622, scale });
+            try {
+                await until(() => sizes.length > 0, "the first frame");
+                for (let i = 0; i < 120; i++) {
+                    await p.evaluate(`document.getElementById('n').textContent = '${i}'`);
+                    await Bun.sleep(25);
+                }
+                // Chrome merges repaints into fewer frames on a busy machine: enough of them to have seen a few hundred.
+                await until(() => sizes.length >= 20, "frames of the repaints");
+                expect({ scale, wrong: sizes.filter((s) => s !== "360x622") }).toEqual({ scale, wrong: [] });
+            } finally { b.unwatch(key); }
+        }
+    }, 120_000);
+
     test("the demo form submits in Chrome and renders the search text", async () => {
         const demo = startDemoSite();
         const b = session();

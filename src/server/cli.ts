@@ -8,7 +8,7 @@
 
 import { dirname, join, resolve } from "path";
 import { existsSync } from "fs";
-import { APP_NAME, APP_VERSION } from "../config/paths";
+import { APP_NAME, APP_VERSION, paths } from "../config/paths";
 import { childEnv } from "../util/env";
 import { redact } from "../util/redact";
 import { startServer } from "./server";
@@ -88,7 +88,7 @@ export async function serveCommand(sub: "gui" | "serve", args: string[], env: Se
     if (host && !["127.0.0.1", "localhost", "::1"].includes(host)) process.stderr.write(`warning: listening on ${host}: anyone who can reach it and has the token can run commands as you.\n`);
 
     const log = (msg: string) => process.stderr.write(`[${APP_NAME} ${sub}] ${redact(msg)}\n`);
-    if (loginEnv) await adoptLoginPath();
+    if (loginEnv) await adoptLoginPath(paths.loginPath());
     const srv = await startServer({ host, port, token, origins, allowBypass, staticDir: defaultStatic(), startCwd: process.cwd(), fallbackModel: env.fallbackModel, log });
     for (const n of env.notes) log(`note: ${n}`);
     // Broken settings files show up in the GUI, not just on a terminal nobody may be watching.

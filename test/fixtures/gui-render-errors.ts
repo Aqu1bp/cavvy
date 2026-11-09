@@ -153,7 +153,7 @@ for (const target of ["SettingsPage", "AgentView", "ReviewPane"]) {
         const App = component(appSource.slice(appSource.indexOf("export function App")), "App", {
             RenderBoundary: boundary(), app: { conn: "open", activeId: "session" }, handleFor: () => handle,
             prefs: { sidebar: true }, isTauri: false, isDesktop: false, isElectron: false, document: {}, onMount() {}, setEnterSends() {}, actionOf: () => undefined, skipCovered() {},
-            railDrag: () => undefined, columnSteps, COLUMN_NARROW, COLUMN_SHORT, shellLayout: () => ({ railMode: "dock", railShown: true, sheet: { w: 1100, h: 860 }, column: { w: 1100, h: 860 }, inspector: { open: false, mode: "dock", width: 360, short: false, bottom: 8 }, terminal: { shown: false, height: 0, maximized: false, most: 560 } }), settingsTab, agentFocus, review, setAgentFocus() {}, setReview() {}, attentionCount: () => 0,
+            railDrag: () => undefined, following: () => false, columnSteps, COLUMN_NARROW, COLUMN_SHORT, shellLayout: () => ({ railMode: "dock", railShown: true, sheet: { w: 1100, h: 860 }, column: { w: 1100, h: 860 }, inspector: { open: false, mode: "dock", width: 360, short: false, bottom: 8 }, terminal: { shown: false, height: 0, maximized: false, most: 560 } }), settingsTab, agentFocus, review, setAgentFocus() {}, setReview() {}, attentionCount: () => 0,
             ...Object.fromEntries(tags.map((tag) => [tag, () => { if (tag === target) throw Error("injected " + target); return node(tag); }])),
         });
         const root = node("root");
@@ -238,7 +238,7 @@ for (const kind of ["CodeBlock", "DiffView"]) {
         const highlighting = retryingHighlighter();
         const Widget = component(source(`blocks/${kind}`), kind, {
             RenderBoundary: boundary(undefined, (error) => errors.push(error)),
-            ...highlighting, langOf: () => "typescript", escapeHtml: (s: string) => s,
+            ...highlighting, langOf: () => "typescript", escapeHtml: (s: string) => s, growing: (el: any) => (html: string) => { el.props.innerHTML = html; },
             ...diffWindow, oneSided, plural: format.plural,
             CopyButton: () => node("copy"),
             IntersectionObserver: class {

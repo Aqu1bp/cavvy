@@ -3,11 +3,11 @@
 // sessions from this project's terminal to carry on here. The whole group sits a
 // little above the middle of the column (home.css).
 
-import { createResource, createSignal, For, onCleanup, Show } from "solid-js";
+import { createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { ChevronDown, Folder, FolderGit2, FolderOpen, KeyRound, Plug, ShieldAlert } from "lucide-solid";
 import { app, refreshProjects, reportError, rpc } from "../state/app";
 import { chooseProject, connectCli, openProject, trustAndContinue } from "../state/actions";
-import { columnHeight, requestComposerFocus, setSettingsTab, shellLayout } from "../state/ui";
+import { columnHeight, requestComposerFocus, setFollowing, setSettingsTab, shellLayout } from "../state/ui";
 import { sp } from "../state/prefs";
 import { ago, basename, tildify } from "../lib/format";
 import { isWindowShown } from "../lib/platform";
@@ -95,6 +95,10 @@ export function Home() {
     };
     onCleanup(() => clearTimeout(glideTimer));
 
+    // Nothing passes behind the glass here until the column scrolls: the sheet shows through, as at a reply's end (base.css).
+    onMount(() => setFollowing(true));
+    onCleanup(() => setFollowing(false));
+
     const togglePicker = (e: MouseEvent) => {
         setPickerAnchor(e.currentTarget as HTMLElement);
         setPickerOpen(!pickerOpen());
@@ -152,7 +156,7 @@ export function Home() {
     );
 
     return (
-        <div class="home" classList={{ instant, glide: glide() }}>
+        <div class="home" classList={{ instant, glide: glide() }} onScroll={(e) => setFollowing(e.currentTarget.scrollTop <= 0)}>
             <div
                 class="home-col"
                 style={{ "--column-h": columnHeight(), "--cli-rows": app.homeCwd ? cliRows() : 0, "--cli-on": app.homeCwd && cliOn() ? 1 : 0, "--home-cards": cards() }}

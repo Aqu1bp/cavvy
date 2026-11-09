@@ -295,6 +295,33 @@ function realFolder(p: string, cache: Map<string, string>): string {
     return real;
 }
 
+/**
+ * The folder macOS asks the user about before an app may look inside it, if this path is in one (Files and Folders, in
+ * Privacy & Security).
+ */
+function guardedFolder(p: string): string | undefined {
+    if (process.platform !== "darwin") return undefined;
+    const home = homedir();
+    for (const name of ["Desktop", "Documents", "Downloads", "Movies", "Music", "Pictures", "Library/Mobile Documents"]) {
+        const root = join(home, name);
+        if (p === root || p.startsWith(`${root}/`)) return root;
+    }
+    return p.startsWith("/Volumes/") ? p.split("/").slice(0, 3).join("/") : undefined;
+}
+
+/**
+ * A session's folder is this one. Codex's log holds every project's sessions, so most of them are elsewhere; one in a
+ * folder macOS guards isn't looked at from outside it, or just listing this folder's sessions would ask for access to
+ * the user's Desktop.
+ */
+function isFolder(p: string, real: string, cache: Map<string, string>): boolean {
+    const r = resolve(p);
+    if (r === real) return true;
+    const guarded = guardedFolder(r);
+    if (guarded && guarded !== guardedFolder(real)) return false;
+    return realFolder(r, cache) === real;
+}
+
 /** Claude Code's folder name for a working directory. */
 function claudeFolderName(cwd: string): string {
     return cwd.replace(/[^A-Za-z0-9]/g, "-");
@@ -348,7 +375,7 @@ export function listCliSessions(source: CliSource, cwd: string, o: { root?: stri
             return;
         }
         const p = probe(c.file, c.size, limits);
-        if (!p.cwd || realFolder(p.cwd, cache) !== real) return;
+        if (!p.cwd || !isFolder(p.cwd, real, cache)) return;
         const kind = o.sort?.(c.id, p.originator) ?? "new";
         if (kind === "hidden") return;
         const list = kind === "held" ? out.held : out.sessions;
@@ -376,7 +403,7 @@ export function findCliSession(source: CliSource, cwd: string, id: string, o: { 
         .find((x) => x.id.toLowerCase() === id.toLowerCase());
     if (!c) return undefined;
     const p = probe(c.file, c.size, limits);
-    if (!p.cwd || realFolder(p.cwd, cache) !== real) return undefined;
+    if (!p.cwd || !isFolder(p.cwd, real, cache)) return undefined;
     const e = source === "claude-code" ? claudeEntry(c, limits) : codexEntry(c, limits, codexTitles(root, limits));
     return e && e.messages > 0 ? e : undefined;
 }

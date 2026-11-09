@@ -440,6 +440,8 @@ describe("connecting", () => {
                 return { role: "assistant", provider: "mock", model: "mock-opus", stopReason: "end_turn", content: [{ type: "text", text: "Done" }] };
             } } as any);
             await rt.startTurn("make the first change");
+            // The turn's closing snapshot goes on after it: the badge counts what it found once it's in.
+            await (await import("../src/agent/turn-snapshots")).TurnSnapshots.for(rt.session, cwd)!.settled();
             const live = rt.snapshot();
             const promptTurns = live.turns.filter((t) => t.prompt);
             expect(promptTurns.map((t) => t.prompt!.text)).toEqual(["make the first change", "and make the second change"]);
@@ -1714,6 +1716,34 @@ describe("sessions", () => {
         await c.until(id, (v) => done(v) && v.turns.filter((x) => x.prompt).length === 2);
         await expect(c.call("session.rewind", { id, index: t.index, planId: plan.planId, code: true, conversation: true })).rejects.toThrow(/changed since this was shown/);
         expect((await c.call("session.rewindTargets", { id })).length).toBe(2);
+        c.close();
+    }, 30_000);
+
+    test("what a session prints comes less often while another's on screen, and at once when it's shown", async () => {
+        const c = await client();
+        const id = await c.open("session.create", { cwd: project() });
+        const frames = () => c.events.filter((e) => e.type === "session.ops" && e.sessionId === id && e.ops.some((op) => op.op === "append" && op.field === "output")).length;
+        const printing = (n: number) => `!for i in $(seq 1 ${n}); do echo $i; sleep 0.1; done`;
+        await c.call("session.send", { id, text: printing(12) });
+        await c.until(id, done, 15_000);
+        const shown = frames();
+        expect(shown).toBeGreaterThan(6);
+
+        await c.call("session.shown", {});
+        await c.call("session.send", { id, text: printing(30) });
+        await Bun.sleep(1000);
+        const hidden = frames() - shown;
+        expect(hidden).toBeLessThanOrEqual(3);
+        // Right after one has come, some words are waiting for the next, 500 ms on: being shown sends them now.
+        const seen = frames();
+        while (frames() === seen) await Bun.sleep(10);
+        await Bun.sleep(250);
+        const waiting = frames();
+        await c.call("session.shown", { id });
+        await Bun.sleep(60);
+        expect(frames()).toBeGreaterThan(waiting);
+        await c.until(id, done, 15_000);
+        expect(lastTurn(c.view(id)).blocks.filter((b) => b.t === "shell").map((b) => (b as Extract<Block, { t: "shell" }>).output)).toEqual([Array.from({ length: 30 }, (_, i) => i + 1).join("\n")]);
         c.close();
     }, 30_000);
 
@@ -3310,7 +3340,12 @@ describe("reopening a Claude Code session", () => {
                 const turns = c2.view(id).turns.filter((t) => t.prompt);
                 expect(turns[0]).toMatchObject({ status: "aborted", snapshotId: checkpoint });
                 expect(turns[1]!.snapshotId).toBeGreaterThan(checkpoint);
-                const continued = await snapshotRecords(id);
+                // The turn's closing snapshot is written a moment after it ends.
+                let continued = await snapshotRecords(id);
+                for (let i = 0; i < 100 && !continued.at(-1)?.end; i++) {
+                    await Bun.sleep(50);
+                    continued = await snapshotRecords(id);
+                }
                 expect(continued.filter((r) => r.id === checkpoint)).toEqual(records);
                 expect(continued.at(-1)).toMatchObject({ id: turns[1]!.snapshotId });
                 expect(continued.at(-1)!.end?.tree).toBeString();
