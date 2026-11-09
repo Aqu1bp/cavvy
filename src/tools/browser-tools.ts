@@ -310,7 +310,7 @@ Returns what changed on the page (or the new outline), including anything the us
     },
     async preview(input, ctx) {
         // The element as the last snapshot named it ("button "Save""), from a tab that's open; never starts a browser.
-        const page = ctx.state.browser?.peek(input.tab);
+        const page = ctx?.state?.browser?.peek(input.tab);
         const found = input.ref ? page?.refs.resolve(input.ref) : undefined;
         const el = found && "entry" in found ? `${found.entry.role}${found.entry.name ? ` ${JSON.stringify(short(found.entry.name, 60))}` : ""}` : input.ref ? input.ref : typeof input.x === "number" ? `at ${Math.round(input.x)},${Math.round(input.y ?? 0)}` : "";
         const quoted = (t: string | undefined) => JSON.stringify(short(redact(t ?? ""), 80));
