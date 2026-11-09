@@ -132,6 +132,25 @@ let treeBytes = 0;
 const TREE_CACHE_BYTES = 32 * 1024 * 1024;
 /** A session's object reader goes after this long unused, and is started again after this long at most. */
 const READER_IDLE_MS = 60_000;
+/**
+ * Readers kept open across the whole server, every session's together: past this many, the one used longest ago
+ * that isn't reading is let go (its session starts another when it next reads). Each holds a `git cat-file`.
+ */
+const READERS_MAX = Number(process.env.CAVVY_READERS_MAX) || 2;
+type SessionReader = { key: string; reader: ObjectReader; queue: Promise<unknown>; idle?: ReturnType<typeof setTimeout>; jobs: number; letGo: () => void };
+/** Every session's open reader, the one used longest ago first. */
+const openReaders = new Set<SessionReader>();
+function readerUsed(r: SessionReader) {
+    openReaders.delete(r);
+    openReaders.add(r);
+}
+/** Room for one more reader: the oldest that aren't reading are let go. Past the limit only while all are reading. */
+function readerRoom() {
+    for (const r of [...openReaders]) {
+        if (openReaders.size < READERS_MAX) return;
+        if (!r.jobs) r.letGo();
+    }
+}
 /** A turn's trees are read ahead (warmTrees) along this many changed paths at most. */
 const WARM_MAX_PATHS = 200;
 const READER_MAX_MS = 60 * 60_000;
@@ -536,7 +555,7 @@ export class TurnSnapshots {
     /** This session's reader of objects (readTree): kept between captures, while it's used. */
     /** changedPaths(), until a turn's added. */
     private changed?: string[];
-    private reader?: { key: string; reader: ObjectReader; queue: Promise<unknown>; idle?: ReturnType<typeof setTimeout> };
+    private reader?: SessionReader;
     /** Captures taken from what `git status` said differs (captureFromStatus): for tests. */
     statusCount = 0;
     /**
@@ -768,11 +787,7 @@ export class TurnSnapshots {
         this.stopWarming = undefined;
         clearTimeout(this.warmTimer);
         await Promise.allSettled([...this.pending]);
-        if (this.reader) {
-            clearTimeout(this.reader.idle);
-            this.reader.reader.close();
-            this.reader = undefined;
-        }
+        this.reader?.letGo();
         if (this.watch) releaseWatch(this.watch);
         this.watch = undefined;
     }
@@ -2365,10 +2380,25 @@ export class TurnSnapshots {
         const key = `${root}\0${JSON.stringify(env)}`;
         let r = this.reader;
         if (!r || r.key !== key) {
-            r?.reader.close();
-            r = this.reader = { key, reader: new ObjectReader(root, env, Date.now() + READER_MAX_MS), queue: Promise.resolve() };
+            r?.letGo();
+            readerRoom();
+            const made: SessionReader = {
+                key,
+                reader: new ObjectReader(root, env, Date.now() + READER_MAX_MS),
+                queue: Promise.resolve(),
+                jobs: 0,
+                letGo: () => {
+                    clearTimeout(made.idle);
+                    made.reader.close();
+                    openReaders.delete(made);
+                    if (this.reader === made) this.reader = undefined;
+                },
+            };
+            r = this.reader = made;
         }
         const mine = r;
+        readerUsed(mine);
+        mine.jobs++;
         clearTimeout(mine.idle);
         mine.reader.busy();
         const job = mine.queue.then(() => {
@@ -2380,20 +2410,17 @@ export class TurnSnapshots {
             ]).finally(() => clearTimeout(timer));
         });
         mine.queue = job.catch(() => undefined);
-        const letGo = () => {
-            mine.reader.close();
-            if (this.reader === mine) this.reader = undefined;
-        };
         try {
             return await job;
         } catch (e) {
             // Out of time or broken: what it was reading is unknown; the next read starts another.
-            letGo();
+            mine.letGo();
             throw e;
         } finally {
-            if (this.reader === mine) {
+            mine.jobs--;
+            if (this.reader === mine && !mine.jobs) {
                 mine.reader.idle();
-                mine.idle = setTimeout(letGo, READER_IDLE_MS);
+                mine.idle = setTimeout(mine.letGo, READER_IDLE_MS);
                 mine.idle.unref?.();
             }
         }
