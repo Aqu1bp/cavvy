@@ -121,5 +121,5 @@ test("in a folder the user hasn't trusted, edits get no diagnostics and the user
     const { session, events, run } = setup([call("w1", "Write", { file_path: "a.ts", content: "ERROR: x\n" }), call("w2", "Write", { file_path: "b.ts", content: "ERROR: y\n" }), answer], { untrusted: true });
     await run();
     for (const r of toolResults(session.messages)) expect(r).not.toContain("<new-diagnostics>");
-    expect(events.filter((e) => e.type === "notice" && /until you trust it/.test(e.message))).toHaveLength(1);
+    expect(events.filter((e) => e.type === "notice" && /until you \/trust this folder/.test(e.message))).toHaveLength(1);
 });

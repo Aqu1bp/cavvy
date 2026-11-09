@@ -669,6 +669,8 @@ export class Engine {
             exists,
             trusted: trusted || (!found.length && exists),
             needsTrust: trusted || this.declined.has(p) ? [] : found,
+            // Opened without asking (nothing to protect), but language servers run only where the user said yes.
+            askTrust: exists && !found.length && !this.declined.has(p) && !trustedByUser(p),
             branch: git ? gitBranch(p) : undefined,
             git,
             openedAt: readStore().recent?.find((r) => r.path === p)?.at,

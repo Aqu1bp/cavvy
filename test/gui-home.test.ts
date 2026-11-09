@@ -189,14 +189,14 @@ test("a prefix goes in where the caret is, as typing would: an @ after a word ge
     expect(events).toEqual(["input", "input"]);
 });
 
-function home(o: { cwd?: string; needsTrust?: string[]; models?: unknown[]; providers?: unknown[]; height?: number; width?: number } = {}) {
+function home(o: { cwd?: string; needsTrust?: string[]; askTrust?: boolean; models?: unknown[]; providers?: unknown[]; height?: number; width?: number } = {}) {
     const trusts: unknown[] = [];
     const connected: string[] = [];
     const tabs: string[] = [];
     const cliProps: Record<string, any>[] = [];
     const Home = componentCode("Home", {
         node, Show, For, createSignal, createEffect: stub, onCleanup: stub, onMount: stub, React: { Fragment: "Fragment" },
-        createResource: () => [() => ({ needsTrust: o.needsTrust ?? [], git: true, branch: "main" }), { refetch: stub }],
+        createResource: () => [() => ({ needsTrust: o.needsTrust ?? [], askTrust: o.askTrust, git: true, branch: "main" }), { refetch: stub }],
         ChevronDown: "ChevronDown", Folder: "Folder", FolderGit2: "FolderGit2", FolderOpen: "FolderOpen", KeyRound: "KeyRound", Plug: "Plug", ShieldAlert: "ShieldAlert",
         app: { conn: "open", homeCwd: o.cwd === undefined ? "/work/cavvy" : o.cwd || undefined, providers: o.providers ?? [], projects: [], models: o.models ?? [{ models: [{}] }], modelsLoaded: true, modelsLoading: false },
         refreshProjects: stub, reportError: stub, rpc: {}, chooseProject: stub,
@@ -314,6 +314,22 @@ test("a short column shows fewer terminal rows, down to none, and a card in a na
     expect(rows({ height: 330 })).toBe(0);
     expect(rows({ height: 700, needsTrust: [".mcp.json"], width: 900 })).toBe(3);
     expect(rows({ height: 700, needsTrust: [".mcp.json"], width: 500 })).toBe(2);
+});
+
+test("a folder with nothing to protect, not yet trusted, is asked about once: trusting it is what turns on checking edits", async () => {
+    const h = home({ askTrust: true });
+    const card = byClass(h.tree, "div", "trust")[0]!;
+    expect(text(byClass(card, "span", "ask-title"))).toBe("Do you trust this folder?");
+    expect(text(card)).toContain("Edits are checked for errors only in folders you trust");
+    const [later, trust] = elements(byClass(card, "div", "ask-row"), "button");
+    expect([text(later), text(trust)]).toEqual(["Not now", "Trust this folder"]);
+    await later!.props.onClick();
+    await trust!.props.onClick();
+    expect(h.trusts).toEqual([["/work/cavvy", false], ["/work/cavvy", true]]);
+    // Trusted, or never asked: no card.
+    expect(byClass(home().tree, "div", "trust")).toEqual([]);
+    // Settings that can run commands are asked about as before, by name: one card, not two.
+    expect(byClass(home({ askTrust: true, needsTrust: [".mcp.json"] }).tree, "div", "trust").length).toBe(1);
 });
 
 test("Home shows the error cards above the trust and connect cards", () => {

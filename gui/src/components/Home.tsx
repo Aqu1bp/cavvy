@@ -77,7 +77,8 @@ export function Home() {
     const [connecting, setConnecting] = createSignal<string>();
     const noModel = () => Boolean(app.modelsLoaded && !app.modelsLoading && app.models.every((g) => !g.models.length));
     const needsTrust = () => info()?.needsTrust ?? [];
-    const cards = () => (needsTrust().length ? 1 : 0) + (noModel() ? 1 : 0);
+    const askTrust = () => Boolean(info()?.askTrust);
+    const cards = () => (needsTrust().length || askTrust() ? 1 : 0) + (noModel() ? 1 : 0);
 
     // The terminal rows shown under the composer: home.css places the group by them. When they arrive
     // (or go) after Home is up, the group glides to its new place rather than jumping.
@@ -221,6 +222,25 @@ export function Home() {
                             <div class="ask-row">
                                 <button class="pbtn" onClick={async () => { await trustAndContinue(app.homeCwd!, false); void refetch(); }}>
                                     Open without them
+                                </button>
+                                <button class="pbtn primary" onClick={async () => { await trustAndContinue(app.homeCwd!, true); void refetch(); void refreshProjects(); }}>
+                                    Trust this folder
+                                </button>
+                            </div>
+                        </div>
+                    </Show>
+
+                    {/* Nothing in it runs by itself, but its edits are checked for errors only once it's trusted. */}
+                    <Show when={!needsTrust().length && askTrust()}>
+                        <div class="hcard glass trust" role="group" aria-label="Trust this folder">
+                            <div class="ask-h">
+                                <span class="ask-ic"><ShieldAlert size={16} /></span>
+                                <span class="ask-title">Do you trust this folder?</span>
+                            </div>
+                            <p>Edits are checked for errors only in folders you trust, as that runs the project's own tools.</p>
+                            <div class="ask-row">
+                                <button class="pbtn" onClick={async () => { await trustAndContinue(app.homeCwd!, false); void refetch(); }}>
+                                    Not now
                                 </button>
                                 <button class="pbtn primary" onClick={async () => { await trustAndContinue(app.homeCwd!, true); void refetch(); void refreshProjects(); }}>
                                     Trust this folder
