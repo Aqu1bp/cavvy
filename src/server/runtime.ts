@@ -1838,7 +1838,8 @@ export class Runtime {
                 if (so.length < PARTIAL_SCAN) {
                     const now = so + e.partial;
                     this.argsSoFar.set(e.id, now.slice(0, PARTIAL_SCAN));
-                    const input = partialInput(now);
+                    // Redacted, as a call's whole input is (trimInput): a secret in a command shows as no more of it than that.
+                    const input = trimInput(partialInput(now)) ?? {};
                     // Said once a field has arrived whole: the row names its file (or command) from then on.
                     if (Object.keys(input).length > Object.keys(b.input ?? {}).length) {
                         patch.input = input;

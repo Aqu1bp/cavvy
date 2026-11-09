@@ -2,7 +2,7 @@
 // and on what. Shared by the work log's rows (blocks/Activity.tsx), the running
 // turn's live line (live-line.ts) and find (find.ts).
 
-import type { ThinkingBlock, ToolBlock } from "@shared/protocol";
+import type { Block, ToolBlock } from "@shared/protocol";
 import { sleepSeconds, splitTitle } from "./format";
 
 export const VERBS: Record<string, string> = {
@@ -238,13 +238,13 @@ export function commandDescription(t: ToolBlock): string | undefined {
  * Calls in a row that read the same ("Run a script in the page" three times): one row, counted. Only finished ones
  * that worked; a failure keeps its own row. `more` is the calls after the first, by its id; `joined`, their ids.
  */
-export function sameInARow(steps: (ToolBlock | ThinkingBlock)[]): { more: Map<string, ToolBlock[]>; joined: Set<string> } {
+export function sameInARow(steps: readonly Block[], o: { /** Calls drawn as cards of their own (an edit, a command), which never join a row. */ apart?: (t: ToolBlock) => boolean } = {}): { more: Map<string, ToolBlock[]>; joined: Set<string> } {
     const more = new Map<string, ToolBlock[]>();
     const joined = new Set<string>();
     let first: ToolBlock | undefined;
     let key = "";
     for (const b of steps) {
-        const k = b.t === "tool" && b.status === "ok" && !b.diff && !b.agent ? JSON.stringify(toolLabel(b)) : undefined;
+        const k = b.t === "tool" && b.status === "ok" && !b.diff && !b.agent && !o.apart?.(b) ? JSON.stringify(toolLabel(b)) : undefined;
         if (b.t === "tool" && k !== undefined && first && k === key) {
             more.set(first.id, [...(more.get(first.id) ?? []), b]);
             joined.add(b.id);
