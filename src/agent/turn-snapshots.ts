@@ -606,6 +606,8 @@ export class TurnSnapshots {
     private reader?: SessionReader;
     /** Captures taken from what `git status` said differs (captureFromStatus): for tests. */
     statusCount = 0;
+    /** Captures that looked at the folder, rather than taking the last one again (unchanged): for tests. */
+    lookedCount = 0;
     /**
      * The last capture from Git's index, whole or from what changed (captureNarrowed): the watch's count when it began,
      * the index it rested on, what differed from it, and this session's copy of the index as it left it.
@@ -2039,6 +2041,7 @@ export class TurnSnapshots {
     private async captureBy(ending: boolean, quiet: boolean, deadline: number): Promise<TurnCapture | undefined> {
         const same = await this.unchanged(quiet, ending);
         if (same) return same;
+        this.lookedCount++;
         let genAtStart: number | undefined;
         const started = Date.now();
         const result: TurnCapture = { incomplete: false, notes: [], skipped: pathMap(), durationMs: 0 };

@@ -1039,9 +1039,11 @@ describe("per-turn snapshots", () => {
         const { cwd, snapshots } = setup({ "a.txt": "a\n", "src/b.txt": "b\n" });
         await snapshots.begin(1, "Look only");
         await Bun.sleep(400);
+        let looked = snapshots.lookedCount;
         await snapshots.end();
         const quiet = snapshots.list()[0]!;
         // Nothing started or read: the start's capture, again.
+        expect(snapshots.lookedCount).toBe(looked);
         expect(quiet.end!.durationMs).toBe(0);
         expect(quiet.end!.tree).toBe(quiet.start.tree);
         expect(quiet.changed).toEqual([]);
@@ -1056,8 +1058,9 @@ describe("per-turn snapshots", () => {
         await Bun.sleep(400);
         await snapshots.begin(3, "Write");
         snapshots.reach([cwd]);
+        looked = snapshots.lookedCount;
         await snapshots.end();
-        expect(snapshots.list()[2]!.end!.durationMs).toBeGreaterThan(0);
+        expect(snapshots.lookedCount).toBe(looked + 1);
     }, 30_000);
 
     for (const version of [2, 4]) test(`a capture that looks only at what the watch saw change agrees with one that looks at everything (index version ${version})`, async () => {
