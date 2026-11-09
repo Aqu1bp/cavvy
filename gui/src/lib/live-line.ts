@@ -6,7 +6,7 @@
 // pace at which rows that land together come in.
 
 import type { Block, Interaction, ThinkingBlock, ToolBlock, Turn } from "@shared/protocol";
-import { sleepSeconds, tokens, turnDuration } from "./format";
+import { sleepSeconds, turnDuration } from "./format";
 import { commandDescription, isLive, runningVerb, toolLabel } from "./tool-words";
 
 export type LiveKind = "think" | "tool" | "wait" | "bg" | "special" | "work";
@@ -99,7 +99,7 @@ function toolState(t: ToolBlock): LiveLineState {
         return { key: `wait:${t.id}`, kind: "wait", label: runningVerb(t), detail: asks ? undefined : [verb, description ?? arg].filter(Boolean).join(" "), toolId: t.id, title: command ? undefined : arg };
     }
     if (t.status === "streaming") {
-        return { key: `tool:${t.id}:streaming`, kind: "tool", label: runningVerb(t), detail: arg, mono: true, meta: t.receiving ? `${tokens(t.receiving)} chars` : undefined, since: t.startedAt, toolId: t.id };
+        return { key: `tool:${t.id}:streaming`, kind: "tool", label: runningVerb(t), detail: arg, mono: true, since: t.startedAt, toolId: t.id };
     }
     const wait = t.name === "Bash" && t.status === "running" ? sleepSeconds(t.input?.command) : undefined;
     const base = { key: `tool:${t.id}:${t.status}`, kind: "tool" as const, since: t.startedAt, toolId: t.id, jobSince: t.job?.startedAt };

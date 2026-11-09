@@ -32,6 +32,7 @@ import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "..
 import { toolPath } from "../permissions/rules";
 import { BUILTIN_TOOLS, offered } from "../tools/index";
 import { skillTool } from "../tools/skill-tool";
+import { partialInput, PARTIAL_SCAN } from "../tools/partial-input";
 import { formatSkill, skillMentions, withSkills } from "../agent/skills";
 import { cliRunsSkills } from "../backends/native-skills";
 import { loadsPluginsNatively, onlyPluginHooks, runsPluginCommand, sessionHookSettings, withoutPluginHooks } from "../plugins/native";
@@ -380,6 +381,8 @@ export class Runtime {
     private steeredTurns = new Map<number, string>();
     /** Tool call id -> the turn its block is in. */
     private toolTurn = new Map<string, string>();
+    /** The start of each call's arguments while they arrive, to name its file or command before they're all in (partialInput). */
+    private argsSoFar = new Map<string, string>();
     /** Background shell id -> the description of the call that started it, whole (a block's input is cut). */
     private shellDescriptions = new Map<string, string>();
     /** Each sub-agent's label (how its permission prompts name it) and its open text block while it writes. */
@@ -1829,7 +1832,21 @@ export class Runtime {
             }
             case "tool_call_delta": {
                 const b = this.blockIn(this.toolTurn.get(e.id), e.id);
-                if (b?.t === "tool") this.patchBlock(e.id, { receiving: (b.receiving ?? 0) + e.partial.length });
+                if (b?.t !== "tool") break;
+                const patch: Partial<ToolBlock> = { receiving: (b.receiving ?? 0) + e.partial.length };
+                const so = this.argsSoFar.get(e.id) ?? "";
+                if (so.length < PARTIAL_SCAN) {
+                    const now = so + e.partial;
+                    this.argsSoFar.set(e.id, now.slice(0, PARTIAL_SCAN));
+                    // Redacted, as a call's whole input is (trimInput): a secret in a command shows as no more of it than that.
+                    const input = trimInput(partialInput(now)) ?? {};
+                    // Said once a field has arrived whole: the row names its file (or command) from then on.
+                    if (Object.keys(input).length > Object.keys(b.input ?? {}).length) {
+                        patch.input = input;
+                        patch.title = this.toolMeta({ type: "tool_call", id: e.id, name: b.name, input }).title;
+                    }
+                }
+                this.patchBlock(e.id, patch);
                 break;
             }
             case "server_tool": {
@@ -1848,6 +1865,7 @@ export class Runtime {
                 this.finishResponse(e.message);
                 break;
             case "tool_start": {
+                this.argsSoFar.delete(e.call.id);
                 const turnId = this.toolTurn.get(e.call.id);
                 const patch: Partial<ToolBlock> = {
                     title: e.title,
@@ -1973,6 +1991,7 @@ export class Runtime {
         for (const part of msg.content) {
             if (part.type !== "tool_call") continue;
             const call = part as unknown as ToolCallPart;
+            this.argsSoFar.delete(call.id);
             const at = this.toolTurn.get(call.id);
             const b = this.blockIn(at, call.id);
             if (b?.t !== "tool" || b.status !== "streaming") continue;
@@ -2278,6 +2297,7 @@ export class Runtime {
     }
 
     private endTurn(reason: TurnEndReason) {
+        this.argsSoFar.clear();
         const turnId = this.turnId;
         if (!turnId) return;
         const turn = findTurn(this.view, turnId);
@@ -2446,7 +2466,8 @@ export class Runtime {
             plainLabel: req.summary ? "AI summary" : undefined,
             agentLabel: req.agentLabel,
         };
-        if (decision.grant) it.options.push({ id: "session", label: `Allow \`${redact(decision.grant.label)}\` for the session` });
+        // A shell grant is commands or paths (shown as code); any other is in words ("browser actions").
+        if (decision.grant) it.options.push({ id: "session", label: isShellTool(tool.name) ? `Allow \`${redact(decision.grant.label)}\` for the session` : `Allow ${redact(decision.grant.label)} this session` });
         if (req.preview?.summary) it.summary = redact(req.preview.summary);
         if (isShellTool(tool.name)) {
             it.heading = tool.name === "Monitor" ? "Watch a command's output" : req.secrets?.length ? "Run a shell command with secrets" : "Run a shell command";
@@ -2483,18 +2504,29 @@ export class Runtime {
         } else if (BROWSER_TOOL_HEADINGS[tool.name]) {
             it.heading = BROWSER_TOOL_HEADINGS[tool.name]!;
             if (tool.name === "BrowserNavigate") it.url = String(input.url ?? "");
-            else if (req.preview?.summary) it.description = redact(req.preview.summary);
-            if (req.preview?.body) it.command = redact(req.preview.body);
-            if (suggestions.length) it.options.push({ id: "always", label: tool.name === "BrowserNavigate" ? `Always allow ${suggestions[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1")}` : `Always allow ${tool.name} in ${projectName}` });
+            else if (tool.name === "BrowserAct") {
+                // What it does to which element ("Click button "Save""), on the page it's on.
+                if (req.preview?.summary) it.heading = redact(req.preview.summary);
+                const page = req.preview?.body ? redact(req.preview.body).replace(/^https?:\/\//, "").replace(/\/$/, "") : "";
+                it.where = page ? `In the browser · ${page}` : "In the browser";
+            } else {
+                if (req.preview?.body) it.command = redact(req.preview.body);
+                if (req.preview?.summary && req.preview.summary !== it.heading) it.description = redact(req.preview.summary);
+            }
+            if (suggestions.length) it.options.push({ id: "always", label: tool.name === "BrowserNavigate" ? `Always allow ${suggestions[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1")}` : `Always allow in ${projectName}` });
         } else if (GIT_TOOL_HEADINGS[tool.name]) {
             it.heading = GIT_TOOL_HEADINGS[tool.name]!;
             if (req.preview?.body) it.command = redact(req.preview.body);
             if (req.preview?.summary) it.description = redact(req.preview.summary);
-            if (suggestions.length) it.options.push({ id: "always", label: `Always allow ${tool.name} in ${projectName}` });
+            if (suggestions.length) it.options.push({ id: "always", label: `Always allow in ${projectName}` });
         } else if (tool.category === "mcp") {
-            it.heading = "Use an MCP tool";
+            // Its own name in words ("Create issue"), and the server it's from.
+            const m = /^mcp__(.+?)__(.+)$/.exec(tool.name);
+            const words = m ? m[2]!.replace(/[_-]+/g, " ").trim() : tool.name;
+            it.heading = words.charAt(0).toUpperCase() + words.slice(1);
+            if (m) it.where = `From ${m[1]}`;
             it.json = redact(JSON.stringify(input, null, 2)).slice(0, 6000);
-            if (suggestions.length) it.options.push({ id: "always", label: `Always allow ${tool.name} in ${projectName}` });
+            if (suggestions.length) it.options.push({ id: "always", label: `Always allow in ${projectName}` });
         }
         it.options.push({ id: "no", label: "Deny" });
         // A sub-agent stopped while this was put together asks nothing.

@@ -3,7 +3,7 @@
 // test/helpers/browser-fixture.ts) only what needs none runs.
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "fs";
-import { join } from "path";
+import { basename, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 import { chromePath, fixtureServer } from "./helpers/browser-fixture";
 import { fakeChromeProgram } from "./helpers/fake-chrome";
@@ -134,7 +134,9 @@ describe("the demo (bun run gui:demo)", () => {
             // opening a local page asks nothing; the click asks
             await until(() => rt.snapshot().state.interactions.length > 0, "the click's approval");
             const [ask] = rt.snapshot().state.interactions;
-            expect(ask).toMatchObject({ kind: "permission", heading: "Act on a page in the browser", description: "Browser: click e5" });
+            // What it does to which element, on which page, and what the broader answers cover, in words.
+            expect(ask).toMatchObject({ kind: "permission", heading: 'Click button "Click me"', where: `In the browser · ${new URL(demo.url).host}` });
+            expect(ask.options.map((o: { label: string }) => o.label)).toEqual(["Allow once", "Allow browser actions this session", `Always allow in ${basename(fresh)}`, "Deny"]);
             await call("session.respond", { id: demoId, interactionId: ask.id, response: { kind: "permission", choice: "yes" } });
             await until(() => !rt.snapshot().state.busy, "the turn to end");
             const said = JSON.stringify(rt.session.messages);

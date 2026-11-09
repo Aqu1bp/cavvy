@@ -158,7 +158,9 @@ describe("the tools", () => {
 
     test("show what will be done in the prompt, with a typed secret redacted", async () => {
         const typed = await BrowserActTool.preview!({ action: "type", ref: "e3", text: `token ${FAKE.anthropic}` }, ctx());
-        expect(typed!.summary).toContain("Browser: type e3");
+        // No tab open: the element by its ref.
+        expect(typed!.summary).toBe('Type "token [REDACTED anthropic-key]" into e3');
+        expect((await BrowserActTool.preview!({ action: "press", key: "Enter" }, ctx()))!.summary).toBe("Press Enter");
         expect(typed!.summary).not.toContain("sk-ant");
         expect((await BrowserEvalTool.preview!({ expression: `fetch("/x?k=${FAKE.openai}")` }, ctx()))!.body).not.toContain("sk-proj");
         expect((await BrowserNavigateTool.preview!({ url: "http://user:pw@localhost:3000/" }, ctx()))!.summary).toBe("Open http://localhost:3000/ in the browser");
