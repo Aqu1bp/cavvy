@@ -13,7 +13,7 @@
 
 import { createHash } from "crypto";
 import { lstatSync, realpathSync } from "fs";
-import { lstat, readFile } from "fs/promises";
+import { lstat } from "fs/promises";
 import { dirname, join, relative, resolve } from "path";
 import { git, gitChanges, readRegular, readRegularSync } from "../server/git-changes";
 import type { GitChangesInfo, TurnPlace } from "../server/protocol";
@@ -244,7 +244,7 @@ async function identify(root: string, path: string, main: boolean): Promise<{ re
     if (!expected || common !== expected || !own || top !== real) return undefined;
     if (main) return own === expected ? { real, gitDir: own } : undefined;
     if (dirname(own) !== join(expected, "worktrees")) return undefined;
-    const named = await readFile(join(own, "gitdir"), "utf-8").then((f) => f.replace(/\r?\n$/, "")).catch(() => "");
+    const named = ((await gitFile(join(own, "gitdir"))) ?? "").replace(/\r?\n$/, "");
     return named && sameFolder(dirname(resolve(own, named)), path) ? { real, gitDir: own } : undefined;
 }
 
