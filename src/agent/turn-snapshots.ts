@@ -1622,8 +1622,30 @@ export class TurnSnapshots {
      * can't say plainly what's on disk: an entry it reports otherwise (a conflict, a submodule, assume-unchanged,
      * skip-worktree, intent-to-add), no tree worked out for the index, the index written meanwhile, more than
      * NARROW_MAX_PATHS paths, or attributes that store other bytes than a file's. The whole capture is taken then, as it
-     * is wherever Git's config defines a filter: `git status` would run its program.
+     * is wherever Git's config defines a filter (`git status` would run its program), or the repository's config
+     * includes another file (noFilters).
      */
+    /**
+     * Whether no config defines a filter for `git status` to run. `git status` reads the config again, later: a file
+     * the repository's config includes (`include.path`, `includeIf`) can be rewritten in between, so one included
+     * from the repository's own config, or the command's, counts as a filter; one the user's or the system's
+     * config includes is theirs. Older git, without --show-scope, says nothing plainly: no.
+     */
+    private async noFilters(root: string, deadline: number): Promise<boolean> {
+        const found = await git(root, ["config", "-z", "--show-scope", "--get-regexp", "^(filter\\..*\\.(clean|process)|include\\..*|includeif\\..*)$"], { deadline, privateEnv: { GIT_NO_REPLACE_OBJECTS: "1" } });
+        if (found.cut) return false;
+        if (found.code === 1) return true;
+        if (found.code) return false;
+        // scope NUL key LF value NUL, for each.
+        const fields = found.out.toString("utf-8").split("\0");
+        for (let i = 0; i + 1 < fields.length; i += 2) {
+            const scope = fields[i]!, key = fields[i + 1]!.split("\n", 1)[0]!.toLowerCase();
+            if (key.startsWith("filter.")) return false;
+            if (scope !== "global" && scope !== "system") return false;
+        }
+        return true;
+    }
+
     private async captureFromStatus(result: TurnCapture, read: KnownFile[], indexPath: string, deadline: number, inTime: () => void, ending: boolean): Promise<boolean> {
         const w = this.watch, root = this.root!;
         if (!w?.healthy || !msTimesExact(indexPath)) return false;
@@ -1632,8 +1654,7 @@ export class TurnSnapshots {
         // Any config's, the user's too: git-lfs's, for one, runs what the repository's config says. Exit 1: none.
         // GIT_CONFIG would point `git config` alone at another file.
         if (gitEnvironment().GIT_CONFIG !== undefined) return false;
-        const filters = await git(root, ["config", "-z", "--get-regexp", "^filter\\..*\\.(clean|process)$"], { deadline, privateEnv: { GIT_NO_REPLACE_OBJECTS: "1" } });
-        if (filters.code !== 1 || filters.cut) return false;
+        if (!(await this.noFilters(root, deadline))) return false;
         const before = lstatSync(indexPath, { throwIfNoEntry: false });
         if (!before) return false;
         const started = Date.now();

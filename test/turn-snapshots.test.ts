@@ -415,6 +415,40 @@ describe("per-turn snapshots", () => {
         process.env.GIT_CONFIG_GLOBAL = "/dev/null";
     });
 
+    // An included file can be rewritten between the check for filters and `git status`: the include alone is enough.
+    for (const [kind, key] of [["include", "include.path"], ["includeIf", "includeIf.onbranch:main.path"]]) test(`a big repository whose config has an ${kind} isn't captured with git status, and still sees the turn's changes`, async () => {
+        const { cwd, dir } = setup({ "a.txt": "a\n", "b.txt": "b\n" });
+        const included = join(dirname(cwd), "included.cfg");
+        writeFileSync(included, "");
+        git(cwd, ["config", key!, included]);
+        write(cwd, "a.txt", "a, before the turn\n");
+        const snapshots = new TurnSnapshots(dir, cwd, { statusFromEntries: 0 });
+        await snapshots.begin(1, "Edit a file");
+        write(cwd, "a.txt", "a, after the turn\n");
+        await snapshots.end();
+        expect(snapshots.statusCount).toBe(0);
+        const turn = snapshots.list()[0]!;
+        expect([turn.start.incomplete, turn.end!.incomplete, turn.changed]).toEqual([false, false, ["a.txt"]]);
+        await snapshots.stop();
+    });
+
+    test("a big repository whose user config includes a file is still captured with git status", async () => {
+        const { cwd, dir } = setup({ "a.txt": "a\n", "b.txt": "b\n" });
+        const user = join(dirname(cwd), "gitconfig"), included = join(dirname(cwd), "included.cfg");
+        writeFileSync(included, "");
+        git(cwd, ["config", "--file", user, "include.path", included]);
+        process.env.GIT_CONFIG_GLOBAL = user;
+        try {
+            write(cwd, "a.txt", "a, before the turn\n");
+            const snapshots = new TurnSnapshots(dir, cwd, { statusFromEntries: 0 });
+            await snapshots.begin(1, "Edit a file");
+            expect(snapshots.statusCount).toBe(1);
+            await snapshots.stop();
+        } finally {
+            process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+        }
+    });
+
     test("ignored files are omitted, large files are marked, and ordinary files still diff", async () => {
         const { cwd, dir, snapshots } = setup({ ".gitignore": "private.txt\n", "small.txt": "before\n" });
         write(cwd, "private.txt", "not captured\n");
