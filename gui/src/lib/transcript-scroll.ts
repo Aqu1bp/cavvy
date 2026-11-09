@@ -61,7 +61,96 @@ export type TranscriptPosition = {
     top: number;
     anchor?: ScrollAnchor;
     openWork: string[];
+    /** The same turns as keys that find them again in the session read in anew (placedAgain); set by keyed(). */
+    keys?: { anchor?: TurnKey; part?: number; work: TurnKey[] };
 };
+
+type Place = { seg: number; index: number };
+/** What a turn is to be found again by (Turn, or a test's few fields of one). */
+export type KeyTurn = { id: string; pos?: Place; startedAt?: number; prompt?: unknown; blocks?: readonly { t: string; id: string }[] };
+
+/**
+ * A turn, as it can be found again once the server reads its session in anew (it let it go, or restarted): turn ids are
+ * the server's, numbered as it reads the session, and the same id can then be another turn, or none. Where its message is
+ * in the session (pos), when it started, and what it starts with don't change.
+ */
+export type TurnKey = {
+    id: string;
+    pos?: Place;
+    at?: number;
+    /** "prompt", or what its first block is. */
+    kind: string;
+    /** Its place, or the place of the nearest turn before it that has one: session.turns' `through`, to bring it back. */
+    near?: Place;
+};
+
+const samePlace = (a?: Place, b?: Place) => a === b || (!!a && !!b && a.seg === b.seg && a.index === b.index);
+/** `a` is before `b` in the session. */
+export const placeBefore = (a: Place, b: Place) => a.seg < b.seg || (a.seg === b.seg && a.index < b.index);
+const kindOf = (t: KeyTurn) => (t.prompt ? "prompt" : (t.blocks?.[0]?.t ?? ""));
+
+export function turnKey(turns: readonly KeyTurn[], i: number): TurnKey {
+    const t = turns[i]!;
+    let near: Place | undefined;
+    for (let j = i; j >= 0 && !near; j--) near = turns[j]!.pos;
+    return { id: t.id, kind: kindOf(t), ...(t.pos ? { pos: t.pos } : {}), ...(t.startedAt !== undefined ? { at: t.startedAt } : {}), ...(near ? { near } : {}) };
+}
+
+function isKey(t: KeyTurn, k: TurnKey) {
+    if (!samePlace(t.pos, k.pos) || kindOf(t) !== k.kind) return false;
+    if (t.startedAt !== undefined && k.at !== undefined) return t.startedAt === k.at;
+    // Nothing else tells turns with no place apart: only its own id, unchanged.
+    return k.pos !== undefined || t.id === k.id;
+}
+
+/** The turn `k` is of, among `turns`; none when it isn't there, or two could be it. */
+export function keyedTurn<T extends KeyTurn>(turns: readonly T[], k: TurnKey): T | undefined {
+    let found: T | undefined;
+    let both = false;
+    for (const t of turns) {
+        if (!isKey(t, k)) continue;
+        if (found) both = true;
+        if (!found || t.id === k.id) found = t;
+    }
+    return both && found?.id !== k.id ? undefined : found;
+}
+
+/** `p`, with what finds its turns again (keys), from `turns` as they are now. */
+export function keyed(turns: readonly KeyTurn[], p: TranscriptPosition): TranscriptPosition {
+    let at: Map<string, number> | undefined;
+    const index = (id: string) => (at ??= new Map(turns.map((t, i) => [t.id, i]))).get(id);
+    const a = p.anchor ? index(p.anchor.turnId) : undefined;
+    const part = a === undefined || !p.anchor?.part ? -1 : (turns[a]!.blocks?.findIndex((b) => b.id === p.anchor!.part) ?? -1);
+    const work = p.openWork.flatMap((id) => {
+        const i = index(id);
+        return i === undefined ? [] : [turnKey(turns, i)];
+    });
+    return { ...p, keys: { ...(a !== undefined ? { anchor: turnKey(turns, a) } : {}), ...(part >= 0 ? { part } : {}), work } };
+}
+
+/**
+ * `p` (saved with keyed()) on `turns`, which may be numbered anew: its turns by their ids now. The place read, if its
+ * turn isn't among them, goes: the session opens at its end. A block it was read at is kept only if it's still that
+ * block (its id, at its index): block ids are numbered anew too.
+ */
+export function placedAgain(turns: readonly KeyTurn[], p: TranscriptPosition): TranscriptPosition {
+    const k = p.keys;
+    if (!k) return p;
+    const openWork = k.work.flatMap((w) => keyedTurn(turns, w)?.id ?? []);
+    if (!p.anchor || p.bottom) return { bottom: p.bottom, top: p.top, openWork };
+    const a = k.anchor && keyedTurn(turns, k.anchor);
+    if (!a) return { bottom: true, top: p.top, openWork };
+    let anchor: ScrollAnchor = { ...p.anchor, turnId: a.id };
+    const part = anchor.part;
+    // "prompt", a work log by its index: not ids. A block's id, in a turn numbered anew, or no longer at its index
+    // (the blocks before it were): another block's, maybe.
+    const byId = part !== undefined && part !== "prompt" && !part.startsWith("worklog:");
+    if (byId && (a.id !== p.anchor.turnId || (k.part !== undefined && a.blocks?.[k.part]?.id !== part))) {
+        const { part: _p, partOffset: _o, row: _r, rowOffset: _ro, ...rest } = anchor;
+        anchor = rest;
+    }
+    return { bottom: p.bottom, top: p.top, anchor, openWork };
+}
 
 /** In-memory only: revisiting a session refreshes its place in the LRU. */
 export function positionCache(limit = 20) {

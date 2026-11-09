@@ -12,10 +12,10 @@
 // filter-safe read. A worktree is read only once its folder is checked to be that worktree (as session-worktrees.ts checks).
 
 import { createHash } from "crypto";
-import { lstatSync, readFileSync, realpathSync } from "fs";
-import { lstat, readFile } from "fs/promises";
+import { lstatSync, realpathSync } from "fs";
+import { lstat } from "fs/promises";
 import { dirname, join, relative, resolve } from "path";
-import { git, gitChanges } from "../server/git-changes";
+import { git, gitChanges, readRegular, readRegularSync } from "../server/git-changes";
 import type { GitChangesInfo, TurnPlace } from "../server/protocol";
 import { sameFolder } from "../server/session-worktrees";
 import { normalPath, worktreeOf } from "../server/worktree-agents";
@@ -127,12 +127,13 @@ function decidedBy(list: readonly Worktree[]): string[] | undefined {
     for (const w of list) {
         if (w.main) continue;
         paths.push(w.path, join(w.path, ".git"));
-        try {
-            const named = /^gitdir: (.+)\n?$/.exec(readFileSync(join(w.path, ".git"), "utf-8"))?.[1];
-            if (named) paths.push(join(resolve(w.path, named), "HEAD"));
-        } catch {
-            // Gone: its folder's stamp says so.
-        }
+        // Not waiting on a pipe there (this runs on the server's only thread for JavaScript), nor following a link.
+        const file = readRegularSync(join(w.path, ".git"), GIT_FILE_MAX);
+        // Gone: its folder's stamp says so. Something else: no telling where its HEAD is.
+        if (file === null) continue;
+        if (!file?.buf) return undefined;
+        const named = /^gitdir: (.+)\n?$/.exec(file.buf.toString("utf-8"))?.[1];
+        if (named) paths.push(join(resolve(w.path, named), "HEAD"));
     }
     return paths;
 }
@@ -243,7 +244,7 @@ async function identify(root: string, path: string, main: boolean): Promise<{ re
     if (!expected || common !== expected || !own || top !== real) return undefined;
     if (main) return own === expected ? { real, gitDir: own } : undefined;
     if (dirname(own) !== join(expected, "worktrees")) return undefined;
-    const named = await readFile(join(own, "gitdir"), "utf-8").then((f) => f.replace(/\r?\n$/, "")).catch(() => "");
+    const named = ((await gitFile(join(own, "gitdir"))) ?? "").replace(/\r?\n$/, "");
     return named && sameFolder(dirname(resolve(own, named)), path) ? { real, gitDir: own } : undefined;
 }
 
@@ -279,6 +280,26 @@ export async function token(w: Checked, deadline: number): Promise<string> {
     }
 }
 
+/** Bigger than any HEAD, ref or .git file Git writes. */
+const GIT_FILE_MAX = 64 * 1024;
+const PACKED_REFS_MAX = 256 * 1024 * 1024;
+
+/**
+ * A file of a Git dir, as text: read without waiting or following a link (a pipe or a link put there would hold up
+ * every file read in the server, or point elsewhere). Null when there's nothing there; undefined when there's something
+ * that can't be read so (git's asked then).
+ */
+async function gitFile(path: string, max = GIT_FILE_MAX): Promise<string | null | undefined> {
+    const r = await readRegular(path, max);
+    return r === null ? null : r?.buf?.toString("utf-8");
+}
+
+/** A Git dir's common dir: its own, or the one its commondir file names; undefined when that can't be read. */
+async function commonOf(gitDir: string): Promise<string | undefined> {
+    const named = await gitFile(join(gitDir, "commondir"));
+    return named === undefined ? undefined : named === null ? gitDir : resolve(gitDir, named.trim());
+}
+
 /**
  * Whether a worktree's HEAD, branch or index was written since `since` (the file system's clock, in nanoseconds): what
  * its token, taken then, would show changed now, told by its files' times rather than by reading them. A branch that
@@ -291,14 +312,14 @@ export async function movedSince(w: Checked, since: bigint): Promise<boolean | u
         return st === undefined ? undefined : st.ctimeNs >= since;
     };
     try {
-        let common = w.gitDir;
-        const named = await readFile(join(w.gitDir, "commondir"), "utf-8").catch(() => undefined);
-        if (named !== undefined) common = resolve(w.gitDir, named.trim());
+        const common = await commonOf(w.gitDir);
+        if (common === undefined) return undefined;
         if (await lstat(join(common, "reftable")).then(() => true, () => false)) return undefined;
         const head = await written(join(w.gitDir, "HEAD"));
         if (head !== false) return head;
         if ((await written(join(w.gitDir, "index"))) === true) return true;
-        const text = (await readFile(join(w.gitDir, "HEAD"), "utf-8")).trim();
+        const text = (await gitFile(join(w.gitDir, "HEAD")))?.trim();
+        if (text === undefined) return undefined;
         // Detached: HEAD's own file says it all.
         if (/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(text)) return false;
         const ref = /^ref: (refs\/\S+)$/.exec(text)?.[1];
@@ -319,18 +340,20 @@ export async function movedSince(w: Checked, since: bigint): Promise<boolean | u
  */
 export async function headOf(gitDir: string): Promise<{ oid: string; ref: string } | undefined> {
     try {
-        let common = gitDir;
-        const named = await readFile(join(gitDir, "commondir"), "utf-8").catch(() => undefined);
-        if (named !== undefined) common = resolve(gitDir, named.trim());
+        const common = await commonOf(gitDir);
+        if (common === undefined) return undefined;
         if (await lstat(join(common, "reftable")).then(() => true, () => false)) return undefined;
-        const head = (await readFile(join(gitDir, "HEAD"), "utf-8")).trim();
+        const head = (await gitFile(join(gitDir, "HEAD")))?.trim();
+        if (head === undefined) return undefined;
         if (/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(head)) return { oid: head, ref: "" };
         const ref = /^ref: (refs\/\S+)$/.exec(head)?.[1];
         if (!ref || ref.split("/").includes("..")) return undefined;
-        const loose = await readFile(join(common, ref), "utf-8").then((t) => t.trim(), () => undefined);
-        if (loose !== undefined) return /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(loose) ? { oid: loose, ref } : undefined;
-        const packed = await readFile(join(common, "packed-refs"), "utf-8").catch(() => "");
-        for (const line of packed.split("\n")) {
+        const loose = await gitFile(join(common, ref));
+        if (loose === undefined) return undefined;
+        if (loose !== null) return /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(loose.trim()) ? { oid: loose.trim(), ref } : undefined;
+        const packed = await gitFile(join(common, "packed-refs"), PACKED_REFS_MAX);
+        if (packed === undefined) return undefined;
+        for (const line of (packed ?? "").split("\n")) {
             const m = /^([0-9a-f]{40}(?:[0-9a-f]{24})?) (\S+)$/.exec(line);
             if (m?.[2] === ref) return { oid: m[1]!, ref };
         }

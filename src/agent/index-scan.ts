@@ -4,7 +4,24 @@
 // repository holds nothing of the files that haven't changed (turn-snapshots.ts). Runs on the stat worker
 // (stat-worker.ts), or here where there's none. Nothing is read but the index and stats; nothing runs.
 
-import { closeSync, fstatSync, lstatSync, openSync, readFileSync, readSync, type Stats } from "fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, type Stats } from "fs";
+
+/** Opens the index without following a link, or waiting on a pipe: one that isn't a file is no index. */
+const INDEX_OPEN = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+
+/** The index file's bytes, and its stat as they were read. */
+function readIndexFile(path: string): { buf: Buffer; st: Stats } | undefined {
+    let fd: number;
+    try { fd = openSync(path, INDEX_OPEN); } catch { return undefined; }
+    try {
+        const st = fstatSync(fd);
+        return st.isFile() ? { buf: readFileSync(fd), st } : undefined;
+    } catch {
+        return undefined;
+    } finally {
+        closeSync(fd);
+    }
+}
 
 /** What's at a path (as stat-files.ts has it). */
 export const AT = { missing: 0, file: 1, link: 2, dir: 3, other: 4, unreadable: 5 } as const;
@@ -116,13 +133,9 @@ export const LATE = "late";
 /** `deadline`: past it, it stops (throws LATE): nothing waits for what it would find. */
 export function scanIndex(root: string, indexFile: string, hashBytes: number, untracked: readonly string[], msExact: boolean, part: { k: number; n: number } = { k: 0, n: 1 }, deadline?: number): IndexScan {
     const out: IndexScan = { differs: [], gone: [], attributes: [] };
-    let buf: Buffer, written: Stats;
-    try {
-        written = lstatSync(indexFile);
-        buf = readFileSync(indexFile);
-    } catch {
-        return { ...out, unusable: "unreadable" };
-    }
+    const read = readIndexFile(indexFile);
+    if (!read) return { ...out, unusable: "unreadable" };
+    const { buf, st: written } = read;
     if (buf.length < 12 + hashBytes || buf.readUInt32BE(0) !== MAGIC) return { ...out, unusable: "unreadable" };
     const version = buf.readUInt32BE(4);
     if (version < 2 || version > 4) return { ...out, unusable: "version" };
@@ -355,8 +368,9 @@ export function scanPaths(root: string, indexFile: string, hashBytes: number, pa
     if (table) {
         let fd: number | undefined;
         try {
-            fd = openSync(indexFile, "r");
+            fd = openSync(indexFile, INDEX_OPEN);
             const st = fstatSync(fd);
+            if (!st.isFile()) throw new Error("not a file");
             // Written again with the same entries (`git status` saving what it refreshed: only their stat fields differ),
             // asked only what it records: its entries where they were, their content key the same, without making
             // a path of each.
@@ -386,12 +400,9 @@ export function scanPaths(root: string, indexFile: string, hashBytes: number, pa
         }
         offsetsByIndex.delete(indexFile);
     }
-    try {
-        written = lstatSync(indexFile);
-        buf = readFileSync(indexFile);
-    } catch {
-        return { unusable: "unreadable", states: [] };
-    }
+    const read = readIndexFile(indexFile);
+    if (!read) return { unusable: "unreadable", states: [] };
+    ({ buf, st: written } = read);
     if (buf.length < 12 + hashBytes || buf.readUInt32BE(0) !== MAGIC) return { unusable: "unreadable", states: [] };
     const version = buf.readUInt32BE(4);
     if (version < 2 || version > 4) return { unusable: "version", states: [] };

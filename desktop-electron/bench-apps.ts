@@ -7,7 +7,7 @@
 //   bun desktop-electron/bench-apps.ts --app <path to the .app> --label <what's on screen> [--seconds 60] [--after 5]
 //     --after: seconds to wait before measuring (start the reply, then step away from the keyboard and mouse)
 //
-// For a fair comparison (docs/performance-plan.md, competition): the same Mac, quiet (`top` first), the same window
+// For a fair comparison (docs/benchmark-apps.md): the same Mac, quiet (`top` first), the same window
 // size, the same model and prompt, each app alone, and runs alternated between apps. Compare totals, the CLIs
 // included: where an agent's work happens (its CLI, or the app) differs between apps.
 

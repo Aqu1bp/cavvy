@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, readdirSync, realpathSync, utimesSync, writeFileSync } from "fs";
+import { lutimesSync, mkdirSync, readdirSync, readFileSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate } from "./helpers/isolate";
 
@@ -60,6 +60,42 @@ test("in a repository, settling waits for the watch to have seen everything unti
         const gen = w.gen;
         await w.settle(0);
         expect(w.gen).toBe(gen);
+    } finally {
+        releaseWatch(w);
+    }
+});
+
+test("a link put where a sync's marker would go is never written through, and the sync still completes", async () => {
+    // A sandboxed command can write in .git: it mustn't get the server to empty a file outside it.
+    const root = join(realpathSync(iso.home), "linked");
+    mkdirSync(join(root, ".git"), { recursive: true });
+    mkdirSync(join(root, "src"), { recursive: true });
+    const victim = join(realpathSync(iso.home), "victim.txt");
+    writeFileSync(victim, "keep me\n");
+    // Every name a marker of this process could have had (process, watch and sync numbers), plus a stale one.
+    const planted: string[] = [];
+    for (let wid = 1; wid <= 30; wid++) {
+        for (let seq = 1; seq <= 60; seq++) planted.push(`cavvy-watch-sync-${process.pid}-${wid}-${seq}`);
+        for (let n = 0; n <= 40; n++) planted.push(`cavvy-watch-sync-${process.pid}-${wid}-live-${n}`);
+    }
+    for (const name of planted) symlinkSync(victim, join(root, ".git", name));
+    const old = new Date(Date.now() - 60_000);
+    symlinkSync(victim, join(root, ".git", "cavvy-watch-sync-stale"));
+    lutimesSync(join(root, ".git", "cavvy-watch-sync-stale"), old, old);
+    const w = acquireWatch(root);
+    try {
+        await w.ready;
+        expect(w.healthy).toBe(true);
+        for (let i = 0; i < 5; i++) {
+            const gen = w.gen;
+            writeFileSync(join(root, "src", `f${i}.ts`), String(i));
+            await w.settle(0);
+            expect(w.changedSince(gen)).toContain(`src/f${i}.ts`);
+        }
+        expect(w.healthy).toBe(true);
+        expect(readFileSync(victim, "utf8")).toBe("keep me\n");
+        // The stale link is removed (not what it points at); the others are left as they were.
+        expect(readdirSync(join(root, ".git")).sort()).toEqual(planted.sort());
     } finally {
         releaseWatch(w);
     }

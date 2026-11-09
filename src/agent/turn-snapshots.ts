@@ -1,12 +1,13 @@
 // Raw working-tree snapshots, independent of edit tools and backend history.
 // Version 2 journal (reads version 1 too): one complete turn record per line, later records replace
-// earlier ones with the same checkpoint id. All objects belong to this session;
-// no alternates, repository writes, filters, hooks, or network access are used.
+// earlier ones with the same checkpoint id. A turn's objects belong to this session: what was read from the
+// repository's (as an alternate) is copied in when the turn ends. The only repository writes are the folder watch's
+// short-lived sync markers in .git (stat-worker.ts); no filters, hooks, or network access are used.
 // Git's loose object format is zlib(header + bytes); hashing/compressing in
 // process avoids a subprocess per file and preserves the bytes on disk.
 
-import { appendFileSync, chmodSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync, type Stats } from "fs";
-import { chmod, copyFile, lstat, mkdir, open, readdir, readFile, readlink, rename, rm, writeFile } from "fs/promises";
+import { appendFileSync, chmodSync, constants, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync, type Stats } from "fs";
+import { chmod, lstat, mkdir, open, readdir, readFile, readlink, rename, rm, writeFile } from "fs/promises";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "path";
 import { deflateSync, inflateSync } from "zlib";
 import { randomBytes } from "crypto";
@@ -77,6 +78,8 @@ export const MAX_SNAPSHOT_STORE_BYTES = 256 * 1024 * 1024;
 const PACK_KEEP_FROM = 64;
 /** How long a turn's end capture may take (a start has 2 s: the model waits on it). */
 const END_BUDGET_MS = 10_000;
+/** How long closing a session waits for the captures already asked for (a turn's end goes on after the turn). */
+const STOP_WAIT_MS = 5000;
 /**
  * How long a whole capture may go on after the turn it was taken for stopped waiting (capture). Long: with many
  * sessions on a busy machine, each one's first waits its turn behind the others' on the stat worker, and one that gave
@@ -212,11 +215,15 @@ function eventWait(ending: boolean): number {
     return ending ? 100 : 60;
 }
 
+/** Opens Git's index without following a link, or waiting on a pipe: one that isn't a file is no index. */
+const INDEX_OPEN = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+
 /** How many entries Git's index file says it has (0 when it can't be read). */
 async function indexEntries(path: string): Promise<number> {
     try {
-        const f = await open(path, "r");
+        const f = await open(path, INDEX_OPEN);
         try {
+            if (!(await f.stat()).isFile()) return 0;
             const head = Buffer.alloc(12);
             const { bytesRead } = await f.read(head, 0, 12, 0);
             return bytesRead === 12 ? head.readUInt32BE(8) : 0;
@@ -498,29 +505,32 @@ function ignoreKeyOf(root: string, indexPath: string): string {
     return files.map((f) => `${f}:${stampAt(f)}`).join("\0");
 }
 
-/** The common Git dir of the repository whose index is at `index` (its own Git dir, or the one a worktree's names). */
+/**
+ * The common Git dir of the repository whose index is at `index` (its own Git dir, or the one a worktree's names).
+ * Its commondir file is read without waiting or following a link: a pipe there would stop the server.
+ */
 function commonDirOf(index: string): string {
     const dir = dirname(index);
-    try {
-        return resolve(dir, readFileSync(join(dir, "commondir"), "utf-8").trim());
-    } catch {
-        return dir;
-    }
+    const named = readRegularSync(join(dir, "commondir"), 64 * 1024)?.buf;
+    return named ? resolve(dir, named.toString("utf-8").trim()) : dir;
 }
 
 /** The repository's objects, as git reads them (its common dir's). */
 const objectsOf = (index: string) => join(commonDirOf(index), "objects");
 
+/**
+ * Folders as GIT_ALTERNATE_OBJECT_DIRECTORIES lists them: git splits the list at each `delimiter` except within one
+ * in double quotes, where `\` escapes as in C.
+ */
+function alternates(dirs: string[]): string {
+    const quote = (d: string) => `"${d.replace(/[\\"\x00-\x1f\x7f]/g, (c) => (c === "\\" || c === '"' ? `\\${c}` : `\\${c.charCodeAt(0).toString(8).padStart(3, "0")}`))}"`;
+    return dirs.map((d) => (/[":;\\\x00-\x1f\x7f]/.test(d) ? quote(d) : d)).join(delimiter);
+}
+
 /** The repository's own attributes file (info/attributes in its common Git dir, found from where its index is), stamped. */
 function infoAttributes(index: string | undefined): string {
     if (!index) return "-";
-    let common = dirname(index);
-    try {
-        common = resolve(common, readFileSync(join(common, "commondir"), "utf-8").trim());
-    } catch {
-        // The main worktree's: its Git dir is the common one.
-    }
-    return `info/attributes:${stampAt(join(common, "info", "attributes"))}`;
+    return `info/attributes:${stampAt(join(commonDirOf(index), "info", "attributes"))}`;
 }
 
 const sameList = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
@@ -594,6 +604,8 @@ export class TurnSnapshots {
     private reader?: SessionReader;
     /** Captures taken from what `git status` said differs (captureFromStatus): for tests. */
     statusCount = 0;
+    /** Captures that looked at the folder, rather than taking the last one again (unchanged): for tests. */
+    lookedCount = 0;
     /**
      * The last capture from Git's index, whole or from what changed (captureNarrowed): the watch's count when it began,
      * the index it rested on, what differed from it, and this session's copy of the index as it left it.
@@ -637,7 +649,7 @@ export class TurnSnapshots {
     private readonly storage: string;
     private readonly journal: string;
 
-    constructor(readonly dir: string, readonly cwd: string, private options: { budgetMs?: number; maxStoreBytes?: number; /** NARROW_FROM_MS, for tests. */ narrowFromMs?: number; /** How long a turn waits for a capture, which goes on past it (capture): for tests. */ turnBudgetMs?: number; /** STATUS_FROM_ENTRIES, for tests. */ statusFromEntries?: number } = {}) {
+    constructor(readonly dir: string, readonly cwd: string, private options: { budgetMs?: number; maxStoreBytes?: number; /** NARROW_FROM_MS, for tests. */ narrowFromMs?: number; /** How long a turn waits for a capture, which goes on past it (capture): for tests. */ turnBudgetMs?: number; /** STATUS_FROM_ENTRIES, for tests. */ statusFromEntries?: number; /** STOP_WAIT_MS, for tests. */ stopWaitMs?: number } = {}) {
         this.storage = join(dir, "turn-snapshots");
         this.journal = join(dir, "turn-snapshots.jsonl");
         let lines: string;
@@ -815,8 +827,12 @@ export class TurnSnapshots {
         }).then(() => finished);
     }
 
-    /** Retire before releasing the session lock: no late end, or index writes alongside a reopened session. */
+    /**
+     * Retire before releasing the session lock: no late end, or index writes alongside a reopened session. What's been
+     * asked for already (the last turn's end) is waited for first, up to STOP_WAIT_MS; past that, it's dropped.
+     */
     async stop(): Promise<void> {
+        if (!this.stopped) await settlesBy(this.settled(), Date.now() + (this.options.stopWaitMs ?? STOP_WAIT_MS));
         this.stopped = true;
         this.active = undefined;
         this.stopWarming?.();
@@ -941,19 +957,20 @@ export class TurnSnapshots {
         try {
             for (const batch of batches) {
                 // Trees read on the way to what changed are known already; the rest from this session's reader.
-                const found = new Map<string, { type: string; buf: Buffer }>();
+                const found = new Map<string, { type: string; buf?: Buffer }>();
                 const ask: string[] = [];
                 for (const oid of batch) {
                     const tree = treeBodies.get(oid);
                     if (tree) found.set(oid, { type: "tree", buf: tree });
                     else ask.push(oid);
                 }
-                if (ask.length) for (const [oid, o] of await this.withReader(root, deadline, (r) => r.readAll(ask))) found.set(oid, o);
+                // A blob bigger than a file is read to comes without its bytes, and is left out (as above).
+                if (ask.length) for (const [oid, o] of await this.withReader(root, deadline, (r) => r.readAll(ask, MAX_SNAPSHOT_BYTES))) found.set(oid, o);
                 for (const oid of batch) {
                     const o = found.get(oid), type = o?.type;
+                    if (type === "blob" && !o!.buf) continue;
                     // Its bytes, whatever the repository holds under that name.
-                    if (!o || (type !== "blob" && type !== "tree") || objectId(type, o.buf, this.algo) !== oid) { missing++; continue; }
-                    if (type === "blob" && o.buf.length > MAX_SNAPSHOT_BYTES) continue;
+                    if (!o?.buf || (type !== "blob" && type !== "tree") || objectId(type, o.buf, this.algo) !== oid) { missing++; continue; }
                     await this.store(o.buf, type, oid);
                 }
             }
@@ -1287,7 +1304,9 @@ export class TurnSnapshots {
             const dotGit = lstatSync(join(root, ".git"));
             if (dotGit.isDirectory()) index = join(root, ".git", "index");
             else if (dotGit.isFile()) {
-                const named = /^gitdir: (.+)\n?$/.exec(readFileSync(join(root, ".git"), "utf-8"))?.[1];
+                // Not waiting on a pipe put there since (this runs on the server's only thread for JavaScript).
+                const file = readRegularSync(join(root, ".git"), 64 * 1024)?.buf;
+                const named = file && /^gitdir: (.+)\n?$/.exec(file.toString("utf-8"))?.[1];
                 if (named) index = join(resolve(root, named), "index");
             }
         } catch {
@@ -1407,7 +1426,15 @@ export class TurnSnapshots {
         if (!st?.isFile()) return undefined;
         const stamp = `${path}\0${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}`;
         if (this.index?.stamp === stamp) return this.index.parsed;
-        const buf = await readFile(path).catch(() => undefined);
+        let buf: Buffer | undefined;
+        const f = await open(path, INDEX_OPEN).catch(() => undefined);
+        try {
+            if (f && (await f.stat()).isFile()) buf = await f.readFile();
+        } catch {
+            buf = undefined;
+        } finally {
+            await f?.close().catch(() => {});
+        }
         const parsed = buf && await parseIndex(buf, this.algo === "sha1" ? 20 : 32, st.mtimeNs);
         this.index = parsed ? { stamp, parsed } : undefined;
         return parsed;
@@ -1590,13 +1617,40 @@ export class TurnSnapshots {
      * and it compares a hundred thousand files in less CPU than a scan here does. False, having kept nothing, where it
      * can't say plainly what's on disk: an entry it reports otherwise (a conflict, a submodule, assume-unchanged,
      * skip-worktree, intent-to-add), no tree worked out for the index, the index written meanwhile, more than
-     * NARROW_MAX_PATHS paths, or attributes that store other bytes than a file's. The whole capture is taken then.
+     * NARROW_MAX_PATHS paths, or attributes that store other bytes than a file's. The whole capture is taken then, as it
+     * is wherever Git's config defines a filter (`git status` would run its program), or the repository's config
+     * includes another file (noFilters).
      */
+    /**
+     * Whether no config defines a filter for `git status` to run. `git status` reads the config again, later: a file
+     * the repository's config includes (`include.path`, `includeIf`) can be rewritten in between, so one included
+     * from the repository's own config, or the command's, counts as a filter; one the user's or the system's
+     * config includes is theirs. Older git, without --show-scope, says nothing plainly: no.
+     */
+    private async noFilters(root: string, deadline: number): Promise<boolean> {
+        const found = await git(root, ["config", "-z", "--show-scope", "--get-regexp", "^(filter\\..*\\.(clean|process)|include\\..*|includeif\\..*)$"], { deadline, privateEnv: { GIT_NO_REPLACE_OBJECTS: "1" } });
+        if (found.cut) return false;
+        if (found.code === 1) return true;
+        if (found.code) return false;
+        // scope NUL key LF value NUL, for each.
+        const fields = found.out.toString("utf-8").split("\0");
+        for (let i = 0; i + 1 < fields.length; i += 2) {
+            const scope = fields[i]!, key = fields[i + 1]!.split("\n", 1)[0]!.toLowerCase();
+            if (key.startsWith("filter.")) return false;
+            if (scope !== "global" && scope !== "system") return false;
+        }
+        return true;
+    }
+
     private async captureFromStatus(result: TurnCapture, read: KnownFile[], indexPath: string, deadline: number, inTime: () => void, ending: boolean): Promise<boolean> {
         const w = this.watch, root = this.root!;
         if (!w?.healthy || !msTimesExact(indexPath)) return false;
         // A small repository's whole capture is quicker here than starting git for it.
         if ((await indexEntries(indexPath)) < (this.options.statusFromEntries ?? STATUS_FROM_ENTRIES)) return false;
+        // Any config's, the user's too: git-lfs's, for one, runs what the repository's config says. Exit 1: none.
+        // GIT_CONFIG would point `git config` alone at another file.
+        if (gitEnvironment().GIT_CONFIG !== undefined) return false;
+        if (!(await this.noFilters(root, deadline))) return false;
         const before = lstatSync(indexPath, { throwIfNoEntry: false });
         if (!before) return false;
         const started = Date.now();
@@ -1874,7 +1928,14 @@ export class TurnSnapshots {
         inTime();
         const index = join(this.storage, "index");
         if (fresh) {
-            await copyFile(indexPath, index);
+            // Opened as the scan opened it: a pipe put there since is no index (a copy would wait on it for good).
+            const f = await open(indexPath, INDEX_OPEN);
+            try {
+                if (!(await f.stat()).isFile()) throw new Error("Could not read Git's index.");
+                await writeFile(index, await f.readFile(), { mode: 0o600 });
+            } finally {
+                await f.close().catch(() => {});
+            }
             await chmod(index, 0o600);
             // Whatever this session's own index held is gone: the whole capture starts afresh if it's taken next.
             this.indexEntries = new Map();
@@ -1885,7 +1946,7 @@ export class TurnSnapshots {
         const made = join(this.storage, `trees-${randomBytes(6).toString("hex")}`);
         await mkdir(made, { mode: 0o700 });
         try {
-            const env = { GIT_NO_REPLACE_OBJECTS: "1", GIT_INDEX_FILE: index, GIT_OBJECT_DIRECTORY: made, GIT_ALTERNATE_OBJECT_DIRECTORIES: [join(this.storage, "objects"), objectsOf(indexPath)].join(delimiter) };
+            const env = { GIT_NO_REPLACE_OBJECTS: "1", GIT_INDEX_FILE: index, GIT_OBJECT_DIRECTORY: made, GIT_ALTERNATE_OBJECT_DIRECTORIES: alternates([join(this.storage, "objects"), objectsOf(indexPath)]) };
             const config = ["-c", "core.hooksPath=/dev/null", "-c", "core.splitIndex=false", "-c", "core.sharedRepository=0600", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false"];
             if (lines.length) {
                 const update = await git(root, [...config, "update-index", "-z", "--index-info"], { input: lines.join(""), privateEnv: env, deadline });
@@ -1974,10 +2035,16 @@ export class TurnSnapshots {
             if (name === "core.attributesfile" && value) files.push(value.startsWith("~/") ? join(home, value.slice(2)) : value);
             if (name === "core.excludesfile" && value) excludes = value.startsWith("~/") ? join(home, value.slice(2)) : value;
         }
+        const own = new Set(files.slice(0, attributes.length + 1));
         for (const f of files) {
             if (converts) break;
-            const text = await readFile(f, "utf-8").catch(() => "");
-            for (const line of text.split("\n")) {
+            // The folder's and its Git dir's not through a link (Git doesn't follow a link to a .gitattributes either);
+            // the user's as Git finds them. One that's there and can't be read as a file (a pipe), or that's too big to
+            // read: no telling, so it may convert.
+            const r = await readRegular(f, MAX_SNAPSHOT_BYTES, !own.has(f));
+            if (r === null) continue;
+            if (!r?.buf) { converts = true; break; }
+            for (const line of r.buf.toString("utf-8").split("\n")) {
                 const t = line.trim();
                 if (!t || t.startsWith("#")) continue;
                 // An attribute that converts, set (not unset with -, or ! for unspecified); or a macro defined with one.
@@ -2016,6 +2083,7 @@ export class TurnSnapshots {
     private async captureBy(ending: boolean, quiet: boolean, deadline: number): Promise<TurnCapture | undefined> {
         const same = await this.unchanged(quiet, ending);
         if (same) return same;
+        this.lookedCount++;
         let genAtStart: number | undefined;
         const started = Date.now();
         const result: TurnCapture = { incomplete: false, notes: [], skipped: pathMap(), durationMs: 0 };
@@ -2399,7 +2467,7 @@ export class TurnSnapshots {
     }
 
     /**
-     * A tree's bytes: known (treeBodies), or read by this session's `git cat-file --batch`, kept between captures (a
+     * A tree's bytes: known (treeBodies), or read by this session's `git cat-file` (ObjectReader), kept between captures (a
      * turn's end reads the trees of the folders it changed, most of them new to it) and let go of after a minute idle.
      */
     private async readTree(root: string, oid: string, deadline: number): Promise<Buffer> {
@@ -2501,7 +2569,7 @@ export class TurnSnapshots {
     /** This session's objects, with the repository's (when its index is known) to read what a capture took from it. */
     private readEnv(): Record<string, string> {
         const index = locations.get(this.cwd)?.index;
-        return index ? { ...this.env(), GIT_ALTERNATE_OBJECT_DIRECTORIES: objectsOf(index) } : this.env();
+        return index ? { ...this.env(), GIT_ALTERNATE_OBJECT_DIRECTORIES: alternates([objectsOf(index)]) } : this.env();
     }
 
     private async compare(turn: SnapshotTurn, deadline: number, trees?: Set<string>): Promise<Change[]> {
