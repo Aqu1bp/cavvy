@@ -60,6 +60,11 @@ beforeEach(() => {
 
 const logLines = (): any[] => (existsSync(LOG) ? readFileSync(LOG, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
 const received = () => logLines().flatMap((l) => (l.received ? [l.received] : []));
+/** Whether the fake Codex has read a turn/interrupt: Cavvy sends it without waiting, so it can land just after the turn. */
+const interrupted = async (ms = 5000) => {
+    for (const end = Date.now() + ms; !received().some((m) => m.method === "turn/interrupt") && Date.now() < end; ) await Bun.sleep(10);
+    return received().some((m) => m.method === "turn/interrupt");
+};
 const jsonl = (file: string): any[] => (existsSync(file) ? readFileSync(file, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
 const record = (file: string, then = "") => `cat >> '${file}'; echo >> '${file}'${then}`;
 const say = (o: unknown) => `echo '${JSON.stringify(o)}'`;
@@ -403,7 +408,7 @@ describe("Codex's items run Cavvy's hooks", () => {
         const a = await makeAgent("codex", { hooks: { PreToolUse: [{ command: stop }] } }, "bypassPermissions");
         await a.run("make x");
         expect(ranLine()).toMatchObject({ ran: false });
-        expect(received().some((m) => m.method === "turn/interrupt")).toBe(true);
+        expect(await interrupted()).toBe(true);
         expect(a.events.some((e) => e.type === "notice" && e.message.includes("enough for today"))).toBe(true);
     });
 
@@ -411,7 +416,7 @@ describe("Codex's items run Cavvy's hooks", () => {
         process.env.FAKE_HOOK_SERVER_DOWN = "1";
         const a = await makeAgent("codex", { hooks: { PreToolUse: [{ command: "true" }] } }, "bypassPermissions");
         await a.run("make x");
-        expect(received().some((m) => m.method === "turn/interrupt")).toBe(true);
+        expect(await interrupted()).toBe(true);
         expect(a.events.some((e) => e.type === "notice" && e.level === "error" && e.message.includes("couldn't run"))).toBe(true);
     });
 
