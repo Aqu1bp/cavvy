@@ -28,6 +28,12 @@ export const [hostedTargets, setHostedTargets] = createSignal<Record<string, str
 export interface Shown {
     targetId: string;
     box: Box;
+    /**
+     * The pane's page keeps this size, not the box's, while the panels slide: it moves with the box, cut to it where
+     * the box is smaller, and takes the box's size once the slide is over. A real page resized on every frame of a
+     * slide made the window wait for the page each time, so a busy page made every slide stutter.
+     */
+    page?: { width: number; height: number };
     by: "pane" | "float";
     fit?: boolean;
     /**

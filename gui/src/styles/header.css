@@ -19,7 +19,10 @@
     min-width: 0;
     user-select: none;
     -webkit-user-select: none;
-    transition: padding var(--dur) var(--ease);
+    /* With the window's tracks (shell.css): the bar's top padding grows as the sheet's inset closes, so what's on the
+       top line stays on it all the way. Its start changes at once: what's in the bar is moved from where it was
+       (lib/bar-glide.ts). */
+    transition: padding-top var(--dur-panel) var(--ease);
 }
 
 .header::before {

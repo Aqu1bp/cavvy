@@ -61,7 +61,7 @@ test("Home drawn before the window is shown is marked to skip its entrance; one 
     let shown = false;
     const stub = () => null;
     const Home = componentCode("Home", {
-        node, createSignal: (v: unknown) => [() => v, stub], createResource: () => [() => ({ needsTrust: [], git: false }), { refetch: stub }], For: stub, Show: stub, onCleanup: stub, onMount: stub,
+        node, createSignal: (v: unknown) => [() => v, stub], createResource: () => [() => ({ needsTrust: [], git: false }), { refetch: stub }], For: stub, Show: stub, createEffect: stub, onCleanup: stub, onMount: stub,
         React: { Fragment: "Fragment" },
         ChevronDown: stub, Folder: stub, FolderGit2: stub, FolderOpen: stub, KeyRound: stub, Plug: stub, ShieldAlert: stub,
         app: { conn: "open", homeCwd: "/project", providers: [], projects: [], models: [] }, refreshProjects: stub, reportError: stub, rpc: {}, chooseProject: stub, connectCli: stub, openProject: stub, trustAndContinue: stub,
@@ -71,7 +71,7 @@ test("Home drawn before the window is shown is marked to skip its entrance; one 
     }) as () => { tag: string; props: { class: string; classList?: Record<string, boolean> } };
     const atLaunch = Home();
     expect(atLaunch.props.class).toBe("home");
-    expect(atLaunch.props.classList).toEqual({ instant: true, glide: false });
+    expect(atLaunch.props.classList).toEqual({ instant: true, glide: false, placed: false });
     shown = true;
-    expect(Home().props.classList).toEqual({ instant: false, glide: false });
+    expect(Home().props.classList).toEqual({ instant: false, glide: false, placed: false });
 });

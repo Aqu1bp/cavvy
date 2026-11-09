@@ -3,7 +3,7 @@
 // the right one glass capsule of tools: the changes, the project's scripts,
 // the terminal, the side panel and the session's menu.
 
-import { createEffect, createMemo, createResource, createSignal, For, on, Show, type JSX } from "solid-js";
+import { createEffect, createMemo, createResource, createSignal, For, on, onCleanup, Show, type JSX } from "solid-js";
 import { Archive, ChevronDown, Copy, Ellipsis, FileDiff, FolderGit2, FolderOpen, GitBranch, Hand, History, PanelBottom, PanelLeft, PanelRight, Pencil, Search, Share, ShieldAlert, Shrink, SquareArrowOutUpRight, SquarePen, SquareTerminal, Trash2 } from "lucide-solid";
 import type { SessionState, SessionSummary, WorkingIn } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
@@ -11,8 +11,9 @@ import { app, reportError, rpc, toast } from "../state/app";
 import { archive, deleteSession, editorName, exportSession, newSession, openInEditor, openReview, openWaiting, openWorktreeReview, refreshEditors, rename, togglePanel, toggleSidebar } from "../state/actions";
 import { sessionReadReady, useGitChanges } from "../state/changes";
 import { prefs } from "../state/prefs";
-import { agentFocus, terminalOpen, setTerminalOpen, setRewindOpen, openFind, review, setReview, setSettingsTab, settingsTab, shellLayout } from "../state/ui";
+import { agentFocus, beforeRailChange, panelHold, railDrag, terminalOpen, setTerminalOpen, setRewindOpen, openFind, review, setReview, setSettingsTab, settingsTab, shellLayout } from "../state/ui";
 import { copyText, isDesktop, os } from "../lib/platform";
+import { barPlaces, glideBar, type BarPlace } from "../lib/bar-glide";
 import { plural, tildify } from "../lib/format";
 import { asking, inFront, needsLine, needsPlace, needsYou } from "../lib/rail";
 import { Menu } from "./ui/Menu";
@@ -93,8 +94,37 @@ export function NeedsYou(p: { waiting: SessionSummary[] }) {
 export function TitleBar(p: { children: JSX.Element; end?: JSX.Element }) {
     // Shown by the rail when it's there (by Settings over both); the session in front of you shows its own request.
     const waiting = createMemo(() => (needsPlace({ railShown: shellLayout().railShown, settings: Boolean(settingsTab()) }) === "title" ? needsYou([...app.sessions, ...app.archived], inFront({ activeId: app.activeId, settings: false, agentFocus: agentFocus() })) : []));
+    // The rail showing or hiding changes what's before the title at once, while the bar slides with the sheet: the
+    // title and what follows it are drawn from where they were and moved with the slide (lib/bar-glide.ts).
+    let bar: HTMLElement | undefined;
+    let was: { parts: Map<Element, BarPlace>; left: number } | undefined;
+    let forgetting = 0;
+    let glides: Animation[] = [];
+    const parts = () => [...bar!.querySelectorAll(":scope > .bar-rail, :scope > .crumbs > *")];
+    onCleanup(beforeRailChange(() => {
+        // Not one that's covered or off screen: nothing of it is seen moving.
+        if (!bar?.getClientRects().length) return;
+        was = { parts: barPlaces(bar, parts()), left: bar.getBoundingClientRect().left };
+        // No slide follows (animations off): the places read aren't kept for some later one.
+        cancelAnimationFrame(forgetting);
+        forgetting = requestAnimationFrame(() => (was = undefined));
+    }));
+    createEffect(on(() => panelHold()?.slide, (slide) => {
+        const before = was;
+        was = undefined;
+        if (!slide || !before || !bar) return;
+        for (const g of glides) g.cancel();
+        // The bar starts where the sheet does: after a docked rail, or at the window's edge.
+        const l = shellLayout();
+        const left = l.railMode === "dock" && l.railShown ? railDrag() ?? prefs.sidebarWidth : 0;
+        glides = glideBar(bar, parts(), before.parts, slide, left - before.left);
+    }));
+    onCleanup(() => {
+        cancelAnimationFrame(forgetting);
+        for (const g of glides) g.cancel();
+    });
     return (
-        <header class={`header ${isDesktop && os === "macos" ? "traffic" : ""} ${prefs.sidebar ? "" : "rail-off"}`}>
+        <header ref={bar} class={`header ${isDesktop && os === "macos" ? "traffic" : ""} ${prefs.sidebar ? "" : "rail-off"}`}>
             <div class="bar-rail">
                 <button class={`hb ${waiting().length ? "has-wait" : ""}`} title={withShortcut(waiting().length ? "Show sidebar: a session needs you" : "Show sidebar", "app:toggleSidebar")} aria-label={waiting().length ? "Show sidebar, a session needs you" : "Show sidebar"} onClick={toggleSidebar}>
                     <PanelLeft size={16} />

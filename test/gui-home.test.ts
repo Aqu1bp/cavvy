@@ -195,7 +195,7 @@ function home(o: { cwd?: string; needsTrust?: string[]; models?: unknown[]; prov
     const tabs: string[] = [];
     const cliProps: Record<string, any>[] = [];
     const Home = componentCode("Home", {
-        node, Show, For, createSignal, onCleanup: stub, onMount: stub, React: { Fragment: "Fragment" },
+        node, Show, For, createSignal, createEffect: stub, onCleanup: stub, onMount: stub, React: { Fragment: "Fragment" },
         createResource: () => [() => ({ needsTrust: o.needsTrust ?? [], git: true, branch: "main" }), { refetch: stub }],
         ChevronDown: "ChevronDown", Folder: "Folder", FolderGit2: "FolderGit2", FolderOpen: "FolderOpen", KeyRound: "KeyRound", Plug: "Plug", ShieldAlert: "ShieldAlert",
         app: { conn: "open", homeCwd: o.cwd === undefined ? "/work/cavvy" : o.cwd || undefined, providers: o.providers ?? [], projects: [], models: o.models ?? [{ models: [{}] }], modelsLoaded: true, modelsLoading: false },

@@ -3,7 +3,7 @@
 // sessions from this project's terminal to carry on here. The whole group sits a
 // little above the middle of the column (home.css).
 
-import { createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { ChevronDown, Folder, FolderGit2, FolderOpen, KeyRound, Plug, ShieldAlert } from "lucide-solid";
 import { app, refreshProjects, reportError, rpc } from "../state/app";
 import { chooseProject, connectCli, openProject, trustAndContinue } from "../state/actions";
@@ -95,6 +95,16 @@ export function Home() {
     };
     onCleanup(() => clearTimeout(glideTimer));
 
+    // The group's place follows the column's height, easing with a panel's slide (home.css --home-h). Not before the
+    // height is known and drawn once: as the app starts it's the window's, then the column's, and the group would
+    // drift those few pixels while it came in.
+    const [placed, setPlaced] = createSignal(false);
+    createEffect(() => {
+        if (placed() || !columnHeight()) return;
+        let frame = requestAnimationFrame(() => (frame = requestAnimationFrame(() => setPlaced(true))));
+        onCleanup(() => cancelAnimationFrame(frame));
+    });
+
     // Nothing passes behind the glass here until the column scrolls: the sheet shows through, as at a reply's end (base.css).
     onMount(() => setFollowing(true));
     onCleanup(() => setFollowing(false));
@@ -156,7 +166,7 @@ export function Home() {
     );
 
     return (
-        <div class="home" classList={{ instant, glide: glide() }} onScroll={(e) => setFollowing(e.currentTarget.scrollTop <= 0)}>
+        <div class="home" classList={{ instant, glide: glide(), placed: placed() }} onScroll={(e) => setFollowing(e.currentTarget.scrollTop <= 0)}>
             <div
                 class="home-col"
                 style={{ "--column-h": columnHeight(), "--cli-rows": app.homeCwd ? cliRows() : 0, "--cli-on": app.homeCwd && cliOn() ? 1 : 0, "--home-cards": cards() }}

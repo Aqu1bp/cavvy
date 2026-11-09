@@ -132,6 +132,17 @@ export const [shellLayout, setShellLayout] = createSignal<WindowLayout>({
 /** The sizes held while the panels slide open or shut (lib/layout.ts heldSizes), and the slide; undefined at rest. */
 export const [panelHold, setPanelHold] = createSignal<Held & { slide: Animation }>();
 
+const railChanging = new Set<() => void>();
+/** `fn` runs just before the rail is shown or hidden: what's placed by it (the title bar) reads where it is. */
+export function beforeRailChange(fn: () => void): () => void {
+    railChanging.add(fn);
+    return () => void railChanging.delete(fn);
+}
+/** The rail is about to be shown or hidden (state/actions.ts toggleSidebar). */
+export function railChange() {
+    for (const fn of railChanging) fn();
+}
+
 /**
  * The conversation column's height as --column-h, for the few boxes sized by it (what `cqh` measured when
  * the column was a query container: shell.css). Set on each of them, not inherited from the column.

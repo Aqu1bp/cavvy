@@ -47,7 +47,21 @@ const subject = (selector: string) => [...(selector.split(/\s*[\s>+~]\s*/).pop()
 
 test("these are the sizes registered as not inherited", () => {
     // A new one is audited here too; add it once its readers set it themselves.
-    expect(new Set(sizes)).toEqual(new Set(["--rail-w", "--insp-w", "--insp-col", "--insp-bottom", "--term-h", "--dock-h"]));
+    expect(new Set(sizes)).toEqual(new Set(["--rail-w", "--insp-w", "--insp-col", "--insp-bottom", "--term-h", "--dock-h", "--home-h"]));
+});
+
+test("--home-h is set by the one rule that reads it, from the column's height set on that box", () => {
+    // Not set from a component like the others: it's --column-h (which Home.tsx sets on .home-col) made a length
+    // that can ease with a panel's slide (home.css).
+    const home = parseRules(read("styles/home.css"));
+    const setting = home.filter((r) => r.decls.has("--home-h") && !r.selectors.some((sel) => sel.startsWith("@")));
+    expect(setting.map((r) => r.selectors.join())).toEqual([".home-col"]);
+    expect(setting[0]!.decls.get("--home-h")).toBe("var(--column-h, 100vh)");
+    // Eased with the panels' slide, once Home has been drawn at the column's height (not as the app starts).
+    expect(home.find((r) => r.selectors.includes(".home.placed .home-col"))?.decls.get("transition")).toBe("--home-h var(--dur-panel) var(--ease)");
+    expect(read("components/Home.tsx")).toContain("classList={{ instant, glide: glide(), placed: placed() }}");
+    expect(readers("--home-h").map((r) => r.selector)).toEqual([".home-col"]);
+    expect(read("components/Home.tsx")).toMatch(/class="home-col"[\s\S]{0,80}style=\{\{ "--column-h": columnHeight\(\)/);
 });
 
 for (const name of ["--rail-w", "--insp-w", "--insp-col", "--insp-bottom", "--term-h", "--dock-h"]) {
