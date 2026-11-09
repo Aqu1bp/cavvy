@@ -63,24 +63,10 @@ export function shortModelRef(ref?: string): string | undefined {
     return ref?.slice(ref.indexOf(":") + 1);
 }
 
-/** Cavvy's own tools as Claude Code and Codex call them, through its MCP server (mcp__cavvy__browser_eval): by their own names. */
-const SERVED: Record<string, string> = {
-    browser_navigate: "BrowserNavigate",
-    browser_snapshot: "BrowserSnapshot",
-    browser_act: "BrowserAct",
-    browser_screenshot: "BrowserScreenshot",
-    browser_eval: "BrowserEval",
-    browser_logs: "BrowserLogs",
-    simulator_control: "SimulatorControl",
-    simulator_snapshot: "SimulatorSnapshot",
-    simulator_act: "SimulatorAct",
-    simulator_screenshot: "SimulatorScreenshot",
-};
-
-/** Which tool a call is of: one of Cavvy's own however it was called (BrowserEval for mcp__cavvy__browser_eval), else its name. */
+/** Which tool a call is of: one of Cavvy's own however it was called (BrowserEval for mcp__cavvy__browser_eval, as its server names it), else its name. */
 export function toolKind(name: string): string {
     const m = /^mcp__cavvy__(\w+)$/.exec(name);
-    return (m && SERVED[m[1]!]) ?? name;
+    return m ? m[1]!.replace(/(^|_)(\w)/g, (_, __, c: string) => c.toUpperCase()) : name;
 }
 
 type Words = { verb: string; running: string; arg?: string };
@@ -138,16 +124,19 @@ function ownWords(t: ToolBlock): Words | undefined {
         case "SimulatorScreenshot":
             return { verb: "Screenshot the simulator", running: "Taking a screenshot" };
         case "SimulatorControl": {
-            const a = s("action");
+            const a = s("action") ?? "";
             const app = s("bundleId") ?? s("app")?.split("/").pop();
-            if (a === "boot") return { verb: "Start the simulator", running: "Starting the simulator", arg: s("device") };
-            if (a === "shutdown") return { verb: "Shut down the simulator", running: "Shutting down the simulator" };
-            if (a === "install") return { verb: "Install", running: "Installing", arg: app };
-            if (a === "launch") return { verb: "Open", running: "Opening", arg: app };
-            if (a === "terminate") return { verb: "Quit", running: "Quitting", arg: app };
-            if (a === "open_url") return { verb: "Open", running: "Opening", arg: shortUrl(i.url) };
-            if (a === "list") return { verb: "List simulators", running: "Listing simulators" };
-            return { verb: "Use the simulator", running: "Using the simulator" };
+            const words: Record<string, [string, string, string?]> = {
+                boot: ["Start the simulator", "Starting the simulator", s("device")],
+                shutdown: ["Shut down the simulator", "Shutting down the simulator"],
+                install: ["Install", "Installing", app],
+                launch: ["Open", "Opening", app],
+                terminate: ["Quit", "Quitting", app],
+                open_url: ["Open", "Opening", shortUrl(i.url)],
+                list: ["List simulators", "Listing simulators"],
+            };
+            const [verb, running, arg] = words[a] ?? ["Use the simulator", "Using the simulator"];
+            return { verb, running, arg };
         }
         case "BrowserAct":
         case "SimulatorAct": {
