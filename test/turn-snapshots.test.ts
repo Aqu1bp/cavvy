@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "fs";
+import { chmodSync, closeSync, constants, existsSync, openSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "fs";
+import { readFile } from "fs/promises";
 import { dirname, join } from "path";
 import { isolate } from "./helpers/isolate";
 
@@ -486,6 +487,28 @@ describe("per-turn snapshots", () => {
         expect([result.incomplete, result.files.map((f) => [f.path, f.added, f.removed])]).toEqual([false, [["f1.txt", 1, 1]]]);
         await snapshots.stop();
     });
+
+    test("a pipe where Git's index should be is no index: turns end, and other reads aren't held up", async () => {
+        const { cwd, dir } = setup({ "a.txt": "a\n" });
+        const index = join(cwd, ".git/index");
+        rmSync(index);
+        expect(Bun.spawnSync(["mkfifo", index]).exitCode).toBe(0);
+        const within = (work: Promise<unknown>, ms: number) => Promise.race([work.then(() => "done"), Bun.sleep(ms).then(() => "stuck")]);
+        // More sessions than the threads that read files for the whole server: each capture opens it.
+        const sessions = [1, 2, 3, 4, 5, 6].map((id) => new TurnSnapshots(join(dir, String(id)), cwd, { statusFromEntries: 0 }));
+        try {
+            expect(await within(Promise.all(sessions.map((s, i) => s.begin(i + 1, "Edit"))), 5000)).toBe("done");
+            expect(await within(readFile(join(cwd, "a.txt")), 2000)).toBe("done");
+            write(cwd, "a.txt", "a again\n");
+            expect(await within(Promise.all(sessions.map((s) => s.end())), 5000)).toBe("done");
+            expect(sessions.every((s) => s.list()[0]?.end)).toBe(true);
+            // Git itself waits on the pipe until its time is up.
+            expect(await within(Promise.all(sessions.map((s) => s.stop())), 30_000)).toBe("done");
+        } finally {
+            // Lets go of any read still waiting on the pipe.
+            try { closeSync(openSync(index, constants.O_WRONLY | constants.O_NONBLOCK)); } catch {}
+        }
+    }, 60_000);
 
     test("linked worktrees keep both their own and the common repository metadata untouched", async () => {
         const { cwd, dir } = setup({ "a.txt": "before\n" });

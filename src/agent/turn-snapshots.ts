@@ -6,7 +6,7 @@
 // Git's loose object format is zlib(header + bytes); hashing/compressing in
 // process avoids a subprocess per file and preserves the bytes on disk.
 
-import { appendFileSync, chmodSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync, type Stats } from "fs";
+import { appendFileSync, chmodSync, constants, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync, type Stats } from "fs";
 import { chmod, copyFile, lstat, mkdir, open, readdir, readFile, readlink, rename, rm, writeFile } from "fs/promises";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "path";
 import { deflateSync, inflateSync } from "zlib";
@@ -215,11 +215,15 @@ function eventWait(ending: boolean): number {
     return ending ? 100 : 60;
 }
 
+/** Opens Git's index without following a link, or waiting on a pipe: one that isn't a file is no index. */
+const INDEX_OPEN = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+
 /** How many entries Git's index file says it has (0 when it can't be read). */
 async function indexEntries(path: string): Promise<number> {
     try {
-        const f = await open(path, "r");
+        const f = await open(path, INDEX_OPEN);
         try {
+            if (!(await f.stat()).isFile()) return 0;
             const head = Buffer.alloc(12);
             const { bytesRead } = await f.read(head, 0, 12, 0);
             return bytesRead === 12 ? head.readUInt32BE(8) : 0;
@@ -1426,7 +1430,15 @@ export class TurnSnapshots {
         if (!st?.isFile()) return undefined;
         const stamp = `${path}\0${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}`;
         if (this.index?.stamp === stamp) return this.index.parsed;
-        const buf = await readFile(path).catch(() => undefined);
+        let buf: Buffer | undefined;
+        const f = await open(path, INDEX_OPEN).catch(() => undefined);
+        try {
+            if (f && (await f.stat()).isFile()) buf = await f.readFile();
+        } catch {
+            buf = undefined;
+        } finally {
+            await f?.close().catch(() => {});
+        }
         const parsed = buf && await parseIndex(buf, this.algo === "sha1" ? 20 : 32, st.mtimeNs);
         this.index = parsed ? { stamp, parsed } : undefined;
         return parsed;

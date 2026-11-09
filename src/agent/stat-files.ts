@@ -2,7 +2,7 @@
 // thread, which every session and the GUI's socket share, isn't held for it. Where there's no worker (a build that
 // left it out, or CAVVY_STAT_WORKER=0), here, a few milliseconds at a time.
 
-import { lstatSync, type Stats } from "fs";
+import { constants, lstatSync, type Stats } from "fs";
 import { open } from "fs/promises";
 import { loadavg } from "os";
 import { Pace } from "../util/pace";
@@ -163,11 +163,12 @@ export async function statFiles(root: string, trackedId: string, tracked: string
     return statHere(root, tracked, untracked, inTime);
 }
 
-/** Entries Git's index file says it has (0 when it can't be read). */
+/** Entries Git's index file says it has (0 when it can't be read, or isn't a file: a pipe would never answer). */
 async function entriesIn(indexFile: string): Promise<number> {
     try {
-        const f = await open(indexFile, "r");
+        const f = await open(indexFile, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
         try {
+            if (!(await f.stat()).isFile()) return 0;
             const head = Buffer.alloc(12);
             const { bytesRead } = await f.read(head, 0, 12, 0);
             return bytesRead === 12 ? head.readUInt32BE(8) : 0;
