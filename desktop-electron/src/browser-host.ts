@@ -14,12 +14,14 @@
 // It goes only to web pages, and closes with its tab. One the agent opens is a tab, which it drives as any other.
 //
 // A tab nobody can see and nobody has used for a while is frozen: its timers, animations and scripts stop (it costs no
-// CPU) and it's told to give back what memory it can. Any command for it, or a pane showing it, wakes it first, so the
-// agent never finds it different. Not one still loading, nor one playing sound.
+// CPU) and it's told to give back what memory it can. One playing sound is only hidden, so it goes on playing without
+// being drawn (tab-rest.ts). Any command for it, or a pane showing it, wakes it first, so the agent never finds it
+// different. Not one still loading.
 
 import { app, session, type BrowserWindow, type BrowserWindowConstructorOptions, type Session, type WebContents } from "electron";
 import { createHash } from "node:crypto";
 import { sendToTab } from "./guest-input";
+import { nextRest } from "./tab-rest";
 
 interface Tab {
     targetId: string;
@@ -45,6 +47,8 @@ interface Tab {
     /** The sessions of its frames from other sites, each with the frame's session it's in (undefined: the page). */
     children: Map<string, string | undefined>;
     frozen: boolean;
+    /** Not drawn (frozen, or playing sound and only hidden): the GUI hides its webview. */
+    hidden: boolean;
     /** Chromium refused to freeze it once: it isn't tried again. */
     unfreezable?: boolean;
 }
@@ -66,8 +70,6 @@ const FREEZE_AFTER_MS = Number(process.env.CAVVY_ELECTRON_FREEZE_MS ?? 30_000);
 /** How often, at most, the server hears that a project's browser is in use here (Cavvy.inUse), so it isn't closed as
  *  idle: well within the ten minutes it waits. */
 const IN_USE_EVERY_MS = 60_000;
-/** An asleep tab's page process using more CPU than this (%, over the last 5s) is put back to sleep. */
-const BUSY_ASLEEP_PERCENT = 1;
 /** How long Chromium takes to take in a webview's visibility changing (a frame or two, with room). */
 const VISIBILITY_MS = 100;
 /** A popup opened this soon after the person used the page is theirs (a window); later, or by the agent, a tab. */
@@ -94,7 +96,7 @@ export class BrowserHost {
     private closing = false;
     /** The tabs a pane or the floating view shows (by the GUI's keys): never frozen. */
     private onScreen = new Set<string>();
-    readonly stats = { frozen: 0, woken: 0, refused: 0, resleeps: 0, hideSent: 0, showSent: 0, lastShown: [] as string[] };
+    readonly stats = { frozen: 0, woken: 0, refused: 0, resleeps: 0, hideSent: 0, showSent: 0, hiddenPlaying: 0, lastShown: [] as string[] };
 
     constructor(private window: () => BrowserWindow | undefined) {
         setInterval(() => this.freezeIdle(), 5000).unref();
@@ -174,11 +176,35 @@ export class BrowserHost {
         // CPU of each page process since the last look (percentCPUUsage is since the previous getAppMetrics).
         const cpu = new Map(app.getAppMetrics().map((m) => [m.pid, m.cpu.percentCPUUsage]));
         for (const tab of this.tabsById.values()) {
-            if (this.onScreen.has(tab.key)) tab.usedAt = now;
-            else if (!tab.frozen && !tab.closed && !tab.unfreezable && now - tab.usedAt >= FREEZE_AFTER_MS && !tab.wc.isLoading() && !tab.wc.isCurrentlyAudible()) void this.freeze(tab);
+            const onScreen = this.onScreen.has(tab.key);
+            if (onScreen) tab.usedAt = now;
+            const live = !tab.closed && !tab.wc.isDestroyed();
+            const step = nextRest(
+                {
+                    rest: tab.frozen ? "frozen" : tab.hidden ? "hidden" : "awake",
+                    closed: !live,
+                    unfreezable: tab.unfreezable === true,
+                    onScreen,
+                    idleMs: now - tab.usedAt,
+                    loading: live && tab.wc.isLoading(),
+                    audible: live && tab.wc.isCurrentlyAudible(),
+                    cpuPercent: live && tab.frozen ? (cpu.get(tab.wc.getOSProcessId()) ?? 0) : 0,
+                },
+                FREEZE_AFTER_MS,
+            );
+            if (step === "freeze") void this.freeze(tab);
+            else if (step === "hide") this.hide(tab);
             // Asleep, but its page is busy again (Chromium drawing it once more): put it back to sleep.
-            else if (tab.frozen && !tab.closed && (cpu.get(tab.wc.getOSProcessId()) ?? 0) > BUSY_ASLEEP_PERCENT) void this.resleep(tab);
+            else if (step === "resleep") void this.resleep(tab);
         }
+    }
+
+    /** Playing sound: hidden, so Chromium stops drawing it, but not frozen, so the sound goes on (tab-rest.ts). */
+    private hide(tab: Tab) {
+        tab.hidden = true;
+        this.toGui({ type: "sleep", key: tab.key, asleep: true });
+        this.stats.hideSent++;
+        this.stats.hiddenPlaying++;
     }
 
     /**
@@ -216,6 +242,7 @@ export class BrowserHost {
      */
     private async freeze(tab: Tab) {
         tab.frozen = true;
+        tab.hidden = true;
         try {
             this.toGui({ type: "sleep", key: tab.key, asleep: true });
             this.stats.hideSent++;
@@ -226,6 +253,7 @@ export class BrowserHost {
             this.stats.frozen++;
         } catch (e) {
             tab.frozen = false;
+            tab.hidden = false;
             tab.unfreezable = true;
             this.toGui({ type: "sleep", key: tab.key, asleep: false });
             this.stats.refused++;
@@ -236,7 +264,15 @@ export class BrowserHost {
     /** Running and drawn again before anything reaches it. */
     private async wake(tab: Tab) {
         tab.usedAt = Date.now();
-        if (!tab.frozen || tab.closed) return;
+        if (tab.closed || !tab.hidden) return;
+        tab.hidden = false;
+        if (!tab.frozen) {
+            // Only hidden (playing sound): drawn again.
+            this.toGui({ type: "sleep", key: tab.key, asleep: false });
+            this.stats.showSent++;
+            await new Promise((r) => setTimeout(r, VISIBILITY_MS));
+            return;
+        }
         tab.frozen = false;
         this.toGui({ type: "sleep", key: tab.key, asleep: false });
         this.stats.showSent++;
@@ -412,7 +448,7 @@ export class BrowserHost {
         if (wc.isLoading()) await new Promise<void>((r) => wc.once("did-stop-loading", () => r()));
         wc.debugger.attach("1.3");
         const { targetInfo } = (await wc.debugger.sendCommand("Target.getTargetInfo")) as { targetInfo: { targetId: string } };
-        const tab: Tab = { targetId: targetInfo.targetId, sid: `desktop-${n}`, key, wc, channel, openerId, agentInputs: 0, closed: false, usedAt: Date.now(), personAt: 0, agentAt: 0, popups: new Set(), children: new Map(), frozen: false };
+        const tab: Tab = { targetId: targetInfo.targetId, sid: `desktop-${n}`, key, wc, channel, openerId, agentInputs: 0, closed: false, usedAt: Date.now(), personAt: 0, agentAt: 0, popups: new Set(), children: new Map(), frozen: false, hidden: false };
         channel.tabs.set(tab.targetId, tab);
         this.tabsById.set(tab.targetId, tab);
         this.tabsBySid.set(tab.sid, tab);
