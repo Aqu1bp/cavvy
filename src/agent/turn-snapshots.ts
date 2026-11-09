@@ -77,6 +77,8 @@ export const MAX_SNAPSHOT_STORE_BYTES = 256 * 1024 * 1024;
 const PACK_KEEP_FROM = 64;
 /** How long a turn's end capture may take (a start has 2 s: the model waits on it). */
 const END_BUDGET_MS = 10_000;
+/** How long closing a session waits for the captures already asked for (a turn's end goes on after the turn). */
+const STOP_WAIT_MS = 5000;
 /**
  * How long a whole capture may go on after the turn it was taken for stopped waiting (capture). Long: with many
  * sessions on a busy machine, each one's first waits its turn behind the others' on the stat worker, and one that gave
@@ -637,7 +639,7 @@ export class TurnSnapshots {
     private readonly storage: string;
     private readonly journal: string;
 
-    constructor(readonly dir: string, readonly cwd: string, private options: { budgetMs?: number; maxStoreBytes?: number; /** NARROW_FROM_MS, for tests. */ narrowFromMs?: number; /** How long a turn waits for a capture, which goes on past it (capture): for tests. */ turnBudgetMs?: number; /** STATUS_FROM_ENTRIES, for tests. */ statusFromEntries?: number } = {}) {
+    constructor(readonly dir: string, readonly cwd: string, private options: { budgetMs?: number; maxStoreBytes?: number; /** NARROW_FROM_MS, for tests. */ narrowFromMs?: number; /** How long a turn waits for a capture, which goes on past it (capture): for tests. */ turnBudgetMs?: number; /** STATUS_FROM_ENTRIES, for tests. */ statusFromEntries?: number; /** STOP_WAIT_MS, for tests. */ stopWaitMs?: number } = {}) {
         this.storage = join(dir, "turn-snapshots");
         this.journal = join(dir, "turn-snapshots.jsonl");
         let lines: string;
@@ -815,8 +817,12 @@ export class TurnSnapshots {
         }).then(() => finished);
     }
 
-    /** Retire before releasing the session lock: no late end, or index writes alongside a reopened session. */
+    /**
+     * Retire before releasing the session lock: no late end, or index writes alongside a reopened session. What's been
+     * asked for already (the last turn's end) is waited for first, up to STOP_WAIT_MS; past that, it's dropped.
+     */
     async stop(): Promise<void> {
+        if (!this.stopped) await settlesBy(this.settled(), Date.now() + (this.options.stopWaitMs ?? STOP_WAIT_MS));
         this.stopped = true;
         this.active = undefined;
         this.stopWarming?.();

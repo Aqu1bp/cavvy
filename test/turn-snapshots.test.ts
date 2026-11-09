@@ -288,8 +288,23 @@ describe("per-turn snapshots", () => {
         expect(changes.files[0]?.hunks.flatMap((h) => h.lines).map((l) => l.text).join("\n")).toContain("cut off here");
     });
 
-    for (const phase of ["begin", "end", "compare", "steering-compare"] as const) test(`retiring during ${phase} drains private writes and never appends a late end`, async () => {
+    test("closing right after a turn waits for its end, which is kept", async () => {
         const { cwd, dir, snapshots } = setup({ "a.txt": "before\n" });
+        await snapshots.begin(1, "Edit");
+        write(cwd, "a.txt", "after\n");
+        // As an agent's turn does: its end goes on after it.
+        void snapshots.end();
+        await snapshots.stop();
+        const reopened = new TurnSnapshots(dir, cwd);
+        const turn = reopened.list()[0]!;
+        expect([!!turn.end, turn.changed]).toEqual([true, ["a.txt"]]);
+        const changes = await reopened.changes({ scope: "last-turn" });
+        expect(changes.files.map((f) => [f.path, f.added, f.removed])).toEqual([["a.txt", 1, 1]]);
+    });
+
+    for (const phase of ["begin", "end", "compare", "steering-compare"] as const) test(`retiring during ${phase}, past its wait, drains private writes and never appends a late end`, async () => {
+        const { cwd, dir } = setup({ "a.txt": "before\n" });
+        const snapshots = new TurnSnapshots(dir, cwd, { stopWaitMs: 0 });
         await snapshots.begin(1, "interrupted prompt");
         write(cwd, "a.txt", "late change\n");
         const journal = readFileSync(join(dir, "turn-snapshots.jsonl"), "utf8");

@@ -437,9 +437,9 @@ export class App {
         if (this.session?.cost || this.session?.costUnknown) this.screen.print(theme.muted(`Total cost: ${formatCost(this.session.cost, this.session.costUnknown)}${this.session.costUnknown ? " (no price known for some of the models used)" : ""}`));
         if (hint) this.screen.print(hint);
         this.screen.flushNow();
-        // SessionEnd hooks get at most 5 seconds.
+        // SessionEnd hooks get at most 5 seconds; the last turn's closing snapshot, which goes on after the turn, as long.
         const ended = this.sessionHook("SessionEnd", { reason: "exit" }, AbortSignal.timeout(5000));
-        await Promise.all([ended, disposed, killAllShells({ state: this.toolState }), this.toolState.lsp?.dispose(), this.toolState.browser?.dispose(),this.toolState.simulator?.dispose(), Promise.race([this.mcp.closeAll(), new Promise((r) => setTimeout(r, 1500))])]);
+        await Promise.all([ended, disposed, this.agent?.turnSnapshots?.stop(), killAllShells({ state: this.toolState }), this.toolState.lsp?.dispose(), this.toolState.browser?.dispose(),this.toolState.simulator?.dispose(), Promise.race([this.mcp.closeAll(), new Promise((r) => setTimeout(r, 1500))])]);
         if (finishWorktree) {
             for (const line of await finishWorktree().catch((e: Error) => [theme.error(`Couldn't remove the worktree: ${redact(e.message)}`)])) this.screen.print(line);
             this.screen.flushNow();
