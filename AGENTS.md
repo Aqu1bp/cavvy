@@ -6,6 +6,7 @@ Several agents work on this repository at the same time. These rules keep you ou
 
 - Before writing code, write down what the user will see in each case, failures included, then build to match it, even when an existing mechanism would be quicker. For example, if a steer message never reaches the model, the chat must not say "Steered in".
 - Don't guess what you can look up. To know whether a CLI read a message, check its session file rather than inferring it.
+- A claim that affects a decision (a cost, a risk, "this is faster", "this is safe") is backed by code you read or a measurement you ran, and says which. If you couldn't check it, say it's unchecked and don't base a recommendation on it.
 - Put logic both apps need in the core (`src/agent`, `src/tools`, `src/providers`, `src/permissions`, `src/mcp`) so the terminal and the GUI both get it. The front ends only show it.
 
 ## UI copy
@@ -24,21 +25,22 @@ Unit tests and reviews aren't enough to call a user-facing change done. Build th
 
 - Launch it isolated and directly: `CAVVY_HOME=<test home> CAVVY_ELECTRON_USER_DATA=<test dir> CAVVY_NO_KEYCHAIN=1 <path to Cavvy.app>/Contents/MacOS/cavvy-desktop`. Not with `open`: macOS then treats the build as its own app under the installed Cavvy's bundle id, and each one's answer to a folder prompt undoes the other's, so the user is asked again and again. Never use `desktop:install`: it quits the Cavvy your own session runs in.
 - Try the edge cases: Esc mid-turn, steering vs. queueing, each permission mode, reloading the session.
-- Run real CLIs only in a sandbox with an isolated HOME, and only with harmless commands.
+- Run real CLIs only with harmless commands, in a scratch repository, and with a test HOME of their own (`HOME=<test home> claude`), never the person's. A CLI starts signed out there: ask the person to sign it in once (`/login` in it), and reuse that HOME for later runs. If they can't, stop and say so; don't fall back to the real HOME, where test sessions mix with theirs.
 
 ## Branches
 
 - Work in your own git worktree, on a branch from the current `origin/main`. Every change reaches `main` through a pull request.
 - Keep a pull request to one kind of change, such as a feature, a bug fix or UI work, not a mix. Something unrelated you find on the way gets its own pull request.
-- When `main` moves, rebase onto it and push.
+- When `main` moves, merge it into your branch and push. Rebase only a branch nobody else has pulled: it needs a force-push, which breaks other checkouts and may be refused.
+- A large effort can gather its pull requests on an integration branch instead of `main`. Each change still goes into it through its own pull request, after CI. Before the branch goes to `main`: review it as a whole, test it in the app against `main`, fix what that finds through pull requests into the branch, and merge it with a merge commit so each pull request stays visible in `main`'s history.
 
 ## Tests
 
 The whole suite takes about 20 minutes on a Mac, and agents running it at once time each other out. CI runs it in three.
 
 - Locally, run only the test files for what you changed (`bun test ./test/foo.test.ts`: the `./` makes it a path, not a name filter) and the typechecks: `bun run typecheck`, plus `bun run gui:typecheck` for `gui/` and `bun run desktop:typecheck` for `desktop-electron/`.
-- Push and wait for CI: `gh pr checks --watch`. If it fails, run `gh run view <run-id> --log-failed`, fix the failing tests, and push again.
-- A test that fails and then passes on a rerun (`gh run rerun <run-id> --failed`) is flaky. Open an issue with the log excerpt, trimmed as [It's public](#its-public) says, and don't add retries.
+- Push and wait for CI. If it fails, read the failing job's log (`gh run view <run-id> --log-failed`, or your GitHub tools), fix the cause, and push again.
+- A test that fails and then passes when its job is rerun once is flaky. If you can't rerun, reproduce it locally, under load for anything timed, and check it fails the same way on the base branch. Open an issue with the log excerpt, trimmed as [It's public](#its-public) says, and fix what makes it flaky; don't add retries. A test that waits for something that lands after a call returns, instead of checking at once, isn't a retry.
 
 ## Performance
 
@@ -64,6 +66,7 @@ Anyone can read this repository, and what's pushed to it stays readable for good
 - Screenshots come from `bun run gui:demo`, not from a real session.
 - A log in an issue or a pull request: only the lines that matter, checked for the above.
 - Nothing quoted from Claude Code's or Codex's compiled code. Describe what a CLI does from running it.
+- A security bug (something a repository, a page, an agent or another user could use against the person) is reported privately as [SECURITY.md](SECURITY.md) says, never in an issue, a pull request or a comment. A fix for one says what it fixes for the user, not how to exploit it.
 
 Other people's text and code:
 
