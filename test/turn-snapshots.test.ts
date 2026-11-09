@@ -4,11 +4,20 @@ import { dirname, join } from "path";
 import { isolate } from "./helpers/isolate";
 
 const iso = isolate();
+// The machine's own Git config (a filter git-lfs defines, say) changes which capture is taken: none here.
+const inheritedGitConfig = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("GIT_CONFIG")));
+for (const key of Object.keys(inheritedGitConfig)) delete process.env[key];
+process.env.GIT_CONFIG_NOSYSTEM = "1";
+process.env.GIT_CONFIG_GLOBAL = "/dev/null";
 const { TurnSnapshots } = await import("../src/agent/turn-snapshots");
 const { pruneFileHistory, HISTORY_MAX_AGE_MS, MAX_SNAPSHOT_BYTES } = await import("../src/agent/checkpoints");
 const { paths } = await import("../src/config/paths");
 const { gitArgv, gitEnv } = await import("../src/util/git");
-afterAll(() => iso.cleanup());
+afterAll(() => {
+    for (const key of Object.keys(process.env)) if (key.startsWith("GIT_CONFIG")) delete process.env[key];
+    Object.assign(process.env, inheritedGitConfig);
+    iso.cleanup();
+});
 
 let next = 0;
 const IDENTITY = ["-c", "maintenance.auto=false", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Cavvy Test", "-c", "user.email=test@example.invalid"];
@@ -364,6 +373,29 @@ describe("per-turn snapshots", () => {
         const env = { GIT_OBJECT_DIRECTORY: objectsDir(dir), GIT_ALTERNATE_OBJECT_DIRECTORIES: "" };
         expect(git(cwd, ["cat-file", "blob", `${tree}:raw.txt`], env)).toEqual(crlf);
         expectPrivate(dir);
+    });
+
+    for (const scope of ["repository", "user"]) test(`a big repository's first capture runs no filter the ${scope}'s config defines, and still sees the turn's changes`, async () => {
+        const { cwd, dir } = setup({ ".gitattributes": "*.txt filter=evil\n", "a.txt": "a\n", "b.txt": "b\n" });
+        const marker = join(dirname(cwd), "filter-ran");
+        const config = scope === "user" ? join(dirname(cwd), "gitconfig") : join(cwd, ".git/config");
+        git(cwd, ["config", "--file", config, "filter.evil.clean", `touch '${marker}'; cat`]);
+        if (scope === "user") process.env.GIT_CONFIG_GLOBAL = config;
+        // Git compares these two by content: their stat no longer matches what the index recorded.
+        write(cwd, "a.txt", "a, before the turn\n");
+        utimesSync(join(cwd, "b.txt"), new Date(), new Date(Date.now() + 5000));
+        const snapshots = new TurnSnapshots(dir, cwd, { statusFromEntries: 0 });
+        await snapshots.begin(1, "Edit a file");
+        write(cwd, "a.txt", "a, after the turn\n");
+        await snapshots.end();
+        expect(existsSync(marker)).toBe(false);
+        expect(snapshots.statusCount).toBe(0);
+        const turn = snapshots.list()[0]!;
+        expect([turn.start.incomplete, turn.end!.incomplete, turn.changed]).toEqual([false, false, ["a.txt"]]);
+        const shown = await snapshots.changes({ scope: "last-turn" });
+        expect(shown.files.map((f) => [f.path, f.added, f.removed])).toEqual([["a.txt", 1, 1]]);
+        await snapshots.stop();
+        process.env.GIT_CONFIG_GLOBAL = "/dev/null";
     });
 
     test("ignored files are omitted, large files are marked, and ordinary files still diff", async () => {

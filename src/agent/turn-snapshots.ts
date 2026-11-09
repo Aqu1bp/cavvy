@@ -1590,13 +1590,19 @@ export class TurnSnapshots {
      * and it compares a hundred thousand files in less CPU than a scan here does. False, having kept nothing, where it
      * can't say plainly what's on disk: an entry it reports otherwise (a conflict, a submodule, assume-unchanged,
      * skip-worktree, intent-to-add), no tree worked out for the index, the index written meanwhile, more than
-     * NARROW_MAX_PATHS paths, or attributes that store other bytes than a file's. The whole capture is taken then.
+     * NARROW_MAX_PATHS paths, or attributes that store other bytes than a file's. The whole capture is taken then, as it
+     * is wherever Git's config defines a filter: `git status` would run its program.
      */
     private async captureFromStatus(result: TurnCapture, read: KnownFile[], indexPath: string, deadline: number, inTime: () => void, ending: boolean): Promise<boolean> {
         const w = this.watch, root = this.root!;
         if (!w?.healthy || !msTimesExact(indexPath)) return false;
         // A small repository's whole capture is quicker here than starting git for it.
         if ((await indexEntries(indexPath)) < (this.options.statusFromEntries ?? STATUS_FROM_ENTRIES)) return false;
+        // Any config's, the user's too: git-lfs's, for one, runs what the repository's config says. Exit 1: none.
+        // GIT_CONFIG would point `git config` alone at another file.
+        if (gitEnvironment().GIT_CONFIG !== undefined) return false;
+        const filters = await git(root, ["config", "-z", "--get-regexp", "^filter\\..*\\.(clean|process)$"], { deadline, privateEnv: { GIT_NO_REPLACE_OBJECTS: "1" } });
+        if (filters.code !== 1 || filters.cut) return false;
         const before = lstatSync(indexPath, { throwIfNoEntry: false });
         if (!before) return false;
         const started = Date.now();
