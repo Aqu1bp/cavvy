@@ -947,19 +947,20 @@ export class TurnSnapshots {
         try {
             for (const batch of batches) {
                 // Trees read on the way to what changed are known already; the rest from this session's reader.
-                const found = new Map<string, { type: string; buf: Buffer }>();
+                const found = new Map<string, { type: string; buf?: Buffer }>();
                 const ask: string[] = [];
                 for (const oid of batch) {
                     const tree = treeBodies.get(oid);
                     if (tree) found.set(oid, { type: "tree", buf: tree });
                     else ask.push(oid);
                 }
-                if (ask.length) for (const [oid, o] of await this.withReader(root, deadline, (r) => r.readAll(ask))) found.set(oid, o);
+                // A blob bigger than a file is read to comes without its bytes, and is left out (as above).
+                if (ask.length) for (const [oid, o] of await this.withReader(root, deadline, (r) => r.readAll(ask, MAX_SNAPSHOT_BYTES))) found.set(oid, o);
                 for (const oid of batch) {
                     const o = found.get(oid), type = o?.type;
+                    if (type === "blob" && !o!.buf) continue;
                     // Its bytes, whatever the repository holds under that name.
-                    if (!o || (type !== "blob" && type !== "tree") || objectId(type, o.buf, this.algo) !== oid) { missing++; continue; }
-                    if (type === "blob" && o.buf.length > MAX_SNAPSHOT_BYTES) continue;
+                    if (!o?.buf || (type !== "blob" && type !== "tree") || objectId(type, o.buf, this.algo) !== oid) { missing++; continue; }
                     await this.store(o.buf, type, oid);
                 }
             }

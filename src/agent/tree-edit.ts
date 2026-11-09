@@ -126,6 +126,18 @@ export class ObjectReader {
         return out;
     }
 
+    /** Past the next `n` bytes, without holding them. */
+    private async skip(n: number) {
+        while (n > 0) {
+            if (!this.have) await this.more();
+            const first = this.chunks[0]!, k = Math.min(n, first.length);
+            if (k === first.length) this.chunks.shift();
+            else this.chunks[0] = first.subarray(k);
+            this.have -= k;
+            n -= k;
+        }
+    }
+
     /** The next line, without its newline. */
     private async line(): Promise<string> {
         for (let seen = 0, k = 0; ; ) {
@@ -141,11 +153,15 @@ export class ObjectReader {
         }
     }
 
-    /** One object's header and body; undefined when the repository doesn't have it. */
-    private async next(oid: string): Promise<{ type: string; buf: Buffer } | undefined> {
+    /** One object's header and body; undefined when the repository doesn't have it. A blob over `maxBlob` bytes, without its body. */
+    private async next(oid: string, maxBlob = Infinity): Promise<{ type: string; buf?: Buffer } | undefined> {
         const [id, kind, size] = (await this.line()).split(" ");
         if (id !== oid) throw new Error("Snapshot objects are missing or unreadable.");
         if (kind === "missing" || size === undefined) return undefined;
+        if (kind === "blob" && Number(size) > maxBlob) {
+            await this.skip(Number(size) + 1);
+            return { type: kind };
+        }
         const body = await this.take(Number(size) + 1);
         return { type: kind!, buf: body.subarray(0, body.length - 1) };
     }
@@ -155,19 +171,19 @@ export class ObjectReader {
         stdin.write(`${oid}\n`);
         await stdin.flush();
         const o = await this.next(oid);
-        if (!o || o.type !== type) throw new Error("Snapshot objects are missing or unreadable.");
+        if (!o?.buf || o.type !== type) throw new Error("Snapshot objects are missing or unreadable.");
         return o.buf;
     }
 
-    /** Several at once, asked for together: those the repository has, by id. */
-    async readAll(oids: readonly string[]): Promise<Map<string, { type: string; buf: Buffer }>> {
-        const out = new Map<string, { type: string; buf: Buffer }>();
+    /** Several at once, asked for together: those the repository has, by id; a blob over `maxBlob` bytes, without its bytes. */
+    async readAll(oids: readonly string[], maxBlob?: number): Promise<Map<string, { type: string; buf?: Buffer }>> {
+        const out = new Map<string, { type: string; buf?: Buffer }>();
         if (!oids.length) return out;
         const stdin = this.proc.stdin as import("bun").FileSink;
         stdin.write(oids.map((o) => `${o}\n`).join(""));
         await stdin.flush();
         for (const oid of oids) {
-            const o = await this.next(oid);
+            const o = await this.next(oid, maxBlob);
             if (o) out.set(oid, o);
         }
         return out;

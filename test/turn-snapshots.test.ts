@@ -13,6 +13,7 @@ const { TurnSnapshots } = await import("../src/agent/turn-snapshots");
 const { pruneFileHistory, HISTORY_MAX_AGE_MS, MAX_SNAPSHOT_BYTES } = await import("../src/agent/checkpoints");
 const { paths } = await import("../src/config/paths");
 const { gitArgv, gitEnv } = await import("../src/util/git");
+const { ObjectReader } = await import("../src/agent/tree-edit");
 afterAll(() => {
     for (const key of Object.keys(process.env)) if (key.startsWith("GIT_CONFIG")) delete process.env[key];
     Object.assign(process.env, inheritedGitConfig);
@@ -435,6 +436,37 @@ describe("per-turn snapshots", () => {
         const contents = git(cwd, ["ls-tree", "-r", "--name-only", tree], { GIT_OBJECT_DIRECTORY: objectsDir(dir) }).toString();
         expect(contents).not.toContain("private.txt");
         expect(contents).not.toContain("large.bin");
+    });
+
+    test("a committed file over the size limit that a turn changes is marked, and its committed version never held", async () => {
+        const big = Buffer.alloc(12 * 1024 * 1024, 1);
+        const { cwd, snapshots } = setup({ "big.bin": big, "small.txt": "before\n" });
+        const bigId = git(cwd, ["rev-parse", "HEAD:big.bin"]).toString().trim();
+        /** Bytes each object read came with. */
+        const held = new Map<string, number>();
+        const readAll = ObjectReader.prototype.readAll;
+        ObjectReader.prototype.readAll = async function (oids, maxBlob) {
+            const read = await readAll.call(this, oids, maxBlob);
+            for (const [oid, o] of read) held.set(oid, o.buf?.length ?? 0);
+            return read;
+        };
+        try {
+            await snapshots.begin(1, "Edit both");
+            big[0] = 2;
+            write(cwd, "big.bin", big);
+            write(cwd, "small.txt", "after\n");
+            await snapshots.end();
+        } finally {
+            ObjectReader.prototype.readAll = readAll;
+        }
+        expect(held.has(bigId)).toBe(true);
+        expect(held.get(bigId)).toBe(0);
+        const turn = snapshots.list()[0]!;
+        expect(turn.end!.skipped["big.bin"]).toMatch(/10|large|size/i);
+        const result = await snapshots.changes({ scope: "last-turn" });
+        expect(result.files.find((f) => f.path === "small.txt")).toMatchObject({ added: 1, removed: 1 });
+        expect(JSON.stringify(result)).toMatch(/large|10 MB|10 MiB/i);
+        await snapshots.stop();
     });
 
     test("linked worktrees keep both their own and the common repository metadata untouched", async () => {
