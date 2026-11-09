@@ -570,6 +570,42 @@ describe("per-turn snapshots", () => {
         }
     }, 60_000);
 
+    test("Git's index turned into a pipe after it was scanned and before it's copied: turns end, and other reads aren't held up", async () => {
+        if (process.platform === "win32") return;
+        // A staged file: Git has worked out no tree for the index, so a capture copies it.
+        const repos = [1, 2, 3, 4, 5, 6].map(() => {
+            const r = setup({ "a.txt": "a\n" });
+            write(r.cwd, "staged.txt", "staged\n");
+            git(r.cwd, ["add", "staged.txt"]);
+            return r;
+        });
+        const pipes: string[] = [];
+        const proto = TurnSnapshots.prototype as any, writeTrees = proto.writeTrees;
+        proto.writeTrees = function (indexPath: string, lines: string[], fresh: boolean, ...rest: unknown[]) {
+            if (fresh) {
+                rmSync(indexPath);
+                expect(Bun.spawnSync(["mkfifo", indexPath]).exitCode).toBe(0);
+                pipes.push(indexPath);
+            }
+            return writeTrees.call(this, indexPath, lines, fresh, ...rest);
+        };
+        const within = (work: Promise<unknown>, ms: number) => Promise.race([work.then(() => "done"), Bun.sleep(ms).then(() => "stuck")]);
+        const sessions = repos.map(({ cwd, dir }) => new TurnSnapshots(dir, cwd));
+        try {
+            expect(await within(Promise.all(sessions.map((s, i) => s.begin(i + 1, "Edit"))), 5000)).toBe("done");
+            expect(pipes.length).toBe(sessions.length);
+            expect(await within(readFile(join(repos[0]!.cwd, "a.txt")), 2000)).toBe("done");
+            expect(sessions.every((s) => s.list()[0]?.start.incomplete)).toBe(true);
+            expect(await within(Promise.all(sessions.map((s) => s.stop())), 30_000)).toBe("done");
+        } finally {
+            proto.writeTrees = writeTrees;
+            for (const pipe of pipes) {
+                for (let i = 0; i < 4; i++) try { closeSync(openSync(pipe, constants.O_WRONLY | constants.O_NONBLOCK)); } catch {}
+                rmSync(pipe, { force: true });
+            }
+        }
+    }, 60_000);
+
     test("linked worktrees keep both their own and the common repository metadata untouched", async () => {
         const { cwd, dir } = setup({ "a.txt": "before\n" });
         const linked = join(dirname(cwd), "linked");

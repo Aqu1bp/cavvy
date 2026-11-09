@@ -7,7 +7,7 @@
 // process avoids a subprocess per file and preserves the bytes on disk.
 
 import { appendFileSync, chmodSync, constants, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync, type Stats } from "fs";
-import { chmod, copyFile, lstat, mkdir, open, readdir, readFile, readlink, rename, rm, writeFile } from "fs/promises";
+import { chmod, lstat, mkdir, open, readdir, readFile, readlink, rename, rm, writeFile } from "fs/promises";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "path";
 import { deflateSync, inflateSync } from "zlib";
 import { randomBytes } from "crypto";
@@ -1932,7 +1932,14 @@ export class TurnSnapshots {
         inTime();
         const index = join(this.storage, "index");
         if (fresh) {
-            await copyFile(indexPath, index);
+            // Opened as the scan opened it: a pipe put there since is no index (a copy would wait on it for good).
+            const f = await open(indexPath, INDEX_OPEN);
+            try {
+                if (!(await f.stat()).isFile()) throw new Error("Could not read Git's index.");
+                await writeFile(index, await f.readFile(), { mode: 0o600 });
+            } finally {
+                await f.close().catch(() => {});
+            }
             await chmod(index, 0o600);
             // Whatever this session's own index held is gone: the whole capture starts afresh if it's taken next.
             this.indexEntries = new Map();
