@@ -54,11 +54,16 @@
     transition: grid-template-columns var(--dur-panel) var(--ease), margin-right var(--dur-panel) var(--ease), visibility 0s linear var(--dur-panel);
 }
 
+/* Cut by its box as the box opens and closes, 4px out from the buttons all round: a button's focus ring (base.css:
+   2px, 2px off it) is outside the button, and a box cut at the buttons' own edges cut the ring too. The margin takes
+   the padding back, so the box is no larger in the bar, and has no width while it's closed. */
 .bar-rail-in {
     display: flex;
     align-items: center;
     gap: 2px;
     min-width: 0;
+    margin: -4px;
+    padding: 4px;
     overflow: hidden;
 }
 

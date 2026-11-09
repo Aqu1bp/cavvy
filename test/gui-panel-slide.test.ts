@@ -143,6 +143,11 @@ test("what the rail's hiding puts before the title opens with the slide, so the 
     }
     // What's in each box keeps its own width and is cut by it: a box of no width takes none.
     expect([decls(".bar-rail-in").get("min-width"), decls(".bar-rail-in").get("overflow")]).toEqual(["0", "hidden"]);
+    // The buttons' focus ring reaches 4px past them (2px wide, 2px off: base.css), so the box that cuts them is that
+    // much larger all round, without taking more room in the bar.
+    const ring = parseRules(read("styles/base.css")).find((r) => r.selectors.some((sel) => sel.includes(":focus-visible")) && r.decls.has("outline-offset"));
+    expect([ring?.decls.get("outline")?.split(" ")[0], ring?.decls.get("outline-offset")]).toEqual(["2px", "2px"]);
+    expect([decls(".bar-rail-in").get("padding"), decls(".bar-rail-in").get("margin")]).toEqual(["4px", "-4px"]);
     expect([decls(".proj").get("min-width"), decls(".proj").get("overflow"), decls(".proj .truncate").get("flex")]).toEqual(["0", "hidden", "none"]);
     // Closed, a box takes back the gap that would follow it: the bar's (12px), the crumbs' (10).
     expect(decls(".header").get("gap")).toBe("12px");
