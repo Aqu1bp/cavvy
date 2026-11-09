@@ -4,7 +4,8 @@
 // It's sent a root and the lists of paths to look at (the tracked ones once per version of Git's index, kept here
 // by id), and answers with each path's kind and stamp, in arrays handed over rather than copied.
 
-import { lstatSync, readdirSync, unlinkSync, watch, writeFileSync, type FSWatcher, type Stats } from "fs";
+import { closeSync, constants, lstatSync, openSync, readdirSync, unlinkSync, watch, type FSWatcher, type Stats } from "fs";
+import { randomBytes } from "crypto";
 import { join, relative } from "path";
 import { KIND, type StatRequest, type StatReply, type IndexRequest, type PathsRequest } from "./stat-files";
 import { LATE, scanIndex, scanPaths } from "./index-scan";
@@ -76,6 +77,20 @@ type WatchRequest = { watch: "open"; wid: number; root: string; gitDir?: string 
  * too short for a busy Mac's FSEvents. Gone again at once.
  */
 const MARK = "cavvy-watch-sync-";
+/**
+ * A marker's name, not to be guessed: what runs in the folder can write in .git (a sandboxed command too), and mustn't
+ * know where the next one goes.
+ */
+const markName = () => MARK + randomBytes(12).toString("hex");
+/** Made only where nothing is, never through a link put there; false when it can't be. */
+function putMark(dir: string, name: string): boolean {
+    try {
+        closeSync(openSync(join(dir, name), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600));
+        return true;
+    } catch {
+        return false;
+    }
+}
 /** A marker's event not come by then: the watch isn't relied on (what it saw may be incomplete). */
 const MARK_LIMIT_MS = 2000;
 /**
@@ -114,7 +129,7 @@ function onWatch(r: WatchRequest) {
         // No Git dir of its own to mark in (a linked worktree, a plain folder): as long as the server's thread would
         // have waited for events to arrive, and what's arrived by then goes first.
         if (!w?.markDir) return void setTimeout(answer, r.waitMs);
-        const name = `${MARK}${process.pid}-${r.wid}-${r.seq}`;
+        const name = markName();
         const limit = setTimeout(() => {
             if (w.marks.delete(name)) answer(true);
             try { unlinkSync(join(w.markDir!, name)); } catch {}
@@ -124,9 +139,7 @@ function onWatch(r: WatchRequest) {
             try { unlinkSync(join(w.markDir!, name)); } catch {}
             answer();
         });
-        try {
-            writeFileSync(join(w.markDir, name), "");
-        } catch {
+        if (!putMark(w.markDir, name)) {
             clearTimeout(limit);
             w.marks.delete(name);
             setTimeout(answer, r.waitMs);
@@ -192,14 +205,13 @@ function onWatch(r: WatchRequest) {
     const mark = () => {
         if (done || !watches.has(r.wid)) return;
         if (Date.now() - started > MARK_LIMIT_MS) return finish(failed);
-        const name = `${MARK}${process.pid}-${r.wid}-live-${names.length}`;
-        names.push(name);
+        const name = markName();
         w.marks.set(name, () => finish(ready));
-        try {
-            writeFileSync(join(w.markDir!, name), "");
-        } catch {
+        if (!putMark(w.markDir!, name)) {
+            w.marks.delete(name);
             return finish(() => setTimeout(ready, LIVE_WAIT_MS));
         }
+        names.push(name);
         setTimeout(mark, LIVE_RETRY_MS);
     };
     mark();
