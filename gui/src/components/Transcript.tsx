@@ -480,11 +480,10 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
                     const box = e.target.getBoundingClientRect();
                     return { el: e.target, was: box.bottom <= top ? box.height : undefined };
                 });
-                for (const e of entries) {
-                    // Skipped from here: what it was still bringing in is over now, not left part way (lib/entrances.ts).
-                    if (!e.isIntersecting && !e.target.hasAttribute(FAR)) finishEntrances(e.target);
-                    e.target.toggleAttribute(FAR, !e.isIntersecting);
-                }
+                // Skipped from here: what it was still bringing in is over now, not left part way (lib/entrances.ts).
+                // For all of them before any is marked: ending them reads the page's styles, which marking one changes.
+                for (const e of entries) if (!e.isIntersecting && !e.target.hasAttribute(FAR)) finishEntrances(e.target);
+                for (const e of entries) e.target.toggleAttribute(FAR, !e.isIntersecting);
                 if (stick() || smoothScroll) return;
                 let moved = 0;
                 for (const n of near) if (n.was !== undefined) moved += n.el.getBoundingClientRect().height - n.was;

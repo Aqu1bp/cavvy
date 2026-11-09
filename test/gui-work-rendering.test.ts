@@ -212,3 +212,33 @@ test("a row skipped from here ends what it was still bringing in; what goes on f
     expect(spin.finished).toBe(false);
     f.dispose();
 });
+
+test("a batch of rows gone far has its entrances ended before any of them is skipped", () => {
+    // Ending a row's entrances reads the page's styles (getAnimations). After a row was skipped that read worked the
+    // styles out again: a row at a time, a hundred rows going far as a long conversation opened took 150ms and more.
+    const f = fixture();
+    const log: string[] = [];
+    for (const [i, row] of f.rows.entries()) {
+        (row as any).getAnimations = () => (log.push(`read ${i}`), []);
+        const set = row.setAttribute.bind(row);
+        row.setAttribute = (name: string) => { if (name === "data-work-far") log.push(`skip ${i}`); set(name); };
+    }
+    const batch = f.rows.slice(0, 3);
+    // Measured while near, then all three leave the view together.
+    for (const row of batch) f.measure(row);
+    expect(log).toEqual([]);
+    io.emit(batch.map((target) => ({ target, isIntersecting: false })));
+    expect(log).toEqual(["read 0", "read 1", "read 2", "skip 0", "skip 1", "skip 2"]);
+    // The same when their sizes arrive after they've left it.
+    log.length = 0;
+    const later = f.rows.slice(3, 6);
+    io.emit(later.map((target) => ({ target, isIntersecting: false })));
+    expect(log).toEqual([]);
+    ro.emit(later.map((target) => ({ target, contentRect: { height: 31 } })));
+    expect(log).toEqual(["read 3", "read 4", "read 5", "skip 3", "skip 4", "skip 5"]);
+    // One that stays near, or is skipped already, isn't read at all.
+    log.length = 0;
+    io.emit([{ target: f.rows[0], isIntersecting: false }, { target: f.rows[6], isIntersecting: true }]);
+    expect(log).toEqual([]);
+    f.dispose();
+});

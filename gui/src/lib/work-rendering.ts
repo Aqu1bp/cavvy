@@ -53,19 +53,31 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
         if (row) row.parkedFar = false;
         watch(el);
     };
+    /** A row far from the view, measured and not skipped yet: `skip` would skip it. */
+    const skippable = (el: HTMLElement, near: boolean, height: number | undefined) => !near && height !== undefined && height > 0 && !el.hasAttribute(FAR);
+    /**
+     * Skipped from here, what a row was still bringing in is over, not left part way (lib/entrances.ts). Ending it reads
+     * the page's styles, so it's done for every row of a batch before any of them is skipped: one row at a time, each
+     * read came after a row had just been skipped and worked the page's styles out again, a hundred times over as a
+     * long conversation opened.
+     */
+    const settle = (els: readonly HTMLElement[]) => { for (const el of els) finishEntrances(el); };
+    /** Skips a row whose entrances are over (`settle`). */
     const skip = (el: HTMLElement) => {
         const row = rows.get(el);
-        if (!row || row.near || row.height === undefined || row.height <= 0 || el.hasAttribute(FAR)) return;
+        if (!row || !skippable(el, row.near, row.height)) return;
         // Content-box size: padding and borders remain the element's own. `auto` remembers later
         // natural sizes too. It also lets native find, focus and selection reveal skipped content.
         el.style.containIntrinsicBlockSize = `auto ${row.height}px`;
-        // Skipped from here: what it was still bringing in is over now, not left part way (lib/entrances.ts).
-        finishEntrances(el);
         el.setAttribute(FAR, "");
     };
     const start = () => {
         if (io || rows.size < MIN_ROWS) return;
         to.sizes = (entries) => {
+            settle(entries.map((entry) => entry.target as HTMLElement).filter((el, i) => {
+                const row = rows.get(el);
+                return !!row && skippable(el, row.near, entries[i]!.contentRect.height);
+            }));
             for (const entry of entries) {
                 const el = entry.target as HTMLElement;
                 const row = rows.get(el);
@@ -87,6 +99,10 @@ export function observeWorkRendering(root: HTMLElement, content: HTMLElement, sh
                     if (box.bottom <= top) above.push({ el, height: box.height });
                 }
             }
+            settle(entries.map((entry) => entry.target as HTMLElement).filter((el, i) => {
+                const row = rows.get(el);
+                return !!row && skippable(el, entries[i]!.isIntersecting, row.height);
+            }));
             for (const entry of entries) {
                 const el = entry.target as HTMLElement;
                 const row = rows.get(el);
