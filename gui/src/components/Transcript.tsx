@@ -2,7 +2,7 @@ import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Sh
 import { ArrowDown, ArrowUpLeft, GitFork } from "lucide-solid";
 import type { Turn } from "@shared/protocol";
 import { fork, forkAnchor } from "../state/actions";
-import { activate, app, loadEarlier, toast, type SessionHandle } from "../state/app";
+import { activate, app, loadEarlier, loadEarlierTo, toast, type SessionHandle } from "../state/app";
 import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setFollowing, setJumpTarget, setRewindOpen, takeDockGlide } from "../state/ui";
 import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
@@ -42,8 +42,20 @@ function relay(to: { fn?: IntersectionObserverCallback }): IntersectionObserverC
 }
 
 
-/** `dock`: the composer dock's height (undefined until it's measured). */
+/**
+ * `dock`: the composer dock's height (undefined until it's measured). Opened again where a turn was being read that the
+ * session didn't come with this time (new turns pushed it out): the turns back to it come first, then it opens there.
+ */
 export function Transcript(p: { handle: SessionHandle; dock?: number }) {
+    const saved = transcriptPositions.get(p.handle.id);
+    const read = !saved?.bottom ? saved?.anchor?.turnId : undefined;
+    if (!read || !p.handle.view.earlier || p.handle.view.turns.some((t) => t.id === read)) return <TranscriptView handle={p.handle} dock={p.dock} />;
+    const [placed, setPlaced] = createSignal(false);
+    void loadEarlierTo(p.handle, read).finally(() => setPlaced(true));
+    return <Show when={placed()}><TranscriptView handle={p.handle} dock={p.dock} /></Show>;
+}
+
+function TranscriptView(p: { handle: SessionHandle; dock?: number }) {
     // --dock-h goes on each box that reads it (stage.css): not inherited, and not passed down with `inherit`.
     const dock = () => (p.dock === undefined ? undefined : `${p.dock}px`);
     let scroller: HTMLDivElement | undefined;
@@ -823,9 +835,10 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
         setStick(false);
     };
 
-    // Find counts what's in the whole session: opened, it has the turns the session opened without.
-    createEffect(on(findOpen, (open) => {
-        if (open && p.handle.view.earlier) void loadEarlier(p.handle, { all: true });
+    // Find counts what's in the whole session: opened, it has the turns the session opened without (again after a
+    // reconnect that came with fewer).
+    createEffect(on([findOpen, () => p.handle.view.earlier], ([open, earlier]) => {
+        if (open && earlier) void loadEarlier(p.handle, { all: true });
     }));
 
     // A message found from ⌘K: its turn, briefly marked, with the find bar on what was searched.

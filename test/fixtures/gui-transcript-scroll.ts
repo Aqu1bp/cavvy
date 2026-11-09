@@ -137,7 +137,12 @@ let findProps: any;
 const workToggles = new Map<string, (el: any, toggle: () => void) => void>();
 /** Each turn's onFold (TurnView calls it as its work, faded out, folds away). */
 const onFolds = new Map<string, (el: any, fold: () => void) => void>();
+/** state/app.ts loadEarlier and loadEarlierTo: what a test has them do. */
+let loadMore: (h: any, how: any) => Promise<boolean> = async () => false;
+let loadTo: (h: any, turnId: string) => Promise<boolean> = async () => false;
 const scope = {
+    loadEarlier: (h: any, how: any) => loadMore(h, how),
+    loadEarlierTo: (h: any, turnId: string) => loadTo(h, turnId),
     setFollowing() {},
     renderer: { ...solid, ...renderer, createElement: create },
     anchoredTop, atBottom, FAR, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, turnHeight, window: { innerHeight: 500 }, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow, wordsFlowing: () => flowingNow, finishEntrances, DrawnAgain,
@@ -948,6 +953,39 @@ for (const mode of ["prose", "tool"] as const) {
     try {
         assert.equal(top, 175, `${mode}: reopening at a different row position restores the saved reading point`);
     } finally { dispose(); rowAnchors = undefined; rowShift = 0; }
+}
+
+// Opened again where a turn was read that the session didn't come with this time (new turns pushed it out of those
+// sent): the turns back to it come first, and it opens there, not further down.
+{
+    const [sent, setSent] = solid.createSignal(turns(130).slice(30));
+    const [earlier, setEarlier] = solid.createSignal(30);
+    const handle = { id: "paged", view: { state: {}, get turns() { return sent(); }, get earlier() { return earlier(); } } };
+    cache.set(handle.id, { bottom: false, top: 0, anchor: { turnId: "turn-20", offset: -50 }, openWork: [] });
+    let asked: string | undefined;
+    let land: (() => void) | undefined;
+    loadTo = (_h, turnId) => {
+        asked = turnId;
+        return new Promise((r) => (land = () => { setSent(turns(130)); setEarlier(0); r(true); }));
+    };
+    dispose = mount(handle);
+    try {
+        assert.equal(asked, "turn-20", "the turns back to the place read are asked for");
+        assert.equal(all(root).filter((n) => n.tag === "article").length, 0, "nothing shown further down meanwhile");
+        land!();
+        for (let i = 0; i < 5; i++) await Promise.resolve();
+        settle();
+        assert.ok(turn("turn-20"), "the turn read is there");
+        assert.equal(turn("turn-20").getBoundingClientRect().top, -50, "where it was read");
+        // Find open, and a reconnect comes with fewer turns than it had: the rest are asked for again.
+        const more: unknown[] = [];
+        loadMore = async (_h, how) => (more.push(how), true);
+        setFindShown(true);
+        assert.deepEqual(more, [], "all there: nothing to ask for");
+        setEarlier(3);
+        assert.deepEqual(more, [{ all: true }], "find counts every turn again");
+        setFindShown(false);
+    } finally { dispose(); loadTo = async () => false; loadMore = async () => false; }
 }
 
 // Following a reply in room kept under it (lib/follow.ts): once words come steadily the reply writes into the room and
