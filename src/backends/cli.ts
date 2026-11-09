@@ -104,6 +104,20 @@ export const stopTiming = {
 /** How long after a write that waited on the pipe its process's exit, if that's why it settled, is reported (JsonLinesProcess.send). */
 const EXIT_SEEN_MS = 100;
 
+/**
+ * How much less of the CPU an agent CLI gets than the server (its niceness), and what it starts with it. The server
+ * needs a few milliseconds now and then, the CLIs and their builds as much as they can get: at the same priority, with
+ * many sessions busy, the server waits behind them, and so does every click in the window. CAVVY_CLI_NICE sets it (up
+ * to 19, the most there is); 0 runs them as the server is. `nice` is found on `env`'s PATH, the one the CLI starts
+ * with. Where there's none (Windows), they run as the server is.
+ */
+export function cliPriority(env: Record<string, string | undefined> = process.env): string[] {
+    const n = Number(env.CAVVY_CLI_NICE ?? 5);
+    if (!Number.isInteger(n) || n <= 0 || process.platform === "win32") return [];
+    const nice = Bun.which("nice", { PATH: env.PATH ?? "" });
+    return nice ? [nice, "-n", String(Math.min(n, 19))] : [];
+}
+
 /** A long-running CLI speaking JSON lines on stdin/stdout. */
 export class JsonLinesProcess {
     private proc: Subprocess<"pipe", "pipe", "pipe">;
@@ -118,7 +132,19 @@ export class JsonLinesProcess {
     readonly stderrEnded: Promise<void>;
 
     constructor(bin: string, args: string[], opts: { cwd: string; env?: Record<string, string> }) {
-        this.proc = Bun.spawn([bin, ...args], { cwd: opts.cwd, env: { ...childEnv(), ...opts.env }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+        const env = { ...childEnv(), ...opts.env };
+        // `nice` runs the CLI in its own place (exec), so its pid is the CLI's. Only for a CLI that's there to run:
+        // `nice` would start where the CLI can't, and fail naming itself. A spawn that fails at once (the folder is
+        // missing or can't be entered) starts nothing; it's tried again without `nice`, so the error names the CLI.
+        const spawn = (prefix: string[]) =>
+            Bun.spawn([...prefix, bin, ...args], { cwd: opts.cwd, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+        const priority = Bun.which(bin, { PATH: env.PATH ?? "", cwd: opts.cwd }) ? cliPriority(env) : [];
+        try {
+            this.proc = spawn(priority);
+        } catch (e) {
+            if (!priority.length) throw e;
+            this.proc = spawn([]);
+        }
         this.exited = this.proc.exited;
         this.pid = this.proc.pid;
         void this.exited.then(() => (this.gone = true));
