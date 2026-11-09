@@ -5,7 +5,7 @@
 import { foldCase, type Block, type Turn } from "@shared/protocol";
 import { cardOf } from "../components/blocks/Activity";
 import { planTitle } from "./plan-chat";
-import { toolLabel } from "./tool-words";
+import { sameInARow, toolLabel } from "./tool-words";
 import { commandLabel, commandMeta, outputLines } from "./command-row";
 import { stripAnsi } from "./format";
 import { renderMarkdown } from "./markdown";
@@ -41,7 +41,8 @@ function plain(md: string): string {
  * What a block shows, as find sees it. Thinking isn't searched; a tool row is its title and summary, not its
  * output (its details are for reading, not searching); a finished command's row is its command and output too.
  */
-function blockText(b: Block): string | undefined {
+/** `counted`: the first of a run of the same call, drawn as one row with a count and no result (sameInARow). */
+function blockText(b: Block, counted = false): string | undefined {
     switch (b.t) {
         case "text":
             return plain(b.text);
@@ -68,7 +69,7 @@ function blockText(b: Block): string | undefined {
             if (b.status === "streaming") return undefined;
             // As the row reads, a space between each part (ToolRow puts one there): verb, argument, summary.
             // A card (an edit, a command) doesn't show its verb: it's there for the screen reader only.
-            const meta = b.status === "denied" ? "Declined" : b.diff && b.status === "ok" ? undefined : b.summary;
+            const meta = counted ? undefined : b.status === "denied" ? "Declined" : b.diff && b.status === "ok" ? undefined : b.summary;
             return [cardOf(b) ? undefined : l.verb, l.arg, meta].filter(Boolean).join(" ");
         }
         case "notice":
@@ -90,8 +91,11 @@ export function findParts(turn: Turn): { part: string; text: string }[] {
         const { text, comments } = splitComments(turn.prompt.text);
         out.push({ part: "prompt", text: [text, ...comments.map((c) => c.text)].filter(Boolean).join("\n") });
     }
+    // The same call made again in a row is drawn once, counted (Activity.tsx StepRows): no row of its own to find in.
+    const same = sameInARow(turn.blocks, { apart: (t) => Boolean(cardOf(t)) });
     for (const b of turn.blocks) {
-        const text = blockText(b);
+        if (same.joined.has(b.id)) continue;
+        const text = blockText(b, same.more.has(b.id));
         if (text) out.push({ part: b.id, text });
     }
     return out;

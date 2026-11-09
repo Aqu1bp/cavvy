@@ -436,6 +436,8 @@ export interface PermissionInteraction {
     title: string;
     /** What it is, in a few words: "Run a shell command", "Edit file". */
     heading: string;
+    /** Where it acts, under the heading: the page a browser call is on, the MCP server a tool is from. */
+    where?: string;
     command?: string;
     description?: string;
     path?: string;
@@ -914,6 +916,8 @@ export interface ProjectInfo {
     trusted: boolean;
     /** Configuration that trusting the folder would turn on. */
     needsTrust: string[];
+    /** Nothing to turn on, but the user hasn't said they trust it: edits aren't checked for errors until they do. */
+    askTrust?: boolean;
     branch?: string;
     git: boolean;
     openedAt?: number;

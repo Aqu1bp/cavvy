@@ -85,6 +85,22 @@ test("find counts a plan's card by its title, not the faded glimpse under it", (
     expect(result.exitCode, result.stderr.toString()).toBe(0);
 });
 
+test("find counts the same call made again in a row once, as its one counted row reads", () => {
+    const result = Bun.spawnSync([process.execPath, "--no-env-file", "-e", String.raw`
+        import { expect, mock } from "bun:test";
+        mock.module("./src/components/blocks/Activity", () => ({ cardOf: (b) => b.name === "Bash" ? "command" : undefined }));
+        const { findParts, findMatches } = await import("./src/lib/find");
+        const read = (id, status = "ok") => ({ t: "tool", id, name: "Read", title: "Read(README.md)", status, input: { file_path: "README.md" }, summary: "Read 3 lines" });
+        const run = (id) => ({ t: "tool", id, name: "Bash", title: "Bash", status: "ok", input: { command: "ls" }, output: "a" });
+        const turn = { id: "turn", status: "done", blocks: [read("a"), read("b"), read("c"), run("x"), run("y"), read("d", "error")] };
+        // The three reads are one row, which shows no result; the two commands are cards, each its own; a failure keeps its row.
+        expect(findParts(turn).map((p) => p.part)).toEqual(["a", "x", "y", "d"]);
+        expect(findParts(turn)[0].text).toBe("Read README.md");
+        expect(findMatches([turn], "README.md").map((m) => m.part)).toEqual(["a", "d"]);
+    `], { cwd: resolve(import.meta.dir, "../gui"), stdout: "pipe", stderr: "pipe" });
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+});
+
 test("Chrome disables its sandbox only when running as root or in CI", () => {
     expect(sandboxArgs(0)).toEqual(["--no-sandbox"]);
     expect(sandboxArgs(1000, true)).toEqual(["--no-sandbox"]);

@@ -15,12 +15,12 @@ const run = (id: string, description: string | undefined, more: Partial<ToolBloc
     t: "tool", id, name: "Bash", title: "", status: "ok", durationMs: 2000, output: "done\n",
     input: { command: `cd /Users/me/project && bun test ./test/${id}.test.ts`, ...(description ? { description } : {}) }, ...more,
 });
-// Labels of every length; with and without the sandbox tag; a tally or not; a failure with its last line under it.
+// Labels of every length; with and without a tag (approved by the reviewer); a tally or not; a failure with its last line under it.
 const rows: ToolBlock[] = [
-    run("a", "Run GUI markdown streaming test", { sandboxed: true, output: "ok\n 5 pass\n", durationMs: 2000 }),
-    run("b", "Run GUI live line test", { sandboxed: true, output: "ok\n 8 pass\n", durationMs: 68 }),
-    run("c", "Typecheck", { sandboxed: true, durationMs: 701 }),
-    run("d", "Run UX and transcript fixes tests", { sandboxed: true, output: "ok\n 306 pass\n", durationMs: 11_000 }),
+    run("a", "Run GUI markdown streaming test", { sandboxed: true, approval: "a routine test run", output: "ok\n 5 pass\n", durationMs: 2000 }),
+    run("b", "Run GUI live line test", { sandboxed: true, approval: "a routine test run", output: "ok\n 8 pass\n", durationMs: 68 }),
+    run("c", "Typecheck", { sandboxed: true, approval: "a routine test run", durationMs: 701 }),
+    run("d", "Run UX and transcript fixes tests", { sandboxed: true, approval: "a routine test run", output: "ok\n 306 pass\n", durationMs: 11_000 }),
     run("e", "Build", { status: "error", output: "error: kiwi\nExit code: 1", durationMs: 325 }),
     run("f", undefined, { durationMs: 1_500 }),
     run("g", "A very long description of what this command is for, much longer than the column has room for", { output: "ok\n 14 pass\n", durationMs: 90_000 }),

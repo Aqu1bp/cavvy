@@ -302,7 +302,7 @@ export class PermissionChecker {
         if (!rules.length) return undefined;
         if (tool.name === "WebFetch" || tool.name === "BrowserNavigate") return { label: rules[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1"), rules };
         if (tool.name === "SimulatorControl") return { label: rules[0]!, rules };
-        return { label: tool.name, rules };
+        return { label: toolNoun(tool.name), rules };
     }
 
     /** The paths a command's sensitive words name (globs by the folder before them). */
@@ -1003,4 +1003,21 @@ export function registryHosts(cmd: string): string[] {
 function dirGlob(abs: string): string {
     const dir = dirname(abs);
     return dir === "/" ? "//**" : `/${dir}/**`;
+}
+
+const TOOL_NOUNS: Record<string, string> = {
+    BrowserAct: "browser actions",
+    BrowserEval: "scripts in the page",
+    SimulatorAct: "simulator actions",
+    GitCommit: "commits",
+    GitPush: "pushes",
+    CreatePullRequest: "pull requests",
+};
+
+/** What allowing a tool for good allows, in words: "browser actions", "create issue from github"; never mcp__… or BrowserAct. */
+export function toolNoun(name: string): string {
+    if (TOOL_NOUNS[name]) return TOOL_NOUNS[name]!;
+    const mcp = /^mcp__(.+?)__(.+)$/.exec(name);
+    if (mcp) return `${mcp[2]!.replace(/[_-]+/g, " ").trim()} from ${mcp[1]}`;
+    return name;
 }

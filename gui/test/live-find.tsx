@@ -106,7 +106,7 @@ async function checkCards() {
     // More than one line, so its card opens on the whole command; its output cut short, so it offers the rest.
     const command: ToolBlock = {
         t: "tool", id: "cmd", name: "Bash", title: "echo kiwi", input: { command: "echo kiwi\necho kiwi again" }, status: "running",
-        summary: "kiwi summary", output: "kiwi output\nlast kiwi line", outputTruncated: true, progress: "kiwi progress", startedAt: Date.now(),
+        summary: "kiwi summary", output: "kiwi output\nerror: last kiwi line", outputTruncated: true, progress: "kiwi progress", startedAt: Date.now(),
     };
     const edit: ToolBlock = {
         t: "tool", id: "edit", name: "Edit", title: "Edit(src/kiwi.ts)", input: { file_path: "src/kiwi.ts" }, status: "running", summary: "kiwi summary", startedAt: Date.now(),
@@ -151,7 +151,7 @@ async function checkCards() {
                 check(folded <= counted(i, "kiwi"), `${id} ${status}: folded, no more drawn matches (${folded}) than counted`);
                 // Its last line under the row isn't counted, since the body find opens has it.
                 const tail = card(id).querySelector<HTMLElement>(".cmd-tail");
-                check(status === "running" || status === "error" ? tail?.textContent === (status === "running" ? "kiwi progress" : "last kiwi line") : !tail, `${id} ${status}: last line in the header is "${tail?.textContent}"`);
+                check(status === "running" || status === "error" ? tail?.textContent === (status === "running" ? "kiwi progress" : "error: last kiwi line") : !tail, `${id} ${status}: last line in the header is "${tail?.textContent}"`);
                 check(!tail || tail.closest("[data-find-skip]"), `${id} ${status}: the row's last line is skipped by find`);
                 // While its command is still arriving there's nothing to open, and find counts none of it.
                 if (status === "streaming") {

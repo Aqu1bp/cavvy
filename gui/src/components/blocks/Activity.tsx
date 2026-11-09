@@ -8,7 +8,6 @@ import {
     AlertTriangle,
     Bot,
     Check,
-    ChevronDown,
     ChevronRight,
     CircleCheck,
     CircleX,
@@ -29,12 +28,13 @@ import {
     Sparkles,
     ShieldCheck,
     SquareArrowOutUpRight,
+    Smartphone,
     SquareTerminal,
     Wrench,
     X, GitCommitHorizontal, ArrowUpFromLine, GitPullRequestArrow } from "lucide-solid";
 import type { AgentRun, Block, ThinkingBlock, TodoEntry, ToolBlock } from "@shared/protocol";
-import { duration, firstChangedLine, plural, sleepSeconds, stripAnsi, tokens } from "../../lib/format";
-import { commandDescription, isLive, runningVerb, shortModelRef, toolLabel } from "../../lib/tool-words";
+import { duration, firstChangedLine, plural, sleepSeconds, stripAnsi } from "../../lib/format";
+import { commandDescription, isLive, resultEchoes, runningVerb, sameInARow, shortModelRef, toolKind, toolLabel } from "../../lib/tool-words";
 import { commandCut, commandLabel, commandMeta, exitCode, firstLine, highlightShell, outputLines, passTally, taskOf, type ShellToken } from "../../lib/command-row";
 import { enterRow, lineTone, STAGGER_MS } from "../../lib/live-line";
 import { backgroundOf } from "../../lib/background";
@@ -115,9 +115,12 @@ export function cardOf(t: ToolBlock): Card | undefined {
 
 export function ToolIcon(p: { name: string; size?: number; agent?: boolean }) {
     const s = () => p.size ?? 15;
+    const kind = () => toolKind(p.name);
     return (
         <Switch fallback={<Wrench size={s()} />}>
             <Match when={p.agent}><Bot size={s()} /></Match>
+            <Match when={kind().startsWith("Browser")}><Globe size={s()} /></Match>
+            <Match when={kind().startsWith("Simulator")}><Smartphone size={s()} /></Match>
             <Match when={p.name === "Read"}><FileText size={s()} /></Match>
             <Match when={p.name === "Grep" || p.name === "Glob"}><Search size={s()} /></Match>
             <Match when={p.name === "LS"}><FolderTree size={s()} /></Match>
@@ -346,10 +349,13 @@ function StepRows(p: GroupProps) {
     const runs = createMemo(() => (p.agents ?? []).filter((a) => agentIds().has(a.id)));
     const runIds = createMemo(() => new Set(runs().map((a) => a.id)));
     // A sub-agent with a run is a row in the sub-agents' card; a call still under way is the live line's.
-    const rows = createMemo(() => p.steps.filter((b) => b.t === "thinking" || (!runIds().has(b.id) && !(p.hideLive && isLive(b)))));
+    const shown = createMemo(() => p.steps.filter((b) => b.t === "thinking" || (!runIds().has(b.id) && !(p.hideLive && isLive(b)))));
+    const repeats = createMemo(() => sameInARow(shown()));
+    // The rows are the blocks themselves, so a call that joins the row above it only adds to that row's count.
+    const rows = createMemo(() => shown().filter((b) => !repeats().joined.has(b.id)));
     return (
         <div class="steps">
-            <For each={rows()}>{(b) => (b.t === "tool" ? <ToolRow tool={b} /> : <Thinking block={b} live={false} />)}</For>
+            <For each={rows()}>{(b) => (b.t === "tool" ? <ToolRow tool={b} also={repeats().more.get(b.id)} /> : <Thinking block={b} live={false} />)}</For>
             <Show when={runs().length}>
                 <SubAgentsRow runs={runs()} />
             </Show>
@@ -562,14 +568,13 @@ function StatusIcon(p: { tool: ToolBlock }) {
             <Match when={p.tool.status === "queued"}>
                 <Clock size={12} class="tone-muted" />
             </Match>
-            <Match when={p.tool.status === "error"}>
-                <X size={12} class="tone-err" />
-            </Match>
-            <Match when={p.tool.status === "denied"}>
-                <X size={12} class="tone-warn" />
-            </Match>
         </Switch>
     );
+}
+
+/** A result without the verb its row already says: "8 lines", not "Read 8 lines". */
+export function resultOf(summary: string | undefined): string | undefined {
+    return summary?.replace(/^(?:Read|Found|Listed|Fetched|Wrote|Matched) (?=\d)/, "");
 }
 
 const FILE_TOOLS = new Set(["Read", "Edit", "MultiEdit", "Write", "NotebookEdit"]);
@@ -603,27 +608,44 @@ export function OpenFileButton(p: { path: string; line?: number }) {
 }
 
 /** One call, as a plain line; opens into its details. */
-export function ToolRow(p: { tool: ToolBlock; activity?: boolean; detailsOnly?: boolean }) {
+/** `also`: the same call made again right after (sameInARow), counted in this row and opened with it. */
+type ToolRowProps = { tool: ToolBlock; activity?: boolean; detailsOnly?: boolean; also?: ToolBlock[] };
+
+export function ToolRow(p: ToolRowProps) {
     return <RenderBoundary raw={() => p.tool}><ToolRowContent {...p} /></RenderBoundary>;
 }
 
-function ToolRowContent(p: { tool: ToolBlock; activity?: boolean; detailsOnly?: boolean }) {
+function ToolRowContent(p: ToolRowProps) {
     const [open, setOpen] = createSignal(false);
     createEffect(() => { if (p.detailsOnly) setOpen(true); });
     // Shown by find: its whole title, where the match may be past the cut.
     const found = () => findReveal()?.part === p.tool.id;
     const label = createMemo(() => toolLabel(p.tool));
+    const all = () => [p.tool, ...(p.also ?? [])];
+    // Opened, a counted row shows each different call once: the same file read three times is one output.
+    const distinct = createMemo(() => {
+        const seen = new Set<string>();
+        return all().filter((t) => {
+            const k = JSON.stringify([t.input ?? null, t.output ?? t.summary ?? null]);
+            return !seen.has(k) && Boolean(seen.add(k));
+        });
+    });
+    const ms = () => (p.also?.length ? all().reduce((n, t) => n + (t.durationMs ?? 0), 0) : p.tool.durationMs);
     const meta = () => {
         const t = p.tool;
+        // Counted calls each have their own result: they're in its details.
+        if (p.also?.length) return undefined;
         if (t.status === "denied") return "Declined";
         if (t.diff && t.status === "ok") return undefined;
-        return t.summary;
+        if (t.status === "error") return t.summary?.trim() || "Failed";
+        if (resultEchoes(t)) return undefined;
+        return resultOf(t.summary);
     };
     return (
         <div ref={(el) => enterRow(el, motionMs(STAGGER_MS))} class={`tool ${open() ? "open" : ""} st-${p.tool.status} ${found() ? "found" : ""}`} data-find={p.tool.id}>
             <div class="tool-head" style={p.detailsOnly ? { display: "none" } : undefined}>
                 <button class={p.activity ? `tool-line wrow ${isLive(p.tool) ? "live" : ""} ${p.tool.status === "awaiting" || p.tool.status === "queued" ? p.tool.status : ""}` : "tool-line"} onClick={() => setOpen(!open())} aria-expanded={open()}>
-                    <span class="tool-icon">
+                    <span class="tool-icon" title={p.tool.sandboxed ? "Ran in the sandbox" : undefined}>
                         <Switch fallback={<ToolIcon name={p.tool.name} agent={p.tool.agent} size={14} />}>
                             <Match when={p.activity && p.tool.status === "awaiting"}><Hand size={14} /></Match>
                             <Match when={p.activity && p.tool.status === "queued"}><Clock size={14} /></Match>
@@ -631,11 +653,11 @@ function ToolRowContent(p: { tool: ToolBlock; activity?: boolean; detailsOnly?: 
                     </span>
                     {/* Spaces between the parts, as find counts them ("Read src/a.ts"); a flex row doesn't draw them. */}
                     <span class={p.activity && isLive(p.tool) && p.tool.status !== "awaiting" && p.tool.status !== "queued" ? "tool-verb wverb shimmer" : p.activity && isLive(p.tool) ? "tool-verb wverb" : "tool-verb"} data-find-skip={isLive(p.tool) || undefined}>{p.activity && isLive(p.tool) ? runningVerb(p.tool) : label().verb}</span>{!isLive(p.tool) && " "}
-                    <Show when={label().arg && (!p.activity || p.tool.status !== "streaming")}>
+                    <Show when={label().arg}>
                         <span class={p.activity ? "tool-arg warg mono truncate" : "tool-arg truncate"} data-find-skip={p.tool.status === "streaming" || undefined}>{label().arg}</span>{!isLive(p.tool) && " "}
                     </Show>
-                    <Show when={p.activity && p.tool.status === "streaming" && p.tool.receiving}>
-                        <span class="warg truncate" data-find-skip>{tokens(p.tool.receiving!)} chars</span>
+                    <Show when={p.also?.length}>
+                        <span class="tool-times num" title={`${all().length} times in a row`} data-find-skip>×{all().length}</span>
                     </Show>
                     <span class="tool-meta" data-find-skip={isLive(p.tool) || undefined}>
                         <Show when={p.activity && isLive(p.tool) && p.tool.job}>
@@ -644,13 +666,8 @@ function ToolRowContent(p: { tool: ToolBlock; activity?: boolean; detailsOnly?: 
                         <Show when={p.activity && isLive(p.tool) && liveTime(p.tool)}>
                             {(time) => <span class="wtime num" data-find-skip>{time()}</span>}
                         </Show>
-                        <Show when={p.tool.sandboxed}>
-                            <span class="tool-tag" title="Ran in the sandbox" data-find-skip>
-                                <ShieldCheck size={11} /> sandbox
-                            </span>
-                        </Show>
                         <Show when={meta()}>
-                            <span class="truncate">{meta()}</span>
+                            <span class={`truncate ${p.tool.status === "error" ? "tone-err" : p.tool.status === "denied" ? "tone-warn" : ""}`}>{meta()}</span>
                         </Show>
                         <Show when={p.tool.diff && p.tool.status === "ok"}>
                             <span class="stat" data-find-skip>
@@ -659,9 +676,9 @@ function ToolRowContent(p: { tool: ToolBlock; activity?: boolean; detailsOnly?: 
                             </span>
                         </Show>
                         <Show when={p.tool.diagnostics}>{(r) => <DiagnosticsChip report={r()} />}</Show>
-                        <Show when={p.tool.durationMs !== undefined && p.tool.durationMs >= 1000}>
+                        <Show when={ms() !== undefined && ms()! >= 1000}>
                             <span class="tool-dur num" data-find-skip>
-                                {duration(p.tool.durationMs!)}
+                                {duration(ms()!)}
                             </span>
                         </Show>
                         <Show when={!p.activity || !isLive(p.tool)}><StatusIcon tool={p.tool} /></Show>
@@ -676,7 +693,7 @@ function ToolRowContent(p: { tool: ToolBlock; activity?: boolean; detailsOnly?: 
             </Show>
             <Show when={open()}>
                 <div class="tool-detail" data-find-skip>
-                    <ToolDetails tool={p.tool} />
+                    <For each={distinct()}>{(t) => <ToolDetails tool={t} openLink={p.detailsOnly} />}</For>
                 </div>
             </Show>
         </div>
@@ -688,32 +705,20 @@ function ToolRowContent(p: { tool: ToolBlock; activity?: boolean; detailsOnly?: 
 // card's header as the argument and the summary; the verb is there for the
 // screen reader only, and like the rest it isn't searched, since it isn't seen.
 
-/** The state of a call as a small pill at the end of its card's header. */
-function StatusPill(p: { tool: ToolBlock; done?: string }) {
+/** How a change stands, when it isn't simply done: said in words at the end of its row, as a command's exit is. */
+function EditStatus(p: { tool: ToolBlock }) {
     return (
         <Switch>
             <Match when={p.tool.status === "awaiting"}>
-                <span class="tpill warn" data-find-skip>
+                <span class="tstate warn" data-find-skip>
                     <Hand size={12} /> {runningVerb(p.tool)}
                 </span>
             </Match>
-            <Match when={isLive(p.tool)}>
-                <span class="tpill run" data-find-skip>
-                    <Spinner size={11} /> {p.tool.status === "running" ? (runningVerb(p.tool) === "Waiting" ? "Waiting" : "Running") : runningVerb(p.tool)}
-                </span>
-            </Match>
             <Match when={p.tool.status === "error"}>
-                <span class="tpill fail" data-find-skip>
-                    <X size={12} /> Failed
-                </span>
+                <span class="tstate err" data-find-skip>Failed</span>
             </Match>
             <Match when={p.tool.status === "denied"}>
-                <span class="tpill fail">Declined</span>
-            </Match>
-            <Match when={p.done && p.tool.status === "ok"}>
-                <span class="tpill ok" data-find-skip>
-                    <Check size={12} /> {p.done}
-                </span>
+                <span class="tstate warn">Declined</span>
             </Match>
         </Switch>
     );
@@ -745,13 +750,32 @@ function EditCardContent(p: { tool: ToolBlock }) {
     const live = () => isLive(t());
     const ok = () => t().status === "ok";
     const meta = () => (t().status === "denied" || (t().diff && ok()) ? undefined : t().summary);
-    const input = () => (t().diff ? undefined : Object.keys(t().input ?? {}).length ? JSON.stringify(t().input, null, 2) : undefined);
-    const showOutput = () => (!t().diff || t().status === "error") && Boolean(t().output?.trim());
+    // Refused before it changed anything (not read first, old text not found): the row says Failed, and why under it,
+    // as a failed command's does; what it would have written isn't worth opening.
+    const refused = () => t().status === "error" && !t().diff;
+    const why = createMemo(() => (refused() ? (t().output ?? "").split("\n").map((l) => l.trim()).filter(Boolean).join(" ") || undefined : undefined));
+    const input = () => (t().diff || refused() ? undefined : Object.keys(t().input ?? {}).length ? JSON.stringify(t().input, null, 2) : undefined);
+    const showOutput = () => !refused() && (!t().diff || t().status === "error") && Boolean(t().output?.trim());
     const hasBody = () => Boolean(t().diff || t().diagnostics || input() || showOutput());
     const open = () => !(folded() ?? !(t().diff || t().diagnostics || t().status === "error"));
+    const toggle = () => hasBody() && setFolded(open());
+    // Under way: its time, once it has one (a write still arriving has only its size).
+    const time = () => (t().status === "running" || t().status === "queued" ? liveTime(t()) : undefined);
     return (
-        <div ref={(el) => enterRow(el, motionMs(STAGGER_MS))} class={`tcard edit-card st-${t().status} ${findReveal()?.part === t().id ? "found" : ""}`} data-find={t().id}>
-            <div class="tcard-h">
+        <div ref={(el) => enterRow(el, motionMs(STAGGER_MS))} class={`tcard edit-card st-${t().status} ${open() && hasBody() ? "open" : ""} ${live() ? "live" : ""} ${findReveal()?.part === t().id ? "found" : ""}`} data-find={t().id}>
+            {/* Like a command's row: the whole row opens and folds the change; its buttons come in on hover, after the file. */}
+            <div
+                class="tcard-h"
+                role={hasBody() ? "button" : undefined}
+                tabindex={hasBody() ? 0 : undefined}
+                aria-expanded={hasBody() ? open() : undefined}
+                onClick={toggle}
+                onKeyDown={(e) => {
+                    if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
+                    e.preventDefault();
+                    toggle();
+                }}
+            >
                 <span class="tcard-ic">
                     <Show when={!live()} fallback={<Spinner size={12} class="tone-accent" />}>
                         <Show when={t().diff?.status === "added" || (t().name === "Write" && !t().diff)} fallback={<FilePen size={14} />}>
@@ -759,40 +783,43 @@ function EditCardContent(p: { tool: ToolBlock }) {
                         </Show>
                     </Show>
                 </span>
-                <span class="tcard-verb" data-find-skip>{live() ? runningVerb(t()) : label().verb}{" "}</span>
-                <Show when={label().arg && t().status !== "streaming"}>
-                    <span class="tcard-p truncate" title={label().arg}>{label().arg}</span>{!live() && " "}
+                <span class={`tcard-verb ${live() && t().status !== "awaiting" ? "shimmer" : ""}`} data-find-skip>{live() ? runningVerb(t()) : label().verb}{" "}</span>
+                {/* Still arriving, its file is named as soon as that much has (the server reads it from the start of the input). */}
+                <Show when={label().arg}>
+                    <span class="tcard-p truncate" title={label().arg} data-find-skip={t().status === "streaming" || undefined}>{label().arg}</span>{!live() && " "}
                 </Show>
-                <Show when={t().status === "streaming" && t().receiving}>
-                    <span class="tcard-dim" data-find-skip>{tokens(t().receiving!)} chars</span>
-                </Show>
-                <Show when={t().diff && ok()}>
-                    <span class="stat" data-find-skip>
-                        <span class="add">+{t().diff!.added}</span>
-                        <span class="del">−{t().diff!.removed}</span>
-                    </span>
-                </Show>
-                <Show when={meta()}>
-                    <span class="tcard-dim truncate" data-find-skip={live() || undefined}>{meta()}</span>
-                </Show>
-                <Show when={t().diagnostics}>{(r) => <DiagnosticsChip report={r()} />}</Show>
-                <span class="grow" />
-                <Approved tool={t()} />
-                <StatusPill tool={t()} />
-                <Show when={t().diff && ok()}>
-                    <button class="icon-btn tcard-btn" data-find-skip title="Review in the side panel" aria-label={`Review ${t().diff!.path}`} onClick={() => openReview(t().diff!.path, "uncommitted")}>
-                        <FileDiff size={14} />
-                    </button>
-                </Show>
-                <Show when={toolFile(t())}>{(f) => <OpenFileButton path={f().path} line={f().line} />}</Show>
-                <Show when={hasBody()}>
-                    <button class="icon-btn tcard-btn" data-find-skip title={open() ? "Collapse" : "Expand"} aria-label={`${open() ? "Collapse" : "Show"} the ${t().diff ? "change" : "details"}`} aria-expanded={open()} onClick={() => setFolded(open())}>
-                        <Show when={open()} fallback={<ChevronRight size={14} />}>
-                            <ChevronDown size={14} />
-                        </Show>
-                    </button>
-                </Show>
+                <span class="tcard-tools" data-find-skip>
+                    <Show when={t().diff && ok()}>
+                        <button class="icon-btn tcard-btn" title="Review in the side panel" aria-label={`Review ${t().diff!.path}`} onClick={(e) => (e.stopPropagation(), openReview(t().diff!.path, "uncommitted"))}>
+                            <FileDiff size={14} />
+                        </button>
+                    </Show>
+                    <Show when={toolFile(t())}>{(f) => <OpenFileButton path={f().path} line={f().line} />}</Show>
+                </span>
+                <span class="tcard-end">
+                    <Approved tool={t()} />
+                    <Show when={t().diagnostics}>{(r) => <DiagnosticsChip report={r()} />}</Show>
+                    <Show when={meta()}>
+                        <span class="tcard-dim truncate" data-find-skip={live() || undefined}>{meta()}</span>
+                    </Show>
+                    <Show when={t().diff && ok()}>
+                        <span class="stat" data-find-skip>
+                            <span class="add">+{t().diff!.added}</span>
+                            <span class="del">−{t().diff!.removed}</span>
+                        </span>
+                    </Show>
+                    <Show when={time()}>{(tm) => <span class="tcard-dim num" data-find-skip>{tm()}</span>}</Show>
+                    <EditStatus tool={t()} />
+                </span>
+                <span class="chev-w" aria-hidden="true">
+                    <Show when={hasBody()}>
+                        <ChevronRight size={14} class="chev" />
+                    </Show>
+                </span>
             </div>
+            <Show when={why()}>
+                <div class="cmd-tail err" title={why()} data-find-skip>{why()}</div>
+            </Show>
             <Show when={open() && hasBody()}>
                 <div class="tcard-body" data-find-skip>
                     <Show when={t().diff}>{(d) => <DiffView diff={d()} maxLines={16} class="inline" />}</Show>
@@ -872,13 +899,17 @@ export function useCardFolds(): CardFolds {
  * The last line a command printed: the latest of its live output, or of its output once it failed,
  * passing over the exit code the tool adds at the end ("Exit code: 1"), which the row already says.
  */
-function lastLine(text: string | undefined): string | undefined {
+/** Words a line that says why a command failed has; a failure's last line without them (a file's closing "}") says nothing. */
+const SAYS_WHY = /\berror\b|\bfailed\b|\bfatal\b|not found|no such|denied|\bcannot\b|can't|\bunable\b|exception|traceback|refused|\binvalid\b|^usage:/i;
+
+/** Its last line; with `why`, the last that says why it failed, if one does. */
+function lastLine(text: string | undefined, why = false): string | undefined {
     if (!text) return undefined;
     // Only the end is wanted: don't clean a long output to read one line of it.
     const lines = stripAnsi(text.slice(-4096)).split(/\r\n|\r|\n/);
     for (let i = lines.length - 1; i >= 0; i--) {
         const line = lines[i]!.trim();
-        if (line && !/^Exit code:? -?\d+\b/.test(line)) return line;
+        if (line && !/^Exit code:? -?\d+\b/.test(line) && (!why || SAYS_WHY.test(line))) return line;
     }
     return undefined;
 }
@@ -920,12 +951,12 @@ function CommandCardContent(p: { tool: ToolBlock }) {
     const running = () => t().status === "running";
     const hasBody = () => Boolean(command()) && t().status !== "streaming";
     const shown = () => open() && hasBody();
-    const tail = createMemo(() => (shown() ? undefined : running() ? lastLine(t().progress) : failed() ? lastLine(t().output) : undefined));
+    const tail = createMemo(() => (shown() ? undefined : running() ? lastLine(t().progress) : failed() ? lastLine(t().output, true) : undefined));
     // Its time: a background task's own (so far, or how long it ran), else the call's.
     const time = () => {
         const tk = task();
         if (tk) return tk.status === "running" ? elapsed(now() - tk.startedAt) : tk.endedAt !== undefined ? duration(tk.endedAt - tk.startedAt) : undefined;
-        return live() ? liveTime(t()) : t().durationMs !== undefined ? duration(t().durationMs!) : undefined;
+        return live() ? liveTime(t()) : t().durationMs !== undefined && t().durationMs! >= 1000 ? duration(t().durationMs!) : undefined;
     };
     // What became of its background task, as its tag and footer say it.
     const taskWord = () => {
@@ -963,7 +994,7 @@ function CommandCardContent(p: { tool: ToolBlock }) {
             >
                 {/* Its columns (the label, then tags, result, time, chevron) line up with the rows around it (transcript.css). */}
                 <span class="cmd-what">
-                    <span class="ic">
+                    <span class="ic" title={t().sandboxed ? "Ran in the sandbox" : undefined}>
                         <Show when={live() || background()} fallback={<SquareTerminal size={14} />}>
                             <Spinner size={12} />
                         </Show>
@@ -971,11 +1002,8 @@ function CommandCardContent(p: { tool: ToolBlock }) {
                     <span class="sr-only" data-find-skip>{label().verb}{" "}</span>
                     {/* Folded, only what it's for: the command is in the row opened. Under way, find counts the command
                         (as on the live line, whose label the description is), so not this. */}
-                    <Show when={rowLabel() && t().status !== "streaming"}>
+                    <Show when={rowLabel()}>
                         <span class={`cmd-l ${description() ? "" : "solo"} ${!description() && command().includes("\n") ? "more" : ""}`} data-find-skip={live() || undefined}>{rowLabel()}</span>{" "}
-                    </Show>
-                    <Show when={t().status === "streaming" && t().receiving}>
-                        <span class="cmd-dim" data-find-skip>{tokens(t().receiving!)} chars</span>
                     </Show>
                     <span class="cmd-tools" data-find-skip>
                         <Show when={background() && task()!.stoppable && folds.sessionId}>
@@ -985,17 +1013,9 @@ function CommandCardContent(p: { tool: ToolBlock }) {
                                 </svg>
                             </button>
                         </Show>
-                        <Show when={command() && !commandCut(command())}>
-                            <CopyButton text={command} label="Copy command" class="cp" />
-                        </Show>
                     </span>
                 </span>
                 <span class="cmd-tags">
-                    <Show when={t().sandboxed}>
-                        <span class="cmd-tag" title="Ran in the sandbox" data-find-skip>
-                            <ShieldCheck size={12} /> sandbox
-                        </span>
-                    </Show>
                     <Approved tool={t()} />
                     {/* Started in the background: how its task is doing, when the session still lists it. */}
                     <Show when={task()} fallback={<Show when={t().input?.run_in_background === true && t().status === "ok"}><span class="cmd-tag badge" data-find-skip>Started in the background</span></Show>}>
@@ -1098,9 +1118,6 @@ function CommandBody(p: { tool: ToolBlock; live: boolean; running: boolean; code
                             <pre class={failed() ? "err" : ""}>
                                 <For each={lines()}>{(l, i) => <>{i() > 0 && "\n"}<span class={lineTone(l) ?? ""}>{l}</span></>}</For>
                             </pre>
-                            <span data-find-skip>
-                                <CopyButton text={() => lines().join("\n")} label="Copy output" class="cp" />
-                            </span>
                         </Show>
                     }
                 >
@@ -1278,11 +1295,12 @@ function Todos(p: { todos: TodoEntry[] }) {
     );
 }
 
-function ToolDetails(p: { tool: ToolBlock }) {
+/** `openLink`: the row's header (and its open button) is hidden, so the details offer to open the file. */
+function ToolDetails(p: { tool: ToolBlock; openLink?: boolean }) {
     return <RenderBoundary raw={() => p.tool}><ToolDetailsContent {...p} /></RenderBoundary>;
 }
 
-function ToolDetailsContent(p: { tool: ToolBlock }) {
+function ToolDetailsContent(p: { tool: ToolBlock; openLink?: boolean }) {
     const t = () => p.tool;
     const input = () => t().input ?? {};
     return (
@@ -1292,7 +1310,7 @@ function ToolDetailsContent(p: { tool: ToolBlock }) {
                     <ShieldCheck size={13} /> Approved by the auto-mode reviewer: {t().approval}
                 </div>
             </Show>
-            <Show when={!t().diff && toolFile(t())}>
+            <Show when={p.openLink && !t().diff && toolFile(t())}>
                 {(f) => (
                     <button class="link-btn tool-open" data-find-skip onClick={() => void openInEditor(f().path, f().line)}>
                         <SquareArrowOutUpRight size={13} /> Open in editor

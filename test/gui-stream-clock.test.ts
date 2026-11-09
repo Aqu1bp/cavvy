@@ -29,6 +29,15 @@ test("a step whose callback throws still runs the others, and the clock keeps st
     } finally {
         offStep(broken);
         offStep(streaming);
+        // Leave the clock as it started, for the tests after this one in the process: the step it has armed through the
+        // fakes (streaming asked for one at the last step) would stay pending for good, and the time of its last step
+        // would hold up another test's clock. A timer due runs empty; then one step runs at -Infinity, the "never" it began with.
+        for (const { fn } of timers.values()) fn();
+        now += 1000;
+        const settle = () => {};
+        onStep(settle);
+        offStep(settle);
+        frame?.(-Infinity);
         Object.assign(globalThis, { requestAnimationFrame: real.raf, cancelAnimationFrame: real.caf, setTimeout: real.timeout, clearTimeout: real.clear });
         performance.now = real.now;
         console.error = real.error;

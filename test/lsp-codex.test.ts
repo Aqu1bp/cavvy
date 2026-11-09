@@ -182,7 +182,7 @@ describe("diagnostics after Codex's edits", () => {
         await a.run("one");
         await a.run("two");
         expect(steers()).toEqual([]);
-        expect(notices(a.events)).toEqual(["Diagnostics after edits are off in this folder until you trust it (/trust): language servers run the project's own code."]);
+        expect(notices(a.events)).toEqual(["Edits aren't checked for errors until you /trust this folder."]);
         expect(states[0]!.lsp?.status()).toEqual([]);
     });
 });

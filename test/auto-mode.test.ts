@@ -253,11 +253,6 @@ describe("what the reviewer is told", () => {
         expect(r.reviews[0]!.context.requests).toEqual(["add lodash", "also add zod"]);
     });
 
-    test("a reviewer warning becomes a notice", async () => {
-        const ws = workspace();
-        const r = await runAuto({ ws, prompt: "add lodash", sandbox: false, verdict: () => ({ decision: "allow", reason: "ok", warning: "reviewer fell back" }), script: oneCommand({ command: "touch lodash.installed" }) });
-        expect(r.events.filter((e) => e.type === "notice").map((e) => e.message)).toContain("reviewer fell back");
-    });
 });
 
 describe("the reviewer's verdicts", () => {

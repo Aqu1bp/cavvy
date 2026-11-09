@@ -9,7 +9,7 @@
 // folds, by call: a roll doesn't close it, and the row the command commits as
 // is open too. What it says, and DWELL_MS, are in lib/live-line.ts.
 
-import { createEffect, createMemo, createSignal, For, Match, on, onCleanup, Show, Switch, untrack } from "solid-js";
+import { createComputed, createEffect, createMemo, createSignal, For, Match, on, onCleanup, Show, Switch, untrack } from "solid-js";
 import { ChevronRight, Clock, Hand } from "lucide-solid";
 import { now } from "../lib/clock";
 import { turnDuration } from "../lib/format";
@@ -29,6 +29,35 @@ export function motionMs(base: number): number {
 
 const EASE = "cubic-bezier(0.32, 0.72, 0, 1)";
 
+/** How long the line takes to fade where it was as it steps aside, before Settings → Motion scales it. */
+const STEP_ASIDE_MS = 220;
+
+/**
+ * The line stepping aside for what takes its place (the answer, the thought it became) fades out where it was, out
+ * of the flow, as that comes in: a crossfade, not a cut. A copy of its row does, so the line itself goes at once and
+ * leaves no gap. `at`: where the row was in its turn's reply, read before the page moved for what came.
+ */
+function fadeAway(stack: HTMLElement, at: { top: number; left: number; width: number }) {
+    const ms = motionMs(STEP_ASIDE_MS);
+    const host = stack.closest<HTMLElement>(".reply");
+    if (!ms || !host || typeof stack.animate !== "function") return;
+    const ghost = document.createElement("div");
+    ghost.className = "live-line ghost";
+    ghost.setAttribute("aria-hidden", "true");
+    ghost.dataset.findSkip = "";
+    const row = stack.cloneNode(true) as HTMLElement;
+    // Only the state on show: one rolling away would be drawn where its roll began. Nothing in it is a part find counts, or a button.
+    row.querySelectorAll(".layer.leaving").forEach((el) => el.remove());
+    row.querySelectorAll("[data-find]").forEach((el) => el.removeAttribute("data-find"));
+    row.removeAttribute("role");
+    row.removeAttribute("tabindex");
+    ghost.append(row);
+    Object.assign(ghost.style, { top: `${at.top}px`, left: `${at.left}px`, width: `${at.width}px` });
+    host.append(ghost);
+    const a = ghost.animate([{ opacity: 1 }, { opacity: 0, transform: "translateY(-3px)" }], { duration: ms, easing: "ease-out", fill: "forwards" });
+    a.onfinish = a.oncancel = () => ghost.remove();
+}
+
 type Layer = { id: number; key: string; state: () => LiveLineState; since: number; enter: boolean; leaving: () => boolean; leave: () => void };
 
 
@@ -44,10 +73,24 @@ export function LiveLine(p: { state: LiveLineState | undefined; hint?: string })
     let shownAt: number | undefined;
     let wait: ReturnType<typeof setTimeout> | undefined;
     onCleanup(() => clearTimeout(wait));
+    let stackEl: HTMLDivElement | undefined;
+    /** Where the row was as the line began to step aside: read before the page changes for what takes its place. */
+    let leftFrom: { top: number; left: number; width: number } | undefined;
+    createComputed(
+        on(key, (key, before) => {
+            leftFrom = undefined;
+            if (key !== undefined || before === undefined || !stackEl?.isConnected) return;
+            const host = stackEl.closest(".reply")?.getBoundingClientRect();
+            const r = stackEl.getBoundingClientRect();
+            if (host) leftFrom = { top: r.top - host.top, left: r.left - host.left, width: r.width };
+        }),
+    );
     const show = (key: string | undefined) => {
         const first = p.state;
         if (key === undefined || !first) {
             shownAt = undefined;
+            if (stackEl?.isConnected && leftFrom && layers().length) fadeAway(stackEl, leftFrom);
+            leftFrom = undefined;
             return setLayers([]);
         }
         const ms = motionMs(ROLL_MS);
@@ -109,6 +152,7 @@ export function LiveLine(p: { state: LiveLineState | undefined; hint?: string })
         <Show when={layers().length}>
             <div class="live-line" data-find-skip>
                 <div
+                    ref={stackEl}
                     class="live-stack"
                     role={command() ? "button" : undefined}
                     tabindex={command() ? 0 : undefined}
@@ -166,7 +210,7 @@ function LayerRow(p: { layer: Layer; hint?: string; isOpen: (id: string) => bool
         }),
     );
     return (
-        <div ref={el} class={`layer k-${s().kind}`} title={s().title} aria-hidden="true">
+        <div ref={el} class={`layer k-${s().kind} ${p.layer.leaving() ? "leaving" : ""}`} title={s().title} aria-hidden="true">
             <span class="lic">
                 <Switch fallback={<Spinner size={13} />}>
                     <Match when={s().kind === "think"}>
