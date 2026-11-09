@@ -89,10 +89,19 @@ export async function editTree(base: string, edits: Map<string, TreeEdit>, hashB
     return (await build("", Buffer.from(base, "hex")))!.toString("hex");
 }
 
-/** Objects read one after another from one `git cat-file --batch`, each asked for once the last is in. */
+/**
+ * Objects read one after another from one `git cat-file --batch-command`, each asked for once the last is in: a blob
+ * that may be too big to want is asked about first, and its bytes only when they're wanted. Git older than 2.36 has
+ * only --batch, which sends every blob asked for whole: that, where it's all there is.
+ */
 export class ObjectReader {
-    private proc: ReturnType<typeof Bun.spawn>;
-    private reader: { read(): Promise<{ value?: Uint8Array; done: boolean }>; releaseLock(): void };
+    /** Whether git has --batch-command: undefined until a reader's found out. */
+    static batchCommand: boolean | undefined;
+    private proc!: ReturnType<typeof Bun.spawn>;
+    private reader!: { read(): Promise<{ value?: Uint8Array; done: boolean }>; releaseLock(): void };
+    private command = false;
+    /** Bytes git has sent. */
+    received = 0;
     /** Whether `reader` holds its stdout (let go while idle). */
     private held = true;
     /** What's come in and not yet taken, in the pieces it came in (joined once, when taken). */
@@ -102,18 +111,56 @@ export class ObjectReader {
     /** Called once it's closed, by whoever closed it (its deadline included). */
     onClose?: () => void;
 
-    constructor(cwd: string, env: Record<string, string>, deadline: number) {
-        this.proc = Bun.spawn(gitArgv(["cat-file", "--batch"]), { cwd, env: gitEnvironment({ privateEnv: env }), stdin: "pipe", stdout: "pipe", stderr: "ignore" });
-        this.reader = (this.proc.stdout as ReadableStream<Uint8Array>).getReader() as unknown as ObjectReader["reader"];
+    constructor(private cwd: string, private env: Record<string, string>, deadline: number) {
+        this.start(ObjectReader.batchCommand !== false);
         this.timer = setTimeout(() => this.close(), Math.max(0, deadline - Date.now()));
+    }
+
+    private start(command: boolean) {
+        this.command = command;
+        this.proc = Bun.spawn(gitArgv(["cat-file", command ? "--batch-command" : "--batch"]), { cwd: this.cwd, env: gitEnvironment({ privateEnv: this.env }), stdin: "pipe", stdout: "pipe", stderr: "ignore" });
+        this.reader = (this.proc.stdout as ReadableStream<Uint8Array>).getReader() as unknown as ObjectReader["reader"];
+        this.held = true;
+    }
+
+    /**
+     * `f`, the requests it writes and the answers it reads. Where git stopped without a word as it started (an
+     * older git, which doesn't know --batch-command, says why on stderr and exits): once more with --batch, which
+     * says from then on whether that's what it was.
+     */
+    private async ask<T>(f: () => Promise<T>): Promise<T> {
+        try {
+            return await f();
+        } catch (e) {
+            if (!this.command || this.received || this.closed) throw e;
+            // A git that won't start in this folder, or was stopped, isn't an old one.
+            const code = await Promise.race([this.proc.exited, Bun.sleep(1000).then(() => undefined)]);
+            if (!code || this.proc.signalCode || this.closed) throw e;
+            try { (this.proc.stdin as import("bun").FileSink).end(); } catch {}
+            this.chunks = [];
+            this.have = 0;
+            this.start(false);
+            const out = await f();
+            ObjectReader.batchCommand = false;
+            return out;
+        }
     }
 
     private async more() {
         if (!this.held) this.busy();
         const { value, done } = await this.reader.read();
         if (done || !value) throw new Error("Snapshot objects are missing or unreadable.");
+        if (this.command && !this.received) ObjectReader.batchCommand = true;
         this.chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
         this.have += value.byteLength;
+        this.received += value.byteLength;
+    }
+
+    /** Requests, written and sent: `contents` or `info` with --batch-command, the id alone (contents) with --batch. */
+    private async send(oids: readonly string[], what: "contents" | "info" = "contents") {
+        const stdin = this.proc.stdin as import("bun").FileSink;
+        stdin.write(oids.map((o) => (this.command ? `${what} ${o}\n` : `${o}\n`)).join(""));
+        await stdin.flush();
     }
 
     /** The next `n` bytes, waited for. */
@@ -167,26 +214,44 @@ export class ObjectReader {
     }
 
     async read(oid: string, type: string): Promise<Buffer> {
-        const stdin = this.proc.stdin as import("bun").FileSink;
-        stdin.write(`${oid}\n`);
-        await stdin.flush();
-        const o = await this.next(oid);
+        const o = await this.ask(async () => {
+            await this.send([oid]);
+            return this.next(oid);
+        });
         if (!o?.buf || o.type !== type) throw new Error("Snapshot objects are missing or unreadable.");
         return o.buf;
     }
 
-    /** Several at once, asked for together: those the repository has, by id; a blob over `maxBlob` bytes, without its bytes. */
+    /**
+     * Several at once, asked for together: those the repository has, by id; a blob over `maxBlob` bytes, without its
+     * bytes (with --batch-command, git doesn't send them either: each is asked about first).
+     */
     async readAll(oids: readonly string[], maxBlob?: number): Promise<Map<string, { type: string; buf?: Buffer }>> {
-        const out = new Map<string, { type: string; buf?: Buffer }>();
-        if (!oids.length) return out;
-        const stdin = this.proc.stdin as import("bun").FileSink;
-        stdin.write(oids.map((o) => `${o}\n`).join(""));
-        await stdin.flush();
-        for (const oid of oids) {
-            const o = await this.next(oid, maxBlob);
-            if (o) out.set(oid, o);
-        }
-        return out;
+        if (!oids.length) return new Map();
+        return this.ask(async () => {
+            const out = new Map<string, { type: string; buf?: Buffer }>();
+            let wanted = oids;
+            if (this.command && maxBlob !== undefined) {
+                await this.send(oids, "info");
+                const fit: string[] = [];
+                for (const oid of oids) {
+                    const [id, kind, size] = (await this.line()).split(" ");
+                    if (id !== oid) throw new Error("Snapshot objects are missing or unreadable.");
+                    if (kind === "missing" || size === undefined) continue;
+                    if (kind === "blob" && Number(size) > maxBlob) out.set(oid, { type: kind });
+                    else fit.push(oid);
+                }
+                wanted = fit;
+            }
+            if (!wanted.length) return out;
+            await this.send(wanted);
+            for (const oid of wanted) {
+                const o = await this.next(oid, maxBlob);
+                if (o) out.set(oid, o);
+            }
+            // In the order asked for.
+            return new Map(oids.filter((o) => out.has(o)).map((o) => [o, out.get(o)!]));
+        });
     }
 
     /** Waiting to be asked again (kept between captures): it doesn't keep the process running by itself. */
@@ -212,7 +277,10 @@ export class ObjectReader {
         }
     }
 
+    private closed = false;
+
     close() {
+        this.closed = true;
         clearTimeout(this.timer);
         try { (this.proc.stdin as import("bun").FileSink).end(); } catch {}
         this.proc.kill();

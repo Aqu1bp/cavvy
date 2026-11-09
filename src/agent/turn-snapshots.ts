@@ -2467,7 +2467,7 @@ export class TurnSnapshots {
     }
 
     /**
-     * A tree's bytes: known (treeBodies), or read by this session's `git cat-file --batch`, kept between captures (a
+     * A tree's bytes: known (treeBodies), or read by this session's `git cat-file` (ObjectReader), kept between captures (a
      * turn's end reads the trees of the folders it changed, most of them new to it) and let go of after a minute idle.
      */
     private async readTree(root: string, oid: string, deadline: number): Promise<Buffer> {

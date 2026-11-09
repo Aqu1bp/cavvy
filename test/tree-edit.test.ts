@@ -81,3 +81,55 @@ test("several objects read together come back whole, by id, without the ones the
         reader.close();
     }
 });
+
+test("a blob over the size asked for comes without its bytes, and git doesn't send them", async () => {
+    const cwd = join(realpathSync(iso.home), "read-big");
+    mkdirSync(cwd, { recursive: true });
+    git(cwd, ["init", "-q"]);
+    const big = git(cwd, ["hash-object", "-w", "--stdin"], Buffer.alloc(8 * 1024 * 1024, "big\n")).trim();
+    const small = git(cwd, ["hash-object", "-w", "--stdin"], "small\n").trim();
+    const reader = new ObjectReader(cwd, {}, Date.now() + 60_000);
+    try {
+        const got = await reader.readAll([big, small], 1024 * 1024);
+        expect([...got].map(([oid, o]) => [oid, o.type, o.buf?.toString()])).toEqual([[big, "blob", undefined], [small, "blob", "small\n"]]);
+        expect(reader.received).toBeLessThan(1024);
+    } finally {
+        reader.close();
+    }
+});
+
+test("with a git that has no --batch-command, objects are still read, big ones as well", async () => {
+    const cwd = join(realpathSync(iso.home), "read-old-git");
+    mkdirSync(cwd, { recursive: true });
+    git(cwd, ["init", "-q"]);
+    const big = git(cwd, ["hash-object", "-w", "--stdin"], Buffer.alloc(2 * 1024 * 1024, "big\n")).trim();
+    const small = git(cwd, ["hash-object", "-w", "--stdin"], "small\n").trim();
+    const tree = treeOf(cwd, new Map([["a.txt", "small\n"]]));
+    // An older git, as it answers an option it doesn't know.
+    const bin = join(realpathSync(iso.home), "old-git-bin");
+    mkdirSync(bin, { recursive: true });
+    const real = Bun.which("git")!;
+    writeFileSync(join(bin, "git"), `#!/bin/sh\nfor a in "$@"; do [ "$a" = --batch-command ] && { echo "error: unknown option \\\`batch-command'" >&2; exit 129; }; done\nexec "${real}" "$@"\n`, { mode: 0o755 });
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path}`;
+    const known = ObjectReader.batchCommand;
+    ObjectReader.batchCommand = undefined;
+    const reader = new ObjectReader(cwd, {}, Date.now() + 60_000);
+    try {
+        const got = await reader.readAll([big, small], 1024 * 1024);
+        expect([...got].map(([oid, o]) => [oid, o.type, o.buf?.toString()])).toEqual([[big, "blob", undefined], [small, "blob", "small\n"]]);
+        expect((await reader.read(tree, "tree")).length).toBeGreaterThan(0);
+        expect(ObjectReader.batchCommand).toBe(false);
+        // The next one starts with what this git has.
+        const next = new ObjectReader(cwd, {}, Date.now() + 60_000);
+        try {
+            expect((await next.read(small, "blob")).toString()).toBe("small\n");
+        } finally {
+            next.close();
+        }
+    } finally {
+        reader.close();
+        process.env.PATH = path;
+        ObjectReader.batchCommand = known;
+    }
+});
