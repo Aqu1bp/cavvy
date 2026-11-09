@@ -4,8 +4,10 @@ dist/
 .DS_Store
 # Temporary executables `bun build --compile` can leave behind
 *.bun-build
-# Local agent state: settings, worktrees, memory
-.claude/
+# Local agent state: local settings, worktrees, memory. The project's skills and settings are shared.
+.claude/*
+!.claude/skills/
+!.claude/settings.json
 # Environment files with keys (the example stays tracked)
 .env.*
 !.env.example
