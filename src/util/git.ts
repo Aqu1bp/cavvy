@@ -1,6 +1,6 @@
 import { spawnSync } from "bun";
-import { lstatSync } from "fs";
-import { delimiter, isAbsolute } from "path";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, realpathSync, statSync } from "fs";
+import { delimiter, dirname, isAbsolute, join } from "path";
 import { childEnv } from "./env";
 import { trustedByUser } from "../config/trust";
 
@@ -178,9 +178,64 @@ export interface GitSnapshot {
     recentCommits: string;
 }
 
+const mine = (path: string) => statSync(path).uid === process.getuid?.();
+
+/** A file of ours and of a size HEAD could be, or nothing. Opened so that neither a pipe (it would hang) nor a link gets further. */
+function readSmall(path: string): string | undefined {
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+        const st = fstatSync(fd);
+        if (!st.isFile() || st.size > 4096 || st.uid !== process.getuid?.()) return undefined;
+        const bytes = Buffer.alloc(4097);
+        const n = readSync(fd, bytes, 0, bytes.length, 0);
+        return n > 4096 ? undefined : bytes.toString("utf8", 0, n);
+    } finally {
+        closeSync(fd);
+    }
+}
+
+/**
+ * What `git branch --show-current` says, from the HEAD file: this runs on the server's thread, and a process would stop
+ * every session until it returned. "" when HEAD is detached; undefined whenever it takes git to say, as anything not plain
+ * does: a reftable repository (its HEAD names nothing), a bare one, a stop to the search, a mount on the way up.
+ */
+function headBranch(cwd: string): string | undefined {
+    if (process.env.GIT_CEILING_DIRECTORIES !== undefined || process.env.GIT_DISCOVERY_ACROSS_FILESYSTEM !== undefined) return undefined;
+    try {
+        let dir = realpathSync(cwd);
+        const device = lstatSync(dir).dev;
+        let dot = lstatSync(join(dir, ".git"), { throwIfNoEntry: false });
+        while (!dot) {
+            // Inside a repository's own folder.
+            if (existsSync(join(dir, "HEAD")) || dir === dirname(dir)) return undefined;
+            dir = dirname(dir);
+            dot = lstatSync(join(dir, ".git"), { throwIfNoEntry: false });
+        }
+        if (lstatSync(dir).dev !== device) return undefined;
+        let gitDir = join(dir, ".git");
+        if (dot.isFile()) {
+            const pointer = /^gitdir: ([^\r\n]+)\r?\n?$/.exec(readSmall(gitDir) ?? "")?.[1];
+            if (!pointer) return undefined;
+            // As written: normalized, a `..` after a link would be somewhere else.
+            gitDir = isAbsolute(pointer) ? pointer : `${dir}/${pointer}`;
+        } else if (!dot.isDirectory()) return undefined;
+        // Someone else's repository: git decides, and may refuse it.
+        if (!mine(dir) || !mine(gitDir)) return undefined;
+        if (!existsSync(`${gitDir}/commondir`) && !(existsSync(`${gitDir}/objects`) && existsSync(`${gitDir}/refs`))) return undefined;
+        const head = readSmall(`${gitDir}/HEAD`);
+        if (head === undefined) return undefined;
+        if (/^([0-9a-f]{40}|[0-9a-f]{64})\n$/.test(head)) return "";
+        const name = /^ref: refs\/heads\/(\S+)\n$/.exec(head)?.[1];
+        const plain = name && !name.includes("..") && name.split("/").every((part) => /^\w[\w.+-]*$/.test(part) && !part.endsWith(".") && !part.endsWith(".lock"));
+        return plain ? name : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
 /** Branch discovery never reads working file contents or commit signatures. */
 export function gitBranch(cwd: string): string | undefined {
-    return git(cwd, ["branch", "--show-current"]) || undefined;
+    return (headBranch(cwd) ?? git(cwd, ["branch", "--show-current"])) || undefined;
 }
 
 /**
@@ -286,7 +341,7 @@ async function statusSkipReason(cwd: string, signal?: AbortSignal): Promise<stri
 export async function gitSnapshot(cwd: string, signal?: AbortSignal): Promise<GitSnapshot | undefined> {
     if (!gitRoot(cwd)) return undefined;
     const [branch, main, statusSkipped, recentCommits] = await Promise.all([
-        gitAsync(cwd, ["branch", "--show-current"], { signal }).then((b) => b || undefined),
+        Promise.resolve(headBranch(cwd) ?? gitAsync(cwd, ["branch", "--show-current"], { signal })).then((b) => b || undefined),
         mainBranch(cwd, signal),
         // Implicit session trust (no Cavvy configuration) says nothing about .git/config.
         (async () => {
@@ -314,8 +369,9 @@ export async function gitSnapshot(cwd: string, signal?: AbortSignal): Promise<Gi
 
 /** What origin/HEAD points at; else master, else main, if there's one. */
 async function mainBranch(cwd: string, signal?: AbortSignal): Promise<string | undefined> {
-    const head = (await gitAsync(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], { signal }))?.replace(/^origin\//, "");
+    const out = await gitAsync(cwd, ["for-each-ref", "--format=%(refname) %(symref)", "refs/remotes/origin/HEAD", "refs/heads/main", "refs/heads/master"], { signal });
+    const refs = new Map((out ?? "").split("\n").map((line) => line.split(" ") as [string, string]));
+    const head = refs.get("refs/remotes/origin/HEAD")?.replace(/^refs\/remotes\/(origin\/)?/, "");
     if (head) return head;
-    const [main, master] = await Promise.all(["main", "master"].map((b) => gitAsync(cwd, ["rev-parse", "--verify", "--quiet", b], { signal })));
-    return master !== undefined ? "master" : main !== undefined ? "main" : undefined;
+    return refs.has("refs/heads/master") ? "master" : refs.has("refs/heads/main") ? "main" : undefined;
 }

@@ -12,7 +12,7 @@
 // writes the index, refs or objects.
 
 import { AsyncLocalStorage } from "async_hooks";
-import { constants, type Stats } from "fs";
+import { closeSync, constants, fstatSync, openSync, readSync, type Stats } from "fs";
 import type { BigIntStats } from "fs";
 import { lstat, open, readlink } from "fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "path";
@@ -252,14 +252,20 @@ type ContentId = Pick<Entry, "oid" | "norm" | "crlf" | "autoBinary">;
 const idCache = new Map<string, ContentId & { stamp: string }>();
 
 const OPEN_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+/** OPEN_FLAGS, following a link (a file the user's config names, which may be one). */
+const FOLLOW_FLAGS = constants.O_RDONLY | constants.O_NONBLOCK;
+/** Nothing at the path (or a file where a folder is on the way): not a file that can't be read. */
+const absent = (e: unknown) => ["ENOENT", "ENOTDIR"].includes((e as NodeJS.ErrnoException)?.code ?? "");
 
 /**
- * A regular file's bytes, opened without following a link and checked to
- * still be a regular file (a FIFO would block). undefined when it can't be read.
+ * A regular file's bytes, opened without following a link (unless `follow`) or waiting (a FIFO would block),
+ * and checked to still be a regular file. Over `max` bytes: its size, without them. undefined when it can't be
+ * read; null when there's nothing there.
  */
-export async function readRegular(abs: string, max: number): Promise<{ buf?: Buffer; size: number } | undefined> {
-    const fh = await open(abs, OPEN_FLAGS).catch(() => undefined);
-    if (!fh) return undefined;
+export async function readRegular(abs: string, max: number, follow = false): Promise<{ buf?: Buffer; size: number } | undefined | null> {
+    let gone = false;
+    const fh = await open(abs, follow ? FOLLOW_FLAGS : OPEN_FLAGS).catch((e) => void (gone = absent(e)));
+    if (!fh) return gone ? null : undefined;
     try {
         const st = await fh.stat();
         if (!st.isFile()) return undefined;
@@ -268,7 +274,8 @@ export async function readRegular(abs: string, max: number): Promise<{ buf?: Buf
         const chunks: Buffer[] = [];
         let total = 0;
         for (;;) {
-            const chunk = Buffer.alloc(Math.min(256 * 1024, max + 1 - total));
+            // Sized to the file, with a little over to find its end: most are small, and this runs for every file of a repository.
+            const chunk = Buffer.allocUnsafe(Math.min(Math.min(256 * 1024, total < st.size ? st.size + 1 - total : 4096), max + 1 - total));
             const { bytesRead } = await fh.read(chunk, 0, chunk.length, null);
             if (!bytesRead) break;
             chunks.push(chunk.subarray(0, bytesRead));
@@ -280,6 +287,32 @@ export async function readRegular(abs: string, max: number): Promise<{ buf?: Buf
         return undefined;
     } finally {
         await fh.close().catch(() => {});
+    }
+}
+
+/** readRegular, without waiting: for a small file, where each step's wait on a busy machine costs more than reading it. */
+export function readRegularSync(abs: string, max: number, follow = false): { buf?: Buffer; size: number } | undefined | null {
+    let fd: number;
+    try { fd = openSync(abs, follow ? FOLLOW_FLAGS : OPEN_FLAGS); } catch (e) { return absent(e) ? null : undefined; }
+    try {
+        const st = fstatSync(fd);
+        if (!st.isFile()) return undefined;
+        if (st.size > max) return { size: st.size };
+        const chunks: Buffer[] = [];
+        let total = 0;
+        for (;;) {
+            const chunk = Buffer.allocUnsafe(Math.min(Math.min(256 * 1024, total < st.size ? st.size + 1 - total : 4096), max + 1 - total));
+            const n = readSync(fd, chunk, 0, chunk.length, null);
+            if (!n) break;
+            chunks.push(chunk.subarray(0, n));
+            total += n;
+            if (total > max) return { size: total };
+        }
+        return { buf: chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks), size: total };
+    } catch {
+        return undefined;
+    } finally {
+        try { closeSync(fd); } catch {}
     }
 }
 
@@ -463,6 +496,15 @@ export class WorkTree {
         if (!(await this.inside(rel, strict))) return undefined;
         return lstat(join(this.root, rel)).catch((e: NodeJS.ErrnoException) => {
             // Snapshots must distinguish deletion from a path they cannot read.
+            if (strict && e.code !== "ENOENT" && e.code !== "ENOTDIR") throw e;
+            return undefined;
+        });
+    }
+
+    /** As `stat`, in full precision: nanosecond times, as Git's index records them. */
+    async statBig(rel: string, strict = false): Promise<BigIntStats | undefined> {
+        if (!(await this.inside(rel, strict))) return undefined;
+        return lstat(join(this.root, rel), { bigint: true }).catch((e: NodeJS.ErrnoException) => {
             if (strict && e.code !== "ENOENT" && e.code !== "ENOTDIR") throw e;
             return undefined;
         });

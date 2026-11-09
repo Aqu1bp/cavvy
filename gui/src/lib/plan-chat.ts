@@ -33,12 +33,13 @@ export function stepsKey(todos: readonly TodoEntry[]): string {
  * says "All steps done" until then. A list still under way is never stale, and one whose writing can't be found
  * (compacted away) is kept: the strip's ✕ hides it.
  */
-export function stepsStale(todos: readonly TodoEntry[], turns: readonly { blocks: readonly { t: string; name?: string }[] }[]): boolean {
+export function stepsStale(todos: readonly TodoEntry[], turns: readonly { blocks: readonly { t: string; name?: string }[] }[], earlier = 0): boolean {
     if (!todos.length || todos.some((t) => t.status !== "completed")) return false;
     for (let i = turns.length - 1; i >= 0; i--) {
         if (turns[i]!.blocks.some((b) => b.t === "tool" && b.name === "TodoWrite")) return i < turns.length - 1;
     }
-    return false;
+    // Written in a turn before those the window has (`earlier` of them): turns have started since.
+    return earlier > 0 && turns.length > 0;
 }
 
 /** The plan under its title: what the card's preview shows (the title's own line isn't repeated). */

@@ -1520,6 +1520,42 @@ describe("steering: a message sent while Claude Code works goes to it at once", 
         expect(logLines().find((l) => "liveReply" in l)?.liveReply).not.toContain(" 9.");
     });
 
+    test("sent before it says anything: written \"now\"; 2.1.316 ends the cut turn as an error, but the turn goes on with the message, and no error shows", async () => {
+        process.env.FAKE_SCENARIO = "steer-live";
+        process.env.FAKE_LIVE_FIRST_MS = "3000";
+        const { run, events, agent, queued, wakes } = await makeAgent();
+        const done = run("start");
+        await until(() => Boolean(userSent("start")), 2000, "the prompt written");
+        await Bun.sleep(300);
+        steer(agent, queued, "stop counting");
+        await until(() => Boolean(userSent("stop counting")), 2000, "the steer written");
+        expect(userSent("stop counting").priority).toBe("now");
+        expect(await done).toBe("done");
+        expect(midTurn()).toEqual([{ text: "stop counting", priority: "now", phase: "starting", synthetic: false }]);
+        expect(texts(events)).toContain("Took: stop counting");
+        expect(notices(events).join("\n")).not.toMatch(/ede_diagnostic|error/i);
+        expect(events.some((e) => e.type === "turn_end" && (e as any).reason === "error")).toBe(false);
+        expect(wakes).toHaveLength(0);
+    });
+
+    test("a prompt sent while Claude Code's own turn runs, which it takes into that turn (2.1.316, its result names it): answered there, not left waiting", async () => {
+        process.env.FAKE_SCENARIO = "steer-live";
+        process.env.FAKE_TOOL_MS = "1500";
+        process.env.FAKE_WRITE_MS = "50";
+        process.env.FAKE_LIVE_WAKE_MS = "100";
+        const { run, wakes, adopt } = await makeAgent();
+        expect(await run("start")).toBe("done");
+        // Its own turn is in its call; the host hasn't taken it over (busy, say) when the user's next prompt goes.
+        await until(() => logLines().some((l) => l.liveWake) && wakes.length > 0, 5000, "the turn Claude Code started by itself");
+        const next = run("and the tests");
+        await until(() => Boolean(userSent("and the tests")), 2000, "the prompt written");
+        const r = await Promise.race([next, Bun.sleep(5000).then(() => "still waiting")]);
+        expect(midTurn()).toEqual([{ text: "and the tests", priority: null, phase: "tool", synthetic: false }]);
+        expect(logLines().find((l) => l.foldedAtToolResult?.length)?.foldedAtToolResult).toEqual(["and the tests"]);
+        expect(r).toBe("done");
+        expect(await adopt(wakes[0]!)).toBe("done");
+    }, 20_000);
+
     test("sent as the turn ends (its result in while the message is taken): Claude Code runs it after, as the same turn, once", async () => {
         process.env.FAKE_SCENARIO = "steer-live";
         process.env.FAKE_TOOL_MS = "50";

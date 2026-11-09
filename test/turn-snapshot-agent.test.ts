@@ -10,6 +10,8 @@ const { Agent } = await import("../src/agent/agent");
 const { Session } = await import("../src/agent/session");
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { gitArgv, gitEnv } = await import("../src/util/git");
+const { TurnSnapshots } = await import("../src/agent/turn-snapshots");
+const { endRun } = await import("../src/run-setup");
 const dirs: string[] = [];
 afterAll(() => {
     for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
@@ -274,5 +276,32 @@ test("a real agent turn captures shell edits and a stubbed backend's writes toge
     const changes = await agent.turnSnapshots!.changes({ scope: "last-turn" });
     expect(changes.files.map((f) => f.path).sort()).toEqual(["backend.txt", "shell.txt"]);
     expect(changes.files.every((f) => f.added === 1 && f.removed === 1)).toBe(true);
+    session.release();
+});
+
+test("a run that ends right after its turn keeps that turn's closing snapshot", async () => {
+    const backend = {
+        agentBackend: true as const,
+        setMode() {},
+        listModels: async () => [],
+        stream: async () => answer(),
+        compact: async () => ({ reason: "done" as const, text: "", actions: [] }),
+        runTurn: async (turn: BackendTurn) => {
+            writeFileSync(join(turn.cwd, "a.txt"), "after\n");
+            return { reason: "done" as const, text: "done", actions: [] };
+        },
+    };
+    const { agent, session, run } = setup(backend);
+    const cwd = agent.state.cwd;
+    const env = gitEnv();
+    for (const key of Object.keys(env)) if (key.startsWith("GIT_")) delete env[key];
+    expect(Bun.spawnSync(gitArgv(["init", "-q"]), { cwd, env: { ...env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" } }).exitCode).toBe(0);
+    writeFileSync(join(cwd, "a.txt"), "before\n");
+    await run();
+    // As `cavvy -p` does, before it exits.
+    const runSetup = { settings: {}, model: { provider: "test", id: "test" }, session, cwd, toolState: agent.state, mcp: { closeAll: async () => {} } };
+    await endRun(runSetup as any, agent, undefined, () => {});
+    const reopened = new TurnSnapshots(agent.turnSnapshots!.dir, cwd).list();
+    expect(reopened.map((t) => [!!t.end, t.changed])).toEqual([[true, ["a.txt"]]]);
     session.release();
 });

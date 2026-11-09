@@ -295,8 +295,9 @@ export function startRun(s: RunSetup, warn: HookNotice): Promise<unknown> {
 }
 
 /**
- * The end of a run: SessionEnd hooks, delegated tasks, background shells and
- * MCP servers. `started` is startRun's promise.
+ * The end of a run: SessionEnd hooks, delegated tasks, background shells,
+ * MCP servers, and the last turn's closing snapshot (it goes on after the
+ * turn). `started` is startRun's promise.
  */
 export async function endRun(s: RunSetup, agent: Agent | undefined, started: Promise<unknown> | undefined, warn: HookNotice): Promise<void> {
     // A SessionStart hook still running and the SessionEnd hooks get at most 5 seconds between them.
@@ -311,7 +312,7 @@ export async function endRun(s: RunSetup, agent: Agent | undefined, started: Pro
         : undefined;
     // Delegated tasks still running end with the run.
     try {
-        await Promise.all([ended, agent?.dispose(), killAllShells({ state: s.toolState }), s.toolState.lsp?.dispose(), s.toolState.browser?.dispose(),s.toolState.simulator?.dispose(), within(s.mcp.closeAll(), 1500)]);
+        await Promise.all([ended, agent?.dispose(), agent?.turnSnapshots?.stop(), killAllShells({ state: s.toolState }), s.toolState.lsp?.dispose(), s.toolState.browser?.dispose(),s.toolState.simulator?.dispose(), within(s.mcp.closeAll(), 1500)]);
     } finally {
         s.original?.release();
     }

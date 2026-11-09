@@ -1295,7 +1295,9 @@ class ClaudeTurn {
                 url: o.url,
                 headers: { Authorization: o.authorization },
                 timeout: o.toolTimeoutSec * 1000,
-                alwaysLoad: true,
+                // Loaded when a task needs them (Claude Code's ToolSearch; their names are listed to the model): always loaded, their
+                // definitions were ~13 KB, ~3,300 tokens, on every request of every step, for tools most turns never use.
+                alwaysLoad: false,
                 tools: o.tools.map((name) => ({ name, permission_policy: "always_allow" })),
             },
         };

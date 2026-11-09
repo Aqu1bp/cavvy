@@ -1,14 +1,25 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "fs";
+import { chmodSync, closeSync, constants, existsSync, openSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "fs";
+import { readFile } from "fs/promises";
 import { dirname, join } from "path";
 import { isolate } from "./helpers/isolate";
 
 const iso = isolate();
+// The machine's own Git config (a filter git-lfs defines, say) changes which capture is taken: none here.
+const inheritedGitConfig = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("GIT_CONFIG")));
+for (const key of Object.keys(inheritedGitConfig)) delete process.env[key];
+process.env.GIT_CONFIG_NOSYSTEM = "1";
+process.env.GIT_CONFIG_GLOBAL = "/dev/null";
 const { TurnSnapshots } = await import("../src/agent/turn-snapshots");
 const { pruneFileHistory, HISTORY_MAX_AGE_MS, MAX_SNAPSHOT_BYTES } = await import("../src/agent/checkpoints");
 const { paths } = await import("../src/config/paths");
 const { gitArgv, gitEnv } = await import("../src/util/git");
-afterAll(() => iso.cleanup());
+const { ObjectReader } = await import("../src/agent/tree-edit");
+afterAll(() => {
+    for (const key of Object.keys(process.env)) if (key.startsWith("GIT_CONFIG")) delete process.env[key];
+    Object.assign(process.env, inheritedGitConfig);
+    iso.cleanup();
+});
 
 let next = 0;
 const IDENTITY = ["-c", "maintenance.auto=false", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Cavvy Test", "-c", "user.email=test@example.invalid"];
@@ -26,15 +37,20 @@ function write(dir: string, path: string, body: string | Buffer) {
     writeFileSync(join(dir, path), body);
 }
 
-function setup(files: Record<string, string | Buffer> = {}, format: "sha1" | "sha256" = "sha1") {
+/**
+ * A repository with `files` committed, or, with `untracked`, written after the commit: Git's index has committed
+ * files as they are, so a snapshot takes their blobs from it, and reads (and stores) only files Git doesn't have.
+ */
+function setup(files: Record<string, string | Buffer> = {}, format: "sha1" | "sha256" = "sha1", o: { untracked?: boolean } = {}) {
     const base = join(realpathSync(iso.home), `snapshot-${next++}`);
     const cwd = join(base, "repo");
     const dir = join(base, "history");
     mkdirSync(cwd, { recursive: true });
     git(cwd, ["init", "-q", "-b", "main", `--object-format=${format}`]);
-    for (const [path, body] of Object.entries(files)) write(cwd, path, body);
+    if (!o.untracked) for (const [path, body] of Object.entries(files)) write(cwd, path, body);
     git(cwd, ["add", "-A"]);
     git(cwd, ["commit", "-q", "--allow-empty", "-m", "Initial commit"]);
+    if (o.untracked) for (const [path, body] of Object.entries(files)) write(cwd, path, body);
     return { cwd, dir, snapshots: new TurnSnapshots(dir, cwd) };
 }
 
@@ -69,6 +85,14 @@ function objectsDir(root: string): string {
     throw new Error("No private objects directory");
 }
 
+/** Objects in a private store, loose and packed. */
+function storedCount(objects: string): number {
+    const loose = readdirSync(objects).filter((n) => /^[0-9a-f]{2}$/.test(n)).reduce((n, d) => n + readdirSync(join(objects, d)).length, 0);
+    const pack = join(objects, "pack");
+    const packed = existsSync(pack) ? readdirSync(pack).filter((n) => n.endsWith(".idx")).reduce((n, f) => n + readFileSync(join(pack, f)).readUInt32BE(8 + 255 * 4), 0) : 0;
+    return loose + packed;
+}
+
 function expectPrivate(root: string) {
     const st = lstatSync(root);
     expect(st.mode & 0o777).toBe(st.isDirectory() ? 0o700 : 0o600);
@@ -92,6 +116,26 @@ describe("per-turn snapshots", () => {
         // In the order asked: the first ends at the capture, the second starts from it, then ends.
         expect(snapshots.list().map((t) => [t.id, Boolean(t.end)])).toEqual([[1, true], [2, true]]);
         expect(snapshots.list()[1]!.start).toEqual(captured!);
+    });
+
+    test("a next turn asked for while one ends starts before that one's comparing, and both come out whole", async () => {
+        const { cwd, dir, snapshots } = setup({ "a.txt": "a\n" });
+        await snapshots.begin(1, "first");
+        write(cwd, "a.txt", "changed\n");
+        const order: string[] = [];
+        const ended = snapshots.end().then(() => order.push("end"));
+        const started = snapshots.begin(2, "second").then(() => order.push("begin"));
+        // Both asked; what's settled is both, compared and kept.
+        await snapshots.settled();
+        expect(snapshots.list().map((t) => [t.id, Boolean(t.end)])).toEqual([[1, true], [2, false]]);
+        await Promise.all([ended, started]);
+        expect(order).toEqual(["begin", "end"]);
+        const [first, second] = snapshots.list();
+        expect(second!.start.tree).toBe(first!.end!.tree);
+        expect((await snapshots.changes({ scope: "turn", turnId: 1 })).files.map((f) => [f.path, f.added, f.removed])).toEqual([["a.txt", 1, 1]]);
+        // And as saved.
+        const reopened = new TurnSnapshots(dir, cwd);
+        expect(reopened.list().map((t) => [t.id, Boolean(t.end), t.changed])).toEqual([[1, true, ["a.txt"]], [2, false, undefined]]);
     });
 
     test("the object quota degrades capture gracefully and survives reopening", async () => {
@@ -121,7 +165,7 @@ describe("per-turn snapshots", () => {
     });
 
     test("tree objects and blobs left by failed captures count toward the quota", async () => {
-        const { cwd, dir } = setup({ "a.txt": "before\n" });
+        const { cwd, dir } = setup({ "a.txt": "before\n" }, "sha1", { untracked: true });
         // A loose blob fits, but its containing tree does not.
         const limited = new TurnSnapshots(dir, cwd, { maxStoreBytes: 32 });
         await limited.begin(1, "tree exceeds quota");
@@ -246,8 +290,23 @@ describe("per-turn snapshots", () => {
         expect(changes.files[0]?.hunks.flatMap((h) => h.lines).map((l) => l.text).join("\n")).toContain("cut off here");
     });
 
-    for (const phase of ["begin", "end", "compare", "steering-compare"] as const) test(`retiring during ${phase} drains private writes and never appends a late end`, async () => {
+    test("closing right after a turn waits for its end, which is kept", async () => {
         const { cwd, dir, snapshots } = setup({ "a.txt": "before\n" });
+        await snapshots.begin(1, "Edit");
+        write(cwd, "a.txt", "after\n");
+        // As an agent's turn does: its end goes on after it.
+        void snapshots.end();
+        await snapshots.stop();
+        const reopened = new TurnSnapshots(dir, cwd);
+        const turn = reopened.list()[0]!;
+        expect([!!turn.end, turn.changed]).toEqual([true, ["a.txt"]]);
+        const changes = await reopened.changes({ scope: "last-turn" });
+        expect(changes.files.map((f) => [f.path, f.added, f.removed])).toEqual([["a.txt", 1, 1]]);
+    });
+
+    for (const phase of ["begin", "end", "compare", "steering-compare"] as const) test(`retiring during ${phase}, past its wait, drains private writes and never appends a late end`, async () => {
+        const { cwd, dir } = setup({ "a.txt": "before\n" });
+        const snapshots = new TurnSnapshots(dir, cwd, { stopWaitMs: 0 });
         await snapshots.begin(1, "interrupted prompt");
         write(cwd, "a.txt", "late change\n");
         const journal = readFileSync(join(dir, "turn-snapshots.jsonl"), "utf8");
@@ -333,6 +392,63 @@ describe("per-turn snapshots", () => {
         expectPrivate(dir);
     });
 
+    for (const scope of ["repository", "user"]) test(`a big repository's first capture runs no filter the ${scope}'s config defines, and still sees the turn's changes`, async () => {
+        const { cwd, dir } = setup({ ".gitattributes": "*.txt filter=evil\n", "a.txt": "a\n", "b.txt": "b\n" });
+        const marker = join(dirname(cwd), "filter-ran");
+        const config = scope === "user" ? join(dirname(cwd), "gitconfig") : join(cwd, ".git/config");
+        git(cwd, ["config", "--file", config, "filter.evil.clean", `touch '${marker}'; cat`]);
+        if (scope === "user") process.env.GIT_CONFIG_GLOBAL = config;
+        // Git compares these two by content: their stat no longer matches what the index recorded.
+        write(cwd, "a.txt", "a, before the turn\n");
+        utimesSync(join(cwd, "b.txt"), new Date(), new Date(Date.now() + 5000));
+        const snapshots = new TurnSnapshots(dir, cwd, { statusFromEntries: 0 });
+        await snapshots.begin(1, "Edit a file");
+        write(cwd, "a.txt", "a, after the turn\n");
+        await snapshots.end();
+        expect(existsSync(marker)).toBe(false);
+        expect(snapshots.statusCount).toBe(0);
+        const turn = snapshots.list()[0]!;
+        expect([turn.start.incomplete, turn.end!.incomplete, turn.changed]).toEqual([false, false, ["a.txt"]]);
+        const shown = await snapshots.changes({ scope: "last-turn" });
+        expect(shown.files.map((f) => [f.path, f.added, f.removed])).toEqual([["a.txt", 1, 1]]);
+        await snapshots.stop();
+        process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+    });
+
+    // An included file can be rewritten between the check for filters and `git status`: the include alone is enough.
+    for (const [kind, key] of [["include", "include.path"], ["includeIf", "includeIf.onbranch:main.path"]]) test(`a big repository whose config has an ${kind} isn't captured with git status, and still sees the turn's changes`, async () => {
+        const { cwd, dir } = setup({ "a.txt": "a\n", "b.txt": "b\n" });
+        const included = join(dirname(cwd), "included.cfg");
+        writeFileSync(included, "");
+        git(cwd, ["config", key!, included]);
+        write(cwd, "a.txt", "a, before the turn\n");
+        const snapshots = new TurnSnapshots(dir, cwd, { statusFromEntries: 0 });
+        await snapshots.begin(1, "Edit a file");
+        write(cwd, "a.txt", "a, after the turn\n");
+        await snapshots.end();
+        expect(snapshots.statusCount).toBe(0);
+        const turn = snapshots.list()[0]!;
+        expect([turn.start.incomplete, turn.end!.incomplete, turn.changed]).toEqual([false, false, ["a.txt"]]);
+        await snapshots.stop();
+    });
+
+    test("a big repository whose user config includes a file is still captured with git status", async () => {
+        const { cwd, dir } = setup({ "a.txt": "a\n", "b.txt": "b\n" });
+        const user = join(dirname(cwd), "gitconfig"), included = join(dirname(cwd), "included.cfg");
+        writeFileSync(included, "");
+        git(cwd, ["config", "--file", user, "include.path", included]);
+        process.env.GIT_CONFIG_GLOBAL = user;
+        try {
+            write(cwd, "a.txt", "a, before the turn\n");
+            const snapshots = new TurnSnapshots(dir, cwd, { statusFromEntries: 0 });
+            await snapshots.begin(1, "Edit a file");
+            expect(snapshots.statusCount).toBe(1);
+            await snapshots.stop();
+        } finally {
+            process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+        }
+    });
+
     test("ignored files are omitted, large files are marked, and ordinary files still diff", async () => {
         const { cwd, dir, snapshots } = setup({ ".gitignore": "private.txt\n", "small.txt": "before\n" });
         write(cwd, "private.txt", "not captured\n");
@@ -356,6 +472,139 @@ describe("per-turn snapshots", () => {
         expect(contents).not.toContain("private.txt");
         expect(contents).not.toContain("large.bin");
     });
+
+    test("a committed file over the size limit that a turn changes is marked, and its committed version never held", async () => {
+        const big = Buffer.alloc(12 * 1024 * 1024, 1);
+        const { cwd, snapshots } = setup({ "big.bin": big, "small.txt": "before\n" });
+        const bigId = git(cwd, ["rev-parse", "HEAD:big.bin"]).toString().trim();
+        /** Bytes each object read came with. */
+        const held = new Map<string, number>();
+        const readAll = ObjectReader.prototype.readAll;
+        ObjectReader.prototype.readAll = async function (oids, maxBlob) {
+            const read = await readAll.call(this, oids, maxBlob);
+            for (const [oid, o] of read) held.set(oid, o.buf?.length ?? 0);
+            return read;
+        };
+        try {
+            await snapshots.begin(1, "Edit both");
+            big[0] = 2;
+            write(cwd, "big.bin", big);
+            write(cwd, "small.txt", "after\n");
+            await snapshots.end();
+        } finally {
+            ObjectReader.prototype.readAll = readAll;
+        }
+        expect(held.has(bigId)).toBe(true);
+        expect(held.get(bigId)).toBe(0);
+        const turn = snapshots.list()[0]!;
+        expect(turn.end!.skipped["big.bin"]).toMatch(/10|large|size/i);
+        const result = await snapshots.changes({ scope: "last-turn" });
+        expect(result.files.find((f) => f.path === "small.txt")).toMatchObject({ added: 1, removed: 1 });
+        expect(JSON.stringify(result)).toMatch(/large|10 MB|10 MiB/i);
+        await snapshots.stop();
+    });
+
+    test("a repository in a folder whose name has a colon (a slash in the Finder) diffs a changed file", async () => {
+        const { cwd: made } = setup();
+        const cwd = join(dirname(made), "Client:Site");
+        renameSync(made, cwd);
+        write(cwd, "f1.txt", "one\ntwo\n");
+        git(cwd, ["add", "-A"]);
+        git(cwd, ["commit", "-q", "-m", "Add f1"]);
+        const snapshots = new TurnSnapshots(join(dirname(made), "history"), cwd);
+        await snapshots.begin(1, "Edit f1");
+        write(cwd, "f1.txt", "one\nthree\n");
+        await snapshots.end();
+        const turn = snapshots.list()[0]!;
+        expect([turn.start.incomplete, turn.end!.incomplete, turn.end!.notes]).toEqual([false, false, []]);
+        const result = await snapshots.changes({ scope: "last-turn" });
+        expect([result.incomplete, result.files.map((f) => [f.path, f.added, f.removed])]).toEqual([false, [["f1.txt", 1, 1]]]);
+        await snapshots.stop();
+    });
+
+    test("a pipe where Git's index should be is no index: turns end, and other reads aren't held up", async () => {
+        const { cwd, dir } = setup({ "a.txt": "a\n" });
+        const index = join(cwd, ".git/index");
+        rmSync(index);
+        expect(Bun.spawnSync(["mkfifo", index]).exitCode).toBe(0);
+        const within = (work: Promise<unknown>, ms: number) => Promise.race([work.then(() => "done"), Bun.sleep(ms).then(() => "stuck")]);
+        // More sessions than the threads that read files for the whole server: each capture opens it.
+        const sessions = [1, 2, 3, 4, 5, 6].map((id) => new TurnSnapshots(join(dir, String(id)), cwd, { statusFromEntries: 0 }));
+        try {
+            expect(await within(Promise.all(sessions.map((s, i) => s.begin(i + 1, "Edit"))), 5000)).toBe("done");
+            expect(await within(readFile(join(cwd, "a.txt")), 2000)).toBe("done");
+            write(cwd, "a.txt", "a again\n");
+            expect(await within(Promise.all(sessions.map((s) => s.end())), 5000)).toBe("done");
+            expect(sessions.every((s) => s.list()[0]?.end)).toBe(true);
+            // Git itself waits on the pipe until its time is up.
+            expect(await within(Promise.all(sessions.map((s) => s.stop())), 30_000)).toBe("done");
+        } finally {
+            // Lets go of any read still waiting on the pipe.
+            try { closeSync(openSync(index, constants.O_WRONLY | constants.O_NONBLOCK)); } catch {}
+        }
+    }, 60_000);
+
+    for (const [where, path] of [["a tracked .gitattributes", ".gitattributes"], ["the repository's info/attributes", ".git/info/attributes"], ["core.attributesFile", "../attributes"]]) test(`a pipe where ${where} should be: turns end, and other reads aren't held up`, async () => {
+        if (process.platform === "win32") return;
+        const { cwd, dir } = setup({ ".gitattributes": "*.bin binary\n", "a.txt": "a\n" });
+        const pipe = join(cwd, path!);
+        if (path === "../attributes") git(cwd, ["config", "core.attributesFile", pipe]);
+        mkdirSync(dirname(pipe), { recursive: true });
+        rmSync(pipe, { force: true });
+        expect(Bun.spawnSync(["mkfifo", pipe]).exitCode).toBe(0);
+        const within = (work: Promise<unknown>, ms: number) => Promise.race([work.then(() => "done"), Bun.sleep(ms).then(() => "stuck")]);
+        // More sessions than the threads that read files for the whole server: each capture looks at it.
+        const sessions = [1, 2, 3, 4, 5, 6].map((id) => new TurnSnapshots(join(dir, String(id)), cwd));
+        try {
+            expect(await within(Promise.all(sessions.map((s, i) => s.begin(i + 1, "Edit"))), 5000)).toBe("done");
+            expect(await within(readFile(join(cwd, "a.txt")), 2000)).toBe("done");
+            write(cwd, "a.txt", "a again\n");
+            expect(await within(Promise.all(sessions.map((s) => s.end())), 5000)).toBe("done");
+            expect(sessions.every((s) => s.list()[0]?.end)).toBe(true);
+            // Git itself waits on the pipe (check-attr) until its time is up.
+            expect(await within(Promise.all(sessions.map((s) => s.stop())), 30_000)).toBe("done");
+        } finally {
+            // Lets go of any read still waiting on the pipe.
+            for (let i = 0; i < 16; i++) try { closeSync(openSync(pipe, constants.O_WRONLY | constants.O_NONBLOCK)); } catch {}
+            rmSync(pipe, { force: true });
+        }
+    }, 60_000);
+
+    test("Git's index turned into a pipe after it was scanned and before it's copied: turns end, and other reads aren't held up", async () => {
+        if (process.platform === "win32") return;
+        // A staged file: Git has worked out no tree for the index, so a capture copies it.
+        const repos = [1, 2, 3, 4, 5, 6].map(() => {
+            const r = setup({ "a.txt": "a\n" });
+            write(r.cwd, "staged.txt", "staged\n");
+            git(r.cwd, ["add", "staged.txt"]);
+            return r;
+        });
+        const pipes: string[] = [];
+        const proto = TurnSnapshots.prototype as any, writeTrees = proto.writeTrees;
+        proto.writeTrees = function (indexPath: string, lines: string[], fresh: boolean, ...rest: unknown[]) {
+            if (fresh) {
+                rmSync(indexPath);
+                expect(Bun.spawnSync(["mkfifo", indexPath]).exitCode).toBe(0);
+                pipes.push(indexPath);
+            }
+            return writeTrees.call(this, indexPath, lines, fresh, ...rest);
+        };
+        const within = (work: Promise<unknown>, ms: number) => Promise.race([work.then(() => "done"), Bun.sleep(ms).then(() => "stuck")]);
+        const sessions = repos.map(({ cwd, dir }) => new TurnSnapshots(dir, cwd));
+        try {
+            expect(await within(Promise.all(sessions.map((s, i) => s.begin(i + 1, "Edit"))), 5000)).toBe("done");
+            expect(pipes.length).toBe(sessions.length);
+            expect(await within(readFile(join(repos[0]!.cwd, "a.txt")), 2000)).toBe("done");
+            expect(sessions.every((s) => s.list()[0]?.start.incomplete)).toBe(true);
+            expect(await within(Promise.all(sessions.map((s) => s.stop())), 30_000)).toBe("done");
+        } finally {
+            proto.writeTrees = writeTrees;
+            for (const pipe of pipes) {
+                for (let i = 0; i < 4; i++) try { closeSync(openSync(pipe, constants.O_WRONLY | constants.O_NONBLOCK)); } catch {}
+                rmSync(pipe, { force: true });
+            }
+        }
+    }, 60_000);
 
     test("linked worktrees keep both their own and the common repository metadata untouched", async () => {
         const { cwd, dir } = setup({ "a.txt": "before\n" });
@@ -438,7 +687,10 @@ describe("per-turn snapshots", () => {
         const objects = objectsDir(dir);
         const tree = snapshots.list()[0]!.start.tree!;
         const oid = git(cwd, ["rev-parse", `${tree}:a.txt`], { GIT_OBJECT_DIRECTORY: objects }).toString().trim();
-        rmSync(join(objects, oid.slice(0, 2), oid.slice(2)));
+        // Loose, or (kept at the turn's end from the repository's objects) in a pack of its own.
+        const loose = join(objects, oid.slice(0, 2), oid.slice(2));
+        if (existsSync(loose)) rmSync(loose);
+        else rmSync(join(objects, "pack"), { recursive: true });
         const reopened = new TurnSnapshots(dir, cwd);
         for (const path of [undefined, "a.txt"]) {
             const result = await reopened.changes({ scope: "last-turn", path });
@@ -660,6 +912,463 @@ describe("per-turn snapshots", () => {
         expect(single.files[0]!.deferred).toBeUndefined();
         expect(single.files[0]!.added).toBe(1);
     }, 120_000);
+
+    test("a capture of many new files is one pack, and reads as loose objects do", async () => {
+        const files: Record<string, string> = {};
+        for (let i = 0; i < 400; i++) files[`src/d${i % 7}/f${i}.txt`] = `file ${i}\n`;
+        const { cwd, dir, snapshots } = setup(files, "sha1", { untracked: true });
+        await snapshots.begin(1, "Change one of many");
+        write(cwd, "src/d0/f0.txt", "changed\n");
+        await snapshots.end();
+        const turn = snapshots.list()[0]!;
+        expect([turn.start.incomplete, turn.end!.incomplete]).toEqual([false, false]);
+        expect(turn.changed).toEqual(["src/d0/f0.txt"]);
+        const objects = objectsDir(dir);
+        const names = readdirSync(join(objects, "pack")).sort();
+        expect(names.map((n) => n.replace(/-[0-9a-f]+/, ""))).toEqual(["pack.idx", "pack.pack"]);
+        // Only what the turn changed is outside it: the file and the trees above it.
+        expect(readdirSync(objects).filter((n) => n !== "pack").flatMap((n) => readdirSync(join(objects, n))).length).toBeLessThanOrEqual(4);
+        expectPrivate(objects);
+        const shown = await snapshots.changes({ scope: "last-turn", path: "src/d0/f0.txt" });
+        expect(shown.files.map((f) => [f.path, f.added, f.removed])).toEqual([["src/d0/f0.txt", 1, 1]]);
+        expect(JSON.stringify(shown)).toContain("file 0");
+
+        // Reopened, what's in the pack isn't stored again.
+        const before = inventory(objects);
+        const reopened = new TurnSnapshots(dir, cwd);
+        await reopened.begin(2, "Nothing new");
+        await reopened.end();
+        expect(reopened.list()[1]!.end!.incomplete).toBe(false);
+        expect(inventory(objects)).toEqual(before);
+        expect((await reopened.changes({ scope: "turn", turnId: 1 })).files.map((f) => f.path)).toEqual(["src/d0/f0.txt"]);
+    });
+
+    test("reopened, a pack whose index was cut off or never came is written again", async () => {
+        const cutOff = (index: string, whole: Buffer) => writeFileSync(index, whole.subarray(0, 8 + 256 * 4 + whole.readUInt32BE(8 + 255 * 4) * 20));
+        for (const leave of [cutOff, (index: string) => rmSync(index)]) {
+            const files: Record<string, string> = {};
+            for (let i = 0; i < 400; i++) files[`src/f${i}.txt`] = `file ${i}\n`;
+            const { cwd, dir, snapshots } = setup(files, "sha1", { untracked: true });
+            await snapshots.begin(1, "Many files");
+            await snapshots.end();
+            const folder = join(objectsDir(dir), "pack");
+            const index = join(folder, readdirSync(folder).find((n) => n.endsWith(".idx"))!);
+            leave(index, readFileSync(index));
+            const reopened = new TurnSnapshots(dir, cwd);
+            await reopened.begin(2, "Change one");
+            write(cwd, "src/f0.txt", "changed\n");
+            await reopened.end();
+            expect(reopened.list()[1]!.end!.incomplete).toBe(false);
+            expect(JSON.stringify(await reopened.changes({ scope: "turn", turnId: 2 }))).toContain("file 0");
+            expectPrivate(objectsDir(dir));
+        }
+    });
+
+    test("sessions in one repository share what they know of its files, and each keeps its own objects", async () => {
+        const files: Record<string, string> = {};
+        for (let i = 0; i < 400; i++) files[`src/f${i}.txt`] = `file ${i}\n`;
+        const { cwd, dir, snapshots } = setup(files, "sha1", { untracked: true });
+        await snapshots.begin(1, "First");
+        await snapshots.end();
+
+        const otherDir = join(dirname(dir), `${next++}-other`);
+        mkdirSync(otherDir, { recursive: true });
+        const other = new TurnSnapshots(otherDir, cwd);
+        await other.begin(1, "Second session");
+        write(cwd, "src/f0.txt", "changed\n");
+        await other.end();
+        expect(other.list()[0]!.end!.incomplete).toBe(false);
+        // Known to the first session doesn't mean it's in this one's store: it can still show what it replaced.
+        expect(readdirSync(join(objectsDir(otherDir), "pack")).filter((n) => n.endsWith(".pack")).length).toBe(1);
+        expect(JSON.stringify(await other.changes({ scope: "turn", turnId: 1 }))).toContain("file 0");
+        expect((other as any).known).toBe((snapshots as any).known);
+
+        // The first session learns the changed file from the second, and still stores it itself.
+        await snapshots.begin(3, "Next");
+        await snapshots.end();
+        expect(snapshots.list()[1]!.end!.incomplete).toBe(false);
+        write(cwd, "src/f0.txt", "file 0\n");
+        await snapshots.begin(5, "Back");
+        write(cwd, "src/f1.txt", "also changed\n");
+        await snapshots.end();
+        const shown = await snapshots.changes({ scope: "last-turn" });
+        expect(shown.files.map((f) => f.path)).toEqual(["src/f1.txt"]);
+        expect(JSON.stringify(shown)).toContain("also changed");
+    });
+
+    test("a pack works in a SHA-256 repository", async () => {
+        const files: Record<string, string> = {};
+        for (let i = 0; i < 300; i++) files[`f${i}.txt`] = `file ${i}\n`;
+        const { cwd, dir, snapshots } = setup(files, "sha256", { untracked: true });
+        await snapshots.begin(1, "Change one");
+        write(cwd, "f1.txt", "changed\n");
+        await snapshots.end();
+        expect(snapshots.list()[0]!.changed).toEqual(["f1.txt"]);
+        const before = inventory(objectsDir(dir));
+        const reopened = new TurnSnapshots(dir, cwd);
+        await reopened.begin(2, "Nothing new");
+        await reopened.end();
+        expect(inventory(objectsDir(dir))).toEqual(before);
+    });
+
+    test("big files go into a pack too, and each pack's bytes count toward the quota", async () => {
+        const big = (seed: number) => Buffer.from(Array.from({ length: 5 * 1024 * 1024 }, (_, i) => (i * 2654435761 + seed * 97) % 251));
+        const { cwd, dir, snapshots } = setup({ "a.bin": big(1), "b.bin": big(2) }, "sha1", { untracked: true });
+        await snapshots.begin(1, "Two big files");
+        await snapshots.end();
+        const turn = snapshots.list()[0]!;
+        expect(turn.start.incomplete).toBe(false);
+        expect(readdirSync(join(objectsDir(dir), "pack")).length).toBe(2);
+        expect(git(cwd, ["cat-file", "-s", `${turn.start.tree}:a.bin`], { GIT_OBJECT_DIRECTORY: objectsDir(dir) }).toString().trim()).toBe(String(5 * 1024 * 1024));
+
+        const small = setup(Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`f${i}.txt`, `file ${i}\n`])), "sha1", { untracked: true });
+        const limited = new TurnSnapshots(small.dir, small.cwd, { maxStoreBytes: 500 });
+        await limited.begin(1, "Over the limit");
+        const start = limited.list()[0]!.start;
+        expect(start.incomplete).toBe(true);
+        expect(start.notes.join(" ")).toContain("Snapshot storage limit reached");
+        // Nothing's left half written, and a later capture with room finishes.
+        const roomy = new TurnSnapshots(small.dir, small.cwd);
+        await roomy.begin(2, "Room again");
+        expect(roomy.list().at(-1)!.start.incomplete).toBe(false);
+    });
+
+    test("over the limit partway through a pack: what fitted is kept and counted, and what didn't is read again", async () => {
+        const files: Record<string, string> = {};
+        for (let i = 0; i < 400; i++) files[`f${i}.txt`] = `file ${i} ${"x".repeat(200)}\n`;
+        const { cwd, dir } = setup(files, "sha1", { untracked: true });
+        const limited = new TurnSnapshots(dir, cwd, { maxStoreBytes: 4000 });
+        await limited.begin(1, "Over the limit");
+        expect(limited.list()[0]!.start.notes.join(" ")).toContain("Snapshot storage limit reached");
+        const packed = readdirSync(join(objectsDir(dir), "pack")).map((n) => statSync(join(objectsDir(dir), "pack", n)).size);
+        expect(packed.length).toBe(2);
+        expect(packed[0]! + packed[1]!).toBeLessThanOrEqual(4000);
+        expect(packed[0]! + packed[1]!).toBeGreaterThan(3000);
+        // With room, it finishes, the file it hadn't got to included.
+        const roomy = new TurnSnapshots(dir, cwd);
+        await roomy.begin(2, "Room again");
+        write(cwd, "f399.txt", "changed\n");
+        await roomy.end();
+        expect(roomy.list().at(-1)!.start.incomplete).toBe(false);
+        expect(roomy.list().at(-1)!.changed).toEqual(["f399.txt"]);
+        const shown = await roomy.changes({ scope: "last-turn", path: "f399.txt" });
+        expect(JSON.stringify(shown)).toContain("file 399");
+    });
+
+    test("however often a capture's taken, what's in a pack isn't written again", async () => {
+        const files: Record<string, string> = {};
+        for (let i = 0; i < 300; i++) files[`f${i}.txt`] = `file ${i}\n`;
+        const { dir, snapshots } = setup(files, "sha1", { untracked: true });
+        await snapshots.begin(1, "Stored");
+        await snapshots.end();
+        expect(readdirSync(join(objectsDir(dir), "pack")).length).toBe(2);
+        const before = inventory(objectsDir(dir));
+        await snapshots.begin(2, "Again");
+        await snapshots.end();
+        expect(inventory(objectsDir(dir))).toEqual(before);
+    });
+
+    test("files as Git's index has them are taken from it, and what a turn changes is kept privately", async () => {
+        const files: Record<string, string> = {};
+        for (let i = 0; i < 400; i++) files[`src/f${i}.txt`] = `file ${i}\n`;
+        const { cwd, dir, snapshots } = setup(files);
+        await snapshots.begin(1, "Change one of many");
+        // Nothing was read into the store, nor a tree made: the files and their trees are the ones Git has.
+        expect(storedCount(objectsDir(dir))).toBe(0);
+        write(cwd, "src/f7.txt", "changed\n");
+        await snapshots.end();
+        const turn = snapshots.list()[0]!;
+        expect([turn.start.incomplete, turn.end!.incomplete]).toEqual([false, false]);
+        expect(turn.changed).toEqual(["src/f7.txt"]);
+        // Both versions of what changed are the session's own: the diff outlives the repository's objects.
+        rmSync(join(cwd, ".git/objects"), { recursive: true });
+        mkdirSync(join(cwd, ".git/objects"));
+        const shown = await new TurnSnapshots(dir, cwd).changes({ scope: "last-turn" });
+        expect(shown.incomplete).toBe(false);
+        expect(shown.files.map((f) => [f.path, f.added, f.removed])).toEqual([["src/f7.txt", 1, 1]]);
+        expect(JSON.stringify(shown)).toContain("file 7");
+        expectPrivate(dir);
+    });
+
+    test("a file Git stores converted (attributes, core.autocrlf) is captured as its bytes, not taken from the index", async () => {
+        const crlf = "one\r\ntwo\r\n";
+        for (const convert of [(cwd: string) => write(cwd, ".gitattributes", "*.txt text eol=crlf\n"), (cwd: string) => git(cwd, ["config", "core.autocrlf", "true"])]) {
+            const { cwd, dir } = setup();
+            convert(cwd);
+            write(cwd, "a.txt", crlf);
+            git(cwd, ["add", "-A"]);
+            git(cwd, ["commit", "-q", "-m", "Converted"]);
+            const snapshots = new TurnSnapshots(dir, cwd);
+            await snapshots.begin(1, "Converted file");
+            const tree = snapshots.list()[0]!.start.tree!;
+            expect(git(cwd, ["cat-file", "blob", `${tree}:a.txt`], { GIT_OBJECT_DIRECTORY: objectsDir(dir), GIT_ALTERNATE_OBJECT_DIRECTORIES: "" }).toString()).toBe(crlf);
+        }
+    });
+
+    test("a file stamped no earlier than its index was written is read: it could have changed without its stat showing it", async () => {
+        const { cwd, dir } = setup({ "a.txt": "a\n" });
+        const at = statSync(join(cwd, "a.txt")).mtime;
+        utimesSync(join(cwd, ".git/index"), at, at);
+        const snapshots = new TurnSnapshots(dir, cwd);
+        await snapshots.begin(1, "Racily clean");
+        // The file's own blob (its tree, the same as Git's, is Git's).
+        expect(storedCount(objectsDir(dir))).toBe(1);
+        expect(snapshots.list()[0]!.start.incomplete).toBe(false);
+    });
+
+    test("trees worked out again only where something changed agree with Git's, capture after capture", async () => {
+        const { cwd, snapshots } = setup({ "a/b/c.txt": "c\n", "a/d.txt": "d\n", "e.txt": "e\n", "f/g.txt": "g\n" });
+        const steps: (() => void)[] = [
+            () => write(cwd, "a/b/new/deep.txt", "deep\n"),
+            () => rmSync(join(cwd, "f"), { recursive: true }),
+            () => { rmSync(join(cwd, "e.txt")); write(cwd, "e.txt/inside.txt", "now a folder\n"); },
+            () => write(cwd, "a/d.txt", "d again\n"),
+            () => rmSync(join(cwd, "a"), { recursive: true }),
+        ];
+        await snapshots.begin(1, "start");
+        for (const [i, step] of steps.entries()) {
+            step();
+            await snapshots.begin(i + 2, `step ${i}`);
+        }
+        await snapshots.end();
+        // Each capture's planned root matched git write-tree's, or it would be incomplete.
+        for (const turn of snapshots.list()) expect([turn.start.incomplete, turn.end?.incomplete]).toEqual([false, false]);
+        expect(snapshots.list().map((t) => t.changed)).toEqual([["a/b/new/deep.txt"], ["f/g.txt"], ["e.txt", "e.txt/inside.txt"], ["a/d.txt"], ["a/b/c.txt", "a/b/new/deep.txt", "a/d.txt"], []]);
+    });
+
+    test("a turn that changes thousands of committed files ends whole, with every version kept in one pack", async () => {
+        const files: Record<string, string> = {};
+        for (let i = 0; i < 3000; i++) files[`d${i % 30}/f${i}.txt`] = `line ${i}\n`;
+        const { cwd, dir, snapshots } = setup(files);
+        await snapshots.begin(1, "Change them all");
+        for (let i = 0; i < 3000; i++) write(cwd, `d${i % 30}/f${i}.txt`, `line ${i} changed\n`);
+        await snapshots.end();
+        const turn = snapshots.list()[0]!;
+        expect([turn.start.incomplete, turn.end!.incomplete]).toEqual([false, false]);
+        expect(turn.changed!.length).toBe(3000);
+        // The versions it started from, taken from the index, are the session's own now: the diff outlives the repository's objects.
+        rmSync(join(cwd, ".git/objects"), { recursive: true });
+        mkdirSync(join(cwd, ".git/objects"));
+        const shown = await new TurnSnapshots(dir, cwd).changes({ scope: "last-turn", path: "d7/f7.txt" });
+        expect(shown.files.map((f) => [f.path, f.added, f.removed])).toEqual([["d7/f7.txt", 1, 1]]);
+        expectPrivate(dir);
+    }, 60_000);
+
+    test("a turn that changed nothing takes the last capture again; a change something else made is still seen", async () => {
+        const { cwd, snapshots } = setup({ "a.txt": "a\n", "src/b.txt": "b\n" });
+        await snapshots.begin(1, "Look only");
+        await Bun.sleep(400);
+        let looked = snapshots.lookedCount;
+        await snapshots.end();
+        const quiet = snapshots.list()[0]!;
+        // Nothing started or read: the start's capture, again.
+        expect(snapshots.lookedCount).toBe(looked);
+        expect(quiet.end!.durationMs).toBe(0);
+        expect(quiet.end!.tree).toBe(quiet.start.tree);
+        expect(quiet.changed).toEqual([]);
+        await Bun.sleep(400);
+        await snapshots.begin(2, "Meanwhile, an editor saves");
+        await Bun.sleep(400);
+        write(cwd, "src/b.txt", "b, saved elsewhere\n");
+        await Bun.sleep(400);
+        await snapshots.end();
+        expect(snapshots.list()[1]!.changed).toEqual(["src/b.txt"]);
+        // A turn that wrote (a tool call that isn't read-only reached the folder) is always captured.
+        await Bun.sleep(400);
+        await snapshots.begin(3, "Write");
+        snapshots.reach([cwd]);
+        looked = snapshots.lookedCount;
+        await snapshots.end();
+        expect(snapshots.lookedCount).toBe(looked + 1);
+    }, 30_000);
+
+    for (const version of [2, 4]) test(`a capture that looks only at what the watch saw change agrees with one that looks at everything (index version ${version})`, async () => {
+        const { cwd, dir } = setup({ ".gitignore": "*.log\nbuild/\n", "a/b/c.txt": "c\n", "a/d.txt": "d\n", "e.txt": "e\n", "f/g.txt": "g\n", "h/i/j.txt": "j\n", "k.txt": "k\n", "run.sh": "echo\n" });
+        git(cwd, ["config", "index.version", String(version)]);
+        git(cwd, ["update-index", "--index-version", String(version)]);
+        const outside = join(dirname(cwd), "outside");
+        mkdirSync(outside);
+        const snapshots = new TurnSnapshots(dir, cwd, { narrowFromMs: 0 });
+        const steps: [string, () => void][] = [
+            ["edit", () => write(cwd, "a/d.txt", "d again\n")],
+            ["new folders", () => write(cwd, "n/o/p.txt", "p\n")],
+            ["ignored", () => { write(cwd, "x.log", "log\n"); write(cwd, "build/out.js", "js\n"); }],
+            ["move a folder within", () => renameSync(join(cwd, "h"), join(cwd, "h2"))],
+            ["move a folder out", () => renameSync(join(cwd, "n"), join(outside, "n"))],
+            ["move a folder in", () => renameSync(join(outside, "n"), join(cwd, "m"))],
+            ["remove a folder", () => rmSync(join(cwd, "f"), { recursive: true })],
+            ["file to folder", () => { rmSync(join(cwd, "e.txt")); write(cwd, "e.txt/inside.txt", "now a folder\n"); }],
+            ["folder to file", () => { rmSync(join(cwd, "a/b"), { recursive: true }); write(cwd, "a/b", "now a file\n"); }],
+            ["mode and link", () => { chmodSync(join(cwd, "run.sh"), 0o755); symlinkSync("k.txt", join(cwd, "link")); }],
+            ["revert an edit", () => write(cwd, "a/d.txt", "d\n")],
+            ["untracked gone", () => rmSync(join(cwd, "m"), { recursive: true })],
+            ["nested repository", () => { mkdirSync(join(cwd, "nest")); git(join(cwd, "nest"), ["init", "-q"]); write(cwd, "nest/inner.txt", "inner\n"); }],
+            ["inside the nested one", () => write(cwd, "nest/inner.txt", "inner again\n")],
+            ["staged", () => { write(cwd, "k.txt", "k staged\n"); git(cwd, ["add", "k.txt"]); }],
+            ["after staging", () => write(cwd, "k.txt", "k again\n")],
+            ["git status rewrites the index", () => { utimesSync(join(cwd, "h2/i/j.txt"), new Date(), new Date()); git(cwd, ["status", "--porcelain"]); }],
+            ["committed", () => git(cwd, ["commit", "-q", "-m", "Two"])],
+            ["after the commit", () => write(cwd, "a/d.txt", "d at last\n")],
+            ["edited, staged and committed", () => { write(cwd, "a/d.txt", "d committed\n"); git(cwd, ["add", "a/d.txt"]); git(cwd, ["commit", "-q", "-m", "Three"]); }],
+            ["an ignored file forced in", () => { git(cwd, ["add", "-f", "x.log"]); git(cwd, ["commit", "-q", "-m", "Four"]); }],
+            ["and taken out again", () => { git(cwd, ["rm", "-q", "--cached", "x.log"]); git(cwd, ["commit", "-q", "-m", "Five"]); }],
+        ];
+        await snapshots.begin(1, "start");
+        /** The steps whose capture looked at everything. */
+        const whole: string[] = [];
+        /** The steps whose first capture couldn't take what `git status` said. */
+        const notFromStatus: string[] = [];
+        for (const [i, [name, step]] of steps.entries()) {
+            await Bun.sleep(60);
+            step();
+            await Bun.sleep(60);
+            const before = snapshots.narrowedCount;
+            await snapshots.begin(i + 2, name);
+            if (snapshots.narrowedCount === before) whole.push(name);
+            const full = new TurnSnapshots(join(dirname(dir), `full-${i}`), cwd);
+            await full.begin(1, name);
+            const [mine, theirs] = [snapshots.list().at(-1)!.start, full.list()[0]!.start];
+            expect([name, mine.incomplete, mine.tree, Object.keys(mine.skipped).sort()]).toEqual([name, theirs.incomplete, theirs.tree, Object.keys(theirs.skipped).sort()]);
+            // A first capture from what `git status` says differs, as a big repository's is: the same.
+            const status = new TurnSnapshots(join(dirname(dir), `status-${i}`), cwd, { statusFromEntries: 0 });
+            await status.begin(1, name);
+            const fromStatus = status.list()[0]!.start;
+            expect([name, fromStatus.incomplete, fromStatus.tree, Object.keys(fromStatus.skipped).sort()]).toEqual([name, theirs.incomplete, theirs.tree, Object.keys(theirs.skipped).sort()]);
+            if (!status.statusCount) notFromStatus.push(name);
+            await status.stop();
+            await full.stop();
+        }
+        await snapshots.end();
+        // The rest looked only at what changed. Staged with no tree Git worked out for it, Git's index is looked at
+        // whole; rewritten as it was (git status), or committed (both trees there to compare), it isn't.
+        expect(whole).toEqual(["staged"]);
+        // Staged, Git has no tree worked out for its index until the commit: there's none to start from till then.
+        expect(notFromStatus).toEqual(["staged", "after staging", "git status rewrites the index"]);
+        await snapshots.stop();
+    }, 60_000);
+
+    test("while a turn runs, the trees on the way to what it changes are read ahead", async () => {
+        const { cwd, dir } = setup({ "deep/er/still/a.txt": "a\n", "other/b.txt": "b\n" });
+        const snapshots = new TurnSnapshots(dir, cwd, { narrowFromMs: 0 });
+        await snapshots.begin(1, "first");
+        await snapshots.end();
+        const reader = () => (snapshots as unknown as { reader?: unknown }).reader;
+        await snapshots.begin(2, "edit deep");
+        await Bun.sleep(60);
+        write(cwd, "deep/er/still/a.txt", "a changed\n");
+        // Read ahead a second after the change, before the turn ends.
+        for (let i = 0; i < 60 && !reader(); i++) await Bun.sleep(50);
+        expect(reader()).toBeDefined();
+        snapshots.reach([cwd]);
+        await snapshots.end();
+        expect(snapshots.list().at(-1)!.changed).toEqual(["deep/er/still/a.txt"]);
+        await snapshots.stop();
+    }, 30_000);
+
+    test("what a turn changed is what git diff-tree finds between its trees: files that became folders, and the reverse, too", async () => {
+        const { cwd, dir } = setup({ "a/b/c.txt": "c\n", "a-b": "ab\n", "z/y": "y\n", "é": "e\n", "keep/deep/k.txt": "k\n" });
+        const snapshots = new TurnSnapshots(dir, cwd, { narrowFromMs: 0 });
+        const names = ["a", "a-b", "a.txt", "a/b", "a/b/c", "a/b/c/d.txt", "a/b-c", "a/x", "z", "z/é.txt", "z/y", "é", "link"];
+        let seed = 11;
+        const random = (n: number) => ((seed = (seed * 1103515245 + 12345) % 2 ** 31), seed % n);
+        const onDisk = () => {
+            const out = new Set<string>();
+            for (const line of git(cwd, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]).toString().split("\0")) if (line && existsSync(join(cwd, line))) out.add(line);
+            return out;
+        };
+        for (let round = 0; round < 25; round++) {
+            await snapshots.begin(round + 1, `round ${round}`);
+            await Bun.sleep(40);
+            for (let k = random(3) + 1; k > 0; k--) {
+                const name = names[random(names.length)]!;
+                const files = onDisk();
+                if (files.has(name) && random(2)) rmSync(join(cwd, name), { force: true });
+                else {
+                    // A file where a folder was (or the other way): what was in its way goes.
+                    for (const p of files) if (p.startsWith(`${name}/`) || name.startsWith(`${p}/`)) rmSync(join(cwd, p), { recursive: true, force: true });
+                    if (existsSync(join(cwd, name)) && lstatSync(join(cwd, name)).isDirectory()) rmSync(join(cwd, name), { recursive: true, force: true });
+                    if (name === "link") { rmSync(join(cwd, name), { force: true }); symlinkSync(`target-${round}`, join(cwd, name)); }
+                    else write(cwd, name, `round ${round}\n`);
+                }
+            }
+            snapshots.reach([cwd]);
+            await snapshots.end();
+            const turn = snapshots.list().at(-1)!;
+            const env = { GIT_OBJECT_DIRECTORY: objectsDir(dir), GIT_ALTERNATE_OBJECT_DIRECTORIES: join(cwd, ".git/objects") };
+            const theirs = git(cwd, ["diff-tree", "-r", "-z", "--no-renames", "--name-only", turn.start.tree!, turn.end!.tree!], env).toString().split("\0").filter(Boolean).sort();
+            expect([round, [...(turn.changed ?? [])].sort()]).toEqual([round, theirs]);
+        }
+        await snapshots.stop();
+    }, 60_000);
+
+    test("a turn that starts with nothing changed since the last one's end starts from that end, without looking again", async () => {
+        const { cwd, dir } = setup({ "a.txt": "a\n", "b/c.txt": "c\n" });
+        const snapshots = new TurnSnapshots(dir, cwd, { narrowFromMs: 0 });
+        await snapshots.begin(1, "first");
+        await Bun.sleep(60);
+        write(cwd, "b/c.txt", "c changed\n");
+        snapshots.reach([cwd]);
+        await snapshots.end();
+        const ended = snapshots.list()[0]!.end!;
+        expect(snapshots.narrowedCount).toBe(1);
+        // As a next prompt does once its turn's end is in.
+        await Bun.sleep(300);
+        await snapshots.begin(2, "second");
+        const started = snapshots.list().at(-1)!.start;
+        expect([started.tree, started.durationMs, snapshots.narrowedCount]).toEqual([ended.tree, 0, 1]);
+        // Something changed meanwhile: looked at again.
+        write(cwd, "a.txt", "a changed\n");
+        await Bun.sleep(60);
+        snapshots.reach([cwd]);
+        await snapshots.end();
+        await Bun.sleep(300);
+        write(cwd, "d.txt", "new\n");
+        await Bun.sleep(60);
+        await snapshots.begin(3, "third");
+        expect(snapshots.narrowedCount).toBe(3);
+        expect(snapshots.list().at(-1)!.start.tree).not.toBe(snapshots.list().at(-2)!.end!.tree);
+        await snapshots.stop();
+    }, 30_000);
+
+    test("a whole capture a turn can't wait for goes on, and the next turns start from it", async () => {
+        const files: Record<string, string> = {};
+        for (let i = 0; i < 3000; i++) files[`d${i % 30}/f${i}.txt`] = `line ${i}\n`;
+        const { cwd, dir } = setup(files);
+        const snapshots = new TurnSnapshots(dir, cwd, { turnBudgetMs: 1, narrowFromMs: 0 });
+        await snapshots.begin(1, "Too soon");
+        const first = snapshots.list()[0]!.start;
+        expect([first.incomplete, first.tree]).toEqual([true, undefined]);
+        // It goes on in the background; once it's in, captures look only at what changed since.
+        write(cwd, "d1/f1.txt", "changed\n");
+        await Bun.sleep(100);
+        const later = new TurnSnapshots(dir, cwd);
+        expect(later.list().length).toBe(1);
+        // Turns that wait as long as they usually do; while it goes on, a turn doesn't wait for it (incomplete at once).
+        (snapshots as unknown as { options: { turnBudgetMs?: number } }).options.turnBudgetMs = undefined;
+        const whole = () => (snapshots as unknown as { whole?: Promise<void> }).whole;
+        if (whole()) {
+            const t = Date.now();
+            await snapshots.begin(2, "While it goes on");
+            expect(Date.now() - t).toBeLessThan(1500);
+            // Unless it came in while this waited for it (up to 100 ms).
+            if (whole()) expect(snapshots.list()[1]!.start.incomplete).toBe(true);
+            await whole();
+        }
+        const before = snapshots.narrowedCount;
+        await snapshots.begin(3, "In time");
+        // From the one that went on: only what changed was looked at, and found as a whole capture finds it.
+        expect(snapshots.narrowedCount).toBe(before + 1);
+        const everything = new TurnSnapshots(join(dirname(dir), "whole"), cwd);
+        await everything.begin(1, "Everything");
+        expect(snapshots.list().at(-1)!.start.tree).toBe(everything.list()[0]!.start.tree!);
+        await everything.stop();
+        write(cwd, "d2/f2.txt", "changed in the turn\n");
+        await snapshots.end();
+        const second = snapshots.list().at(-1)!;
+        expect([second.start.incomplete, second.end!.incomplete]).toEqual([false, false]);
+        expect(snapshots.list().at(-1)!.changed).toEqual(["d2/f2.txt"]);
+        await snapshots.stop();
+    }, 60_000);
 
     test("snapshots are pruned with file history after thirty days", async () => {
         const { cwd } = setup({ "a.txt": "a\n" });

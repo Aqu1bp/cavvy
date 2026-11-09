@@ -22,7 +22,7 @@ The UI says only what the user needs to decide or act. Explanations go in `docs/
 
 Unit tests and reviews aren't enough to call a user-facing change done. Build the app, do what the user will do, and check what's on screen.
 
-- Launch it isolated: `open -n --env CAVVY_HOME=<test home> --env CAVVY_ELECTRON_USER_DATA=<test dir> <path to Cavvy.app>`. Never use `desktop:install`: it quits the Cavvy your own session runs in.
+- Launch it isolated and directly: `CAVVY_HOME=<test home> CAVVY_ELECTRON_USER_DATA=<test dir> CAVVY_NO_KEYCHAIN=1 <path to Cavvy.app>/Contents/MacOS/cavvy-desktop`. Not with `open`: macOS then treats the build as its own app under the installed Cavvy's bundle id, and each one's answer to a folder prompt undoes the other's, so the user is asked again and again. Never use `desktop:install`: it quits the Cavvy your own session runs in.
 - Try the edge cases: Esc mid-turn, steering vs. queueing, each permission mode, reloading the session.
 - Run real CLIs only in a sandbox with an isolated HOME, and only with harmless commands.
 
@@ -39,6 +39,20 @@ The whole suite takes about 20 minutes on a Mac, and agents running it at once t
 - Locally, run only the test files for what you changed (`bun test ./test/foo.test.ts`: the `./` makes it a path, not a name filter) and the typechecks: `bun run typecheck`, plus `bun run gui:typecheck` for `gui/` and `bun run desktop:typecheck` for `desktop-electron/`.
 - Push and wait for CI: `gh pr checks --watch`. If it fails, run `gh run view <run-id> --log-failed`, fix the failing tests, and push again.
 - A test that fails and then passes on a rerun (`gh run rerun <run-id> --failed`) is flaky. Open an issue with the log excerpt, trimmed as [It's public](#its-public) says, and don't add retries.
+
+## Performance
+
+A change that makes a reply, a turn or startup cost more has to say so and why. What we're aiming for is in `docs/performance-plan.md`. The guards:
+
+- `test/perf-budgets.json` holds what things may cost, counted rather than timed: `test/perf-work.test.ts` and `bun run perf:budgets` (after `gui:build`) check them. Over budget fails. More than 10% under fails too, so a saving lowers the budget in the same PR.
+- CI refuses a raised budget unless the PR has the `perf-budget-raise` label and says why.
+- `test/perf-rules.test.ts` reads the source: endless animations are stepped and compositor-only, no new always-on timers in the GUI, no new `spawnSync` under `src/server` or `src/agent`.
+- `test/perf-gui.test.ts` runs the built GUI in Chrome: how often the conversation glides while a reply streams, and that once it's done nothing is laid out, restyled or left animating.
+- These guards are the owner's. Never raise a budget, loosen a check, or skip, delete or retry a performance test to get CI green: make the change cheaper, or stop and say what it costs and why. `.github/CODEOWNERS` asks for the owner's review on any change to them.
+
+For a change to what runs while a session streams or waits, put a `Perf:` line in the PR with before and after from `bun run perf:bench --app <new>/Cavvy.app --compare <old>/Cavvy.app` on a quiet Mac. Use its instruction counts: CPU% moves with which cores macOS picks, and WindowServer's share includes every other app. `desktop-electron/bench-real.ts` does the same with real models.
+
+Before a release, run the same `perf:bench` for the new build against the last release, on a quiet Mac. A phase more than 10% worse, in instructions or WindowServer's share, holds the release until it's fixed or explained.
 
 ## It's public
 

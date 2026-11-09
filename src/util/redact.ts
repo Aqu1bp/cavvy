@@ -15,7 +15,7 @@ export function redactionVersion(): number {
 }
 
 export function registerSecret(value: string | undefined, label = "secret") {
-    if (!value || value.length < 8) return;
+    if (!value || value.length < MIN_SECRET) return;
     if (exact.get(value)?.label === label) return;
     const prefix = new Uint32Array(value.length);
     for (let i = 1, j = 0; i < value.length; i++) {
@@ -49,8 +49,40 @@ interface SecretSpan {
     label: string;
 }
 
+/**
+ * Long texts redacted lately, by text, while the secrets are the same: the same tool output is redacted again each
+ * time what holds it is written (a step's status changes; the session file, the UI log and the model each take it).
+ * Bounded by length; the texts are kept alive by it, so it stays small.
+ */
+const CACHE_FROM = 1024;
+const CACHE_CHARS = 2 * 1024 * 1024;
+const cached = new Map<string, string>();
+let cachedChars = 0;
+let cachedRevision = -1;
+
 export function redact(text: string): string {
-    return redactThrough(text, text.length);
+    if (text.length < CACHE_FROM) return redactThrough(text, text.length);
+    if (cachedRevision !== revision) {
+        cached.clear();
+        cachedChars = 0;
+        cachedRevision = revision;
+    }
+    const had = cached.get(text);
+    if (had !== undefined) {
+        cached.delete(text);
+        cached.set(text, had);
+        return had;
+    }
+    const out = redactThrough(text, text.length);
+    if (text.length + out.length > CACHE_CHARS / 4) return out;
+    cached.set(text, out);
+    cachedChars += text.length + (out === text ? 0 : out.length);
+    for (const [k, v] of cached) {
+        if (cachedChars <= CACHE_CHARS) break;
+        cached.delete(k);
+        cachedChars -= k.length + (v === k ? 0 : v.length);
+    }
+    return out;
 }
 
 /** Match the full text, but show only original positions before the limit.
@@ -64,7 +96,10 @@ export function redactPrefix(text: string, sourceLimit: number): string {
 function* exactSpans(text: string, secret: string, label: string, prefix?: Uint32Array): Generator<SecretSpan> {
     function* starts() {
         if (prefix) {
-            for (let i = 0, j = 0; i < text.length; i++) {
+            // Where it first is, found natively (most texts have none); from there one pass, overlaps and all.
+            const first = text.indexOf(secret);
+            if (first < 0) return;
+            for (let i = first, j = 0; i < text.length; i++) {
                 while (j && text[i] !== secret[j]) j = prefix[j - 1]!;
                 if (text[i] === secret[j]) j++;
                 if (j === secret.length) {
@@ -95,11 +130,16 @@ function* exactSpans(text: string, secret: string, label: string, prefix?: Uint3
 /** A copy of each pattern to match with: redaction never runs inside itself, so each is in use once at a time. */
 const matchers = new Map<RegExp, RegExp>();
 
-function* patternSpans(text: string, pattern: RegExp, label: string): Generator<SecretSpan> {
-    // Made once, not per call: building a RegExp from source and flags costs more than matching a short line.
+/** Made once, not per call: building a RegExp from source and flags costs more than matching a short line. */
+function matcher(pattern: RegExp): RegExp {
     let re = matchers.get(pattern);
     if (!re) matchers.set(pattern, (re = new RegExp(pattern.source, pattern.flags)));
     re.lastIndex = 0;
+    return re;
+}
+
+function* patternSpans(text: string, pattern: RegExp, label: string): Generator<SecretSpan> {
+    const re = matcher(pattern);
     for (let match; (match = re.exec(text)); ) {
         yield { start: match.index, end: match.index + match[0].length, length: match[0].length, label };
     }
@@ -111,8 +151,13 @@ interface SpanSource {
     order: number;
 }
 
+/** Shorter than this, no pattern matches (Slack's, "xoxb-" and 10 more, is the shortest) and no registered secret fits in. */
+const MIN_PATTERN = 15;
+const MIN_SECRET = 8;
+
 function redactThrough(text: string, sourceLimit: number): string {
     if (!text || sourceLimit <= 0) return "";
+    if (text.length < MIN_SECRET) return text.slice(0, sourceLimit);
     // Each matcher keeps only its next span. A dense line can have millions of
     // matches, so collecting and sorting all matches would exhaust the server.
     const heap: SpanSource[] = [];
@@ -155,11 +200,12 @@ function redactThrough(text: string, sourceLimit: number): string {
         }
         return span;
     };
-    // Match original text: replacement first can break longer or overlapping values.
+    // Match original text: replacement first can break longer or overlapping values. Only what's there is matched
+    // span by span: most texts have nothing, found natively.
     for (const [secret, { label, prefix }] of exact) {
-        if (secret.length <= text.length) add(exactSpans(text, secret, label, prefix));
+        if (secret.length <= text.length && text.includes(secret)) add(exactSpans(text, secret, label, prefix));
     }
-    for (const [pattern, label] of PATTERNS) add(patternSpans(text, pattern, label));
+    for (const [pattern, label] of PATTERNS) if (text.length >= MIN_PATTERN && matcher(pattern).test(text)) add(patternSpans(text, pattern, label));
     if (!heap.length) return text.slice(0, sourceLimit);
     const out: string[] = [];
     let parts: string[] = [];

@@ -54,7 +54,11 @@ async function cleanup(engine: { stop(): Promise<void> }) {
     removeAgentConfig("claude-code");
 }
 
-const log = () => (existsSync(process.env.FAKE_LOG!) ? readFileSync(process.env.FAKE_LOG!, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+// Whole lines only: the fake may be partway through writing one, and with an image in it one is long.
+const log = () => {
+    const text = existsSync(process.env.FAKE_LOG!) ? readFileSync(process.env.FAKE_LOG!, "utf-8") : "";
+    return text.slice(0, text.lastIndexOf("\n") + 1).split("\n").filter(Boolean).map((l) => JSON.parse(l));
+};
 const sent = (text: string) => log().find((l) => l.received?.type === "user" && JSON.stringify(l.received.message.content).includes(text))?.received;
 
 async function until(check: () => boolean, ms = 15_000) {

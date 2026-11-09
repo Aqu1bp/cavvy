@@ -33,6 +33,9 @@ export type ChromeLookup = { ok: true; path: string; source: "CAVVY_BROWSER" | "
 
 export const BROWSER_ENV = "CAVVY_BROWSER";
 
+/** The device scale headless Chrome is started at (chromeArgs); pages are emulated at their viewer's own. */
+export const BROWSER_SCALE = 2;
+
 const MAC_APPS = ["Google Chrome", "Chromium", "Microsoft Edge", "Brave Browser", "Google Chrome Canary"];
 const LINUX_PROGRAMS = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge", "microsoft-edge-stable", "brave-browser", "brave"];
 const LINUX_PATHS = ["/opt/google/chrome/chrome", "/snap/bin/chromium", "/opt/brave.com/brave/brave", "/opt/microsoft/msedge/msedge"];
@@ -125,7 +128,7 @@ export function chromeArgs(o: ChromeArgsOptions): string[] {
         // A Retina surface preserves text detail; each viewer caps output to its backing-store size.
         // No scrollbars: on Linux they'd take 15px of the viewport, so a page (and its screenshots and frames) would be
         // narrower there than on macOS, whose scrollbars sit over the page.
-        ...(o.headless ? ["--headless=new", "--force-device-scale-factor=2", "--hide-scrollbars"] : []),
+        ...(o.headless ? ["--headless=new", `--force-device-scale-factor=${BROWSER_SCALE}`, "--hide-scrollbars"] : []),
         // navigator.webdriver stays false: sites (Google's search, YouTube) answer an automated browser with a robot check.
         "--disable-blink-features=AutomationControlled",
         usesPipe(o) ? "--remote-debugging-pipe" : "--remote-debugging-port=0",

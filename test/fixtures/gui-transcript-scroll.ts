@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import * as solid from "../../gui/node_modules/solid-js/dist/solid.js";
 import { all, component, node, renderer, text, type Node } from "../helpers/gui-render";
-import { anchoredTop, atBottom, FAR, firstBelow, firstShown, firstWindow, MORE_TURNS, restoredShown, positionCache, turnHeight, TURN_PAGE } from "../../gui/src/lib/transcript-scroll";
+import { anchoredTop, atBottom, FAR, firstBelow, firstShown, firstWindow, keyed, lazyHeights, MORE_TURNS, placedAgain, restoredShown, positionCache, turnHeight, TURN_PAGE, type TurnKey } from "../../gui/src/lib/transcript-scroll";
 import { GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity } from "../../gui/src/lib/live-line";
+import { finishEntrances } from "../../gui/src/lib/entrances";
+import { ROOM_KEPT, ROOM_WRITTEN_MS, roomFor } from "../../gui/src/lib/follow";
 import { DrawnAgain } from "../../gui/src/lib/reveal";
 
 // Real Solid effects/reconciliation; deterministic layout and browser scheduling
@@ -44,8 +46,10 @@ let rowShift = 0;
 let dockGlide = false;
 /** Some streamed text is still coming out (lib/reveal.ts revealing()). */
 let revealingNow = false;
+/** Words came out a moment ago (lib/reveal.ts wordsFlowing()). */
+let flowingNow = true;
 const has = (n: Node, cls: string) => n.props.class?.split(" ").includes(cls);
-const height = (n: Node): number => n.props["data-turn"] ? (n.props["data-far"] !== undefined ? skippedAt.get(n.props["data-turn"]) : undefined) ?? turnHeights.get(n.props["data-turn"]) ?? 200 : has(n, "earlier") ? 50 : has(n, "transcript-end") ? (n.props.style?.["--dock-h"] ? parseFloat(n.props.style["--dock-h"]) + 28 : 500) : n.children.reduce((sum, child) => sum + height(child), 0);
+const height = (n: Node): number => n.props["data-turn"] ? (n.props["data-far"] !== undefined ? skippedAt.get(n.props["data-turn"]) : undefined) ?? turnHeights.get(n.props["data-turn"]) ?? 200 : has(n, "earlier") ? 50 : has(n, "transcript-end") ? (n.props.style?.["--dock-h"] ? parseFloat(n.props.style["--dock-h"]) + 28 : 500) : has(n, "transcript-room") ? parseFloat(n.props.style?.height ?? "0") : n.children.reduce((sum, child) => sum + height(child), 0);
 /** Where a running glide draws a row of the column (and what's in it): shiftNow down, if it's one the glide moves. */
 const drawn = (n: Node): number => {
     for (let x: Node | undefined = n; x && !has(x, "transcript-col"); x = x.parent) if (glides.some((g) => g.el === x && g.anim.playState === "running")) return shiftNow;
@@ -70,14 +74,26 @@ const slides: { from: string; options: { duration: number; easing?: string }; an
 /** How many times a turn's box was measured, and the column searched for a turn by id. */
 let turnRects = 0;
 let turnSearches = 0;
+/** How many times the page was asked what's at a point: a hit test each. */
+let hitTests = 0;
 const decorate = (n: Node): any => Object.assign(n, {
     animate: (keyframes: { transform: string }[], options: { duration: number; easing?: string }) => {
-        const anim = { playState: "running", startTime: undefined as number | undefined, cancel() { anim.playState = "idle"; } };
+        const startAt = (steps: { transform: string }[]) => Number(/translateY\((-?[\d.]+)px\)/.exec(steps[0]!.transform)?.[1]);
+        let from = startAt(keyframes);
+        const anim = {
+            playState: "running", startTime: undefined as number | undefined, currentTime: 0, cancel() { anim.playState = "idle"; },
+            effect: {
+                // How far along a running move is: where shiftNow has it.
+                getComputedTiming: () => ({ progress: 1 - shiftNow / from }),
+                updateTiming() {},
+                setKeyframes(steps: { transform: string }[]) { from = startAt(steps); glides.push({ el: n, from, duration: options.duration, anim }); },
+            },
+        };
         if (keyframes[0]!.transform.startsWith("translate(")) {
             slides.push({ from: keyframes[0]!.transform, options, anim });
             return anim;
         }
-        glides.push({ el: n, from: Number(/translateY\((-?[\d.]+)px\)/.exec(keyframes[0]!.transform)?.[1]), duration: options.duration, anim });
+        glides.push({ el: n, from, duration: options.duration, anim });
         return anim;
     },
     getBoundingClientRect: () => has(n, "transcript") ? { top: 0, bottom: viewportHeight, height: viewportHeight } : (n.props["data-turn"] && turnRects++, { top: absolute(n) - top + drawn(n), bottom: absolute(n) - top + drawn(n) + height(n), height: height(n) }),
@@ -106,6 +122,7 @@ const create = (tag: string): any => {
         // Its place in its parent by layout (a translate isn't counted), each element its children's offsetParent.
         offsetParent: { get: () => (n.parent && "offsetTop" in n.parent ? n.parent : null) },
         offsetTop: { get: () => n.parent ? n.parent.children.slice(0, n.parent.children.indexOf(n)).reduce((sum, child) => sum + height(child), 0) : 0 },
+        offsetHeight: { get: () => height(n) },
         parentElement: { get: () => n.parent ?? null },
         isConnected: { get: () => { let x: Node = n; while (x.parent) x = x.parent; return x === root; } },
         previousElementSibling: { get: () => { const s = elements(n.parent); return s[s.indexOf(n) - 1] ?? null; } },
@@ -120,9 +137,23 @@ let findProps: any;
 const workToggles = new Map<string, (el: any, toggle: () => void) => void>();
 /** Each turn's onFold (TurnView calls it as its work, faded out, folds away). */
 const onFolds = new Map<string, (el: any, fold: () => void) => void>();
+/** state/app.ts loadEarlier and loadEarlierTo: what a test has them do. */
+let loadMore: (h: any, how: any) => Promise<boolean> = async () => false;
+let loadTo: (h: any, key: TurnKey) => Promise<boolean> | undefined = () => undefined;
+/** state/app.ts onRenew: what each mounted conversation does when its session comes again, by session id. */
+const renews = new Map<string, () => (() => void) | void>();
+/** The work log each turn was last drawn with open or not (TurnView's workOpen), by turn id. */
+const workOpen = new Map<string, boolean>();
 const scope = {
+    loadEarlier: (h: any, how: any) => loadMore(h, how),
+    loadEarlierTo: (h: any, key: TurnKey) => loadTo(h, key),
+    onRenew: (h: any, fn: () => (() => void) | void) => (renews.set(h.id, fn), () => renews.delete(h.id)),
+    keyed, placedAgain,
+    setFollowing() {},
     renderer: { ...solid, ...renderer, createElement: create },
-    anchoredTop, atBottom, FAR, firstBelow, firstWindow, MORE_TURNS, restoredShown, turnHeight, window: { innerHeight: 500 }, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow, DrawnAgain,
+    anchoredTop, atBottom, FAR, firstBelow, firstWindow, lazyHeights, MORE_TURNS, restoredShown, turnHeight, window: { innerHeight: 500 }, transcriptPositions: cache, PAGE: TURN_PAGE, prefs, GLIDE_MAX, glideFrom, heldTurns, liveLine, specialActivity, revealing: () => revealingNow, wordsFlowing: () => flowingNow, finishEntrances, DrawnAgain,
+    // The glide for each new line, as before (lib/follow.ts); the room it follows in is tried below, on its own.
+    FOLLOW_ROOM: false, roomFor, ROOM_KEPT, ROOM_WRITTEN_MS,
     LiveLine: () => node("live-line"), Spinner: () => node("spinner"),
     // A running move draws what it's on shiftNow down; anything else isn't moved.
     getComputedStyle: (el?: any) => ({ transform: `matrix(1, 0, 0, 1, 0, ${glides.some((g) => g.el === el && g.anim.playState === "running") ? shiftNow : 0})`, overflowY: el?.overflowY ?? "visible" }),
@@ -158,10 +189,11 @@ const scope = {
     rewindTarget: { set() {} }, setRewindOpen() {}, ArrowDown: () => node("icon"), FindBar: (p: any) => { findProps = p; return node("find"); }, CardFoldsProvider: (p: any) => p.children,
     setTimeout(fn: () => void) { tasks.push(fn); return 0; },
     // What's at a point of the view: the row of the column laid out there.
-    document: { elementFromPoint: (_x: number, y: number) => all(root).find((n) => n.parent && has(n.parent, "transcript-col") && absolute(n) - top <= y && y < absolute(n) - top + height(n)) ?? null },
+    document: { elementFromPoint: (_x: number, y: number) => (hitTests++, all(root)).find((n) => n.parent && has(n.parent, "transcript-col") && absolute(n) - top <= y && y < absolute(n) - top + height(n)) ?? null },
     HTMLElement: { [Symbol.hasInstance]: (x: any) => !!x?.props },
     TurnView: (p: any) => {
         restoredOpen ||= p.workOpen;
+        workOpen.set(p.turn.id, p.workOpen);
         workToggles.set(p.turn.id, p.onToggleWork);
         const n = create("article"); n.props["data-turn"] = p.turn.id;
         p.onElement?.(n, p.turn.id);
@@ -185,7 +217,10 @@ const scope = {
         return n;
     },
 };
-const Transcript = component(readFileSync(new URL("../../gui/src/components/Transcript.tsx", import.meta.url), "utf8").replace(/^import .*;\n/gm, ""), "Transcript", scope);
+const transcriptSource = readFileSync(new URL("../../gui/src/components/Transcript.tsx", import.meta.url), "utf8").replace(/^import .*;\n/gm, "");
+const Transcript = component(transcriptSource, "Transcript", scope);
+/** Following a reply in room kept under it (lib/follow.ts). */
+const TranscriptInRoom = component(transcriptSource, "Transcript", { ...scope, FOLLOW_ROOM: true });
 const turns = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `turn-${i}`, prompt: { text: `prompt ${i}` } }));
 const [aTurns, setATurns] = solid.createSignal(turns(45));
 const a = { id: "a", view: { state: {}, get turns() { return aTurns(); } } };
@@ -193,10 +228,10 @@ const b = { id: "b", view: { state: {}, turns: turns(90) } };
 /** Turns mounted in the first painted frame of the last mount (the rest come after: Transcript's grow), and its "Show earlier". */
 let firstFrameTurns = 0;
 let firstFrameEarlier: string | undefined;
-const mount = (handle: any, runFrame = true) => {
+const mount = (handle: any, runFrame = true, View = Transcript) => {
     top = 0;
     root = node("root");
-    const dispose = renderer.render(() => Transcript({ handle }), root);
+    const dispose = renderer.render(() => View({ handle }), root);
     if (runFrame) {
         flush();
         firstFrameTurns = all(root).filter((n) => n.tag === "article").length;
@@ -356,17 +391,16 @@ try {
     }
     turnHeights.delete(aboveRead);
     dispose();
-    // While a turn runs, growth at the end is written once, in the next frame, and the column glides in from where it was.
+    // While a turn runs, growth at the end is written once, in the frame that grew (one of its own costs the page's whole
+    // pipeline), and the column glides in from where it was.
     const live = { id: "live", view: { state: {}, turns: turns(45).map((t, i) => ({ ...t, status: i === 44 ? "running" : "done" })) } };
     dispose = mount(live);
     const bottom = () => height(scroller()) - viewportHeight;
     assert.equal(top, bottom(), "a running turn starts followed");
-    const start = top;
-    turnHeights.set("turn-44", 420); resize();
-    assert.equal(top, start, "nothing is written until the next frame");
     let glideWrites = scrollWrites;
-    flush();
-    assert.equal(top, bottom(), "growth is at the end in one frame");
+    turnHeights.set("turn-44", 420); resize();
+    assert.equal(frames.size, 0, "no frame is asked for");
+    assert.equal(top, bottom(), "growth is at the end in the frame it grew");
     assert.equal(scrollWrites, glideWrites + 1, "with one scrollTop write");
     // In sight: the end's room and the last turn (the one before is 420px above the view, more than the glide's 220).
     assert.deepEqual(glides.map((g) => g.el), [button("transcript-end"), turn("turn-44")], "and one glide, of only the rows in sight");
@@ -378,7 +412,8 @@ try {
     // More growth while that glide runs: one motion, picked up where it is (drawn 100px down by now).
     shiftNow = 100;
     turnHeights.set("turn-44", 460); resize(); flush();
-    assert.ok(glides.slice(0, first).every((g) => g.anim.playState === "idle"), "the running glide gives way");
+    assert.deepEqual(glides.slice(first).map((g) => g.anim), glides.slice(0, first).map((g) => g.anim), "the rows go on in the animations they have: a transform taken off and put back lays the column out");
+    assert.ok(glides.every((g) => g.anim.playState === "running"));
     assert.equal(glides.at(-1)!.from, 140, "the next starts from where the last one was, plus the growth");
     shiftNow = 0; glides.forEach((g) => g.anim.cancel());
     scroller().props.onScroll();
@@ -402,11 +437,11 @@ try {
     assert.deepEqual([top, glides.length], [bottom(), still], "growth above the view isn't glided: it's at the end before it's drawn");
     flush();
     assert.equal(glides.length, still);
-    // And when it comes after the end grew in the same frame (the glide asked for, not yet written): no glide either.
-    turnHeights.set("turn-44", 1500); resize();
+    // And when it comes in the same frame as the end growing: no glide either.
+    turnHeights.set("turn-44", 1500);
     turnHeights.set("turn-40", 850);
-    flush();
-    assert.deepEqual([top, glides.length], [bottom(), still], "the frame's glide sees the growth above and lands at once");
+    resize(); flush();
+    assert.deepEqual([top, glides.length], [bottom(), still], "growth above seen with the end's lands at once");
     // Or a scroll event sees it first (our last write's, told in the next frame): it lands there, nothing glides after.
     turnHeights.set("turn-40", 1100); scroller().props.onScroll();
     assert.equal(top, bottom(), "a scroll event seeing growth above lands at the end");
@@ -416,7 +451,13 @@ try {
     turnHeights.set("turn-44", 1600); resize(); flush();
     assert.equal(glides.length, still + 2, "growth in view glides as before");
     glides.forEach((g) => g.anim.cancel());
-    turnHeights.delete("turn-40"); turnHeights.set("turn-44", 1460); viewportHeight = 500; resize(); flush(); scroller().props.onScroll();
+    // Growth at the end, with what's watched still in the upper part of the view: no hit test each time.
+    turnHeights.delete("turn-40"); turnHeights.set("turn-44", 300); resize(); flush(); scroller().props.onScroll();
+    const looks = hitTests;
+    for (const grown of [310, 320, 330]) { turnHeights.set("turn-44", grown); resize(); flush(); scroller().props.onScroll(); }
+    assert.equal(hitTests, looks, "what's watched goes on being watched");
+    glides.forEach((g) => g.anim.cancel());
+    turnHeights.set("turn-44", 1460); viewportHeight = 500; resize(); flush(); scroller().props.onScroll();
     glides.forEach((g) => g.anim.cancel());
     assert.equal(top, bottom());
     // Scrolled away while a glide runs (Home, the scrollbar): the turn read there isn't gliding, so where it's
@@ -717,8 +758,14 @@ try {
     assert.equal(io.targets.size, 80, "a page shown earlier is watched too");
     assert.ok(articles().every((n) => n.props[FAR] === undefined), "and drawn before any of it is skipped");
     // turn-50 is at the top of the view; turn-10 to turn-45 are more than a screen above it.
+    // A turn still bringing something in (a "Worked for" fading in) when it's skipped: the browser would stop that where
+    // it is, never to end, and the page pays for it on every frame. It's ended first; what goes on for good goes on.
+    const ended: string[] = [];
+    const animation = (name: string, iterations: number) => ({ effect: { getComputedTiming: () => ({ iterations }) }, finish: () => ended.push(name) });
+    (turn("turn-12") as any).getAnimations = () => [animation("fade", 1), animation("spin", Infinity)];
     report(Array.from({ length: 36 }, (_, i) => `turn-${10 + i}`), false);
     assert.equal(articles().filter((n) => n.props[FAR] !== undefined).length, 36, "those far from the view are marked far");
+    assert.deepEqual(ended, ["fade"], "a turn skipped from here ends what it was bringing in, and only that");
     // turn-45, skipped at 200px, is drawn at 320 when it comes near: what's in view doesn't move.
     skippedAt.set("turn-45", 200); turnHeights.set("turn-45", 320);
     const reading = turn("turn-50").getBoundingClientRect().top;
@@ -913,4 +960,216 @@ for (const mode of ["prose", "tool"] as const) {
     try {
         assert.equal(top, 175, `${mode}: reopening at a different row position restores the saved reading point`);
     } finally { dispose(); rowAnchors = undefined; rowShift = 0; }
+}
+
+// Opened again (a session the window let go of, or the server did), its turns numbered anew: ids that went to notices
+// and prompts in between live don't when it's read in again, so an id the window saved is another turn's now, or none.
+// It opens on the turn read, found by its place in the session; where that's a turn the session didn't come with this
+// time (new turns pushed it out), the turns back to it come first, in one request.
+{
+    /** A session's turns: each prompt's place in it, and when it started; live, a turn of notices only after `notice`. */
+    const placed = (n: number, from: number, notice?: number) => {
+        const out: any[] = [];
+        let id = from;
+        for (let i = 0; i < n; i++) {
+            out.push({ id: `turn-${id++}`, prompt: { text: `prompt ${i}` }, pos: { seg: 0, index: 2 * i }, startedAt: 1000 + i, blocks: [] });
+            if (i === notice) out.push({ id: `turn-${id++}`, startedAt: 1000 + i + 0.5, blocks: [{ t: "notice", id: `turn-${id++}` }] });
+        }
+        return out;
+    };
+    const prompt = (id: string) => (all(root).find((n) => n.props["data-turn"] === id) as any) && placedTurns().find((t) => t.id === id)?.prompt?.text;
+    let placedTurns = () => [] as any[];
+
+    // Pushed out: the turns back to it, then there.
+    const live = placed(130, 0, 5);
+    const read = live.find((t) => t.prompt?.text === "prompt 20")!;
+    assert.equal(read.id, "turn-22");
+    const [sent, setSent] = solid.createSignal(placed(130, 0).slice(30));
+    const [earlier, setEarlier] = solid.createSignal(30);
+    placedTurns = sent;
+    const handle = { id: "paged", view: { state: {}, get turns() { return sent(); }, get earlier() { return earlier(); } } };
+    cache.set(handle.id, keyed(live, { bottom: false, top: 0, anchor: { turnId: read.id, offset: -50 }, openWork: [read.id] }));
+    let asked: TurnKey | undefined;
+    let land: (() => void) | undefined;
+    loadTo = (_h, key) => {
+        asked = key;
+        return new Promise((r) => (land = () => { setSent(placed(130, 0)); setEarlier(0); r(true); }));
+    };
+    dispose = mount(handle);
+    try {
+        assert.deepEqual(asked?.near, { seg: 0, index: 40 }, "the turns back to the place read are asked for");
+        assert.equal(all(root).filter((n) => n.tag === "article").length, 0, "nothing shown further down meanwhile");
+        land!();
+        for (let i = 0; i < 5; i++) await Promise.resolve();
+        settle();
+        assert.equal(prompt("turn-20"), "prompt 20", "the turn read is there, under its id now");
+        assert.equal(turn("turn-20").getBoundingClientRect().top, -50, "where it was read");
+        assert.equal(workOpen.get("turn-20"), true, "its work log open, as it was");
+        assert.equal(workOpen.get("turn-22"), false, "not the one that has its old id");
+        // Find open, and a reconnect comes with fewer turns than it had: the rest are asked for again.
+        const more: unknown[] = [];
+        loadMore = async (_h, how) => (more.push(how), true);
+        setFindShown(true);
+        assert.deepEqual(more, [], "all there: nothing to ask for");
+        setEarlier(3);
+        assert.deepEqual(more, [{ all: true }], "find counts every turn again");
+        setFindShown(false);
+    } finally { dispose(); loadTo = () => undefined; loadMore = async () => false; }
+
+    // Came with it, its old id now another turn's: on the turn read all the same, nothing asked for.
+    const [all130, setAll130] = solid.createSignal(placed(130, 0));
+    placedTurns = all130;
+    const whole = { id: "renumbered", view: { state: {}, get turns() { return all130(); }, earlier: 0 } };
+    cache.set(whole.id, keyed(live, { bottom: false, top: 0, anchor: { turnId: read.id, offset: -50 }, openWork: [] }));
+    asked = undefined;
+    loadTo = (_h, key) => ((asked = key), undefined);
+    dispose = mount(whole);
+    try {
+        assert.equal(prompt("turn-22"), "prompt 22", "the turn read's old id is another turn's now");
+        assert.equal(turn("turn-20").getBoundingClientRect().top, -50, "it opens on the turn read, not on the one that has its id");
+    } finally { dispose(); loadTo = () => undefined; }
+
+    // The turn read gone (the notices' turn, gone with the session read in anew): at the end, nothing more loaded.
+    const notices = live.find((t) => !t.prompt)!;
+    cache.set(whole.id, keyed(live, { bottom: false, top: 0, anchor: { turnId: notices.id, offset: -50 }, openWork: [] }));
+    asked = undefined;
+    loadTo = (_h, key) => ((asked = key), undefined);
+    dispose = mount(whole);
+    try {
+        assert.equal(button("jump"), undefined, "it follows the end");
+        assert.equal(top, height(scroller()) - viewportHeight, "at the end");
+    } finally { dispose(); loadTo = () => undefined; }
+
+    // Shown while its session comes again from the server, which read it in anew: the place read stays on its turn.
+    setAll130(placed(130, 0, 120));
+    dispose = mount(whole);
+    try {
+        const at = all130().find((t) => t.prompt?.text === "prompt 125")!;
+        assert.equal(at.id, "turn-127");
+        scroll(top + turn(at.id).getBoundingClientRect().top + 20);
+        assert.equal(turn(at.id).getBoundingClientRect().top, -20);
+        const after = renews.get(whole.id)!();
+        setAll130(placed(130, 0));
+        after?.();
+        resize();
+        settle();
+        assert.equal(prompt("turn-125"), "prompt 125");
+        assert.equal(turn("turn-125").getBoundingClientRect().top, -20, "the place read is on the same turn");
+        // Again, the turn read gone: to the end.
+        setAll130(placed(130, 0, 126));
+        settle();
+        assert.equal(all130().find((t) => t.id === "turn-127")?.prompt, undefined, "the notices' turn");
+        scroll(top + turn("turn-127").getBoundingClientRect().top + 20);
+        const gone = renews.get(whole.id)!();
+        setAll130(placed(130, 0));
+        gone?.();
+        resize();
+        settle();
+        assert.equal(button("jump"), undefined, "it follows the end");
+        assert.equal(top, height(scroller()) - viewportHeight, "at the end");
+    } finally { dispose(); }
+}
+
+// Following a reply in room kept under it (lib/follow.ts): once words come steadily the reply writes into the room and
+// nothing moves; the room used, one glide up and the room again; the words stopped, the room goes in a glide.
+{
+    viewportHeight = 500;
+    const reply = { id: "room", view: { state: {}, turns: turns(45).map((t, i) => ({ ...t, status: i === 44 ? "running" : "done" })) } };
+    dispose = mount(reply, true, TranscriptInRoom);
+    try {
+        const bottom = () => height(scroller()) - viewportHeight;
+        const roomOf = () => parseFloat(button("transcript-room").props.style?.height ?? "0");
+        const full = roomFor(viewportHeight, GLIDE_MAX);
+        let h = 200;
+        const grow = (by: number) => { h += by; turnHeights.set("turn-44", h); resize(); flush(); };
+        // Words coming out (lib/reveal.ts revealing(), wordsFlowing(), the turn ending in its text), or stopped.
+        const ends = (t: string) => { (reply.view.turns[44] as any).blocks = [{ t, id: t }]; };
+        const words = (on: boolean) => { revealingNow = flowingNow = on; ends(on ? "text" : "tool"); };
+        words(true);
+        glides.forEach((g) => g.anim.cancel());
+        // A reply's first words: no room yet; they glide in as any line.
+        grow(24);
+        assert.equal(roomOf(), 0, "no room for a reply's first words");
+        assert.equal(top, bottom(), "the view goes to the end");
+        assert.ok(glides.length > 0, "gliding there");
+        glides.forEach((g) => g.anim.cancel());
+        // Words coming steadily: room for what they write in a while (here more than a third of the view's worth).
+        grow(full);
+        assert.equal(roomOf(), full, "room under a reply writing steadily");
+        assert.equal(top, bottom(), "and the view goes to the end");
+        glides.forEach((g) => g.anim.cancel());
+        scroller().props.onScroll();
+        const writes = scrollWrites, glided = glides.length, at = top;
+        for (let i = 0; i < 3; i++) grow(i === 2 ? 40 : 20);
+        assert.deepEqual([scrollWrites, glides.length, top], [writes, glided, at], "lines written into the room move nothing");
+        assert.equal(roomOf(), full - 80, "what's left of the room");
+        // All but what's always kept used: the room again, and one glide up to the end.
+        assert.ok(full - 80 >= ROOM_KEPT, "(still more than what's kept)");
+        grow(full);
+        assert.equal(roomOf(), full, "used, the room is made again");
+        assert.equal(top, bottom(), "the view at the end");
+        assert.ok(glides.length > glided, "gliding there");
+        glides.forEach((g) => g.anim.cancel());
+        scroller().props.onScroll();
+        // The words stop for a tool: the room goes, in a glide; the tool's row glides in.
+        words(false);
+        const waiting = glides.length;
+        grow(30);
+        assert.equal(roomOf(), 0, "no room stands empty under a wait");
+        assert.equal(top, bottom(), "the end in view");
+        assert.ok(glides.length > waiting, "gliding there");
+        glides.forEach((g) => g.anim.cancel());
+        // A sentence before the next tool: it glides in, and no room opens to go again when it stops.
+        words(true);
+        grow(24);
+        assert.equal(roomOf(), 0, "no room for a sentence");
+        assert.equal(top, bottom(), "it glides in");
+        glides.forEach((g) => g.anim.cancel());
+        // Rows landing just after it (the words a moment ago) aren't words: still no room.
+        revealingNow = false; ends("tool");
+        grow(full);
+        assert.equal(roomOf(), 0, "rows landing between words open no room");
+        assert.equal(top, bottom(), "they glide in");
+        glides.forEach((g) => g.anim.cancel());
+        words(false);
+        const sentence = [top, glides.length];
+        grow(30);
+        assert.equal(roomOf(), 0, "(none to go)");
+        assert.equal(top, bottom(), "the tool's row glides in");
+        assert.ok(top > sentence[0]! && glides.length > sentence[1]!, "up, as any row: nothing comes back down");
+        glides.forEach((g) => g.anim.cancel());
+        // The words again, steadily: room again.
+        words(true);
+        grow(20); grow(full);
+        assert.equal(roomOf(), full, "words again, room again");
+        glides.forEach((g) => g.anim.cancel());
+        scroller().props.onScroll();
+        // The reply ends (its working line goes): the room goes, and the conversation settles onto the end in a glide.
+        reply.view.turns[44]!.status = "done";
+        words(false);
+        const settled = glides.length, was = top;
+        grow(-20);
+        assert.equal(roomOf(), 0, "a finished reply keeps no room under it");
+        assert.equal(top, bottom(), "it rests on the end");
+        assert.ok(top < was, "(come down by what the room was)");
+        assert.ok(glides.length > settled, "gliding there");
+        assert.equal(glides.at(-1)!.from, Math.max(-GLIDE_MAX, top - was), "from where it was");
+        // Its footer lands while it settles: the same glide goes on to the new end.
+        const landing = glides.length;
+        grow(30);
+        assert.equal(top, bottom(), "what lands at its end is followed");
+        assert.ok(glides.length > landing, "in the glide");
+        glides.forEach((g) => g.anim.cancel());
+        // The room again with the next reply.
+        reply.view.turns[44]!.status = "running";
+        words(true);
+        grow(30); grow(full);
+        assert.equal(roomOf(), full, "the next reply makes room again");
+        reply.view.turns[44]!.status = "done";
+        words(false);
+        // Read elsewhere, the room goes only where it can't be seen.
+        scroll(0); resize(); flush();
+        assert.equal(roomOf(), 0, "below the view, the room goes");
+        assert.equal(top, 0, "and what's read doesn't move");
+    } finally { dispose(); }
 }

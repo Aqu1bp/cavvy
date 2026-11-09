@@ -38,6 +38,8 @@ export const paths = {
     /** OAuth tokens for remote MCP servers (src/mcp/oauth.ts): part of the credential store. */
     mcpOAuth: () => join(cavvyHome(), "mcp-oauth.json"),
     history: () => join(cavvyHome(), "history.jsonl"),
+    /** What the login shell last said PATH is (server/login-env.ts). */
+    loginPath: () => join(cavvyHome(), "login-path"),
     modelCache: () => join(cavvyHome(), "cache", "models.json"),
     /** The last plan limits the agent CLIs reported (src/server/limits-store.ts). */
     planLimits: () => join(cavvyHome(), "limits.json"),

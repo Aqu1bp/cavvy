@@ -18,7 +18,7 @@ export function StepsTray(p: { sessionId: string; view: SessionView }) {
     const todos = () => p.view.state.todos;
     const key = createMemo(() => stepsKey(todos()));
     const line = createMemo(() => stepsLine(todos()));
-    const shown = () => todos().length > 0 && !p.view.state.interactions.length && hiddenAt()[p.sessionId] !== key() && !stepsStale(todos(), p.view.turns);
+    const shown = () => todos().length > 0 && !p.view.state.interactions.length && hiddenAt()[p.sessionId] !== key() && !stepsStale(todos(), p.view.turns, p.view.earlier ?? 0);
     const listId = createUniqueId();
     let list: HTMLUListElement | undefined;
     const toggle = () => {

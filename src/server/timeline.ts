@@ -9,6 +9,8 @@ export interface SessionView {
     state: SessionState;
     turns: Turn[];
     agents: AgentRun[];
+    /** In a window: turns before `turns` it hasn't been sent yet (SessionSnapshot.earlier). The server's has them all. */
+    earlier?: number;
 }
 
 /** A sub-agent's activity keeps this many blocks (the rest are counted in `dropped`). */
@@ -139,6 +141,7 @@ export function applyOp(view: SessionView, op: SessionOp): void {
         }
         case "reset":
             view.turns = op.turns;
+            if (view.earlier) view.earlier = 0;
             if (op.agents) view.agents = op.agents;
             return;
         case "agent": {

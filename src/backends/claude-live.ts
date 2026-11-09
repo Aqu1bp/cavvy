@@ -96,8 +96,9 @@ export const liveTiming = {
     wakeDueMs: 15_000,
     /** A background shell or monitor that leaves Claude Code's list without a word on how it ended: ended after this. */
     unlistedMs: 3000,
-    /** How often a turn's /goal is looked at in its transcript. */
+    /** How often a turn's /goal is looked at in its transcript: on screen, and while the session isn't. */
     goalPollMs: 400,
+    goalHiddenPollMs: 5000,
     /** A session's process with nothing running or in the background: stopped after this (resumed at the next turn). */
     idleMs: 15 * 60_000,
     /** A stopped background task: confirmed by Claude Code's notification within this, or the stop timed out. */
@@ -359,7 +360,7 @@ export class ClaudeConnection implements CliConnection {
     private hookCallbacks = new Map<string, { event: HookEvent; hook: HookConfig }>();
     private mcpKey?: string;
     private goals?: ClaudeGoalWatch;
-    private goalTimer?: ReturnType<typeof setInterval>;
+    private goalTimer?: ReturnType<typeof setTimeout>;
     private sessionId?: string;
 
     // Per CLI turn.
@@ -760,7 +761,7 @@ export class ClaudeConnection implements CliConnection {
         } finally {
             this.ended = true;
             this.hookAbort.abort();
-            clearInterval(this.goalTimer);
+            clearTimeout(this.goalTimer);
             for (const d of this.dues) clearTimeout(d.timer);
             for (const t of this.unlisted.values()) clearTimeout(t);
             for (const resolve of [...this.controls.values()]) resolve(undefined);
@@ -1135,7 +1136,7 @@ export class ClaudeConnection implements CliConnection {
     }
 
     private startGoalWatch() {
-        clearInterval(this.goalTimer);
+        clearTimeout(this.goalTimer);
         const env = (() => {
             try {
                 return accountEnv(this.def.id, this.cfg.accountId, this.cfg.cwd);
@@ -1145,11 +1146,18 @@ export class ClaudeConnection implements CliConnection {
         })();
         const cwd = this.cfg.cwd;
         this.goals = new ClaudeGoalWatch(() => (this.sessionId ? claudeTranscriptFile(env.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR, cwd, this.sessionId) : undefined), Date.now(), (goal) => this.emit({ type: "goal", goal }));
-        this.goalTimer = setInterval(() => this.goals?.poll(), liveTiming.goalPollMs);
+        // Off screen, less often (each look reads what the CLI wrote since): its end is looked at as the turn ends.
+        const next = () => {
+            this.goalTimer = setTimeout(() => {
+                this.goals?.poll();
+                next();
+            }, this.host.onScreen?.() === false ? liveTiming.goalHiddenPollMs : liveTiming.goalPollMs);
+        };
+        next();
     }
 
     private onResult(m: Record<string, any>) {
-        clearInterval(this.goalTimer);
+        clearTimeout(this.goalTimer);
         this.goals?.poll();
         this.reportFastMode(m);
         const turn = this.cur;
@@ -1187,7 +1195,10 @@ export class ClaudeConnection implements CliConnection {
             if (this.liveAgents.has(id) && !this.backgroundAgents.has(id)) this.endAgent(id, this.stopping.has(ref) ? "aborted" : "error");
             this.endTool(id, p, this.stopping.has(ref) ? "Interrupted by user" : `${this.def.name} stopped before this finished.`, true);
         }
-        const reason: TurnEndReason = this.stopping.has(ref) ? "aborted" : m.subtype === "error_max_turns" ? "max_turns" : m.subtype !== "success" || m.is_error ? "error" : "done";
+        // Cut by a message of ours written "now" (steerOnce), not stopped: it goes on with that message. Cut before the model
+        // said anything, 2.1.316 calls it error_during_execution, with an [ede_diagnostic] error that isn't one.
+        const cut = m.terminal_reason === "aborted_streaming" && !this.stopping.has(ref);
+        const reason: TurnEndReason = this.stopping.has(ref) ? "aborted" : m.subtype === "error_max_turns" ? "max_turns" : !cut && (m.subtype !== "success" || m.is_error) ? "error" : "done";
         const answered = this.answeredBy.get(ref) ?? [];
         const pending = this.outstanding.get(ref);
         if (pending) {
@@ -1209,13 +1220,15 @@ export class ClaudeConnection implements CliConnection {
             }
         } else answered.push(...ids);
         this.answeredBy.set(ref, answered);
-        // A steering message written as its own turn ended, taken into a turn Claude Code started meanwhile (a wake's):
-        // answered there, so its own turn has nothing more to wait for.
+        // A steering message written as its own turn ended, or a prompt written while Claude Code ran a turn of its own
+        // (2.1.316 takes it into that turn, whose result names it), answered in another turn: its own has nothing more
+        // to wait for.
         for (const id of ids) {
             const p = this.prompts.get(id);
-            if (!p || p.ref === ref || p.kind !== "steer" || p.state === "done" || p.state === "cancelled") continue;
+            if (!p || p.ref === ref || p.kind === "carrier" || p.state === "done" || p.state === "cancelled") continue;
             p.state = "done";
             this.outstanding.get(p.ref)?.delete(id);
+            if (p.kind === "prompt") this.answeredBy.set(p.ref, [...(this.answeredBy.get(p.ref) ?? []), id]);
             this.settleWaiting(p.ref);
         }
         // A steering message Claude Code runs as a turn of its own after this one: still this Cavvy turn.
@@ -1920,7 +1933,9 @@ export class ClaudeConnection implements CliConnection {
                       url: o.url,
                       headers: { Authorization: o.authorization },
                       timeout: o.toolTimeoutSec * 1000,
-                      alwaysLoad: true,
+                      // Loaded when a task needs them (Claude Code's ToolSearch; their names are listed to the model): always loaded, their
+                      // definitions were ~13 KB, ~3,300 tokens, on every request of every step, for tools most turns never use.
+                      alwaysLoad: false,
                       tools: o.tools.map((name) => ({ name, permission_policy: "always_allow" })),
                   },
               }

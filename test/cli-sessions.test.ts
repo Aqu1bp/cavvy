@@ -5,6 +5,7 @@
 import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as fs from "fs";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { homedir } from "os";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import { isolate, tempDir, FAKE } from "./helpers/isolate";
@@ -645,4 +646,44 @@ describe("carrying on", () => {
             await e.stop();
         }
     }, 30_000);
+});
+
+describe("folders macOS guards", () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const inHome = (name: string) => join(homedir(), name);
+
+    test("another project's session on the Desktop isn't looked at when listing this folder", () => {
+        Object.defineProperty(process, "platform", { value: "darwin" });
+        // Never the real thing: these paths are the user's own guarded folders.
+        const realpath = spyOn(fs, "realpathSync").mockImplementation(((p: string) => String(p)) as typeof fs.realpathSync);
+        try {
+            const here = codexSession(CODEX, { cwd: real, turns: CODEX_TURNS });
+            const away = join(inHome("Desktop"), "projects", "elsewhere");
+            codexSession(CODEX, { cwd: away, turns: CODEX_TURNS });
+            codexSession(CODEX, { cwd: "/Volumes/Backup/project", turns: CODEX_TURNS });
+            expect(listCliSessions("codex", real).sessions.map((s) => s.id)).toEqual([here.id]);
+            const looked = realpath.mock.calls.map((c) => String(c[0]));
+            expect(looked.filter((p) => p.startsWith(inHome("Desktop")) || p.startsWith("/Volumes/"))).toEqual([]);
+        } finally {
+            realpath.mockRestore();
+            Object.defineProperty(process, "platform", platform);
+        }
+    });
+
+    test("a project in a guarded folder still finds its own sessions, and looks only within that folder", () => {
+        Object.defineProperty(process, "platform", { value: "darwin" });
+        // Never the real thing: these paths are the user's own guarded folders.
+        const realpath = spyOn(fs, "realpathSync").mockImplementation(((p: string) => String(p)) as typeof fs.realpathSync);
+        try {
+            const project = join(inHome("Desktop"), "projects", "mine");
+            const mine = codexSession(CODEX, { cwd: project, turns: CODEX_TURNS });
+            codexSession(CODEX, { cwd: join(inHome("Documents"), "other"), turns: CODEX_TURNS });
+            expect(listCliSessions("codex", project).sessions.map((s) => s.id)).toEqual([mine.id]);
+            const looked = realpath.mock.calls.map((c) => String(c[0]));
+            expect(looked.filter((p) => p.startsWith(inHome("Documents")))).toEqual([]);
+        } finally {
+            realpath.mockRestore();
+            Object.defineProperty(process, "platform", platform);
+        }
+    });
 });

@@ -1,0 +1,44 @@
+# Performance goal
+
+Cavvy is a light wrapper over the agents it runs: under heavy use the hardware runs out, not the app. So each target below is measured against what the same work costs without Cavvy (the same CLIs run bare, in terminals), on the same machine and in the same run, not against a fixed number. A target is met when it holds in two runs in a row under the whole workload below, not just with one or two sessions. One that turns out to be out of reach (Electron's own floor, say) stays listed with the measured reason; it isn't lowered.
+
+## The heavy-use workload
+
+Every target must hold under all of this at once. Where it can't run on a real 16 GB laptop, it runs in a 16 GB cgroup.
+
+- 30 sessions open, 10 streaming at the same time
+- spread across many worktrees of large repositories (100,000 files, over 1 GB)
+- sessions 2,000+ turns long, tool output of tens of MB, many images
+- agents running builds, test suites, dev servers and file watchers
+- subagents, background tasks and MCP servers in many sessions at once
+- 1,000 sessions in history; the app left open for a week (a long soak stands in for this)
+- bursts: many sessions finishing at once, rate limits hitting all of them together
+
+## Pass mark
+
+| # | Target | Today (`release/final`, measured against the build before this work) | |
+|---|---|---|---|
+| 1 | **Breaking point.** Add sessions in steps under the workload until the machine gives out, once in Cavvy and once with the bare CLIs. Cavvy fits within 5% as many sessions; what ran out is RAM or CPU used by the agents and their processes, and Cavvy can still stop sessions then. | 4-core Linux VM, 30 sessions doing 6 turns each against a stand-in API, CPU the limit, paired runs: the same work takes 6.3% longer in Cavvy (475 s bare, 505 s in Cavvy; 7.4%, 4.4%, 7.1%). Before: 88% longer, 2 sessions stuck and 15 turns failed. Real models on a Mac, 10 and 15 sessions: no errors (before: 1 errored turn at 10). | Nearly |
+| 2 | **Scaling.** Cost per session stays flat from 1 to 30 sessions; one session running a big build or flooding output doesn't slow the others. | Server CPU per turn falls as sessions are added: 210, 142 and 100 ms at 5, 15 and 30 sessions. Mac, real models: Cavvy's server 4.4% of a core at 10 sessions, 5.1% at 15 (before: 8.8% and 12.1%); 26 s of CPU per 1,000 prompts (before: 62). | Met |
+| 3 | **Streaming.** A streaming reply costs no more than the same CLI printing it in a terminal, with 10 streaming at once. | Mac, one long reply at 80 tokens a second, the same real Claude Code CLI against a stand-in API: 716 million instructions a second for Cavvy and the CLI, against 342 for the CLI in Terminal.app; WindowServer 15.6% against 3.0% (before: 808 and 35.8%). What's left is drawing Markdown word by word; the server's part is 6. | Fails (2.1×) |
+| 4 | **Idle**, or waiting on a model: within measurement noise of Cavvy not running. | Mac: a short session on screen, idle, 22 million instructions a second; a long one settles to about 1% of a core within seconds (before: 4–7% for as long as it was open). Waiting on a model with its spinner: 134. | Met idle; not waiting |
+| 5 | **Hidden sessions:** no drawing or layout cost. | Mac: a long reply streaming in a session not on screen, 131 million instructions a second, the same as waiting (132): what's drawn is its sidebar row. | Met |
+| 6 | **Snapshots.** The first one of a repository is no slower than `git status` on it. A turn that changed files costs about what `git add` of those files costs. An unchanged turn starts no processes and reads no repository files. | Unchanged turn: no git process, no repository file read. Mac, 100,000-file repository: 0 git processes a turn (before: 6), 0.23 billion server instructions a turn (before: 10). First capture, 100,000-file worktree on a quiet 4-core Linux machine where the repository sets no filters: 0.55 s against 0.35 s for `git status` (before: 1.2 s). | Partly: the first capture is slower than `git status` |
+| 7 | **No dropped frames** while typing or scrolling with 10 replies streaming (8 ms a frame at 120 Hz). | Mac, the interactions bench: 1–3 dropped frames across all of it (before: 5–16). Not yet measured with 10 replies streaming. | Nearly |
+| 8 | **Size doesn't show.** Opening a 2,000-turn session is as fast as opening a new one. Startup with 30 sessions restored is as fast as with 1. Lists and search with 1,000 sessions in history are as fast as with 10. A 50 MB tool output shows without freezing anything. | A long session opens with its last 100 turns and pages in the rest: 2,000 turns in 231–357 ms against 120 for a short one (Linux, headless); 400 turns of 200 KB output in 91–101 ms on a Mac (before: 117–120). 50 MB of tool output: the server's longest pause 14 ms. Search warms when the palette opens. | Nearly |
+| 9 | **Memory.** All of Cavvy uses less than one of the agent CLIs it runs, at any session count, and stays flat over an hours-long soak (the end matches the start). | Mac, real models, 15 sessions: the server 245 MB (before: 475), the window about 300 MB; a Claude Code CLI about 370 MB. 30-minute soak: the server settles at 334 MB and keeps 304 MB after its sessions close (before: 714 and 709): not a leak in the heap (it's given back), but not returned to the system either. | Fails |
+| 10 | **Failures** with 20 live sessions: a crashed CLI, a server restart, a network drop, out of memory or a full disk loses no work, and the other sessions carry on. | 20 sessions: each failure loses no work and the other sessions carry on. | Met |
+
+## How it's measured
+
+`scripts/bench-ramp.ts` runs N real Claude Code sessions, each in its own worktree of a large repository (`scripts/bench-repo.ts`), given the same prompts (an edit and a build, a subagent's search, megabytes of tool output, a dev server, a commit), either under one `cavvy serve` as the desktop app runs it or as bare `claude -p` processes. Each session sends its next prompt as soon as its last turn ends. With a fixed number of turns each, it reports the wall time to the last turn's end and the whole machine's CPU over it, which is what the same work cost; every second, CPU and memory by role (Cavvy, its own helper processes, the CLIs, what the agents run), the machine's pressure, turn times and failures, and how fast Cavvy's socket answers; and, with the kernel's process accounting, every process's CPU, short-lived ones too, by command and role. Sampling processes once a second misses most of what agents run (a git or a compiler lasts a fraction of a second), and a clock that counts samples rather than time reads short on a busy machine: both made an earlier version of this bench say Cavvy was faster than the bare CLIs when it wasn't. Real models are the evidence. Where a comparison has to be exact (the same work to the byte in both), a stand-in for the model's API scripts the replies, and the CLIs and everything they run are real.
+
+The Mac-only targets (5, 7, and the window's share of 3 and 9) are measured with the packaged app: `bun run perf:bench`, `desktop-electron/bench-heavy.ts` and `bench-real.ts`, by instruction counts, not milliseconds:
+
+- **Instructions and energy decide.** A build that does less can show the same milliseconds or more, because macOS moves lighter work to slower cores: during a reply only 8–14% of the work runs on performance cores. Milliseconds still say how something feels, but they aren't a fair comparison between builds or between machines.
+- **A figure that looks too good is suspect.** A bench must fail if it isn't measuring what it says: `bench-stream` stops if a session didn't open, because the rail holds its rows while the real cursor is over it, and a stretch on the wrong session reads as a great result. Bench connections call `session.shown`, or the server counts them as looking at everything.
+- **Tracing inflates.** Rows from `bench-reply`'s trace run slower than the same work untraced.
+
+## Recovery
+
+Not a speed line, but required: if the window's page crashes, it's back in about 150–200 ms with the same session, the reply still coming, the half-written message and the terminal (30 checks in the packaged app: mid-reply, idle, with a browser tab open, hidden, a crash loop). A rule in `test/perf-rules.test.ts` keeps the handler in place.

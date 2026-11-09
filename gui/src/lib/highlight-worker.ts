@@ -1,4 +1,4 @@
-import { highlight, highlightLineChunks, highlightLines, warmUp } from "./highlight-core";
+import { endWriting, highlight, highlightLineChunks, highlightLines, highlightMore, warmUp } from "./highlight-core";
 import type { HighlightRequest, HighlightResponse } from "./highlight";
 
 /** Streams under way, and those of them asked to stop. A cancel for one that's over is dropped: kept, it would never go. */
@@ -6,7 +6,8 @@ const streaming = new Set<number>();
 const cancelled = new Set<number>();
 
 self.onmessage = async (event: MessageEvent<HighlightRequest>) => {
-    const { id, kind, code = "", lang } = event.data;
+    const { id, kind, code = "", lang, writing = 0 } = event.data;
+    if (kind === "end") return endWriting(writing);
     if (kind === "cancel") {
         if (streaming.has(id)) cancelled.add(id);
         return;
@@ -22,7 +23,7 @@ self.onmessage = async (event: MessageEvent<HighlightRequest>) => {
             return;
         }
         if (kind === "warm") warmUp();
-        const result = kind === "warm" ? undefined : await (kind === "html" ? highlight(code, lang) : highlightLines(code, lang));
+        const result = kind === "warm" ? undefined : await (kind === "html" ? highlight(code, lang) : kind === "more" ? highlightMore(writing, code, lang) : highlightLines(code, lang));
         self.postMessage({ id, result } satisfies HighlightResponse);
     } catch {
         // A failed grammar/chunk can be retried through the existing boundary.
