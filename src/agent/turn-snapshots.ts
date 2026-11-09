@@ -1,7 +1,8 @@
 // Raw working-tree snapshots, independent of edit tools and backend history.
 // Version 2 journal (reads version 1 too): one complete turn record per line, later records replace
-// earlier ones with the same checkpoint id. All objects belong to this session;
-// no alternates, repository writes, filters, hooks, or network access are used.
+// earlier ones with the same checkpoint id. A turn's objects belong to this session: what was read from the
+// repository's (as an alternate) is copied in when the turn ends. No repository writes, filters, hooks, or network
+// access are used.
 // Git's loose object format is zlib(header + bytes); hashing/compressing in
 // process avoids a subprocess per file and preserves the bytes on disk.
 
@@ -512,6 +513,15 @@ function commonDirOf(index: string): string {
 
 /** The repository's objects, as git reads them (its common dir's). */
 const objectsOf = (index: string) => join(commonDirOf(index), "objects");
+
+/**
+ * Folders as GIT_ALTERNATE_OBJECT_DIRECTORIES lists them: git splits the list at each `delimiter` except within one
+ * in double quotes, where `\` escapes as in C.
+ */
+function alternates(dirs: string[]): string {
+    const quote = (d: string) => `"${d.replace(/[\\"\x00-\x1f\x7f]/g, (c) => (c === "\\" || c === '"' ? `\\${c}` : `\\${c.charCodeAt(0).toString(8).padStart(3, "0")}`))}"`;
+    return dirs.map((d) => (/[":;\\\x00-\x1f\x7f]/.test(d) ? quote(d) : d)).join(delimiter);
+}
 
 /** The repository's own attributes file (info/attributes in its common Git dir, found from where its index is), stamped. */
 function infoAttributes(index: string | undefined): string {
@@ -1898,7 +1908,7 @@ export class TurnSnapshots {
         const made = join(this.storage, `trees-${randomBytes(6).toString("hex")}`);
         await mkdir(made, { mode: 0o700 });
         try {
-            const env = { GIT_NO_REPLACE_OBJECTS: "1", GIT_INDEX_FILE: index, GIT_OBJECT_DIRECTORY: made, GIT_ALTERNATE_OBJECT_DIRECTORIES: [join(this.storage, "objects"), objectsOf(indexPath)].join(delimiter) };
+            const env = { GIT_NO_REPLACE_OBJECTS: "1", GIT_INDEX_FILE: index, GIT_OBJECT_DIRECTORY: made, GIT_ALTERNATE_OBJECT_DIRECTORIES: alternates([join(this.storage, "objects"), objectsOf(indexPath)]) };
             const config = ["-c", "core.hooksPath=/dev/null", "-c", "core.splitIndex=false", "-c", "core.sharedRepository=0600", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false"];
             if (lines.length) {
                 const update = await git(root, [...config, "update-index", "-z", "--index-info"], { input: lines.join(""), privateEnv: env, deadline });
@@ -2514,7 +2524,7 @@ export class TurnSnapshots {
     /** This session's objects, with the repository's (when its index is known) to read what a capture took from it. */
     private readEnv(): Record<string, string> {
         const index = locations.get(this.cwd)?.index;
-        return index ? { ...this.env(), GIT_ALTERNATE_OBJECT_DIRECTORIES: objectsOf(index) } : this.env();
+        return index ? { ...this.env(), GIT_ALTERNATE_OBJECT_DIRECTORIES: alternates([objectsOf(index)]) } : this.env();
     }
 
     private async compare(turn: SnapshotTurn, deadline: number, trees?: Set<string>): Promise<Change[]> {

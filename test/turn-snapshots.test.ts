@@ -469,6 +469,24 @@ describe("per-turn snapshots", () => {
         await snapshots.stop();
     });
 
+    test("a repository in a folder whose name has a colon (a slash in the Finder) diffs a changed file", async () => {
+        const { cwd: made } = setup();
+        const cwd = join(dirname(made), "Client:Site");
+        renameSync(made, cwd);
+        write(cwd, "f1.txt", "one\ntwo\n");
+        git(cwd, ["add", "-A"]);
+        git(cwd, ["commit", "-q", "-m", "Add f1"]);
+        const snapshots = new TurnSnapshots(join(dirname(made), "history"), cwd);
+        await snapshots.begin(1, "Edit f1");
+        write(cwd, "f1.txt", "one\nthree\n");
+        await snapshots.end();
+        const turn = snapshots.list()[0]!;
+        expect([turn.start.incomplete, turn.end!.incomplete, turn.end!.notes]).toEqual([false, false, []]);
+        const result = await snapshots.changes({ scope: "last-turn" });
+        expect([result.incomplete, result.files.map((f) => [f.path, f.added, f.removed])]).toEqual([false, [["f1.txt", 1, 1]]]);
+        await snapshots.stop();
+    });
+
     test("linked worktrees keep both their own and the common repository metadata untouched", async () => {
         const { cwd, dir } = setup({ "a.txt": "before\n" });
         const linked = join(dirname(cwd), "linked");
