@@ -544,6 +544,32 @@ describe("per-turn snapshots", () => {
         }
     }, 60_000);
 
+    for (const [where, path] of [["a tracked .gitattributes", ".gitattributes"], ["the repository's info/attributes", ".git/info/attributes"], ["core.attributesFile", "../attributes"]]) test(`a pipe where ${where} should be: turns end, and other reads aren't held up`, async () => {
+        if (process.platform === "win32") return;
+        const { cwd, dir } = setup({ ".gitattributes": "*.bin binary\n", "a.txt": "a\n" });
+        const pipe = join(cwd, path!);
+        if (path === "../attributes") git(cwd, ["config", "core.attributesFile", pipe]);
+        mkdirSync(dirname(pipe), { recursive: true });
+        rmSync(pipe, { force: true });
+        expect(Bun.spawnSync(["mkfifo", pipe]).exitCode).toBe(0);
+        const within = (work: Promise<unknown>, ms: number) => Promise.race([work.then(() => "done"), Bun.sleep(ms).then(() => "stuck")]);
+        // More sessions than the threads that read files for the whole server: each capture looks at it.
+        const sessions = [1, 2, 3, 4, 5, 6].map((id) => new TurnSnapshots(join(dir, String(id)), cwd));
+        try {
+            expect(await within(Promise.all(sessions.map((s, i) => s.begin(i + 1, "Edit"))), 5000)).toBe("done");
+            expect(await within(readFile(join(cwd, "a.txt")), 2000)).toBe("done");
+            write(cwd, "a.txt", "a again\n");
+            expect(await within(Promise.all(sessions.map((s) => s.end())), 5000)).toBe("done");
+            expect(sessions.every((s) => s.list()[0]?.end)).toBe(true);
+            // Git itself waits on the pipe (check-attr) until its time is up.
+            expect(await within(Promise.all(sessions.map((s) => s.stop())), 30_000)).toBe("done");
+        } finally {
+            // Lets go of any read still waiting on the pipe.
+            for (let i = 0; i < 16; i++) try { closeSync(openSync(pipe, constants.O_WRONLY | constants.O_NONBLOCK)); } catch {}
+            rmSync(pipe, { force: true });
+        }
+    }, 60_000);
+
     test("linked worktrees keep both their own and the common repository metadata untouched", async () => {
         const { cwd, dir } = setup({ "a.txt": "before\n" });
         const linked = join(dirname(cwd), "linked");

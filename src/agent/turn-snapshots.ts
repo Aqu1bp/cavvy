@@ -2032,10 +2032,16 @@ export class TurnSnapshots {
             if (name === "core.attributesfile" && value) files.push(value.startsWith("~/") ? join(home, value.slice(2)) : value);
             if (name === "core.excludesfile" && value) excludes = value.startsWith("~/") ? join(home, value.slice(2)) : value;
         }
+        const own = new Set(files.slice(0, attributes.length + 1));
         for (const f of files) {
             if (converts) break;
-            const text = await readFile(f, "utf-8").catch(() => "");
-            for (const line of text.split("\n")) {
+            // The folder's and its Git dir's not through a link (Git doesn't follow a link to a .gitattributes either);
+            // the user's as Git finds them. One that's there and can't be read as a file (a pipe), or that's too big to
+            // read: no telling, so it may convert.
+            const r = await readRegular(f, MAX_SNAPSHOT_BYTES, !own.has(f));
+            if (r === null) continue;
+            if (!r?.buf) { converts = true; break; }
+            for (const line of r.buf.toString("utf-8").split("\n")) {
                 const t = line.trim();
                 if (!t || t.startsWith("#")) continue;
                 // An attribute that converts, set (not unset with -, or ! for unspecified); or a macro defined with one.
