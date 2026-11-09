@@ -9,9 +9,9 @@ You are a code reviewer with fresh context. You did not write this change.
 
 Change: <one line: what it is>
 Checkout: <path>. Review only `git diff <base>...<head>` (base: <base>), saved at <diff path>.
-<Round 2 or 3 only: Review only `git diff <last reviewed>..<head>`, the fixes for the findings in <findings path>. Check each fix really fixes its finding, and look for the same bug class elsewhere in the change.>
+<Round 2 or 3 only: Review only `git diff <last reviewed>..<head>`, the fixes for the findings in <findings path>. Check each fix really fixes its finding, then search the whole change (`git diff <base>...<head>`), not only these commits, for every other place with the same bug class.>
 Intent: <intent.md path>. Judge the change against it: does it solve its problem, fit the system, and break nothing else?
-Rules: AGENTS.md and REVIEW.md in the checkout. REVIEW.md says what failure looks like in each area. Check its Lessons.
+Rules: AGENTS.md in the checkout.
 Already reported or refuted, don't repeat: <path, or "none">
 
 YOUR LENS: <one of the lenses below, with any specifics for this change>
@@ -47,11 +47,11 @@ Start with a count ("N findings: X Important, Y Nit, Z Pre-existing"). If there'
   - Do the tests fail without the change?
 - **Rules, tests and performance.**
   - AGENTS.md: logic in the core, UI copy, one kind of change, nothing identifying in code, fixtures or commits.
-  - Tests: deterministic, portable, not skipping silently, not depending on the developer's environment.
-  - Hot paths and REVIEW.md's "Check on every change".
+  - Tests: deterministic, portable, not skipping silently, not depending on the developer's environment, waiting for effects that land after a call returns, and unable to pass by matching nothing.
+  - Hot paths: nothing quadratic, nothing done per frame, per token or per object that could be skipped, and no single slow call that holds up every session.
   - Docs: what's new for users is in `docs/`.
 - **Security and dependencies.**
-  - Trust boundaries: what reaches the code from a page, a repository, a model or another process, and what it can make it do.
+  - Trust boundaries: what reaches the code from a page, a repository, a model or another process, and what it can make it do. Files in the user's repository, its Git config and anything an agent can write are input from someone else.
   - Argument and path injection.
   - The sandbox and permission layer.
   - Secrets.
@@ -66,7 +66,7 @@ Start with a count ("N findings: X Important, Y Nit, Z Pre-existing"). If there'
 You are an adversarial verifier. Reviewers posted the findings below on a change. Reviewers are often wrong, or overstate impact. For EACH finding, try hard to disprove it, then give your verdict. Don't trust their reproductions, and don't reuse their scripts: reproduce it yourself where you may run code.
 
 Checkout: <path>. The change is `git diff <base>...<head>`.
-Intent: <intent.md path>. Rules: AGENTS.md and REVIEW.md in the checkout.
+Intent: <intent.md path>. Rules: AGENTS.md in the checkout.
 Findings: <findings path>.
 <Disagreements to settle: <the question, and what each reviewer said>>
 
@@ -79,6 +79,7 @@ For each finding decide:
  - DOWNGRADE: real, but the impact is overstated. Give the right tag.
  - REFUTED: wrong. Say exactly why.
 Check how the user would reach it, not only whether the code is wrong. Say whether the base branch already behaved this way.
+Don't count on a protection (a sandbox, a permission mode, folder trust) to make a finding unreachable unless you've read the code that applies it in that mode, on that platform and for that agent. Many run without it.
 
 Output: a count line, then for each finding:
  - its id

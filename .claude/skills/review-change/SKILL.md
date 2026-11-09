@@ -10,7 +10,7 @@ Arguments: $ARGUMENTS
 
 You run the review. Subagents read and judge the code: you never review the diff yourself, because you may have written it. You collect evidence, brief the subagents, tally the votes, fix what survives and report.
 
-The prompts for the subagents are in `prompts.md` in this skill's folder. `REVIEW.md` at the repository root says what failure looks like in this repo. Read both before starting.
+The prompts for the subagents are in `prompts.md` in this skill's folder. Read it before starting.
 
 ## 1. Work out what to review
 
@@ -64,12 +64,14 @@ The change sets the depth, not the author. Use the first that applies:
 
 1. The depth the user gave.
 2. **Deep:**
-   - the diff touches a path REVIEW.md lists under "Paths that always get a deep review", or
+   - the diff touches what decides what an agent may do, what runs on the user's machine, or what reads or runs things in the user's repository: `.github/workflows/`, `src/permissions/`, `src/backends/cli.ts`, `src/util/git.ts`, `src/server/git-*`, `src/agent/turn-snapshots.ts`, `src/agent/turn-places.ts`, `src/agent/stat-worker.ts`, `scripts/probes/lib.ts`, `desktop-electron/pack.ts`, `scripts/install-desktop.ts`, `scripts/update-desktop.ts`, or adds a dependency to any `package.json`, or
    - it changes more than 400 lines outside tests and docs.
+
+   The list names the usual places, not the only ones: a diff elsewhere that does the same kinds of thing gets the raise below.
 3. **Quick:** the diff only touches docs, copy or tests, or changes fewer than 40 lines and none of them in the core (AGENTS.md's list).
 4. Otherwise **Standard**.
 
-Then ask whether this particular change needs more than its tier, whatever its paths and size. Examples: it starts a process, makes a network call, deletes or overwrites files, touches credentials, or changes what runs at install or update. If it does, raise the depth one level and say why. Never lower it below what the rules gave, and never go below the depth the user typed.
+Then ask whether this particular change needs more than its tier, whatever its paths and size. Examples: it starts a process, makes a network call, reads or writes files in the user's repository, deletes or overwrites files, touches credentials, or changes what runs at install or update. If it does, raise the depth one level and say why. Never lower it below what the rules gave, and never go below the depth the user typed.
 
 | | Reviewers in round 1 | Reviewers may run code | Voters per finding | A finding is kept when |
 |---|---|---|---|---|
@@ -90,7 +92,7 @@ Tell the user the depth and the reason in one line, then go on.
 
 **Rounds 2 and 3:**
 - One reviewer reads only the diff since the commit last reviewed, plus the fixes.
-- It checks that each fix really fixes its finding, and looks for every place with the same bug class.
+- It checks that each fix really fixes its finding, then searches the whole change (`git diff <base>...HEAD`), not only the new commits, for every other place with the same bug class.
 - Give it the list of findings already reported and refuted, so it doesn't repeat them.
 
 When the reviewers are done:
@@ -106,6 +108,7 @@ When the reviewers are done:
 ## 6. Fix (unless report-only)
 
 - **Important:** fix every one, at the root cause and at every place with the same bug class, not only the line cited. Add a test that fails without the fix where one can be written.
+- **Same class, everywhere:** before committing, name each fixed finding's pattern (the call, the kind of input, the missing step) and search the whole change and the files it touches for it, with `grep` and by reading the callers. Fix every hit the change added; list hits that were there before as Pre-existing. Say in the report what you searched for and what it found. One reviewer seldom finds every instance: the next round shouldn't have to.
 - **Nits:** fix those that are small and inside the change's scope. List the rest.
 - **Pre-existing:** never fix them on this branch: AGENTS.md wants one kind of change per pull request. List them as follow-ups (a separate pull request or an issue).
 
@@ -139,6 +142,4 @@ Write it in chat. Lead with the count line.
    - A short explanation of the change for the reviewer.
 
    Don't post it.
-5. **Lessons for REVIEW.md:** for each kept finding whose class REVIEW.md doesn't already cover, propose one line for its Lessons section. Ask before editing REVIEW.md. If the user agrees, commit it on its own, or as its own pull request when the branch is a different kind of change.
-
 Never comment on, approve or push to a pull request unless the user asks after seeing the report. Keep the state folder for the next run.
