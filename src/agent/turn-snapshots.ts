@@ -1,8 +1,8 @@
 // Raw working-tree snapshots, independent of edit tools and backend history.
 // Version 2 journal (reads version 1 too): one complete turn record per line, later records replace
 // earlier ones with the same checkpoint id. A turn's objects belong to this session: what was read from the
-// repository's (as an alternate) is copied in when the turn ends. No repository writes, filters, hooks, or network
-// access are used.
+// repository's (as an alternate) is copied in when the turn ends. The only repository writes are the folder watch's
+// short-lived sync markers in .git (stat-worker.ts); no filters, hooks, or network access are used.
 // Git's loose object format is zlib(header + bytes); hashing/compressing in
 // process avoids a subprocess per file and preserves the bytes on disk.
 
