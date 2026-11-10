@@ -289,7 +289,7 @@ test("Tab from the window into a frame of a page: an agent's click elsewhere sen
     const agents = await a.tab();
     a.tabIn(mine, "frame");
     await sleep(150);
-    expect(a.told).toContainEqual({ type: "person", key: a.key(mine), press: true });
+    expect(a.told).toContainEqual({ type: "person", key: a.key(mine), press: true, seq: 1 });
     expect(a.told).toContainEqual({ type: "framed", key: a.key(mine), framed: true });
     await a.click(agents, () => a.type("xy"));
     a.handBack(mine);

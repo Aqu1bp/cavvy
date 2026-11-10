@@ -232,13 +232,16 @@ test("typing in a page while the agent clicks in another one, the keyboard goes 
     f.doc.keys = "tab-1";
     at(3001); f.tell({ type: "focused", key: "tab-1" });
     expect([f.doc.keys, f.doc.activeElement, f.other.calls]).toEqual(["window", f.box, ["blur"]]);
+    // They're in the window now: the app is told, so it doesn't count the page as theirs either.
+    expect(f.backs.n).toBe(1);
     // Nor at the agent's next click, while they were last in the frame.
     f.doc.activeElement = f.view;
     f.doc.keys = "tab-1";
     at(3500); f.tell({ type: "focused", key: "tab-1" });
     expect([f.doc.keys, f.other.calls]).toEqual(["window", ["blur"]]);
-    // Back in the page itself (a press, or Tab out of the frame): given back again.
-    at(4000); f.tell({ type: "framed", key: "tab-2", framed: false });
+    // Back in the page itself (a press there, or Tab into it): given back again.
+    at(4000); f.tell({ type: "person", key: "tab-2", press: true, seq: 2 });
+    f.tell({ type: "framed", key: "tab-2", framed: false });
     f.doc.activeElement = f.view;
     f.doc.keys = "tab-1";
     at(4100); f.tell({ type: "focused", key: "tab-1" });
@@ -374,7 +377,7 @@ test("the app looks at who holds the keyboard as each thing the agent does goes 
     expect(host).toMatch(/wc\.on\("before-input-event", \(e, input\) => \{[^}]*if \(this\.strayKey\(tab, input\)\) return e\.preventDefault\(\);\s*person\(input\.type\);\s*if \(tab\.agentInputs === 0\) this\.tabKey\(input\);/);
     expect(host).toContain('if (type === "mouseDown") this.theirs(tab);');
     expect(host).toContain('gui.on("before-input-event", (_e, input) => this.tabKey(input));');
-    expect(host).toMatch(/private theirs\(tab: Tab\) \{\s*tab\.theirs = true;[^]*?this\.toGui\(\{ type: "person", key: tab\.key, press: true \}\);/);
+    expect(host).toMatch(/private theirs\(tab: Tab\) \{[^]*?tab\.theirs = true;[^]*?this\.toGui\(\{ type: "person", key: tab\.key, press: true, seq: tab\.theirsSeq \}\);/);
     // Never the agent's own keys, nor a page the person put the keyboard in.
     expect(host).toContain("if (tab.agentKeys || tab.theirs || Date.now() - tab.agentAt > STRAY_KEY_MS) return false;");
     // Kept until the window has the keyboard again, then sent in order.

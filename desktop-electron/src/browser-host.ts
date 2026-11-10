@@ -48,9 +48,12 @@ interface Tab {
     heldAt?: number;
     /** The person put the keyboard in its page themselves (a press in it), and the page has held it since. */
     theirs?: boolean;
+    /** Which of the person's presses (or Tabs) made it theirs: browserBack names the last one the GUI had heard of. */
+    theirsSeq?: number;
     /**
-     * Where the person last had the keyboard in its page, by their own keys and presses there: in a frame of it, not the
-     * page itself. Given back to the page, the keyboard lands on the page itself, so it isn't (lookFrame).
+     * The keyboard was last found in a frame of its page, not the page itself: looked at after the person's keys and
+     * presses there, as Tab takes it into the page, and as the agent acts on another page (frameNow). Given back to the
+     * page, the keyboard lands on the page itself, so it isn't.
      */
     framed?: boolean;
     /** Key and text commands from the agent in flight: a key the page sees meanwhile is the agent's. */
@@ -128,6 +131,8 @@ export class BrowserHost {
     private tabsById = new Map<string, Tab>();
     private tabsByKey = new Map<string, Tab>();
     private seq = 0;
+    /** Counts the times a page became the person's (theirs). */
+    private personSeq = 0;
     private attaching: string[] = [];
     private attachWaiters = new Map<string, (wc: WebContents) => void>();
     private closing = false;
@@ -324,9 +329,12 @@ export class BrowserHost {
         return [...this.tabsById.values()].filter((t) => !t.wc.isDestroyed()).map((t) => t.wc.getOSProcessId());
     }
 
-    /** The person is back in the window (the GUI says so): none of the pages is theirs any more. */
-    back() {
-        for (const tab of this.tabsByKey.values()) tab.theirs = false;
+    /**
+     * The person is back in the window (the GUI says so): none of the pages is theirs any more. Not one they pressed in
+     * after the GUI last heard (`seen`): the word crossed their press on its way.
+     */
+    back(seen?: number) {
+        for (const tab of this.tabsByKey.values()) if (seen === undefined || (tab.theirsSeq ?? 0) <= seen) tab.theirs = false;
     }
 
     /** The GUI laid a tab's webview out at this size: its page's real viewport. */
@@ -408,8 +416,11 @@ export class BrowserHost {
 
     /** The person put the keyboard in `tab`'s page themselves: it keeps it through what the agent does there, and the GUI is told. */
     private theirs(tab: Tab) {
+        // The person is in one page at a time: the one they left isn't theirs any more.
+        for (const t of this.tabsByKey.values()) if (t !== tab) t.theirs = false;
         tab.theirs = true;
-        this.toGui({ type: "person", key: tab.key, press: true });
+        tab.theirsSeq = ++this.personSeq;
+        this.toGui({ type: "person", key: tab.key, press: true, seq: tab.theirsSeq });
     }
 
     /**

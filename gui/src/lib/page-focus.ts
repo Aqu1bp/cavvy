@@ -66,11 +66,13 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser" | "browserBac
     /** When the person last pressed in the window, and last pressed Tab or Escape in it. */
     let pressedAt = -Infinity;
     let movedAt = -Infinity;
+    /** The last of the app's words that a page is theirs (its seq), sent back with browserBack. */
+    let seen = 0;
     /** The person is back in the window: no page is theirs, here or in the app (browser-host.ts, which can't see it). */
     const back = () => {
         if (theirs === undefined) return;
         theirs = undefined;
-        bridge.browserBack();
+        bridge.browserBack(seen);
     };
     const isPage = (el: unknown) => el instanceof HTMLElement && el.tagName === "WEBVIEW";
     const view = (key: string) => [...doc.querySelectorAll<HTMLElement>("webview")].find((v) => v.dataset.key === key);
@@ -95,6 +97,8 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser" | "browserBac
             if (!had) body.removeAttribute("tabindex");
         }
         taking = false;
+        // Not back to their page (a frame of it had the keyboard, or it's gone): they're in the window now, for the app too.
+        if (!mine) back();
         // Still the page's (it answers a press in several steps)? The app says so again within 40ms, and it's taken back again.
     };
     const off = bridge.onBrowser((e) => {
@@ -107,7 +111,10 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser" | "browserBac
             else framed.delete(e.key);
         } else if (e.type === "left") {
             if (theirs === e.key) theirs = undefined;
-        } else if (e.type === "person" && e.press) theirs = e.key;
+        } else if (e.type === "person" && e.press) {
+            theirs = e.key;
+            seen = Math.max(seen, e.seq ?? 0);
+        }
         else if (e.type === "focused" && theirs !== e.key) {
             said.set(e.key, performance.now());
             takeBack(e.key);
