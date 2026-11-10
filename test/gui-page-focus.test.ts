@@ -205,7 +205,8 @@ test("typing in a page while the agent clicks in another one, the keyboard goes 
     p.fire("blur", { target: p.win });
     at(3001); p.tell({ type: "focused", key: "tab-1" });
     expect([p.doc.keys, p.doc.activeElement]).toEqual(["tab-2", p.other]);
-    expect(p.box.calls).toEqual([]);
+    // Off the agent's page's element first, as it is off the window's own.
+    expect([p.view.calls, p.box.calls]).toEqual([["blur"], []]);
     // The same where the window went on showing their page focused.
     const q = page();
     at(2000); q.tell({ type: "person", key: "tab-2", press: true });
@@ -213,8 +214,9 @@ test("typing in a page while the agent clicks in another one, the keyboard goes 
     q.doc.keys = "tab-1";
     at(3001); q.tell({ type: "focused", key: "tab-1" });
     expect([q.doc.keys, q.doc.activeElement, q.other.calls]).toEqual(["tab-2", q.other, ["blur", "focus"]]);
-    // Their keyboard was in a frame of their page: given back, it would land on the page itself (measured on macOS and
-    // Linux: of 136 characters, 126 went to the page's top document). So not given back: to the window instead.
+    // Their keyboard was in a frame of their page (the app says so from their own keys and presses there): given back, it
+    // would land on the page itself (measured on macOS and Linux: of 136 characters, 126 went to the page's top
+    // document). So not given back: to the window instead.
     const f = page();
     at(1000); f.fire("focusin", { target: f.box });
     at(2000); f.tell({ type: "person", key: "tab-2", press: true });
@@ -223,18 +225,26 @@ test("typing in a page while the agent clicks in another one, the keyboard goes 
     f.doc.keys = "tab-1";
     at(3001); f.tell({ type: "focused", key: "tab-1" });
     expect([f.doc.keys, f.doc.activeElement, f.other.calls]).toEqual(["window", f.box, ["blur"]]);
-    // And it's no longer theirs: the agent's next click doesn't send the keyboard there either.
+    // Nor at the agent's next click, while they were last in the frame.
     f.doc.activeElement = f.view;
     f.doc.keys = "tab-1";
     at(3500); f.tell({ type: "focused", key: "tab-1" });
     expect([f.doc.keys, f.other.calls]).toEqual(["window", ["blur"]]);
-    // A press of theirs in that page again (in the page itself this time): it's theirs, and given back, again.
+    // Back in the page itself (a press, or Tab out of the frame): given back again.
     at(4000); f.tell({ type: "framed", key: "tab-2", framed: false });
-    f.tell({ type: "person", key: "tab-2", press: true });
     f.doc.activeElement = f.view;
     f.doc.keys = "tab-1";
     at(4100); f.tell({ type: "focused", key: "tab-1" });
     expect(f.doc.keys).toBe("tab-2");
+    // The app says they left that page: the keyboard goes back to the window, and their page keeps what the agent did.
+    const l = page();
+    at(1000); l.fire("focusin", { target: l.box });
+    at(2000); l.tell({ type: "person", key: "tab-2", press: true });
+    l.tell({ type: "left", key: "tab-2" });
+    l.doc.activeElement = l.other;
+    l.doc.keys = "tab-2";
+    at(3001); l.tell({ type: "focused", key: "tab-2" });
+    expect([l.doc.keys, l.doc.activeElement]).toEqual(["window", l.box]);
     // A closed tab's mark is forgotten.
     f.tell({ type: "framed", key: "tab-2", framed: true });
     f.tell({ type: "destroy", key: "tab-2" });
@@ -322,7 +332,7 @@ test("the steps themselves", () => {
     expect(nextStep({ active: null, page, body, left: undefined })).toEqual({ from: undefined, to: undefined });
     // Another page the person put the keyboard in: back to it, whatever else shows focused.
     const mine = "mine";
-    expect(nextStep({ active: page, page, body, left: box, theirs: mine })).toEqual({ from: undefined, to: mine });
+    expect(nextStep({ active: page, page, body, left: box, theirs: mine })).toEqual({ from: page, to: mine });
     expect(nextStep({ active: mine, page, body, left: box, theirs: mine })).toEqual({ from: mine, to: mine });
     // Another page's element showing focused that isn't theirs (any more): off it, to where they were in the window.
     expect(nextStep({ active: mine, page, body, left: box, isPage: (e) => e === mine })).toEqual({ from: mine, to: box });
@@ -370,20 +380,14 @@ test("the app looks at who holds the keyboard as each thing the agent does goes 
 test("keys a page took for the agent go to the page the person is typing in, if it has the keyboard again", () => {
     // Typed in one page while the agent clicked in another, a key that reached the agent's page in that moment was sent
     // to the window, which let it go (its focus is on the person's page): 2 of 136 characters were lost that way.
-    expect(strayTarget([{ page: "agent's other", theirs: false, held: false }, { page: "theirs", theirs: true, held: true }])).toBe("theirs");
-    // Not a page of theirs that doesn't have the keyboard (the window does), nor one that isn't theirs.
-    expect(strayTarget([{ page: "theirs", theirs: true, held: false }])).toBeUndefined();
-    expect(strayTarget([{ page: "other", theirs: false, held: true }])).toBeUndefined();
-    const host = readFileSync(join(import.meta.dir, "../desktop-electron/src/browser-host.ts"), "utf8");
-    expect(host).toContain("const to = strayTarget(others.map((t) => ({ page: t.wc, theirs: !!t.theirs, held: !!t.wc.focusedFrame }))) ?? host;");
-    expect(host).toContain("for (const event of events) to.sendInputEvent(event);");
-    // Their keyboard in a frame of their page, as the agent acts elsewhere: that page isn't theirs any more (the GUI is
-    // told first), and the keys this act's page takes go nowhere: they were typed for the frame.
-    expect(host).toContain("tab.dropStray = this.noteFramed(tab);");
-    expect(host).toMatch(/!t\.theirs \|\| !t\.wc\.focusedFrame \|\| t\.wc\.focusedFrame === t\.wc\.mainFrame\) continue;\s*t\.theirs = false;\s*t\.framed = any = true;\s*this\.toGui\(\{ type: "framed", key: t\.key, framed: true \}\);/);
-    expect(host).toMatch(/const events = tab\.stray\?\.splice\(0\) \?\? \[\];[^]*?if \(tab\.dropStray\) return;/);
-    // A press in it makes it theirs again, in the page or a frame of it, until the agent next acts elsewhere.
-    expect(host).toMatch(/tab\.theirs = true;\s*if \(tab\.framed\) \{\s*tab\.framed = false;\s*this\.toGui\(\{ type: "framed", key: tab\.key, framed: false \}\);/);
+    const mine = { page: "theirs", theirs: true, framed: false, held: true };
+    expect(strayTarget([{ page: "agent's other", theirs: false, framed: false, held: false }, mine])).toBe("theirs");
+    // Not a page of theirs whose own document doesn't have the keyboard (the window does, or a frame of it), nor one
+    // that isn't theirs, nor one they were typing in a frame of: the keyboard doesn't go back to the frame.
+    expect(strayTarget([{ ...mine, held: false }])).toBeUndefined();
+    expect(strayTarget([{ ...mine, theirs: false }])).toBeUndefined();
+    expect(strayTarget([{ ...mine, framed: true }])).toBeUndefined();
+    // What happens to them in the app itself: test/electron-browser-host-focus.test.ts.
 });
 
 test("a key that reaches the window while its focus is in a page goes no further", () => {

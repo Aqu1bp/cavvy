@@ -72,11 +72,12 @@ export function strayKeyEvents(input: { type: string; key: string; alt?: boolean
 
 /**
  * Where the keys a page took for the agent's sake go once it lets go of the keyboard (browser-host.ts, sendStray): the
- * page the person put the keyboard in themselves, if it has it again (they were typing there while the agent clicked in
- * another page), else the window (undefined).
+ * page the person put the keyboard in themselves, if its own document holds it again (they were typing there while the
+ * agent clicked in another page), else the window (undefined). Never a page they were typing in a frame of: the
+ * keyboard doesn't go back to the frame, so their keys don't either.
  */
-export function strayTarget<T>(pages: { page: T; theirs: boolean; held: boolean }[]): T | undefined {
-    return pages.find((p) => p.theirs && p.held)?.page;
+export function strayTarget<T>(pages: { page: T; theirs: boolean; framed: boolean; held: boolean }[]): T | undefined {
+    return pages.find((p) => p.theirs && !p.framed && p.held)?.page;
 }
 
 /**
