@@ -119,7 +119,23 @@ function app() {
             if (!kept) page.got.push(`${page.at.name}:${ch}`);
         }
     };
-    return { host, told, windowSent, cmd, tab, sid, key, click, press, type };
+    /**
+     * What the window does when the agent's page took the keyboard (gui/src/lib/page-focus.ts): gives it back to the
+     * person's page, unless the app said their keyboard was in a frame of it, then to the window. Given back, it lands
+     * on the page itself (measured on macOS and Linux).
+     */
+    const handBack = (page: Page) => {
+        const framed = told.filter((m) => m.type === "framed" && m.key === key(page)).at(-1)?.framed;
+        keyboard = framed ? "window" : page;
+        if (!framed) page.at = page.mainFrame;
+    };
+    /** The person presses Tab in the window, and the keyboard goes into a page (its document, or the frame in it). */
+    const tabIn = (page: Page, where: "page" | "frame") => {
+        gui.emit("before-input-event", {}, { type: "keyDown", key: "Tab" });
+        keyboard = page;
+        page.at = where === "page" ? page.mainFrame : page.frame;
+    };
+    return { host, told, windowSent, cmd, tab, sid, key, click, press, type, handBack, tabIn };
 }
 
 let hosts: any[] = [];
@@ -244,4 +260,112 @@ test("the person left their page: the window is told as the agent next acts ther
     keyboard = "window";
     await a.cmd("Runtime.evaluate", { expression: "1", userGesture: true }, a.sid(mine));
     expect(a.told.filter((m) => m.type === "left")).toEqual([{ type: "left", key: a.key(mine) }]);
+});
+
+test("the page's own script moves the keyboard into a frame: an agent's click elsewhere sends it, and the keys taken, to the window", async () => {
+    // Nothing of the person's said so: the keyboard was given back to the page, landed on the page itself, and what
+    // they typed for the frame went to the page.
+    const a = start();
+    const mine = await a.tab();
+    const agents = await a.tab();
+    a.press(mine, "page");
+    a.type("a");
+    await sleep(150);
+    // Later, the page focuses a field in a frame of it.
+    mine.at = mine.frame;
+    await sleep(50);
+    await a.click(agents, () => a.type("bc"));
+    expect(a.told).toContainEqual({ type: "framed", key: a.key(mine), framed: true });
+    a.handBack(mine);
+    await sleep(30);
+    a.type("d");
+    expect(a.windowSent).toEqual(["b", "c", "typed:d"]);
+    expect([mine.got, mine.sent, agents.sent]).toEqual([["page:a"], [], []]);
+});
+
+test("Tab from the window into a frame of a page: an agent's click elsewhere sends the keyboard, and the keys taken, to the window", async () => {
+    const a = start();
+    const mine = await a.tab();
+    const agents = await a.tab();
+    a.tabIn(mine, "frame");
+    await sleep(150);
+    expect(a.told).toContainEqual({ type: "person", key: a.key(mine), press: true });
+    expect(a.told).toContainEqual({ type: "framed", key: a.key(mine), framed: true });
+    await a.click(agents, () => a.type("xy"));
+    a.handBack(mine);
+    await sleep(30);
+    expect(a.windowSent).toEqual(["x", "y"]);
+    expect([mine.got, mine.sent]).toEqual([[], []]);
+});
+
+test("where the app's word and the page's keyboard disagree as the keys taken are sent, they go to the window", async () => {
+    // Their page was given the keyboard back, and its script moved it into a frame at once: not the page's document.
+    const a = start();
+    const mine = await a.tab();
+    const agents = await a.tab();
+    a.press(mine, "page");
+    await sleep(150);
+    await a.click(agents, () => a.type("bc"));
+    keyboard = mine;
+    mine.at = mine.frame;
+    await sleep(30);
+    expect([a.windowSent, mine.sent]).toEqual([["b", "c"], []]);
+    // Their keyboard was last in a frame of the page, and the page's document has it again: still not there.
+    const b = start();
+    const theirs = await b.tab();
+    const other = await b.tab();
+    b.press(theirs, "frame");
+    await sleep(150);
+    b.type("a");
+    await b.click(other, () => b.type("bc"));
+    keyboard = theirs;
+    theirs.at = theirs.mainFrame;
+    await sleep(30);
+    expect([b.windowSent, theirs.sent]).toEqual([["b", "c"], []]);
+});
+
+test("the person pressing in the agent's page after it took their keys: those keys still go to the window, not there", async () => {
+    const a = start();
+    const mine = await a.tab();
+    const agents = await a.tab();
+    a.press(mine, "page");
+    await a.click(agents, () => a.type("bc"));
+    a.press(agents, "page");
+    await sleep(1100);
+    expect(a.windowSent).toEqual(["b", "c"]);
+    expect([agents.sent, mine.sent]).toEqual([[], []]);
+});
+
+test("a key of theirs in a frame says so at once: the agent's page taking the keyboard just after sends it to the window", async () => {
+    // The agent acted on its page just before (its script can take the keyboard a moment later, with no new command).
+    const a = start();
+    const mine = await a.tab();
+    const agents = await a.tab();
+    a.press(mine, "page");
+    await sleep(150);
+    await a.cmd("Runtime.evaluate", { expression: "1", userGesture: true }, a.sid(agents));
+    mine.at = mine.frame;
+    a.type("a");
+    keyboard = agents;
+    agents.at = agents.mainFrame;
+    a.type("bc");
+    a.handBack(mine);
+    await sleep(30);
+    expect(a.windowSent).toEqual(["b", "c"]);
+    expect([mine.got, mine.sent, agents.got]).toEqual([["frame:a"], [], []]);
+});
+
+test("back in the window, then two agents pressing at once: the person's page they left doesn't keep the keys typed for the window", async () => {
+    // Its own agent's press came while the other's page held the keyboard, which the app doesn't take for them leaving.
+    const a = start();
+    const mine = await a.tab();
+    const agents = await a.tab();
+    a.press(mine, "page");
+    // A press in the message box: the window says so (page-focus.ts).
+    keyboard = "window";
+    a.host.back();
+    await a.click(agents);
+    await a.click(mine, () => a.type("xy"));
+    expect(mine.got).toEqual([]);
+    expect(a.told.filter((m) => m.type === "left")).toEqual([]);
 });

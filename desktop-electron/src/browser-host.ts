@@ -324,6 +324,11 @@ export class BrowserHost {
         return [...this.tabsById.values()].filter((t) => !t.wc.isDestroyed()).map((t) => t.wc.getOSProcessId());
     }
 
+    /** The person is back in the window (the GUI says so): none of the pages is theirs any more. */
+    back() {
+        for (const tab of this.tabsByKey.values()) tab.theirs = false;
+    }
+
     /** The GUI laid a tab's webview out at this size: its page's real viewport. */
     sized(key: string, size: { width: number; height: number; scale: number }) {
         const tab = this.tabsByKey.get(key);
@@ -379,20 +384,26 @@ export class BrowserHost {
     }
 
     /**
-     * After a key or a press of the person's in `tab`'s page: whether they have the keyboard in a frame of it, now and a
-     * moment later (a press or Tab moves it after the event). Told to the GUI when it changes. Not looked at while the
-     * page doesn't hold the keyboard: where they had it in the page stands.
+     * After a key or a press of the person's in `tab`'s page: where the keyboard is in it (frameNow), now and a moment
+     * later (a press or Tab moves it after the event).
      */
     private lookFrame(tab: Tab) {
-        const look = () => {
-            if (tab.closed || tab.wc.isDestroyed() || !tab.wc.focusedFrame) return;
-            const framed = tab.wc.focusedFrame !== tab.wc.mainFrame;
-            if (framed === !!tab.framed) return;
-            tab.framed = framed;
-            this.toGui({ type: "framed", key: tab.key, framed });
-        };
-        look();
-        for (const ms of FRAME_CHECKS_MS) setTimeout(look, ms);
+        this.frameNow(tab);
+        for (const ms of FRAME_CHECKS_MS) setTimeout(() => this.frameNow(tab), ms);
+    }
+
+    /**
+     * Whether the keyboard is in a frame of `tab`'s page rather than the page itself, told to the GUI when it changes.
+     * Looked at after the person's keys and presses there, as they Tab into it, and as the agent acts on another page
+     * (the page's own script can move it into a frame with nothing of theirs). Not while the page doesn't hold the
+     * keyboard: where it was in the page stands.
+     */
+    private frameNow(tab: Tab) {
+        if (tab.closed || tab.wc.isDestroyed() || !tab.wc.focusedFrame) return;
+        const framed = tab.wc.focusedFrame !== tab.wc.mainFrame;
+        if (framed === !!tab.framed) return;
+        tab.framed = framed;
+        this.toGui({ type: "framed", key: tab.key, framed });
     }
 
     /** The person put the keyboard in `tab`'s page themselves: it keeps it through what the agent does there, and the GUI is told. */
@@ -416,7 +427,9 @@ export class BrowserHost {
                     if (tab.closed || tab.wc.isDestroyed()) continue;
                     const agentAt = Math.max(tab.agentAt, tab.heldAt ?? 0);
                     // Said again for a page that was theirs before they left it: the GUI let go of that when they did.
-                    if (tabbedIn({ had, has: !!tab.wc.focusedFrame, agentInputs: busy + tab.agentInputs, agentAt, keyAt, quietMs: TAB_IN_QUIET_MS })) this.theirs(tab);
+                    if (!tabbedIn({ had, has: !!tab.wc.focusedFrame, agentInputs: busy + tab.agentInputs, agentAt, keyAt, quietMs: TAB_IN_QUIET_MS })) continue;
+                    this.frameNow(tab);
+                    this.theirs(tab);
                 }
             }, ms);
         }
@@ -533,6 +546,8 @@ export class BrowserHost {
             const acting = input || cmd.method === "Runtime.callFunctionOn" || (cmd.method === "Runtime.evaluate" && p.userGesture === true);
             if (acting) {
                 tab.agentAt = Date.now();
+                // The person's pages still hold the keyboard now, if they do, and this act may take it from them.
+                for (const t of this.tabsByKey.values()) if (t !== tab && t.theirs) this.frameNow(t);
                 this.left(tab);
             }
             try {

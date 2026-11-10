@@ -373,6 +373,9 @@ function bridge() {
     ipcMain.on("browser_shown", (e, keys: unknown) => {
         if (fromGui(e) && Array.isArray(keys)) host.shown(keys.filter((k): k is string => typeof k === "string"));
     });
+    ipcMain.on("browser_back", (e) => {
+        if (fromGui(e)) host.back();
+    });
     ipcMain.on("browser_sized", (e, key: string, size: { width: number; height: number; scale: number }) => {
         if (fromGui(e) && typeof key === "string" && size && [size.width, size.height, size.scale].every((n) => Number.isFinite(n) && n > 0)) host.sized(key, size);
     });

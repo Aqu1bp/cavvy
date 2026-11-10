@@ -16,5 +16,6 @@ contextBridge.exposeInMainWorld("cavvyDesktop", {
         return () => void ipcRenderer.removeListener("browser", listener);
     },
     browserShown: (keys: string[]) => ipcRenderer.send("browser_shown", keys),
+    browserBack: () => ipcRenderer.send("browser_back"),
     browserSized: (key: string, size: { width: number; height: number; scale: number }) => ipcRenderer.send("browser_sized", key, size),
 });

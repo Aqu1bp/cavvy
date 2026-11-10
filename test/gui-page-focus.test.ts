@@ -57,10 +57,12 @@ function page() {
     let tell: (e: any) => void = () => {};
     /** What keepFocus has put off, for the test to run: [what, how long after]. */
     const later: { fn: () => void; ms: number }[] = [];
-    const stop = keepFocus({ onBrowser: (fn) => ((tell = fn), () => void offs.push("bridge")) }, win as any, (fn, ms) => void later.push({ fn, ms }));
+    /** How many times the app was told the person is back in the window. */
+    const backs = { n: 0 };
+    const stop = keepFocus({ onBrowser: (fn) => ((tell = fn), () => void offs.push("bridge")), browserBack: () => void backs.n++ }, win as any, (fn, ms) => void later.push({ fn, ms }));
     const fire = (type: string, e: any) => { for (const fn of listeners[type] ?? []) fn({ stopImmediatePropagation() {}, preventDefault() {}, ...e }); };
     return {
-        doc, box, view, other, body, win, stop, offs, fire, later,
+        doc, box, view, other, body, win, stop, offs, fire, later, backs,
         /** Runs what was put off for `ms`, as its time comes. */
         run(ms: number) { for (const l of later.splice(0)) if (l.ms === ms) l.fn(); else later.push(l); },
         tell: (e: any) => tell(e),
@@ -177,8 +179,13 @@ test("a page the person put the keyboard in themselves keeps it, until they're b
     at(2000); t.taken();
     at(2005); t.tell({ type: "focused", key: "tab-1" });
     expect(t.box.calls).toEqual(["focus"]);
-    // Back in the window by a press: the agent's next click doesn't keep the keyboard.
+    // Back in the window by a key: the app is told too (it can't see the window's focus), once.
+    expect(t.backs.n).toBe(1);
+    // Back in the window by a press: the agent's next click doesn't keep the keyboard, and the app is told.
     at(2000); p.fire("pointerdown", { target: p.box });
+    expect(p.backs.n).toBe(1);
+    p.fire("pointerdown", { target: p.box });
+    expect(p.backs.n).toBe(1);
     p.doc.activeElement = p.box;
     at(2010); p.tell({ type: "focused", key: "tab-1" });
     expect(p.box.calls).toEqual(["blur", "focus"]);
@@ -411,9 +418,8 @@ test("Tab from the window into a page makes it the person's, unless the agent to
     expect(tabbedIn({ ...tab, has: false })).toBe(false);
     expect(tabbedIn({ ...tab, had: true })).toBe(false);
     // A page that was theirs before, which they left by a key and Tab back into, is said to be theirs again: the GUI
-    // let go of that when they left, and without the word took the keyboard from them at the agent's next click.
-    const host = readFileSync(join(import.meta.dir, "../desktop-electron/src/browser-host.ts"), "utf8");
-    expect(host).toContain("if (tabbedIn({ had, has: !!tab.wc.focusedFrame, agentInputs: busy + tab.agentInputs, agentAt, keyAt, quietMs: TAB_IN_QUIET_MS })) this.theirs(tab);");
+    // let go of that when they left, and without the word took the keyboard from them at the agent's next click
+    // (test/electron-browser-host-focus.test.ts).
     // The agent pressed in the page since the key, or was in the middle of it: that takes the keyboard too.
     expect(tabbedIn({ ...tab, agentAt: 1010 })).toBe(false);
     expect(tabbedIn({ ...tab, agentInputs: 1 })).toBe(false);

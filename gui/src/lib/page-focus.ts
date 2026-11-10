@@ -48,7 +48,7 @@ export function nextStep<E>(o: { active: E | null | undefined; page: E; body: E;
 }
 
 /** Watches the pages' hold on the keyboard in `win`. Returns how to stop. */
-export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser">, win: Window = window, later: (fn: () => void, ms: number) => unknown = setTimeout): () => void {
+export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser" | "browserBack">, win: Window = window, later: (fn: () => void, ms: number) => unknown = setTimeout): () => void {
     const doc = win.document;
     let stopped = false;
     /** The tab whose page the person put the keyboard in themselves (the app says so: a press in it, or Tab into it), until they're back in the window. */
@@ -66,6 +66,12 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser">, win: Window
     /** When the person last pressed in the window, and last pressed Tab or Escape in it. */
     let pressedAt = -Infinity;
     let movedAt = -Infinity;
+    /** The person is back in the window: no page is theirs, here or in the app (browser-host.ts, which can't see it). */
+    const back = () => {
+        if (theirs === undefined) return;
+        theirs = undefined;
+        bridge.browserBack();
+    };
     const isPage = (el: unknown) => el instanceof HTMLElement && el.tagName === "WEBVIEW";
     const view = (key: string) => [...doc.querySelectorAll<HTMLElement>("webview")].find((v) => v.dataset.key === key);
     const agentAtWork = (now: number, key?: string) => (key === undefined ? [...said.values()] : [said.get(key) ?? -Infinity]).some((at) => now - at <= AGAIN_MS);
@@ -142,11 +148,11 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser">, win: Window
         if (!(el instanceof HTMLElement) || isPage(el)) return;
         // Back in the window, by a key as much as by a press: no page is theirs any more.
         home = el;
-        theirs = undefined;
+        back();
     };
     // Back in the window by a press of theirs; where that puts the window's focus (nowhere, on a bare part of it) is home.
     const pressed = () => {
-        theirs = undefined;
+        back();
         pressedAt = performance.now();
         later(() => {
             const at = doc.activeElement;
