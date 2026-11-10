@@ -76,8 +76,8 @@ export function strayKeyEvents(input: { type: string; key: string; alt?: boolean
  * `quietMs` before the key (`agentAt`: when it last acted, or the page was last found with the keyboard for it): its
  * press takes the keyboard too, more than once and a moment late, and that isn't the person's doing.
  */
-export function tabbedIn(o: { had: boolean; has: boolean; theirs: boolean; agentInputs: number; agentAt: number; keyAt: number; quietMs: number }): boolean {
-    return !o.had && o.has && !o.theirs && o.agentInputs === 0 && o.agentAt + o.quietMs < o.keyAt;
+export function tabbedIn(o: { had: boolean; has: boolean; agentInputs: number; agentAt: number; keyAt: number; quietMs: number }): boolean {
+    return !o.had && o.has && o.agentInputs === 0 && o.agentAt + o.quietMs < o.keyAt;
 }
 
 async function evaluate(dbg: Debugger, expression: string): Promise<unknown> {

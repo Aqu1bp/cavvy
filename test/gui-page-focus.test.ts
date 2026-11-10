@@ -297,12 +297,15 @@ test("a key that reaches the window while its focus is in a page goes no further
 });
 
 test("Tab from the window into a page makes it the person's, unless the agent took the keyboard there meanwhile", () => {
-    const tab = { had: false, has: true, theirs: false, agentInputs: 0, agentAt: 400, keyAt: 1000, quietMs: 500 };
+    const tab = { had: false, has: true, agentInputs: 0, agentAt: 400, keyAt: 1000, quietMs: 500 };
     expect(tabbedIn(tab)).toBe(true);
-    // Tab moved the window's focus somewhere else, or the page already had the keyboard, or is theirs already.
+    // Tab moved the window's focus somewhere else, or the page already had the keyboard.
     expect(tabbedIn({ ...tab, has: false })).toBe(false);
     expect(tabbedIn({ ...tab, had: true })).toBe(false);
-    expect(tabbedIn({ ...tab, theirs: true })).toBe(false);
+    // A page that was theirs before, which they left by a key and Tab back into, is said to be theirs again: the GUI
+    // let go of that when they left, and without the word took the keyboard from them at the agent's next click.
+    const host = readFileSync(join(import.meta.dir, "../desktop-electron/src/browser-host.ts"), "utf8");
+    expect(host).toContain("if (tabbedIn({ had, has: !!tab.wc.focusedFrame, agentInputs: busy + tab.agentInputs, agentAt, keyAt, quietMs: TAB_IN_QUIET_MS })) this.theirs(tab);");
     // The agent pressed in the page since the key, or was in the middle of it: that takes the keyboard too.
     expect(tabbedIn({ ...tab, agentAt: 1010 })).toBe(false);
     expect(tabbedIn({ ...tab, agentInputs: 1 })).toBe(false);

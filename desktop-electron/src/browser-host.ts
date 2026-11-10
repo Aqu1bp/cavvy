@@ -374,7 +374,8 @@ export class BrowserHost {
                 for (const { tab, had, busy } of before) {
                     if (tab.closed || tab.wc.isDestroyed()) continue;
                     const agentAt = Math.max(tab.agentAt, tab.heldAt ?? 0);
-                    if (tabbedIn({ had, has: !!tab.wc.focusedFrame, theirs: !!tab.theirs, agentInputs: busy + tab.agentInputs, agentAt, keyAt, quietMs: TAB_IN_QUIET_MS })) this.theirs(tab);
+                    // Said again for a page that was theirs before they left it: the GUI let go of that when they did.
+                    if (tabbedIn({ had, has: !!tab.wc.focusedFrame, agentInputs: busy + tab.agentInputs, agentAt, keyAt, quietMs: TAB_IN_QUIET_MS })) this.theirs(tab);
                 }
             }, ms);
         }

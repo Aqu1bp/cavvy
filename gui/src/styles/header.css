@@ -92,7 +92,9 @@
 [data-rail="overlay"] .header .bar-rail {
     grid-template-columns: 1fr;
     margin-right: 0;
-    visibility: visible;
+    /* As the bar is: behind the maximized terminal it's hidden with the rest (shell.css), and `visible` here would
+       show these through it, pressable, and reachable by Tab. */
+    visibility: inherit;
     transition-delay: 0s;
 }
 
@@ -201,7 +203,7 @@
 [data-rail="overlay"] .header .proj-box {
     grid-template-columns: 1fr;
     margin-right: calc(-6 * var(--sp));
-    visibility: visible;
+    visibility: inherit;
     transition-delay: 0s;
 }
 

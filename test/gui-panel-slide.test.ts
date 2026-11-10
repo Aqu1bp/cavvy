@@ -139,7 +139,7 @@ test("what the rail's hiding puts before the title opens with the slide, so the 
         expect(header.some((r) => r.selectors.includes(`[data-rail="overlay"] .header ${box}`) && r.selectors.includes(`.header.rail-off ${box}`))).toBe(true);
         // Over the slide's own time and easing; unseen and out of the tab order while closed, but only once it has closed.
         expect(closed.get("transition")).toBe("grid-template-columns var(--dur-panel) var(--ease), margin-right var(--dur-panel) var(--ease), visibility 0s linear var(--dur-panel)");
-        expect([closed.get("visibility"), open.get("visibility"), open.get("transition-delay")]).toEqual(["hidden", "visible", "0s"]);
+        expect([closed.get("visibility"), open.get("visibility"), open.get("transition-delay")]).toEqual(["hidden", "inherit", "0s"]);
     }
     // What's in each box keeps its own width and is cut by it: a box of no width takes none.
     expect([decls(".bar-rail-in").get("min-width"), decls(".bar-rail-in").get("overflow")]).toEqual(["0", "hidden"]);
@@ -293,4 +293,16 @@ test("the Browser page is rounded where it lies in a rounded corner of its panel
     // The layer draws it so; the floating view keeps its own rounding (it sets none here).
     const host = read("components/BrowserHostLayer.tsx");
     expect(host).toContain('wrap.style.borderRadius = shown?.corners ?? "";');
+});
+
+test("the title bar's parts for a hidden sidebar are hidden with the bar, behind the maximized terminal", () => {
+    // Open, they said `visibility: visible`, which showed them through the hidden bar: pressable over the terminal's
+    // own bar, reached by Shift+Tab from it, and a hole in the window's drag strip.
+    const css = readFileSync(join(import.meta.dir, "../gui/src/styles/header.css"), "utf8");
+    const open = (part: string) => new RegExp(`\\.header\\.rail-off \\.${part},\\s*\\[data-rail="overlay"\\] \\.header \\.${part} \\{[^}]*\\}`).exec(css)?.[0] ?? "";
+    for (const part of ["bar-rail", "proj-box"]) {
+        expect(open(part)).toContain("visibility: inherit;");
+        expect(open(part)).not.toContain("visibility: visible");
+    }
+    expect(readFileSync(join(import.meta.dir, "../gui/src/styles/shell.css"), "utf8")).toMatch(/\[data-tmax="on"\] \.main,\s*\[data-tmax="on"\] \.insp \{\s*visibility: hidden;/);
 });
