@@ -38,10 +38,13 @@ export const OWN_MS = 150;
  * `left`: what lost focus to nothing in the window just before (or where the person last put it). `theirs`: another
  * page the person put the keyboard in themselves, which it goes back to before anything else: typing in a page while
  * the agent clicked in another one (a hidden one, or another session's), their keys went to the message box.
+ * `isPage`: whether an element is a page's, which the keyboard goes back to only as `theirs` (a page the person's
+ * keyboard was in a frame of isn't: given back, it lands on the page itself, and their keys with it).
  */
-export function nextStep<E>(o: { active: E | null | undefined; page: E; body: E; left: E | undefined; theirs?: E }): { from: E | undefined; to: E | undefined } {
+export function nextStep<E>(o: { active: E | null | undefined; page: E; body: E; left: E | undefined; theirs?: E; isPage?: (el: E) => boolean }): { from: E | undefined; to: E | undefined } {
     const from = o.active && o.active !== o.body && o.active !== o.page ? o.active : undefined;
-    return { from, to: o.theirs ?? from ?? o.left };
+    const own = from && !o.isPage?.(from) ? from : undefined;
+    return { from, to: o.theirs ?? own ?? o.left };
 }
 
 /** Watches the pages' hold on the keyboard in `win`. Returns how to stop. */
@@ -58,6 +61,8 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser">, win: Window
     let taking = false;
     /** When the app last said each tab's page held the keyboard for the agent. */
     const said = new Map<string, number>();
+    /** Pages of the person's whose keyboard was in a frame when the agent last acted elsewhere (browser-host.ts, noteFramed). */
+    const framed = new Set<string>();
     /** When the person last pressed in the window, and last pressed Tab or Escape in it. */
     let pressedAt = -Infinity;
     let movedAt = -Infinity;
@@ -69,8 +74,10 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser">, win: Window
         if (!page) return;
         const now = performance.now();
         const was = left && left.el.isConnected && now - left.at <= LEFT_MS ? left.el : home?.isConnected ? home : undefined;
+        // Their page's frame had the keyboard: not given back (it would land on the page itself), so they're back in the window.
+        if (theirs !== undefined && theirs !== key && framed.has(theirs)) theirs = undefined;
         const mine = theirs !== undefined && theirs !== key ? view(theirs) : undefined;
-        const step = nextStep<HTMLElement>({ active: doc.activeElement as HTMLElement | null, page, body: doc.body, left: was, theirs: mine });
+        const step = nextStep<HTMLElement>({ active: doc.activeElement as HTMLElement | null, page, body: doc.body, left: was, theirs: mine, isPage });
         taking = true;
         step.from?.blur();
         if (step.to?.isConnected) step.to.focus();
@@ -88,7 +95,11 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser">, win: Window
     const off = bridge.onBrowser((e) => {
         if (e.type === "destroy") {
             said.delete(e.key);
+            framed.delete(e.key);
             if (theirs === e.key) theirs = undefined;
+        } else if (e.type === "framed") {
+            if (e.framed) framed.add(e.key);
+            else framed.delete(e.key);
         } else if (e.type === "person" && e.press) theirs = e.key;
         else if (e.type === "focused" && theirs !== e.key) {
             said.set(e.key, performance.now());
