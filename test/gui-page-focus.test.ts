@@ -514,6 +514,38 @@ test("where the person is loses the window's focus to nothing while the agent is
     expect(r.box.calls).toEqual([]);
 });
 
+test("a press of the person's that left the page without the keyboard: the page's element is focused again, and it has it", () => {
+    // A page navigated while their focus was in a frame of it (and the window's in the message box) takes no keyboard on a
+    // press: the window shows its element focused, no frame of it has the keys, and 136 typed characters went nowhere.
+    // Measured on macOS: focusing the element again, after moving off it, gave the keys to the field they pressed in.
+    const p = page();
+    at(1000); p.tell({ type: "person", key: "tab-1", press: true });
+    p.doc.activeElement = p.view;
+    p.doc.keys = "nowhere";
+    p.tell({ type: "refocus", key: "tab-1" });
+    expect([p.doc.keys, p.doc.activeElement, p.view.calls, p.box.calls]).toEqual(["tab-1", p.view, ["blur", "focus"], []]);
+    // Where the window's focus has moved on by then (they pressed elsewhere), or the page is gone: left alone.
+    const q = page();
+    at(1000); q.tell({ type: "person", key: "tab-1", press: true });
+    q.tell({ type: "refocus", key: "tab-1" });
+    q.tell({ type: "refocus", key: "tab-9" });
+    expect([q.doc.activeElement, q.view.calls, q.box.calls]).toEqual([q.box, [], []]);
+    // It stays theirs: the agent's next press in it doesn't take the keyboard back to the window.
+    p.view.calls.length = 0;
+    p.doc.activeElement = p.view;
+    at(1100); p.tell({ type: "focused", key: "tab-1" });
+    expect([p.view.calls, p.box.calls]).toEqual([[], []]);
+    // No longer theirs by then (the agent acted in it first, and the app said they'd left): left alone. Focused, it
+    // would hold the keyboard as the agent's, and what they typed for it would be taken back to the message box.
+    const r = page();
+    at(1000); r.tell({ type: "person", key: "tab-1", press: true });
+    r.doc.activeElement = r.view;
+    r.doc.keys = "nowhere";
+    r.tell({ type: "left", key: "tab-1" });
+    r.tell({ type: "refocus", key: "tab-1" });
+    expect([r.doc.keys, r.view.calls, r.box.calls]).toEqual(["nowhere", [], []]);
+});
+
 test("a closed tab is forgotten, and stopping stops listening", () => {
     const p = page();
     at(1000); p.tell({ type: "person", key: "tab-1", press: true });
@@ -570,7 +602,7 @@ test("the app looks at who holds the keyboard as each thing the agent does goes 
     // A key reaching the page: the window's if it strayed there, else the person using the page. A press makes the page
     // theirs, and so does Tab into it from the window; the GUI is told either way.
     expect(host).toMatch(/wc\.on\("before-input-event", \(e, input\) => \{[^}]*if \(this\.strayKey\(tab, input\)\) return e\.preventDefault\(\);\s*person\(input\.type\);\s*if \(tab\.agentInputs === 0\) this\.tabKey\(input\);/);
-    expect(host).toContain('if (type === "mouseDown") this.theirs(tab);');
+    expect(host).toMatch(/if \(type === "mouseDown"\) \{\s*this\.theirs\(tab\);/);
     expect(host).toContain('gui.on("before-input-event", (_e, input) => this.tabKey(input));');
     expect(host).toMatch(/private theirs\(tab: Tab\) \{[^]*?tab\.theirs = true;[^]*?this\.toGui\(\{ type: "person", key: tab\.key, press: true, seq: tab\.theirsSeq \}\);/);
     // Never the agent's own keys, nor a page the person put the keyboard in.
