@@ -133,6 +133,19 @@ export const [shellLayout, setShellLayout] = createSignal<WindowLayout>({
 export const [panelHold, setPanelHold] = createSignal<Held & { slide: Animation }>();
 
 /**
+ * A floating inspector is docking where it is (the sidebar was hidden, or the window widened, and it now fits beside
+ * the conversation): until the slide that opens its column is over, it's drawn in the column's place (shell.css).
+ */
+export const [inspectorDocking, setInspectorDocking] = createSignal(false);
+
+/**
+ * The window's tracks are about to slide, or are sliding (App.tsx LayoutKeeper): true from the update that changes
+ * them, before the browser has seen it, so what's placed from a size that changes with them can ease with them
+ * (home.css), and not on any other change of that size (the window resized, an edge dragged).
+ */
+export const [tracksSliding, setTracksSliding] = createSignal(false);
+
+/**
  * The conversation column's height as --column-h, for the few boxes sized by it (what `cqh` measured when
  * the column was a query container: shell.css). Set on each of them, not inherited from the column.
  */

@@ -2321,8 +2321,10 @@ export class Agent {
                 const own = req.background ? this.lifetime.signal : sessionSignal();
                 const a = await this.backendPermission(req, req.signal ? AbortSignal.any([own, req.signal]) : own);
                 // A no to one of the backend's own sub-agents stops that one (the backend says so to it), not this turn;
-                // nor does one the backend withdrew (it no longer waits for it).
-                if (!a.allow && a.stop && !req.agentLabel && !req.signal?.aborted) declined = true;
+                // nor does one the backend withdrew (it no longer waits for it). Nor is it a no at all when the turn
+                // was stopped while it waited (Stop, or the app quitting): nobody answered, and the turn ends as
+                // stopped, not as "declined".
+                if (!a.allow && a.stop && !req.agentLabel && !req.signal?.aborted && !own.aborted) declined = true;
                 return a;
             },
             askQuestions: async (qs) => {

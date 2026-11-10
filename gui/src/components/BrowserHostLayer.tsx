@@ -7,6 +7,7 @@
 
 import { createEffect, For, onCleanup, onMount } from "solid-js";
 import { electron } from "../lib/platform";
+import { keepFocus } from "../lib/page-focus";
 import { hostedTabs, hostedTargets, setHostedTabs, setHostedTargets, shownBrowser, type HostedTab } from "../state/browser-host";
 
 /** The size of a tab no pane shows (or the floating view shows, scaled): the agent's, as a headless browser's would be. */
@@ -27,6 +28,8 @@ export function BrowserHostLayer() {
             }
         });
         onCleanup(off);
+        // The agent's clicks in a page don't take the keyboard from where the person is typing (lib/page-focus.ts).
+        onCleanup(keepFocus(electron!));
     });
     // Which tabs are on screen, for the app: it freezes tabs nobody sees and nobody has used for a while.
     createEffect(() => {
@@ -59,15 +62,19 @@ function HostedWebview(p: { tab: HostedTab }) {
             const targetId = hostedTargets()[p.tab.key];
             const shown = s && targetId && s.targetId === targetId ? s : undefined;
             const box = shown?.box;
-            // In the pane the page is the box's size; watched in the floating view, or not shown, it's the agent's.
-            const size = box && !shown.fit ? { width: box.width, height: box.height } : AGENT_SIZE;
+            // In the pane the page is the box's size (or the one it's keeping for now: lib/page-size.ts), drawn in
+            // as much of the box as shows; watched in the floating view, or not shown, it's the agent's.
+            const size = box && !shown.fit ? (shown.page ?? { width: box.width, height: box.height }) : AGENT_SIZE;
             const scale = box && shown.fit ? Math.min(box.width / size.width, box.height / size.height) : 1;
             wrap.classList.toggle("shown", box !== undefined);
             wrap.classList.toggle("fit", shown?.fit === true);
             wrap.classList.toggle("entering", shown?.motion === "enter");
             wrap.classList.toggle("leaving", shown?.motion === "leave");
             wrap.style.transformOrigin = shown?.origin ? `${shown.origin.x}px ${shown.origin.y}px` : "";
-            Object.assign(wrap.style, box ? { left: `${box.x}px`, top: `${box.y}px`, width: `${box.width}px`, height: `${box.height}px` } : { left: "0px", top: "0px", width: "1px", height: "1px" });
+            const frame = shown?.frame ?? box;
+            // The pane's page, rounded where it lies in a rounded corner (the floating view's is its own: browser.css).
+            wrap.style.borderRadius = shown?.corners ?? "";
+            Object.assign(wrap.style, box && frame ? { left: `${box.x}px`, top: `${box.y}px`, width: `${frame.width}px`, height: `${frame.height}px` } : { left: "0px", top: "0px", width: "1px", height: "1px" });
             Object.assign(view.style, { width: `${size.width}px`, height: `${size.height}px`, transform: scale === 1 ? "" : `scale(${scale})` });
             const key = `${size.width}x${size.height}`;
             if (key !== reported) {

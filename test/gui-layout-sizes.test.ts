@@ -47,7 +47,28 @@ const subject = (selector: string) => [...(selector.split(/\s*[\s>+~]\s*/).pop()
 
 test("these are the sizes registered as not inherited", () => {
     // A new one is audited here too; add it once its readers set it themselves.
-    expect(new Set(sizes)).toEqual(new Set(["--rail-w", "--insp-w", "--insp-col", "--insp-bottom", "--term-h", "--dock-h"]));
+    expect(new Set(sizes)).toEqual(new Set(["--rail-w", "--insp-w", "--insp-col", "--insp-bottom", "--term-h", "--dock-h", "--home-h"]));
+});
+
+test("--home-h is set by the one rule that reads it, from the column's height set on that box", () => {
+    // Not set from a component like the others: it's --column-h (which Home.tsx sets on .home-col) made a length
+    // that can ease with a panel's slide (home.css).
+    const home = parseRules(read("styles/home.css"));
+    const setting = home.filter((r) => r.decls.has("--home-h") && !r.selectors.some((sel) => sel.startsWith("@")));
+    expect(setting.map((r) => r.selectors.join())).toEqual([".home-col"]);
+    expect(setting[0]!.decls.get("--home-h")).toBe("var(--column-h, 100vh)");
+    // Eased with the panels' slide only: App.tsx marks the window from the update that changes its tracks until they've
+    // stopped. Not when the window is resized or an edge dragged, and not as the app starts.
+    expect(home.find((r) => r.selectors.includes('[data-sliding="on"] .home-col'))?.decls.get("transition")).toBe("--home-h var(--dur-panel) var(--ease)");
+    expect(setting[0]!.decls.has("transition")).toBe(false);
+    const app = read("App.tsx");
+    expect(app).toContain('data-sliding={tracksSliding() ? "on" : undefined}');
+    expect(app.indexOf("setTracksSliding(true);")).toBeGreaterThan(0);
+    // On before the tracks' transitions are looked for (which is when the browser first sees the new sizes).
+    expect(app.indexOf("setTracksSliding(true);")).toBeLessThan(app.indexOf("const sliding = slides();"));
+    expect(app).toMatch(/const rest = \(\) => \{[^}]*setTracksSliding\(false\);/);
+    expect(readers("--home-h").map((r) => r.selector)).toEqual([".home-col"]);
+    expect(read("components/Home.tsx")).toMatch(/class="home-col"[\s\S]{0,80}style=\{\{ "--column-h": columnHeight\(\)/);
 });
 
 for (const name of ["--rail-w", "--insp-w", "--insp-col", "--insp-bottom", "--term-h", "--dock-h"]) {

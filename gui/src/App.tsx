@@ -1,18 +1,17 @@
 import { RenderBoundary } from "./components/ui/ErrorBoundary";
-import { batch, createEffect, createMemo, createSignal, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
 import { PlugZap } from "lucide-solid";
 import { ErrorCards } from "./components/ErrorCards";
 import { activate, app, attentionCount, handleFor, restoreActiveSession, rpc, type SessionHandle } from "./state/app";
 import { cycleSession, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
-import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, reviewSplit, setAgentFocus, setDockHeight, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold } from "./state/ui";
+import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, reviewSplit, setAgentFocus, setDockHeight, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
 import { isDesktop, isElectron, isTauri, os, windowCommand } from "./lib/platform";
 import { installWindowDrag } from "./lib/window-drag";
-import { BrowserHostLayer } from "./components/BrowserHostLayer";
 import { FloatingBrowser } from "./components/FloatingBrowser";
 import { canStop } from "./lib/session-status";
 import { actionOf, setEnterSends } from "./state/keybindings";
-import { clampInspectorWidth, closesOnShrink, columnSteps, heldSizes, requestCloses, tracks, COLUMN_NARROW, COLUMN_SHORT, INSPECTOR_DEFAULT, windowLayout } from "./lib/layout";
+import { clampInspectorWidth, closesOnShrink, columnSteps, docksInPlace, heldSizes, requestCloses, tracks, COLUMN_NARROW, COLUMN_SHORT, INSPECTOR_DEFAULT, INSPECTOR_MOVES, windowLayout } from "./lib/layout";
 import { warmUp } from "./lib/highlight";
 import { warmMarkdown } from "./lib/markdown";
 import { frameDrag } from "./lib/drag";
@@ -169,10 +168,21 @@ function InspectorResizer() {
 
 const INSPECTOR_KEY = "cavvy.inspectorWidth";
 
+/**
+ * The desktop app's browser pages (components/BrowserHostLayer.tsx, and what keeps them placed and the keyboard out
+ * of them): loaded only there, as the app starts, well before anything can open a tab.
+ */
+const [HostLayer, setHostLayer] = createSignal<() => JSX.Element>();
+if (isElectron) void import("./components/BrowserHostLayer").then((m) => setHostLayer(() => m.BrowserHostLayer), reportError);
+
+/** The transitions running on these elements (the first found for each selector) of the properties `moves` says. */
+function moving(selectors: string[], moves: (property: string) => boolean): Animation[] {
+    return selectors.flatMap((s) => document.querySelector(s)?.getAnimations() ?? []).filter((a) => a instanceof CSSTransition && moves(a.transitionProperty));
+}
+
 /** The window's tracks sliding now (shell.css): none when an edge is dragged, motion is off, or nothing changed. */
 function slides(): Animation[] {
-    return [".win", ".sheet"].flatMap((s) => document.querySelector(s)?.getAnimations() ?? [])
-        .filter((a) => a instanceof CSSTransition && a.transitionProperty.startsWith("grid-template"));
+    return moving([".win", ".sheet"], (p) => p.startsWith("grid-template"));
 }
 
 /**
@@ -219,6 +229,11 @@ function LayoutKeeper(p: { panel: boolean; review: boolean }) {
     // the terminal hold one size (lib/layout.ts heldSizes): they're laid out as the slide starts and as it
     // ends, not on every frame of it.
     let slide = 0;
+    const rest = () => {
+        setPanelHold(undefined);
+        setInspectorDocking(false);
+        setTracksSliding(false);
+    };
     createEffect(on(layout, (to, from) => {
         if (!from || tracks(to) === tracks(from)) {
             const held = panelHold();
@@ -227,14 +242,17 @@ function LayoutKeeper(p: { panel: boolean; review: boolean }) {
             return;
         }
         const now = ++slide;
+        // An open, floating inspector that now fits docks where it is, while its column opens under it.
+        setInspectorDocking(docksInPlace(from, to));
+        setTracksSliding(true);
         // Once the tracks' new sizes are in the DOM (this update's render), their transitions have begun.
         queueMicrotask(() => {
             if (slide !== now) return;
             const sliding = slides();
-            if (!sliding.length) return setPanelHold(undefined);
+            if (!sliding.length) return rest();
             setPanelHold({ ...heldSizes(panelHold(), from, to), slide: sliding[0]! });
             // A slide cut short by another one hands the hold on to it.
-            void Promise.allSettled(sliding.map((a) => a.finished)).then(() => { if (slide === now) setPanelHold(undefined); });
+            void Promise.allSettled(sliding.map((a) => a.finished)).then(() => { if (slide === now) rest(); });
         });
     }));
 
@@ -437,7 +455,17 @@ export function App() {
     const inspOpen = () => reviewing() || panelShown();
     // Under Settings the inspector's column closes, but what was in it stays mounted (covered), as the session does.
     const reviewKept = () => Boolean(review() && active());
-    const panelKept = () => Boolean(prefs.panel && stage() && !agent() && !openingScreen());
+    // Closing, the panel keeps what's in it until it has slid away: emptied at once, a blank panel slid shut.
+    // `panelGone`: it's closed and has finished closing (so it's still false at the moment it's told to close).
+    const [panelGone, setPanelGone] = createSignal(!prefs.panel);
+    createEffect(on(() => prefs.panel, (open) => {
+        if (open) return void setPanelGone(false);
+        // Its move has begun once this update is in the DOM: its column closing (docked), or the panel itself (floating).
+        queueMicrotask(() => {
+            void Promise.allSettled(moving([".sheet", ".insp"], (p) => INSPECTOR_MOVES.includes(p)).map((a) => a.finished)).then(() => { if (!prefs.panel) setPanelGone(true); });
+        });
+    }, { defer: true }));
+    const panelKept = () => Boolean((prefs.panel || !panelGone()) && stage() && !agent() && !openingScreen());
     // The sizes go on the elements that use them, not on .app: a custom property changing on an
     // element restyles everything under it, so on .app each frame of a drag restyled the window.
     // shell.css registers them as not inherited, and nothing takes one with `inherit` (WebKit keeps a
@@ -455,6 +483,8 @@ export function App() {
             data-insp={inspOpen() ? "on" : "off"}
             data-inspmode={layout().inspector.mode}
             data-inspshort={layout().inspector.short ? "on" : "off"}
+            data-inspdocking={inspectorDocking() ? "on" : undefined}
+            data-sliding={tracksSliding() ? "on" : undefined}
             data-term={layout().terminal.shown ? "on" : "off"}
             data-tmax={layout().terminal.maximized ? "on" : "off"}
             data-settings={settingsTab() ? "on" : "off"}
@@ -571,8 +601,8 @@ export function App() {
             <RunSheet />
             <CommitDialog />
             <ImageViewer />
-            <Show when={isElectron}>
-                <BrowserHostLayer />
+            <Show when={isElectron && HostLayer()} keyed>
+                {(Layer) => <Layer />}
             </Show>
             {/* Errors' last resort: shows only when none of the places above is on screen (ErrorCards.tsx). */}
             <ErrorCards place="window" />

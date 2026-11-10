@@ -29,3 +29,16 @@ export function findPick<F extends { path: string; pathToken?: string }>(files: 
     const shownSo = files.filter((f) => f.pathToken && same(f.path, p.path));
     return shownSo.length === 1 ? shownSo[0] : undefined;
 }
+
+/**
+ * A pick the list held and, loaded again, no longer holds (its changes were committed, discarded or undone) isn't
+ * asked for any more. `held`: the view and pick the list last held, as a key; `key`: the view and pick now. Left as
+ * asked for, it was fetched by itself and shown above the files that still have changes, as a file with none.
+ */
+/**
+ * The view and pick the list holds, after it showed (`listed`) or didn't show the pick `key` asks for. While another
+ * view loads, the list on screen is still the last view's: that one having the file isn't this view having held it.
+ */
+export const pickHeld = (held: string | undefined, key: string | undefined, listed: boolean, loading: boolean): string | undefined => (listed && !loading ? key : held);
+
+export const pickGone = (held: string | undefined, key: string | undefined, listed: boolean, loading: boolean): boolean => !listed && !loading && key !== undefined && key === held;

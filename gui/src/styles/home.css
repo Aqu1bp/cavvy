@@ -12,6 +12,15 @@
     scrollbar-width: thin;
 }
 
+/* The column's height, as the group is placed from it. A property of its own so it can ease: the column's height
+   (--column-h, state/ui.ts) changes at once when a panel starts to slide, and the group, placed from it, would jump
+   to its new place while the column was still on its way there. */
+@property --home-h {
+    syntax: "<length>";
+    inherits: false;
+    initial-value: 0px;
+}
+
 /* The group's height (px at 14) is the question and the composer with its strip, the cards above it
    (--home-cards) and the terminal list (--cli-on, --cli-rows), as Home.tsx sets them; its spare height
    in the column goes 42% above it. The composer stays where it is as its text grows (down, on Home). */
@@ -21,10 +30,17 @@
     width: 100%;
     max-width: calc(var(--column-w) + 100 * var(--sp));
     margin: 0 auto;
+    --home-h: var(--column-h, 100vh);
     /* Never above the title bar's row, however short the column. */
-    padding: calc(var(--header-h) + 8 * var(--sp) + max(0px, (var(--column-h, 100vh) - var(--header-h) - 28 * var(--sp) - var(--home-group)) * 0.42)) calc(18 * var(--sp)) calc(20 * var(--sp));
+    padding: calc(var(--header-h) + 8 * var(--sp) + max(0px, (var(--home-h) - var(--header-h) - 28 * var(--sp) - var(--home-group)) * 0.42)) calc(18 * var(--sp)) calc(20 * var(--sp));
     display: flex;
     flex-direction: column;
+}
+
+/* With the window's tracks (shell.css), so the group keeps its place in the column as the column slides. Only then
+   (data-sliding, App.tsx): the window resized or an edge dragged, it's placed at once, as the column is. */
+[data-sliding="on"] .home-col {
+    transition: --home-h var(--dur-panel) var(--ease);
 }
 
 /* The terminal list arriving (or going) after Home is up: the group glides to its new place. */

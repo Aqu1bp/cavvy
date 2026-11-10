@@ -1,7 +1,9 @@
 // The Review pane's picked file (gui/src/lib/review-pick.ts): its name as shown, and its handle when that name hides
 // a registered value. Requests carry the handle as one, never as a file name.
 import { expect, test } from "bun:test";
-import { findPick, pickKey, pickOf, pickParams } from "../gui/src/lib/review-pick";
+import { readFileSync } from "fs";
+import { join } from "path";
+import { findPick, pickGone, pickHeld, pickKey, pickOf, pickParams } from "../gui/src/lib/review-pick";
 
 const same = (a: string, b: string) => a === b;
 const one = { path: "[REDACTED X].txt", pathToken: "git:one" };
@@ -38,4 +40,35 @@ test("a refreshed list is the same files: the reader's stacked cards, keyed as p
     // A file asked for that the list doesn't hold (past its 300) is none of them: the reader fetches it by itself.
     expect(findPick(after, { path: "src/elsewhere.ts" }, same)).toBeUndefined();
     expect(findPick(after, pickOf(two), same)).toBe(after[1]);
+});
+
+test("a picked file that leaves the list (committed, discarded, undone) is no longer asked for", () => {
+    // Opened in the reader, then committed: it was fetched by itself and shown above the files that still had changes
+    // as "sum.js: This file has no changes in this view. Try again".
+    const view = JSON.stringify(["s1", "uncommitted", null, null, null, pickKey({ path: "sum.js" })]);
+    // The list held it in this view, and has loaded again without it: let go of.
+    expect(pickGone(view, view, false, false)).toBe(true);
+    // Still listed, or the list still loading (it keeps showing the last one meanwhile): kept.
+    expect(pickGone(view, view, true, false)).toBe(false);
+    expect(pickGone(view, view, false, true)).toBe(false);
+    // Never listed: a file asked for from a turn's card that the list doesn't hold (past its 300, or with no changes
+    // in this view) is still fetched by itself, and says so.
+    expect(pickGone(undefined, view, false, false)).toBe(false);
+    // Listed in another view (the branch's, another turn's): not this one's to let go of.
+    expect(pickGone(JSON.stringify(["s1", "branch", "main", null, null, pickKey({ path: "sum.js" })]), view, false, false)).toBe(false);
+    // Nothing picked.
+    expect(pickGone(view, undefined, false, false)).toBe(false);
+    // A view and a file asked for together (a turn card's Review link): while the turn's list loads, the last view's
+    // is still on screen and may have the file. That isn't the turn's list having held it, so when it loads without
+    // the file, the file is still fetched by itself.
+    const turn = JSON.stringify(["s1", "turn", null, "t1", null, pickKey({ path: "sum.js" })]);
+    expect(pickHeld(undefined, turn, true, true)).toBeUndefined();
+    expect(pickHeld(view, turn, true, true)).toBe(view);
+    expect(pickGone(pickHeld(undefined, turn, true, true), turn, false, false)).toBe(false);
+    // Loaded, and listed: held.
+    expect(pickHeld(undefined, turn, true, false)).toBe(turn);
+    expect(pickHeld(turn, turn, false, false)).toBe(turn);
+    // The reader lets go once, so asking for the same file again afterwards is a new asking.
+    const pane = readFileSync(join(import.meta.dir, "../gui/src/components/ReviewPane.tsx"), "utf8");
+    expect(pane).toMatch(/if \(listedPick\(\)\) held = pickHeld\(held, key, true, git\.loading\);\s*else if \(pickGone\(held, key, false, git\.loading\)\) \{\s*held = undefined;\s*setPicked\(undefined\);/);
 });

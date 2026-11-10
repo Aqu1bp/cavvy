@@ -6,7 +6,7 @@
 
 /** The rail docks beside the sheet from this window width; narrower, it's a drawer over it. */
 export const RAIL_DOCK_MIN = 900;
-/** The sheet's inset from the window's edges (and from the rail). */
+/** The sheet's inset from the window's edges, while the rail is docked beside it. */
 export const WINDOW_PAD = 8;
 /** A docked inspector leaves the conversation at least this wide; otherwise it floats over it. */
 export const CONVERSATION_MIN = 480;
@@ -34,10 +34,14 @@ export function railMode(windowWidth: number): RailMode {
     return windowWidth >= RAIL_DOCK_MIN ? "dock" : "overlay";
 }
 
-/** The sheet's size: the window less its inset, and less the rail when the rail is docked and showing. */
+/**
+ * The sheet's size. Beside a docked, showing rail: the window less the rail and its inset on the other three edges.
+ * With no rail beside it (hidden, or a drawer over it), the sheet is the whole window (shell.css sets --win-pad to 0).
+ */
 export function sheetSize(win: Size, railDocked: boolean, railWidth: number): Size {
+    if (!railDocked) return { w: win.w, h: win.h };
     return {
-        w: Math.max(0, win.w - WINDOW_PAD - (railDocked ? railWidth : WINDOW_PAD)),
+        w: Math.max(0, win.w - WINDOW_PAD - railWidth),
         h: Math.max(0, win.h - 2 * WINDOW_PAD),
     };
 }
@@ -98,6 +102,21 @@ export function floatBottom(terminal: number, dock: number, short: boolean): num
 export function closesOnShrink(from: InspectorMode | undefined, to: InspectorMode, open: boolean, reviewing: boolean): boolean {
     return from === "dock" && to === "float" && open && !reviewing;
 }
+
+/**
+ * An open, floating inspector that now fits beside the conversation (the sidebar was hidden, the window widened)
+ * docks where it is: it's at the sheet's right edge already, and takes its column's place at once while the column
+ * opens under it. Left to the column, it went to the sheet's edge and slid back in.
+ */
+export function docksInPlace(from: WindowLayout, to: WindowLayout): boolean {
+    return from.inspector.open && to.inspector.open && from.inspector.mode === "float" && to.inspector.mode === "dock";
+}
+
+/**
+ * What a closing inspector moves by (shell.css): its column closing (docked: the sheet's columns), or the inspector
+ * itself sliding off (floating: its transform). What's in it stays until these are over (App.tsx).
+ */
+export const INSPECTOR_MOVES: readonly string[] = ["grid-template-columns", "transform"];
 
 /**
  * A request arriving closes a short floating inspector, which would cover it. Once per request:

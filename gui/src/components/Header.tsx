@@ -95,13 +95,16 @@ export function TitleBar(p: { children: JSX.Element; end?: JSX.Element }) {
     const waiting = createMemo(() => (needsPlace({ railShown: shellLayout().railShown, settings: Boolean(settingsTab()) }) === "title" ? needsYou([...app.sessions, ...app.archived], inFront({ activeId: app.activeId, settings: false, agentFocus: agentFocus() })) : []));
     return (
         <header class={`header ${isDesktop && os === "macos" ? "traffic" : ""} ${prefs.sidebar ? "" : "rail-off"}`}>
+            {/* Opens and closes with the rail's slide (header.css): the inner box keeps the buttons' own width. */}
             <div class="bar-rail">
-                <button class={`hb ${waiting().length ? "has-wait" : ""}`} title={withShortcut(waiting().length ? "Show sidebar: a session needs you" : "Show sidebar", "app:toggleSidebar")} aria-label={waiting().length ? "Show sidebar, a session needs you" : "Show sidebar"} onClick={toggleSidebar}>
-                    <PanelLeft size={16} />
-                </button>
-                <button class="hb" title={withShortcut("New session", "app:newSession")} aria-label="New session" onClick={() => (setSettingsTab(undefined), newSession(app.homeCwd))}>
-                    <SquarePen size={16} />
-                </button>
+                <div class="bar-rail-in">
+                    <button class={`hb ${waiting().length ? "has-wait" : ""}`} title={withShortcut(waiting().length ? "Show sidebar: a session needs you" : "Show sidebar", "app:toggleSidebar")} aria-label={waiting().length ? "Show sidebar, a session needs you" : "Show sidebar"} onClick={toggleSidebar}>
+                        <PanelLeft size={16} />
+                    </button>
+                    <button class="hb" title={withShortcut("New session", "app:newSession")} aria-label="New session" onClick={() => (setSettingsTab(undefined), newSession(app.homeCwd))}>
+                        <SquarePen size={16} />
+                    </button>
+                </div>
             </div>
             <nav class="crumbs" aria-label="Breadcrumb">
                 {p.children}
@@ -237,10 +240,12 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                 {(s) => (
                     <>
                         {/* With the rail hidden, the project goes before the title (and starts a session in it). */}
-                        <button class="proj" title={`New session in ${s().projectName}`} onClick={() => newSession(s().cwd)}>
-                            <span class="truncate">{s().projectName}</span>
-                            <span class="proj-sep" aria-hidden="true">/</span>
-                        </button>
+                        <span class="proj-box">
+                            <button class="proj" title={`New session in ${s().projectName}`} onClick={() => newSession(s().cwd)}>
+                                <span class="truncate">{s().projectName}</span>
+                                <span class="proj-sep" aria-hidden="true">/</span>
+                            </button>
+                        </span>
                         <Show
                             when={!editing()}
                             fallback={

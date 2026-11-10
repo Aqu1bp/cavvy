@@ -510,6 +510,8 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
             reading = capture();
         }, () => (ran ||= p.handle.view.state.busy) || visible().length > PAGE));
         const ro = new ResizeObserver(() => {
+            // Laid out just now, so this reads nothing new: where the column starts, for a slide that begins from here.
+            columnLeft = content!.offsetLeft;
             const above = grewAbove();
             if (!ready) return;
             const running = turns().at(-1)?.status === "running";
@@ -917,6 +919,8 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
     // From the column's end if it's following the end, else from its top.
     let box: HTMLDivElement | undefined;
     let moving: Animation | undefined;
+    /** Where the column of text starts in its box, as last laid out (the resize observer keeps it). */
+    let columnLeft: number | undefined;
     /** This slide's box is held from the column's end (it was following the end as the slide began). */
     let fromEnd = false;
     const atEnd = createMemo(on(() => panelHold()?.slide, (slide) => !!slide && untrack(stick)));
@@ -935,11 +939,16 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
         reading = capture();
     }, { defer: true }));
     createEffect(on(() => panelHold()?.slide, (slide) => {
+        // A slide that cuts another short starts from where that one had drawn the column, not from where it was going.
+        const drawn = slide && box && moving?.playState === "running" ? new DOMMatrixReadOnly(getComputedStyle(box).transform).m41 : 0;
         moving?.cancel();
         moving = undefined;
         const held = panelHold();
         if (slide) fromEnd = atEnd();
-        const x = held ? (held.from.w - held.to.w) / 2 : 0;
+        // From where the column's left edge was: text is set from the left, so that edge is the line the eye follows.
+        // (While the column is centred at its full width at both ends, that's half the difference of the widths. Once
+        // it's narrower than that at one end it isn't, and the edge jumped one way before sliding the other.)
+        const x = !held ? 0 : drawn + (slide && content && columnLeft !== undefined ? columnLeft - content.offsetLeft : (held.from.w - held.to.w) / 2);
         const y = held && atEnd() ? held.from.h - held.to.h : 0;
         if (!slide || !box || (!x && !y)) return;
         const { duration, easing } = slide.effect!.getTiming();

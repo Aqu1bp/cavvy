@@ -18,9 +18,9 @@
 // being drawn (tab-rest.ts). Any command for it, or a pane showing it, wakes it first, so the agent never finds it
 // different. Not one still loading.
 
-import { app, session, type BrowserWindow, type BrowserWindowConstructorOptions, type Session, type WebContents } from "electron";
+import { app, session, type BrowserWindow, type BrowserWindowConstructorOptions, type Input, type KeyboardInputEvent, type Session, type WebContents } from "electron";
 import { createHash } from "node:crypto";
-import { sendToTab } from "./guest-input";
+import { sendToTab, strayKeyEvents, tabbedIn } from "./guest-input";
 import { nextRest } from "./tab-rest";
 
 interface Tab {
@@ -42,6 +42,17 @@ interface Tab {
     personAt: number;
     /** When the agent last acted in it (its input, its scripts): a popup after that is the agent's, a tab. */
     agentAt: number;
+    /** The looks still to come at whether its page holds the window's keyboard (watchHeld). */
+    heldChecks?: ReturnType<typeof setTimeout>[];
+    /** When its page was last found holding the keyboard for the agent, not the person (ms since the epoch). */
+    heldAt?: number;
+    /** The person put the keyboard in its page themselves (a press in it), and the page has held it since. */
+    theirs?: boolean;
+    /** Key and text commands from the agent in flight: a key the page sees meanwhile is the agent's. */
+    agentKeys?: number;
+    /** The person's keys that reached its page while it had the keyboard for the agent, kept for the window (strayKey). */
+    stray?: KeyboardInputEvent[];
+    strayTimer?: ReturnType<typeof setTimeout>;
     /** The popup windows it opened for the person, and the ones those opened. */
     popups: Set<BrowserWindow>;
     /** The sessions of its frames from other sites, each with the frame's session it's in (undefined: the page). */
@@ -65,6 +76,25 @@ interface Channel {
 /** Webviews the GUI is making: will-attach-webview names them (by src), did-attach-webview hands over their page. */
 const WEBVIEW_SRC = /^about:blank#(tab-\d+)$/;
 const PERSON_INPUT = new Set(["mouseDown", "keyDown", "mouseWheel"]);
+/**
+ * A press or a focus() in a page takes the window's keyboard to it, and on macOS nothing in the window shows it. So
+ * after each thing the agent does to a page (as it goes to the page, and again once the page has answered), whether
+ * the page holds the keyboard is looked at now and this long after: what the page does with it can reach the window
+ * late, and taking the keyboard back takes the GUI two steps (gui/src/lib/page-focus.ts).
+ */
+const HELD_CHECKS_MS = [0, 40, 80, 160, 320];
+/**
+ * For this long after the agent last acted on a page the person hasn't pressed in, a key that reaches the page is the
+ * person's, typed where they were in the window while the page had the keyboard for the agent: it goes to the window.
+ */
+const STRAY_KEY_MS = 1000;
+/** Such keys wait for the window to have the keyboard again, looked at this often, and no longer than this. */
+const STRAY_LOOK_MS = 4;
+const STRAY_WAIT_MS = 1000;
+/** After Tab, each page is looked at this long after for having been given the keyboard (tabKey). */
+const TAB_IN_CHECKS_MS = [30, 120];
+/** Tab isn't what gave a page the keyboard this soon after the agent acted on it, or it last had the keyboard for the agent. */
+const TAB_IN_QUIET_MS = 500;
 /** A tab unseen and unused this long sleeps (checks may shorten it with CAVVY_ELECTRON_FREEZE_MS). */
 const FREEZE_AFTER_MS = Number(process.env.CAVVY_ELECTRON_FREEZE_MS ?? 30_000);
 /** How often, at most, the server hears that a project's browser is in use here (Cavvy.inUse), so it isn't closed as
@@ -132,6 +162,7 @@ export class BrowserHost {
 
     /** The GUI's page: only webviews for our tabs, locked down (no preload, no Node), each with a page process of its own. */
     watch(gui: WebContents) {
+        gui.on("before-input-event", (_e, input) => this.tabKey(input));
         gui.on("will-attach-webview", (e, prefs, params) => {
             const key = WEBVIEW_SRC.exec(params.src ?? "")?.[1];
             const partition = params.partition ?? "";
@@ -292,6 +323,74 @@ export class BrowserHost {
         if (tab && !tab.closed) this.event(tab.channel, "Cavvy.viewSize", size, tab.sid);
     }
 
+    /**
+     * A key that reached `tab`'s page while it holds the keyboard for the agent, not the person (the agent's press
+     * took it, and the GUI hasn't taken it back yet): kept for the window, where the person is typing, and true.
+     * The agent's own keys come while a key command of its is in flight, and are the page's.
+     */
+    private strayKey(tab: Tab, input: Input): boolean {
+        if (tab.agentKeys || tab.theirs || Date.now() - tab.agentAt > STRAY_KEY_MS) return false;
+        (tab.stray ??= []).push(...strayKeyEvents(input));
+        tab.heldAt = Date.now();
+        // The GUI is told again that the page has the keyboard, and the keys follow once it doesn't.
+        this.watchHeld(tab);
+        if (!tab.strayTimer) this.sendStray(tab, Date.now());
+        return true;
+    }
+
+    /**
+     * Sends the keys kept for the window on to it, in order, once the window has the keyboard again: sent while the
+     * page has it, they'd go to whatever the window's focus is on meanwhile (the page's own element, on its way
+     * back). After STRAY_WAIT_MS they go regardless: where the window's focus is on something of its own, that gets
+     * them; where it's on the page's element, the GUI lets them go (gui/src/lib/page-focus.ts).
+     */
+    private sendStray(tab: Tab, since: number) {
+        tab.strayTimer = setTimeout(() => {
+            tab.strayTimer = undefined;
+            const host = this.window()?.webContents;
+            if (tab.closed || !host || host.isDestroyed()) return void (tab.stray = []);
+            if (!tab.wc.isDestroyed() && tab.wc.focusedFrame && Date.now() - since < STRAY_WAIT_MS) return this.sendStray(tab, since);
+            for (const event of tab.stray?.splice(0) ?? []) host.sendInputEvent(event);
+        }, STRAY_LOOK_MS);
+    }
+
+    /** The person put the keyboard in `tab`'s page themselves: it keeps it through what the agent does there, and the GUI is told. */
+    private theirs(tab: Tab) {
+        tab.theirs = true;
+        this.toGui({ type: "person", key: tab.key, press: true });
+    }
+
+    /**
+     * A key of the person's, pressed in the window or in a page. Tab can take the keyboard into a page (from the
+     * window, or from the page before it in the order), which is the person's doing as a press in the page is:
+     * looked for a moment later, once the focus has moved.
+     */
+    private tabKey(input: { type: string; key: string }) {
+        if (input.type !== "keyDown" || input.key !== "Tab") return;
+        const keyAt = Date.now();
+        const before = [...this.tabsByKey.values()].filter((tab) => !tab.closed && !tab.wc.isDestroyed()).map((tab) => ({ tab, had: !!tab.wc.focusedFrame, busy: tab.agentInputs }));
+        for (const ms of TAB_IN_CHECKS_MS) {
+            setTimeout(() => {
+                for (const { tab, had, busy } of before) {
+                    if (tab.closed || tab.wc.isDestroyed()) continue;
+                    const agentAt = Math.max(tab.agentAt, tab.heldAt ?? 0);
+                    // Said again for a page that was theirs before they left it: the GUI let go of that when they did.
+                    if (tabbedIn({ had, has: !!tab.wc.focusedFrame, agentInputs: busy + tab.agentInputs, agentAt, keyAt, quietMs: TAB_IN_QUIET_MS })) this.theirs(tab);
+                }
+            }, ms);
+        }
+    }
+
+    /** Tells the GUI each time `tab`'s page is found holding the window's keyboard, over the next moments (HELD_CHECKS_MS). */
+    private watchHeld(tab: Tab) {
+        for (const t of tab.heldChecks ?? []) clearTimeout(t);
+        tab.heldChecks = HELD_CHECKS_MS.map((ms) => setTimeout(() => {
+            if (tab.closed || tab.wc.isDestroyed() || !tab.wc.focusedFrame) return;
+            tab.heldAt = Date.now();
+            this.toGui({ type: "focused", key: tab.key });
+        }, ms));
+    }
+
     private toGui(msg: unknown) {
         const win = this.window();
         if (win && !win.webContents.isDestroyed()) win.webContents.send("browser", msg);
@@ -387,14 +486,25 @@ export class BrowserHost {
             await this.wake(tab);
             const input = cmd.method.startsWith("Input.");
             if (input) tab.agentInputs++;
+            const keys = input && cmd.method !== "Input.dispatchMouseEvent";
+            if (keys) tab.agentKeys = (tab.agentKeys ?? 0) + 1;
             // The agent's own script is the one evaluation with a user gesture (BrowserEval); reading the title isn't acting.
-            if (input || cmd.method === "Runtime.callFunctionOn" || (cmd.method === "Runtime.evaluate" && p.userGesture === true)) tab.agentAt = Date.now();
+            const acting = input || cmd.method === "Runtime.callFunctionOn" || (cmd.method === "Runtime.evaluate" && p.userGesture === true);
+            if (acting) {
+                tab.agentAt = Date.now();
+                // The person left the page (it doesn't hold the keyboard): whatever takes it there now isn't them.
+                if (!tab.wc.focusedFrame) tab.theirs = false;
+            }
             try {
                 // Never through the window's focus into the UI (guest-input.ts).
-                const result = await sendToTab(tab.wc, cmd.method, p);
+                const sent = sendToTab(tab.wc, cmd.method, p);
+                if (acting) this.watchHeld(tab);
+                const result = await sent;
                 return this.answer(channel, cmd.id, result ?? {});
             } finally {
                 if (input) tab.agentInputs--;
+                if (keys) tab.agentKeys = (tab.agentKeys ?? 1) - 1;
+                if (acting) this.watchHeld(tab);
             }
         }
         switch (cmd.method) {
@@ -489,10 +599,17 @@ export class BrowserHost {
         const person = (type: string) => {
             if (tab.agentInputs > 0 || !PERSON_INPUT.has(type)) return;
             tab.usedAt = tab.personAt = Date.now();
+            if (type === "mouseDown") this.theirs(tab);
+            else this.toGui({ type: "person", key, press: false });
             this.event(channel, "Cavvy.humanInput", { type }, tab.sid);
             this.inUse(channel);
         };
-        wc.on("before-input-event", (_e, input) => person(input.type));
+        wc.on("before-input-event", (e, input) => {
+            // Typed in the window while the page had the keyboard for the agent: the window's, not the page's.
+            if (this.strayKey(tab, input)) return e.preventDefault();
+            person(input.type);
+            if (tab.agentInputs === 0) this.tabKey(input);
+        });
         wc.on("before-mouse-event", (_e, mouse) => person(mouse.type));
         wc.on("render-process-gone", () => this.event(channel, "Inspector.targetCrashed", {}, tab.sid));
         this.toGui({ type: "ready", key, targetId: tab.targetId });
@@ -534,6 +651,8 @@ export class BrowserHost {
     private closeTab(tab: Tab, tell: boolean) {
         if (tab.closed) return;
         tab.closed = true;
+        for (const t of tab.heldChecks ?? []) clearTimeout(t);
+        clearTimeout(tab.strayTimer);
         tab.channel.tabs.delete(tab.targetId);
         this.tabsById.delete(tab.targetId);
         this.tabsBySid.delete(tab.sid);

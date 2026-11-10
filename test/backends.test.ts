@@ -369,6 +369,17 @@ describe("Claude Code backend", () => {
         expect(existsSync(join(cwd, "out.txt"))).toBe(true);
     });
 
+    test("a turn stopped while it waits for an approval is stopped, not declined", async () => {
+        // Quitting the app (or Stop) with an approval card up: the request is withdrawn, nobody said no. It was
+        // recorded as declined, and the reopened session said "Stopped after a declined tool call".
+        const ac = new AbortController();
+        const a = await makeAgent({ provider: "claude-code", ask: () => (ac.abort(), { allow: false }) });
+        expect(await a.run("go", ac.signal)).toBe("aborted");
+        expect(a.asked).toHaveLength(1);
+        expect(a.events.filter((e) => e.type === "turn_end").map((e) => (e as { reason: string }).reason)).toEqual(["aborted"]);
+        expect(existsSync(join(cwd, "out.txt"))).toBe(false);
+    });
+
     test("declining stops the turn; declining with feedback passes it on", async () => {
         const a = await makeAgent({ provider: "claude-code", ask: () => ({ allow: false }) });
         expect(await a.run("go")).toBe("denied");

@@ -28,6 +28,16 @@ export const [hostedTargets, setHostedTargets] = createSignal<Record<string, str
 export interface Shown {
     targetId: string;
     box: Box;
+    /**
+     * The pane's page (lib/page-follow.ts). `page`: its size, which isn't the box's while the panels slide or it can't
+     * keep up with an edge being dragged (lib/page-size.ts). `frame`: how much of the box, from its top left, it's
+     * drawn in: no more than shows of the box while its panel slides open or shut, nor than the page fills.
+     * Without them (the floating view), the page's size and frame are the box's.
+     */
+    page?: { width: number; height: number };
+    frame?: { width: number; height: number };
+    /** The pane's page's corners (a CSS border-radius), where it lies in a rounded corner of the panel or the sheet. */
+    corners?: string;
     by: "pane" | "float";
     fit?: boolean;
     /**

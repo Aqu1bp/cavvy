@@ -30,7 +30,17 @@ export const VERBS: Record<string, string> = {
     CreatePullRequest: "Open pull request",
     WatchPullRequest: "Watch pull request",
     UnwatchPullRequest: "Stop watching",
+    // Claude Code's: it loads tools it has only the names of.
+    ToolSearch: "Find tools",
 };
+
+/**
+ * What a call does, in words: its verb above, or for a tool with none (a CLI's own, a new one) its name as words
+ * ("TaskOutput" is "Task output"), never the name as the tool spells it.
+ */
+const verbOf = (name: string) => VERBS[name] ?? name.replace(/([a-z\d])([A-Z])/g, (_, a: string, b: string) => `${a} ${b.toLowerCase()}`);
+/** Those words after another ("Then search", "Running task output"): a name in capitals stays as it is ("Running LSP"). */
+const after = (name: string) => verbOf(name).replace(/^[A-Z](?![A-Z])/, (c) => c.toLowerCase());
 
 export const RUNNING: Record<string, string> = {
     Read: "Reading",
@@ -43,6 +53,7 @@ export const RUNNING: Record<string, string> = {
     NotebookEdit: "Editing notebook",
     Bash: "Running",
     BashOutput: "Checking output",
+    KillShell: "Stopping",
     Monitor: "Starting monitor",
     WebFetch: "Fetching",
     WebSearch: "Searching the web",
@@ -56,6 +67,8 @@ export const RUNNING: Record<string, string> = {
     GitPush: "Pushing",
     CreatePullRequest: "Opening pull request",
     WatchPullRequest: "Reading pull request",
+    UnwatchPullRequest: "Ending the watch",
+    ToolSearch: "Finding tools",
 };
 
 /** "Gemini 3 Pro" style: the model part of provider:model. */
@@ -188,7 +201,8 @@ export function toolLabel(t: ToolBlock): { verb: string; arg?: string } {
     if (t.name === "GitCommit") a = String(input.message ?? arg ?? "").split("\n")[0];
     if (t.name === "CreatePullRequest") a = String(input.title ?? arg ?? "");
     if (t.name === "WatchPullRequest" || t.name === "UnwatchPullRequest") a = input.pr !== undefined && input.pr !== "" ? `#${String(input.pr).replace(/^#/, "").replace(/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\//, "")}` : undefined;
-    return { verb: VERBS[t.name] ?? t.name, arg: a || undefined };
+    if (t.name === "ToolSearch") a = String(input.query ?? arg ?? "");
+    return { verb: verbOf(t.name), arg: a || undefined };
 }
 
 /**
@@ -201,6 +215,7 @@ const ARRIVING: Record<string, string> = {
     MultiEdit: "Editing",
     NotebookEdit: "Editing notebook",
     Bash: "Writing command",
+    ToolSearch: "Finding tools",
 };
 
 /** Still under way: arriving, waiting its turn, running, or waiting for the user. */
@@ -211,10 +226,10 @@ export function runningVerb(t: ToolBlock): string {
     if (t.status === "awaiting") return t.name === "AskUserQuestion" || t.name === "ExitPlanMode" ? RUNNING[t.name]! : "Waiting for approval";
     const own = ownWords(t) ?? mcpWords(t);
     if (own) return t.status === "queued" ? `Then ${own.verb.charAt(0).toLowerCase()}${own.verb.slice(1)}` : own.running;
-    if (t.status === "streaming") return ARRIVING[t.name] ?? `Preparing ${VERBS[t.name]?.toLowerCase() ?? t.name}`;
-    if (t.status === "queued") return `Then ${VERBS[t.name]?.toLowerCase() ?? t.name}`;
+    if (t.status === "streaming") return ARRIVING[t.name] ?? `Preparing ${after(t.name)}`;
+    if (t.status === "queued") return `Then ${after(t.name)}`;
     if (t.name === "Bash" && sleepSeconds(t.input?.command)) return "Waiting";
-    return RUNNING[t.name] ?? `Running ${t.name}`;
+    return RUNNING[t.name] ?? `Running ${after(t.name)}`;
 }
 
 /** What a command is for, in the model's words (Claude Code's Bash `description`), when it gave one. */
