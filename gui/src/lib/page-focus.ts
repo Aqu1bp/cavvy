@@ -35,11 +35,13 @@ export const OWN_MS = 150;
  * Moving the window's focus off the element and back does it. So it's moved off whatever shows focused, whichever
  * case this is: the page's word that it has the keys (desktop-electron/src/browser-host.ts) is what counts, not what
  * the window shows.
- * `left`: what lost focus to nothing in the window just before (or where the person last put it).
+ * `left`: what lost focus to nothing in the window just before (or where the person last put it). `theirs`: another
+ * page the person put the keyboard in themselves, which it goes back to before anything else: typing in a page while
+ * the agent clicked in another one (a hidden one, or another session's), their keys went to the message box.
  */
-export function nextStep<E>(o: { active: E | null | undefined; page: E; body: E; left: E | undefined }): { from: E | undefined; to: E | undefined } {
+export function nextStep<E>(o: { active: E | null | undefined; page: E; body: E; left: E | undefined; theirs?: E }): { from: E | undefined; to: E | undefined } {
     const from = o.active && o.active !== o.body && o.active !== o.page ? o.active : undefined;
-    return { from, to: from ?? o.left };
+    return { from, to: o.theirs ?? from ?? o.left };
 }
 
 /** Watches the pages' hold on the keyboard in `win`. Returns how to stop. */
@@ -67,7 +69,8 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser">, win: Window
         if (!page) return;
         const now = performance.now();
         const was = left && left.el.isConnected && now - left.at <= LEFT_MS ? left.el : home?.isConnected ? home : undefined;
-        const step = nextStep<HTMLElement>({ active: doc.activeElement as HTMLElement | null, page, body: doc.body, left: was });
+        const mine = theirs !== undefined && theirs !== key ? view(theirs) : undefined;
+        const step = nextStep<HTMLElement>({ active: doc.activeElement as HTMLElement | null, page, body: doc.body, left: was, theirs: mine });
         taking = true;
         step.from?.blur();
         if (step.to?.isConnected) step.to.focus();

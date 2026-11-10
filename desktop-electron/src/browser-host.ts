@@ -20,7 +20,7 @@
 
 import { app, session, type BrowserWindow, type BrowserWindowConstructorOptions, type Input, type KeyboardInputEvent, type Session, type WebContents } from "electron";
 import { createHash } from "node:crypto";
-import { sendToTab, strayKeyEvents, tabbedIn } from "./guest-input";
+import { sendToTab, strayKeyEvents, strayTarget, tabbedIn } from "./guest-input";
 import { nextRest } from "./tab-rest";
 
 interface Tab {
@@ -339,7 +339,8 @@ export class BrowserHost {
     }
 
     /**
-     * Sends the keys kept for the window on to it, in order, once the window has the keyboard again: sent while the
+     * Sends the keys kept for the window on to it (or to another page the person was typing in: strayTarget), in order,
+ * once the window has the keyboard again: sent while the
      * page has it, they'd go to whatever the window's focus is on meanwhile (the page's own element, on its way
      * back). After STRAY_WAIT_MS they go regardless: where the window's focus is on something of its own, that gets
      * them; where it's on the page's element, the GUI lets them go (gui/src/lib/page-focus.ts).
@@ -350,7 +351,9 @@ export class BrowserHost {
             const host = this.window()?.webContents;
             if (tab.closed || !host || host.isDestroyed()) return void (tab.stray = []);
             if (!tab.wc.isDestroyed() && tab.wc.focusedFrame && Date.now() - since < STRAY_WAIT_MS) return this.sendStray(tab, since);
-            for (const event of tab.stray?.splice(0) ?? []) host.sendInputEvent(event);
+            const others = [...this.tabsByKey.values()].filter((t) => t !== tab && !t.closed && !t.wc.isDestroyed());
+            const to = strayTarget(others.map((t) => ({ page: t.wc, theirs: !!t.theirs, held: !!t.wc.focusedFrame }))) ?? host;
+            for (const event of tab.stray?.splice(0) ?? []) to.sendInputEvent(event);
         }, STRAY_LOOK_MS);
     }
 

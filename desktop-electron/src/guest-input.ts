@@ -71,6 +71,15 @@ export function strayKeyEvents(input: { type: string; key: string; alt?: boolean
 }
 
 /**
+ * Where the keys a page took for the agent's sake go once it lets go of the keyboard (browser-host.ts, sendStray): the
+ * page the person put the keyboard in themselves, if it has it again (they were typing there while the agent clicked in
+ * another page), else the window (undefined).
+ */
+export function strayTarget<T>(pages: { page: T; theirs: boolean; held: boolean }[]): T | undefined {
+    return pages.find((p) => p.theirs && p.held)?.page;
+}
+
+/**
  * Whether Tab, pressed at `keyAt`, took the keyboard into a page: the page didn't have it then (`had`) and has it
  * now (`has`). Not when the agent was in the middle of acting on the page, has acted on it since, or had within
  * `quietMs` before the key (`agentAt`: when it last acted, or the page was last found with the keyboard for it): its
