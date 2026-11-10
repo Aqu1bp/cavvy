@@ -1,73 +1,131 @@
 // The keyboard stays where the person has it while the agent works in a Browser page (the desktop app).
 //
-// The page is a real one (BrowserHostLayer's <webview>), and a real page takes the window's focus when something in it
-// is pressed or focused, whoever did it: the agent clicking a button took the keyboard from the message box or the
-// terminal, and what the person went on typing went to the page (and pressed its buttons). So when a page takes focus
-// just after the agent acted on it, and the person hasn't used the page since, focus goes back to where it was. The
-// page still has its own focus (the server keeps it as a focused page: src/browser/page.ts), so the agent's next keys
-// reach the field it clicked.
+// The page is a real one (BrowserHostLayer's <webview>), and a real page takes the window's keyboard when something
+// in it is pressed or focused, whoever did it: the agent clicking a button took the keys from the message box or the
+// terminal, and what the person went on typing went to the page (and pressed its buttons). On macOS nothing in the
+// window even shows it: the message box keeps its caret.
 //
-// The app says when the agent acts on a tab and when the person uses one (desktop-electron/src/browser-host.ts).
+// So the app says when a tab's page holds the keyboard after something the agent did to it (`focused`), and when the
+// person presses in a page (`person`): desktop-electron/src/browser-host.ts. Unless the person put the keyboard in
+// that page themselves, it's taken back to where it was. The page keeps its own focus (the server keeps it as a
+// focused page: src/browser/page.ts), so the agent's next keys still reach the field it clicked.
+//
 // Part of the pages' layer (BrowserHostLayer.tsx), which only the desktop app loads.
 
 import type { ElectronBridge } from "./platform";
 
-/** A page taking focus this long after the agent last acted on it is the agent's doing. */
-export const AGENT_FOCUS_MS = 500;
-/** Sent back, and then the app says the person pressed in the page after all: it's theirs, if that comes this soon. */
-export const PERSON_AFTER_MS = 250;
+/** An element that lost focus to nothing else in the window this long ago is still where the person was. */
+export const LEFT_MS = 2000;
+/**
+ * For this long after the app said a page held the keyboard for the agent, the page taking the window's focus again
+ * is the same thing happening again (the page answers a press in several steps, each of which can take it).
+ */
+export const AGAIN_MS = 500;
+/** The second step of taking the keyboard back comes at least this long after the first (below). */
+export const STEP_MS = 30;
 
-/** The page of a tab took focus at `now`: was that the agent's doing (it acted last, and just now)? */
-export function agentTookFocus(now: number, agentAt: number | undefined, personAt: number | undefined): boolean {
-    return agentAt !== undefined && now - agentAt <= AGENT_FOCUS_MS && !(personAt !== undefined && personAt >= agentAt);
-}
+/** What taking the keyboard back does next, for where the window's focus is now. */
+export type Step<E> =
+    /** The window's focus is in the page's element: move it to `to` (or just out of the page), and the keys follow. */
+    | { do: "back"; to: E | undefined }
+    /** The page has the keys though the window's focus isn't in it: put it there first, and remember where it was. */
+    | { do: "enter"; from: E | undefined }
+    /** Entered a moment ago: the page is still taking it. Wait for the app's next word. */
+    | { do: "wait" };
 
 /**
- * Watches for a page taking the window's focus. The window hears of it as a `blur` of its own, with the page's
- * <webview> its active element by then; the element the person was in has just lost focus to nothing in the document.
- * Returns how to stop.
+ * Taking the keyboard back from a page is one step where the window's focus went to the page with the keys (move it
+ * back), and two where it didn't (macOS; or a page answering late, after it was taken back once): the window's focus
+ * is still in the message box, focusing that again changes nothing, and the keys stay in the page. So first the
+ * window's focus goes to the page too, and from there back. Not both at once: the page takes what it's given a
+ * moment later, after the window has it back, and keeps the keys with the window showing otherwise.
+ * `entered`: the first step taken for this page, with where the focus was and when; `left`: what lost focus to
+ * nothing in the window just before.
  */
+export function nextStep<E>(o: { active: E | null | undefined; page: E; body: E; left: E | undefined; entered: { from: E | undefined; at: number } | undefined; now: number }): Step<E> {
+    if (o.active === o.page) {
+        if (o.entered && o.now - o.entered.at < STEP_MS) return { do: "wait" };
+        return { do: "back", to: o.entered ? o.entered.from : o.left };
+    }
+    return { do: "enter", from: o.active && o.active !== o.body ? o.active : undefined };
+}
+
+/** Watches the pages' hold on the keyboard in `win`. Returns how to stop. */
 export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser">, win: Window = window): () => void {
     const doc = win.document;
-    const tabs = new Map<string, { agent?: number; person?: number }>();
-    let sentBack: { key: string; view: HTMLElement; at: number } | undefined;
-    /** What last lost focus to nothing else in the document: where the person was, if a page took it. */
-    let left: HTMLElement | undefined;
+    /** The tab whose page the person put the keyboard in themselves (a press in it, or Tab into it), until they're back in the window. */
+    let theirs: string | undefined;
+    /** What last lost focus to nothing else in the window, and when. */
+    let left: { el: HTMLElement; at: number } | undefined;
+    /** Taking the keyboard back moves the window's focus itself: not the person's doing. */
+    let taking = false;
+    /** The first of two steps taken for a tab's page. */
+    let entered: { key: string; from: HTMLElement | undefined; at: number } | undefined;
+    /** When the app last said each tab's page held the keyboard for the agent. */
+    const said = new Map<string, number>();
+    const view = (key: string) => [...doc.querySelectorAll<HTMLElement>("webview")].find((v) => v.dataset.key === key);
+    const takeBack = (key: string) => {
+        const page = view(key);
+        if (!page) return;
+        const now = performance.now();
+        const step = nextStep<HTMLElement>({
+            active: doc.activeElement as HTMLElement | null, page, body: doc.body, now,
+            left: left && now - left.at <= LEFT_MS ? left.el : undefined,
+            entered: entered?.key === key ? entered : undefined,
+        });
+        if (step.do === "wait") return;
+        taking = true;
+        if (step.do === "enter") {
+            entered = { key, from: step.from, at: now };
+            page.focus();
+        } else {
+            entered = undefined;
+            if (step.to?.isConnected) step.to.focus();
+            else page.blur();
+        }
+        taking = false;
+    };
     const off = bridge.onBrowser((e) => {
-        if (e.type === "destroy") tabs.delete(e.key);
-        if (e.type !== "agent" && e.type !== "person") return;
-        const now = performance.now();
-        const tab = tabs.get(e.key) ?? {};
-        tabs.set(e.key, tab);
-        if (e.type === "agent") return void (tab.agent = now);
-        tab.person = now;
-        // Their press and the agent's came together, and the page's focus was heard of before their press was.
-        if (sentBack?.key === e.key && now - sentBack.at <= PERSON_AFTER_MS && sentBack.view.isConnected) sentBack.view.focus();
-        sentBack = undefined;
+        if (e.type === "destroy") {
+            said.delete(e.key);
+            if (theirs === e.key) theirs = undefined;
+        } else if (e.type === "person" && e.press) theirs = e.key;
+        else if (e.type === "focused" && theirs !== e.key) {
+            said.set(e.key, performance.now());
+            takeBack(e.key);
+        }
     });
-    const focusOut = (e: FocusEvent) => {
-        left = !e.relatedTarget && e.target instanceof HTMLElement ? e.target : undefined;
-    };
-    const focusIn = () => {
-        left = undefined;
-    };
+    // Where the window hears of a page taking its focus (it loses its own, with the page's element active): at once,
+    // while the agent is at it, rather than at the app's next word.
     const blurred = (e: Event) => {
-        const view = doc.activeElement;
-        if (e.target !== win || !(view instanceof HTMLElement) || view.tagName !== "WEBVIEW" || !view.dataset.key) return;
-        const tab = tabs.get(view.dataset.key);
-        const now = performance.now();
-        if (!agentTookFocus(now, tab?.agent, tab?.person)) return;
-        sentBack = { key: view.dataset.key, view, at: now };
-        if (left?.isConnected) left.focus();
-        else view.blur();
+        const page = doc.activeElement;
+        const key = e.target === win && page instanceof HTMLElement && page.tagName === "WEBVIEW" ? page.dataset.key : undefined;
+        if (key && theirs !== key && performance.now() - (said.get(key) ?? -Infinity) <= AGAIN_MS) takeBack(key);
+    };
+    const focusOut = (e: FocusEvent) => {
+        if (!taking && !e.relatedTarget && e.target instanceof HTMLElement && e.target.tagName !== "WEBVIEW") left = { el: e.target, at: performance.now() };
+    };
+    const focusIn = (e: FocusEvent) => {
+        if (taking) return;
+        left = undefined;
+        // Tab from the window into a page: the person's, as a press in it is.
+        const key = e.target instanceof HTMLElement && e.target.tagName === "WEBVIEW" ? e.target.dataset.key : undefined;
+        if (key) theirs = key;
+    };
+    // Back in the window by a press of theirs.
+    const pressed = () => {
+        theirs = undefined;
+        entered = undefined;
     };
     doc.addEventListener("focusout", focusOut, true);
     doc.addEventListener("focusin", focusIn, true);
+    doc.addEventListener("pointerdown", pressed, true);
     win.addEventListener("blur", blurred, true);
     return () => {
         off();
+        win.removeEventListener("blur", blurred, true);
         doc.removeEventListener("focusout", focusOut, true);
         doc.removeEventListener("focusin", focusIn, true);
-        win.removeEventListener("blur", blurred, true);
+        doc.removeEventListener("pointerdown", pressed, true);
     };
 }

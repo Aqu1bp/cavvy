@@ -59,6 +59,17 @@ export function keyboardEvents(params: Record<string, unknown>): KeyboardInputEv
     }
 }
 
+/**
+ * A key the window saw on its way to a page (Electron's before-input-event), as the events that type it somewhere
+ * else: the key itself, and the character it makes when it makes one (Enter's is a carriage return).
+ */
+export function strayKeyEvents(input: { type: string; key: string; alt?: boolean; control?: boolean; meta?: boolean; shift?: boolean }): KeyboardInputEvent[] {
+    const modifiers = (input.alt ? 1 : 0) | (input.control ? 2 : 0) | (input.meta ? 4 : 0) | (input.shift ? 8 : 0);
+    const typed = !input.control && !input.meta;
+    const text = !typed ? "" : input.key === "Enter" ? "\r" : [...input.key].length === 1 ? input.key : "";
+    return keyboardEvents({ type: input.type === "keyUp" ? "keyUp" : "keyDown", key: input.key, text, modifiers });
+}
+
 async function evaluate(dbg: Debugger, expression: string): Promise<unknown> {
     const r = (await dbg.sendCommand("Runtime.evaluate", { expression, returnByValue: true })) as { result?: { value?: unknown } };
     return r.result?.value;

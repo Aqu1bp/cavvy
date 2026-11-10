@@ -16,11 +16,11 @@ export interface ElectronBridge {
     revealPath(path: string): Promise<void>;
     setTheme(scheme: "light" | "dark"): void;
     /**
-     * The app's browser tabs to keep as webviews (components/BrowserHostLayer.tsx), and who is acting on each: `agent`
-     * as the agent's input or script reaches a tab's page and again once the page has taken it, `person` when the
-     * person presses, types or scrolls in one (lib/page-focus.ts). Returns how to stop.
+     * The app's browser tabs to keep as webviews (components/BrowserHostLayer.tsx), and who has the keyboard in one
+     * (lib/page-focus.ts): `focused` when a tab's page holds the window's keyboard after something the agent did to
+     * it, `person` when the person presses (`press`), types or scrolls in one. Returns how to stop.
      */
-    onBrowser(fn: (e: { type: "create"; key: string; partition: string } | { type: "ready"; key: string; targetId: string } | { type: "destroy"; key: string } | { type: "sleep"; key: string; asleep: boolean } | { type: "agent" | "person"; key: string }) => void): () => void;
+    onBrowser(fn: (e: { type: "create"; key: string; partition: string } | { type: "ready"; key: string; targetId: string } | { type: "destroy"; key: string } | { type: "sleep"; key: string; asleep: boolean } | { type: "focused"; key: string } | { type: "person"; key: string; press: boolean }) => void): () => void;
     /** These tabs are on screen now (a pane, the floating view): the app keeps them awake (never frozen). */
     browserShown(keys: string[]): void;
     /** A tab's webview has this size now: its page's real viewport. */
