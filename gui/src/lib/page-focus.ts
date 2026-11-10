@@ -69,10 +69,11 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser" | "browserBac
      * own things it would press a button, send the message box or answer a waiting request with a digit.
      */
     let adrift = false;
-    /** When the person last pressed in the window, last pressed Tab or Escape in it, and last used a shortcut there. */
+    /** When the person last pressed in the window, and last pressed Tab or Escape in it. */
     let pressedAt = -Infinity;
     let movedAt = -Infinity;
-    let shortcutAt = -Infinity;
+    /** Their last key with ⌘ or Ctrl in the window, and when: one of the app's shortcuts if the app took it (ownMove). */
+    let shortcut: { e: KeyboardEvent; at: number } | undefined;
     /** The last of the app's words that a page is theirs (its seq), sent back with browserBack. */
     let seen = 0;
     /** The person is back in the window: no page is theirs, here or in the app (browser-host.ts, which can't see it). */
@@ -163,8 +164,17 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser" | "browserBac
         left = undefined;
         const el = e.target;
         if (!(el instanceof HTMLElement) || isPage(el)) return;
-        // Not where they are if it took the focus by itself.
-        if (adrift && performance.now() - shortcutAt > OWN_MS) return;
+        if (adrift && !ownMove()) {
+            // It took the focus by itself (a request's answer field, the message box with a draft handed back): not
+            // where they are. Nor left showing a caret that takes no keys, and takes a paste or ⌘Enter meant for the page.
+            later(() => {
+                if (stopped || !adrift || doc.activeElement !== el) return;
+                taking = true;
+                el.blur();
+                taking = false;
+            }, 0);
+            return;
+        }
         adrift = false;
         // Back in the window, by a key as much as by a press: no page is theirs any more.
         home = el;
@@ -182,8 +192,13 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser" | "browserBac
     };
     const keyed = (e: KeyboardEvent) => {
         if (e.key === "Tab" || e.key === "Escape") movedAt = performance.now();
-        if (e.metaKey || e.ctrlKey) shortcutAt = performance.now();
+        if (e.metaKey || e.ctrlKey) shortcut = { e, at: performance.now() };
     };
+    // The window's focus moving just after a shortcut of the app's is the person's doing. The app takes its own
+    // shortcuts (App.tsx, onKey: the default is prevented once one runs), after this has heard the key. Not ⌘ or Ctrl
+    // held by itself, nor a shortcut meant for the page (⌘V, Ctrl+A), which nothing here takes: a request's answer
+    // field focusing itself just then isn't where they are.
+    const ownMove = () => shortcut !== undefined && performance.now() - shortcut.at <= OWN_MS && shortcut.e.defaultPrevented;
     // A key that reaches the window while its focus is in a page isn't the window's. The page has the keyboard
     // then, so the person's own keys go to it; this is one the app kept for the window, which never took the
     // keyboard back (browser-host.ts, sendStray). Let go of here: passed on, it would be answered by whatever takes
