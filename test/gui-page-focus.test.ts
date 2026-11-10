@@ -28,7 +28,8 @@ class El {
         this.calls.push("focus");
         const d = this.doc;
         if (!d) return;
-        if (d.keys && d.keys !== "window" && (this.dataset.key === d.keys || d.activeElement === this)) return;
+        // The body is active with nothing focused, never shown focused: focusing it is a move like any other.
+        if (d.keys && d.keys !== "window" && (this.dataset.key === d.keys || (d.activeElement === this && this !== d.body))) return;
         if (this === d.body && !this.attrs.has("tabindex")) return;
         d.activeElement = this;
         if (d.keys) d.keys = this.dataset.key ?? "window";
@@ -223,7 +224,7 @@ test("typing in a page while the agent clicks in another one, the keyboard goes 
     expect([q.doc.keys, q.doc.activeElement, q.other.calls]).toEqual(["tab-2", q.other, ["blur", "focus"]]);
     // Their keyboard was in a frame of their page (the app says so from their own keys and presses there): given back, it
     // would land on the page itself (measured on macOS and Linux: of 136 characters, 126 went to the page's top
-    // document). So not given back: to the window instead.
+    // document). So not given back: to nothing in the window (not where they last were in it: they weren't typing there).
     const f = page();
     at(1000); f.fire("focusin", { target: f.box });
     at(2000); f.tell({ type: "person", key: "tab-2", press: true });
@@ -231,7 +232,7 @@ test("typing in a page while the agent clicks in another one, the keyboard goes 
     f.tell({ type: "framed", key: "tab-2", framed: true });
     f.doc.keys = "tab-1";
     at(3001); f.tell({ type: "focused", key: "tab-1" });
-    expect([f.doc.keys, f.doc.activeElement, f.other.calls]).toEqual(["window", f.box, ["blur"]]);
+    expect([f.doc.keys, f.doc.activeElement, f.other.calls, f.box.calls]).toEqual(["window", f.body, ["blur"], []]);
     // They're in the window now: the app is told, so it doesn't count the page as theirs either.
     expect(f.backs.n).toBe(1);
     // Nor at the agent's next click, while they were last in the frame.
@@ -269,6 +270,78 @@ test("typing in a page while the agent clicks in another one, the keyboard goes 
     q.doc.keys = "tab-1";
     at(4010); q.tell({ type: "focused", key: "tab-1" });
     expect(q.doc.keys).toBe("window");
+});
+
+test("typing in a frame of a page the keyboard can't go back to, what the person types goes nowhere until they're back in the window", () => {
+    // Measured on macOS: Tab from the Browser pane's address bar into a page whose first field is in a cross-site frame,
+    // then another session's agent clicked in its own page. The keyboard went back to the pane's "New tab" button, the
+    // last thing Tab passed: 136 letters typed did nothing, and Space or Enter would have opened a tab. On the message
+    // box, Enter would send what was meant for the page (a password, say) to the agent; and with nothing focused, a
+    // digit answers a waiting request and Escape stops the turn.
+    const p = page();
+    const button = new El("BUTTON");
+    button.doc = p.doc;
+    at(1000); p.fire("focusin", { target: button });
+    p.doc.activeElement = button;
+    // Tab into the page: the app says it's theirs, with the keyboard in a frame of it.
+    at(1500); p.tell({ type: "person", key: "tab-2", press: true, seq: 1 });
+    p.tell({ type: "framed", key: "tab-2", framed: true });
+    p.doc.activeElement = p.other;
+    p.doc.keys = "tab-2";
+    // The agent's press in another page takes the keyboard; the window shows that page's element focused.
+    const click = (ms: number) => {
+        at(ms); p.doc.activeElement = p.view;
+        p.doc.keys = "tab-1";
+        p.tell({ type: "focused", key: "tab-1" });
+    };
+    click(3000);
+    expect([p.doc.keys, p.doc.activeElement, button.calls, p.box.calls]).toEqual(["window", p.body, [], []]);
+    const key = (k: string, mods: object = {}) => {
+        const did = [false, false];
+        p.fire("keydown", { key: k, ...mods, stopImmediatePropagation() { did[0] = true; }, preventDefault() { did[1] = true; } });
+        return did;
+    };
+    for (const k of ["a", " ", "Enter", "1", "Escape", "Tab"]) expect([k, key(k)]).toEqual([k, [true, true]]);
+    // Shortcuts go on working.
+    expect(key("k", { metaKey: true })).toEqual([false, false]);
+    expect(key("k", { ctrlKey: true })).toEqual([false, false]);
+    // The same at the agent's next click, with no page counted as theirs now (the app was told).
+    click(3500);
+    expect([p.doc.keys, p.doc.activeElement, button.calls, key("1")]).toEqual(["window", p.body, [], [true, true]]);
+    // Something of the window's taking focus by itself (a request's answer field) doesn't make their keys the window's.
+    at(3600); p.fire("focusin", { target: p.box });
+    p.doc.activeElement = p.box;
+    expect(key("a")).toEqual([true, true]);
+    // A press in the window does: keys are the window's again, and the agent's next click goes back to where they are.
+    at(4000); p.fire("pointerdown", { target: p.box });
+    p.run(0);
+    expect(key("1")).toEqual([false, false]);
+    click(4100);
+    expect(p.doc.keys).toBe("window");
+    expect(p.box.calls).toEqual(["focus"]);
+    // So does a shortcut that moves the window's focus (to the message box, say).
+    const q = page();
+    at(1000); q.tell({ type: "person", key: "tab-2", press: true, seq: 1 });
+    q.tell({ type: "framed", key: "tab-2", framed: true });
+    q.doc.activeElement = q.view;
+    at(2000); q.tell({ type: "focused", key: "tab-1" });
+    at(3000); q.fire("keydown", { key: "l", metaKey: true });
+    q.fire("focusin", { target: q.box });
+    q.doc.activeElement = q.box;
+    const did = [false];
+    q.fire("keydown", { key: "a", stopImmediatePropagation() { did[0] = true; } });
+    expect(did).toEqual([false]);
+    // And their press in a page (the app says so): that page has the keyboard, and the window its keys as ever.
+    const r = page();
+    at(1000); r.tell({ type: "person", key: "tab-2", press: true, seq: 1 });
+    r.tell({ type: "framed", key: "tab-2", framed: true });
+    r.doc.activeElement = r.view;
+    at(2000); r.tell({ type: "focused", key: "tab-1" });
+    at(3000); r.tell({ type: "person", key: "tab-2", press: true, seq: 2 });
+    r.doc.activeElement = r.body;
+    const done = [false];
+    r.fire("keydown", { key: "1", stopImmediatePropagation() { done[0] = true; } });
+    expect(done).toEqual([false]);
 });
 
 test("with nothing remembered as just left, the keyboard goes back to where the person last put it", () => {
