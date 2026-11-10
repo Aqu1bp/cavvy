@@ -15,8 +15,12 @@ export interface ElectronBridge {
     openExternal(url: string): Promise<void>;
     revealPath(path: string): Promise<void>;
     setTheme(scheme: "light" | "dark"): void;
-    /** The app's browser tabs to keep as webviews (components/BrowserHostLayer.tsx). Returns how to stop. */
-    onBrowser(fn: (e: { type: "create"; key: string; partition: string } | { type: "ready"; key: string; targetId: string } | { type: "destroy"; key: string } | { type: "sleep"; key: string; asleep: boolean }) => void): () => void;
+    /**
+     * The app's browser tabs to keep as webviews (components/BrowserHostLayer.tsx), and who is acting on each: `agent`
+     * as the agent's input or script reaches a tab's page and again once the page has taken it, `person` when the
+     * person presses, types or scrolls in one (lib/page-focus.ts). Returns how to stop.
+     */
+    onBrowser(fn: (e: { type: "create"; key: string; partition: string } | { type: "ready"; key: string; targetId: string } | { type: "destroy"; key: string } | { type: "sleep"; key: string; asleep: boolean } | { type: "agent" | "person"; key: string }) => void): () => void;
     /** These tabs are on screen now (a pane, the floating view): the app keeps them awake (never frozen). */
     browserShown(keys: string[]): void;
     /** A tab's webview has this size now: its page's real viewport. */

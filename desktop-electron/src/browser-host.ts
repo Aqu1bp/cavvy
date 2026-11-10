@@ -388,13 +388,22 @@ export class BrowserHost {
             const input = cmd.method.startsWith("Input.");
             if (input) tab.agentInputs++;
             // The agent's own script is the one evaluation with a user gesture (BrowserEval); reading the title isn't acting.
-            if (input || cmd.method === "Runtime.callFunctionOn" || (cmd.method === "Runtime.evaluate" && p.userGesture === true)) tab.agentAt = Date.now();
+            const acting = input || cmd.method === "Runtime.callFunctionOn" || (cmd.method === "Runtime.evaluate" && p.userGesture === true);
+            // A press or a focus() in the page takes the window's focus to it. The GUI is told the agent is acting,
+            // now and again once the page has taken the command (a busy page takes a while), so it gives the focus
+            // back to where the person had it (gui/src/lib/page-focus.ts).
+            const acted = () => {
+                if (acting) this.toGui({ type: "agent", key: tab.key });
+            };
+            if (acting) tab.agentAt = Date.now();
+            acted();
             try {
                 // Never through the window's focus into the UI (guest-input.ts).
                 const result = await sendToTab(tab.wc, cmd.method, p);
                 return this.answer(channel, cmd.id, result ?? {});
             } finally {
                 if (input) tab.agentInputs--;
+                acted();
             }
         }
         switch (cmd.method) {
@@ -489,6 +498,7 @@ export class BrowserHost {
         const person = (type: string) => {
             if (tab.agentInputs > 0 || !PERSON_INPUT.has(type)) return;
             tab.usedAt = tab.personAt = Date.now();
+            this.toGui({ type: "person", key });
             this.event(channel, "Cavvy.humanInput", { type }, tab.sid);
             this.inUse(channel);
         };

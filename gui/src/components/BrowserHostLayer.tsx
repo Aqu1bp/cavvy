@@ -27,6 +27,9 @@ export function BrowserHostLayer() {
             }
         });
         onCleanup(off);
+        // The agent's clicks in a page don't take the keyboard from where the person is typing (loaded here: only
+        // the desktop app has such pages). For as long as the window: this layer is never taken down.
+        void import("../lib/page-focus").then((m) => m.keepFocus(electron!), () => undefined);
     });
     // Which tabs are on screen, for the app: it freezes tabs nobody sees and nobody has used for a while.
     createEffect(() => {
