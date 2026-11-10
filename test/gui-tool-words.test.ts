@@ -52,3 +52,21 @@ test("the same call made again right after is counted in one row; a failure, or 
     expect([...joined]).toEqual(["b", "c"]);
     expect(more.has("d")).toBe(false);
 });
+
+test("a tool with no words of its own is said by its name in words, never as the tool spells it", () => {
+    // Claude Code's ToolSearch showed as a row labelled "ToolSearch".
+    const search = call({ name: "ToolSearch", title: "ToolSearch(select:Monitor)", input: { query: "select:Monitor" } });
+    expect(toolLabel(search)).toEqual({ verb: "Find tools", arg: "select:Monitor" });
+    expect(runningVerb({ ...search, status: "running" })).toBe("Finding tools");
+    expect(runningVerb({ ...search, status: "queued" })).toBe("Then find tools");
+    // One nothing here knows: its name, as words.
+    const other = call({ name: "TaskOutput", title: "TaskOutput(b1)" });
+    expect(toolLabel(other)).toEqual({ verb: "Task output", arg: "b1" });
+    expect(runningVerb({ ...other, status: "running" })).toBe("Running task output");
+    expect(runningVerb({ ...other, status: "streaming" })).toBe("Preparing task output");
+    expect(runningVerb({ ...other, status: "queued" })).toBe("Then task output");
+    expect(toolLabel(call({ name: "LSP", title: "LSP" })).verb).toBe("LSP");
+    // The ones with words keep them.
+    expect(toolLabel(call({ name: "Read", title: "Read(a.ts)" }))).toEqual({ verb: "Read", arg: "a.ts" });
+    expect(runningVerb(call({ name: "Grep", status: "queued" }))).toBe("Then search");
+});
