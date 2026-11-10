@@ -25,3 +25,14 @@ test("the drag strip's rule names those parts as their components do", () => {
     expect(settings).toContain('<div class="set-top">');
     expect(read("gui/src/App.tsx")).toContain('data-settings={settingsTab() ? "on" : "off"}');
 });
+
+test("the strip ends no lower than the bars those lists start under, at any text size", () => {
+    // The bars shrink with the text size (--sp) and the strip's own height doesn't: at text size 12 the side panel's
+    // first row showed 7px into the strip, with no hole, so a press on it moved the window.
+    const scaled = (css: string, selector: string) => Number(new RegExp(`\\n${selector} \\{[^}]*?\\n    height: calc\\((\\d+) \\* var\\(--sp\\)\\);`).exec(css)?.[1]);
+    const cap = Number(/\.app\.electron::before \{[^}]*max-height: calc\(var\(--win-pad, 8px\) \+ (\d+) \* var\(--sp\)\);/.exec(read("gui/src/styles/base.css"))?.[1]);
+    expect(cap).toBe(52);
+    expect(scaled(read("gui/src/styles/panel.css"), "\\.insp-h")).toBeGreaterThanOrEqual(cap);
+    expect(scaled(read("gui/src/styles/review.css"), "\\.rv-h")).toBeGreaterThanOrEqual(cap);
+    expect(scaled(read("gui/src/styles/settings.css"), "\\.set-top")).toBeGreaterThanOrEqual(cap);
+});

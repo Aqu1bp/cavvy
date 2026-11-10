@@ -1056,14 +1056,17 @@ svg.lucide {
    page, and tells the main process about when it has moved, as all of them do while a reply streams.
    Nor anything else that only passes under the strip unseen: a hole is cut where a control's box lies even when the
    control is scrolled out of sight or covered, and the window then won't move from a spot that looks empty. So not
-   the rows of the sidebar's list, the side panel's body or a Settings page (each starts where the strip ends, under
-   a bar of its own), nor the title bar while Settings covers it. */
+   the rows of the sidebar's list, the side panel's body or a Settings page (each starts no higher than the strip
+   ends, under a bar of its own), nor the title bar while Settings covers it. */
 .app.electron::before {
     content: "";
     position: fixed;
     inset: 0 0 auto 0;
     /* No lower than the title bar's end: compact density's is shorter. */
     height: min(2 * var(--top-line) - var(--win-pad, 8px), var(--win-pad, 8px) + var(--header-h));
+    /* Nor than the bars the lists below start under (.insp-h, .rv-h; .set-top is taller), which shrink with the
+       text size: a row showing in the strip would cut no hole, and a press on it would move the window. */
+    max-height: calc(var(--win-pad, 8px) + 52 * var(--sp));
     -webkit-app-region: drag;
     pointer-events: none;
 }

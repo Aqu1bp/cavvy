@@ -62,7 +62,7 @@ export function followPage(box: HTMLElement, target: () => string | undefined, s
     const sizer = pageSizer();
     const follow = followBox(box, () => {
         const targetId = target();
-        const around = [box.closest(".insp"), box.closest(".sheet")].flatMap((el) => (el ? [{ el, edges: el.getBoundingClientRect() }] : []));
+        const around = targetId === undefined ? [] : [box.closest(".insp"), box.closest(".sheet")].flatMap((el) => (el ? [{ el, edges: el.getBoundingClientRect() }] : []));
         const shown = targetId === undefined ? undefined : shownBox(box.getBoundingClientRect(), {
             dialogTop: box.querySelector(".br-dialog")?.getBoundingClientRect().top,
             handle: document.querySelector(".insp-resizer")?.getBoundingClientRect(),

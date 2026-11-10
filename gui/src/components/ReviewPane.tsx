@@ -25,7 +25,7 @@ import { plural, since } from "../lib/format";
 import { CHANGE, dirOf, nameOf, REVIEW_DEFAULT, REVIEW_STEP, reviewDragWidth, reviewWidthRange } from "../lib/inspector";
 import { DiffView, type DiffComments } from "./blocks/DiffView";
 import { buildComment } from "../lib/review-comments";
-import { findPick, pickGone, pickKey, pickParams, type ReviewPick } from "../lib/review-pick";
+import { findPick, pickGone, pickHeld, pickKey, pickParams, type ReviewPick } from "../lib/review-pick";
 import { anchorShift, cardAt, foldsSmoothly, oneSided, stackRows, viewLabel, viewMenu, type TurnItem, type ViewItem } from "../lib/review-stack";
 import { newCommentId, reviewComments } from "../state/review-comments";
 import { PublishStatus } from "./PublishStatus";
@@ -769,7 +769,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     let held: string | undefined;
     createEffect(() => {
         const key = pickView();
-        if (listedPick()) held = key;
+        if (listedPick()) held = pickHeld(held, key, true, git.loading);
         else if (pickGone(held, key, false, git.loading)) {
             held = undefined;
             setPicked(undefined);
