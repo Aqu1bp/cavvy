@@ -360,6 +360,21 @@ test("typing in a frame of a page the keyboard can't go back to, what the person
         const did = [false];
         q.fire("keydown", { key: "a", stopImmediatePropagation() { did[0] = true; } });
         expect([mods, did, q.doc.activeElement, q.box.calls]).toEqual([mods, [false], q.box, []]);
+        // The app's action can move the focus before the app has taken the key: still theirs, a moment later.
+        const sync = page();
+        at(1000); sync.tell({ type: "person", key: "tab-2", press: true, seq: 1 });
+        sync.tell({ type: "framed", key: "tab-2", framed: true });
+        sync.doc.activeElement = sync.view;
+        at(2000); sync.tell({ type: "focused", key: "tab-1" });
+        at(3000);
+        const shortcut = sync.fire("keydown", { key: "k", ...mods });
+        sync.fire("focusin", { target: sync.box });
+        sync.doc.activeElement = sync.box;
+        shortcut.defaultPrevented = true;
+        sync.run(0);
+        const got = [false];
+        sync.fire("keydown", { key: "a", stopImmediatePropagation() { got[0] = true; } });
+        expect([mods, got, sync.doc.activeElement, sync.box.calls]).toEqual([mods, [false], sync.box, []]);
         // Too long after the shortcut, the focus moving isn't its doing.
         const late = page();
         at(1000); late.tell({ type: "person", key: "tab-2", press: true, seq: 1 });
