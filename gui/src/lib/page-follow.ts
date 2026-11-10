@@ -37,6 +37,22 @@ export function pageFrame(seen: Size, page: Size): Size {
     return { width: Math.min(seen.width, page.width), height: Math.min(seen.height, page.height) };
 }
 
+/** What cuts the page (the inspector, the sheet), with how far its bottom corners are rounded. */
+export interface Rounded extends Edges { bottomLeft: number; bottomRight: number }
+
+/**
+ * The frame's corners as a CSS border-radius, rounded where a bottom corner of it lies in a rounded corner of what
+ * it's in: a floating panel's, or the sheet's at the window's edge. The page is square and laid over them, so it
+ * covered their curve with a corner of its own. Undefined when none does.
+ */
+export function pageCorners(frame: Edges, within: readonly Rounded[]): string | undefined {
+    // How far into a corner of radius r a point (dx, dy) from its two edges is cut: what's left of r past the nearer edge.
+    const cut = (r: number, dx: number, dy: number) => (dx >= 0 && dy >= 0 ? Math.max(0, r - Math.max(dx, dy)) : 0);
+    const right = Math.max(0, ...within.map((w) => cut(w.bottomRight, w.right - frame.right, w.bottom - frame.bottom)));
+    const left = Math.max(0, ...within.map((w) => cut(w.bottomLeft, frame.left - w.left, w.bottom - frame.bottom)));
+    return left || right ? `0 0 ${Math.round(right)}px ${Math.round(left)}px` : undefined;
+}
+
 /**
  * Keeps the page over `box`. `target`: the tab's page to show, undefined while there's none to (no tab, the pane
  * hidden or covered); `sliding`: the panels are sliding. `kick` when either may have changed.
@@ -46,10 +62,11 @@ export function followPage(box: HTMLElement, target: () => string | undefined, s
     const sizer = pageSizer();
     const follow = followBox(box, () => {
         const targetId = target();
+        const around = [box.closest(".insp"), box.closest(".sheet")].flatMap((el) => (el ? [{ el, edges: el.getBoundingClientRect() }] : []));
         const shown = targetId === undefined ? undefined : shownBox(box.getBoundingClientRect(), {
             dialogTop: box.querySelector(".br-dialog")?.getBoundingClientRect().top,
             handle: document.querySelector(".insp-resizer")?.getBoundingClientRect(),
-            within: [box.closest(".insp"), box.closest(".sheet")].flatMap((el) => (el ? [el.getBoundingClientRect()] : [])),
+            within: around.map((a) => a.edges),
         });
         if (!shown) {
             if (placed) unshowBrowser("pane");
@@ -60,10 +77,14 @@ export function followPage(box: HTMLElement, target: () => string | undefined, s
         const { box: at, seen } = shown;
         const page = sizer.frame(performance.now(), { width: at.width, height: at.height }, sliding());
         const frame = pageFrame(seen, page);
-        const key = `${targetId} ${at.x} ${at.y} ${page.width} ${page.height} ${frame.width} ${frame.height}`;
+        const corners = pageCorners({ left: at.x, top: at.y, right: at.x + frame.width, bottom: at.y + frame.height }, around.map(({ el, edges }) => {
+            const style = getComputedStyle(el);
+            return { left: edges.left, top: edges.top, right: edges.right, bottom: edges.bottom, bottomLeft: parseFloat(style.borderBottomLeftRadius) || 0, bottomRight: parseFloat(style.borderBottomRightRadius) || 0 };
+        }));
+        const key = `${targetId} ${at.x} ${at.y} ${page.width} ${page.height} ${frame.width} ${frame.height} ${corners}`;
         if (key === placed) return;
         placed = key;
-        setShownBrowser({ targetId: targetId!, box: at, by: "pane", page, frame });
+        setShownBrowser({ targetId: targetId!, box: at, by: "pane", page, frame, corners });
     });
     return {
         kick: follow.kick,

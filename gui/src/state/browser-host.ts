@@ -36,6 +36,8 @@ export interface Shown {
      */
     page?: { width: number; height: number };
     frame?: { width: number; height: number };
+    /** The pane's page's corners (a CSS border-radius), where it lies in a rounded corner of the panel or the sheet. */
+    corners?: string;
     by: "pane" | "float";
     fit?: boolean;
     /**

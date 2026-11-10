@@ -6,7 +6,7 @@ import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "fs";
 import { join } from "path";
 import { columnSteps, COLUMN_NARROW, COLUMN_SHORT, heldSizes, tracks, windowLayout } from "../gui/src/lib/layout";
-import { pageFrame, shownBox } from "../gui/src/lib/page-follow";
+import { pageCorners, pageFrame, shownBox } from "../gui/src/lib/page-follow";
 import { INSPECTOR_MOVES } from "../gui/src/lib/layout";
 import { pageSizer, SETTLE_MS } from "../gui/src/lib/page-size";
 import { parseRules } from "./helpers/contrast";
@@ -271,4 +271,26 @@ test("the Browser page is drawn no further than what shows of its box, and sized
     const pane = read("components/BrowserPane.tsx");
     expect(pane).toContain('void import("../lib/page-follow").then((m) => {');
     expect(pane).toContain("() => !!panelHold()?.slide");
+});
+
+test("the Browser page is rounded where it lies in a rounded corner of its panel or the sheet", () => {
+    // Square, and laid over the window: in a floating panel its bottom corners covered the panel's rounded ones.
+    const panel = { left: 724, top: 62, right: 1084, bottom: 622, bottomLeft: 12, bottomRight: 12 };
+    const sheet = { left: 260, top: 8, right: 1092, bottom: 742, bottomLeft: 14, bottomRight: 14 };
+    // Filling the floating panel's foot: both bottom corners take its radius.
+    expect(pageCorners({ left: 724, top: 180, right: 1084, bottom: 622 }, [panel, sheet])).toBe("0 0 12px 12px");
+    // Right of the panel's edge handle (6px in): the left corner is that much further from the curve.
+    expect(pageCorners({ left: 730, top: 180, right: 1084, bottom: 622 }, [panel, sheet])).toBe("0 0 12px 6px");
+    // Docked, at the sheet's own rounded corner (the rail showing): the right one only.
+    const docked = { left: 732, top: 8, right: 1092, bottom: 742, bottomLeft: 0, bottomRight: 0 };
+    expect(pageCorners({ left: 738, top: 126, right: 1092, bottom: 742 }, [docked, sheet])).toBe("0 0 14px 0px");
+    // Above the terminal, a dialog, or a sheet with square corners (no rail beside it): square.
+    expect(pageCorners({ left: 738, top: 126, right: 1092, bottom: 480 }, [docked, sheet])).toBeUndefined();
+    expect(pageCorners({ left: 738, top: 126, right: 1092, bottom: 742 }, [docked, { ...sheet, bottomRight: 0 }])).toBeUndefined();
+    // Cut short of the panel's right edge (the page keeping a narrower size): only as round as the curve reaches it.
+    expect(pageCorners({ left: 724, top: 180, right: 1080, bottom: 622 }, [panel])).toBe("0 0 8px 12px");
+    expect(pageCorners({ left: 724, top: 180, right: 1060, bottom: 622 }, [panel])).toBe("0 0 0px 12px");
+    // The layer draws it so; the floating view keeps its own rounding (it sets none here).
+    const host = read("components/BrowserHostLayer.tsx");
+    expect(host).toContain('wrap.style.borderRadius = shown?.corners ?? "";');
 });

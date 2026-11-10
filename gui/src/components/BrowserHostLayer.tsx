@@ -72,6 +72,8 @@ function HostedWebview(p: { tab: HostedTab }) {
             wrap.classList.toggle("leaving", shown?.motion === "leave");
             wrap.style.transformOrigin = shown?.origin ? `${shown.origin.x}px ${shown.origin.y}px` : "";
             const frame = shown?.frame ?? box;
+            // The pane's page, rounded where it lies in a rounded corner (the floating view's is its own: browser.css).
+            wrap.style.borderRadius = shown?.corners ?? "";
             Object.assign(wrap.style, box && frame ? { left: `${box.x}px`, top: `${box.y}px`, width: `${frame.width}px`, height: `${frame.height}px` } : { left: "0px", top: "0px", width: "1px", height: "1px" });
             Object.assign(view.style, { width: `${size.width}px`, height: `${size.height}px`, transform: scale === 1 ? "" : `scale(${scale})` });
             const key = `${size.width}x${size.height}`;
