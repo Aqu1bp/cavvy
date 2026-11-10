@@ -1053,7 +1053,11 @@ svg.lucide {
    Not the frame's gaps (data-window-drag): .win-drag lies under the whole window, and as a region it would swallow
    every click in it. The browser's pages are never part of it. Nor the conversation's rows: the title bar covers the
    strip, so no press reaches them there, and each hole is a box Chromium finds again after every layout, for the whole
-   page, and tells the main process about when it has moved, as all of them do while a reply streams. */
+   page, and tells the main process about when it has moved, as all of them do while a reply streams.
+   Nor anything else that only passes under the strip unseen: a hole is cut where a control's box lies even when the
+   control is scrolled out of sight or covered, and the window then won't move from a spot that looks empty. So not
+   the rows of the sidebar's list, the side panel's body or a Settings page (each starts where the strip ends, under
+   a bar of its own), nor the title bar while Settings covers it. */
 .app.electron::before {
     content: "";
     position: fixed;
@@ -1064,7 +1068,7 @@ svg.lucide {
     pointer-events: none;
 }
 
-.app.electron :is(button, a, input, textarea, select, summary, label, video, audio, iframe, [role], [contenteditable]:not([contenteditable="false"]), [tabindex]:not([tabindex="-1"]), [draggable="true"], [data-window-drag="off"]):not(.transcript *),
+.app.electron :is(button, a, input, textarea, select, summary, label, video, audio, iframe, [role], [contenteditable]:not([contenteditable="false"]), [tabindex]:not([tabindex="-1"]), [draggable="true"], [data-window-drag="off"]):not(.transcript *):not(:is(.side-list, .insp-body, .set-in > :not(.set-top)) *):not([data-settings="on"] .header *),
 .app.electron .br-host-tab {
     -webkit-app-region: no-drag;
 }
