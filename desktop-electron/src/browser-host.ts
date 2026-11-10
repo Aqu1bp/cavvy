@@ -20,7 +20,7 @@
 
 import { app, session, type BrowserWindow, type BrowserWindowConstructorOptions, type Input, type KeyboardInputEvent, type Session, type WebContents } from "electron";
 import { createHash } from "node:crypto";
-import { sendToTab, strayGoes, strayKeyEvents, tabbedIn } from "./guest-input";
+import { sendToTab, strayKeyEvents, tabbedIn } from "./guest-input";
 import { nextRest } from "./tab-rest";
 
 interface Tab {
@@ -44,6 +44,8 @@ interface Tab {
     agentAt: number;
     /** The looks still to come at whether its page holds the window's keyboard (watchHeld). */
     heldChecks?: ReturnType<typeof setTimeout>[];
+    /** When its page was last found holding the keyboard for the agent, not the person (ms since the epoch). */
+    heldAt?: number;
     /** The person put the keyboard in its page themselves (a press in it), and the page has held it since. */
     theirs?: boolean;
     /** Key and text commands from the agent in flight: a key the page sees meanwhile is the agent's. */
@@ -91,6 +93,8 @@ const STRAY_LOOK_MS = 4;
 const STRAY_WAIT_MS = 1000;
 /** After Tab, each page is looked at this long after for having been given the keyboard (tabKey). */
 const TAB_IN_CHECKS_MS = [30, 120];
+/** Tab isn't what gave a page the keyboard this soon after the agent acted on it, or it last had the keyboard for the agent. */
+const TAB_IN_QUIET_MS = 500;
 /** A tab unseen and unused this long sleeps (checks may shorten it with CAVVY_ELECTRON_FREEZE_MS). */
 const FREEZE_AFTER_MS = Number(process.env.CAVVY_ELECTRON_FREEZE_MS ?? 30_000);
 /** How often, at most, the server hears that a project's browser is in use here (Cavvy.inUse), so it isn't closed as
@@ -327,6 +331,7 @@ export class BrowserHost {
     private strayKey(tab: Tab, input: Input): boolean {
         if (tab.agentKeys || tab.theirs || Date.now() - tab.agentAt > STRAY_KEY_MS) return false;
         (tab.stray ??= []).push(...strayKeyEvents(input));
+        tab.heldAt = Date.now();
         // The GUI is told again that the page has the keyboard, and the keys follow once it doesn't.
         this.watchHeld(tab);
         if (!tab.strayTimer) this.sendStray(tab, Date.now());
@@ -336,18 +341,16 @@ export class BrowserHost {
     /**
      * Sends the keys kept for the window on to it, in order, once the window has the keyboard again: sent while the
      * page has it, they'd go to whatever the window's focus is on meanwhile (the page's own element, on its way
-     * back). If the page still has it after STRAY_WAIT_MS, nobody is taking it back: the person is in the page, the
-     * keys are the page's, and so is the keyboard from here on.
+     * back). After STRAY_WAIT_MS they go regardless: where the window's focus is on something of its own, that gets
+     * them; where it's on the page's element, the GUI lets them go (gui/src/lib/page-focus.ts).
      */
     private sendStray(tab: Tab, since: number) {
         tab.strayTimer = setTimeout(() => {
             tab.strayTimer = undefined;
             const host = this.window()?.webContents;
-            if (tab.closed || tab.wc.isDestroyed() || !host || host.isDestroyed()) return void (tab.stray = []);
-            const goes = strayGoes({ pageHasKeyboard: !!tab.wc.focusedFrame, waitedMs: Date.now() - since, waitMs: STRAY_WAIT_MS });
-            if (goes === "wait") return this.sendStray(tab, since);
-            if (goes === "page") this.theirs(tab);
-            for (const event of tab.stray?.splice(0) ?? []) (goes === "page" ? tab.wc : host).sendInputEvent(event);
+            if (tab.closed || !host || host.isDestroyed()) return void (tab.stray = []);
+            if (!tab.wc.isDestroyed() && tab.wc.focusedFrame && Date.now() - since < STRAY_WAIT_MS) return this.sendStray(tab, since);
+            for (const event of tab.stray?.splice(0) ?? []) host.sendInputEvent(event);
         }, STRAY_LOOK_MS);
     }
 
@@ -370,7 +373,8 @@ export class BrowserHost {
             setTimeout(() => {
                 for (const { tab, had, busy } of before) {
                     if (tab.closed || tab.wc.isDestroyed()) continue;
-                    if (tabbedIn({ had, has: !!tab.wc.focusedFrame, theirs: !!tab.theirs, agentInputs: busy + tab.agentInputs, agentAt: tab.agentAt, keyAt })) this.theirs(tab);
+                    const agentAt = Math.max(tab.agentAt, tab.heldAt ?? 0);
+                    if (tabbedIn({ had, has: !!tab.wc.focusedFrame, theirs: !!tab.theirs, agentInputs: busy + tab.agentInputs, agentAt, keyAt, quietMs: TAB_IN_QUIET_MS })) this.theirs(tab);
                 }
             }, ms);
         }
@@ -380,7 +384,9 @@ export class BrowserHost {
     private watchHeld(tab: Tab) {
         for (const t of tab.heldChecks ?? []) clearTimeout(t);
         tab.heldChecks = HELD_CHECKS_MS.map((ms) => setTimeout(() => {
-            if (!tab.closed && !tab.wc.isDestroyed() && tab.wc.focusedFrame) this.toGui({ type: "focused", key: tab.key });
+            if (tab.closed || tab.wc.isDestroyed() || !tab.wc.focusedFrame) return;
+            tab.heldAt = Date.now();
+            this.toGui({ type: "focused", key: tab.key });
         }, ms));
     }
 

@@ -1051,27 +1051,35 @@ svg.lucide {
    is native, takes every press inside it whatever is drawn on top, and only no-drag regions cut holes in it. So only
    the top strip drags (where window-drag.ts's stripEnd puts it), with everything that takes a press cut out of it.
    Not the frame's gaps (data-window-drag): .win-drag lies under the whole window, and as a region it would swallow
-   every click in it. The browser's pages are never part of it. Nor the conversation's rows: the title bar covers the
+   every click in it. A browser's page that shows is never part of it. Nor the conversation's rows: the title bar covers the
    strip, so no press reaches them there, and each hole is a box Chromium finds again after every layout, for the whole
    page, and tells the main process about when it has moved, as all of them do while a reply streams.
    Nor anything else that only passes under the strip unseen: a hole is cut where a control's box lies even when the
    control is scrolled out of sight or covered, and the window then won't move from a spot that looks empty. So not
-   the rows of the sidebar's list, the side panel's body or a Settings page (each starts no higher than the strip
-   ends, under a bar of its own), nor the title bar while Settings covers it. */
+   the rows of the sidebar's list, the side panel's body or a Settings page, nor the title bar while Settings covers
+   it. Each of those starts under a bar of its own. The sidebar's is always past the strip's end, and Settings' is
+   kept there (settings.css). The side panel's and the reader's shrink with the text size, and at 12 or 13 their
+   body starts inside the strip: so the body's own box is a hole, which holds its rows wherever they show. */
 .app.electron::before {
     content: "";
     position: fixed;
     inset: 0 0 auto 0;
     /* No lower than the title bar's end: compact density's is shorter. */
     height: min(2 * var(--top-line) - var(--win-pad, 8px), var(--win-pad, 8px) + var(--header-h));
-    /* Nor than the bars the lists below start under (.insp-h, .rv-h; .set-top is taller), which shrink with the
-       text size: a row showing in the strip would cut no hole, and a press on it would move the window. */
-    max-height: calc(var(--win-pad, 8px) + 52 * var(--sp));
     -webkit-app-region: drag;
     pointer-events: none;
 }
 
 .app.electron :is(button, a, input, textarea, select, summary, label, video, audio, iframe, [role], [contenteditable]:not([contenteditable="false"]), [tabindex]:not([tabindex="-1"]), [draggable="true"], [data-window-drag="off"]):not(.transcript *):not(:is(.side-list, .insp-body, .set-in > :not(.set-top)) *):not([data-settings="on"] .header *),
-.app.electron .br-host-tab {
+.app.electron .insp-body,
+.app.electron .br-host-tab.shown {
     -webkit-app-region: no-drag;
+}
+
+/* A hole is its box and no more: the property is inherited, and each thing inside would be a hole of its own,
+   wherever its box lies. A page no pane shows lies at the window's corner at the agent's size, clipped to a pixel
+   (browser.css): as a hole it took the strip from under the whole window for as long as the agent used it.
+   `initial`, not `none`: Chromium reads any value but `drag` as `no-drag`. */
+.app.electron :is(.insp-body, .br-host-tab) > * {
+    -webkit-app-region: initial;
 }

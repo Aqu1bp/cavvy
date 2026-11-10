@@ -154,6 +154,17 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser">, win: Window
     const keyed = (e: KeyboardEvent) => {
         if (e.key === "Tab" || e.key === "Escape") movedAt = performance.now();
     };
+    // A key that reaches the window while its focus is in a page isn't the window's. The page has the keyboard
+    // then, so the person's own keys go to it; this is one the app kept for the window, which never took the
+    // keyboard back (browser-host.ts, sendStray). Let go of here: passed on, it would be answered by whatever takes
+    // keys with nothing focused, a shortcut or a waiting approval.
+    const strayed = (e: KeyboardEvent) => {
+        if (!isPage(doc.activeElement)) return;
+        e.stopImmediatePropagation();
+        e.preventDefault();
+    };
+    const KEYS = ["keydown", "keypress", "keyup"] as const;
+    for (const type of KEYS) win.addEventListener(type, strayed, true);
     doc.addEventListener("focusout", focusOut, true);
     doc.addEventListener("focusin", focusIn, true);
     doc.addEventListener("pointerdown", pressed, true);
@@ -163,6 +174,7 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser">, win: Window
         stopped = true;
         off();
         win.removeEventListener("blur", blurred, true);
+        for (const type of KEYS) win.removeEventListener(type, strayed, true);
         doc.removeEventListener("focusout", focusOut, true);
         doc.removeEventListener("focusin", focusIn, true);
         doc.removeEventListener("pointerdown", pressed, true);

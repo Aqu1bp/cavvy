@@ -115,6 +115,9 @@
     align-items: center;
     gap: calc(10 * var(--sp));
     height: calc(58 * var(--sp));
+    /* No shorter than the title bar it covers, at any text size: what scrolls under it is no hole in the window's
+       drag strip (base.css), which ends no lower than that bar does. */
+    min-height: var(--header-h);
     padding-top: calc(12 * var(--sp));
     margin-bottom: calc(10 * var(--sp));
     background: var(--sheet);

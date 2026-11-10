@@ -71,22 +71,13 @@ export function strayKeyEvents(input: { type: string; key: string; alt?: boolean
 }
 
 /**
- * Where the keys kept for the window go. On to it once the page no longer has the keyboard. While the page has it
- * they wait, for the GUI to take it back; if nobody has after `waitMs`, the person is in the page, and they're the
- * page's: sent to the window then, they'd reach whatever answers keys with nothing focused there.
+ * Whether Tab, pressed at `keyAt`, took the keyboard into a page: the page didn't have it then (`had`) and has it
+ * now (`has`). Not when the agent was in the middle of acting on the page, has acted on it since, or had within
+ * `quietMs` before the key (`agentAt`: when it last acted, or the page was last found with the keyboard for it): its
+ * press takes the keyboard too, more than once and a moment late, and that isn't the person's doing.
  */
-export function strayGoes(o: { pageHasKeyboard: boolean; waitedMs: number; waitMs: number }): "window" | "page" | "wait" {
-    if (!o.pageHasKeyboard) return "window";
-    return o.waitedMs < o.waitMs ? "wait" : "page";
-}
-
-/**
- * Whether Tab, pressed in the window at `keyAt`, took the keyboard into a page: the page didn't have it then (`had`)
- * and has it now (`has`). Not when the agent has acted on the page meanwhile, or was in the middle of it: its press
- * takes the keyboard too.
- */
-export function tabbedIn(o: { had: boolean; has: boolean; theirs: boolean; agentInputs: number; agentAt: number; keyAt: number }): boolean {
-    return !o.had && o.has && !o.theirs && o.agentInputs === 0 && o.agentAt < o.keyAt;
+export function tabbedIn(o: { had: boolean; has: boolean; theirs: boolean; agentInputs: number; agentAt: number; keyAt: number; quietMs: number }): boolean {
+    return !o.had && o.has && !o.theirs && o.agentInputs === 0 && o.agentAt + o.quietMs < o.keyAt;
 }
 
 async function evaluate(dbg: Debugger, expression: string): Promise<unknown> {
