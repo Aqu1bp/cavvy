@@ -340,6 +340,15 @@ test("a press of the person's that left the page without the keyboard: the page'
     p.doc.activeElement = p.view;
     at(1100); p.tell({ type: "focused", key: "tab-1" });
     expect([p.view.calls, p.box.calls]).toEqual([[], []]);
+    // No longer theirs by then (the agent acted in it first, and the app said they'd left): left alone. Focused, it
+    // would hold the keyboard as the agent's, and what they typed for it would be taken back to the message box.
+    const r = page();
+    at(1000); r.tell({ type: "person", key: "tab-1", press: true });
+    r.doc.activeElement = r.view;
+    r.doc.keys = "nowhere";
+    r.tell({ type: "left", key: "tab-1" });
+    r.tell({ type: "refocus", key: "tab-1" });
+    expect([r.doc.keys, r.view.calls, r.box.calls]).toEqual(["nowhere", [], []]);
 });
 
 test("a closed tab is forgotten, and stopping stops listening", () => {

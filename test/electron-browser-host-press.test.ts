@@ -74,7 +74,7 @@ async function app() {
     host.receive(JSON.stringify({ channel: "c", open: { profile: "p" } }));
     await host.command(host.channels.get("c"), { id: 1, method: "Target.createTarget", params: { url: "about:blank" } });
     const refocus = () => told.filter((m) => m.type === "refocus");
-    return { page: pages[0]!, host, refocus };
+    return { page: pages[0]!, host, told, refocus };
 }
 
 test("a press of the person's that leaves the page without the keyboard: the window is told to focus it again", async () => {
@@ -97,4 +97,17 @@ test("a press that gives the page the keyboard, as any does: nothing is said", a
     b.host.close();
     await sleep(150);
     expect(b.refocus()).toEqual([]);
+});
+
+test("the agent acts in the page before it's looked at: it's no longer the person's, and the window isn't told to focus it", async () => {
+    // Given the keyboard then, the page would be taken for the agent's: the window takes the keyboard back to where the
+    // person last was in it, and what they type for the page lands there.
+    const a = await app();
+    a.page.stuck = true;
+    a.page.press();
+    await sleep(20);
+    const tab = a.host.tabsByKey.get("tab-1");
+    await a.host.command(a.host.channels.get("c"), { id: 2, method: "Runtime.evaluate", params: { expression: "1", userGesture: true }, sessionId: tab.sid });
+    await sleep(150);
+    expect(a.told.filter((m) => m.type === "left" || m.type === "refocus")).toEqual([{ type: "left", key: "tab-1" }]);
 });

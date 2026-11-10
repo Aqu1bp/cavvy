@@ -676,7 +676,8 @@ export class BrowserHost {
             if (type === "mouseDown") {
                 this.theirs(tab);
                 setTimeout(() => {
-                    if (!tab.closed && !wc.isDestroyed() && !wc.focusedFrame) this.toGui({ type: "refocus", key });
+                    // Not once it's no longer theirs (they're back in the window, in another page, or the agent has acted here since).
+                    if (!tab.closed && !wc.isDestroyed() && tab.theirs && !wc.focusedFrame) this.toGui({ type: "refocus", key });
                 }, PRESS_LOOK_MS);
             } else this.toGui({ type: "person", key, press: false });
             this.event(channel, "Cavvy.humanInput", { type }, tab.sid);

@@ -116,8 +116,9 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser" | "browserBac
             seen = Math.max(seen, e.seq ?? 0);
         } else if (e.type === "refocus") {
             // Their press in the page didn't give it the keyboard (browser-host.ts, PRESS_LOOK_MS): focused again, it has it.
+            // Only while it's still theirs: given the keyboard after that, it would be taken for the agent's.
             const page = view(e.key);
-            if (!page || doc.activeElement !== page) return;
+            if (!page || theirs !== e.key || doc.activeElement !== page) return;
             taking = true;
             page.blur();
             page.focus();
