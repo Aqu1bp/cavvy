@@ -23,6 +23,8 @@ export const LEFT_MS = 2000;
 export const AGAIN_MS = 500;
 /** The second step of taking the keyboard back comes at least this long after the first (below). */
 export const STEP_MS = 30;
+/** A press or a key of the person's this recently is what moved the window's focus, not the page. */
+export const OWN_MS = 150;
 
 /** What taking the keyboard back does next, for where the window's focus is now. */
 export type Step<E> =
@@ -45,7 +47,7 @@ export type Step<E> =
 export function nextStep<E>(o: { active: E | null | undefined; page: E; body: E; left: E | undefined; entered: { from: E | undefined; at: number } | undefined; now: number }): Step<E> {
     if (o.active === o.page) {
         if (o.entered && o.now - o.entered.at < STEP_MS) return { do: "wait" };
-        return { do: "back", to: o.entered ? o.entered.from : o.left };
+        return { do: "back", to: o.entered?.from ?? o.left };
     }
     return { do: "enter", from: o.active && o.active !== o.body ? o.active : undefined };
 }
@@ -57,26 +59,30 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser">, win: Window
     let theirs: string | undefined;
     /** What last lost focus to nothing else in the window, and when. */
     let left: { el: HTMLElement; at: number } | undefined;
+    /** Where the person last put the window's focus themselves: where the keyboard goes back to when nothing says otherwise. */
+    let home: HTMLElement | undefined;
     /** Taking the keyboard back moves the window's focus itself: not the person's doing. */
     let taking = false;
     /** The first of two steps taken for a tab's page. */
     let entered: { key: string; from: HTMLElement | undefined; at: number } | undefined;
     /** When the app last said each tab's page held the keyboard for the agent. */
     const said = new Map<string, number>();
+    /** When the person last pressed in the window, and last pressed Tab or Escape in it. */
+    let pressedAt = -Infinity;
+    let movedAt = -Infinity;
+    const isPage = (el: unknown) => el instanceof HTMLElement && el.tagName === "WEBVIEW";
     const view = (key: string) => [...doc.querySelectorAll<HTMLElement>("webview")].find((v) => v.dataset.key === key);
+    const agentAtWork = (now: number, key?: string) => (key === undefined ? [...said.values()] : [said.get(key) ?? -Infinity]).some((at) => now - at <= AGAIN_MS);
     const takeBack = (key: string) => {
         const page = view(key);
         if (!page) return;
         const now = performance.now();
-        const step = nextStep<HTMLElement>({
-            active: doc.activeElement as HTMLElement | null, page, body: doc.body, now,
-            left: left && now - left.at <= LEFT_MS ? left.el : undefined,
-            entered: entered?.key === key ? entered : undefined,
-        });
+        const was = left && left.el.isConnected && now - left.at <= LEFT_MS ? left.el : home?.isConnected ? home : undefined;
+        const step = nextStep<HTMLElement>({ active: doc.activeElement as HTMLElement | null, page, body: doc.body, now, left: was, entered: entered?.key === key ? entered : undefined });
         if (step.do === "wait") return;
         taking = true;
         if (step.do === "enter") {
-            entered = { key, from: step.from, at: now };
+            entered = { key, from: step.from ?? was, at: now };
             page.focus();
         } else {
             entered = undefined;
@@ -98,28 +104,52 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser">, win: Window
     // Where the window hears of a page taking its focus (it loses its own, with the page's element active): at once,
     // while the agent is at it, rather than at the app's next word.
     const blurred = (e: Event) => {
-        const page = doc.activeElement;
-        const key = e.target === win && page instanceof HTMLElement && page.tagName === "WEBVIEW" ? page.dataset.key : undefined;
-        if (key && theirs !== key && performance.now() - (said.get(key) ?? -Infinity) <= AGAIN_MS) takeBack(key);
+        const page = doc.activeElement as HTMLElement | null;
+        const key = e.target === win && page && isPage(page) ? page.dataset.key : undefined;
+        if (key && theirs !== key && agentAtWork(performance.now(), key)) takeBack(key);
     };
     const focusOut = (e: FocusEvent) => {
-        if (!taking && !e.relatedTarget && e.target instanceof HTMLElement && e.target.tagName !== "WEBVIEW") left = { el: e.target, at: performance.now() };
+        const el = e.target;
+        if (taking || e.relatedTarget || !(el instanceof HTMLElement) || isPage(el)) return;
+        const now = performance.now();
+        left = { el, at: now };
+        // While the agent is at a page, where the person is can lose the window's focus to nothing with no press or
+        // key of theirs (seen on macOS: their next keys then landed on nothing until the agent's next click). Once
+        // this has settled, if nothing has it, it's theirs again.
+        if (el !== home || !agentAtWork(now) || now - Math.max(pressedAt, movedAt) <= OWN_MS) return;
+        setTimeout(() => {
+            if (doc.activeElement !== doc.body || home !== el || !el.isConnected) return;
+            taking = true;
+            el.focus();
+            taking = false;
+        }, 0);
     };
     const focusIn = (e: FocusEvent) => {
         if (taking) return;
         left = undefined;
+        const el = e.target;
+        if (!isPage(el)) return void (home = el instanceof HTMLElement ? el : home);
         // Tab from the window into a page: the person's, as a press in it is.
-        const key = e.target instanceof HTMLElement && e.target.tagName === "WEBVIEW" ? e.target.dataset.key : undefined;
-        if (key) theirs = key;
+        const key = (el as HTMLElement).dataset.key;
+        if (key && performance.now() - movedAt <= OWN_MS) theirs = key;
     };
-    // Back in the window by a press of theirs.
+    // Back in the window by a press of theirs; where that puts the window's focus (nowhere, on a bare part of it) is home.
     const pressed = () => {
         theirs = undefined;
         entered = undefined;
+        pressedAt = performance.now();
+        setTimeout(() => {
+            const at = doc.activeElement;
+            home = at instanceof HTMLElement && at !== doc.body && !isPage(at) ? at : undefined;
+        }, 0);
+    };
+    const keyed = (e: KeyboardEvent) => {
+        if (e.key === "Tab" || e.key === "Escape") movedAt = performance.now();
     };
     doc.addEventListener("focusout", focusOut, true);
     doc.addEventListener("focusin", focusIn, true);
     doc.addEventListener("pointerdown", pressed, true);
+    doc.addEventListener("keydown", keyed, true);
     win.addEventListener("blur", blurred, true);
     return () => {
         off();
@@ -127,5 +157,6 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser">, win: Window
         doc.removeEventListener("focusout", focusOut, true);
         doc.removeEventListener("focusin", focusIn, true);
         doc.removeEventListener("pointerdown", pressed, true);
+        doc.removeEventListener("keydown", keyed, true);
     };
 }

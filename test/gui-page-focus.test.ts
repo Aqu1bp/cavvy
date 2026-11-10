@@ -121,9 +121,18 @@ test("a page the person put the keyboard in themselves keeps it, until they're b
     expect(q.view.calls).toEqual(["focus"]);
     // Tab from the window into the page is theirs too.
     const r = page();
-    at(1000); r.fire("focusin", { target: r.view, relatedTarget: r.box });
+    at(1000); r.fire("keydown", { key: "Tab" });
+    at(1002); r.fire("focusin", { target: r.view, relatedTarget: r.box });
+    r.doc.activeElement = r.view;
     at(1005); r.tell({ type: "focused", key: "tab-1" });
-    expect(r.view.calls).toEqual([]);
+    expect([r.view.calls, r.box.calls]).toEqual([[], []]);
+    // The window's focus landing on the page's element without their Tab isn't them (the page took it).
+    const t = page();
+    at(900); t.fire("focusin", { target: t.box });
+    at(1000); t.fire("focusin", { target: t.view, relatedTarget: t.box });
+    t.doc.activeElement = t.view;
+    at(1005); t.tell({ type: "focused", key: "tab-1" });
+    expect(t.box.calls).toEqual(["focus"]);
     // Back in the window by a press: the agent's next click doesn't keep the keyboard.
     at(2000); p.fire("pointerdown", { target: p.box });
     p.doc.activeElement = p.box;
@@ -136,6 +145,54 @@ test("a page the person put the keyboard in themselves keeps it, until they're b
     expect(s.view.calls).toEqual(["focus"]);
 });
 
+test("with nothing remembered as just left, the keyboard goes back to where the person last put it", () => {
+    // macOS, a page taking it twice in a millisecond: the second time nothing had "just lost focus" to go back to,
+    // and the keys stayed in the page until the app's next word 40ms later.
+    const p = page();
+    at(1000); p.fire("focusin", { target: p.box });
+    p.doc.activeElement = p.view;
+    at(5000); p.tell({ type: "focused", key: "tab-1" });
+    expect([p.view.calls, p.box.calls]).toEqual([[], ["focus"]]);
+    // Entered from nowhere (the window's focus was on nothing): still back to where they were.
+    const q = page();
+    at(1000); q.fire("focusin", { target: q.box });
+    q.doc.activeElement = q.body;
+    at(5000); q.tell({ type: "focused", key: "tab-1" });
+    at(5040); q.tell({ type: "focused", key: "tab-1" });
+    expect([q.view.calls, q.box.calls]).toEqual([["focus"], ["focus"]]);
+});
+
+test("where the person is loses the window's focus to nothing while the agent is at a page: it's theirs again", async () => {
+    // Seen once on macOS: 576ms after an agent press the message box lost focus to nothing, with no press or key of
+    // the person's, and 32 typed keys landed on nothing until the agent's next click.
+    const p = page();
+    at(1000); p.fire("focusin", { target: p.box });
+    at(2000); p.tell({ type: "focused", key: "tab-1" });
+    p.box.calls.length = 0; p.view.calls.length = 0;
+    p.doc.activeElement = p.body;
+    at(2300); p.fire("focusout", { target: p.box, relatedTarget: null });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(p.box.calls).toEqual(["focus"]);
+    // Their own press or Escape took it away: left alone. So is it with no agent at work, or when something else has it by then.
+    for (const own of ["pointerdown", "keydown"]) {
+        const q = page();
+        at(1000); q.fire("focusin", { target: q.box });
+        at(2000); q.tell({ type: "focused", key: "tab-1" });
+        q.box.calls.length = 0;
+        at(2290); q.fire(own, { key: "Escape", target: q.body });
+        q.doc.activeElement = q.body;
+        at(2300); q.fire("focusout", { target: q.box, relatedTarget: null });
+        await new Promise((r) => setTimeout(r, 5));
+        expect([own, q.box.calls]).toEqual([own, []]);
+    }
+    const r = page();
+    at(1000); r.fire("focusin", { target: r.box });
+    r.doc.activeElement = r.body;
+    at(9000); r.fire("focusout", { target: r.box, relatedTarget: null });
+    await new Promise((res) => setTimeout(res, 5));
+    expect(r.box.calls).toEqual([]);
+});
+
 test("a closed tab is forgotten, and stopping stops listening", () => {
     const p = page();
     at(1000); p.tell({ type: "person", key: "tab-1", press: true });
@@ -143,7 +200,7 @@ test("a closed tab is forgotten, and stopping stops listening", () => {
     at(1010); p.tell({ type: "focused", key: "tab-1" });
     expect(p.view.calls).toEqual(["focus"]);
     p.stop();
-    expect(p.offs.sort()).toEqual(["blur", "bridge", "focusin", "focusout", "pointerdown"]);
+    expect(p.offs.sort()).toEqual(["blur", "bridge", "focusin", "focusout", "keydown", "pointerdown"]);
 });
 
 test("the steps themselves", () => {
