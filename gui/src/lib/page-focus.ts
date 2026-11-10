@@ -63,9 +63,20 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser" | "browserBac
     const said = new Map<string, number>();
     /** Pages the person last had the keyboard in a frame of (browser-host.ts, lookFrame). */
     const framed = new Set<string>();
+    /**
+     * The person was typing in a page the keyboard couldn't go back to (in a frame of it): until they're back in the
+     * window (a press, or a shortcut that moves its focus) or in a page, what they type goes nowhere. On the window's
+     * own things it would press a button, send the message box or answer a waiting request with a digit.
+     */
+    let adrift = false;
     /** When the person last pressed in the window, and last pressed Tab or Escape in it. */
     let pressedAt = -Infinity;
     let movedAt = -Infinity;
+    /**
+     * Their last key with ⌘ or Ctrl in the window, and when: one of the app's shortcuts if the app took it. Not ⌘ or
+     * Ctrl held by itself, nor a shortcut meant for the page (⌘V, Ctrl+A), which nothing here takes.
+     */
+    let shortcut: { e: KeyboardEvent; at: number } | undefined;
     /** The last of the app's words that a page is theirs (its seq), sent back with browserBack. */
     let seen = 0;
     /** The person is back in the window: no page is theirs, here or in the app (browser-host.ts, which can't see it). */
@@ -81,9 +92,11 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser" | "browserBac
         const page = view(key);
         if (!page) return;
         const now = performance.now();
-        const was = left && left.el.isConnected && now - left.at <= LEFT_MS ? left.el : home?.isConnected ? home : undefined;
         // Not to a page they were typing in a frame of: given back, the keyboard lands on the page itself, not the frame.
         const mine = theirs !== undefined && theirs !== key && !framed.has(theirs) ? view(theirs) : undefined;
+        // Nor to where they last were in the window: they were typing in a page, not there. To nothing.
+        if (theirs !== undefined && !mine) adrift = true;
+        const was = adrift ? undefined : left && left.el.isConnected && now - left.at <= LEFT_MS ? left.el : home?.isConnected ? home : undefined;
         const step = nextStep<HTMLElement>({ active: doc.activeElement as HTMLElement | null, page, body: doc.body, left: was, theirs: mine, isPage });
         taking = true;
         step.from?.blur();
@@ -113,6 +126,7 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser" | "browserBac
             if (theirs === e.key) theirs = undefined;
         } else if (e.type === "person" && e.press) {
             theirs = e.key;
+            adrift = false;
             seen = Math.max(seen, e.seq ?? 0);
         } else if (e.type === "refocus") {
             // Their press in the page didn't give it the keyboard (browser-host.ts, PRESS_LOOK_MS): focused again, it has it.
@@ -163,11 +177,29 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser" | "browserBac
         const el = e.target;
         if (!(el instanceof HTMLElement) || isPage(el)) return;
         // Back in the window, by a key as much as by a press: no page is theirs any more.
-        home = el;
-        back();
+        const arrived = () => {
+            adrift = false;
+            home = el;
+            back();
+        };
+        if (!adrift) return arrived();
+        // While their typing is dropped, only a shortcut of the app's makes this their doing. The app takes its
+        // shortcuts (App.tsx, onKey: the default is prevented) once the action has run, which can be after the action
+        // moved the focus here: looked at a moment later.
+        const key = shortcut && performance.now() - shortcut.at <= OWN_MS ? shortcut.e : undefined;
+        later(() => {
+            if (stopped || !adrift || doc.activeElement !== el) return;
+            if (key?.defaultPrevented) return arrived();
+            // It took the focus by itself (a request's answer field, the message box with a draft handed back): not
+            // where they are. Nor left showing a caret that takes no keys, and takes a paste or ⌘Enter meant for the page.
+            taking = true;
+            el.blur();
+            taking = false;
+        }, 0);
     };
     // Back in the window by a press of theirs; where that puts the window's focus (nowhere, on a bare part of it) is home.
     const pressed = () => {
+        adrift = false;
         back();
         pressedAt = performance.now();
         later(() => {
@@ -177,13 +209,15 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser" | "browserBac
     };
     const keyed = (e: KeyboardEvent) => {
         if (e.key === "Tab" || e.key === "Escape") movedAt = performance.now();
+        if (e.metaKey || e.ctrlKey) shortcut = { e, at: performance.now() };
     };
     // A key that reaches the window while its focus is in a page isn't the window's. The page has the keyboard
     // then, so the person's own keys go to it; this is one the app kept for the window, which never took the
     // keyboard back (browser-host.ts, sendStray). Let go of here: passed on, it would be answered by whatever takes
-    // keys with nothing focused, a shortcut or a waiting approval.
+    // keys with nothing focused, a shortcut or a waiting approval. The same for what the person types for a page the
+    // keyboard couldn't go back to (`adrift`), all but shortcuts.
     const strayed = (e: KeyboardEvent) => {
-        if (!isPage(doc.activeElement)) return;
+        if (!isPage(doc.activeElement) && !(adrift && !e.metaKey && !e.ctrlKey)) return;
         e.stopImmediatePropagation();
         e.preventDefault();
     };
