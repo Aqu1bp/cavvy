@@ -7,18 +7,32 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { AGAIN_MS, ENTERED_MS, keepFocus, LEFT_MS, nextStep, STEP_MS } from "../gui/src/lib/page-focus";
+import { AGAIN_MS, keepFocus, LEFT_MS, nextStep } from "../gui/src/lib/page-focus";
 import { strayKeyEvents, tabbedIn } from "../desktop-electron/src/guest-input";
 
-// The browser's side only: elements that take and lose focus, and a window that hears of it.
+// The browser's side only: elements that take and lose focus, and a window that hears of it. With `keys` set, where the
+// keys go too, as measured on macOS (Electron 45): while a page has them, focusing the page's element, or the window's
+// element that shows focused, changes nothing; focusing another element of the window takes them back.
 class El {
     isConnected = true;
     dataset: Record<string, string> = {};
+    attrs = new Set<string>();
     calls: string[] = [];
-    doc?: { activeElement: El | undefined; body: El };
+    doc?: { activeElement: El | undefined; body: El; keys?: "window" | "page" };
     constructor(public tagName: string, key?: string) { if (key) this.dataset.key = key; }
-    focus() { this.calls.push("focus"); if (this.doc) this.doc.activeElement = this; }
-    blur() { this.calls.push("blur"); if (this.doc) this.doc.activeElement = this.doc.body; }
+    set tabIndex(_: number) { this.attrs.add("tabindex"); }
+    hasAttribute(name: string) { return this.attrs.has(name); }
+    removeAttribute(name: string) { this.attrs.delete(name); }
+    focus() {
+        this.calls.push("focus");
+        const d = this.doc;
+        if (!d) return;
+        if (d.keys === "page" && (this.tagName === "WEBVIEW" || d.activeElement === this)) return;
+        if (this === d.body && !this.attrs.has("tabindex")) return;
+        d.activeElement = this;
+        if (d.keys) d.keys = this.tagName === "WEBVIEW" ? "page" : "window";
+    }
+    blur() { this.calls.push("blur"); if (this.doc?.activeElement === this) this.doc.activeElement = this.doc.body; }
 }
 const real = (globalThis as any).HTMLElement;
 beforeAll(() => { (globalThis as any).HTMLElement = El; });
@@ -34,7 +48,7 @@ function page() {
     const body = new El("BODY");
     const box = new El("TEXTAREA");
     const view = new El("WEBVIEW", "tab-1");
-    const doc = { activeElement: box as El | undefined, body, addEventListener: on, removeEventListener: (type: string) => void offs.push(type), querySelectorAll: () => [view] };
+    const doc = { activeElement: box as El | undefined, body, keys: undefined as "window" | "page" | undefined, addEventListener: on, removeEventListener: (type: string) => void offs.push(type), querySelectorAll: () => [view] };
     for (const el of [body, box, view]) el.doc = doc;
     const win = { document: doc, addEventListener: on, removeEventListener: (type: string) => void offs.push(type) };
     let tell: (e: any) => void = () => {};
@@ -64,69 +78,71 @@ test("where the window's focus went to the page with the keys, it's moved back t
     at(1005); p.tell({ type: "focused", key: "tab-1" });
     expect(p.box.calls).toEqual(["focus"]);
     expect(p.doc.activeElement).toBe(p.box);
-    // The page takes it again a moment later (it answers a press in steps): back at once, without the app's word.
+    // The page takes it again a moment later (it answers a press in steps): back without the app's word, though not
+    // inside the blur event, while the window's focus is still moving.
     at(1020); p.taken();
+    expect(p.box.calls).toEqual(["focus"]);
+    p.run(0);
     expect(p.box.calls).toEqual(["focus", "focus"]);
     // Long after the app last said so, the window's focus going to a page isn't taken for the agent's doing.
     at(1021 + AGAIN_MS); p.taken();
+    p.run(0);
     expect(p.box.calls).toEqual(["focus", "focus"]);
+    // Nor once the window's focus has moved on by the time it would be, or the page has become theirs.
+    const q = page();
+    at(1000); q.tell({ type: "focused", key: "tab-1" });
+    q.box.calls.length = 0;
+    at(1010); q.taken();
+    q.doc.activeElement = q.box;
+    q.run(0);
+    at(1020); q.taken();
+    q.tell({ type: "person", key: "tab-1", press: true });
+    q.run(0);
+    expect(q.box.calls).toEqual([]);
 });
 
-test("where the window's focus never moved (macOS), it goes to the page first and back from there, a moment apart", () => {
+test("where the window's focus never moved (macOS), it's moved off what shows focused and back, and the keys follow", () => {
+    // The page has the keys; the window still shows the message box focused (seen on macOS when a page takes them again
+    // just after they were taken back: an agent's double-click, or two clicks of its at once). Focusing the box again
+    // changes nothing, and nor does focusing the page's element: 174 of 364 characters typed meanwhile went to the page.
     const p = page();
-    // The page has the keys; the window still shows the message box focused. Focusing that again would change nothing.
+    p.doc.keys = "page";
     at(1000); p.tell({ type: "focused", key: "tab-1" });
-    expect([p.view.calls, p.box.calls]).toEqual([["focus"], []]);
-    // The app's next word comes too soon after: the page is still taking it.
-    at(1000 + STEP_MS - 1); p.tell({ type: "focused", key: "tab-1" });
-    expect([p.view.calls, p.box.calls]).toEqual([["focus"], []]);
-    // Then back to where it was.
-    at(1000 + STEP_MS); p.tell({ type: "focused", key: "tab-1" });
-    expect([p.view.calls, p.box.calls]).toEqual([["focus"], ["focus"]]);
+    expect(p.doc.keys).toBe("window");
     expect(p.doc.activeElement).toBe(p.box);
-    // Still the page's after that (it answered late): the same two steps again.
-    at(1200); p.tell({ type: "focused", key: "tab-1" });
-    at(1240); p.tell({ type: "focused", key: "tab-1" });
-    expect([p.view.calls, p.box.calls]).toEqual([["focus", "focus"], ["focus", "focus"]]);
-    // The app's last look brought the first step, so no word of its brings the second: taken here, a while after.
+    expect([p.view.calls, p.box.calls]).toEqual([[], ["blur", "focus"]]);
+    // Still the page's after that (it answered late): the same again, at the app's next word.
+    p.doc.keys = "page";
+    at(1040); p.tell({ type: "focused", key: "tab-1" });
+    expect(p.doc.keys).toBe("window");
+    // Where the window's focus did go to the page's element, going back is enough.
     const q = page();
-    at(1320); q.tell({ type: "focused", key: "tab-1" });
-    expect([q.view.calls, q.box.calls]).toEqual([["focus"], []]);
-    at(1320 + ENTERED_MS); q.run(ENTERED_MS);
-    expect([q.view.calls, q.box.calls]).toEqual([["focus"], ["focus"]]);
-    expect(q.doc.activeElement).toBe(q.box);
-    // Not when the app's word did bring it, nor once the window's focus is elsewhere (it would go into the page again), nor after stopping.
-    at(1200 + ENTERED_MS); p.run(ENTERED_MS);
-    expect([p.view.calls, p.box.calls]).toEqual([["focus", "focus"], ["focus", "focus"]]);
-    const r = page();
-    at(1000); r.tell({ type: "focused", key: "tab-1" });
-    r.doc.activeElement = r.body;
-    at(1000 + ENTERED_MS); r.run(ENTERED_MS);
-    expect([r.view.calls, r.box.calls]).toEqual([["focus"], []]);
-    const t = page();
-    at(1000); t.tell({ type: "focused", key: "tab-1" });
-    t.stop();
-    at(1000 + ENTERED_MS); t.run(ENTERED_MS);
-    expect([t.view.calls, t.box.calls]).toEqual([["focus"], []]);
+    q.doc.keys = "page";
+    at(1000); q.taken();
+    at(1005); q.tell({ type: "focused", key: "tab-1" });
+    expect([q.doc.keys, q.view.calls, q.box.calls]).toEqual(["window", [], ["focus"]]);
 });
 
 test("nothing had the window's focus: the page just loses it, so shortcuts go on working", () => {
+    // Nothing had it, then the agent's press: the window shows the page's element focused, with the keys in the page.
     const p = page();
-    p.doc.activeElement = p.body;
+    p.doc.activeElement = p.view;
+    p.doc.keys = "page";
     at(1000); p.tell({ type: "focused", key: "tab-1" });
-    at(1040); p.tell({ type: "focused", key: "tab-1" });
-    expect([p.view.calls, p.box.calls]).toEqual([["focus", "blur"], []]);
+    expect([p.doc.keys, p.doc.activeElement, p.view.calls, p.box.calls]).toEqual(["window", p.body, [], []]);
+    // The body takes focus for it, and is left as it was.
+    expect(p.body.hasAttribute("tabindex")).toBe(false);
     // What lost focus long before isn't where the person is now; nor is something that's gone.
     const q = page();
     at(1000); q.fire("focusout", { target: q.box, relatedTarget: null });
     q.doc.activeElement = q.view;
     at(1001 + LEFT_MS); q.tell({ type: "focused", key: "tab-1" });
-    expect([q.view.calls, q.box.calls]).toEqual([["blur"], []]);
+    expect([q.doc.activeElement, q.box.calls]).toEqual([q.body, []]);
     const r = page();
     at(1000); r.taken();
     r.box.isConnected = false;
     at(1005); r.tell({ type: "focused", key: "tab-1" });
-    expect([r.view.calls, r.box.calls]).toEqual([["blur"], []]);
+    expect([r.doc.activeElement, r.box.calls]).toEqual([r.body, []]);
 });
 
 test("a page the person put the keyboard in themselves keeps it, until they're back in the window", () => {
@@ -142,7 +158,7 @@ test("a page the person put the keyboard in themselves keeps it, until they're b
     const q = page();
     at(1000); q.tell({ type: "person", key: "tab-1", press: false });
     at(1005); q.tell({ type: "focused", key: "tab-1" });
-    expect(q.view.calls).toEqual(["focus"]);
+    expect(q.box.calls).toEqual(["blur", "focus"]);
     // Escape (to stop the turn) just before the agent's click lands doesn't make the page theirs: only the app's word does.
     const r = page();
     at(1000); r.fire("keydown", { key: "Escape" });
@@ -162,12 +178,12 @@ test("a page the person put the keyboard in themselves keeps it, until they're b
     at(2000); p.fire("pointerdown", { target: p.box });
     p.doc.activeElement = p.box;
     at(2010); p.tell({ type: "focused", key: "tab-1" });
-    expect(p.view.calls).toEqual(["focus"]);
+    expect(p.box.calls).toEqual(["blur", "focus"]);
     // Another tab's page isn't theirs because one is.
     const s = page();
     at(1000); s.tell({ type: "person", key: "tab-2", press: true });
     at(1005); s.tell({ type: "focused", key: "tab-1" });
-    expect(s.view.calls).toEqual(["focus"]);
+    expect(s.box.calls).toEqual(["blur", "focus"]);
 });
 
 test("with nothing remembered as just left, the keyboard goes back to where the person last put it", () => {
@@ -183,8 +199,7 @@ test("with nothing remembered as just left, the keyboard goes back to where the 
     at(1000); q.fire("focusin", { target: q.box });
     q.doc.activeElement = q.body;
     at(5000); q.tell({ type: "focused", key: "tab-1" });
-    at(5040); q.tell({ type: "focused", key: "tab-1" });
-    expect([q.view.calls, q.box.calls]).toEqual([["focus"], ["focus"]]);
+    expect([q.view.calls, q.box.calls]).toEqual([[], ["focus"]]);
 });
 
 test("where the person is loses the window's focus to nothing while the agent is at a page: it's theirs again", () => {
@@ -224,23 +239,22 @@ test("a closed tab is forgotten, and stopping stops listening", () => {
     at(1000); p.tell({ type: "person", key: "tab-1", press: true });
     p.tell({ type: "destroy", key: "tab-1" });
     at(1010); p.tell({ type: "focused", key: "tab-1" });
-    expect(p.view.calls).toEqual(["focus"]);
+    expect(p.box.calls).toEqual(["blur", "focus"]);
     p.stop();
     expect(p.offs.sort()).toEqual(["blur", "bridge", "focusin", "focusout", "keydown", "keydown", "keypress", "keyup", "pointerdown"]);
 });
 
 test("the steps themselves", () => {
-    const [page, body, box] = ["page", "body", "box"];
-    // In the page's element: back to where it was (what was remembered on entering, else what just lost focus).
-    expect(nextStep({ active: page, page, body, left: box, entered: undefined, now: 1000 })).toEqual({ do: "back", to: box });
-    expect(nextStep({ active: page, page, body, left: undefined, entered: { from: box, at: 900 }, now: 1000 })).toEqual({ do: "back", to: box });
-    expect(nextStep({ active: page, page, body, left: undefined, entered: undefined, now: 1000 })).toEqual({ do: "back", to: undefined });
-    // Entered a moment ago: not yet.
-    expect(nextStep({ active: page, page, body, left: box, entered: { from: box, at: 1000 - STEP_MS + 1 }, now: 1000 })).toEqual({ do: "wait" });
-    // Elsewhere in the window: into the page first, remembering where from (nowhere, from the body).
-    expect(nextStep({ active: box, page, body, left: undefined, entered: undefined, now: 1000 })).toEqual({ do: "enter", from: box });
-    expect(nextStep({ active: body, page, body, left: box, entered: undefined, now: 1000 })).toEqual({ do: "enter", from: undefined });
-    expect(nextStep({ active: null, page, body, left: undefined, entered: undefined, now: 1000 })).toEqual({ do: "enter", from: undefined });
+    const [page, body, box, button] = ["page", "body", "box", "button"];
+    // In the page's element: to where the person was (what just lost focus, else where they last put it), or nowhere.
+    expect(nextStep({ active: page, page, body, left: box })).toEqual({ from: undefined, to: box });
+    expect(nextStep({ active: page, page, body, left: undefined })).toEqual({ from: undefined, to: undefined });
+    // Something of the window's shows focused: off it and back onto it.
+    expect(nextStep({ active: box, page, body, left: undefined })).toEqual({ from: box, to: box });
+    expect(nextStep({ active: button, page, body, left: box })).toEqual({ from: button, to: button });
+    // Nothing does: to where the person was.
+    expect(nextStep({ active: body, page, body, left: box })).toEqual({ from: undefined, to: box });
+    expect(nextStep({ active: null, page, body, left: undefined })).toEqual({ from: undefined, to: undefined });
 });
 
 test("a key the page was sent while it held the keyboard for the agent is typed in the window as it was typed", () => {

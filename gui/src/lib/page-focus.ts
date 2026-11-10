@@ -21,37 +21,25 @@ export const LEFT_MS = 2000;
  * is the same thing happening again (the page answers a press in several steps, each of which can take it).
  */
 export const AGAIN_MS = 500;
-/** The second step of taking the keyboard back comes at least this long after the first (below). */
-export const STEP_MS = 30;
 /** A press or a key of the person's this recently is what moved the window's focus, not the page. */
 export const OWN_MS = 150;
-/** After the first of two steps, the second is taken here if the app's word hasn't brought it by now (its last look is at 320ms). */
-export const ENTERED_MS = 400;
-
-/** What taking the keyboard back does next, for where the window's focus is now. */
-export type Step<E> =
-    /** The window's focus is in the page's element: move it to `to` (or just out of the page), and the keys follow. */
-    | { do: "back"; to: E | undefined }
-    /** The page has the keys though the window's focus isn't in it: put it there first, and remember where it was. */
-    | { do: "enter"; from: E | undefined }
-    /** Entered a moment ago: the page is still taking it. Wait for the app's next word. */
-    | { do: "wait" };
 
 /**
- * Taking the keyboard back from a page is one step where the window's focus went to the page with the keys (move it
- * back), and two where it didn't (macOS; or a page answering late, after it was taken back once): the window's focus
- * is still in the message box, focusing that again changes nothing, and the keys stay in the page. So first the
- * window's focus goes to the page too, and from there back. Not both at once: the page takes what it's given a
- * moment later, after the window has it back, and keeps the keys with the window showing otherwise.
- * `entered`: the first step taken for this page, with where the focus was and when; `left`: what lost focus to
- * nothing in the window just before.
+ * Where taking the keyboard back from a page moves the window's focus: off `from`, the window's own element that
+ * shows focused while the page has the keys, and onto `to` (nothing: the window's body, so shortcuts go on working).
+ *
+ * Where the window's focus went to the page's element with the keys, focusing `to` is enough. Where it didn't (macOS,
+ * a page taking the keys again just after they were taken back), the window still shows the message box focused, with
+ * `document.hasFocus()` false: focusing it again changes nothing, and nor does focusing the page's element, so the
+ * keys stayed in the page until the agent was done (of 364 characters typed while it double-clicked, 190 arrived).
+ * Moving the window's focus off the element and back does it. So it's moved off whatever shows focused, whichever
+ * case this is: the page's word that it has the keys (desktop-electron/src/browser-host.ts) is what counts, not what
+ * the window shows.
+ * `left`: what lost focus to nothing in the window just before (or where the person last put it).
  */
-export function nextStep<E>(o: { active: E | null | undefined; page: E; body: E; left: E | undefined; entered: { from: E | undefined; at: number } | undefined; now: number }): Step<E> {
-    if (o.active === o.page) {
-        if (o.entered && o.now - o.entered.at < STEP_MS) return { do: "wait" };
-        return { do: "back", to: o.entered?.from ?? o.left };
-    }
-    return { do: "enter", from: o.active && o.active !== o.body ? o.active : undefined };
+export function nextStep<E>(o: { active: E | null | undefined; page: E; body: E; left: E | undefined }): { from: E | undefined; to: E | undefined } {
+    const from = o.active && o.active !== o.body && o.active !== o.page ? o.active : undefined;
+    return { from, to: from ?? o.left };
 }
 
 /** Watches the pages' hold on the keyboard in `win`. Returns how to stop. */
@@ -66,8 +54,6 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser">, win: Window
     let home: HTMLElement | undefined;
     /** Taking the keyboard back moves the window's focus itself: not the person's doing. */
     let taking = false;
-    /** The first of two steps taken for a tab's page. */
-    let entered: { key: string; from: HTMLElement | undefined; at: number } | undefined;
     /** When the app last said each tab's page held the keyboard for the agent. */
     const said = new Map<string, number>();
     /** When the person last pressed in the window, and last pressed Tab or Escape in it. */
@@ -81,23 +67,20 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser">, win: Window
         if (!page) return;
         const now = performance.now();
         const was = left && left.el.isConnected && now - left.at <= LEFT_MS ? left.el : home?.isConnected ? home : undefined;
-        const step = nextStep<HTMLElement>({ active: doc.activeElement as HTMLElement | null, page, body: doc.body, now, left: was, entered: entered?.key === key ? entered : undefined });
-        if (step.do === "wait") return;
+        const step = nextStep<HTMLElement>({ active: doc.activeElement as HTMLElement | null, page, body: doc.body, left: was });
         taking = true;
-        if (step.do === "enter") {
-            const first = (entered = { key, from: step.from ?? was, at: now });
-            page.focus();
-            // The app's next word brings the second step. If this was its last look, none comes, and the window
-            // would be left showing the page focused, with the keys in it.
-            later(() => {
-                if (!stopped && entered === first && theirs !== key && doc.activeElement === page) takeBack(key);
-            }, ENTERED_MS);
-        } else {
-            entered = undefined;
-            if (step.to?.isConnected) step.to.focus();
-            else page.blur();
+        step.from?.blur();
+        if (step.to?.isConnected) step.to.focus();
+        else {
+            // Nothing of the window's to go back to: its body, which takes focus only while it may.
+            const body = doc.body;
+            const had = body.hasAttribute("tabindex");
+            if (!had) body.tabIndex = -1;
+            body.focus();
+            if (!had) body.removeAttribute("tabindex");
         }
         taking = false;
+        // Still the page's (it answers a press in several steps)? The app says so again within 40ms, and it's taken back again.
     };
     const off = bridge.onBrowser((e) => {
         if (e.type === "destroy") {
@@ -109,12 +92,17 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser">, win: Window
             takeBack(e.key);
         }
     });
-    // Where the window hears of a page taking its focus (it loses its own, with the page's element active): at once,
-    // while the agent is at it, rather than at the app's next word.
+    // Where the window hears of a page taking its focus (it loses its own, with the page's element active): while the
+    // agent is at it, taken back without waiting for the app's next word. Not in the blur event itself, while the
+    // window's focus is still moving: taken back there, the page could take the keys again a moment later with the
+    // window showing the message box focused.
     const blurred = (e: Event) => {
         const page = doc.activeElement as HTMLElement | null;
         const key = e.target === win && page && isPage(page) ? page.dataset.key : undefined;
-        if (key && theirs !== key && agentAtWork(performance.now(), key)) takeBack(key);
+        if (!key || theirs === key || !agentAtWork(performance.now(), key)) return;
+        later(() => {
+            if (!stopped && theirs !== key && doc.activeElement === page) takeBack(key);
+        }, 0);
     };
     const focusOut = (e: FocusEvent) => {
         const el = e.target;
@@ -144,7 +132,6 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser">, win: Window
     // Back in the window by a press of theirs; where that puts the window's focus (nowhere, on a bare part of it) is home.
     const pressed = () => {
         theirs = undefined;
-        entered = undefined;
         pressedAt = performance.now();
         later(() => {
             const at = doc.activeElement;
