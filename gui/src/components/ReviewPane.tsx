@@ -25,7 +25,7 @@ import { plural, since } from "../lib/format";
 import { CHANGE, dirOf, nameOf, REVIEW_DEFAULT, REVIEW_STEP, reviewDragWidth, reviewWidthRange } from "../lib/inspector";
 import { DiffView, type DiffComments } from "./blocks/DiffView";
 import { buildComment } from "../lib/review-comments";
-import { findPick, pickKey, pickParams, type ReviewPick } from "../lib/review-pick";
+import { findPick, pickGone, pickKey, pickParams, type ReviewPick } from "../lib/review-pick";
 import { anchorShift, cardAt, foldsSmoothly, oneSided, stackRows, viewLabel, viewMenu, type TurnItem, type ViewItem } from "../lib/review-stack";
 import { newCommentId, reviewComments } from "../state/review-comments";
 import { PublishStatus } from "./PublishStatus";
@@ -759,10 +759,22 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     });
     // Asked for a file the list doesn't hold (past its 300): fetched by itself, and shown above the rest. Its
     // answer counts only for the view, base and path it was asked for; the resource keeps its last.
-    const unlistedKey = () => {
+    /** The pick in the view it's asked for in, as a key. */
+    const pickView = () => {
         const want = picked();
-        return shownScope() !== "cavvy" && view() && want && !listedPick() ? JSON.stringify([id(), gitScope(), base(), turnId(), worktree(), pickKey(want)]) : undefined;
+        return want && JSON.stringify([id(), gitScope(), base(), turnId(), worktree(), pickKey(want)]);
     };
+    const unlistedKey = () => (shownScope() !== "cavvy" && view() && !listedPick() ? pickView() : undefined);
+    // Once the list has held the pick, its leaving the list (a commit, say) ends the asking (lib/review-pick.ts).
+    let held: string | undefined;
+    createEffect(() => {
+        const key = pickView();
+        if (listedPick()) held = key;
+        else if (pickGone(held, key, false, git.loading)) {
+            held = undefined;
+            setPicked(undefined);
+        }
+    });
     const [unlisted, { refetch: refetchUnlisted }] = createResource(
         () => {
             if (!sessionReadReady(p.handle)) return false;
