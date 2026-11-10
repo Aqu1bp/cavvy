@@ -20,7 +20,7 @@
 
 import { app, session, type BrowserWindow, type BrowserWindowConstructorOptions, type Input, type KeyboardInputEvent, type Session, type WebContents } from "electron";
 import { createHash } from "node:crypto";
-import { sendToTab, strayKeyEvents, tabbedIn } from "./guest-input";
+import { sendToTab, strayKeyEvents, strayTarget, tabbedIn } from "./guest-input";
 import { nextRest } from "./tab-rest";
 
 interface Tab {
@@ -48,6 +48,14 @@ interface Tab {
     heldAt?: number;
     /** The person put the keyboard in its page themselves (a press in it), and the page has held it since. */
     theirs?: boolean;
+    /** Which of the person's presses (or Tabs) made it theirs: browserBack names the last one the GUI had heard of. */
+    theirsSeq?: number;
+    /**
+     * The keyboard was last found in a frame of its page, not the page itself: looked at after the person's keys and
+     * presses there, as Tab takes it into the page, and as the agent acts on another page (frameNow). Given back to the
+     * page, the keyboard lands on the page itself, so it isn't.
+     */
+    framed?: boolean;
     /** Key and text commands from the agent in flight: a key the page sees meanwhile is the agent's. */
     agentKeys?: number;
     /** The person's keys that reached its page while it had the keyboard for the agent, kept for the window (strayKey). */
@@ -91,6 +99,8 @@ const STRAY_KEY_MS = 1000;
 /** Such keys wait for the window to have the keyboard again, looked at this often, and no longer than this. */
 const STRAY_LOOK_MS = 4;
 const STRAY_WAIT_MS = 1000;
+/** After a key or a press of the person's in a page, it's looked at again this long after for a frame having the keys. */
+const FRAME_CHECKS_MS = [30, 120];
 /** After Tab, each page is looked at this long after for having been given the keyboard (tabKey). */
 const TAB_IN_CHECKS_MS = [30, 120];
 /** Tab isn't what gave a page the keyboard this soon after the agent acted on it, or it last had the keyboard for the agent. */
@@ -121,6 +131,8 @@ export class BrowserHost {
     private tabsById = new Map<string, Tab>();
     private tabsByKey = new Map<string, Tab>();
     private seq = 0;
+    /** Counts the times a page became the person's (theirs). */
+    private personSeq = 0;
     private attaching: string[] = [];
     private attachWaiters = new Map<string, (wc: WebContents) => void>();
     private closing = false;
@@ -317,6 +329,14 @@ export class BrowserHost {
         return [...this.tabsById.values()].filter((t) => !t.wc.isDestroyed()).map((t) => t.wc.getOSProcessId());
     }
 
+    /**
+     * The person is back in the window (the GUI says so): none of the pages is theirs any more. Not one they pressed in
+     * after the GUI last heard (`seen`): the word crossed their press on its way.
+     */
+    back(seen?: number) {
+        for (const tab of this.tabsByKey.values()) if (seen === undefined || (tab.theirsSeq ?? 0) <= seen) tab.theirs = false;
+    }
+
     /** The GUI laid a tab's webview out at this size: its page's real viewport. */
     sized(key: string, size: { width: number; height: number; scale: number }) {
         const tab = this.tabsByKey.get(key);
@@ -339,10 +359,11 @@ export class BrowserHost {
     }
 
     /**
-     * Sends the keys kept for the window on to it, in order, once the window has the keyboard again: sent while the
-     * page has it, they'd go to whatever the window's focus is on meanwhile (the page's own element, on its way
-     * back). After STRAY_WAIT_MS they go regardless: where the window's focus is on something of its own, that gets
-     * them; where it's on the page's element, the GUI lets them go (gui/src/lib/page-focus.ts).
+     * Sends the keys kept for the window on, in order, once the page has let go of the keyboard: to the page the person
+     * was typing in if it has it again (strayTarget), else to the window. Sent while the page has it, they'd go to
+     * whatever the window's focus is on meanwhile (the page's own element, on its way back). After STRAY_WAIT_MS they
+     * go regardless: where the window's focus is on something of its own, that gets them; where it's on the page's
+     * element, the GUI lets them go (gui/src/lib/page-focus.ts).
      */
     private sendStray(tab: Tab, since: number) {
         tab.strayTimer = setTimeout(() => {
@@ -350,14 +371,56 @@ export class BrowserHost {
             const host = this.window()?.webContents;
             if (tab.closed || !host || host.isDestroyed()) return void (tab.stray = []);
             if (!tab.wc.isDestroyed() && tab.wc.focusedFrame && Date.now() - since < STRAY_WAIT_MS) return this.sendStray(tab, since);
-            for (const event of tab.stray?.splice(0) ?? []) host.sendInputEvent(event);
+            const others = [...this.tabsByKey.values()].filter((t) => t !== tab && !t.closed && !t.wc.isDestroyed());
+            const events = tab.stray?.splice(0) ?? [];
+            const to = strayTarget(others.map((t) => ({ page: t.wc, theirs: !!t.theirs, framed: !!t.framed, held: t.wc.focusedFrame === t.wc.mainFrame }))) ?? host;
+            for (const event of events) to.sendInputEvent(event);
         }, STRAY_LOOK_MS);
+    }
+
+    /**
+     * As the agent acts on `tab`: a page of the person's that doesn't hold the keyboard is one they left, so what takes it
+     * there now isn't them, and the GUI is told. Not while another page holds it for the agent: they're still typing
+     * in this one, and get the keyboard back.
+     */
+    private left(tab: Tab) {
+        if (!tab.theirs || tab.wc.focusedFrame) return;
+        const live = [...this.tabsByKey.values()].filter((t) => t !== tab && !t.closed && !t.wc.isDestroyed());
+        if (live.some((t) => !t.theirs && t.wc.focusedFrame)) return;
+        tab.theirs = false;
+        this.toGui({ type: "left", key: tab.key });
+    }
+
+    /**
+     * After a key or a press of the person's in `tab`'s page: where the keyboard is in it (frameNow), now and a moment
+     * later (a press or Tab moves it after the event).
+     */
+    private lookFrame(tab: Tab) {
+        this.frameNow(tab);
+        for (const ms of FRAME_CHECKS_MS) setTimeout(() => this.frameNow(tab), ms);
+    }
+
+    /**
+     * Whether the keyboard is in a frame of `tab`'s page rather than the page itself, told to the GUI when it changes.
+     * Looked at after the person's keys and presses there, as they Tab into it, and as the agent acts on another page
+     * (the page's own script can move it into a frame with nothing of theirs). Not while the page doesn't hold the
+     * keyboard: where it was in the page stands.
+     */
+    private frameNow(tab: Tab) {
+        if (tab.closed || tab.wc.isDestroyed() || !tab.wc.focusedFrame) return;
+        const framed = tab.wc.focusedFrame !== tab.wc.mainFrame;
+        if (framed === !!tab.framed) return;
+        tab.framed = framed;
+        this.toGui({ type: "framed", key: tab.key, framed });
     }
 
     /** The person put the keyboard in `tab`'s page themselves: it keeps it through what the agent does there, and the GUI is told. */
     private theirs(tab: Tab) {
+        // The person is in one page at a time: the one they left isn't theirs any more.
+        for (const t of this.tabsByKey.values()) if (t !== tab) t.theirs = false;
         tab.theirs = true;
-        this.toGui({ type: "person", key: tab.key, press: true });
+        tab.theirsSeq = ++this.personSeq;
+        this.toGui({ type: "person", key: tab.key, press: true, seq: tab.theirsSeq });
     }
 
     /**
@@ -375,7 +438,9 @@ export class BrowserHost {
                     if (tab.closed || tab.wc.isDestroyed()) continue;
                     const agentAt = Math.max(tab.agentAt, tab.heldAt ?? 0);
                     // Said again for a page that was theirs before they left it: the GUI let go of that when they did.
-                    if (tabbedIn({ had, has: !!tab.wc.focusedFrame, agentInputs: busy + tab.agentInputs, agentAt, keyAt, quietMs: TAB_IN_QUIET_MS })) this.theirs(tab);
+                    if (!tabbedIn({ had, has: !!tab.wc.focusedFrame, agentInputs: busy + tab.agentInputs, agentAt, keyAt, quietMs: TAB_IN_QUIET_MS })) continue;
+                    this.frameNow(tab);
+                    this.theirs(tab);
                 }
             }, ms);
         }
@@ -492,8 +557,9 @@ export class BrowserHost {
             const acting = input || cmd.method === "Runtime.callFunctionOn" || (cmd.method === "Runtime.evaluate" && p.userGesture === true);
             if (acting) {
                 tab.agentAt = Date.now();
-                // The person left the page (it doesn't hold the keyboard): whatever takes it there now isn't them.
-                if (!tab.wc.focusedFrame) tab.theirs = false;
+                // The person's pages still hold the keyboard now, if they do, and this act may take it from them.
+                for (const t of this.tabsByKey.values()) if (t !== tab && t.theirs) this.frameNow(t);
+                this.left(tab);
             }
             try {
                 // Never through the window's focus into the UI (guest-input.ts).
@@ -599,6 +665,7 @@ export class BrowserHost {
         const person = (type: string) => {
             if (tab.agentInputs > 0 || !PERSON_INPUT.has(type)) return;
             tab.usedAt = tab.personAt = Date.now();
+            if (type !== "mouseWheel") this.lookFrame(tab);
             if (type === "mouseDown") this.theirs(tab);
             else this.toGui({ type: "person", key, press: false });
             this.event(channel, "Cavvy.humanInput", { type }, tab.sid);

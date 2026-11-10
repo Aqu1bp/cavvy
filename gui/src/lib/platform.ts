@@ -20,7 +20,9 @@ export interface ElectronBridge {
      * (lib/page-focus.ts): `focused` when a tab's page holds the window's keyboard after something the agent did to
      * it, `person` when the person presses (`press`), types or scrolls in one. Returns how to stop.
      */
-    onBrowser(fn: (e: { type: "create"; key: string; partition: string } | { type: "ready"; key: string; targetId: string } | { type: "destroy"; key: string } | { type: "sleep"; key: string; asleep: boolean } | { type: "focused"; key: string } | { type: "person"; key: string; press: boolean }) => void): () => void;
+    onBrowser(fn: (e: { type: "create"; key: string; partition: string } | { type: "ready"; key: string; targetId: string } | { type: "destroy"; key: string } | { type: "sleep"; key: string; asleep: boolean } | { type: "focused"; key: string } | { type: "person"; key: string; press: boolean; seq?: number } | { type: "framed"; key: string; framed: boolean } | { type: "left"; key: string }) => void): () => void;
+    /** The person is back in the window (a press or focus of theirs there): no page is theirs any more. */
+    browserBack(seen: number): void;
     /** These tabs are on screen now (a pane, the floating view): the app keeps them awake (never frozen). */
     browserShown(keys: string[]): void;
     /** A tab's webview has this size now: its page's real viewport. */

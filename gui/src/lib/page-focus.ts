@@ -35,15 +35,20 @@ export const OWN_MS = 150;
  * Moving the window's focus off the element and back does it. So it's moved off whatever shows focused, whichever
  * case this is: the page's word that it has the keys (desktop-electron/src/browser-host.ts) is what counts, not what
  * the window shows.
- * `left`: what lost focus to nothing in the window just before (or where the person last put it).
+ * `left`: what lost focus to nothing in the window just before (or where the person last put it). `theirs`: another
+ * page the person put the keyboard in themselves, which it goes back to before anything else: typing in a page while
+ * the agent clicked in another one (a hidden one, or another session's), their keys went to the message box.
+ * The page's own element is moved off too when the keyboard goes to `theirs`. `isPage`: whether an element is a
+ * page's, which the keyboard goes back to only as `theirs`.
  */
-export function nextStep<E>(o: { active: E | null | undefined; page: E; body: E; left: E | undefined }): { from: E | undefined; to: E | undefined } {
-    const from = o.active && o.active !== o.body && o.active !== o.page ? o.active : undefined;
-    return { from, to: from ?? o.left };
+export function nextStep<E>(o: { active: E | null | undefined; page: E; body: E; left: E | undefined; theirs?: E; isPage?: (el: E) => boolean }): { from: E | undefined; to: E | undefined } {
+    const from = o.active && o.active !== o.body && (o.active !== o.page || o.theirs !== undefined) ? o.active : undefined;
+    const own = from && !o.isPage?.(from) ? from : undefined;
+    return { from, to: o.theirs ?? own ?? o.left };
 }
 
 /** Watches the pages' hold on the keyboard in `win`. Returns how to stop. */
-export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser">, win: Window = window, later: (fn: () => void, ms: number) => unknown = setTimeout): () => void {
+export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser" | "browserBack">, win: Window = window, later: (fn: () => void, ms: number) => unknown = setTimeout): () => void {
     const doc = win.document;
     let stopped = false;
     /** The tab whose page the person put the keyboard in themselves (the app says so: a press in it, or Tab into it), until they're back in the window. */
@@ -56,9 +61,19 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser">, win: Window
     let taking = false;
     /** When the app last said each tab's page held the keyboard for the agent. */
     const said = new Map<string, number>();
+    /** Pages the person last had the keyboard in a frame of (browser-host.ts, lookFrame). */
+    const framed = new Set<string>();
     /** When the person last pressed in the window, and last pressed Tab or Escape in it. */
     let pressedAt = -Infinity;
     let movedAt = -Infinity;
+    /** The last of the app's words that a page is theirs (its seq), sent back with browserBack. */
+    let seen = 0;
+    /** The person is back in the window: no page is theirs, here or in the app (browser-host.ts, which can't see it). */
+    const back = () => {
+        if (theirs === undefined) return;
+        theirs = undefined;
+        bridge.browserBack(seen);
+    };
     const isPage = (el: unknown) => el instanceof HTMLElement && el.tagName === "WEBVIEW";
     const view = (key: string) => [...doc.querySelectorAll<HTMLElement>("webview")].find((v) => v.dataset.key === key);
     const agentAtWork = (now: number, key?: string) => (key === undefined ? [...said.values()] : [said.get(key) ?? -Infinity]).some((at) => now - at <= AGAIN_MS);
@@ -67,7 +82,9 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser">, win: Window
         if (!page) return;
         const now = performance.now();
         const was = left && left.el.isConnected && now - left.at <= LEFT_MS ? left.el : home?.isConnected ? home : undefined;
-        const step = nextStep<HTMLElement>({ active: doc.activeElement as HTMLElement | null, page, body: doc.body, left: was });
+        // Not to a page they were typing in a frame of: given back, the keyboard lands on the page itself, not the frame.
+        const mine = theirs !== undefined && theirs !== key && !framed.has(theirs) ? view(theirs) : undefined;
+        const step = nextStep<HTMLElement>({ active: doc.activeElement as HTMLElement | null, page, body: doc.body, left: was, theirs: mine, isPage });
         taking = true;
         step.from?.blur();
         if (step.to?.isConnected) step.to.focus();
@@ -80,13 +97,24 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser">, win: Window
             if (!had) body.removeAttribute("tabindex");
         }
         taking = false;
+        // Not back to their page (a frame of it had the keyboard, or it's gone): they're in the window now, for the app too.
+        if (!mine) back();
         // Still the page's (it answers a press in several steps)? The app says so again within 40ms, and it's taken back again.
     };
     const off = bridge.onBrowser((e) => {
         if (e.type === "destroy") {
             said.delete(e.key);
+            framed.delete(e.key);
             if (theirs === e.key) theirs = undefined;
-        } else if (e.type === "person" && e.press) theirs = e.key;
+        } else if (e.type === "framed") {
+            if (e.framed) framed.add(e.key);
+            else framed.delete(e.key);
+        } else if (e.type === "left") {
+            if (theirs === e.key) theirs = undefined;
+        } else if (e.type === "person" && e.press) {
+            theirs = e.key;
+            seen = Math.max(seen, e.seq ?? 0);
+        }
         else if (e.type === "focused" && theirs !== e.key) {
             said.set(e.key, performance.now());
             takeBack(e.key);
@@ -127,11 +155,11 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser">, win: Window
         if (!(el instanceof HTMLElement) || isPage(el)) return;
         // Back in the window, by a key as much as by a press: no page is theirs any more.
         home = el;
-        theirs = undefined;
+        back();
     };
     // Back in the window by a press of theirs; where that puts the window's focus (nowhere, on a bare part of it) is home.
     const pressed = () => {
-        theirs = undefined;
+        back();
         pressedAt = performance.now();
         later(() => {
             const at = doc.activeElement;
