@@ -7,6 +7,7 @@
 
 import { createEffect, For, onCleanup, onMount } from "solid-js";
 import { electron } from "../lib/platform";
+import { keepFocus } from "../lib/page-focus";
 import { hostedTabs, hostedTargets, setHostedTabs, setHostedTargets, shownBrowser, type HostedTab } from "../state/browser-host";
 
 /** The size of a tab no pane shows (or the floating view shows, scaled): the agent's, as a headless browser's would be. */
@@ -27,9 +28,8 @@ export function BrowserHostLayer() {
             }
         });
         onCleanup(off);
-        // The agent's clicks in a page don't take the keyboard from where the person is typing (loaded here: only
-        // the desktop app has such pages). For as long as the window: this layer is never taken down.
-        void import("../lib/page-focus").then((m) => m.keepFocus(electron!), () => undefined);
+        // The agent's clicks in a page don't take the keyboard from where the person is typing (lib/page-focus.ts).
+        onCleanup(keepFocus(electron!));
     });
     // Which tabs are on screen, for the app: it freezes tabs nobody sees and nobody has used for a while.
     createEffect(() => {

@@ -1,5 +1,5 @@
 import { RenderBoundary } from "./components/ui/ErrorBoundary";
-import { batch, createEffect, createMemo, createSignal, Match, on, onCleanup, onMount, Show, Switch } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
 import { PlugZap } from "lucide-solid";
 import { ErrorCards } from "./components/ErrorCards";
 import { activate, app, attentionCount, handleFor, restoreActiveSession, rpc, type SessionHandle } from "./state/app";
@@ -8,7 +8,6 @@ import { prefs, setPrefs } from "./state/prefs";
 import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, reviewSplit, setAgentFocus, setDockHeight, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
 import { isDesktop, isElectron, isTauri, os, windowCommand } from "./lib/platform";
 import { installWindowDrag } from "./lib/window-drag";
-import { BrowserHostLayer } from "./components/BrowserHostLayer";
 import { FloatingBrowser } from "./components/FloatingBrowser";
 import { canStop } from "./lib/session-status";
 import { actionOf, setEnterSends } from "./state/keybindings";
@@ -168,6 +167,13 @@ function InspectorResizer() {
 }
 
 const INSPECTOR_KEY = "cavvy.inspectorWidth";
+
+/**
+ * The desktop app's browser pages (components/BrowserHostLayer.tsx, and what keeps them placed and the keyboard out
+ * of them): loaded only there, as the app starts, well before anything can open a tab.
+ */
+const [HostLayer, setHostLayer] = createSignal<() => JSX.Element>();
+if (isElectron) void import("./components/BrowserHostLayer").then((m) => setHostLayer(() => m.BrowserHostLayer), reportError);
 
 /** The transitions running on these elements (the first found for each selector) of the properties `moves` says. */
 function moving(selectors: string[], moves: (property: string) => boolean): Animation[] {
@@ -595,8 +601,8 @@ export function App() {
             <RunSheet />
             <CommitDialog />
             <ImageViewer />
-            <Show when={isElectron}>
-                <BrowserHostLayer />
+            <Show when={isElectron && HostLayer()} keyed>
+                {(Layer) => <Layer />}
             </Show>
             {/* Errors' last resort: shows only when none of the places above is on screen (ErrorCards.tsx). */}
             <ErrorCards place="window" />

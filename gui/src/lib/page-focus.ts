@@ -8,7 +8,7 @@
 // reach the field it clicked.
 //
 // The app says when the agent acts on a tab and when the person uses one (desktop-electron/src/browser-host.ts).
-// Loaded only where there are such pages (BrowserHostLayer.tsx).
+// Part of the pages' layer (BrowserHostLayer.tsx), which only the desktop app loads.
 
 import type { ElectronBridge } from "./platform";
 

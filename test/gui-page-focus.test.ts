@@ -152,6 +152,7 @@ test("the app says when the agent acts on a tab, before and after the page takes
     const person = host.slice(host.indexOf("const person = (type: string) => {"), host.indexOf('wc.on("before-input-event"'));
     expect(person).toContain("if (tab.agentInputs > 0 || !PERSON_INPUT.has(type)) return;");
     expect(person).toContain('this.toGui({ type: "person", key });');
-    // Loaded with the pages' layer, which only the desktop app has.
-    expect(readFileSync(join(import.meta.dir, "../gui/src/components/BrowserHostLayer.tsx"), "utf8")).toContain('import("../lib/page-focus")');
+    // Kept for as long as the pages' layer is up, which only the desktop app loads.
+    expect(readFileSync(join(import.meta.dir, "../gui/src/components/BrowserHostLayer.tsx"), "utf8")).toContain("onCleanup(keepFocus(electron!));");
+    expect(readFileSync(join(import.meta.dir, "../gui/src/App.tsx"), "utf8")).toContain('if (isElectron) void import("./components/BrowserHostLayer")');
 });
