@@ -91,6 +91,13 @@ const STRAY_KEY_MS = 1000;
 /** Such keys wait for the window to have the keyboard again, looked at this often, and no longer than this. */
 const STRAY_LOOK_MS = 4;
 const STRAY_WAIT_MS = 1000;
+/**
+ * This long after a press of the person's in a page, the page is looked at for holding the keyboard. A page navigated
+ * while their focus was in a frame of it, and the window's elsewhere, takes none on a press: no frame of it has the
+ * keyboard, and their keys go nowhere. The window focusing the page's element again gives it back (seen on macOS,
+ * Electron 45), and the field they pressed in keeps its focus (gui/src/lib/page-focus.ts).
+ */
+const PRESS_LOOK_MS = 100;
 /** After Tab, each page is looked at this long after for having been given the keyboard (tabKey). */
 const TAB_IN_CHECKS_MS = [30, 120];
 /** Tab isn't what gave a page the keyboard this soon after the agent acted on it, or it last had the keyboard for the agent. */
@@ -599,8 +606,12 @@ export class BrowserHost {
         const person = (type: string) => {
             if (tab.agentInputs > 0 || !PERSON_INPUT.has(type)) return;
             tab.usedAt = tab.personAt = Date.now();
-            if (type === "mouseDown") this.theirs(tab);
-            else this.toGui({ type: "person", key, press: false });
+            if (type === "mouseDown") {
+                this.theirs(tab);
+                setTimeout(() => {
+                    if (!tab.closed && !wc.isDestroyed() && !wc.focusedFrame) this.toGui({ type: "refocus", key });
+                }, PRESS_LOOK_MS);
+            } else this.toGui({ type: "person", key, press: false });
             this.event(channel, "Cavvy.humanInput", { type }, tab.sid);
             this.inUse(channel);
         };

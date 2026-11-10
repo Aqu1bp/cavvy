@@ -87,6 +87,15 @@ export function keepFocus(bridge: Pick<ElectronBridge, "onBrowser">, win: Window
             said.delete(e.key);
             if (theirs === e.key) theirs = undefined;
         } else if (e.type === "person" && e.press) theirs = e.key;
+        else if (e.type === "refocus") {
+            // Their press in the page didn't give it the keyboard (browser-host.ts, PRESS_LOOK_MS): focused again, it has it.
+            const page = view(e.key);
+            if (!page || doc.activeElement !== page) return;
+            taking = true;
+            page.blur();
+            page.focus();
+            taking = false;
+        }
         else if (e.type === "focused" && theirs !== e.key) {
             said.set(e.key, performance.now());
             takeBack(e.key);
