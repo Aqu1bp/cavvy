@@ -34,7 +34,14 @@ class El {
         d.activeElement = this;
         if (d.keys) d.keys = this.dataset.key ?? "window";
     }
-    blur() { this.calls.push("blur"); if (this.doc?.activeElement === this) this.doc.activeElement = this.doc.body; }
+    /** What losing the focus sets off, where a test needs it (a page's focusout, heard by keepFocus). */
+    onBlur?: () => void;
+    blur() {
+        this.calls.push("blur");
+        if (this.doc?.activeElement !== this) return;
+        this.doc.activeElement = this.doc.body;
+        this.onBlur?.();
+    }
 }
 const real = (globalThis as any).HTMLElement;
 beforeAll(() => { (globalThis as any).HTMLElement = El; });
@@ -398,6 +405,37 @@ test("typing in a frame of a page the keyboard can't go back to, what the person
     const done = [false];
     r.fire("keydown", { key: "1", stopImmediatePropagation() { done[0] = true; } });
     expect(done).toEqual([false]);
+    // The shortcut's action moves the focus twice before it's looked at (a dialog, then its field): the second is where they are.
+    const two = page();
+    const first = new El("INPUT");
+    first.doc = two.doc;
+    at(1000); two.tell({ type: "person", key: "tab-2", press: true, seq: 1 });
+    two.tell({ type: "framed", key: "tab-2", framed: true });
+    two.doc.activeElement = two.view;
+    at(2000); two.tell({ type: "focused", key: "tab-1" });
+    at(3000); two.fire("keydown", { key: "k", metaKey: true }).defaultPrevented = true;
+    two.fire("focusin", { target: first });
+    two.fire("focusin", { target: two.box });
+    two.doc.activeElement = two.box;
+    two.run(0);
+    at(9000); two.doc.activeElement = two.view;
+    two.tell({ type: "focused", key: "tab-1" });
+    expect([two.doc.activeElement, first.calls]).toEqual([two.box, []]);
+    // The field that focused itself is where they last were in the window, and the agent has just clicked: moved off, it
+    // isn't taken for where they are having lost the focus to nothing, and focused again.
+    const h = page();
+    at(1000); h.fire("focusin", { target: h.box });
+    at(1500); h.tell({ type: "person", key: "tab-2", press: true, seq: 1 });
+    h.tell({ type: "framed", key: "tab-2", framed: true });
+    h.doc.activeElement = h.view;
+    at(3000); h.tell({ type: "focused", key: "tab-1" });
+    h.box.calls.length = 0;
+    h.box.onBlur = () => h.fire("focusout", { target: h.box, relatedTarget: null });
+    at(3100); h.fire("focusin", { target: h.box });
+    h.doc.activeElement = h.box;
+    h.run(0);
+    h.run(0);
+    expect([h.doc.activeElement, h.box.calls]).toEqual([h.body, ["blur"]]);
     // Their press in the field that just focused itself, before it's moved off: it's where they are, and keeps the focus.
     const t = page();
     at(1000); t.tell({ type: "person", key: "tab-2", press: true, seq: 1 });
