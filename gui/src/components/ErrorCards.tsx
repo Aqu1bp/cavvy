@@ -35,9 +35,9 @@ function ErrorCard(p: { toast: Toast }) {
     createEffect(on(() => t().count, () => setNudge((n) => (n === "a" ? "b" : "a")), { defer: true }));
     const count = () => (t().count > 1 ? <span class="error-count">{t().count}×</span> : undefined);
     return (
-        <div class="error-card glass" data-nudge={nudge()}>
+        <div class="error-card" data-nudge={nudge()}>
             <span class="error-card-icon">
-                <CircleAlert size={17} stroke-width={2} />
+                <CircleAlert size={16} />
             </span>
             <div class="error-card-body">
                 <div class="error-card-text selectable">

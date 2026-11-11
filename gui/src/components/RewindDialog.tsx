@@ -194,7 +194,6 @@ export function RewindDialog() {
                 <button class="btn ghost" onClick={close}>
                     Cancel
                 </button>
-                <span class="grow" />
                 <button class="btn secondary" disabled={!plan() || busy() || !plan()!.restore.length} onClick={() => void go(true, false)}>
                     Code only
                 </button>

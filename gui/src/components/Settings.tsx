@@ -5,7 +5,7 @@
 import "../styles/settings.css";
 import "../styles/usage.css";
 import { createEffect, createMemo, createSignal, For, Match, on, onMount, Show, Switch, type JSX } from "solid-js";
-import { AlertTriangle, ArrowLeft, ChartColumn, ChevronDown, CircleAlert, Copy, Download, ExternalLink, FolderOpen, Info, Keyboard, Palette, Plug, Plus, Puzzle, RotateCcw, SlidersHorizontal, X } from "lucide-solid";
+import { AlertTriangle, ArrowLeft, ChartColumn, CircleAlert, Copy, Download, ExternalLink, FolderOpen, Info, Keyboard, KeyRound, Palette, Plug, Plus, Puzzle, RotateCcw, SlidersHorizontal, X } from "lucide-solid";
 import { MODE_LABELS, type FollowUpMode, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
 import { app, refreshModels, refreshProviders, refreshSettings, reportError, rpc, setApp, toast } from "../state/app";
 import { reconcile } from "solid-js/store";
@@ -30,7 +30,7 @@ import { effortLevels, effortOf } from "../lib/effort";
 import { SidebarFrame } from "./Sidebar";
 import { NeedsYou } from "./Header";
 import { needsYou } from "../lib/rail";
-import { Spinner, Toggle } from "./ui/bits";
+import { Logo, Spinner, Toggle } from "./ui/bits";
 import { UsageView } from "./UsageView";
 import { Appearance } from "./Appearance";
 import { Plugins } from "./Plugins";
@@ -126,7 +126,7 @@ async function update(patch: GuiSettings) {
     }
 }
 
-/** A native select drawn as the mockup's .selbtn: a small raised pill with a chevron, and a glyph before its value when there is one. */
+/** A native select, with a glyph before its value when there is one. */
 function SelectButton(p: { icon?: JSX.Element; children: JSX.Element }) {
     return (
         <span class={`selbtn ${p.icon ? "has-ic" : ""}`}>
@@ -134,7 +134,6 @@ function SelectButton(p: { icon?: JSX.Element; children: JSX.Element }) {
                 <span class="selbtn-ic" aria-hidden="true">{p.icon}</span>
             </Show>
             {p.children}
-            <ChevronDown size={13} class="selbtn-chev" aria-hidden="true" />
         </span>
     );
 }
@@ -411,7 +410,7 @@ function ProviderRow(p: { pr: ProviderInfo }) {
         <>
             <Show when={commandIn(message)}>
                 {(command) => (
-                    <button class="btn ghost sm" onClick={() => void copyCommand(command())}>
+                    <button class="btn secondary sm" onClick={() => void copyCommand(command())}>
                         <Copy size={13} />
                         Copy command
                     </button>
@@ -428,11 +427,10 @@ function ProviderRow(p: { pr: ProviderInfo }) {
         </>
     );
     const removable = () => p.pr.requiresKey && p.pr.configured && !p.pr.source?.startsWith("$");
-    // The line under the name: the key as stored (masked), or what's missing.
-    const sub = () =>
-        p.pr.masked ? undefined
-        : !p.pr.configured ? (p.pr.requiresKey ? "Not set up" : "Set up in the terminal")
-        : undefined;
+    // The line under the name, when it has no key to show there: how to set up one that takes no key.
+    const sub = () => (!p.pr.masked && !p.pr.configured && !p.pr.requiresKey ? "Set up in the terminal" : undefined);
+    // Its state, as a chip at the row's end: a key is stored (not checked), or what it still needs.
+    const state = () => (p.pr.configured ? (p.pr.requiresKey ? "Key added" : "Ready") : p.pr.requiresKey ? "Needs a key" : "Not set up");
     return (
         <div class="prov" classList={{ err: !!failure() }} data-flash={failure() ? flash() : undefined}>
             <ConfirmDialog
@@ -505,18 +503,16 @@ function ProviderRow(p: { pr: ProviderInfo }) {
                         <Show when={p.pr.source && p.pr.source !== "local"}>
                             <span class="tag">{p.pr.source}</span>
                         </Show>
+                        <Show when={!failure()}>
+                            <span class={`tag ${p.pr.configured ? "ok" : ""}`}>{state()}</span>
+                        </Show>
                         <Show when={p.pr.requiresKey}>
                             <Show
                                 when={removable()}
                                 fallback={
                                     <Show when={!p.pr.configured}>
-                                        <Show when={p.pr.keyUrl}>
-                                            <button class="link-btn" onClick={() => void openExternal(p.pr.keyUrl!)}>
-                                                Get a key <ExternalLink size={11} />
-                                            </button>
-                                        </Show>
                                         <button class="btn secondary sm" aria-expanded={adding()} onClick={() => setAdding(!adding())}>
-                                            Add key
+                                            {adding() ? "Cancel" : "Add key"}
                                         </button>
                                     </Show>
                                 }
@@ -535,6 +531,11 @@ function ProviderRow(p: { pr: ProviderInfo }) {
                     <button class="btn primary sm" disabled={!key().trim() || busy()} onClick={() => void save()}>
                         {busy() ? <Spinner size={12} /> : "Save"}
                     </button>
+                    <Show when={p.pr.keyUrl}>
+                        <button class="link-btn" onClick={() => void openExternal(p.pr.keyUrl!)}>
+                            Get a key <ExternalLink size={11} />
+                        </button>
+                    </Show>
                 </div>
             </Show>
         </div>
@@ -570,6 +571,7 @@ function Providers() {
         <>
             <div class="set-group">
                 <div class="keyin">
+                    <KeyRound size={16} aria-hidden="true" />
                     <input class="input mono" type="password" aria-label="API key" placeholder="Paste an API key from any provider" value={key()} onInput={(e) => setKey(e.currentTarget.value)} onKeyDown={(e) => e.key === "Enter" && void quickAdd()} />
                     <button class="btn primary sm" disabled={!key().trim() || busy()} onClick={() => void quickAdd()}>
                         {busy() ? <Spinner size={12} /> : "Add"}
@@ -608,9 +610,13 @@ const BUILT_IN: [string, string][] = [
 
 const CONTEXT_TITLES: Record<string, string> = { Global: "Anywhere", Chat: "In the input box", Autocomplete: "In the / and @ menu", Sidebar: "In the session list" };
 
-/** One keystroke as one key cap: "⌘ K". */
+/** One keystroke, a cap for each of its keys: ⌘ and K. */
 function Cap(p: { keys: string }) {
-    return <kbd>{p.keys.split("+").join(" ")}</kbd>;
+    return (
+        <span class="sc-cap">
+            <For each={p.keys.split("+")}>{(k) => <kbd>{k}</kbd>}</For>
+        </span>
+    );
 }
 
 /** One key sequence as key caps: a chord's strokes one after another. */
@@ -657,11 +663,11 @@ function Shortcuts() {
                     }
                 >
                     <span class="sc-file-actions">
-                        <Show when={exists()} fallback={<button class="btn sm" disabled={creating()} onClick={() => void create()}><Plus size={14} /> Create file</button>}>
-                            <button class="btn sm" onClick={() => void copyPath()}><Copy size={14} /> Copy path</button>
+                        <Show when={exists()} fallback={<button class="btn secondary sm" disabled={creating()} onClick={() => void create()}><Plus size={14} /> Create file</button>}>
+                            <button class="btn secondary sm" onClick={() => void copyPath()}><Copy size={14} /> Copy path</button>
                         </Show>
                         <Show when={canReveal && exists()}>
-                            <button class="btn sm" onClick={() => void revealPath(path())}><FolderOpen size={14} /> Show</button>
+                            <button class="btn secondary sm" onClick={() => void revealPath(path())}><FolderOpen size={14} /> Show</button>
                         </Show>
                     </span>
                 </Row>
@@ -679,7 +685,7 @@ function Shortcuts() {
             <For each={CONTEXTS}>
                 {(context) => (
                     <Show when={rows(context).length}>
-                        <Section title={CONTEXT_TITLES[context]}>
+                        <Section title={CONTEXT_TITLES[context]} class="sc-list">
                             <For each={rows(context)}>
                                 {(a) => {
                                     const keys = () => (keymap().keysOf.get(a.id) ?? []).map((k) => formatKeys(k, "gui", os));
@@ -747,7 +753,7 @@ function Updates() {
                         <Show when={!v().busy && v().action} fallback={<Show when={v().busy}><Spinner size={16} class="upd-spin" /></Show>}>
                             {(a) => (
                                 <>
-                                    <button class="btn sm" disabled={asking()} onClick={() => void check()}>Check now</button>
+                                    <button class="btn secondary sm" disabled={asking()} onClick={() => void check()}>Check now</button>
                                     <Show when={a() === "update"}>
                                         <button class="btn primary sm" disabled={update.pending()} onClick={update.request}>
                                             <Download size={14} /> Update &amp; restart
@@ -789,11 +795,18 @@ function Updates() {
 function About() {
     return (
         <>
+            <div class="about-top">
+                <Logo size={44} />
+                <div>
+                    <div class="about-name">Cavvy</div>
+                    <div class="about-ver">
+                        Version {app.hello?.version ?? "—"}
+                        <span class={`tag ${app.conn === "open" ? "ok" : ""}`}>{app.conn === "open" ? "Connected" : "Not connected"}</span>
+                    </div>
+                </div>
+            </div>
             <Updates />
-            <Section title={app.update && (isDesktop || !app.update.unavailable) ? "Details" : undefined}>
-                <Row title="Version">
-                    <span class="set-val">{app.hello?.version ?? "—"}</span>
-                </Row>
+            <Section title="Details">
                 <Row title="Protocol">
                     <span class="set-val">{app.hello?.protocol ?? "—"}</span>
                 </Row>

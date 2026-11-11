@@ -129,7 +129,7 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
             <Show when={renameError()}><span id={`${uid}-rename-error`} class="account-error" role="alert">{renameError()}</span></Show>
         </form>
     </Show>;
-    // Beside the name: a green dot while it's on, or what's wrong with its one account.
+    // At the row's end, as a chip: connected while it's on, or what's wrong with its one account.
     const problem = () => {
         const a = single();
         return a?.invalid ? "Unavailable" : a?.signedIn === false ? "Not signed in" : undefined;
@@ -143,16 +143,14 @@ export function Accounts(p: { provider: ProviderInfo; connecting?: boolean; onCo
                 <div class="prov-name">
                     <span class="truncate">{p.provider.name}</span>
                     <Show when={planLabel(main()?.plan)}>{(plan) => <span class="tag">{plan()}</span>}</Show>
-                    <Show when={p.provider.configured}>
-                        <Show when={problem()} fallback={<span class="cli-dot" role="img" aria-label="Connected" title="Connected" />}>
-                            <span class="cli-problem">{problem()}</span>
-                        </Show>
-                    </Show>
                 </div>
                 <Show when={sub()}><div class="prov-sub truncate" title={single()?.email ? single()?.description : undefined}>{sub()}</div></Show>
             </div>
             <span class="prov-end">
                 <Show when={refreshing()}><Spinner size={12} /></Show>
+                <Show when={p.provider.configured}>
+                    <span class={`tag ${problem() ? "" : "ok"}`}>{problem() ?? "Connected"}</span>
+                </Show>
                 <Show when={!installed() && p.provider.keyUrl}>
                     <button class="link-btn" onClick={() => void openExternal(p.provider.keyUrl!)}>Install <ExternalLink size={11} /></button>
                 </Show>

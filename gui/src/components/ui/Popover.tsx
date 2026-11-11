@@ -60,7 +60,8 @@ function fadeOut(el: HTMLElement, scrolled: Map<Element, number>) {
 
 /** A floating panel next to an anchor, in a portal so no overflow clips it. */
 export function Popover(p: PopoverProps) {
-    const [pos, setPos] = createSignal<PopoverPlace>();
+    /** Where it goes, the room it has on that side of the window, and where along its edge the control that opened it is. */
+    const [pos, setPos] = createSignal<PopoverPlace & { room: number; from: number }>();
     let el: HTMLDivElement | undefined;
 
     const place = () => {
@@ -71,7 +72,11 @@ export function Popover(p: PopoverProps) {
         const r = span ? { top: at.top, bottom: at.bottom, left: span.left, right: span.right } : at;
         // Its own height once rendered, so a tall menu opens on the side it fits.
         const need = Math.min(el?.scrollHeight || 220, sp(p.maxHeight ?? 560));
-        setPos(placePopover(r, { width: span ? span.width : sp(p.width ?? 320), least: Math.min(need, p.minHeight === undefined ? need : sp(p.minHeight)), placement: p.placement ?? "bottom", align: p.point || span ? "start" : p.align, vw: window.innerWidth, vh: window.innerHeight }));
+        const to = placePopover(r, { width: span ? span.width : sp(p.width ?? 320), least: Math.min(need, p.minHeight === undefined ? need : sp(p.minHeight)), placement: p.placement ?? "bottom", align: p.point || span ? "start" : p.align, vw: window.innerWidth, vh: window.innerHeight });
+        // Never past the window's edge, however little room its side has (the placement allows it 160 at least):
+        // it scrolls inside instead. The same 6px from the edge as from its anchor.
+        const room = window.innerHeight - (to.top ?? to.bottom ?? 0) - 6;
+        setPos({ ...to, room, from: Math.max(0, Math.min(to.width, (at.left + at.right) / 2 - to.left)) });
     };
 
     createEffect(() => {
@@ -141,7 +146,8 @@ export function Popover(p: PopoverProps) {
                         top: pos()?.top !== undefined ? `${pos()!.top}px` : undefined,
                         bottom: pos()?.bottom !== undefined ? `${pos()!.bottom}px` : undefined,
                         width: `${pos()?.width ?? sp(p.width ?? 320)}px`,
-                        "max-height": `${Math.min(pos()?.maxHeight ?? 480, sp(p.maxHeight ?? 560))}px`,
+                        "max-height": `${Math.min(pos()?.maxHeight ?? 480, pos()?.room ?? 480, sp(p.maxHeight ?? 560))}px`,
+                        "--ox": pos() ? `${pos()!.from}px` : undefined,
                     }}
                     data-side={pos()?.bottom !== undefined ? "top" : "bottom"}
                     data-align={!p.point && p.align === "end" ? "end" : "start"}

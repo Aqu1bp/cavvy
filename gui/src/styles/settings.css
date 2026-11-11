@@ -67,10 +67,11 @@
 }
 
 
-/* ---- Settings pages (the mockup's "Settings") -----------------------------
-   A centred column on the sheet; a header that stays while the page scrolls;
-   settings in grouped rounded lists: title and description on the left, the
-   control on the right. */
+/* ---- Settings pages --------------------------------------------------------
+   A centred column on the sheet under a title that stays while the page
+   scrolls. Each section is a small heading over one filled group; a row in
+   it is what the setting is and one line about it on the left, its control
+   on the right. */
 
 .settings-page {
     flex: 1;
@@ -102,9 +103,9 @@
 }
 
 .set-in {
-    max-width: calc(680 * var(--sp));
+    max-width: calc(696 * var(--sp));
     margin: 0 auto;
-    padding: 0 calc(28 * var(--sp)) calc(60 * var(--sp));
+    padding: 0 calc(28 * var(--sp)) calc(72 * var(--sp));
 }
 
 .set-top {
@@ -112,14 +113,14 @@
     top: 0;
     z-index: 2;
     display: flex;
-    align-items: center;
+    align-items: flex-end;
     gap: calc(10 * var(--sp));
-    height: calc(58 * var(--sp));
+    height: calc(76 * var(--sp));
     /* No shorter than the title bar it covers, at any text size: what scrolls under it is no hole in the window's
        drag strip (base.css), which ends no lower than that bar does. */
     min-height: var(--header-h);
-    padding-top: calc(12 * var(--sp));
-    margin-bottom: calc(10 * var(--sp));
+    padding-bottom: calc(14 * var(--sp));
+    margin-bottom: calc(8 * var(--sp));
     background: var(--sheet);
     box-shadow: 0 10px 12px -12px var(--sheet);
 }
@@ -128,9 +129,10 @@
     flex: 1;
     min-width: 0;
     margin: 0;
-    font-size: 1.429rem;
+    font-size: 1.57rem;
     font-weight: 650;
-    letter-spacing: -0.02em;
+    letter-spacing: -0.025em;
+    line-height: calc(30 * var(--sp));
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -143,12 +145,12 @@
 .set-close {
     display: inline-grid;
     place-items: center;
-    width: calc(28 * var(--sp));
-    height: calc(28 * var(--sp));
+    width: calc(30 * var(--sp));
+    height: calc(30 * var(--sp));
     flex: none;
-    border-radius: var(--pill);
-    color: var(--fg-2);
-    transition: background 140ms, color 140ms, transform 160ms var(--ease);
+    border-radius: var(--r-ctl);
+    color: var(--fg-3);
+    transition: background var(--dur-fast), color var(--dur-fast);
 }
 
 .set-close:hover {
@@ -157,15 +159,15 @@
 }
 
 .set-close:active {
-    transform: scale(0.94);
     background: var(--press);
 }
 
-/* Sections as pills, for when there's no sidebar showing their list. */
+/* The sections as a row of tabs, for when there's no sidebar showing their list. */
 .set-pills {
     display: none;
-    gap: calc(4 * var(--sp));
-    margin: calc(-6 * var(--sp)) 0 calc(16 * var(--sp));
+    gap: calc(2 * var(--sp));
+    margin: 0 calc(-4 * var(--sp)) calc(20 * var(--sp));
+    padding: calc(2 * var(--sp)) calc(4 * var(--sp));
     overflow-x: auto;
     scrollbar-width: none;
 }
@@ -176,28 +178,30 @@
 
 .set-pills button {
     flex: none;
-    height: calc(28 * var(--sp));
+    height: calc(30 * var(--sp));
     padding: 0 calc(12 * var(--sp));
-    border-radius: var(--pill);
-    color: var(--fg-3);
+    border-radius: var(--r-ctl);
+    color: var(--fg-2);
+    font-size: 0.929rem;
     font-weight: 500;
     white-space: nowrap;
+    transition: background var(--dur-fast), color var(--dur-fast);
 }
 
 .set-pills button:hover:not(.on) {
-    color: var(--fg-2);
-}
-
-.set-pills button.on {
-    background: var(--sheet-2);
+    background: var(--hover);
     color: var(--fg);
 }
 
+.set-pills button.on {
+    background: var(--accent-soft);
+    color: var(--accent-text);
+}
+
 /* No sidebar (hidden, or a drawer below 900px): the header drops below the
-   window controls, says Settings, and the sections show as pills under it. */
+   window controls, says Settings, and the sections show as tabs under it. */
 .settings-page.rail-off .set-top {
-    height: calc(88 * var(--sp));
-    padding-top: calc(44 * var(--sp));
+    height: calc(92 * var(--sp));
 }
 
 .settings-page.rail-off .set-pills {
@@ -214,8 +218,7 @@
 
 @media (max-width: 899px) {
     .settings-page .set-top {
-        height: calc(88 * var(--sp));
-        padding-top: calc(44 * var(--sp));
+        height: calc(92 * var(--sp));
     }
 
     .settings-page .set-pills {
@@ -235,10 +238,10 @@
     display: flex;
     align-items: center;
     gap: calc(6 * var(--sp));
-    margin: calc(20 * var(--sp)) calc(4 * var(--sp)) calc(7 * var(--sp));
+    margin: calc(28 * var(--sp)) calc(4 * var(--sp)) calc(8 * var(--sp));
     font-size: 0.857rem;
     font-weight: 600;
-    color: var(--fg-3);
+    color: var(--fg-2);
 }
 
 .set-pills + .set-h,
@@ -250,7 +253,6 @@
 .set-group {
     border-radius: var(--r-card);
     background: var(--group);
-    box-shadow: inset 0 0 0 0.5px var(--line);
     overflow: hidden;
 }
 
@@ -262,16 +264,21 @@
     display: flex;
     align-items: center;
     gap: calc(16 * var(--sp));
-    min-height: calc(46 * var(--sp));
-    padding: calc(9 * var(--sp)) calc(14 * var(--sp));
+    min-height: calc(52 * var(--sp));
+    padding: calc(9 * var(--sp)) calc(16 * var(--sp));
 }
 
-/* A row with no description under its title (About's details, say) needs less height. */
+/* A row with no description under its title (About's details, say) needs less height, and its value more room. */
 .set-row:not(:has(.set-desc)) {
-    min-height: calc(40 * var(--sp));
+    min-height: calc(44 * var(--sp));
 }
 
-.set-row + .set-row {
+.set-row:not(:has(.set-desc)) .set-ctl {
+    max-width: 78%;
+}
+
+.set-row + .set-row,
+.prov + .prov {
     border-top: 0.5px solid var(--line);
 }
 
@@ -281,11 +288,12 @@
 }
 
 .set-title {
+    font-size: 0.929rem;
     font-weight: 500;
+    line-height: 1.4;
 }
 
 .set-desc {
-    margin-top: calc(2 * var(--sp));
     font-size: 0.857rem;
     line-height: 1.4;
     color: var(--fg-3);
@@ -301,6 +309,7 @@
     display: flex;
     align-items: center;
     justify-content: flex-end;
+    gap: calc(6 * var(--sp));
     flex: none;
     max-width: 60%;
     min-width: 0;
@@ -322,7 +331,7 @@
 }
 
 .set-val {
-    color: var(--fg-3);
+    color: var(--fg-2);
     font: 0.857rem var(--font-mono);
     text-align: right;
     overflow-wrap: anywhere;
@@ -331,13 +340,13 @@
 }
 
 .set-note {
-    margin: calc(10 * var(--sp)) calc(4 * var(--sp)) 0;
+    margin: calc(12 * var(--sp)) calc(4 * var(--sp)) 0;
     font-size: 0.857rem;
     line-height: 1.5;
     color: var(--fg-3);
 }
 
-/* Reasoning effort: the level's name, then the composer's bars, smaller (mockup .set-effort). */
+/* Reasoning effort: the level's name, then the composer's bars, smaller. */
 .set-effort {
     display: inline-flex;
     align-items: center;
@@ -348,8 +357,9 @@
 .set-effort-l {
     min-width: calc(70 * var(--sp));
     text-align: right;
+    font-size: 0.929rem;
     font-weight: 500;
-    color: var(--fg);
+    color: var(--fg-2);
     white-space: nowrap;
 }
 
@@ -357,7 +367,7 @@
     width: calc(120 * var(--sp));
 }
 
-/* A native select drawn as a small raised button, with a glyph before its value. */
+/* A select (base.css's), with a glyph before its value when the value has one. */
 .selbtn {
     position: relative;
     display: inline-flex;
@@ -368,50 +378,20 @@
 }
 
 .selbtn .select {
-    height: calc(28 * var(--sp));
+    height: calc(30 * var(--sp));
     max-width: calc(260 * var(--sp));
-    padding: 0 calc(26 * var(--sp)) 0 calc(10 * var(--sp));
-    border: 0;
-    border-radius: calc(8 * var(--rs));
-    background-color: var(--sheet);
-    box-shadow: 0 0 0 0.5px var(--line), 0 1px 2px var(--line);
-    color: var(--fg);
     font-size: 0.929rem;
     font-weight: 500;
     text-overflow: ellipsis;
-    transition: box-shadow 140ms;
 }
 
 .selbtn.has-ic .select {
-    padding-left: calc(32 * var(--sp));
-}
-
-.selbtn .select:hover {
-    box-shadow: 0 0 0 0.5px var(--fg-4), 0 1px 2px var(--line);
-}
-
-.selbtn .select:focus,
-.selbtn .select:focus-visible {
-    border: 0;
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
-}
-
-.selbtn .select {
-    background-image: none;
-}
-
-.selbtn-chev {
-    position: absolute;
-    right: calc(8 * var(--sp));
-    top: 50%;
-    transform: translateY(-50%);
-    color: var(--fg-3);
-    pointer-events: none;
+    padding-left: calc(34 * var(--sp));
 }
 
 .selbtn-ic {
     position: absolute;
-    left: calc(10 * var(--sp));
+    left: calc(11 * var(--sp));
     top: 50%;
     display: grid;
     place-items: center;
@@ -422,19 +402,23 @@
 
 /* ---- Settings → Providers ------------------------------------------- */
 
+/* Any provider's key, pasted: the quickest way in. */
 .keyin {
     display: flex;
+    align-items: center;
     gap: calc(8 * var(--sp));
-    padding: calc(12 * var(--sp)) calc(14 * var(--sp));
+    padding: calc(12 * var(--sp)) calc(16 * var(--sp));
 }
 
-.settings-page .keyin .input,
-.settings-page .prov-add .input,
-.settings-page .prov-quick .input {
-    flex: 1;
+.keyin > svg {
+    flex: none;
+    margin: 0 calc(8 * var(--sp));
+    color: var(--fg-3);
+}
+
+.settings-page :is(.keyin, .prov-add) .input {
+    flex: 1 1 calc(200 * var(--sp));
     min-width: 0;
-    height: calc(30 * var(--sp));
-    border-radius: calc(8 * var(--rs));
     font: 0.857rem var(--font-mono);
 }
 
@@ -442,27 +426,23 @@
     overflow: visible;
 }
 
-.prov + .prov {
-    border-top: 0.5px solid var(--line);
-}
-
 .prov-line {
     display: flex;
     align-items: center;
     gap: calc(12 * var(--sp));
-    min-height: calc(52 * var(--sp));
-    padding: calc(11 * var(--sp)) calc(14 * var(--sp));
+    min-height: calc(56 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(16 * var(--sp));
 }
 
+/* The provider's mark in a tile. */
 .prov-logo {
     display: grid;
     place-items: center;
-    width: calc(28 * var(--sp));
-    height: calc(28 * var(--sp));
+    width: calc(32 * var(--sp));
+    height: calc(32 * var(--sp));
     flex: none;
-    border-radius: calc(8 * var(--rs));
+    border-radius: calc(9 * var(--rs));
     background: var(--sheet);
-    box-shadow: 0 0 0 0.5px var(--line);
     color: var(--fg);
 }
 
@@ -476,11 +456,11 @@
     align-items: center;
     gap: calc(8 * var(--sp));
     min-width: 0;
+    font-size: 0.929rem;
     font-weight: 500;
 }
 
 .prov-sub {
-    margin-top: 1px;
     font-size: 0.857rem;
     color: var(--fg-3);
 }
@@ -497,89 +477,86 @@
     flex-wrap: wrap;
     gap: calc(8 * var(--sp));
     flex: none;
-    max-width: 55%;
+    max-width: 60%;
 }
 
-.tag {
-    padding: calc(2 * var(--sp)) calc(6 * var(--sp));
-    border-radius: var(--pill);
-    background: var(--hover);
-    color: var(--fg-3);
-    font-size: 0.75rem;
-    font-weight: 600;
-    white-space: nowrap;
-}
-
-.tag.ok {
-    color: var(--ok);
-    background: color-mix(in srgb, var(--ok) 12%, transparent);
-}
-
+/* A provider's key, in place under its row: the field, Save, and where to get one. */
 .prov-add {
     display: flex;
-    gap: calc(8 * var(--sp));
-    padding: 0 calc(14 * var(--sp)) calc(12 * var(--sp)) calc(54 * var(--sp));
-}
-
-/* The marketplace field on the Plugins page: a field in a rounded group. */
-.prov-quick {
-    display: flex;
     align-items: center;
-    gap: calc(10 * var(--sp));
-    padding: calc(12 * var(--sp)) calc(14 * var(--sp));
-    border-radius: calc(12 * var(--rs));
-    background: var(--group);
-    box-shadow: inset 0 0 0 0.5px var(--line);
-}
-
-.prov-quick > svg {
-    flex: none;
-    color: var(--fg-3);
+    flex-wrap: wrap;
+    gap: calc(8 * var(--sp)) calc(8 * var(--sp));
+    padding: 0 calc(16 * var(--sp)) calc(14 * var(--sp)) calc(60 * var(--sp));
+    animation: settings-in var(--dur-panel) var(--ease);
 }
 
 /* ---- Settings → Shortcuts ------------------------------------------- */
 
-/* Several bindings for one action sit apart; a sequence's strokes closer. */
+/* A context's shortcuts in two columns: what it does, and its keys as caps. */
+.sc-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.sc-list > .set-row:nth-child(2) {
+    border-top: 0;
+}
+
+.sc-list > .set-row:nth-child(odd) {
+    border-right: 0.5px solid var(--line);
+}
+
+.sc-list .set-ctl {
+    max-width: 50%;
+}
+
+/* Several bindings for one action sit apart; a stroke's keys closer. */
 .sc-keys {
     display: inline-flex;
     flex-wrap: wrap;
     justify-content: flex-end;
     align-items: center;
-    gap: calc(6 * var(--sp)) calc(12 * var(--sp));
+    gap: calc(6 * var(--sp)) calc(10 * var(--sp));
 }
 
-/* Key caps: 12.5px, raised a little off the group. */
-.sc-keys kbd {
-    height: auto;
-    min-width: calc(24 * var(--sp));
-    padding: calc(4 * var(--sp)) calc(8 * var(--sp));
-    border-radius: calc(6 * var(--rs));
-    background: var(--sheet);
-    box-shadow: 0 0 0 0.5px var(--line), 0 1px 0 var(--line);
-    color: var(--fg-2);
-    font-size: 0.893rem;
-    text-align: center;
-}
-
-.sc-seq {
+.sc-seq,
+.sc-cap {
     display: inline-flex;
     align-items: center;
-    gap: calc(5 * var(--sp));
+    gap: calc(3 * var(--sp));
+}
+
+.sc-keys kbd {
+    min-width: calc(22 * var(--sp));
+    height: calc(22 * var(--sp));
+    padding: 0 calc(6 * var(--sp));
+}
+
+/* Either of them does it. */
+.sc-keys > .sc-seq + .sc-seq::before {
+    content: "or";
+    margin-right: calc(7 * var(--sp));
+    font-size: 0.786rem;
+    color: var(--fg-3);
 }
 
 .sc-then,
 .sc-none {
+    margin: 0 calc(2 * var(--sp));
     font-size: 0.786rem;
     color: var(--fg-3);
 }
 
 .sc-custom {
-    padding: calc(2 * var(--sp)) calc(7 * var(--sp));
-    border-radius: var(--pill);
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    display: inline-flex;
+    align-items: center;
+    height: calc(20 * var(--sp));
+    padding: 0 calc(7 * var(--sp));
+    border-radius: calc(6 * var(--rs));
+    font-size: 0.786rem;
+    font-weight: 500;
+    color: var(--accent-text);
+    background: var(--accent-soft);
 }
 
 .sc-action {
@@ -598,10 +575,9 @@
 
 .sc-issues {
     margin-top: calc(12 * var(--sp));
-    padding: calc(10 * var(--sp)) calc(12 * var(--sp));
-    border-radius: calc(12 * var(--rs));
-    background: var(--warn-bg);
-    box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--warn) 40%, transparent);
+    padding: calc(12 * var(--sp)) calc(16 * var(--sp));
+    border-radius: var(--r-card);
+    background: var(--warn-soft);
     font-size: 0.857rem;
     line-height: 1.5;
 }
@@ -634,7 +610,7 @@
 /* Narrow: tighter margins; a row's control drops under its text when they don't fit side by side. */
 :where(.main[data-narrow~="520"]) {
     .set-in {
-        padding: 0 calc(16 * var(--sp)) calc(50 * var(--sp));
+        padding: 0 calc(16 * var(--sp)) calc(56 * var(--sp));
     }
 
     .set-row,
@@ -643,15 +619,74 @@
     }
 
     .set-ctl,
-    .prov-end {
+    .prov-end,
+    .sc-list .set-ctl {
         max-width: 100%;
     }
 
     .prov-add {
-        padding-left: calc(14 * var(--sp));
+        padding-left: calc(16 * var(--sp));
     }
 }
 
+/* One column once two would squeeze the keys. */
+:where(.main[data-narrow~="700"]) {
+    .sc-list {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .sc-list > .set-row:nth-child(n) {
+        border-right: 0;
+    }
+
+    .sc-list > .set-row:nth-child(2) {
+        border-top: 0.5px solid var(--line);
+    }
+}
+
+
+/* ---- About ---------------------------------------------------------------- */
+
+/* The mark, the name and the version it is, before anything to do about it. */
+.about-top {
+    display: flex;
+    align-items: center;
+    gap: calc(14 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(4 * var(--sp)) calc(4 * var(--sp));
+}
+
+.about-mark {
+    display: grid;
+    place-items: center;
+    width: calc(52 * var(--sp));
+    height: calc(52 * var(--sp));
+    flex: none;
+    border-radius: var(--r-card);
+    background: var(--group);
+}
+
+.about-name {
+    font-size: 1.143rem;
+    font-weight: 620;
+    letter-spacing: -0.015em;
+    line-height: 1.3;
+}
+
+.about-ver {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    margin-top: calc(2 * var(--sp));
+    font: 0.857rem var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-3);
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+.about-ver .tag {
+    font-family: var(--font-ui);
+}
 
 /* ---- About: updates from main (Settings.tsx Updates) ------------------- */
 
@@ -664,15 +699,6 @@
     text-overflow: ellipsis;
 }
 
-/* Check now, and Update & restart beside it when there's one. */
-.upd-row .set-ctl {
-    gap: calc(6 * var(--sp));
-}
-
-.upd-row .btn svg {
-    margin-right: calc(2 * var(--sp));
-}
-
 .upd-spin {
     color: var(--fg-3);
 }
@@ -682,14 +708,14 @@
     align-items: center;
     gap: calc(6 * var(--sp));
     margin-top: calc(-4 * var(--sp));
-    padding: 0 calc(14 * var(--sp)) calc(12 * var(--sp));
-    font-size: 0.821rem;
+    padding: 0 calc(16 * var(--sp)) calc(12 * var(--sp));
+    font-size: 0.857rem;
     color: var(--warn);
 }
 
 .upd-changes {
     margin: 0;
-    padding: calc(10 * var(--sp)) calc(14 * var(--sp)) calc(12 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(16 * var(--sp)) calc(12 * var(--sp));
     list-style: none;
     border-top: 0.5px solid var(--line);
 }
@@ -719,7 +745,7 @@
     display: flex;
     align-items: flex-start;
     gap: calc(8 * var(--sp));
-    padding: calc(10 * var(--sp)) calc(14 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(16 * var(--sp));
     border-top: 0.5px solid var(--line);
     font-size: 0.857rem;
     line-height: 1.4;
@@ -740,4 +766,594 @@
 .upd-error .btn {
     flex: none;
     margin-top: calc(-3 * var(--sp));
+}
+
+/* ---- Settings: plugins --------------------------------------------- */
+
+/* Discover is a catalog to scan: category filters, then cards (a mark tinted by category, name and maker,
+   two lines of summary, one Install). Installed and Marketplaces are lists to manage. The category hue is
+   the only colour; everything else is ink. */
+.pg-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: calc(10 * var(--sp));
+    margin: 0 0 calc(16 * var(--sp));
+}
+
+.plg-n {
+    margin-left: calc(2 * var(--sp));
+    color: var(--fg-3);
+    font-variant-numeric: tabular-nums;
+}
+
+.pg-search {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    width: min(calc(250 * var(--sp)), 100%);
+    height: calc(32 * var(--sp));
+    padding: 0 calc(5 * var(--sp)) 0 calc(11 * var(--sp));
+    border-radius: var(--r-ctl);
+    background: var(--group);
+    color: var(--fg-3);
+}
+
+.pg-search:focus-within,
+.pg-add:focus-within {
+    box-shadow: inset 0 0 0 1px var(--accent-border), var(--ring);
+}
+
+.pg-search input,
+.pg-add input {
+    flex: 1;
+    min-width: 0;
+    border: 0;
+    outline: 0;
+    background: none;
+    font: inherit;
+    color: var(--fg);
+}
+
+:is(.pg-search, .pg-add) input::placeholder {
+    color: var(--fg-3);
+}
+
+/* Categories: quiet tabs, the hue as a dot, the count after. */
+.pg-cats {
+    display: flex;
+    gap: calc(4 * var(--sp));
+    margin: 0 0 calc(14 * var(--sp));
+    padding: 1px;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.pg-cats button {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    gap: calc(6 * var(--sp));
+    height: calc(28 * var(--sp));
+    padding: 0 calc(10 * var(--sp));
+    border-radius: var(--r-ctl);
+    font-size: 0.857rem;
+    font-weight: 500;
+    white-space: nowrap;
+    color: var(--fg-2);
+    transition: background var(--dur-fast), color var(--dur-fast);
+}
+
+.pg-cats button:hover:not(.on) {
+    background: var(--hover);
+    color: var(--fg);
+}
+
+.pg-cats button.on {
+    background: var(--accent-soft);
+    color: var(--accent-text);
+}
+
+.pg-cats button span {
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-3);
+}
+
+.pg-cats i,
+.pg-cat i,
+.pg-facts i {
+    flex: none;
+    width: calc(7 * var(--sp));
+    height: calc(7 * var(--sp));
+    border-radius: 50%;
+    background: var(--h);
+}
+
+/* A plugin's mark: its category's icon on the category's tint, or its maker's logo filling the tile. */
+.pg-mark {
+    position: relative;
+    display: inline-grid;
+    place-items: center;
+    flex: none;
+    border-radius: calc(10 * var(--rs));
+    overflow: hidden;
+    color: var(--h);
+    background: color-mix(in srgb, var(--h) 14%, var(--sheet));
+}
+
+[data-theme="dark"] .pg-mark {
+    color: color-mix(in srgb, var(--h) 70%, white);
+    background: color-mix(in srgb, var(--h) 22%, var(--sheet));
+}
+
+.pg-mark img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.pg-mark.logo,
+[data-theme="dark"] .pg-mark.logo {
+    background: #fff;
+}
+
+.pg-mark.logo::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    box-shadow: inset 0 0 0 0.5px var(--line-strong);
+    pointer-events: none;
+}
+
+.pg-mark.mk,
+[data-theme="dark"] .pg-mark.mk {
+    width: calc(32 * var(--sp));
+    height: calc(32 * var(--sp));
+    color: var(--fg-2);
+    background: var(--sheet);
+}
+
+.pg-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: calc(12 * var(--sp));
+}
+
+.pg-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: calc(10 * var(--sp));
+    padding: calc(16 * var(--sp));
+    border-radius: var(--r-card);
+    background: var(--group);
+    cursor: pointer;
+    outline: 0;
+    transition: background var(--dur-fast);
+}
+
+.pg-card:hover {
+    background: linear-gradient(var(--hover) 0 0), var(--group);
+}
+
+.pg-card:has(.pg-open:focus-visible) {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+/* The name is the card's button: it reads as the name, and its hit area covers the card. */
+.pg-open {
+    display: block;
+    max-width: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    font-weight: 600;
+    color: inherit;
+    text-align: left;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+    outline: none;
+}
+
+.pg-open::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+}
+
+/* Install sits above the stretched hit area. */
+.pg-install {
+    position: relative;
+    z-index: 1;
+}
+
+.pg-top {
+    display: flex;
+    align-items: center;
+    gap: calc(12 * var(--sp));
+    min-width: 0;
+}
+
+.pg-id {
+    flex: 1;
+    min-width: 0;
+}
+
+.pg-id b,
+.pg-id h3 {
+    display: block;
+    margin: 0;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.pg-id span {
+    display: block;
+    font-size: 0.857rem;
+    color: var(--fg-3);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.pg-card p {
+    display: -webkit-box;
+    flex: 1;
+    margin: 0;
+    font-size: 0.857rem;
+    line-height: 1.5;
+    color: var(--fg-2);
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.pg-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: calc(8 * var(--sp));
+}
+
+.pg-cat {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    font-size: 0.857rem;
+    color: var(--fg-3);
+}
+
+.pg-note {
+    margin-top: calc(16 * var(--sp));
+}
+
+/* Installed and marketplaces: rows in one rounded group. */
+.pg-scope {
+    display: flex;
+    align-items: center;
+    gap: calc(7 * var(--sp));
+    margin: 0 calc(4 * var(--sp)) calc(10 * var(--sp));
+    font-size: 0.857rem;
+    color: var(--fg-3);
+}
+
+.pg-scope svg {
+    flex: none;
+}
+
+.pg-scope b {
+    font-weight: 600;
+    color: var(--fg-2);
+}
+
+.pg-list,
+.pg-add,
+.pg-empty {
+    border-radius: var(--r-card);
+    background: var(--group);
+}
+
+.pg-row {
+    display: flex;
+    align-items: center;
+    gap: calc(12 * var(--sp));
+    min-height: calc(56 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(12 * var(--sp)) calc(10 * var(--sp)) calc(16 * var(--sp));
+}
+
+.pg-row + .pg-row {
+    border-top: 0.5px solid var(--line);
+}
+
+.pg-row.off .pg-mark {
+    filter: grayscale(1);
+    opacity: 0.6;
+}
+
+.pg-row.off .pg-rname b {
+    color: var(--fg-2);
+}
+
+.pg-row > .toggle,
+.pg-row > .hb,
+.pg-row > .btn {
+    flex: none;
+}
+
+.pg-rmain {
+    flex: 1;
+    min-width: 0;
+}
+
+.pg-rname {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    min-width: 0;
+}
+
+.pg-rname b {
+    font-size: 0.929rem;
+    font-weight: 500;
+}
+
+.pg-ver {
+    font-size: 0.857rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    color: var(--fg-3);
+}
+
+.pg-prob {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    gap: calc(4 * var(--sp));
+    height: calc(20 * var(--sp));
+    padding: 0 calc(7 * var(--sp));
+    border-radius: calc(6 * var(--rs));
+    font-size: 0.786rem;
+    font-weight: 500;
+    white-space: nowrap;
+    color: var(--warn);
+    background: var(--warn-soft);
+}
+
+.pg-prob.err {
+    color: var(--danger);
+    background: var(--danger-soft);
+}
+
+.pg-rmeta {
+    font-size: 0.857rem;
+    line-height: 1.4;
+    color: var(--fg-3);
+    overflow-wrap: anywhere;
+}
+
+.pg-rmeta code {
+    font: 0.821rem var(--font-mono);
+    color: var(--fg-2);
+}
+
+.pg-rprob {
+    margin-top: calc(6 * var(--sp));
+    font-size: 0.857rem;
+    line-height: 1.45;
+    color: var(--fg-2);
+    overflow-wrap: anywhere;
+}
+
+.pg-rprob.err {
+    color: var(--danger);
+}
+
+.pg-after {
+    display: flex;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+    margin: calc(12 * var(--sp)) calc(4 * var(--sp)) 0;
+}
+
+.pg-add {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(10 * var(--sp)) calc(10 * var(--sp)) calc(16 * var(--sp));
+}
+
+.pg-add label {
+    display: flex;
+    align-items: center;
+    flex: 1;
+    gap: calc(10 * var(--sp));
+    min-width: 0;
+    color: var(--fg-3);
+}
+
+.pg-add input {
+    height: calc(30 * var(--sp));
+    font: 0.857rem var(--font-mono);
+}
+
+.pg-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: calc(40 * var(--sp)) calc(20 * var(--sp));
+    text-align: center;
+}
+
+.pg-add + .pg-empty {
+    margin-top: calc(12 * var(--sp));
+}
+
+.pg-eic {
+    display: grid;
+    place-items: center;
+    width: calc(44 * var(--sp));
+    height: calc(44 * var(--sp));
+    margin-bottom: calc(12 * var(--sp));
+    border-radius: calc(12 * var(--rs));
+    background: var(--sheet);
+    color: var(--fg-2);
+}
+
+.pg-empty b {
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+.pg-empty p {
+    max-width: 46ch;
+    margin: calc(4 * var(--sp)) 0 0;
+    font-size: 0.929rem;
+    line-height: 1.5;
+    color: var(--fg-3);
+}
+
+.pg-eact {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: calc(8 * var(--sp));
+    margin-top: calc(16 * var(--sp));
+}
+
+.pg-load {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    padding: calc(32 * var(--sp)) calc(4 * var(--sp));
+    color: var(--fg-3);
+}
+
+/* A plugin's details. */
+.pg-dlg .pg-top {
+    gap: calc(14 * var(--sp));
+    padding-top: calc(4 * var(--sp));
+}
+
+.pg-dlg h3 {
+    font-size: 1.143rem;
+}
+
+.pg-dlg .pg-full {
+    margin: calc(14 * var(--sp)) 0 calc(12 * var(--sp));
+    line-height: 1.55;
+    color: var(--fg-2);
+}
+
+.pg-facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: calc(6 * var(--sp)) calc(14 * var(--sp));
+    font-size: 0.857rem;
+    color: var(--fg-3);
+}
+
+.pg-facts > * {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+}
+
+.pg-sh {
+    margin: calc(18 * var(--sp)) 0 calc(8 * var(--sp));
+    font-size: 0.857rem;
+    font-weight: 600;
+    color: var(--fg-2);
+}
+
+.pg-scs {
+    display: grid;
+    gap: 1px;
+    padding: calc(4 * var(--sp));
+    border-radius: calc(10 * var(--rs));
+    background: var(--well);
+}
+
+.pg-sc {
+    display: flex;
+    align-items: flex-start;
+    gap: calc(10 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
+    border-radius: calc(7 * var(--rs));
+    text-align: left;
+}
+
+.pg-sc:hover:not(.on) {
+    background: var(--hover);
+}
+
+.pg-sc.on {
+    background: var(--accent-soft);
+}
+
+.pg-sc:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+.pg-sc .rd {
+    flex: none;
+    width: calc(14 * var(--sp));
+    height: calc(14 * var(--sp));
+    margin-top: calc(2 * var(--sp));
+    border-radius: 50%;
+    box-shadow: inset 0 0 0 1.5px var(--fg-4);
+}
+
+.pg-sc.on .rd {
+    box-shadow: inset 0 0 0 calc(4 * var(--sp)) var(--accent);
+}
+
+.pg-sc b {
+    display: block;
+    font-weight: 500;
+}
+
+.pg-sc span span {
+    display: block;
+    font-size: 0.857rem;
+    line-height: 1.4;
+    color: var(--fg-3);
+}
+
+.pg-sub {
+    margin: calc(8 * var(--sp)) calc(4 * var(--sp)) 0;
+    font-size: 0.857rem;
+    color: var(--fg-3);
+}
+
+.pg-warn {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    margin: calc(12 * var(--sp)) 0 calc(4 * var(--sp));
+    font-size: 0.857rem;
+    color: var(--fg-3);
+}
+
+.pg-warn svg {
+    flex: none;
+}
+
+:where(.main[data-narrow~="600"]) {
+    .pg-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .pg-search {
+        width: 100%;
+    }
 }

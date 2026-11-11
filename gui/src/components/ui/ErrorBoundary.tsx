@@ -26,9 +26,9 @@ function RenderFallback(p: Omit<Props, "children"> & { error: unknown; reset: ()
             <p>{p.app ? "Couldn't render Cavvy. Reload to try again." : "Couldn't render this part."}</p>
             <Show when={p.raw}><pre>{raw()}</pre></Show>
             <div class="render-error-actions">
-                <button class="ghost-btn" onClick={() => p.app ? location.reload() : p.reset()}>{p.app ? "Reload" : "Retry"}</button>
-                <button class="ghost-btn" onClick={() => void copy(details)}>Copy details</button>
-                <Show when={p.raw}><button class="ghost-btn" onClick={() => void copy(raw())}>Copy text</button></Show>
+                <button class="btn secondary sm" onClick={() => p.app ? location.reload() : p.reset()}>{p.app ? "Reload" : "Retry"}</button>
+                <button class="btn ghost sm" onClick={() => void copy(details)}>Copy details</button>
+                <Show when={p.raw}><button class="btn ghost sm" onClick={() => void copy(raw())}>Copy text</button></Show>
                 <span role="status">{copied()}</span>
             </div>
         </div>

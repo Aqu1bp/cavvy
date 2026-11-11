@@ -88,7 +88,7 @@ export function UsageDashboard(p: { data: UsageSummary; metric: Metric }) {
     const accountCount = (s: UsageSource) => accounts().filter((a) => a.source === s).length;
     return <section class="usage-dashboard" aria-label="Usage dashboard" data-hl={hl() ?? ""}>
         <section class="uh" aria-label="Total">
-            <div class="uh-num"><span class="v">{m() === "tokens" ? tokens(processed(p.data.totals), 3) : costFigure(p.data.totals)}</span><span class="u">{m() === "tokens" ? "tokens" : "at API prices"}</span></div>
+            <div class="uh-num"><span class={`v ${m() === "cost" && costFigure(p.data.totals) === "—" ? "none" : ""}`}>{m() === "tokens" ? tokens(processed(p.data.totals), 3) : costFigure(p.data.totals)}</span><span class="u">{m() === "tokens" ? "tokens" : "at API prices"}</span></div>
             <p class="uh-sub">
                 In the last {rangeLabel(p.data.days)}, across {plural(p.data.sessions, "session")}.
                 <Show when={m() === "cost" && unpriced().length}> No price is known for {unpriced().join(", ")}, so {unpriced().length === 1 ? "its" : "their"} usage isn't in the cost.</Show>
@@ -99,7 +99,7 @@ export function UsageDashboard(p: { data: UsageSummary; metric: Metric }) {
             <div class="uh-leg" style={{ "--k": sources().length }}>
                 <For each={sources()}>{(s) => <div class={`uh-li src-${s.source}`} data-src={s.source} onPointerEnter={() => setHl(s.source)} onPointerLeave={() => setHl(undefined)}>
                     <span class="n"><i class="sw" />{s.label}</span>
-                    <span class="v">{figure(s, m())}<span class="p">{pct(amount(s, m()), total())}</span></span>
+                    <span class={`v ${figure(s, m()) === "—" ? "none" : ""}`}>{figure(s, m())}<span class="p">{pct(amount(s, m()), total())}</span></span>
                     <span class="m">
                         {m() === "tokens" ? `${costFigure(s)} at API prices` : `${tokens(processed(s))} tokens`}, {plural(s.sessions, "session")}
                         <Show when={s.source !== "api" && accountCount(s.source) > 1}>, <a class="u-link" href="#usage-accounts" onClick={(e) => { e.preventDefault(); document.getElementById("usage-accounts")?.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" }); }}>{accountCount(s.source)} accounts</a></Show>
