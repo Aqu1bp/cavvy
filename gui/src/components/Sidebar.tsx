@@ -159,7 +159,8 @@ function SingleItems(p: { s: SessionSummary; close: () => void; onRename: () => 
                 </button>
             </Show>
             <button role="menuitem" class="menu-item compact" title={`New session in ${p.s.projectName}`} onClick={() => (close(), newSession(p.s.cwd))}>
-                <Plus size={14} /> New session here
+                {/* Short enough for the narrowest rail at the largest text: the menu is the row's width. Where: its tooltip. */}
+                <Plus size={14} /> New session
             </button>
             <div class="menu-sep" />
             <button role="menuitem" class="menu-item compact" onClick={() => (close(), void archive(p.s.id, !p.s.archived))}>
