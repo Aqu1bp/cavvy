@@ -325,47 +325,41 @@
     white-space: nowrap;
 }
 
-/* A message from the agent in another session: a card in the reply's column (it isn't the user's), its head naming the sender. */
+/* A message from the agent in another session: quoted in the reply's column (it isn't the user's), under who sent it. */
 .peer-card {
-    margin-bottom: calc(18 * var(--sp));
-    border-radius: var(--r-card);
-    background: var(--sheet);
-    box-shadow: 0 0 0 0.5px var(--line), 0 1px 2px var(--hover);
-    overflow: hidden;
+    max-width: min(82%, 600 * var(--sp));
+    margin-bottom: calc(14 * var(--sp));
 }
 
 .peer-head {
     display: flex;
     align-items: center;
-    gap: calc(10 * var(--sp));
-    width: 100%;
-    padding: calc(8 * var(--sp)) calc(14 * var(--sp)) calc(8 * var(--sp)) calc(12 * var(--sp));
-    border-bottom: 0.5px solid var(--line);
-    text-align: left;
+    gap: calc(6 * var(--sp));
+    max-width: 100%;
+    margin-bottom: calc(6 * var(--sp));
+    color: var(--fg-3);
+    font-size: 0.857rem;
 }
 
-.peer-head:hover {
-    background: var(--hover);
+.peer-head svg {
+    flex: none;
+    color: var(--accent);
 }
 
-.peer-who {
-    display: flex;
-    flex: 1;
-    flex-direction: column;
-    min-width: 0;
-    color: var(--fg);
+.peer-head b {
+    color: var(--fg-2);
     font-weight: 500;
 }
 
-.peer-who small {
-    color: var(--fg-3);
-    font: 0.786rem var(--font-ui);
+.peer-head:hover b {
+    text-decoration: underline;
 }
 
 .peer-body {
     max-height: calc(320 * var(--sp));
     overflow-y: auto;
-    padding: calc(12 * var(--sp)) calc(16 * var(--sp)) calc(14 * var(--sp));
+    padding: calc(2 * var(--sp)) 0 calc(2 * var(--sp)) calc(14 * var(--sp));
+    border-left: 2px solid var(--accent);
     line-height: 1.55;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
