@@ -67,8 +67,22 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: ${{ env.BUN_VERSION }}
+      # From its release on GitHub, checked against the hash below: the runners can't always reach Ubuntu's package
+      # mirror, and every shard then failed here before a test ran. apt is the fallback.
       - name: Install ripgrep
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+        env:
+          RG_VERSION: 14.1.0
+          RG_SHA256: f84757b07f425fe5cf11d87df6644691c644a5cd2348a2c670894272999d3ba7
+        run: |
+          from_release() {
+            local name="ripgrep-$RG_VERSION-x86_64-unknown-linux-musl"
+            curl -fsSL --retry 3 --max-time 60 -o "$RUNNER_TEMP/rg.tar.gz" "https://github.com/BurntSushi/ripgrep/releases/download/$RG_VERSION/$name.tar.gz" &&
+              echo "$RG_SHA256  $RUNNER_TEMP/rg.tar.gz" | sha256sum -c - &&
+              tar -xzf "$RUNNER_TEMP/rg.tar.gz" -C "$RUNNER_TEMP" "$name/rg" &&
+              sudo install -m 755 "$RUNNER_TEMP/$name/rg" /usr/local/bin/rg
+          }
+          from_release || { sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep; }
+          rg --version
       - name: Set a git identity for tests that commit
         run: git config --global user.name "Cavvy CI" && git config --global user.email "ci@cavvy.invalid"
       # sandbox-differential.test.ts compares against origin/main, which a shallow checkout doesn't have.
