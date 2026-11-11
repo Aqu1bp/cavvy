@@ -86,7 +86,10 @@ export function UsageDashboard(p: { data: UsageSummary; metric: Metric }) {
     const unpriced = () => [...new Set(p.data.rows.filter((r) => r.unknown).map((r) => r.model))];
     const accounts = createMemo(() => byAccount(p.data.accounts));
     const accountCount = (s: UsageSource) => accounts().filter((a) => a.source === s).length;
+    // Cost, and nothing used has a price: there's no figure, split or chart to draw, so say that once.
+    const noCost = () => m() === "cost" && p.data.totals.cost === 0 && p.data.totals.unknown;
     return <section class="usage-dashboard" aria-label="Usage dashboard" data-hl={hl() ?? ""}>
+        <Show when={!noCost()} fallback={<div class="blank"><b>No cost to show</b>No price is known for {unpriced().join(", ")}.</div>}><>
         <section class="uh" aria-label="Total">
             <div class="uh-num"><span class="v">{m() === "tokens" ? tokens(processed(p.data.totals), 3) : costFigure(p.data.totals)}</span><span class="u">{m() === "tokens" ? "tokens" : "at API prices"}</span></div>
             <p class="uh-sub">
@@ -132,6 +135,7 @@ export function UsageDashboard(p: { data: UsageSummary; metric: Metric }) {
             <Show when={p.data.totals.unknown}> Costs leave out unpriced usage; the Tokens view includes it.</Show>
             {p.data.approxDated ? ` Times are approximate for ${plural(p.data.approxDated, "older record")}.` : ""}{p.data.approxPriced ? ` ${plural(p.data.approxPriced, "record")} may be unpriced.` : ""}
         </p>
+        </></Show>
     </section>;
 }
 

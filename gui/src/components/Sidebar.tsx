@@ -14,7 +14,7 @@ import { prefs, setPrefs } from "../state/prefs";
 import { agentFocus, setDeletedOpen, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
 import { frameDrag } from "../lib/drag";
 import { ago, monogram, projectColor, since } from "../lib/format";
-import { holdSidebar, projectOf, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type SidebarEntry } from "../lib/session-order";
+import { holdSidebar, listedOnce, projectOf, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type SidebarEntry } from "../lib/session-order";
 import { sessionStatus } from "../lib/session-status";
 import { foldOrder, groupCounts, inFront, needsRowLine, needsYou, planFit, railFoot, type RailPlan } from "../lib/rail";
 import { railSelection, setRailSelection, setSidebarOrder } from "../state/sidebar";
@@ -26,7 +26,7 @@ import { rowMenuKey } from "../lib/menu";
 import { ProviderIcon } from "./ui/ProviderIcon";
 import { Logo, Spinner } from "./ui/bits";
 import { updateView } from "../lib/app-update";
-import { actionOf, shortcut, withShortcut } from "../state/keybindings";
+import { actionOf, keyText, shortcut, withShortcut } from "../state/keybindings";
 
 /** Cards shown before "Show more". */
 const PAGE = SESSION_PAGE;
@@ -129,13 +129,14 @@ function BulkItems(p: { plan: BulkPlan; close: () => void; clear: () => void }) 
     );
 }
 
-function RowMenu(p: { s: SessionSummary; pick: RailPick; open: boolean; setOpen: (v: boolean) => void; anchor: () => HTMLElement | undefined; returnFocus: () => HTMLElement | undefined; point?: { x: number; y: number }; onRename: () => void }) {
+function RowMenu(p: { s: SessionSummary; pick: RailPick; open: boolean; setOpen: (v: boolean) => void; anchor: () => HTMLElement | undefined; returnFocus: () => HTMLElement | undefined; onRename: () => void }) {
     const close = () => p.setOpen(false);
     // Taken as the menu opens, so it doesn't change under the pointer.
     const group = createMemo(() => (p.open ? untrack(() => p.pick.group(p.s.id)) : undefined));
     return (
-        // From the row's "…", as wide as the row: what's behind doesn't peek out at its edge. At the pointer when right-clicked.
-        <Menu label={group() ? "Selected sessions actions" : "Session actions"} returnFocus={p.returnFocus} point={p.point} open={p.open} anchor={p.anchor} span={p.point ? undefined : () => p.anchor()?.closest<HTMLElement>(".card, .slim") ?? undefined} onClose={close} align="end" width={220}>
+        // Under its row and as wide as it, however it's opened (the row's "…", a right click, the menu key): one
+        // menu in one place, inside the rail, and what's behind doesn't peek out at its edge.
+        <Menu label={group() ? "Selected sessions actions" : "Session actions"} returnFocus={p.returnFocus} open={p.open} anchor={p.anchor} span={() => p.anchor()?.closest<HTMLElement>(".card, .slim") ?? undefined} onClose={close} align="end" width={220}>
             <Show when={group()} fallback={<SingleItems s={p.s} close={close} onRename={p.onRename} />}>
                 {(ids) => <BulkItems plan={p.pick.plan(ids())} close={close} clear={p.pick.clear} />}
             </Show>
@@ -159,7 +160,8 @@ function SingleItems(p: { s: SessionSummary; close: () => void; onRename: () => 
                 </button>
             </Show>
             <button role="menuitem" class="menu-item compact" title={`New session in ${p.s.projectName}`} onClick={() => (close(), newSession(p.s.cwd))}>
-                <Plus size={14} /> <span class="truncate">New session in {p.s.projectName}</span>
+                {/* Short enough for the narrowest rail at the largest text: the menu is the row's width. Where: its tooltip. */}
+                <Plus size={14} /> New session
             </button>
             <div class="menu-sep" />
             <button role="menuitem" class="menu-item compact" onClick={() => (close(), void archive(p.s.id, !p.s.archived))}>
@@ -175,26 +177,22 @@ function SingleItems(p: { s: SessionSummary; close: () => void; onRename: () => 
 /** Both row layouts use the same pointer/keyboard invocation and focus target. */
 function useRowMenu(more: () => HTMLElement | undefined) {
     const [menu, setMenu] = createSignal(false);
-    const [point, setPoint] = createSignal<{ x: number; y: number }>();
     let returnTo: HTMLElement | undefined;
     const contextMenu = (e: MouseEvent) => {
         if ((e.target as HTMLElement).closest("input, textarea, [contenteditable]")) return;
         e.preventDefault();
         returnTo = (e.currentTarget as HTMLElement).querySelector<HTMLElement>(".card-hit, .slim-hit") ?? more();
-        setPoint(e.button === 2 ? { x: e.clientX, y: e.clientY } : undefined);
         setMenu(true);
     };
     const contextKey = (e: KeyboardEvent) => rowMenuKey(e, () => {
         returnTo = e.target as HTMLElement;
-        setPoint(undefined);
         setMenu(true);
     });
     const toggleMenu = () => {
         returnTo = more();
-        setPoint(undefined);
         setMenu(!menu());
     };
-    return { menu, setMenu, point, contextMenu, contextKey, toggleMenu, returnFocus: () => returnTo };
+    return { menu, setMenu, contextMenu, contextKey, toggleMenu, returnFocus: () => returnTo };
 }
 
 /** What a screen reader hears for a row: its title, then how it's doing, and whether it's selected. */
@@ -367,29 +365,42 @@ function PlanRow(p: { plans: RailPlan[] }) {
 }
 
 /**
- * A session waiting on you, pinned under Needs you (it keeps its own row below
- * too): an amber row saying what it's asking. Any click opens it: picking
- * several happens in the rows below (its own may be folded away). Answered
- * while the rail holds still, it shows how it's doing now until it goes.
+ * A session waiting on you, pinned under Needs you, its one row in the rail
+ * until it's answered (lib/session-order.ts listedOnce): an amber row saying
+ * what it's asking. Any click opens it; a right click has the row's menu.
+ * Rows are picked together in the list below, which this one isn't in.
+ * Answered while the rail holds still, it shows how it's doing now until it
+ * goes back to its place.
  */
-function NeedsRow(p: { s: SessionSummary; pick: RailPick }) {
+function NeedsRow(p: { s: SessionSummary; hold: (id: string, held: boolean) => void; pick: RailPick }) {
+    const r = useRename(() => p.s);
+    const { menu, setMenu, contextMenu, contextKey, returnFocus } = useRowMenu(() => undefined);
+    const id = p.s.id;
+    createEffect(() => p.hold(id, menu() || r.editing()));
+    onCleanup(() => p.hold(id, false));
+    let el: HTMLDivElement | undefined;
     const title = () => (p.s.run ? `${p.s.run.modelName} · ${p.s.title}` : p.s.title);
     const waiting = () => p.s.status === "waiting";
-    const unread = () => isUnread(p.s) && app.activeId !== p.s.id;
+    const current = () => app.activeId === p.s.id;
+    const unread = () => isUnread(p.s) && !current();
     return (
-        <div data-needs-id={p.s.id} class={`needs-row card ${waiting() ? "waiting" : ""}`}>
-            <button class="card-hit needs-hit" onClick={() => p.pick.open(p.s.id)} aria-label={`${title()}, ${needsRowLine(p.s)}`} title={`${p.s.title}: ${needsRowLine(p.s)}`}>
-                <span class="t">{title()}</span>
+        <div ref={el} data-needs-id={p.s.id} class={`needs-row card ${waiting() ? "waiting" : ""} ${current() ? "cur" : ""} ${menu() ? "menu-open" : ""} ${r.editing() ? "renaming" : ""}`} onContextMenu={contextMenu} onKeyDown={contextKey}>
+            <button class="card-hit needs-hit" onClick={() => p.pick.open(p.s.id)} aria-current={current() ? "page" : undefined} aria-label={`${title()}, ${needsRowLine(p.s)}`} title={`${p.s.title}: ${needsRowLine(p.s)}`}>
+                <span class="t"><Show when={!r.editing()}>{title()}</Show></span>
                 <span class="end"><RowEnd s={p.s} unread={unread()} /></span>
                 <span class="m"><span class="truncate">{needsRowLine(p.s)}</span></span>
             </button>
+            <Show when={r.editing()}>
+                <div class="card-rename">{r.input()}</div>
+            </Show>
+            <RowMenu returnFocus={returnFocus} s={p.s} pick={p.pick} open={menu()} setOpen={setMenu} anchor={() => el} onRename={() => r.setEditing(true)} />
         </div>
     );
 }
 
 function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) => void; grouped: boolean; pick: RailPick }) {
     const r = useRename(() => p.s);
-    const { menu, setMenu, point, contextMenu, contextKey, toggleMenu, returnFocus } = useRowMenu(() => more);
+    const { menu, setMenu, contextMenu, contextKey, toggleMenu, returnFocus } = useRowMenu(() => more);
     const id = p.s.id;
     createEffect(() => p.hold(id, menu() || r.editing()));
     onCleanup(() => p.hold(id, false));
@@ -447,14 +458,14 @@ function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) =
             <Show when={r.editing()}>
                 <div class="card-rename">{r.input()}</div>
             </Show>
-            <RowMenu returnFocus={returnFocus} point={point()} s={p.s} pick={p.pick} open={menu()} setOpen={setMenu} anchor={() => more ?? el} onRename={() => r.setEditing(true)} />
+            <RowMenu returnFocus={returnFocus} s={p.s} pick={p.pick} open={menu()} setOpen={setMenu} anchor={() => more ?? el} onRename={() => r.setEditing(true)} />
         </div>
     );
 }
 
 function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) => void; pick: RailPick }) {
     const r = useRename(() => p.s);
-    const { menu, setMenu, point, contextMenu, contextKey, toggleMenu, returnFocus } = useRowMenu(() => more);
+    const { menu, setMenu, contextMenu, contextKey, toggleMenu, returnFocus } = useRowMenu(() => more);
     const id = p.s.id;
     createEffect(() => p.hold(id, menu() || r.editing()));
     onCleanup(() => p.hold(id, false));
@@ -499,7 +510,7 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
                     </span>
                 </span>
             </Show>
-            <RowMenu returnFocus={returnFocus} point={point()} s={p.s} pick={p.pick} open={menu()} setOpen={setMenu} anchor={() => more} onRename={() => r.setEditing(true)} />
+            <RowMenu returnFocus={returnFocus} s={p.s} pick={p.pick} open={menu()} setOpen={setMenu} anchor={() => more} onRename={() => r.setEditing(true)} />
         </div>
     );
 }
@@ -640,7 +651,8 @@ export function Sidebar() {
     const needs = createMemo(() => needsYou(all(), inFront({ activeId: app.activeId, settings: Boolean(settingsTab()), agentFocus: agentFocus() })).map((s) => s.id), undefined, { equals: (a, b) => a.length === b.length && a.every((id, i) => id === b[i]) });
     // Today's midnight: the day headings move when the date does, not with every tick of the clock.
     const today = createMemo(() => new Date(now()).setHours(0, 0, 0, 0));
-    const layout = createMemo<SidebarEntry[]>((previous) => {
+    // The whole list, each session in its own place: what holds still while the pointer's on the rail.
+    const heldLayout = createMemo<SidebarEntry[]>((previous) => {
         const next = sidebarEntries(app.sessions, app.archived, {
             activeId: app.activeId, groupBy: prefs.groupBy, archived: showArchived(),
             settledOpen: prefs.settledOpen, cards: shown(), settled: settledShown(), archive: archiveShown(),
@@ -648,6 +660,8 @@ export function Sidebar() {
         });
         return holdSidebar(previous ?? [], next, held(), all(), app.activeId, pinnedHeld());
     });
+    // What's drawn: a session under Needs you shows there alone, not again in its place below.
+    const layout = createMemo(() => listedOnce(heldLayout()));
     const entriesByKey = createMemo(() => new Map(layout().map((entry) => [entry.key, entry])));
     const counts = createMemo(() => groupCounts(layout()));
     // Capture before Solid moves keyed rows; animate only after the new layout is painted.
@@ -667,14 +681,19 @@ export function Sidebar() {
                 if (old === undefined) continue;
                 const delta = old - el.getBoundingClientRect().top;
                 if (!delta) continue;
-                const animation = el.animate([{ transform: `translateY(${delta}px)` }, { transform: "translateY(0)" }], { duration: prefs.motion === "smooth" ? 260 : 160, easing: "ease-out" });
+                // A row that changes place by a slot slides there with its neighbours. One that jumps past others
+                // (a session that just moved to the top) fades in near its new place: sliding, it ran through the
+                // rows between, their words over each other.
+                const far = Math.abs(delta) > el.offsetHeight * 1.5;
+                const animation = el.animate(far ? [{ opacity: 0, transform: `translateY(${Math.sign(delta) * 10}px)` }, { opacity: 1, transform: "translateY(0)" }] : [{ transform: `translateY(${delta}px)` }, { transform: "translateY(0)" }], { duration: prefs.motion === "smooth" ? 260 : 160, easing: "ease-out" });
                 animations.add(animation);
                 animation.onfinish = () => animations.delete(animation);
             }
         });
         return next;
     });
-    createEffect(() => setSidebarOrder(sidebarIds(layout())));
+    // Each session in its own place, pinned under Needs you or not: opening one mustn't change what next and previous step to.
+    createEffect(() => setSidebarOrder(sidebarIds(heldLayout())));
     createEffect(() => {
         const pause = held();
         for (const animation of animations) {
@@ -858,7 +877,7 @@ export function Sidebar() {
                 <button class="side-search" title={withShortcut("Search sessions, messages and actions", "app:commandPalette")} onClick={() => setPaletteOpen(true)}>
                     <Search size={14} />
                     <span>Search</span>
-                    <Show when={shortcut("app:commandPalette")}>{(k) => <span class="side-kbd">{os === "macos" ? k().replaceAll("+", "") : k()}</span>}</Show>
+                    <Show when={shortcut("app:commandPalette")}>{(k) => <span class="side-kbd">{keyText(k())}</span>}</Show>
                 </button>
                 <button ref={viewBtn} class={`hb ${viewOpen() ? "on" : ""}`} title="View options" aria-label="View options" aria-haspopup="menu" aria-expanded={viewOpen()} onClick={() => setViewOpen(!viewOpen())}>
                     <ListFilter size={16} />
@@ -877,7 +896,7 @@ export function Sidebar() {
                 <Menu label="View options" open={viewOpen()} anchor={() => viewBtn} onClose={() => setViewOpen(false)} align="end" width={220}>
                     <div class="menu-head">Group</div>
                     <button role="menuitemradio" aria-checked={prefs.groupBy === "date"} class="menu-item compact" onClick={() => (setPrefs("groupBy", "date"), setViewOpen(false))}>
-                        <span class="menu-label">Most recent first</span>
+                        <span class="menu-label">By date</span>
                         <Show when={prefs.groupBy === "date"}>
                             <Check size={14} class="menu-check" />
                         </Show>
@@ -923,7 +942,7 @@ export function Sidebar() {
                         const members = () => group().ids.filter((id) => sessions().has(id));
                         return <div class="needs-g" data-session-row={key} role="group" aria-label={`Needs you: ${sessionCount(members().length)}`}>
                             <div class="shelf needs-head"><Hand size={14} /><span>Needs you</span><span class="n">{members().length}</span></div>
-                            <For each={members()}>{(id) => <Show when={sessions().get(id)}>{(s) => <NeedsRow s={s()} pick={pick} />}</Show>}</For>
+                            <For each={members()}>{(id) => <Show when={sessions().get(id)}>{(s) => <NeedsRow s={s()} hold={hold} pick={pick} />}</Show>}</For>
                         </div>;
                     }
                     if (kind === "run") {

@@ -23,7 +23,7 @@ import { editorName, openInEditor } from "../state/actions";
 import { canReveal, revealPath } from "../lib/platform";
 import { plural, since } from "../lib/format";
 import { CHANGE, dirOf, nameOf, REVIEW_DEFAULT, REVIEW_STEP, reviewDragWidth, reviewWidthRange } from "../lib/inspector";
-import { DiffView, type DiffComments } from "./blocks/DiffView";
+import { Counts, DiffView, type DiffComments } from "./blocks/DiffView";
 import { buildComment } from "../lib/review-comments";
 import { findPick, pickGone, pickHeld, pickKey, pickParams, type ReviewPick } from "../lib/review-pick";
 import { anchorShift, cardAt, foldsSmoothly, oneSided, stackRows, viewLabel, viewMenu, type TurnItem, type ViewItem } from "../lib/review-stack";
@@ -273,12 +273,7 @@ function ViewMenu(p: {
 function Stat(p: { added: number; removed: number }) {
     return (
         <span class="stat">
-            <Show when={p.added || !p.removed}>
-                <span class="add">+{p.added}</span>
-            </Show>
-            <Show when={p.removed}>
-                <span class="del">−{p.removed}</span>
-            </Show>
+            <Counts added={p.added} removed={p.removed} />
         </span>
     );
 }
@@ -1014,8 +1009,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                         setFold([...keys(), ...(asked()?.file ? [ASKED] : [])], fold);
                     }} />
                     <span class="stat rv-total" title={`${count()}, +${view()?.added ?? 0} −${view()?.removed ?? 0} in all`}>
-                        <span class="add">+{view()?.added ?? 0}</span>
-                        <span class="del">−{view()?.removed ?? 0}</span>
+                        <Counts added={view()?.added} removed={view()?.removed} />
                     </span>
                     <span class="sep" />
                 </Show>

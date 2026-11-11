@@ -611,7 +611,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         // A message doesn't wait for an idle compaction: it stops it and goes.
         if (busy() && st()?.activity?.idle) return "Send a message to stop compacting and carry on…";
         if (busy()) return labels().placeholder;
-        return p.placeholder ?? "Ask, plan, or describe a change…  (@ files, / commands, $ skills)";
+        return p.placeholder ?? "Ask, plan, or describe a change…";
     };
     const hasContent = () => Boolean(text().trim() || attachments().length || comments().length);
     /** While a turn runs: what Enter does now and what the steer-or-queue key does, in the box and on the send button. */

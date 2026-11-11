@@ -1,6 +1,6 @@
 // What the user does, as calls to the server.
 
-import { createSignal } from "solid-js";
+import { batch, createSignal } from "solid-js";
 import { adjacentSession, sidebarEntries, sidebarIds, SESSION_PAGE } from "../lib/session-order";
 import { sidebarOrder, unselect } from "./sidebar";
 import { sessionCount, sessionNames } from "../lib/rail-select";
@@ -14,7 +14,7 @@ import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { keepSentImages } from "./images";
 import { prefs, setPrefs } from "./prefs";
-import { railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, setReview, setRewindOpen, setSettingsTab, setTerminalMax, shellLayout } from "./ui";
+import { railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, review, setReview, setRewindOpen, setSettingsTab, setTerminalMax, shellLayout } from "./ui";
 import { clientAction, slashName } from "../lib/commands";
 import { forkAnchor } from "../lib/fork";
 import { backgroundOf, stopOutcome, stopTasks } from "../lib/background";
@@ -630,7 +630,9 @@ export function archivedWithWorktree(id: string, r: Extract<ArchiveResult, { arc
     );
 }
 
+/** The side panel's button and key. The diff reader is one of the panel's views: closing the panel closes it too. */
 export function togglePanel() {
+    if (review()) return batch(() => (setReview(undefined), setPrefs("panel", false)));
     setPrefs("panel", !prefs.panel);
 }
 

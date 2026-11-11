@@ -50,9 +50,10 @@ export function needsYou<T extends Pick<SessionSummary, "id" | "status" | "updat
 
 /**
  * Where the sessions that need you show: pinned at the top of the rail when
- * it's shown, else in the title bar. Settings covers both (its own list takes
- * the rail's place, its page the title bar's): its top line has them, the open
- * one too, since Settings covers its request as well.
+ * it's shown; while it's hidden ("title"), only as a dot on the title bar's
+ * button that shows it. Settings covers both (its own list takes the rail's
+ * place, its page the title bar's): its top line has them, the open one too,
+ * since Settings covers its request as well.
  */
 export function needsPlace(o: { railShown: boolean; settings: boolean }): "rail" | "title" | "settings" {
     return o.settings ? "settings" : o.railShown ? "rail" : "title";

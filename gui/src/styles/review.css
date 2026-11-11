@@ -99,6 +99,11 @@
     color: var(--fg-2);
 }
 
+/* "N files" stays whole: the view's name beside it gives way first. */
+.tb.files {
+    flex: none;
+}
+
 .tb.files:hover,
 .tb.files[aria-expanded="true"] {
     color: var(--fg);
@@ -750,7 +755,8 @@
 
 /* ---- Narrow (a floating reader, 1024px windows and down): the total goes; the toolbar keeps one row ---- */
 
-@container review (width < 470px) {
+/* In rem: the toolbar's words grow with the text size, so the width they need does too. */
+@container review (width < 33.6rem) {
     .rv-total,
     .rv-h .sep {
         display: none;

@@ -18,7 +18,7 @@ import { asking, inFront, needsLine, needsPlace, needsYou } from "../lib/rail";
 import { Menu } from "./ui/Menu";
 import { RunSwitcher } from "./RunSwitcher";
 import { ProjectScripts } from "./ProjectScripts";
-import { shortcut, withShortcut } from "../state/keybindings";
+import { keyText, shortcut, withShortcut } from "../state/keybindings";
 import { promptPreview } from "../lib/review-comments";
 import { workingBranch } from "../lib/worktree-work";
 
@@ -35,11 +35,12 @@ export function deleteOpen(h?: SessionHandle) {
 }
 
 /**
- * The sessions waiting on you while the rail is hidden (or a closed drawer): here,
- * beside the tools, until they're answered, never a toast that could time out
- * unseen. One by name, opening it; several by count, opening a menu of them.
- * Settings' top line has it too (lib/rail.ts needsPlace). Opening one
- * (state/actions.ts openWaiting) closes Settings and a sub-agent's view.
+ * The sessions waiting on you, in Settings' top line (Settings.tsx), which covers
+ * the rail where they're listed: there until they're answered, never a toast that
+ * could time out unseen. One by name, opening it; several by count, opening a menu
+ * of them. Not in a session's title bar: the rail lists them, and while it's
+ * hidden its button there carries an amber dot. Opening one (state/actions.ts
+ * openWaiting) closes Settings and a sub-agent's view.
  */
 export function NeedsYou(p: { waiting: SessionSummary[] }) {
     const [open, setOpen] = createSignal(false);
@@ -87,11 +88,11 @@ export function NeedsYou(p: { waiting: SessionSummary[] }) {
 /**
  * The frame every main view shares. With the rail hidden it starts with the
  * rail's own two buttons (show it, new session), clear of the traffic lights;
- * then the title (or crumbs), and the tools at the far end, with whoever is
- * waiting on you before them.
+ * then the title (or crumbs), and the tools at the far end. A session waiting
+ * on you while the rail is hidden shows as an amber dot on the rail's button.
  */
 export function TitleBar(p: { children: JSX.Element; end?: JSX.Element }) {
-    // Shown by the rail when it's there (by Settings over both); the session in front of you shows its own request.
+    // Listed by the rail when it's there (by Settings over both); hidden, its button here says there are some. The session in front of you shows its own request.
     const waiting = createMemo(() => (needsPlace({ railShown: shellLayout().railShown, settings: Boolean(settingsTab()) }) === "title" ? needsYou([...app.sessions, ...app.archived], inFront({ activeId: app.activeId, settings: false, agentFocus: agentFocus() })) : []));
     return (
         <header class={`header ${isDesktop && os === "macos" ? "traffic" : ""} ${prefs.sidebar ? "" : "rail-off"}`}>
@@ -110,12 +111,7 @@ export function TitleBar(p: { children: JSX.Element; end?: JSX.Element }) {
                 {p.children}
             </nav>
             <span class="grow" />
-            <div class="bar-end">
-                <Show when={waiting().length}>
-                    <NeedsYou waiting={waiting()} />
-                </Show>
-                {p.end}
-            </div>
+            <div class="bar-end">{p.end}</div>
         </header>
     );
 }
@@ -182,8 +178,9 @@ function ChangesChip(p: { handle: SessionHandle }) {
                         }}
                     >
                         <FileDiff size={15} />
-                        <span class="a">+{c().added}</span>
-                        <span class="d">−{c().removed}</span>
+                        {/* Only the sides that changed: "+18", not "+18 −0"; the mark alone when no line did. */}
+                        <span class="a" hidden={!c().added}>+{c().added}</span>
+                        <span class="d" hidden={!c().removed}>−{c().removed}</span>
                     </button>
                     <span class="sep" />
                 </>
@@ -225,7 +222,7 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                             <PanelBottom size={16} />
                         </button>
                         <Show when={st()}>
-                            <button class={`hb ${prefs.panel ? "on" : ""}`} title={withShortcut("Side panel", "app:togglePanel")} aria-label="Toggle panel" aria-pressed={prefs.panel} onClick={() => togglePanel()}>
+                            <button class={`hb ${prefs.panel || review() ? "on" : ""}`} title={withShortcut("Side panel", "app:togglePanel")} aria-label="Toggle panel" aria-pressed={prefs.panel || !!review()} onClick={() => togglePanel()}>
                                 <PanelRight size={16} />
                             </button>
                             <button ref={moreBtn} class="hb" title="More" aria-label="Session actions" aria-haspopup="menu" aria-expanded={menuOpen()} onClick={() => (setMenuOpen(!menuOpen()), menuOpen() && void refreshEditors())}>
@@ -313,7 +310,7 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                                 {(it) => (
                                     <button role="menuitem" class="menu-item compact" disabled={it.disabled} onClick={it.run}>
                                         <it.icon size={14} /> <span class="menu-label">{it.label}</span>
-                                        <Show when={it.kbd && shortcut(it.kbd)}>{(k) => <kbd class="menu-kbd">{os === "macos" ? k().replaceAll("+", "") : k()}</kbd>}</Show>
+                                        <Show when={it.kbd && shortcut(it.kbd)}>{(k) => <kbd class="menu-kbd">{keyText(k())}</kbd>}</Show>
                                     </button>
                                 )}
                             </For>

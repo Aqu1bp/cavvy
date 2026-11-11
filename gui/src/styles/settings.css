@@ -61,11 +61,6 @@
 /* ---- MCP servers dialog ---- */
 
 /* Lines up with the icon column of the rows above. */
-.prow .mcp-spacer {
-    width: calc(16 * var(--sp));
-    flex: none;
-}
-
 
 /* ---- Settings pages (the mockup's "Settings") -----------------------------
    A centred column on the sheet; a header that stays while the page scrolls;
@@ -429,8 +424,7 @@
 }
 
 .settings-page .keyin .input,
-.settings-page .prov-add .input,
-.settings-page .prov-quick .input {
+.settings-page .prov-add .input {
     flex: 1;
     min-width: 0;
     height: calc(30 * var(--sp));
@@ -452,6 +446,11 @@
     gap: calc(12 * var(--sp));
     min-height: calc(52 * var(--sp));
     padding: calc(11 * var(--sp)) calc(14 * var(--sp));
+}
+
+/* Its own tile already: a provider's initial needs no second one inside. */
+.prov-logo .provider-mono {
+    background: none;
 }
 
 .prov-logo {
@@ -522,21 +521,6 @@
 }
 
 /* The marketplace field on the Plugins page: a field in a rounded group. */
-.prov-quick {
-    display: flex;
-    align-items: center;
-    gap: calc(10 * var(--sp));
-    padding: calc(12 * var(--sp)) calc(14 * var(--sp));
-    border-radius: calc(12 * var(--sp));
-    background: var(--group);
-    box-shadow: inset 0 0 0 0.5px var(--line);
-}
-
-.prov-quick > svg {
-    flex: none;
-    color: var(--fg-3);
-}
-
 /* ---- Settings → Shortcuts ------------------------------------------- */
 
 /* Several bindings for one action sit apart; a sequence's strokes closer. */

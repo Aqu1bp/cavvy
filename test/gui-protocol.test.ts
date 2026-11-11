@@ -854,6 +854,44 @@ test("a delegated task's effective effort is set once and survives agent-head re
     await engine.stop();
 });
 
+test("a turn a steered message ended has no call left under way once the run is over", async () => {
+    const engine = new Engine({ listModels: async () => [] });
+    const runtime = await engine.createSession(tempDir("steer-cut-"));
+    await runtime.ready;
+    const session = runtime.session;
+    session.meta.system = "Test";
+    const ran = { type: "tool_call" as const, id: "ran", name: "Bash", input: { command: "sleep 9" } };
+    let during: unknown;
+    Object.assign(runtime, {
+        model: { provider: "codex", id: "test" },
+        agent: {
+            delegatedTasks: [],
+            backgroundTasks: () => [],
+            dispose: async () => {},
+            run: async () => {
+                session.push({ role: "user", content: [{ type: "text", text: "first" }] });
+                // One call running and the next still arriving (nothing of it here yet) when a message is steered in.
+                (runtime as any).onEvent({ type: "tool_start", call: ran, title: "Bash(sleep 9)" });
+                (runtime as any).onEvent({ type: "tool_call_start", id: "cut", name: "Bash" });
+                (runtime as any).drainedTurn("second");
+                runtime.flush();
+                during = runtime.snapshot().turns[0]!.blocks.map((b) => [b.id, b.t === "tool" && b.status]);
+                session.push({ role: "assistant", provider: "codex", content: [{ type: "text", text: "Done" }], stopReason: "end_turn" });
+                (runtime as any).onEvent({ type: "turn_end", reason: "done" });
+                return "done";
+            },
+        },
+    });
+    await runtime.startTurn("first");
+    runtime.flush();
+    const [first, second] = runtime.snapshot().turns;
+    expect(during).toEqual([["ran", "running"], ["cut", "streaming"]]);
+    expect(second!.prompt).toMatchObject({ text: "second", steered: true });
+    // The one that never arrived is gone; the one that never finished says so, as in the run's last turn.
+    expect(first!.blocks.map((b) => [b.id, b.t === "tool" && b.status, b.t === "tool" && b.summary])).toEqual([["ran", "error", "Not run"]]);
+    await engine.stop();
+});
+
 test("a reopened task comes back with its own sub-agents, whose calls are in its steps, not in a turn", () => {
     const run = (id: string, parentId?: string): AgentRun => ({ id, turnId: "old", parentId, description: id, agentType: "general-purpose", status: "running", startedAt: 1, toolCount: 0, tokens: 0, blocks: [] });
     const turns: Turn[] = [{ id: "t1", status: "done", endedAt: 50, blocks: [{ t: "tool", id: "task", name: "delegate", title: "delegate", status: "ok", agent: true }] }];

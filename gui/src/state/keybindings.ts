@@ -90,13 +90,19 @@ export function shortcut(action: string, all = false): string | undefined {
     return keyLabel(keymap(), action, all, "  ");
 }
 
-/** The first key for an action spaced out for a hint ("⌘ K"), or "" when it has none. */
-export const shortcutHint = (action: string) => shortcut(action)?.replaceAll("+", " ") ?? "";
+/** A key as it's written everywhere: macOS's symbols run together (⌘K), other systems keep the + (Ctrl+K). */
+export const keyText = (key: string) => (os === "macos" ? key.replaceAll("+", "") : key);
+
+/** The first key for an action as a hint ("⌘K", "Ctrl+K"), or "" when it has none. */
+export const shortcutHint = (action: string) => {
+    const k = shortcut(action);
+    return k ? keyText(k) : "";
+};
 
 /** "Toggle the sidebar (⌘B)"-style tooltip text. */
 export const withShortcut = (label: string, action: string) => {
-    const k = shortcut(action);
-    return k ? `${label} (${os === "macos" ? k.replaceAll("+", "") : k})` : label;
+    const k = shortcutHint(action);
+    return k ? `${label} (${k})` : label;
 };
 
 /**

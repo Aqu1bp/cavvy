@@ -84,7 +84,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
         setSidebarOrder: (value: string[] | undefined) => { ids = value ?? []; }, now: () => 100000,
         handleFor: () => undefined, isUnread: () => true, activate: setActiveId, openWaiting: setActiveId, refreshSessions, reportError,
         Menu: (p: any) => { menus.push(p); return solid.createMemo(() => p.open ? p.children : null); },
-        isTauri: false, isDesktop: false, isElectron: false, mod: "⌘", os: "macos", toggleSidebar() {}, setPaletteOpen() {}, setSettingsTab() {}, shortcut: () => "⌘+K", withShortcut: (label: string) => label,
+        isTauri: false, isDesktop: false, isElectron: false, mod: "⌘", os: "macos", toggleSidebar() {}, setPaletteOpen() {}, setSettingsTab() {}, shortcut: () => "⌘+K", keyText: (k: string) => k.replaceAll("+", ""), withShortcut: (label: string) => label,
         chooseProject() {}, newSession() {}, openProject() {}, pin() {}, rename() {}, archive() {}, settle() {},
         requestAnimationFrame: (fn: () => void) => { frames.set(++sequence, fn); return sequence; },
         cancelAnimationFrame: (id: number) => frames.delete(id),
@@ -167,8 +167,9 @@ test("rail rows: needs-you rows get an amber dot and no archive; others archive 
     const rowOf = (title: string) => f.nodes.findLast((n) => String(n.props.class).startsWith("card ") && n.querySelector()?.props.title?.startsWith(`${title}\n`));
     const buttons = (row: any) => f.descendants(row).filter((n) => n.tag === "button");
     try {
+        // Open, so its request is in front of you and it keeps its own row (elsewhere it's under Needs you alone).
         f.update("1", { status: "waiting", waitingKind: "permission" });
-        f.setActiveId("2");
+        f.setActiveId("1");
         const waiting = rowOf("Session 1");
         expect(String(waiting.props.class)).toContain("waiting");
         expect(waiting.querySelector().props["aria-label"]).toBe("Session 1, Needs approval");
@@ -180,7 +181,7 @@ test("rail rows: needs-you rows get an amber dot and no archive; others archive 
         const idle = rowOf("Session 3");
         expect(buttons(idle).some((n) => n.props.title === "Archive")).toBe(true);
         // Rows are buttons; the open one says so.
-        expect(rowOf("Session 2").querySelector().props["aria-current"]).toBe("page");
+        expect(waiting.querySelector().props["aria-current"]).toBe("page");
         expect(idle.querySelector().props["aria-current"]).toBeUndefined();
         f.setGroupBy("project");
         const counts = f.nodes.filter((n) => n.props.class === "n").map((n) => n.content);
@@ -188,7 +189,7 @@ test("rail rows: needs-you rows get an amber dot and no archive; others archive 
     } finally { f.dispose(); }
 });
 
-test("Needs you: waiting sessions but the open one, pinned above the list as well as in their place; keys act on the pinned row", () => {
+test("Needs you: waiting sessions but the open one, pinned above the list, their one row; keys act on the pinned row", () => {
     let next: string | undefined;
     const f = fixture(6, { actionOf: () => next });
     const group = () => f.nodes.findLast((n) => n.props.class === "needs-g");
@@ -203,7 +204,11 @@ test("Needs you: waiting sessions but the open one, pinned above the list as wel
         expect(pinned().map((n) => n.props["data-needs-id"])).toEqual(["3"]);
         expect(text(group())).toContain("Needs you");
         expect(text(pinned()[0])).toContain("Plan ready for review");
-        // Both stay in their own places too: the list's order (⌘-cycling, ranges) has each once.
+        // 3 is drawn there alone, not again as a card below; the open one (4) keeps its own row.
+        const cards = () => f.nodes.filter((n) => String(n.props.class).startsWith("card ") && f.descendants(f.nav).includes(n)).map((n) => n.props["data-session-id"]);
+        expect(cards()).not.toContain("3");
+        expect(cards()).toContain("4");
+        // The order (⌘-cycling) has each once.
         expect(f.ids.filter((id) => id === "3")).toHaveLength(1);
         expect(f.ids.slice(0, 2).sort()).toEqual(["3", "4"]);
         // Settings covers the open one: it's pinned too.
@@ -240,7 +245,7 @@ test("Needs you's rows aren't picked: a ⌘- or Shift-click opens the session, i
     try {
         f.setGroupBy("project");
         f.update("3", { status: "waiting", waitingKind: "permission" });
-        // Its project folded: its own row is under the heading, out of the list's order.
+        // Its project folded: its own place is under the heading, out of the order next and previous step through.
         f.setCollapsedProjects(["/p/0"]);
         expect(f.ids).not.toContain("3");
         expect(pinnedIds(f)).toEqual(["3"]);
@@ -280,7 +285,8 @@ test("Needs you while the rail holds still: rows say how they're doing now, and 
         f.nav.props.onPointerLeave();
         expect(pinnedIds(f)).toEqual(["4"]);
         expect(classes(pinnedRows(f)[0])).toContain("waiting");
-        // Rows picked hold the list, not the group: it follows who's waiting, the order stays.
+        // Rows picked hold the list, not the group: it follows who's waiting, and the order next and previous step
+        // through stays as it was (each session in its own place, pinned or not).
         f.setRailSelection({ ids: ["0", "1"], anchor: "0" });
         const held = f.ids;
         f.update("5", { status: "waiting", updatedAt: 500 });
@@ -421,8 +427,11 @@ for (const layout of ["card", "settled", "archived"] as const) {
                 const more = f.descendants(row).find((n) => n.props?.["aria-haspopup"] === "menu");
                 const menu = f.menus.findLast((p) => p.label === "Session actions" && p.anchor() === more);
                 expect(menu).toBeDefined();
+                // A right click opens it where the row's "…" does (under the row, its width), not at the pointer.
                 f.contextMenu(row);
-                expect(menu.point).toEqual({ x: 40, y: 60 });
+                expect(menu.open).toBe(true);
+                expect(menu.point).toBeUndefined();
+                expect(typeof menu.span).toBe("function");
                 expect(menu.returnFocus()).toBe(hit);
                 menu.onClose();
                 for (const key of ["ContextMenu", "F10"]) {

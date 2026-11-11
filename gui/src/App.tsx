@@ -21,7 +21,7 @@ import { Header } from "./components/Header";
 import { Transcript } from "./components/Transcript";
 import { Composer } from "./components/Composer";
 import { AgentView } from "./components/Agents";
-import { RightPanel } from "./components/RightPanel";
+import { ReviewRail, RightPanel } from "./components/RightPanel";
 import { ReviewPane } from "./components/ReviewPane";
 import { TerminalPanel } from "./components/TerminalPanel";
 import { following, openFind, terminalOpen, setTerminalOpen } from "./state/ui";
@@ -582,7 +582,13 @@ export function App() {
                                     </Show>
                                 }
                             >
-                                <RenderBoundary resetKey={() => app.activeId}><ReviewPane handle={active()!} /></RenderBoundary>
+                                {/* The reader with the panel's rail beside it: it's one of the panel's views. */}
+                                <RenderBoundary resetKey={() => app.activeId}>
+                                    <div class="insp-rv">
+                                        <ReviewPane handle={active()!} />
+                                        <ReviewRail handle={active()!} />
+                                    </div>
+                                </RenderBoundary>
                             </Show>
                         </div>
                         <RenderBoundary><TerminalPanel cwd={active()?.view.state.cwd ?? app.homeCwd} hidden={!!settingsTab()} /></RenderBoundary>

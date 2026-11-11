@@ -46,16 +46,24 @@ export function sheetSize(win: Size, railDocked: boolean, railWidth: number): Si
     };
 }
 
+/** The narrowest the diff reader docks at by itself: under this beside the conversation, it fills the sheet. */
+export const REVIEW_DOCK_MIN = 480;
+
 /**
  * The diff reader widens the inspector: to 55% of the sheet (68% side by side), up to 860px
  * (1120px side by side), and never narrower than the inspector (`inspector`). Its own resize
- * handle (`base`) widens it further, as far as it still docks.
+ * handle (`base`) widens it further, as far as it still docks. In a sheet too narrow for that share
+ * beside the conversation it takes what the conversation can spare, down to `REVIEW_DOCK_MIN`, and
+ * stays beside it: it covers the conversation only when there's no room for both.
  */
 export function reviewWidth(base: number, sheetWidth: number, split: boolean, inspector = INSPECTOR_DEFAULT): number {
     const cap = split ? 1120 : 860;
     const share = Math.round(sheetWidth * (split ? 0.68 : 0.55));
     const least = Math.min(cap, Math.max(inspector, share));
-    return Math.max(least, Math.min(base, sheetWidth - CONVERSATION_MIN));
+    const room = Math.floor(sheetWidth - CONVERSATION_MIN);
+    // Side by side needs room for two columns: short of it, the reader fills the sheet as before.
+    if (least > room && room >= (split ? 760 : REVIEW_DOCK_MIN)) return room;
+    return Math.max(least, Math.min(base, room));
 }
 
 /** The inspector docks while the conversation keeps `CONVERSATION_MIN` beside it. */

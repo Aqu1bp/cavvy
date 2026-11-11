@@ -100,6 +100,8 @@ describe("the window's keymap", () => {
         kb.applyKeybindingsFile(fileOf([{ context: "Global", bindings: { "mod+b": null, "mod+shift+s": "app:toggleSidebar", "mod+k": null } }]));
         expect(kb.shortcut("app:toggleSidebar")).toBe(os === "macos" ? "⇧+⌘+S" : "Ctrl+Shift+S");
         expect(kb.withShortcut("Hide sidebar", "app:toggleSidebar")).toBe(os === "macos" ? "Hide sidebar (⇧⌘S)" : "Hide sidebar (Ctrl+Shift+S)");
+        // A hint (the palette's key caps) is written the same way as a tooltip's.
+        expect(kb.shortcutHint("app:toggleSidebar")).toBe(os === "macos" ? "⇧⌘S" : "Ctrl+Shift+S");
         expect(kb.shortcut("app:commandPalette")).toBeUndefined();
         expect(kb.withShortcut("Search", "app:commandPalette")).toBe("Search");
         expect(kb.shortcutHint("app:commandPalette")).toBe("");

@@ -1083,3 +1083,38 @@ svg.lucide {
 .app.electron :is(.insp-body, .br-host-tab) > * {
     -webkit-app-region: initial;
 }
+
+/* ---- A list with more below --------------------------------------------
+   Its bottom edge fades while there's more to scroll to, so the last row in sight isn't cut through its words; at
+   the end, and in a list that fits, nothing is drawn. Driven by the list's own scroll position (no script). Where
+   the browser has no scroll timelines the animation ends at once, on nothing drawn: the list is as it was.
+   The row the keys select stops above the fade, never under it (lib/composer-menu.ts reads this for its own list). */
+.composer-menu,
+.pal-list {
+    scroll-padding-bottom: calc(30 * var(--sp));
+}
+
+.composer-menu::after,
+.pal-list::after {
+    content: "";
+    position: sticky;
+    bottom: 0;
+    display: block;
+    height: calc(30 * var(--sp));
+    margin-top: calc(-30 * var(--sp));
+    background: linear-gradient(color-mix(in srgb, var(--ctl-strong) 0%, transparent), var(--ctl-strong));
+    pointer-events: none;
+    opacity: 0;
+    animation: more-below linear both;
+    animation-timeline: scroll(nearest block);
+    animation-range: calc(100% - 24px) 100%;
+}
+
+@keyframes more-below {
+    from {
+        opacity: 1;
+    }
+    to {
+        opacity: 0;
+    }
+}

@@ -425,6 +425,8 @@ export interface Turn {
 export interface PermissionOption {
     id: "yes" | "session" | "always" | "session-edits" | "no";
     label: string;
+    /** Its button's words, when the label says more than a button needs (the project it's saved for): what it allows stays in them. */
+    short?: string;
 }
 
 export interface PermissionInteraction {

@@ -137,6 +137,8 @@ describe("the demo (bun run gui:demo)", () => {
             // What it does to which element, on which page, and what the broader answers cover, in words.
             expect(ask).toMatchObject({ kind: "permission", heading: 'Click button "Click me"', where: `In the browser · ${new URL(demo.url).host}` });
             expect(ask.options.map((o: { label: string }) => o.label)).toEqual(["Allow once", "Allow browser actions this session", `Always allow in ${basename(fresh)}`, "Deny"]);
+            // Its button doesn't repeat the project's name.
+            expect(ask.options.find((o: { id: string }) => o.id === "always").short).toBe("Always allow");
             await call("session.respond", { id: demoId, interactionId: ask.id, response: { kind: "permission", choice: "yes" } });
             await until(() => !rt.snapshot().state.busy, "the turn to end");
             const said = JSON.stringify(rt.session.messages);

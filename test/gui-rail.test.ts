@@ -252,6 +252,40 @@ test("the session in front of you (left out of Needs you): the open one, but not
     expect(needsYou(waiting, inFront({ activeId: "a", settings: false, agentFocus: "agent-1" })).map((s) => s.id)).toEqual(["a"]);
 });
 
+test("a session under Needs you is drawn once: not again in its own place, and a heading left empty goes with it", async () => {
+    const order = await import("../gui/src/lib/session-order");
+    const sess = (id: string, o: Partial<SessionSummary> = {}): SessionSummary => ({ id, cwd: "/p", projectName: "p", title: id, createdAt: 1, updatedAt: 1, status: "idle", messages: 1, pinned: false, archived: false, settled: false, live: true, ...o });
+    const base = { archived: false, settledOpen: true, cards: 25, settled: 25, archive: 25 };
+    const kinds = (entries: readonly { key: string }[]) => entries.map((e) => e.key);
+    // By date: the waiting one leaves Today, which keeps its other session; alone under a day, the day goes too.
+    const list = [sess("1", { status: "waiting" }), sess("2", { updatedAt: 1000 }), sess("3", { settled: true })];
+    const byDate = order.sidebarEntries(list, [], { ...base, groupBy: "date", needs: ["1"], now: 1000 });
+    expect(kinds(order.listedOnce(byDate))).toEqual(["heading:needs", "day:Today", "2", "heading:settled", "3"]);
+    expect(order.pinnedIds(byDate)).toEqual(["1"]);
+    expect(order.sidebarIds(order.listedOnce(byDate))).toEqual(["2", "3"]);
+    // Next and previous step through the layout before that: each session in its own place, whichever are pinned
+    // (opening a waiting one unpins it, and mustn't change where the next step goes).
+    const unpinned = order.sidebarEntries(list, [], { ...base, groupBy: "date", needs: [], now: 1000 });
+    expect(order.sidebarIds(byDate)).toEqual(order.sidebarIds(unpinned));
+    expect(order.sidebarIds(byDate)).toContain("1");
+    const alone = order.sidebarEntries([list[0]!, sess("2", { updatedAt: 0 })], [], { ...base, groupBy: "date", needs: ["1"], now: 10 * 86_400_000 });
+    expect(kinds(order.listedOnce(alone))).toEqual(["heading:needs", "day:Older", "2"]);
+    // By project: an open project with nothing left goes; a folded one keeps its heading and its sessions.
+    const two = [sess("1", { status: "waiting" }), sess("2", { cwd: "/q", projectName: "q" })];
+    const open = order.sidebarEntries(two, [], { ...base, groupBy: "project", needs: ["1"] });
+    expect(kinds(order.listedOnce(open))).toEqual(["heading:needs", "project:/q", "2"]);
+    const folded = order.sidebarEntries(two, [], { ...base, groupBy: "project", needs: ["1"], collapsed: ["/p"] });
+    expect(order.listedOnce(folded).find((e) => e.key === "project:/p")).toMatchObject({ collapsed: true, ids: ["1"] });
+    // A run keeps its other models' sessions.
+    const run = { id: "r", label: "go", cwd: "/p" } as SessionSummary["run"];
+    const models = [sess("a", { run: { ...run!, modelName: "A" }, status: "waiting" }), sess("b", { run: { ...run!, modelName: "B" } })];
+    const ran = order.listedOnce(order.sidebarEntries(models, [], { ...base, groupBy: "date", needs: ["a"] }));
+    expect(ran.find((e) => e.kind === "run")).toMatchObject({ ids: ["b"] });
+    // Nothing pinned: the layout itself.
+    const plain = order.sidebarEntries(list, [], { ...base, groupBy: "date", needs: [] });
+    expect(order.listedOnce(plain)).toBe(plain);
+});
+
 test("Needs you's group starts the active list, isn't counted under a project, and isn't in the list's order", async () => {
     const order = await import("../gui/src/lib/session-order");
     const sess = (id: string, o: Partial<SessionSummary> = {}): SessionSummary => ({ id, cwd: "/p", projectName: "p", title: id, createdAt: 1, updatedAt: 1, status: "idle", messages: 1, pinned: false, archived: false, settled: false, live: true, ...o });

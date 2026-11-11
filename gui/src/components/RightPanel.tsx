@@ -7,12 +7,13 @@
 // browser, watched and driven by hand (BrowserPane). Empty sections aren't
 // drawn. The plan and its steps are in the conversation (Composer, Activity).
 
-import { createEffect, createMemo, createResource, createSignal, For, Match, on, onCleanup, Show, Switch } from "solid-js";
+import { batch, createEffect, createMemo, createResource, createSignal, For, Match, on, onCleanup, Show, Switch } from "solid-js";
 import { Bot, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitCommitHorizontal, GitPullRequestArrow, Globe, KeyRound, Plug, Smartphone, SquarePen, Terminal, X } from "lucide-solid";
 import type { ChangesInfo, GitFileDiff } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc, toast } from "../state/app";
-import { inspectorPane, setCommitRequest, setInspectorPane, setMcpOpen } from "../state/ui";
+import { setPrefs } from "../state/prefs";
+import { inspectorPane, setCommitRequest, setInspectorPane, setMcpOpen, setReview } from "../state/ui";
 import { newSession, openReview } from "../state/actions";
 import { needsAttention, shownName, statusLabel } from "../lib/mcp";
 import { commitUnavailable, sessionReadReady, useGitChanges } from "../state/changes";
@@ -20,9 +21,10 @@ import { canReveal, copyText, openExternal, revealPath } from "../lib/platform";
 import { tildify } from "../lib/format";
 import { workingBranch } from "../lib/worktree-work";
 import { agentRows, backgroundOf, commandRows, rowLive, type WorkRow } from "../lib/background";
-import { CHANGE, dirOf, fitTabs, nameOf, tabName, type Change, type TabFit } from "../lib/inspector";
+import { CHANGE, dirOf, nameOf, tabName, type Change, type InspectorPane } from "../lib/inspector";
 import { Menu } from "./ui/Menu";
 import { Segmented, Spinner } from "./ui/bits";
+import { DiffStat } from "./blocks/DiffView";
 import { PublishDialog } from "./PublishDialog";
 import { uncleared, WorkList } from "./BackgroundTasks";
 import { BrowserPane } from "./BrowserPane";
@@ -68,7 +70,7 @@ function WorkspaceButton(p: { handle: SessionHandle }) {
                     <Copy size={14} /> Copy folder path
                 </button>
                 <button role="menuitem" class="menu-item compact" onClick={() => (close(), newSession(st().cwd))}>
-                    <SquarePen size={14} /> New session in {st().projectName}
+                    <SquarePen size={14} /> New session
                 </button>
                 <button role="menuitem" class="menu-item compact" onClick={() => (close(), setMcpOpen({}))}>
                     <Plug size={14} /> MCP servers
@@ -128,7 +130,7 @@ function FileRow(p: { f: Listed; onOpen: () => void }) {
             </span>
             <Show when={p.f.added || p.f.removed}>
                 <span class="stat">
-                    <Show when={p.f.added || !p.f.removed}>
+                    <Show when={p.f.added}>
                         <span class="add">+{p.f.added}</span>
                     </Show>
                     <Show when={p.f.removed}>
@@ -140,30 +142,25 @@ function FileRow(p: { f: Listed; onOpen: () => void }) {
     );
 }
 
-/** The Changes pane: the counts, then each file; a file opens the diff reader on it. */
-function ChangesPane(p: { changes: ReturnType<ReturnType<typeof useFolderChanges>> }) {
+type FolderChanges = ReturnType<ReturnType<typeof useFolderChanges>>;
+
+/** The diff reader on these changes: git's uncommitted view, or (outside a repository) Cavvy's own record. */
+const openChanges = (c: FolderChanges, path?: string, token?: string) => openReview(path, c?.repo === false ? "cavvy" : "uncommitted", undefined, token);
+
+/** The Changes pane: each file (the counts are on the pane's title line); a file opens the diff reader on it. */
+function ChangesPane(p: { changes: FolderChanges }) {
     const c = () => p.changes;
-    // Git's uncommitted view, or (outside a repository) Cavvy's own record.
-    const open = (path?: string, token?: string) => openReview(path, c()?.repo === false ? "cavvy" : "uncommitted", undefined, token);
+    const open = (path?: string, token?: string) => openChanges(c(), path, token);
     return (
         <Show when={c()} fallback={<div class="blank" aria-busy="true"><Spinner size={16} /></div>}>
             {(ch) => (
                 <Show
                     when={ch().count}
                     fallback={
-                        <div class="blank">
-                            <FileDiff size={22} class="ic" />
-                            <Show
-                                when={!ch().error}
-                                fallback={
-                                    <>
-                                        <b>Changes unavailable</b>
-                                        <span class="selectable">{ch().error}</span>
-                                    </>
-                                }
-                            >
-                                <b>No changes yet</b>
-                                {ch().repo ? "The working tree matches the last commit." : ch().untracked ? "This session isn't saved yet." : "Files Cavvy edits in this session show up here."}
+                        <div class="none">
+                            <Show when={ch().error} fallback="No changes yet">
+                                <b>Changes unavailable</b>
+                                <span class="selectable">{ch().error}</span>
                             </Show>
                             <button class="link-btn" onClick={() => open()}>
                                 {ch().repo ? "Review the branch or a turn" : "Open the diff reader"}
@@ -172,17 +169,6 @@ function ChangesPane(p: { changes: ReturnType<ReturnType<typeof useFolderChanges
                     }
                 >
                     <div>
-                        <div class="sum">
-                            <b class="add">+{ch().added}</b>
-                            <b class="del">−{ch().removed}</b>
-                            <span class="grow">
-                                in {ch().count.toLocaleString()}
-                                {ch().atLeast ? "+" : ""} {ch().count === 1 ? "file" : "files"}
-                            </span>
-                            <button class="btn ghost sm" title="Open the diff reader" onClick={() => open()}>
-                                Review
-                            </button>
-                        </div>
                         <For each={ch().files}>{(f) => <FileRow f={f} onOpen={() => open(f.path, f.pathToken)} />}</For>
                         <Show when={ch().more}>
                             <div class="file-more">
@@ -287,11 +273,7 @@ function AgentsPane(p: { handle: SessionHandle; rows: WorkRow[] }) {
         <Show
             when={p.rows.length}
             fallback={
-                <div class="blank">
-                    <Bot size={22} class="ic" />
-                    <b>No agents yet</b>
-                    Sub-agents and tasks given to other models show up here.
-                </div>
+<div class="none">No agents yet</div>
             }
         >
             <WorkList handle={p.handle} tab="agents" rows={p.rows} />
@@ -307,11 +289,7 @@ function CommandsPane(p: { handle: SessionHandle; rows: WorkRow[] }) {
         <Show
             when={any()}
             fallback={
-                <div class="blank">
-                    <Terminal size={22} class="ic" />
-                    <b>No background commands</b>
-                    Shells and monitors the agent leaves running show up here.
-                </div>
+<div class="none">No commands running</div>
             }
         >
             <WorkList handle={p.handle} tab="commands" rows={p.rows} />
@@ -346,163 +324,164 @@ function PanelFoot(p: { handle: SessionHandle; changes: ReturnType<ReturnType<ty
     );
 }
 
-/** How the tabs fit the header (lib/inspector fitTabs), tried roomiest first whenever the panel's width, the text
- *  size or what's in a tab changes; set on the header as data-fit, which panel.css lays out. */
-function useTabFit(): [() => TabFit, (head: HTMLElement) => void] {
-    const [fit, setFit] = createSignal<TabFit>("full");
-    const measure = (head: HTMLElement) => {
-        const tabs = [...head.querySelectorAll<HTMLElement>(".segmented button")];
-        const chosen = fitTabs((f) => {
-            head.dataset.fit = f;
-            return tabs.some((t) => t.scrollWidth > t.clientWidth);
-        });
-        head.dataset.fit = chosen;
-        setFit(chosen);
-    };
-    const ref = (head: HTMLElement) => {
-        const resized = new ResizeObserver(() => measure(head));
-        // A count that appears or grows; not attributes, which measuring sets.
-        const changed = new MutationObserver(() => measure(head));
-        resized.observe(head);
-        changed.observe(head, { subtree: true, childList: true, characterData: true });
-        onCleanup(() => {
-            resized.disconnect();
-            changed.disconnect();
-        });
-    };
-    return [fit, ref];
+/** What the panel's views hold, for its rail and its panes: the folder's changes, the agents and the commands. */
+function usePanelWork(handle: () => SessionHandle) {
+    const changes = useFolderChanges(handle);
+    const tasks = createMemo(() => backgroundOf(handle().view.state));
+    const agents = createMemo(() => uncleared(handle().id, agentRows(tasks(), handle().view.agents)));
+    const commands = createMemo(() => uncleared(handle().id, commandRows(tasks())));
+    // What the agent does in the browser is told even while the pane isn't showing (a dot on its icon).
+    createEffect(on(() => handle().id, (id) => void loadBrowserState(id).catch(() => undefined)));
+    // And on the simulator, whose view shows only on a Mac with Xcode.
+    createEffect(on(() => handle().id, (id) => void loadSimulatorState(id).catch(() => undefined)));
+    return { changes, agents, commands };
 }
 
-export function RightPanel(p: { handle: SessionHandle }) {
-    const changes = useFolderChanges(() => p.handle);
-    const st = () => p.handle.view.state;
-    const tasks = createMemo(() => backgroundOf(st()));
-    const agents = createMemo(() => uncleared(p.handle.id, agentRows(tasks(), p.handle.view.agents)));
-    const commands = createMemo(() => uncleared(p.handle.id, commandRows(tasks())));
+/**
+ * The panel's views, as icons down its outer edge (first for the keyboard; panel.css puts it there): one look at any
+ * width. A view's name is its tooltip, and the title of its pane. It stays beside the diff reader too (`reviewing`:
+ * Changes is the view the reader belongs to), so the reader reads as part of the panel: an icon leaves it for that view.
+ */
+function PanelRail(p: { handle: SessionHandle; work: ReturnType<typeof usePanelWork>; reviewing?: boolean }) {
+    const { changes, agents, commands } = p.work;
     const running = (rows: readonly WorkRow[]) => rows.filter(rowLive).length;
     const asks = () => agents().some((r) => r.status === "waiting");
     const files = () => (changes()?.count ? `${changes()!.count.toLocaleString()}${changes()!.atLeast ? "+" : ""}` : undefined);
-    // What the agent does in the browser is told even while the pane isn't showing (a dot on its tab).
-    createEffect(on(() => p.handle.id, (id) => void loadBrowserState(id).catch(() => undefined)));
-    // And on the simulator, whose tab shows only on a Mac with Xcode.
-    createEffect(on(() => p.handle.id, (id) => void loadSimulatorState(id).catch(() => undefined)));
+    const show = (pane: InspectorPane) => batch(() => {
+        setReview(undefined);
+        setInspectorPane(pane);
+        setPrefs("panel", true);
+    });
+    return (
+        <div class="insp-rail">
+            <Segmented
+                label="Side panel"
+                value={p.reviewing ? "changes" : inspectorPane()}
+                onChange={show}
+                options={[
+                    {
+                        value: "changes",
+                        get name() {
+                            return tabName("Changes", files() && `${files()} ${changes()!.count === 1 ? "file" : "files"}`);
+                        },
+                        title: "Changes",
+                        label: (
+                            <>
+                                <FileDiff class="seg-i" />
+                                <Show when={files()}>
+                                    <span class="ct files">{files()}</span>
+                                </Show>
+                            </>
+                        ),
+                    },
+                    {
+                        value: "agents",
+                        get name() {
+                            return tabName("Agents", running(agents()) > 0 && `${running(agents())} running`, asks() && "a sub-agent needs you");
+                        },
+                        title: "Agents",
+                        // A tab's count is what runs in it now, in the accent.
+                        label: (
+                            <>
+                                <Bot class="seg-i" />
+                                <Show when={running(agents())}>
+                                    <span class="ct live">{running(agents())}</span>
+                                </Show>
+                                <Show when={asks()}>
+                                    <span class="ct-dot" title="A sub-agent needs you" />
+                                </Show>
+                            </>
+                        ),
+                    },
+                    {
+                        value: "commands",
+                        get name() {
+                            return tabName("Commands", running(commands()) > 0 && `${running(commands())} running`);
+                        },
+                        title: "Commands",
+                        label: (
+                            <>
+                                <Terminal class="seg-i" />
+                                <Show when={running(commands())}>
+                                    <span class="ct live">{running(commands())}</span>
+                                </Show>
+                            </>
+                        ),
+                    },
+                    {
+                        value: "browser",
+                        get name() {
+                            return tabName("Browser", browserUnseen(p.handle.id) && "the agent opened a page");
+                        },
+                        title: "Browser",
+                        label: (
+                            <>
+                                <Globe class="seg-i" />
+                                <Show when={browserUnseen(p.handle.id)}>
+                                    <span class="ct-dot" title="The agent opened a page" />
+                                </Show>
+                            </>
+                        ),
+                    },
+                    ...(simulatorOffered(p.handle.id)
+                        ? [
+                              {
+                                  value: "simulator" as const,
+                                  get name() {
+                                      return tabName("Simulator", simulatorUnseen(p.handle.id) && "the agent used it");
+                                  },
+                                  title: "Simulator",
+                                  label: (
+                                      <>
+                                          <Smartphone class="seg-i" />
+                                          <Show when={simulatorUnseen(p.handle.id)}>
+                                              <span class="ct-dot" title="The agent used the simulator" />
+                                          </Show>
+                                      </>
+                                  ),
+                              },
+                          ]
+                        : []),
+                ]}
+            />
+            <span class="grow" />
+            <WorkspaceButton handle={p.handle} />
+        </div>
+    );
+}
+
+/** The panel's rail, beside the diff reader (App.tsx). */
+export function ReviewRail(p: { handle: SessionHandle }) {
+    return <PanelRail handle={p.handle} work={usePanelWork(() => p.handle)} reviewing />;
+}
+
+export function RightPanel(p: { handle: SessionHandle }) {
+    const work = usePanelWork(() => p.handle);
+    const { changes, agents, commands } = work;
     createEffect(() => {
         if (inspectorPane() === "simulator" && simulatorState(p.handle.id)?.status === "unavailable") setInspectorPane("changes");
     });
-    const [fit, fitRef] = useTabFit();
-    // Shown as icons, a tab's label is its tooltip; its name always says its count.
-    const tip = (label: string) => (fit() === "icons" ? label : undefined);
+    // The panes with a title line; the browser's and the simulator's own bars say what they are.
+    const titled = () => (inspectorPane() === "browser" || inspectorPane() === "simulator" ? undefined : inspectorPane());
     return (
         <aside class="panel" aria-label="Session details">
-            <div class="insp-h" ref={fitRef}>
-                <Segmented
-                    label="Side panel"
-                    value={inspectorPane()}
-                    onChange={setInspectorPane}
-                    options={[
-                        {
-                            value: "changes",
-                            get name() {
-                                return tabName("Changes", files() && `${files()} ${changes()!.count === 1 ? "file" : "files"}`);
-                            },
-                            get title() {
-                                return tip("Changes");
-                            },
-                            label: (
-                                <>
-                                    <FileDiff class="seg-i" />
-                                    <span class="seg-l">Changes</span>
-                                    <Show when={files()}>
-                                        <span class="ct files">{files()}</span>
-                                    </Show>
-                                </>
-                            ),
-                        },
-                        {
-                            value: "agents",
-                            get name() {
-                                return tabName("Agents", running(agents()) > 0 && `${running(agents())} running`, asks() && "a sub-agent needs you");
-                            },
-                            get title() {
-                                return tip("Agents");
-                            },
-                            // A tab's count is what runs in it now, in the accent.
-                            label: (
-                                <>
-                                    <Bot class="seg-i" />
-                                    <span class="seg-l">Agents</span>
-                                    <Show when={running(agents())}>
-                                        <span class="ct live">{running(agents())}</span>
-                                    </Show>
-                                    <Show when={asks()}>
-                                        <span class="ct-dot" title="A sub-agent needs you" />
-                                    </Show>
-                                </>
-                            ),
-                        },
-                        {
-                            value: "commands",
-                            get name() {
-                                return tabName("Commands", running(commands()) > 0 && `${running(commands())} running`);
-                            },
-                            get title() {
-                                return tip("Commands");
-                            },
-                            label: (
-                                <>
-                                    <Terminal class="seg-i" />
-                                    <span class="seg-l">Commands</span>
-                                    <Show when={running(commands())}>
-                                        <span class="ct live">{running(commands())}</span>
-                                    </Show>
-                                </>
-                            ),
-                        },
-                        {
-                            value: "browser",
-                            get name() {
-                                return tabName("Browser", browserUnseen(p.handle.id) && "the agent opened a page");
-                            },
-                            get title() {
-                                return tip("Browser");
-                            },
-                            label: (
-                                <>
-                                    <Globe class="seg-i" />
-                                    <span class="seg-l">Browser</span>
-                                    <Show when={browserUnseen(p.handle.id)}>
-                                        <span class="ct-dot" title="The agent opened a page" />
-                                    </Show>
-                                </>
-                            ),
-                        },
-                        ...(simulatorOffered(p.handle.id)
-                            ? [
-                                  {
-                                      value: "simulator" as const,
-                                      get name() {
-                                          return tabName("Simulator", simulatorUnseen(p.handle.id) && "the agent used it");
-                                      },
-                                      get title() {
-                                          return tip("Simulator");
-                                      },
-                                      label: (
-                                          <>
-                                              <Smartphone class="seg-i" />
-                                              <span class="seg-l">Simulator</span>
-                                              <Show when={simulatorUnseen(p.handle.id)}>
-                                                  <span class="ct-dot" title="The agent used the simulator" />
-                                              </Show>
-                                          </>
-                                      ),
-                                  },
-                              ]
-                            : []),
-                    ]}
-                />
-                <WorkspaceButton handle={p.handle} />
-            </div>
-            <div class="insp-body panel-scroll" classList={{ "br-body": inspectorPane() === "browser" || inspectorPane() === "simulator" }}>
+            <PanelRail handle={p.handle} work={work} />
+            <div class="insp-main">
+            <Show when={titled()}>
+                {(pane) => (
+                    <div class="insp-t">
+                        <h2>{pane()}</h2>
+                        <Show when={pane() === "changes" && changes()?.count}>
+                            <DiffStat added={changes()!.added} removed={changes()!.removed} />
+                            <span class="grow" />
+                            <button class="btn ghost sm" title="Open the diff reader" onClick={() => openChanges(changes())}>
+                                Review
+                            </button>
+                        </Show>
+                    </div>
+                )}
+            </Show>
+            <div class="insp-body panel-scroll" classList={{ "br-body": !titled() }}>
                 {/* A pane is made when its tab is chosen, and fades in then: not when what's in it changes. */}
                 <Switch>
                     <Match when={inspectorPane() === "agents"}>
@@ -535,6 +514,7 @@ export function RightPanel(p: { handle: SessionHandle }) {
             <Show when={inspectorPane() === "changes"}>
                 <PanelFoot handle={p.handle} changes={changes()} />
             </Show>
+            </div>
         </aside>
     );
 }

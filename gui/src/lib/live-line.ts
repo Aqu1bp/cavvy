@@ -60,7 +60,8 @@ function waitLabel(i: Interaction): { label: string; detail?: string; mono?: boo
             return { label: "Waiting for a secret", detail: i.name };
         default: {
             const what = i.command?.split("\n")[0] ?? i.path;
-            return { label: "Waiting for approval", detail: what ?? i.title, mono: Boolean(what) };
+            // No command or file: what the card asks, in its words (never the call as code, "BrowserAct(click e4)").
+            return { label: "Waiting for approval", detail: what ?? i.heading, mono: Boolean(what) };
         }
     }
 }

@@ -2312,6 +2312,20 @@ export class Runtime {
                 if (b.job) this.ui.write({ t: "tool", id: b.id, job: b.job, at: Date.now() });
             }
         }
+        // The turns steered messages ended on the way here (drainedTurn) keep the calls that began in them: none of
+        // theirs is left under way either. One that never arrived whole goes: there's nothing of it to show.
+        for (let i = this.view.turns.findIndex((t) => t.id === turnId); i > 0 && this.view.turns[i]!.prompt?.steered; i--) {
+            const earlier = this.view.turns[i - 1]!;
+            let changed = false;
+            for (const b of [...earlier.blocks]) {
+                if (b.t !== "tool" || (b.status === "running" && background.has(b.id))) continue;
+                if (b.status === "streaming") this.op({ op: "block.remove", turnId: earlier.id, blockId: b.id });
+                else if (b.status === "running" || b.status === "queued" || b.status === "awaiting") this.patchBlock(b.id, { status: "error", summary: reason === "aborted" ? "Interrupted" : "Not run", progress: undefined }, earlier.id);
+                else continue;
+                changed = true;
+            }
+            if (changed) this.syncTurnAll(earlier.id);
+        }
         const status: TurnStatus = reason;
         const end = Date.now();
         this.op({ op: "turn.patch", turnId, patch: { status, endedAt: end, snapshotId: this.snapshotId() } });
@@ -2448,7 +2462,10 @@ export class Runtime {
 
     private async askPermission(req: PermissionRequest): Promise<PermissionResponse> {
         const { tool, input, decision } = req;
-        const suggestions = decision.suggestions ?? [];
+        // A rule kept for good ("always") isn't offered where it would allow far more than what's asked: a command asked
+        // about for the file or hosts it names (the rule is for every such command, and is matched before those are
+        // looked at), or what auto mode says it asks about every time. The choice for the session stays.
+        const suggestions = (isShellTool(tool.name) && (decision.sensitive || decision.listedHosts?.length)) || decision.everyTime ? [] : (decision.suggestions ?? []);
         const projectName = basename(this.ws.cwd);
         const it: PermissionInteraction = {
             kind: "permission",
@@ -2477,7 +2494,8 @@ export class Runtime {
             if (decision.sandbox && Array.isArray(input.allowedHosts)) it.hosts = input.allowedHosts.map(String);
             if (!decision.dangerous && suggestions.length) {
                 const label = suggestions.map((s) => s.replace(/^Bash\((.*?)(:\*)?\)$/, "$1")).join(", ");
-                it.options.push({ id: "always", label: `Always allow \`${label}\` in ${projectName}` });
+                // On its button the commands are code: a backtick in one's name would end that early.
+                it.options.push({ id: "always", label: `Always allow \`${label}\` in ${projectName}`, short: `Always allow \`${label.replaceAll("`", "'")}\`` });
             }
         } else if (tool.category === "edit") {
             const p = toolPath(tool.name, input) ?? "";
@@ -2513,12 +2531,12 @@ export class Runtime {
                 if (req.preview?.body) it.command = redact(req.preview.body);
                 if (req.preview?.summary && req.preview.summary !== it.heading) it.description = redact(req.preview.summary);
             }
-            if (suggestions.length) it.options.push({ id: "always", label: tool.name === "BrowserNavigate" ? `Always allow ${suggestions[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1")}` : `Always allow in ${projectName}` });
+            if (suggestions.length) it.options.push(tool.name === "BrowserNavigate" ? { id: "always", label: `Always allow ${suggestions[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1")}` } : { id: "always", label: `Always allow in ${projectName}`, short: "Always allow" });
         } else if (GIT_TOOL_HEADINGS[tool.name]) {
             it.heading = GIT_TOOL_HEADINGS[tool.name]!;
             if (req.preview?.body) it.command = redact(req.preview.body);
             if (req.preview?.summary) it.description = redact(req.preview.summary);
-            if (suggestions.length) it.options.push({ id: "always", label: `Always allow in ${projectName}` });
+            if (suggestions.length) it.options.push({ id: "always", label: `Always allow in ${projectName}`, short: "Always allow" });
         } else if (tool.category === "mcp") {
             // Its own name in words ("Create issue"), and the server it's from.
             const m = /^mcp__(.+?)__(.+)$/.exec(tool.name);
@@ -2526,7 +2544,7 @@ export class Runtime {
             it.heading = words.charAt(0).toUpperCase() + words.slice(1);
             if (m) it.where = `From ${m[1]}`;
             it.json = redact(JSON.stringify(input, null, 2)).slice(0, 6000);
-            if (suggestions.length) it.options.push({ id: "always", label: `Always allow in ${projectName}` });
+            if (suggestions.length) it.options.push({ id: "always", label: `Always allow in ${projectName}`, short: "Always allow" });
         }
         it.options.push({ id: "no", label: "Deny" });
         // A sub-agent stopped while this was put together asks nothing.

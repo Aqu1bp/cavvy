@@ -11,6 +11,7 @@ import type { Interaction, PermissionInteraction, PlanInteraction, QuestionInter
 import { openAgents, respond } from "../state/actions";
 import { handleFor, rpc } from "../state/app";
 import { agentProvider } from "../lib/agent-marks";
+import { approvalChoices } from "../lib/approval";
 import { AgentMark } from "./ui/AgentMark";
 import { columnHeight, setPlanDialog, settingsTab } from "../state/ui";
 import { DiffView } from "./blocks/DiffView";
@@ -153,6 +154,8 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
         const a = p.it.agentId ? h?.view.agents.find((x) => x.id === p.it.agentId) : undefined;
         return a && agentProvider(a, h?.view.state.model?.provider, h?.view.agents);
     };
+    // Its task, without the model's id after it ("(anthropic:claude-…)"): its mark says whose it is.
+    const asker = () => p.it.agentLabel?.replace(/ \([^()\s]+:[^()\s]+\)$/, "");
     const [busy, setBusy] = createSignal(false);
     const answer = async (choice: PermissionInteraction["options"][number]["id"]) => {
         if (busy()) return;
@@ -160,12 +163,11 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
         // Answered, the card goes away; if the answer didn't go through, it can be given again.
         if (!(await respond(p.sessionId, p.it.id, { kind: "permission", choice, feedback: choice === "no" ? feedback() : undefined }))) setBusy(false);
     };
+    const choices = () => approvalChoices(p.it.options);
     useKeys((k) => {
-        const i = Number(k);
-        if (i >= 1 && i <= p.it.options.length) {
-            const opt = p.it.options[i - 1]!;
-            if (opt.id === "no") setFeedback((f) => f ?? "");
-            else void answer(opt.id);
+        const opt = choices().keys[Number(k) - 1];
+        if (opt) {
+            void answer(opt.id);
             return true;
         }
         if (k === "Escape") {
@@ -174,10 +176,6 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
         }
         return false;
     });
-    // On screen: one row at the trailing edge, Deny first and Allow once last, where the eye lands.
-    const opts = () => p.it.options.map((o, i) => ({ o, key: i + 1 }));
-    const deny = () => opts().filter((x) => x.o.id === "no");
-    const allows = () => [...opts().filter((x) => x.o.id !== "no" && x.o.id !== "yes"), ...opts().filter((x) => x.o.id === "yes")];
     const Choice = (c: { o: PermissionInteraction["options"][number]; key: number }) => (
         <button
             class={`pbtn ${c.o.id === "yes" ? "primary" : c.o.id === "no" ? "quiet" : "outlined"}`}
@@ -188,7 +186,7 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                 else void answer(c.o.id);
             }}
         >
-            <FitLabel text={c.o.id === "no" && feedback() !== undefined ? "Deny" : c.o.label} />
+            <FitLabel text={c.o.id === "no" && feedback() !== undefined ? "Deny" : c.o.short ?? c.o.label} />
             <kbd>{c.o.id === "no" ? "Esc" : c.key}</kbd>
         </button>
     );
@@ -204,9 +202,9 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                     ) : p.it.agentLabel ? (
                         <>
                             <AgentMark provider={askerProvider()} size={12} /> Requested by sub-agent ·{" "}
-                            <Show when={p.it.agentId} fallback={p.it.agentLabel}>
+                            <Show when={p.it.agentId} fallback={asker()}>
                                 <button class="link-btn" tabIndex={-1} title="See what it has done so far" onClick={() => openAgents(p.it.agentId)}>
-                                    {p.it.agentLabel}
+                                    {asker()}
                                 </button>
                             </Show>
                         </>
@@ -226,7 +224,8 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                 </Show>
                 <Show when={p.it.command !== undefined}>
                     <pre class="itab-code ask-cmd mono">{p.it.command}</pre>
-                    <Show when={p.it.description}>
+                    {/* Not a shell command's: those are the agent's own words for it, and the command is right there. */}
+                    <Show when={p.it.description && p.it.toolName !== "Bash" && p.it.toolName !== "Monitor"}>
                         <div class="itab-desc why selectable">{p.it.description}</div>
                     </Show>
                     <Show when={p.it.hosts?.length}>
@@ -283,7 +282,7 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                 </Show>
             </div>
             <div class="itab-actions ask-row perm-row">
-                <For each={[...deny(), ...allows()]}>{Choice}</For>
+                <For each={choices().row}>{Choice}</For>
             </div>
         </>
     );

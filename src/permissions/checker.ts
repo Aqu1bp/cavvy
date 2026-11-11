@@ -61,6 +61,8 @@ export interface Decision {
     hosts?: string[];
     /** Hosts the command listed that nothing opens by itself: the reason for the review. */
     listedHosts?: string[];
+    /** Auto mode asks about this every time (a push to the main branch, publishing): no rule kept for good is offered for it. */
+    everyTime?: boolean;
     /** Changes Cavvy's own configuration: only the exact action can be approved, never a wider grant. */
     config?: boolean;
     /** The "allow this for the session" choice the popup offers. */
@@ -543,7 +545,7 @@ export class PermissionChecker {
                     const open = sandbox && hosts.length ? { hosts } : {};
                     const push = mode === "auto" ? pushesDefaultBranch(judged, cwd) : undefined;
                     // Naming something sensitive doesn't take a push to main past the user.
-                    if (push) return { behavior: "ask", reason: `This command updates the main branch on the remote (${push}); auto mode always asks for that.`, suggestions };
+                    if (push) return { behavior: "ask", everyTime: true, reason: `This command updates the main branch on the remote (${push}); auto mode always asks for that.`, suggestions };
                     if (sensitive) {
                         // Using a .env (loading it to run the tests, creating one from the example) is routine;
                         // printing or sending it isn't. The reviewer tells them apart, and the user hears only if it won't allow it.
@@ -578,7 +580,7 @@ export class PermissionChecker {
                 // GitCommit, GitPush, CreatePullRequest: "don't ask again" allows the tool in this project.
                 const suggestions = [tool.name === "SimulatorControl" ? `SimulatorControl(${t.action})` : tool.name];
                 // Publishing reaches other people and can't be taken back: auto mode's reviewer doesn't decide it, the user does.
-                if (tool.name === "GitPush" || tool.name === "CreatePullRequest") return { behavior: "ask", suggestions, ...(mode === "auto" ? { reason: "Pushing to the remote always asks in auto mode." } : {}) };
+                if (tool.name === "GitPush" || tool.name === "CreatePullRequest") return { behavior: "ask", suggestions, ...(mode === "auto" ? { everyTime: true, reason: "Pushing to the remote always asks in auto mode." } : {}) };
                 return mode === "auto" ? { behavior: "ask", needsClassifier: true, suggestions } : { behavior: "ask", suggestions };
             }
             case "network": {

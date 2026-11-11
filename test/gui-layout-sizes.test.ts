@@ -131,6 +131,8 @@ test("the composer dock's measured height reaches the transcript (SessionView, r
 test("the transcript's end and the Latest pill have the composer dock's height set on them", () => {
     const transcript = read("components/Transcript.tsx");
     expect(transcript).toMatch(/<div class="transcript-end" style=\{\{ "--dock-h": dock\(\) \}\} \/>/);
-    expect(transcript).toMatch(/<button class="jump glass" style=\{\{ "--dock-h": dock\(\) \}\}/);
+    // The pill and the fade it sits on, each for itself; the pill also has the width a floating panel covers.
+    expect(transcript).toMatch(/<button class="jump glass" style=\{\{ "--dock-h": dock\(\), "--over": floatOver\(\) \}\}/);
+    expect(transcript).toMatch(/<div class="jump-shelf" style=\{\{ "--dock-h": dock\(\) \}\}/);
     expect(read("components/Agents.tsx")).toMatch(/<div class="transcript-end" style=\{\{ "--dock-h": `\$\{dockH\(\)\}px` \}\} \/>/);
 });

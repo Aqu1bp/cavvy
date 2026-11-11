@@ -40,6 +40,7 @@ function setup(blocks: any[], expanded = true, agents: any[] = [], session?: str
         handleFor: () => ({ view }), stopBackground: (id: string, ids: string[]) => { stops.push([id, ids]); }, now: clock, motionMs: () => 0, prefs: { expandActivity: expanded, showThinking: true }, findReveal: reveal,
         CodeBlock: (p: any) => { const n = node("code"); solid.createRenderEffect(() => n.text = p.code); return n; },
         DiffView: (p: any) => { const n = node("diff"); solid.createRenderEffect(() => n.text = `diff ${p.diff.path}`); return n; },
+        Counts: (p: { added?: number; removed?: number }) => { const n = node("counts"); solid.createRenderEffect(() => n.text = [p.added ? `+${p.added}` : "", p.removed ? `−${p.removed}` : ""].filter(Boolean).join(" ")); return n; },
         Markdown: () => node("markdown"), Spinner: icon,
         // What a Copy would copy, read when it's pressed.
         CopyButton: (p: any) => { const n = icon(); n.props.label = p.label; n.props.copy = p.text; return n; }, openReview: () => {}, openInEditor: () => {},
@@ -104,6 +105,20 @@ test("a turn left running with no live line draws its calls under way as rows, t
         for (let i = 0; i < 40; i++) h.op({ op: "append", blockId: "a", field: "progress", text: `line ${i}\n` });
         h.op({ op: "block.patch", blockId: "a", patch: { status: "ok", durationMs: 2000 } });
         expect(row(h.root, "a")).toBe(first);
+        expect(text(h.root)).not.toContain("Couldn't render");
+    } finally { h.dispose(); }
+});
+
+test("a command still arriving with nothing of it here yet draws no row: a spinner alone says nothing", () => {
+    // No live line (a turn a steered message ended keeps the calls that began in it, as rows).
+    const cut = { t: "tool", id: "cut", name: "Bash", title: "Bash", status: "streaming", receiving: 0 };
+    const h = setup([cut as any], false, [], undefined, false);
+    try {
+        expect(row(h.root, "cut")).toBeUndefined();
+        expect(all(h.root).some((n) => has(n, "cmd-card"))).toBe(false);
+        // What it's for has arrived: its row says so.
+        h.op({ op: "block.patch", blockId: "cut", patch: { input: { description: "Survey the repo" } } });
+        expect(text(row(h.root, "cut"))).toContain("Survey the repo");
         expect(text(h.root)).not.toContain("Couldn't render");
     } finally { h.dispose(); }
 });

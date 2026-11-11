@@ -333,6 +333,35 @@ describe("asking for a secret in a GUI session", () => {
         a.close();
     });
 
+    test("a command's lasting choice says what it allows on its button, and isn't offered beside a narrower grant", async () => {
+        const { BashTool } = await import("../src/tools/bash");
+        const a = await client();
+        const id = await a.open("session.create", { cwd: project() });
+        const rt = srv.engine.runtimes.get(id)! as any;
+        const options = async (decision: object) => {
+            const answer = rt.askPermission({ tool: BashTool, input: { command: "cp .env backup.env" }, title: "Bash(cp .env backup.env)", decision: { behavior: "ask", suggestions: ["Bash(cp:*)"], ...decision } });
+            await a.until(id, (v) => v.state.interactions.length === 1);
+            const card = a.view(id).state.interactions[0]!;
+            await respond(a, id, card.id, { kind: "permission", choice: "no" });
+            await answer;
+            await a.until(id, (v) => v.state.interactions.length === 0);
+            return card.kind === "permission" ? card.options.map((o) => [o.id, o.short ?? o.label]) : [];
+        };
+        // The same commands for the session or for good: both offered, the lasting one's button without the project's name.
+        expect(await options({ grant: { label: "cp", rules: ["Bash(cp:*)"] } })).toEqual([["yes", "Allow once"], ["session", "Allow `cp` for the session"], ["always", "Always allow `cp`"], ["no", "Deny"]]);
+        expect(await options({})).toEqual([["yes", "Allow once"], ["always", "Always allow `cp`"], ["no", "Deny"]]);
+        // Asked over the file or host it names: the grant covers only that, and no rule for every `cp` is offered beside it.
+        expect(await options({ sensitive: "a .env file", grant: { label: ".env", paths: ["/p/.env"] } })).toEqual([["yes", "Allow once"], ["session", "Allow `.env` for the session"], ["no", "Deny"]]);
+        expect(await options({ listedHosts: ["example.com"], grant: { label: "example.com", hosts: ["example.com"] } })).toEqual([["yes", "Allow once"], ["session", "Allow `example.com` for the session"], ["no", "Deny"]]);
+        // The same with no grant to offer (the file's path can't be listed): only this once.
+        expect(await options({ sensitive: "a .env file" })).toEqual([["yes", "Allow once"], ["no", "Deny"]]);
+        // What auto mode says it asks about every time (a push to main): for the session at most.
+        expect(await options({ everyTime: true, grant: { label: "git push", rules: ["Bash(git push:*)"] } })).toEqual([["yes", "Allow once"], ["session", "Allow `git push` for the session"], ["no", "Deny"]]);
+        // A backtick in a command's name doesn't end the button's code early.
+        expect(await options({ suggestions: ["Bash(./x` once:*)"] })).toEqual([["yes", "Allow once"], ["always", "Always allow `./x' once`"], ["no", "Deny"]]);
+        a.close();
+    });
+
     test("an unloaded session restores mode and effort but not its secrets", async () => {
         const a = await client();
         const id = await a.open("session.create", { cwd: project() });

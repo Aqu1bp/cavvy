@@ -48,14 +48,18 @@ test("the inspector docks while the conversation keeps 480px, else floats", () =
 });
 
 test("the diff reader widens the inspector: 55% of the sheet up to 860px, 68% up to 1120px side by side", () => {
-    expect(reviewWidth(360, 1000, false)).toBe(550);
+    expect(reviewWidth(360, 1400, false)).toBe(770);
     expect(reviewWidth(360, 2000, false)).toBe(860);
+    // Short of that share beside 480px of conversation, it takes what's left rather than cover it, down to 480px.
+    expect(reviewWidth(360, 1000, false)).toBe(520);
+    expect(reviewWidth(360, 960, false)).toBe(480);
+    expect(reviewWidth(360, 959, false)).toBe(527);
     expect(reviewWidth(360, 1000, true)).toBe(680);
     expect(reviewWidth(360, 2000, true)).toBe(1120);
     // Never narrower than the inspector it replaces.
     expect(reviewWidth(360, 600, false, 400)).toBe(400);
     // Its own handle widens it, as far as the conversation keeps 480px, and past the cap.
-    expect(reviewWidth(720, 1000, false)).toBe(550);
+    expect(reviewWidth(720, 1000, false)).toBe(520);
     expect(reviewWidth(720, 1300, false)).toBe(720);
     expect(reviewWidth(900, 1300, false)).toBe(820);
     expect(reviewWidth(1000, 2000, false)).toBe(1000);

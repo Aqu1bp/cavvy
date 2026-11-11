@@ -14,7 +14,7 @@ import { ACCENTS, CHAT_WIDTHS, prefs, PREF_DEFAULTS, setPrefs, type AccentId, ty
 import { setSettingsTab, settingsTab, type SettingsTab } from "../state/ui";
 import { loadSimulatorState } from "../state/simulator";
 import { canReveal, copyText, isDesktop, mod, openExternal, os, revealPath } from "../lib/platform";
-import { keybindingsFile, keymap, withShortcut } from "../state/keybindings";
+import { keybindingsFile, keymap, keyText, withShortcut } from "../state/keybindings";
 import { ACTIONS, CONTEXTS, KEYBINDINGS_DOCS, formatKeys } from "../../../src/keybindings/core";
 import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { ProviderIcon } from "./ui/ProviderIcon";
@@ -380,9 +380,9 @@ function Appearance() {
     const pickAccent = (id: AccentId) => setPrefs("accent", id === "blue" ? undefined : id);
     return (
         <div class="ap">
-            <Group>Colour scheme</Group>
+            <Group>Color scheme</Group>
             <div class="set-group ap-group">
-                <div class="ap-tiles" role="group" aria-label="Colour scheme">
+                <div class="ap-tiles" role="group" aria-label="Color scheme">
                     <SchemeTile id="system" label="System" />
                     <SchemeTile id="light" label="Light" />
                     <SchemeTile id="dark" label="Dark" />
@@ -411,7 +411,7 @@ function Appearance() {
                         ]}
                     />
                 </Row>
-                <Row title="Window tint" desc="The colour of the glass behind the sidebar." changed={prefs.tint !== PREF_DEFAULTS.tint} reset={() => setPrefs("tint", PREF_DEFAULTS.tint)} class="ap-tint-row">
+                <Row title="Window tint" desc="The color of the glass behind the sidebar." changed={prefs.tint !== PREF_DEFAULTS.tint} reset={() => setPrefs("tint", PREF_DEFAULTS.tint)} class="ap-tint-row">
                     <div class="ap-tiles ap-tint-tiles" role="group" aria-label="Window tint">
                         <TintTile id="clear" label="Clear" />
                         <TintTile id="ocean" label="Ocean" />
@@ -448,7 +448,7 @@ function Appearance() {
                     </div>
                 </Row>
                 <div class="ap-preview" aria-label="Preview">
-                    The list sorts on <code>updatedAt</code>, so a finished run moves for one frame before its status lands.
+                    Renamed <code>parseConfig</code> and updated the three places that call it.
                 </div>
                 <Row title="Density" desc="Row and header height across the app." changed={prefs.density !== PREF_DEFAULTS.density} reset={() => setPrefs("density", PREF_DEFAULTS.density)}>
                     <Segmented
@@ -753,26 +753,29 @@ function Providers() {
     );
 }
 
+// Shift as the keymap's own rows write it: a symbol on macOS, where a key's parts run together (keyText).
+const shift = os === "macos" ? "⇧" : "Shift";
+
 /** Keys that aren't in the keybindings file: they belong to what's on screen. */
 const BUILT_IN: [string, string][] = [
     [`${mod}+1…9`, "Pick a model (model picker open)"],
     ["Esc", "Deny a permission · close a dialog, Settings or the review"],
     ["1  2  3", "Answer the request on the composer"],
-    [`${mod}+Shift+Enter`, "While working: steer instead of queue, or the other way round (empty input: send the first queued message now)"],
+    [`${mod}+${shift}+Enter`, "While working: steer instead of queue, or the other way round (empty input: send the first queued message now)"],
     ["@", "Mention a file"],
     ["/", "Commands"],
     ["!", "Run a shell command yourself"],
     // Mouse gestures and arrows in the session list: not bindings.
-    ["Shift+Click", "Select the sessions from the last one clicked to this one"],
+    [`${shift}+Click`, "Select the sessions from the last one clicked to this one"],
     [`${mod}+Click`, "Add a session to the selection, or take it out"],
-    ["Shift+↑  Shift+↓", "In the session list: extend the selection · Esc clears it"],
+    [`${shift}+↑  ${shift}+↓`, "In the session list: extend the selection · Esc clears it"],
 ];
 
 const CONTEXT_TITLES: Record<string, string> = { Global: "Anywhere", Chat: "In the input box", Autocomplete: "In the / and @ menu", Sidebar: "In the session list" };
 
-/** One keystroke as one key cap: "⌘ K". */
+/** One keystroke as one key cap, written as everywhere else: "⌘K", "Ctrl+K". */
 function Cap(p: { keys: string }) {
-    return <kbd>{p.keys.split("+").join(" ")}</kbd>;
+    return <kbd>{keyText(p.keys)}</kbd>;
 }
 
 /** One key sequence as key caps: a chord's strokes one after another. */

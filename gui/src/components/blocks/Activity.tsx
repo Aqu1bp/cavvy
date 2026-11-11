@@ -47,7 +47,7 @@ import { findReveal } from "../../state/ui";
 import { CopyButton, Spinner } from "../ui/bits";
 import { AgentMark, ProviderStack } from "../ui/AgentMark";
 import { CodeBlock } from "./CodeBlock";
-import { DiffView } from "./DiffView";
+import { Counts, DiffView } from "./DiffView";
 import { Markdown } from "./Markdown";
 import { PlanCard } from "./PlanCard";
 import { motionMs } from "../LiveLine";
@@ -421,8 +421,7 @@ function ActivityGroupContent(p: GroupProps) {
                         </span>
                         <Show when={stats().added || stats().removed}>
                             <span class="stat">
-                                <span class="add">+{stats().added}</span>
-                                <span class="del">−{stats().removed}</span>
+                                <Counts added={stats().added} removed={stats().removed} />
                             </span>
                         </Show>
                         <Show when={groupDiagnostics(done())}>{(r) => <DiagnosticsChip report={r()} />}</Show>
@@ -639,6 +638,8 @@ function ToolRowContent(p: ToolRowProps) {
         if (t.diff && t.status === "ok") return undefined;
         if (t.status === "error") return t.summary?.trim() || "Failed";
         if (resultEchoes(t)) return undefined;
+        // A commit's result is its hash and its subject: the row has the subject already.
+        if (t.name === "GitCommit" && label().arg && t.summary?.endsWith(` ${label().arg}`)) return t.summary.slice(0, -label().arg!.length - 1);
         return resultOf(t.summary);
     };
     return (
@@ -671,8 +672,7 @@ function ToolRowContent(p: ToolRowProps) {
                         </Show>
                         <Show when={p.tool.diff && p.tool.status === "ok"}>
                             <span class="stat" data-find-skip>
-                                <span class="add">+{p.tool.diff!.added}</span>
-                                <span class="del">−{p.tool.diff!.removed}</span>
+                                <Counts added={p.tool.diff!.added} removed={p.tool.diff!.removed} />
                             </span>
                         </Show>
                         <Show when={p.tool.diagnostics}>{(r) => <DiagnosticsChip report={r()} />}</Show>
@@ -753,7 +753,8 @@ function EditCardContent(p: { tool: ToolBlock }) {
     // Refused before it changed anything (not read first, old text not found): the row says Failed, and why under it,
     // as a failed command's does; what it would have written isn't worth opening.
     const refused = () => t().status === "error" && !t().diff;
-    const why = createMemo(() => (refused() ? (t().output ?? "").split("\n").map((l) => l.trim()).filter(Boolean).join(" ") || undefined : undefined));
+    // Its first sentence, in a reader's words: the rest is advice to the model ("It must match the file exactly…").
+    const why = createMemo(() => (refused() ? (t().output ?? "").trim().split(/(?<=\.)\s/)[0]?.replace(/^old_string( and new_string are)?/, (_, both) => (both ? "The old and new text are" : "The text to replace")) || undefined : undefined));
     const input = () => (t().diff || refused() ? undefined : Object.keys(t().input ?? {}).length ? JSON.stringify(t().input, null, 2) : undefined);
     const showOutput = () => !refused() && (!t().diff || t().status === "error") && Boolean(t().output?.trim());
     const hasBody = () => Boolean(t().diff || t().diagnostics || input() || showOutput());
@@ -804,8 +805,7 @@ function EditCardContent(p: { tool: ToolBlock }) {
                     </Show>
                     <Show when={t().diff && ok()}>
                         <span class="stat" data-find-skip>
-                            <span class="add">+{t().diff!.added}</span>
-                            <span class="del">−{t().diff!.removed}</span>
+                            <Counts added={t().diff!.added} removed={t().diff!.removed} />
                         </span>
                     </Show>
                     <Show when={time()}>{(tm) => <span class="tcard-dim num" data-find-skip>{tm()}</span>}</Show>
@@ -922,7 +922,8 @@ function lastLine(text: string | undefined, why = false): string | undefined {
  * a footer with the exit and the time.
  */
 export function CommandCard(p: { tool: ToolBlock }) {
-    return <RenderBoundary raw={() => p.tool}><CommandCardContent {...p} /></RenderBoundary>;
+    // Still arriving, with nothing of it here yet: no row (it would be a spinner with no words beside it).
+    return <RenderBoundary raw={() => p.tool}><Show when={p.tool.status !== "streaming" || commandLabel(p.tool)}><CommandCardContent {...p} /></Show></RenderBoundary>;
 }
 
 function CommandCardContent(p: { tool: ToolBlock }) {

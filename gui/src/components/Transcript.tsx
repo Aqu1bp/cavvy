@@ -3,7 +3,7 @@ import { ArrowDown, ArrowUpLeft, GitFork } from "lucide-solid";
 import type { Turn } from "@shared/protocol";
 import { fork, forkAnchor } from "../state/actions";
 import { activate, app, loadEarlier, loadEarlierTo, onRenew, toast, type SessionHandle } from "../state/app";
-import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setFollowing, setJumpTarget, setRewindOpen, takeDockGlide } from "../state/ui";
+import { findOpen, jumpTarget, openFind, panelHold, setFindQuery, setFollowing, setJumpTarget, setRewindOpen, shellLayout, takeDockGlide } from "../state/ui";
 import { GROW_EASE, GROW_MS } from "../lib/composer-size";
 import { prefs } from "../state/prefs";
 import { anchoredTop, atBottom, FAR, firstBelow, firstWindow, keyed, lazyHeights, MORE_TURNS, placedAgain, restoredShown, transcriptPositions, TURN_PAGE as PAGE, type ScrollAnchor, type TranscriptPosition } from "../lib/transcript-scroll";
@@ -60,6 +60,11 @@ export function Transcript(p: { handle: SessionHandle; dock?: number }) {
 function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: TranscriptPosition }) {
     // --dock-h goes on each box that reads it (stage.css): not inherited, and not passed down with `inherit`.
     const dock = () => (p.dock === undefined ? undefined : `${p.dock}px`);
+    // What a side panel floating over the conversation covers, with its gap to the edge: "Latest" centres in the rest.
+    const floatOver = () => {
+        const i = shellLayout().inspector;
+        return i.open && i.mode === "float" ? `${i.width + 8}px` : "0px";
+    };
     let scroller: HTMLDivElement | undefined;
     let content: HTMLDivElement | undefined;
     // SessionView is keyed by handle; save on disposal, restore on the next mount.
@@ -1020,7 +1025,9 @@ function TranscriptView(p: { handle: SessionHandle; dock?: number; saved?: Trans
                 <FindBar turns={turns} scroller={() => scroller} dock={() => p.dock ?? 0} col={() => content} show={show} anchor={anchor} clearAnchor={() => setAnchor(undefined)} onNavigate={navigated} />
             </Show>
             <Show when={!stick() && !scrolledDown()}>
-                <button class="jump glass" style={{ "--dock-h": dock() }} classList={{ "is-live": running() }} title="Jump to latest" aria-label={running() ? "Jump to latest: still working" : "Jump to latest"} onClick={() => { setTrimmed(0); setStick(true); toBottom(true); }}>
+                {/* The fade "Latest" sits on; both have the dock's height themselves (it isn't inherited). */}
+                <div class="jump-shelf" style={{ "--dock-h": dock() }} aria-hidden="true" />
+                <button class="jump glass" style={{ "--dock-h": dock(), "--over": floatOver() }} classList={{ "is-live": running() }} title="Jump to latest" aria-label={running() ? "Jump to latest: still working" : "Jump to latest"} onClick={() => { setTrimmed(0); setStick(true); toBottom(true); }}>
                     {/* Still working down there: a spinner, where the arrow is. */}
                     <Show when={running()} fallback={<ArrowDown size={14} />}>
                         <Spinner size={12} />

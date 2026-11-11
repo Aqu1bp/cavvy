@@ -204,7 +204,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
                         <span class="num">
                             <Show when={state()} fallback="No session yet">
                                 {tokens(state()?.tokensIn ?? 0)} in, {tokens(state()?.tokensOut ?? 0)} out
-                                <Show when={(state()?.cost ?? 0) > 0 || state()?.costUnknown}>
+                                <Show when={(state()?.cost ?? 0) > 0}>
                                     <span title={state()?.costUnknown ? "Leaves out models with no known price" : undefined}>, {cost(state()?.cost ?? 0, state()?.costUnknown)}</span>
                                 </Show>
                             </Show>

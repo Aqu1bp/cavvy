@@ -146,7 +146,7 @@ test("the side-by-side toggle sets the shared split signal the layout widens the
     }
 });
 
-test("the Changes pane: counts, a row per file opening the reader on it, and the empty and error states", () => {
+test("the Changes pane: a row per file opening the reader on it, and the empty and error states", () => {
     const opened: unknown[][] = [];
     const Pane = component(between(panel, "function FileRow(", "/** Pull requests the agent watches"), "ChangesPane", {
         CHANGE, dirOf, nameOf,
@@ -166,21 +166,21 @@ test("the Changes pane: counts, a row per file opening the reader on it, and the
     const dispose = renderer.render(() => Pane({ get changes() { return changes(); } }), root);
     const rows = () => all(root).filter((n) => n.props.class === "file");
     try {
-        expect(text(root)).toContain("+7−2in 3 files");
+        // The totals and Review are on the pane's title line (RightPanel), not repeated in it.
+        expect(text(root)).not.toContain("+7");
         expect(text(root)).toContain("1 more not shown");
         expect(rows().map((r) => text(r))).toEqual(["Mindex.tssrc/auth/+6−2", "UREADME.md+1"]);
         rows()[0]!.props.onClick();
         expect(opened.at(-1)).toEqual(["src/auth/index.ts", "uncommitted"]);
-        all(root).find((n) => n.props.class === "btn ghost sm")!.props.onClick();
-        expect(opened.at(-1)).toEqual([undefined, "uncommitted"]);
         // Outside a repository: Cavvy's own record, and the reader opens on it.
         setChanges({ repo: false, count: 1, more: 0, atLeast: false, added: 1, removed: 0, files: [{ path: "notes.md", change: "added", added: 1, removed: 0 }] });
         rows()[0]!.props.onClick();
         expect(opened.at(-1)).toEqual(["notes.md", "cavvy"]);
         // Nothing changed: a blank pane that still opens the reader (the branch, a turn).
         setChanges({ repo: true, count: 0, more: 0, atLeast: false, added: 0, removed: 0, files: [] });
+        // One short line: no sentence about why.
         expect(text(root)).toContain("No changes yet");
-        expect(text(root)).toContain("The working tree matches the last commit.");
+        expect(text(root)).not.toContain("working tree");
         all(root).find((n) => n.props.class === "link-btn")!.props.onClick();
         expect(opened.at(-1)).toEqual([undefined, "uncommitted"]);
         // Git couldn't say: why, rather than "no changes".

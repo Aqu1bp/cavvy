@@ -12,7 +12,8 @@ test("a request waiting on the user comes first, in its own words", () => {
     expect(line({ blocks, interactions: [{ kind: "question", id: "q" } as any] })).toMatchObject({ kind: "wait", label: "Waiting for your answer", key: "wait:q" });
     expect(line({ blocks, interactions: [{ kind: "plan", id: "p" } as any] })).toMatchObject({ label: "Waiting for plan review" });
     expect(line({ interactions: [{ kind: "permission", id: "a", title: "Bash", command: "rm -rf build\necho done" } as any] })).toMatchObject({ label: "Waiting for approval", detail: "rm -rf build", mono: true });
-    expect(line({ interactions: [{ kind: "permission", id: "a", title: "Fetch example.com" } as any] })).toMatchObject({ detail: "Fetch example.com", mono: false });
+    // Neither a command nor a file: what its card asks, never the call as code.
+    expect(line({ interactions: [{ kind: "permission", id: "a", title: "BrowserAct(click e4)", heading: 'Click button "Save"' } as any] })).toMatchObject({ detail: 'Click button "Save"', mono: false });
     expect(line({ interactions: [{ kind: "secret", id: "s", name: "GITHUB_TOKEN" } as any] })).toMatchObject({ label: "Waiting for a secret", detail: "GITHUB_TOKEN" });
     // Timed from when it was asked: a session opened 20 minutes into the wait says so, not "0s".
     expect(line({ interactions: [{ kind: "question", id: "q", since: 1234 } as any] })).toMatchObject({ since: 1234 });

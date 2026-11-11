@@ -7,7 +7,8 @@ import { planTitle } from "@shared/plan-title";
 
 export { planTitle };
 
-/** The Steps strip's one line: how far along, and the step under way (or "All steps done"). */
+/** The Steps strip's one line: how far along, and the step under way (or "All steps done"). `working` false (the
+ * turn has ended): a step left under way is named as a step still to do, not as something happening now. */
 export interface StepsLine {
     done: number;
     total: number;
@@ -15,11 +16,11 @@ export interface StepsLine {
     all: boolean;
 }
 
-export function stepsLine(todos: readonly TodoEntry[]): StepsLine {
+export function stepsLine(todos: readonly TodoEntry[], working = true): StepsLine {
     const done = todos.filter((t) => t.status === "completed").length;
     const all = todos.length > 0 && done === todos.length;
     const under = todos.find((t) => t.status === "in_progress");
-    const now = all ? "All steps done" : under ? (under.activeForm ?? under.content) : (todos.find((t) => t.status === "pending")?.content ?? "");
+    const now = all ? "All steps done" : under ? ((working ? under.activeForm : undefined) ?? under.content) : (todos.find((t) => t.status === "pending")?.content ?? "");
     return { done, total: todos.length, now, all };
 }
 

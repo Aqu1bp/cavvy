@@ -144,10 +144,11 @@ test("empty state differs from partial/unknown usage; limits displays windows an
     const unknown = summary(); unknown.totals.unknown = true; unknown.totals.cost = 0; unknown.rows[0]!.unknown = true; unknown.rows[0]!.cost = 0;
     const g = mount(async () => unknown);
     try {
-        await tick(); expect(g.text()).toContain("—");
+        // Nothing used has a price: one line saying so, not a dash for a figure over an empty split and chart.
+        await tick(); expect(g.text()).toContain("No cost to show");
         expect(g.text()).toContain("No price is known for");
-        expect(g.text()).toContain("No price");
-        expect(g.text()).toContain("Costs leave out unpriced usage; the Tokens view includes it.");
+        expect(g.text()).not.toContain("—");
+        expect(g.text()).not.toContain("Busiest day");
         g.segment("Usage view").onChange("tokens"); await tick();
         expect(g.text()).toContain("the Tokens view includes it.");
         expect(g.text()).toContain("430 tokens");

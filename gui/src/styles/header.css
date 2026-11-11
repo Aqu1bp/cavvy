@@ -30,12 +30,14 @@
     inset: 0 0 -18px 0;
     z-index: -1;
     pointer-events: none;
-    /* A fade drawn with the page: a blur or a mask here would be worked out again on every frame the column moves. */
+    /* The bar itself is the sheet, so nothing under it reads through the title or beside the tools; what scrolls up
+       fades out in the 18px below it. Drawn with the page: a blur or a mask here would be worked out again on every
+       frame the column moves. */
     background: linear-gradient(
-        var(--sheet) 45%,
-        color-mix(in srgb, var(--sheet) 82%, transparent) 55%,
-        color-mix(in srgb, var(--sheet) 36%, transparent) 70%,
-        color-mix(in srgb, var(--sheet) 9%, transparent) 85%,
+        var(--sheet) calc(100% - 18px),
+        color-mix(in srgb, var(--sheet) 82%, transparent) calc(100% - 13px),
+        color-mix(in srgb, var(--sheet) 36%, transparent) calc(100% - 8px),
+        color-mix(in srgb, var(--sheet) 9%, transparent) calc(100% - 3px),
         color-mix(in srgb, var(--sheet) 0%, transparent)
     );
 }
@@ -98,7 +100,7 @@
     transition-delay: 0s;
 }
 
-/* A session needs you (Header.tsx NeedsYou): an amber dot on Show sidebar. */
+/* A session needs you while the rail that lists it is hidden: an amber dot on Show sidebar. */
 .bar-rail .has-wait {
     position: relative;
 }
@@ -165,7 +167,10 @@
 .proj-box {
     display: grid;
     grid-template-columns: 0fr;
-    flex: none;
+    /* Its own width while there's room. In a window too narrow for the bar it gives way last, after the branch and
+       the title (below), rather than run under what follows. */
+    flex: 0 1 auto;
+    min-width: 0;
     margin-right: calc(-10 * var(--sp));
     visibility: hidden;
     transition: grid-template-columns var(--dur-panel) var(--ease), margin-right var(--dur-panel) var(--ease), visibility 0s linear var(--dur-panel);
@@ -209,6 +214,8 @@
 
 .ttl-h {
     margin: 0 0 0 calc(-4 * var(--sp));
+    /* Short of room, the branch goes first (.br), then this, then the project before it. */
+    flex: 0 40 auto;
     min-width: 0;
     padding: calc(2 * var(--sp)) calc(4 * var(--sp));
     border-radius: calc(6 * var(--sp));
@@ -246,7 +253,7 @@
     gap: calc(5 * var(--sp));
     min-width: 0;
     max-width: calc(240 * var(--sp));
-    flex: 0 1 auto;
+    flex: 0 1600 auto;
     color: var(--fg-3);
     font-size: 0.893rem;
     white-space: nowrap;
@@ -255,6 +262,11 @@
 
 .br svg {
     flex: none;
+}
+
+/* A narrow column: the title has the room, not a stub of the branch. */
+:where(.main[data-narrow~="640"]) .br {
+    display: none;
 }
 
 .crumbs .pill {
@@ -306,9 +318,9 @@ button.bc:hover {
     flex: none;
 }
 
-/* ---- Needs you, while the rail is hidden --------------------------------
-   An amber glass pill just before the tools, as tall as the capsule beside
-   it: one session by name, or how many. Narrow, the words go. */
+/* ---- Needs you, in Settings' top line -----------------------------------
+   An amber glass pill beside Close (Settings covers the rail, where they're
+   listed): one session by name, or how many. Narrow, the words go. */
 
 .needs {
     display: inline-flex;
