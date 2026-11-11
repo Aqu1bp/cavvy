@@ -18,7 +18,7 @@ import { asking, inFront, needsLine, needsPlace, needsYou } from "../lib/rail";
 import { Menu } from "./ui/Menu";
 import { RunSwitcher } from "./RunSwitcher";
 import { ProjectScripts } from "./ProjectScripts";
-import { shortcut, withShortcut } from "../state/keybindings";
+import { keyText, shortcut, withShortcut } from "../state/keybindings";
 import { promptPreview } from "../lib/review-comments";
 import { workingBranch } from "../lib/worktree-work";
 
@@ -52,7 +52,7 @@ export function NeedsYou(p: { waiting: SessionSummary[] }) {
         <>
             <button
                 ref={btn}
-                class="needs glass"
+                class={`needs glass ${one() ? "one" : ""}`}
                 title={needsLine(p.waiting)}
                 aria-label={needsLine(p.waiting)}
                 aria-haspopup={one() ? undefined : "menu"}
@@ -182,8 +182,9 @@ function ChangesChip(p: { handle: SessionHandle }) {
                         }}
                     >
                         <FileDiff size={15} />
-                        <span class="a">+{c().added}</span>
-                        <span class="d">−{c().removed}</span>
+                        {/* Only the sides that changed: "+18", not "+18 −0". */}
+                        <span class="a" hidden={!c().added && !!c().removed}>+{c().added}</span>
+                        <span class="d" hidden={!c().removed}>−{c().removed}</span>
                     </button>
                     <span class="sep" />
                 </>
@@ -313,7 +314,7 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                                 {(it) => (
                                     <button role="menuitem" class="menu-item compact" disabled={it.disabled} onClick={it.run}>
                                         <it.icon size={14} /> <span class="menu-label">{it.label}</span>
-                                        <Show when={it.kbd && shortcut(it.kbd)}>{(k) => <kbd class="menu-kbd">{os === "macos" ? k().replaceAll("+", "") : k()}</kbd>}</Show>
+                                        <Show when={it.kbd && shortcut(it.kbd)}>{(k) => <kbd class="menu-kbd">{keyText(k())}</kbd>}</Show>
                                     </button>
                                 )}
                             </For>

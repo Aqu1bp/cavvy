@@ -47,8 +47,10 @@ export type SidebarEntry =
     | { key: string; kind: "day"; label: DayLabel }
     | { key: string; kind: "more"; page: "cards" | "settled" | "archived"; remaining: number }
     /**
-     * Needs you, pinned above everything: the sessions waiting on you (`ids`), each
-     * also in its own place below. Its ids aren't the list's order (sidebarIds).
+     * Needs you, pinned above everything: the sessions waiting on you (`ids`). The
+     * layout keeps each in its own place below as well (what holds still is the
+     * whole list); the rail draws it once, under Needs you (listedOnce). Its ids
+     * aren't the list's order (sidebarIds).
      */
     | { key: string; kind: "needs"; ids: string[] };
 
@@ -201,6 +203,32 @@ export function holdSidebar(previous: readonly SidebarEntry[], next: SidebarEntr
         return "id" in e && !ids.has(e.id) && requiredSession(live.get(e.id)!, activeId) ? [e] : [];
     });
     return [...pinned, ...kept, ...added];
+}
+
+/**
+ * The layout as the rail draws it: a session pinned under Needs you isn't listed a second time in its own place
+ * below. A run keeps its other sessions; a day or an open project left with nothing under it goes with its last
+ * one, and comes back when that's answered. A folded project keeps its heading and its count (the session is
+ * still under it, and the heading's dot says one there needs you). The same array when nothing is pinned.
+ */
+export function listedOnce(entries: readonly SidebarEntry[]): readonly SidebarEntry[] {
+    const pinned = new Set(pinnedIds(entries));
+    if (!pinned.size) return entries;
+    const kept = entries.flatMap((e): SidebarEntry[] => {
+        if (e.kind === "card" || e.kind === "row") return pinned.has(e.id) ? [] : [e];
+        if (e.kind === "run") {
+            const ids = e.ids.filter((id) => !pinned.has(id));
+            return ids.length === e.ids.length ? [e] : ids.length ? [{ ...e, ids }] : [];
+        }
+        return [e];
+    });
+    // A heading's rows come straight after it: the next entry is a session's, or the heading has none.
+    return kept.filter((e, i) => (e.kind !== "day" && !(e.kind === "project" && !e.collapsed)) || /card|row|run/.test(kept[i + 1]?.kind ?? ""));
+}
+
+/** The ids pinned under Needs you, in its order. */
+export function pinnedIds(entries: readonly SidebarEntry[]): string[] {
+    return entries.flatMap((e) => (e.kind === "needs" ? e.ids : []));
 }
 
 export function sidebarIds(entries: readonly SidebarEntry[]): string[] {

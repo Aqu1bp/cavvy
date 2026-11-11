@@ -27,6 +27,8 @@ const ChangesCard = component(source, "ChangesCard", {
     RenderBoundary: boundary(), fetchGitChanges, firstChangedLine, plural, basename, tildify, openReview() {}, openInEditor() {},
     openWorktreeReview: (...args: unknown[]) => void worktreeReviews.push(args),
     ...turnPlaces, agentProvider, app: { hello: { homeDir: "/home/u" } },
+    // The card's "+a −d" (blocks/DiffView.tsx Counts): only the sides that changed.
+    Counts: (p: { added?: number; removed?: number }) => { const n = node("counts"); n.text = `${p.added || !p.removed ? `+${p.added ?? 0}` : ""}${p.removed ? ` −${p.removed}` : ""}`; return n; },
     FileDiff: stub, SquareArrowOutUpRight: stub, Folder: stub, FolderGit2: stub, Info: stub, ProviderIcon: stub, SplitPath: (p: { path: string }) => { const n = node("path"); n.text = p.path; return n; },
 });
 const settle = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); };

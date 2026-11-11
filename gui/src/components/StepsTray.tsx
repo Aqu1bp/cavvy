@@ -17,7 +17,8 @@ export function StepsTray(p: { sessionId: string; view: SessionView }) {
     const [open, setOpen] = createSignal(false);
     const todos = () => p.view.state.todos;
     const key = createMemo(() => stepsKey(todos()));
-    const line = createMemo(() => stepsLine(todos()));
+    const working = () => p.view.state.busy;
+    const line = createMemo(() => stepsLine(todos(), working()));
     const shown = () => todos().length > 0 && !p.view.state.interactions.length && hiddenAt()[p.sessionId] !== key() && !stepsStale(todos(), p.view.turns, p.view.earlier ?? 0);
     const listId = createUniqueId();
     let list: HTMLUListElement | undefined;
@@ -46,7 +47,7 @@ export function StepsTray(p: { sessionId: string; view: SessionView }) {
                                                     <Check size={9} stroke-width={3.4} />
                                                 </Show>
                                             </span>
-                                            <span class="selectable">{t.status === "in_progress" ? (t.activeForm ?? t.content) : t.content}</span>
+                                            <span class="selectable">{t.status === "in_progress" && working() ? (t.activeForm ?? t.content) : t.content}</span>
                                         </li>
                                     )}
                                 </For>

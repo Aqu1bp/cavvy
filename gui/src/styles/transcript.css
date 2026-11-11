@@ -119,9 +119,25 @@
 }
 
 /* "Latest": a small glass pill over the end of the conversation, above the composer. */
+/* Under it, the conversation fades out a little sooner than it does behind the dock alone, so the pill sits on a
+   quiet shelf rather than across a line someone is reading. */
+.jump-shelf {
+    position: absolute;
+    left: 0;
+    right: calc(14 * var(--sp));
+    bottom: var(--dock-h);
+    height: calc(64 * var(--sp));
+    z-index: 24;
+    background: linear-gradient(color-mix(in srgb, var(--sheet) 0%, transparent), var(--sheet) 85%);
+    pointer-events: none;
+    animation: ov-fade 300ms;
+}
+
+/* In the middle of what shows of the conversation: a side panel floating over it covers the rest (--over, its width,
+   set on the pill itself by Transcript.tsx), and the pill would be half under its edge. */
 .jump {
     position: absolute;
-    left: 50%;
+    left: max(calc(56 * var(--sp)), calc((100% - var(--over, 0px)) / 2));
     bottom: calc(var(--dock-h) + 12 * var(--sp));
     transform: translateX(-50%);
     z-index: 25;
@@ -156,7 +172,8 @@
 
 /* Too short to spare the room: the end is a scroll away anyway. */
 :where(.main[data-short~="360"]) {
-    .jump {
+    .jump,
+    .jump-shelf {
         display: none;
     }
 }

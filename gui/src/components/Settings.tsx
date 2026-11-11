@@ -448,7 +448,7 @@ function Appearance() {
                     </div>
                 </Row>
                 <div class="ap-preview" aria-label="Preview">
-                    The list sorts on <code>updatedAt</code>, so a finished run moves for one frame before its status lands.
+                    Renamed <code>parseConfig</code> and updated the three places that call it.
                 </div>
                 <Row title="Density" desc="Row and header height across the app." changed={prefs.density !== PREF_DEFAULTS.density} reset={() => setPrefs("density", PREF_DEFAULTS.density)}>
                     <Segmented

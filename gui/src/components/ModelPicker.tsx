@@ -117,6 +117,9 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
             .filter((g) => g.models.length || g.status === "error"),
     );
     const providerName = (id: string) => app.models.find((g) => g.provider === id)?.providerName ?? id;
+    // The panel's height (px at text size 14) for every model listed at once, which a search can show: the search
+    // box, filters and foot, then a heading and its rows for each provider. Between Popover's least and most.
+    const fit = createMemo(() => Math.max(240, Math.min(380, 128 + groups().reduce((n, g) => n + 32 + Math.max(1, g.models.length) * 35, 0))));
     /** The model and whose it is: Claude Code's Opus and the Anthropic API's both read "Opus 5.5" on the chip. */
     const chipName = () => {
         const name = currentModel()?.name ?? currentRef() ?? "Model";
@@ -492,7 +495,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                 exit
             >
                 {/* A click anywhere else in the picker closes the accounts list. */}
-                <div class="mp-wrap" onPointerDown={(e) => acctOpen() && !acctEl?.contains(e.target as Node) && setAcctOpen(false)}>
+                <div class="mp-wrap" style={{ "--mp-fit": fit() }} onPointerDown={(e) => acctOpen() && !acctEl?.contains(e.target as Node) && setAcctOpen(false)}>
                     <div class="mp-search">
                         <Search size={14} />
                         <input ref={input} role="combobox" aria-expanded="true" aria-controls={listId} aria-autocomplete="list" aria-activedescendant={rows()[sel()] ? `${listId}-${sel()}` : undefined} value={q()} onInput={(e) => (setQ(e.currentTarget.value), setSel(0))} placeholder="Search models…" aria-label="Search models" spellcheck={false} />

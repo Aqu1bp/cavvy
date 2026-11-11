@@ -47,7 +47,7 @@ import { findReveal } from "../../state/ui";
 import { CopyButton, Spinner } from "../ui/bits";
 import { AgentMark, ProviderStack } from "../ui/AgentMark";
 import { CodeBlock } from "./CodeBlock";
-import { DiffView } from "./DiffView";
+import { Counts, DiffView } from "./DiffView";
 import { Markdown } from "./Markdown";
 import { PlanCard } from "./PlanCard";
 import { motionMs } from "../LiveLine";
@@ -421,8 +421,7 @@ function ActivityGroupContent(p: GroupProps) {
                         </span>
                         <Show when={stats().added || stats().removed}>
                             <span class="stat">
-                                <span class="add">+{stats().added}</span>
-                                <span class="del">−{stats().removed}</span>
+                                <Counts added={stats().added} removed={stats().removed} />
                             </span>
                         </Show>
                         <Show when={groupDiagnostics(done())}>{(r) => <DiagnosticsChip report={r()} />}</Show>
@@ -671,8 +670,7 @@ function ToolRowContent(p: ToolRowProps) {
                         </Show>
                         <Show when={p.tool.diff && p.tool.status === "ok"}>
                             <span class="stat" data-find-skip>
-                                <span class="add">+{p.tool.diff!.added}</span>
-                                <span class="del">−{p.tool.diff!.removed}</span>
+                                <Counts added={p.tool.diff!.added} removed={p.tool.diff!.removed} />
                             </span>
                         </Show>
                         <Show when={p.tool.diagnostics}>{(r) => <DiagnosticsChip report={r()} />}</Show>
@@ -804,8 +802,7 @@ function EditCardContent(p: { tool: ToolBlock }) {
                     </Show>
                     <Show when={t().diff && ok()}>
                         <span class="stat" data-find-skip>
-                            <span class="add">+{t().diff!.added}</span>
-                            <span class="del">−{t().diff!.removed}</span>
+                            <Counts added={t().diff!.added} removed={t().diff!.removed} />
                         </span>
                     </Show>
                     <Show when={time()}>{(tm) => <span class="tcard-dim num" data-find-skip>{tm()}</span>}</Show>

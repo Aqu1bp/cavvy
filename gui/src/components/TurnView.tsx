@@ -14,6 +14,7 @@ import { openInEditor, openReview, openWorktreeReview } from "../state/actions";
 import { findReveal, setViewedImage } from "../state/ui";
 import { imagesReady, promptImages, type PromptImage } from "../state/images";
 import { ActivityGroup, groupBlocks, Thinking, type Item } from "./blocks/Activity";
+import { Counts } from "./blocks/DiffView";
 import { Markdown } from "./blocks/Markdown";
 import { CopyButton, Spinner } from "./ui/bits";
 import { ProviderIcon } from "./ui/ProviderIcon";
@@ -340,8 +341,7 @@ function ChangesCard(p: { turn: Turn; cwd: string; sessionId: string; busy: bool
     const commits = (n?: number) => (n ? ` · ${plural(n, "commit")}` : "");
     const Stat = (s: { added?: number; removed?: number }) => (
         <span class="stat">
-            <span class="add">+{(s.added ?? 0).toLocaleString()}</span>
-            <span class="del">−{(s.removed ?? 0).toLocaleString()}</span>
+            <Counts added={s.added} removed={s.removed} />
         </span>
     );
     return (

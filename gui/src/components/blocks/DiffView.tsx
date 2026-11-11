@@ -55,15 +55,24 @@ function sameRows(a: Row[], b: Row[]): boolean {
     return true;
 }
 
+/** "+a −d" with only the sides that changed: "+18", not "+18 −0" (and "+0" when neither did). */
+export function Counts(p: { added?: number; removed?: number }) {
+    return (
+        <>
+            <Show when={p.added || !p.removed}>
+                <span class="add">+{(p.added ?? 0).toLocaleString()}</span>
+            </Show>
+            <Show when={p.removed}>
+                <span class="del">−{p.removed!.toLocaleString()}</span>
+            </Show>
+        </>
+    );
+}
+
 export function DiffStat(p: { added: number; removed: number; class?: string }) {
     return (
         <span class={`diffstat ${p.class ?? ""}`}>
-            <Show when={p.added || !p.removed}>
-                <span class="add">+{p.added}</span>
-            </Show>
-            <Show when={p.removed}>
-                <span class="del">−{p.removed}</span>
-            </Show>
+            <Counts added={p.added} removed={p.removed} />
         </span>
     );
 }

@@ -30,12 +30,14 @@
     inset: 0 0 -18px 0;
     z-index: -1;
     pointer-events: none;
-    /* A fade drawn with the page: a blur or a mask here would be worked out again on every frame the column moves. */
+    /* The bar itself is the sheet, so nothing under it reads through the title or beside the tools; what scrolls up
+       fades out in the 18px below it. Drawn with the page: a blur or a mask here would be worked out again on every
+       frame the column moves. */
     background: linear-gradient(
-        var(--sheet) 45%,
-        color-mix(in srgb, var(--sheet) 82%, transparent) 55%,
-        color-mix(in srgb, var(--sheet) 36%, transparent) 70%,
-        color-mix(in srgb, var(--sheet) 9%, transparent) 85%,
+        var(--sheet) calc(100% - 18px),
+        color-mix(in srgb, var(--sheet) 82%, transparent) calc(100% - 13px),
+        color-mix(in srgb, var(--sheet) 36%, transparent) calc(100% - 8px),
+        color-mix(in srgb, var(--sheet) 9%, transparent) calc(100% - 3px),
         color-mix(in srgb, var(--sheet) 0%, transparent)
     );
 }
@@ -165,7 +167,10 @@
 .proj-box {
     display: grid;
     grid-template-columns: 0fr;
-    flex: none;
+    /* Its own width while there's room. In a window too narrow for the bar it gives way last, after the branch and
+       the title (below), rather than run under what follows. */
+    flex: 0 1 auto;
+    min-width: 0;
     margin-right: calc(-10 * var(--sp));
     visibility: hidden;
     transition: grid-template-columns var(--dur-panel) var(--ease), margin-right var(--dur-panel) var(--ease), visibility 0s linear var(--dur-panel);
@@ -209,6 +214,8 @@
 
 .ttl-h {
     margin: 0 0 0 calc(-4 * var(--sp));
+    /* Short of room, the branch goes first (.br), then this, then the project before it. */
+    flex: 0 40 auto;
     min-width: 0;
     padding: calc(2 * var(--sp)) calc(4 * var(--sp));
     border-radius: calc(6 * var(--sp));
@@ -246,7 +253,7 @@
     gap: calc(5 * var(--sp));
     min-width: 0;
     max-width: calc(240 * var(--sp));
-    flex: 0 1 auto;
+    flex: 0 1600 auto;
     color: var(--fg-3);
     font-size: 0.893rem;
     white-space: nowrap;
@@ -298,12 +305,14 @@ button.bc:hover {
 
 /* ---- Tools: one glass capsule (a run's models get their own) ---------- */
 
+/* Short of room, Needs you gives up its session's name before the title gives up anything: this box shrinks first,
+   down to the pill without the name and the tools (.needs: the name's column is the only one that can close). */
 .bar-end {
     display: flex;
     align-items: center;
     gap: calc(8 * var(--sp));
-    min-width: 0;
-    flex: none;
+    min-width: min-content;
+    flex: 0 100000 auto;
 }
 
 /* ---- Needs you, while the rail is hidden --------------------------------
@@ -311,11 +320,14 @@ button.bc:hover {
    it: one session by name, or how many. Narrow, the words go. */
 
 .needs {
-    display: inline-flex;
+    display: inline-grid;
+    grid-auto-flow: column;
+    grid-auto-columns: auto;
     align-items: center;
     align-self: stretch;
     gap: calc(7 * var(--sp));
-    min-width: 0;
+    /* The hand and "needs you" at least: never cut, and never over the title. */
+    min-width: min-content;
     max-width: calc(340 * var(--sp));
     /* The capsule's height beside it (stretched); on its own (a sub-agent's view), a button's. */
     min-height: calc(28 * var(--sp));
@@ -354,6 +366,11 @@ button.bc:hover {
     flex: none;
 }
 
+/* One session, by name: the name's column closes to nothing when the bar is short of room. */
+.needs.one {
+    grid-template-columns: auto minmax(0, auto);
+}
+
 .needs-t {
     min-width: 0;
     color: var(--fg);
@@ -388,6 +405,7 @@ button.bc:hover {
 }
 
 :where(.main[data-narrow~="600"]) .needs {
+    grid-template-columns: none;
     padding: 0 calc(11 * var(--sp));
 }
 

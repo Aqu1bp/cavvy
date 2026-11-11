@@ -21,6 +21,12 @@ describe("the Steps line", () => {
         expect(l).toEqual({ done: 1, total: 3, now: "Adding the SSO strategy", all: false });
     });
 
+    test("once the turn has ended, a step left under way is named as a step, not as happening now", () => {
+        const todos = [todo("Read the auth module", "completed"), todo("Run the tests", "in_progress", "Running the tests")];
+        expect(stepsLine(todos, false)).toEqual({ done: 1, total: 2, now: "Run the tests", all: false });
+        expect(stepsLine(todos, true).now).toBe("Running the tests");
+    });
+
     test("without an -ing form, the step's own words", () => {
         expect(stepsLine([todo("Add the SSO strategy", "in_progress")]).now).toBe("Add the SSO strategy");
     });

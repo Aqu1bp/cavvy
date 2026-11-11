@@ -1688,13 +1688,18 @@
     font-weight: 500;
 }
 
+/* Commands: the names take one column (a longer name just runs past it), so what each does starts at the same
+   place down the list and reads as a column beside its name. */
+.composer-menu:not(.files) .cm-name {
+    min-width: calc(176 * var(--sp));
+}
+
 .cm-args {
     color: var(--fg-3);
 }
 
 .cm-desc {
     flex: 1;
-    text-align: right;
     font-size: 0.821rem;
     color: var(--fg-3);
 }
@@ -2090,12 +2095,12 @@
 
 /* ---- Model picker: provider filters, then one provider's models ------------ */
 
-/* One size whatever the list: a short list leaves room, a long one scrolls. Popover's max-height clamps it
-   on a short window. */
+/* One size while it's open, whatever is filtered or searched: tall enough for everything the providers offer
+   (--mp-fit, ModelPicker.tsx), so a few models don't leave half of it blank, and never taller than a long list
+   needs to scroll. Popover's max-height clamps it on a short window. */
 .popover.mp {
     display: flex;
     flex-direction: column;
-    height: calc(440 * var(--sp));
     padding: 0;
     overflow: hidden;
     border-radius: calc(16 * var(--sp));
@@ -2105,8 +2110,9 @@
     position: relative;
     display: flex;
     flex-direction: column;
-    flex: 1;
+    flex: 0 1 auto;
     width: 100%;
+    height: calc(var(--mp-fit, 380) * var(--sp));
     min-height: 0;
 }
 
@@ -2729,12 +2735,14 @@
     flex: none;
 }
 
+/* A provider with no mark of its own: its initial on a small tile, the size a mark would be. */
 .provider-mono {
     display: inline-grid;
     place-items: center;
     flex: none;
-    font: 700 calc(9.5 * var(--sp))/1 var(--font-mono);
-    letter-spacing: -0.02em;
+    border-radius: 28%;
+    background: color-mix(in srgb, var(--fg) 11%, transparent);
+    font: 700 calc(9.5 * var(--sp))/1 var(--font-ui);
     color: var(--fg-2);
 }
 
