@@ -36,7 +36,8 @@
 //                    "met" after, or "impossible" when the goal says so
 //   "ship"           commits, opens a pull request and watches it (GitCommit, CreatePullRequest)
 //   (a wake)         answers a watched pull request's news: failed checks, comments, passing checks
-//   "handoff"        finds another session of this project (ListSessions) and asks it to run the tests (SendToSession)
+//   "handoff"        finds another session of this project (ListSessions) and asks it to run the tests (SendToSession);
+//                    "handoff long" sends a 24-line message
 //   "spinoff"        starts a new session to write a README section (StartSession)
 //   (a message)      answers a message from another session's agent
 //   "monitor"        watches a build log with Monitor; its lines wake the agent later
@@ -215,7 +216,8 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
     if (/\bhandoff\b/.test(p)) {
         if (toolRounds === 0) return { text: "I'll find the other session.", calls: [{ name: "ListSessions", args: {} }] };
         const id = /^(\d{8}-\d{6}-[0-9a-f]+)\s/m.exec(lastResult)?.[1];
-        if (toolRounds === 1 && id) return { text: "Handing it over.", calls: [{ name: "SendToSession", args: { id, message: "Please run the auth tests and tell me if any fail." } }] };
+        const message = /\blong\b/.test(p) ? Array.from({ length: 24 }, (_, i) => `${i + 1}. Run the auth tests in test/auth.test.ts and report each failure with its stack trace.`).join("\n") : "Please run the auth tests and tell me if any fail.";
+        if (toolRounds === 1 && id) return { text: "Handing it over.", calls: [{ name: "SendToSession", args: { id, message } }] };
         return { text: toolRounds === 1 ? "There's no other session here to hand it to." : lastResult.split("\n")[0]! };
     }
     if (/\bspinoff\b/.test(p)) {

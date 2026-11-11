@@ -67,18 +67,28 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
     const long = () => text().split("\n").length > 14 || text().length > 1400;
     const shell = () => text().startsWith("!");
     createEffect(on(findReveal, (r) => r?.turnId === p.turn.id && r.part === "prompt" && long() && setExpanded(true)));
+    // A long prompt or message opens and closes.
+    const clamped = () => (long() && !expanded() ? "clamped" : "");
+    const more = () => (
+        <Show when={long()}>
+            <button class="link-btn more" aria-expanded={expanded()} onClick={() => setExpanded(!expanded())}>
+                {expanded() ? "Show less" : "Show more"}
+            </button>
+        </Show>
+    );
     // A message from the agent in another session: quoted in the reply's column, not the user's bubble. Which session is on hover; a click opens it.
     const from = p.turn.prompt?.from;
     if (from) {
         return (
             <div class="peer-card">
-                <button class="peer-head" title={`From “${from.title}”. Click to open it.`} onClick={() => void activate(from.id)}>
+                <button class="peer-head" title={`From “${from.title}”`} onClick={() => activate(from.id)}>
                     <MessageSquareText size={14} aria-hidden="true" />
                     Message from another session
                 </button>
-                <div class="peer-body" data-find="prompt">
+                <div class={`peer-body ${clamped()}`} data-find="prompt">
                     {text()}
                 </div>
+                {more()}
             </div>
         );
     }
@@ -123,7 +133,7 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
                     </For>
                 </span>
             </Show>
-            <div class={`user-bubble ${p.turn.prompt?.command ? "command" : ""} ${shell() ? "shell" : ""} ${long() && !expanded() ? "clamped" : ""} ${shortPrompt(text()) && !parts().comments.length ? "short" : ""}`} data-find="prompt">
+            <div class={`user-bubble ${p.turn.prompt?.command ? "command" : ""} ${shell() ? "shell" : ""} ${clamped()} ${shortPrompt(text()) && !parts().comments.length ? "short" : ""}`} data-find="prompt">
                 <Show when={shell()} fallback={<span class="user-text">{text()}</span>}>
                     <span class="user-text mono">
                         <SquareTerminal size={13} /> {text().slice(1)}
@@ -144,11 +154,7 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
                         </For>
                     </div>
                 </Show>
-                <Show when={long()}>
-                    <button class="link-btn more" aria-expanded={expanded()} onClick={() => setExpanded(!expanded())}>
-                        {expanded() ? "Show less" : "Show more"}
-                    </button>
-                </Show>
+                {more()}
             </div>
             <div class="user-actions" data-find-skip>
                 <Show when={p.turn.startedAt}>
