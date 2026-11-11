@@ -1,98 +1,121 @@
 /* ---- The side panel (RightPanel), in the sheet's inspector column ----
-   design/glass "Inspector": a segmented Changes | Agents | Commands header,
-   the pane under it, Commit and Push at the foot of Changes. The column itself
-   (docked or floating, its resizer) is shell.css's. The diff reader is review.css. */
+   Its views as icons down the outer edge (the rail), and the view beside it: a title line, the pane, and under
+   Changes, Commit and Push. The column itself (docked or floating, its resizer) is shell.css's. The diff reader
+   is review.css. */
 
 .panel {
     display: flex;
-    flex-direction: column;
+    flex-direction: row-reverse;
     min-height: 0;
     font-size: 0.929rem;
 }
 
-/* ---- Shared by the panel and the diff reader ---- */
-
-.insp-h {
+.insp-main {
     display: flex;
-    align-items: center;
-    gap: calc(6 * var(--sp));
-    height: calc(52 * var(--sp));
-    padding: calc(9 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp));
-    flex: none;
-    min-width: 0;
-}
-
-.insp-h .segmented {
+    flex-direction: column;
     flex: 1;
     min-width: 0;
+    min-height: 0;
 }
 
+.insp-rail {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: calc(4 * var(--sp));
+    flex: none;
+    width: calc(46 * var(--sp));
+    padding: calc(8 * var(--sp)) 0;
+    border-left: 0.5px solid var(--line);
+}
 
-/* A count in a segment ("Changes 3"); what runs in a tab now, in the accent. */
+.insp-rail .segmented {
+    flex-direction: column;
+    padding: 0;
+    gap: calc(4 * var(--sp));
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
+}
+
+.insp-rail .segmented button {
+    position: relative;
+    justify-content: center;
+    width: calc(34 * var(--sp));
+    height: calc(34 * var(--sp));
+    padding: 0;
+    border-radius: calc(10 * var(--sp));
+}
+
+.insp-rail .segmented button:hover:not(.on) {
+    background: var(--hover);
+}
+
+.insp-rail .seg-i {
+    width: calc(17 * var(--sp));
+    height: calc(17 * var(--sp));
+}
+
+/* On a view's icon: how many files changed, or what runs there now (in the accent). */
 .segmented .ct {
-    font-size: 0.786rem;
-    color: var(--fg-3);
+    position: absolute;
+    top: calc(-1 * var(--sp));
+    right: calc(-1 * var(--sp));
+    min-width: calc(15 * var(--sp));
+    padding: 0 calc(3 * var(--sp));
+    border-radius: var(--pill);
+    background: color-mix(in srgb, var(--fg) 16%, var(--insp-bg));
+    box-shadow: 0 0 0 1.5px var(--insp-bg);
+    font-size: 0.714rem;
+    font-weight: 600;
+    line-height: calc(15 * var(--sp));
+    text-align: center;
+    color: var(--fg);
     font-variant-numeric: tabular-nums;
 }
 
 .segmented .ct.live {
     color: var(--accent-text);
-    font-weight: 600;
 }
 
-/* The tabs share the panel's width, each as wide as its label and an even part of what's left.
-   As the panel narrows (or the text grows) they give way in steps, never cut: the side panel
-   measures which fit holds every tab whole and sets it as data-fit (RightPanel useTabFit).
-   "tight": less padding. "lean": no count of files either (what runs stays). "icons": each
-   tab's icon and what runs, the label kept for screen readers and as the tooltip. */
-.insp-h .segmented button {
-    position: relative;
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    padding: 0 calc(8 * var(--sp));
-    gap: calc(5 * var(--sp));
-}
-
-.insp-h .segmented .seg-i {
-    display: none;
-    width: calc(15 * var(--sp));
-    height: calc(15 * var(--sp));
-    flex: none;
-}
-
-.insp-h:is([data-fit="tight"], [data-fit="lean"], [data-fit="icons"]) {
-    gap: calc(4 * var(--sp));
-}
-
-.insp-h:is([data-fit="tight"], [data-fit="lean"], [data-fit="icons"]) .segmented button {
-    padding: 0 calc(3 * var(--sp));
-    gap: calc(3 * var(--sp));
-}
-
-.insp-h:is([data-fit="lean"], [data-fit="icons"]) .segmented .ct.files {
-    display: none;
-}
-
-.insp-h[data-fit="icons"] .segmented .seg-i {
-    display: block;
-}
-
-.insp-h[data-fit="icons"] .segmented .seg-l {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-}
-
+/* Something there wants a look. */
 .segmented .ct-dot {
+    position: absolute;
+    top: calc(3 * var(--sp));
+    right: calc(3 * var(--sp));
     width: calc(6 * var(--sp));
     height: calc(6 * var(--sp));
     border-radius: 50%;
     background: var(--warn);
+}
+
+/* The view's name, and beside Changes what changed and the way into the diff reader. */
+.insp-t {
+    display: flex;
+    align-items: center;
+    gap: calc(10 * var(--sp));
     flex: none;
+    min-width: 0;
+    height: calc(48 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(10 * var(--sp)) 0 calc(18 * var(--sp));
+}
+
+.insp-t h2 {
+    margin: 0;
+    font-size: 1.071rem;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    text-transform: capitalize;
+}
+
+/* Nothing in the view: one quiet line under its title. */
+.none {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: calc(6 * var(--sp));
+    padding: 0 calc(8 * var(--sp));
+    color: var(--fg-3);
 }
 
 .insp-body {
@@ -241,38 +264,6 @@
 }
 
 /* ---- Changes ---- */
-
-.sum {
-    display: flex;
-    align-items: baseline;
-    gap: calc(10 * var(--sp));
-    padding: calc(10 * var(--sp)) calc(8 * var(--sp)) calc(12 * var(--sp));
-    min-width: 0;
-}
-
-.sum b {
-    font-size: 1.571rem;
-    font-weight: 650;
-    letter-spacing: -0.02em;
-    font-variant-numeric: tabular-nums;
-}
-
-.sum .add {
-    color: var(--add-fg);
-}
-
-.sum .del {
-    color: var(--del-fg);
-}
-
-.sum > span {
-    color: var(--fg-3);
-    white-space: nowrap;
-}
-
-.sum .btn {
-    align-self: center;
-}
 
 .file {
     display: grid;

@@ -464,9 +464,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                                     <Spinner size={22} class="ic" />
                                 </Show>
                                 <b>{status() === "starting" ? "Starting the browser…" : status() === "crashed" ? "The browser stopped" : "No page open"}</b>
-                                <Show when={status() === "crashed"} fallback="Pages the agent opens show up here.">
-                                    {state()?.error}
-                                </Show>
+                                <Show when={status() === "crashed"}>{state()?.error}</Show>
                             </div>
                         </Show>
                     </div>
