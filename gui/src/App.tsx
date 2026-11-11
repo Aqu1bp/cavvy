@@ -1,5 +1,5 @@
 import { RenderBoundary } from "./components/ui/ErrorBoundary";
-import { batch, createEffect, createMemo, createSignal, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, lazy, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
 import { PlugZap } from "lucide-solid";
 import { ErrorCards } from "./components/ErrorCards";
 import { activate, app, attentionCount, handleFor, restoreActiveSession, rpc, type SessionHandle } from "./state/app";
@@ -27,7 +27,9 @@ import { TerminalPanel } from "./components/TerminalPanel";
 import { following, openFind, terminalOpen, setTerminalOpen } from "./state/ui";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
-import { SettingsNav, SettingsPage } from "./components/Settings";
+import { loadSettings } from "./lib/settings-chunk";
+const SettingsNav = lazy(() => loadSettings().then((m) => ({ default: m.SettingsNav })));
+const SettingsPage = lazy(() => loadSettings().then((m) => ({ default: m.SettingsPage })));
 import { RewindDialog } from "./components/RewindDialog";
 import { McpDialog } from "./components/McpDialog";
 import { FolderPicker } from "./components/FolderPicker";

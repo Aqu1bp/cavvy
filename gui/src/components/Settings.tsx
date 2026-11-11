@@ -2,6 +2,8 @@
 // setting is one row: what it is, what it does, its control, and a reset
 // when it's been changed.
 
+import "../styles/settings.css";
+import "../styles/usage.css";
 import { createEffect, createMemo, createSignal, For, Match, on, onMount, Show, Switch, type JSX } from "solid-js";
 import { AlertTriangle, ArrowLeft, ChartColumn, ChevronDown, CircleAlert, Copy, Download, ExternalLink, FolderOpen, Info, Keyboard, Minus, Palette, Plug, Plus, Puzzle, RotateCcw, SlidersHorizontal, X } from "lucide-solid";
 import { MODE_LABELS, type FollowUpMode, type GuiSettings, type PermissionModeId, type ProviderInfo } from "@shared/protocol";
