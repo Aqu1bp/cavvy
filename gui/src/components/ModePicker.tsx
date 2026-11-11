@@ -30,7 +30,7 @@ export function nextMode(m: PermissionModeId, bypass: boolean): PermissionModeId
 
 const BYPASS_OFF = "Turn on “Allow bypass mode” in Settings first.";
 
-/** Grey but Plan, in the accent, and Bypass, in red: the two worth noticing. */
+/** Manual is quiet; every other mode wears its own colour (composer.css), so a glance says how much the agent may do. */
 export function ModePicker(p: ComposerMenu & { mode: PermissionModeId; bypassAllowed: boolean; /** The model has no reviewer for auto mode. */ autoAsks?: boolean }) {
     let anchor: HTMLButtonElement | undefined;
     const describe = (m: PermissionModeId) => (m === "auto" && p.autoAsks ? AUTO_WITHOUT_REVIEWER : MODE_LABELS[m].description);
@@ -38,7 +38,7 @@ export function ModePicker(p: ComposerMenu & { mode: PermissionModeId; bypassAll
         <>
             <button
                 ref={anchor}
-                class={`pick mode ${p.mode === "plan" ? "mode-plan" : p.mode === "bypassPermissions" ? "mode-bypass" : ""} ${p.open ? "open" : ""}`}
+                class={`pick mode ${p.mode === "default" ? "" : `tint mode-${p.mode}`} ${p.open ? "open" : ""}`}
                 aria-haspopup="menu"
                 aria-expanded={p.open}
                 onClick={() => p.setOpen(!p.open)}
@@ -48,7 +48,7 @@ export function ModePicker(p: ComposerMenu & { mode: PermissionModeId; bypassAll
                 <span class="lbl">{MODE_LABELS[p.mode].label}</span>
                 <ChevronDown size={13} class="chev" />
             </button>
-            <Menu label="Permission mode" open={p.open} anchor={() => anchor} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} width={340}>
+            <Menu label="Permission mode" open={p.open} anchor={() => anchor} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} width={340} class="pick-pop">
                 <div class="mode-menu">
                     <div class="menu-head">
                         <span>Permission mode</span>
@@ -59,7 +59,7 @@ export function ModePicker(p: ComposerMenu & { mode: PermissionModeId; bypassAll
                             const disabled = () => m === "bypassPermissions" && !p.bypassAllowed;
                             return (
                                 <button
-                                    class={`menu-item ${p.mode === m ? "on" : ""} ${m === "bypassPermissions" ? "danger" : ""}`}
+                                    class={`menu-item mode-${m} ${p.mode === m ? "on" : ""} ${m === "bypassPermissions" ? "danger" : ""}`}
                                     role="menuitemradio"
                                     aria-checked={p.mode === m}
                                     disabled={disabled()}

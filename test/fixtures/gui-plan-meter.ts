@@ -107,7 +107,7 @@ test("the ring is the context; its tone follows the context alone", () => {
         expect(m.stroke().stroke).toBe("var(--warn)");
         m.setState({ ...m.state(), contextTokens: 180000 });
         expect(m.stroke().stroke).toBe("var(--danger)");
-        const circumference = 2 * Math.PI * (26 - 2.5) / 2;
+        const circumference = 2 * Math.PI * (18 - 2.5) / 2;
         expect(m.stroke()["stroke-dasharray"]).toBe(`${circumference * 0.9} ${circumference}`);
     } finally { m.dispose(); }
 });

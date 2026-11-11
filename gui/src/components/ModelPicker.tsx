@@ -328,15 +328,9 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                     title={[name, r.line].filter(Boolean).join(" · ")}
                     onClick={() => choose(r.m)}
                 >
-                    <span class="mr-mark" aria-hidden="true">
-                        <Show
-                            when={multi()}
-                            fallback={
-                                <Show when={isCurrent(r.m.ref)}>
-                                    <Check size={14} stroke-width={2.5} />
-                                </Show>
-                            }
-                        >
+                    {/* Whose it is, by its mark; Compare's checkbox takes the mark's place. */}
+                    <span class="mr-lead" aria-hidden="true">
+                        <Show when={multi()} fallback={<ProviderIcon id={r.m.provider} name={providerName(r.m.provider)} size={15} />}>
                             <span class={`mr-check ${picked(r.m.ref) ? "on" : ""}`}>
                                 <Show when={picked(r.m.ref)}>
                                     <Check size={11} stroke-width={3} />
@@ -344,7 +338,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                             </span>
                         </Show>
                     </span>
-                    {/* One line: the name, then what it stands for (or whose it is, its window and price) dimmed, cut first. */}
+                    {/* One line: the name, then whose it is (in Favorites) dimmed, cut first. */}
                     <span class="mr-text">
                         <span class="mr-name truncate">{name}</span>
                         <Show when={r.line}>
@@ -354,6 +348,12 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                     <Show when={i < 9}>
                         <kbd aria-hidden="true">{`${mod === "⌘" ? "⌘" : "Ctrl+"}${i + 1}`}</kbd>
                     </Show>
+                    {/* The current model's check, at the row's end. */}
+                    <span class="mr-mark" aria-hidden="true">
+                        <Show when={!multi() && isCurrent(r.m.ref)}>
+                            <Check size={15} stroke-width={2.5} />
+                        </Show>
+                    </span>
                 </button>
                 <button onFocus={() => setSel(i)} class={`mr-star ${isFav(r.m.ref) ? "f" : ""}`} aria-pressed={isFav(r.m.ref)} title={isFav(r.m.ref) ? "Remove from Favorites" : "Add to Favorites"} aria-label={isFav(r.m.ref) ? `Remove ${name} from Favorites` : `Add ${name} to Favorites`} onClick={() => toggleFav(r.m.ref)}>
                     <Star size={14} />
@@ -453,7 +453,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     return (
         <>
             {/* Keep the trigger mounted when Compare changes so Menu can restore focus. */}
-            <button ref={anchor} class={`pick model ${multi() ? "on" : ""} ${p.open ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={multi() ? picks().map((r) => resolve(undefined, r)?.name ?? r).join(", ") || "Pick 2 to 4 models" : withShortcut(showAccounts() ? `${chipName()} · ${accountName()}` : chipName(), "chat:modelPicker")}>
+            <button ref={anchor} class={`pick model ${multi() ? "tint on" : ""} ${p.open ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={multi() ? picks().map((r) => resolve(undefined, r)?.name ?? r).join(", ") || "Pick 2 to 4 models" : withShortcut(showAccounts() ? `${chipName()} · ${accountName()}` : chipName(), "chat:modelPicker")}>
                 <Show when={multi()} fallback={
                     <>
                         <Show when={currentProvider()}>{(id) => <ProviderIcon id={id()} name={providerName(id())} size={15} />}</Show>
@@ -775,6 +775,9 @@ export function EffortPicker(p: ComposerMenu & { current?: ModelSummary; current
                 }}
             >
                 <div class="ep-h">
+                    <Show when={reasoning()}>
+                        <EffortGlyph level={effortOf(shown())?.lv ?? 0} />
+                    </Show>
                     <b>{label()}</b>
                     <Show when={fastOk()}>
                         <button ref={fastBtn} class={`ep-fast ${fastOn() ? "on" : ""}`} aria-pressed={fastOn()} disabled={p.busy} title={p.busy ? FAST_BUSY : FAST_TIP} onClick={() => void setFastMode(!p.fast)}>
@@ -784,11 +787,11 @@ export function EffortPicker(p: ComposerMenu & { current?: ModelSummary; current
                     </Show>
                 </div>
                 <Show when={reasoning()}>
+                    <EffortSlider ref={(e) => (bars = e)} levels={levels()} value={shown()} onChange={pick} />
                     <div class="ep-ends" aria-hidden="true">
                         <span>Quick</span>
                         <span>Thorough</span>
                     </div>
-                    <EffortSlider ref={(e) => (bars = e)} levels={levels()} value={shown()} onChange={pick} />
                 </Show>
             </Menu>
         </Show>

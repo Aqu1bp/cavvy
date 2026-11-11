@@ -129,7 +129,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
         panel?.focus();
     };
     onCleanup(cancelClose);
-    /** The ring's share as a number inside it; nothing while neither share is known. */
+    /** The ring's share as a number beside it (composer.css adds the %); nothing while neither share is known. */
     const shownPct = () => (view().pct === undefined ? undefined : Math.round(Math.min(1, urgency()) * 100));
     const ctxTone = () => ((view().pct ?? 0) >= 0.85 ? "danger" : (view().pct ?? 0) >= 0.7 ? "warning" : "");
     return (
@@ -154,7 +154,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
                 <Show
                     when={near()}
                     fallback={<>
-                        <span class="ctx-ring" aria-hidden="true"><Ring value={urgency()} size={26} stroke={2.5} neutral tone={tone()} /></span>
+                        <span class="ctx-ring" aria-hidden="true"><Ring value={urgency()} size={18} stroke={2.5} neutral tone={tone()} /></span>
                         <span class="ctx-num num" aria-hidden="true">{shownPct()}</span>
                     </>}
                 >

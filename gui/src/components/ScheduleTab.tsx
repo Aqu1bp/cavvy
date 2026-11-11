@@ -1,4 +1,4 @@
-// The session's schedules, as rows inside the composer card (like the
+// The session's schedules, as rows in a drawer on the composer's top edge (like the
 // queue's): what runs when, with pause or resume, run now and delete.
 
 import { createSignal, For, Show } from "solid-js";
@@ -54,7 +54,7 @@ export function ScheduleTab(p: { sessionId: string; items: ScheduleInfo[] }) {
         }
     };
     return (
-        <div class="queue queue-tab schedule-tab" role="list" aria-label="Schedules">
+        <div class="tray schedule-tab" role="list" aria-label="Schedules">
             <For each={shown()}>
                 {(s) => (
                     <div class={`queue-row schedule-row ${s.paused ? "paused" : ""}`} role="listitem">
