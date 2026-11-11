@@ -36,6 +36,9 @@
 //                    "met" after, or "impossible" when the goal says so
 //   "ship"           commits, opens a pull request and watches it (GitCommit, CreatePullRequest)
 //   (a wake)         answers a watched pull request's news: failed checks, comments, passing checks
+//   "handoff"        finds another session of this project (ListSessions) and asks it to run the tests (SendToSession)
+//   "spinoff"        starts a new session to write a README section (StartSession)
+//   (a message)      answers a message from another session's agent
 //   "monitor"        watches a build log with Monitor; its lines wake the agent later
 //   "jsonfail"       a command that works, and one that fails after printing JSON (its last line is "}")
 //   "repeats"        reads the same file three times in a row (one row, counted), then lists files
@@ -202,6 +205,22 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         if (ended) return { text: `The build watch ended (exit code ${ended[1]}).` };
         const failed = lines.find((l) => /error|fail/i.test(l));
         return { text: failed ? `The build reported a failure: \`${failed}\`. I'll look into \`test/auth.test.ts\` next.` : `Progress: ${lines.join("; ")}.` };
+    }
+    // A message from the agent in another session: say what it asked.
+    if (/messages? from (the agent|agents) in (another of )?the user's/.test(p)) {
+        const said = /From session \S+ \(“[^”]*”\):\n\n([^\n]*)/.exec(prompt)?.[1] ?? "";
+        return { text: `Another session asked: “${said}” I'll take it from here.` };
+    }
+    // Hands work to another session of this project (ListSessions, SendToSession), or starts one (StartSession).
+    if (/\bhandoff\b/.test(p)) {
+        if (toolRounds === 0) return { text: "I'll find the other session.", calls: [{ name: "ListSessions", args: {} }] };
+        const id = /^(\d{8}-\d{6}-[0-9a-f]+)\s/m.exec(lastResult)?.[1];
+        if (toolRounds === 1 && id) return { text: "Handing it over.", calls: [{ name: "SendToSession", args: { id, message: "Please run the auth tests and tell me if any fail." } }] };
+        return { text: toolRounds === 1 ? "There's no other session here to hand it to." : lastResult.split("\n")[0]! };
+    }
+    if (/\bspinoff\b/.test(p)) {
+        if (toolRounds === 0) return { text: "I'll start a session for that.", calls: [{ name: "StartSession", args: { prompt: "Write a README section about SSO sign-in.", title: "SSO README" } }] };
+        return { text: lastResult.split("\n")[0]! };
     }
     // News from a watched pull request (Cavvy woke the agent).
     if (/events? you asked to be told about arrived/.test(p)) {

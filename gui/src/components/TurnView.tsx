@@ -18,7 +18,7 @@ import { Counts } from "./blocks/DiffView";
 import { Markdown } from "./blocks/Markdown";
 import { CopyButton, Spinner } from "./ui/bits";
 import { ProviderIcon } from "./ui/ProviderIcon";
-import { app } from "../state/app";
+import { activate, app } from "../state/app";
 import { Notice } from "./blocks/Notices";
 import { hasErrorCard, leadingNotices, shownBlocks } from "../lib/notices";
 import { LiveLine, motionMs } from "./LiveLine";
@@ -67,8 +67,10 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
     const long = () => text().split("\n").length > 14 || text().length > 1400;
     const shell = () => text().startsWith("!");
     createEffect(on(findReveal, (r) => r?.turnId === p.turn.id && r.part === "prompt" && long() && setExpanded(true)));
+    // A message from the agent in another session: drawn as a prompt at the left, under who sent it (opens it).
+    const from = p.turn.prompt?.from;
     // Started by an event the agent asked to be woken for (a watched pull request), not by the user.
-    if (p.turn.prompt?.wake) {
+    if (p.turn.prompt?.wake && !from) {
         return (
             <div class="wake-row" data-find="prompt" title="The agent asked to be woken for this event">
                 <BellRing size={13} aria-hidden="true" />
@@ -79,7 +81,15 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
     // At the right, as wide as its text: attachments above it, and under it (over the gap, on hover
     // or focus) when it was sent, Copy and Rewind.
     return (
-        <div class={`user-row ${p.turn.prompt?.steered ? "steered" : ""}`}>
+        <div class={`user-row ${p.turn.prompt?.steered ? "steered" : ""} ${from ? "peer" : ""}`}>
+            <Show when={from}>
+                {(f) => (
+                    <button class="wake-row" data-find-skip title="Open the session that sent this" onClick={() => void activate(f().id)}>
+                        <MessageSquareText size={13} aria-hidden="true" />
+                        <span class="wake-text">From {f().title}</span>
+                    </button>
+                )}
+            </Show>
             {/* Sent while the turn before ran, and joined it at its next step (that turn ended for it). */}
             <Show when={p.turn.prompt?.steered}>
                 <span class="steered-tag" data-find-skip title="Sent while it worked: joined the work at its next step">
@@ -646,7 +656,7 @@ function TurnViewContent(p: TurnViewProps) {
     return (
         <article class={`turn ${p.turn.archived ? "archived" : ""} ${p.turn.imported ? "imported" : ""} ${p.held ? "chained" : ""} ${foldable() ? "done" : ""}`} data-turn={p.turn.id} aria-busy={running()} ref={(el) => (article = el, p.onElement?.(el, p.turn.id))}>
             <Show when={p.turn.prompt}>
-                <h2 class="sr-only" data-find-skip>You said</h2>
+                <h2 class="sr-only" data-find-skip>{p.turn.prompt?.from ? "Another session said" : "You said"}</h2>
                 <UserPrompt turn={p.turn} sessionId={p.state.id} onRewind={p.onRewind} />
             </Show>
             <Show when={hasOutput()}>

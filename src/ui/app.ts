@@ -37,6 +37,8 @@ import { Notifier } from "./notify";
 import { Session } from "../agent/session";
 import { SessionSchedules } from "../agent/schedule-host";
 import { CRON_TOOLS } from "../agent/schedule-tools";
+import { diskPeers } from "../agent/peers";
+import { SESSION_READ_TOOLS } from "../tools/session-tools";
 import { shortTime } from "../agent/schedule";
 import { appendPromptHistory, loadPromptHistory } from "../agent/session";
 import { resetToolState, rewindTargets } from "../agent/checkpoints";
@@ -273,6 +275,8 @@ export class App {
         });
         this.toolState.scheduler = this.schedules.scheduler;
         this.toolState.wakes!.onReady(() => this.wake());
+        // The user's other sessions, read from disk: the terminal can't drive those another process has open.
+        this.toolState.peers = diskPeers(() => this.session.meta.id, () => this.cwd);
         (this.toolState.watchers as WatcherMap).onChange = () => this.renderLive();
         this.editor.setHistory(loadPromptHistory(init.cwd));
     }
@@ -860,7 +864,7 @@ export class App {
         const native = this.nativeSearch();
         const builtin = BUILTIN_TOOLS.filter((t) => !(native && t.name === "WebSearch") && !(t.name === "WebSearch" && this.settings.webSearch === "off") && offered(t, this.settings));
         const skill = skillTool(this.skills);
-        return [...builtin, ...(skill ? [skill] : []), ...CRON_TOOLS, ...this.mcp.tools()];
+        return [...builtin, ...(skill ? [skill] : []), ...CRON_TOOLS, ...SESSION_READ_TOOLS, ...this.mcp.tools()];
     }
 
     makeAgent() {

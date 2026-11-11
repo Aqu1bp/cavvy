@@ -5,13 +5,15 @@
 
 import { NO_SCHEDULES, SessionSchedules, type ScheduleAction } from "../agent/schedule-host";
 import { CRON_TOOLS, jobLine } from "../agent/schedule-tools";
+import { SESSION_TOOLS } from "../tools/session-tools";
+import { appPeers } from "./session-peers";
 import type { ScheduledJob } from "../agent/schedule";
 import { GIT_TOOL_HEADINGS } from "../tools/git-tools";
 import { BROWSER_TOOL_HEADINGS } from "../tools/browser-tools";
 import { BrowserSession } from "../browser/session";
 import { SimulatorSession } from "../simulator/session";
 import { SIMULATOR_TOOL_HEADINGS } from "../tools/simulator-tools";
-import { WakeQueue, WatcherMap, formatWakes, stopWatchers, wakeDisplay, type Wake } from "../agent/wakes";
+import { WakeQueue, WatcherMap, formatWakes, stopWatchers, wakeDisplay, wakesFrom, type Wake } from "../agent/wakes";
 import { turnDuration } from "./duration";
 import { existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
@@ -464,6 +466,8 @@ export class Runtime {
             if (!this.closed) this.setState({ watches: (this.toolState.watchers as WatcherMap).info() });
         };
         this.toolState.wakes!.onReady(() => this.wake());
+        // The user's other sessions, for its agent to list, read, send to and start.
+        this.toolState.peers = appPeers(engine.peerHost(), this);
         this.checker = new PermissionChecker(() => this.settings(), ws.cwd);
         this.classifier = new AutoClassifier(undefined);
         this.reviewer = ws.settings.reviewModel;
@@ -1527,11 +1531,11 @@ export class Runtime {
         const native = this.nativeSearch();
         const off = this.settings().webSearch === "off";
         const skill = skillTool(this.ws.skills);
-        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off)) && offered(t, this.settings())), ...(skill ? [skill] : []), ...CRON_TOOLS, ...this.ws.mcp.tools()];
+        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off)) && offered(t, this.settings())), ...(skill ? [skill] : []), ...CRON_TOOLS, ...SESSION_TOOLS, ...this.ws.mcp.tools()];
     }
 
     private toolMeta(call: ToolCallPart): ToolMeta {
-        const tool = BUILTIN_TOOLS.find((t) => t.name === call.name) ?? CRON_TOOLS.find((t) => t.name === call.name) ?? (call.name === "Skill" ? (skillTool(this.ws.skills) as Tool<any> | undefined) : undefined) ?? this.ws.mcp.tools().find((t) => t.name === call.name);
+        const tool = BUILTIN_TOOLS.find((t) => t.name === call.name) ?? CRON_TOOLS.find((t) => t.name === call.name) ?? SESSION_TOOLS.find((t) => t.name === call.name) ?? (call.name === "Skill" ? (skillTool(this.ws.skills) as Tool<any> | undefined) : undefined) ?? this.ws.mcp.tools().find((t) => t.name === call.name);
         let title = call.name;
         try {
             if (tool) title = tool.title(call.input ?? {});
@@ -2537,6 +2541,12 @@ export class Runtime {
             if (req.preview?.body) it.command = redact(req.preview.body);
             if (req.preview?.summary) it.description = redact(req.preview.summary);
             if (suggestions.length) it.options.push({ id: "always", label: `Always allow in ${projectName}`, short: "Always allow" });
+        } else if (tool.name === "SendToSession" || tool.name === "StartSession") {
+            // To which session ("Send a message to “Fix login”"), and what it's told.
+            it.heading = req.preview?.summary ? redact(req.preview.summary) : tool.name === "StartSession" ? "Start a session" : "Send a message to another session";
+            const body = req.preview?.body ? redact(req.preview.body) : "";
+            if (body) it.description = body.length > 1200 ? `${body.slice(0, 1200)}…` : body;
+            if (suggestions.length) it.options.push({ id: "always", label: `Always allow in ${projectName}`, short: "Always allow" });
         } else if (tool.category === "mcp") {
             // Its own name in words ("Create issue"), and the server it's from.
             const m = /^mcp__(.+?)__(.+)$/.exec(tool.name);
@@ -3095,7 +3105,7 @@ export class Runtime {
     /** `mentionsIn`: the part of `text` the user wrote, whose @mentions attach files and MCP resources (a skill's or an MCP prompt's text is sent as written). */
     /** `goal`: a turn the goal started (src/agent/goal.ts). */
     /** `adopt`: a wake turn its agent CLI started by itself (AgentHost.wake): nothing is sent, the turn takes its events. */
-    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; attachments?: AttachedPart[]; about?: string; mentionsIn?: string; wakes?: Wake[]; goal?: boolean; adopt?: BackendWake; admitted?: { context?: string } } = {}) {
+    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; attachments?: AttachedPart[]; about?: string; mentionsIn?: string; wakes?: Wake[]; goal?: boolean; adopt?: BackendWake; admitted?: { context?: string }; from?: { id: string; title: string } } = {}) {
         // The user's own turn overtakes a pending goal check, and a paused goal picks up after it. A scheduled prompt
         // leaves a paused goal paused; the resume after a usage limit is the exception, as in Claude Code.
         // A watch's events don't either: they aren't the user's.
@@ -3141,7 +3151,7 @@ export class Runtime {
         const attached = attachedPrompt(opts.attachments, false);
         const turn: Turn = {
             id: this.newId(),
-            prompt: { text: display, ...attached, ...(opts.kind === "command" ? { command: true } : {}), ...(scheduled ? { scheduled } : {}), ...(opts.kind === "wake" ? { wake: true } : { index }) },
+            prompt: { text: display, ...attached, ...(opts.kind === "command" ? { command: true } : {}), ...(scheduled ? { scheduled } : {}), ...(opts.kind === "wake" ? { wake: true } : { index }), ...(opts.from ? { from: opts.from } : {}) },
             blocks: [],
             status: "running",
             startedAt: this.turnStartedAt,
@@ -3185,7 +3195,7 @@ export class Runtime {
                 const images = parts.filter((p): p is AttachedPart => p.type === "image");
                 this.pendingPrompt = { seg: this.segment, index, attachments: images };
                 if (images.length) this.op({ op: "turn.patch", turnId: turn.id, patch: { prompt: { ...turn.prompt!, ...attachedPrompt(images) } } });
-                reason = await agent.run(parts, { signal: ac.signal, display, kind: opts.kind, ...(opts.adopt ? { adopt: opts.adopt } : {}), admitted: opts.admitted });
+                reason = await agent.run(parts, { signal: ac.signal, display, kind: opts.kind, ...(opts.adopt ? { adopt: opts.adopt } : {}), admitted: opts.admitted, ...(opts.from ? { from: opts.from } : {}) });
             }
         } catch (e) {
             const message = `Unexpected error: ${redact((e as Error).message)}`;
@@ -3446,7 +3456,10 @@ export class Runtime {
         }
         const wakes = this.toolState.wakes!.takeForTurn();
         if (!wakes.length) return;
-        void this.startTurn(formatWakes(wakes), { display: wakeDisplay(wakes), kind: "wake", wakes }).catch((e) => this.notice(redact((e as Error).message), "error"));
+        // Messages from one other session: shown as it wrote them, as from it.
+        const from = wakesFrom(wakes);
+        const display = from ? wakes.map((w) => w.message ?? w.label).join("\n\n") : wakeDisplay(wakes);
+        void this.startTurn(formatWakes(wakes), { display, kind: "wake", wakes, ...(from ? { from } : {}) }).catch((e) => this.notice(redact((e as Error).message), "error"));
     }
 
     /** Turns agent CLIs started by themselves, waiting for the session to be free to adopt them (wake). */

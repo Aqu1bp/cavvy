@@ -858,6 +858,14 @@ export class Session {
         }
     }
 
+    /**
+     * Read only, without claiming it: another session's agent reading this one (src/agent/peers.ts). What a process that
+     * has it open is still writing may be missing; nothing is ever written.
+     */
+    static peek(file: string): Session {
+        return Session.read(file, false);
+    }
+
     private static read(file: string, persist = true): Session {
         const writtenAt = statSync(file).mtimeMs;
         const text = readFileSync(file, "utf-8");

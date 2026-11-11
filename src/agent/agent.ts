@@ -74,6 +74,7 @@ import { MONITOR_INSTRUCTIONS, monitorServerTools, nativeMonitorCall, stoppedMon
 import { BROWSER_INSTRUCTIONS, BrowserNavigateTool, browserServerTools, nativeBrowserCall, servedBrowserName } from "../tools/browser-tools";
 import { SIMULATOR_INSTRUCTIONS, SimulatorControlTool, nativeSimulatorCall, servedSimulatorName, simulatorServerTools } from "../tools/simulator-tools";
 import { nativeWorktreeCall, servedWorktreeFor, WORKTREE_INSTRUCTIONS, worktreeServerTools } from "../tools/worktree-tools";
+import { nativeSessionCall, servedSessionName, SESSION_TOOL_NAMES, sessionInstructions, sessionServerTools } from "../tools/session-tools";
 import { offered } from "../tools/index";
 import { lostNote, SessionBackground, type BackgroundTaskInfo } from "./background";
 import { SECRET_INSTRUCTIONS, secretTools, secretToolTitle } from "./secret-tools";
@@ -235,6 +236,8 @@ export interface RunOptions {
     adopt?: BackendWake;
     /** Its UserPromptSubmit hooks went already, when it was queued to steer, with what they added: they don't run again. */
     admitted?: { context?: string };
+    /** A wake that is another session's message: who sent it (kept with the prompt, so the transcript shows it). */
+    from?: { id: string; title: string };
 }
 
 /** What a queued message's hooks, and whether it can still go, decided (AgentHost.drainWaiting). */
@@ -786,7 +789,7 @@ export class Agent {
         // Codex's edits are checked too: what came after their wait goes with this prompt (after a /goal, with the next).
         const late = keepNotes ? undefined : this.lateDiagnostics();
         if (late) parts.push(late);
-        const prompt = this.session.push({ role: "user", content: parts, meta: { kind: opts.kind ?? "prompt", display: opts.display, checkpoint } });
+        const prompt = this.session.push({ role: "user", content: parts, meta: { kind: opts.kind ?? "prompt", display: opts.display, checkpoint, ...(opts.from ? { from: opts.from } : {}) } });
         this.prompted = true;
 
         // Claude Code, Codex: the backend runs the whole turn with its own tools (the prompt as stored: redacted).
@@ -1691,7 +1694,9 @@ export class Agent {
         const simulating = !acp && offered(SimulatorControlTool, this.o.settings());
         // Claude Code has EnterWorktree and ExitWorktree of its own; the others get Cavvy's.
         const worktrees = caller === "codex" || acp;
-        if (!delegating && !(store && ask) && !scheduling && !watching && !browsing && !simulating && !worktrees) return undefined;
+        // The user's other sessions: where the host reaches them (not a -p run's).
+        const peers = !acp && !this.oneShot ? this.state.peers : undefined;
+        if (!delegating && !(store && ask) && !scheduling && !watching && !browsing && !simulating && !worktrees && !peers) return undefined;
         const tools: ServerTool[] = [];
         const instructions: string[] = [];
         if (delegating) {
@@ -1735,6 +1740,11 @@ export class Agent {
         if (worktrees) {
             tools.push(...worktreeServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), () => this.state));
             instructions.push(WORKTREE_INSTRUCTIONS);
+        }
+        if (peers) {
+            const drives = Boolean(peers.send && peers.start);
+            tools.push(...sessionServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), drives));
+            instructions.push(sessionInstructions(drives));
         }
         this.serverTools = tools;
         this.serverInstructions = instructions.join("\n\n");
@@ -2795,7 +2805,7 @@ export class Agent {
         if ((e.type === "tool_start" || e.type === "tool_end") && e.call.name.startsWith(`mcp__${MCP_SERVER_NAME}__`)) {
             const served = e.call.name.slice(`mcp__${MCP_SERVER_NAME}__`.length);
             const input = (e.call.input ?? {}) as Record<string, unknown>;
-            const native = nativeMonitorCall(served, input) ?? nativeBrowserCall(served, input) ?? nativeSimulatorCall(served, input) ?? nativeWorktreeCall(served, input);
+            const native = nativeMonitorCall(served, input) ?? nativeBrowserCall(served, input) ?? nativeSimulatorCall(served, input) ?? nativeWorktreeCall(served, input) ?? nativeSessionCall(served, input);
             const tool = native && this.findTool(native.name);
             if (native && tool) {
                 const call = { ...e.call, ...native };
@@ -2915,7 +2925,7 @@ export class Agent {
         // Only the main agent can be woken, so a sub-agent gets no Monitor (Cavvy's sub-agents don't either). Nor can its stop end the main turn.
         if (tool.name === "Monitor" && callId && (await this.fromBackendSubagent(callId))) return { text: "Monitor isn't available to sub-agents: only the main agent can be woken by one.", isError: true };
         // The CLI approves Cavvy's tools without asking: a rule naming the tool as served is enforced here, before the checks its own name gets.
-        const served = servedBrowserName(tool.name) ?? servedSimulatorName(tool.name) ?? servedWorktreeFor(tool.name);
+        const served = servedBrowserName(tool.name) ?? servedSimulatorName(tool.name) ?? servedWorktreeFor(tool.name) ?? servedSessionName(tool.name);
         if (served) {
             const refused = await this.authorizeServedTool(served, tool.title(input), input, signal);
             if (refused) return refused;
@@ -3641,7 +3651,7 @@ export class Agent {
             notes.push(...(servers?.notes ?? []));
         }
 
-        const exclude = new Set(["Task", "TaskStatus", "Monitor", "ListModels", "TodoWrite", "AskUserQuestion", "RequestSecret", "ExitPlanMode", ...CRON_TOOL_NAMES]);
+        const exclude = new Set(["Task", "TaskStatus", "Monitor", "ListModels", "TodoWrite", "AskUserQuestion", "RequestSecret", "ExitPlanMode", ...CRON_TOOL_NAMES, ...SESSION_TOOL_NAMES]);
         let tools = this.tools.filter((t) => !exclude.has(t.name));
         // Its own servers' tools (their names never match a configured server's: startAgentServers refuses those).
         if (servers?.tools.length) tools = [...tools, ...servers.tools];

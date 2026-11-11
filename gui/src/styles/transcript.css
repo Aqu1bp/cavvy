@@ -325,6 +325,30 @@
     white-space: nowrap;
 }
 
+/* A message from the agent in another session: at the left (it isn't the user's), under who sent it. */
+.user-row.peer {
+    align-self: flex-start;
+    align-items: flex-start;
+}
+
+.user-row.peer > .wake-row {
+    margin-bottom: calc(6 * var(--sp));
+    border: none;
+    font: inherit;
+    font-size: 0.893rem;
+    cursor: pointer;
+}
+
+.user-row.peer > .user-bubble {
+    background: var(--sheet-2);
+    border-radius: calc(6 * var(--sp)) calc(20 * var(--sp)) calc(20 * var(--sp)) calc(20 * var(--sp));
+}
+
+.user-row.peer > .user-actions {
+    right: auto;
+    left: calc(2 * var(--sp));
+}
+
 /* The bubble's look; its shape in the conversation is .user-row's (a sub-agent's task uses it too). */
 .user-bubble {
     min-width: 0;
