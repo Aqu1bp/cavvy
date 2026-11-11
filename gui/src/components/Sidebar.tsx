@@ -1,16 +1,18 @@
-// The session rail, straight on the window glass. Sessions still in play are
-// two-line rows: how it's doing, what it's about, when; then its branch (and
-// project, when the list isn't grouped by project). Ones you've settled fold
-// into a one-line list at the bottom; sending to one brings it back. The ones
-// waiting on you are pinned above them all, under Needs you, until answered.
+// The session rail, straight on the window glass. Every row starts with how it's
+// doing, in one column you can read down: working, needs you, stopped, finished
+// unseen, or quiet. Sessions still in play are two-line rows: that glyph, what
+// it's about, when; then its project (its colour on a small tile) and branch.
+// Ones you've settled fold into a one-line list at the bottom; sending to one
+// brings it back. The ones waiting on you are pinned above them all, under
+// Needs you, until answered.
 
 import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack } from "solid-js";
-import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronsUpDown, ChevronUp, CircleAlert, Download, Folder, FolderPlus, Hand, Layers, ListFilter, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
+import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronsUpDown, ChevronUp, CircleAlert, Download, FolderPlus, Hand, Layers, ListFilter, Moon, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Sun, Trash2, Undo2, X } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
 import { activate, app, handleFor, isUnread, refreshSessions, reportError } from "../state/app";
 import { createUpdateAction } from "./UpdateAction";
 import { archive, archiveSessions, chooseProject, deleteSessions, newSession, openProject, openWaiting, pin, rename, settle, settleSessions, toggleSidebar } from "../state/actions";
-import { prefs, setPrefs } from "../state/prefs";
+import { activeTheme, prefs, setPrefs } from "../state/prefs";
 import { agentFocus, setDeletedOpen, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
 import { frameDrag } from "../lib/drag";
 import { ago, monogram, projectColor, since } from "../lib/format";
@@ -205,35 +207,29 @@ function rowLabel(s: SessionSummary, unread: boolean, picked = false): string {
 }
 
 /**
- * The right end of a row, the one place it says how it's doing: a check while it's picked, an amber dot while it
- * needs you, a ring while it works, a mark when it stopped on an error; else when it last moved (a dot when unread).
+ * The start of a row, the one place it says how it's doing, in a column of its own so a glance down the rail reads
+ * every session: a check while it's picked, a hand while it needs you, a ring while it works, a mark when it stopped
+ * on an error; else a dot, filled when it finished unseen. (The row's label says the same in words: rowLabel.)
  */
-function RowEnd(p: { s: SessionSummary; unread: boolean; picked?: boolean }) {
+function RowGlyph(p: { s: SessionSummary; unread: boolean; picked?: boolean }) {
     const word = () => sessionStatus(p.s, now())?.text;
     return (
-        <Switch
-            fallback={
-                <>
-                    <Show when={p.unread}>
-                        <span class="unread-dot" />
-                    </Show>
-                    <span class="when">{(now(), since(p.s.updatedAt))}</span>
-                </>
-            }
-        >
-            <Match when={p.picked}>
-                <span class="st pick" aria-hidden="true"><Check size={12} stroke-width={3} /></span>
-            </Match>
-            <Match when={p.s.status === "waiting"}>
-                <span class="wait-dot" title={word()} />
-            </Match>
-            <Match when={p.s.status === "running"}>
-                <span class="spin-ring" title={word()} />
-            </Match>
-            <Match when={p.s.status === "error"}>
-                <span class="st error" title={word()}><CircleAlert size={14} /></span>
-            </Match>
-        </Switch>
+        <span class="sg">
+            <Switch fallback={<i class={p.unread ? "unread-dot" : "idle-dot"} />}>
+                <Match when={p.picked}>
+                    <span class="st pick" aria-hidden="true"><Check size={11} stroke-width={3} /></span>
+                </Match>
+                <Match when={p.s.status === "waiting"}>
+                    <span class="st waiting" title={word()}><Hand size={14} /></span>
+                </Match>
+                <Match when={p.s.status === "running"}>
+                    <span class="spin-ring" title={word()} />
+                </Match>
+                <Match when={p.s.status === "error"}>
+                    <span class="st error" title={word()}><CircleAlert size={14} /></span>
+                </Match>
+            </Switch>
+        </span>
     );
 }
 
@@ -380,8 +376,9 @@ function NeedsRow(p: { s: SessionSummary; pick: RailPick }) {
     return (
         <div data-needs-id={p.s.id} class={`needs-row card ${waiting() ? "waiting" : ""}`}>
             <button class="card-hit needs-hit" onClick={() => p.pick.open(p.s.id)} aria-label={`${title()}, ${needsRowLine(p.s)}`} title={`${p.s.title}: ${needsRowLine(p.s)}`}>
+                <RowGlyph s={p.s} unread={unread()} />
                 <span class="t">{title()}</span>
-                <span class="end"><RowEnd s={p.s} unread={unread()} /></span>
+                <span class="end">{(now(), since(p.s.updatedAt))}</span>
                 <span class="m"><span class="truncate">{needsRowLine(p.s)}</span></span>
             </button>
         </div>
@@ -402,8 +399,9 @@ function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) =
     const provider = () => modelOf(p.s)?.split(":")[0];
     // Working in the background: it's fine, it can recede.
     const recede = () => p.s.status === "running" && !current();
-    // Grouped by project, the heading names it; listed by date, the row does.
-    const where = () => [p.grouped ? undefined : p.s.projectName, usualBranch(branchOf(p.s)) ? undefined : branchOf(p.s)].filter(Boolean).join(" · ") || p.s.projectName;
+    // Listed by date, the row names its project, then its branch unless it's the usual one. Grouped by project, the
+    // heading names it and the row says the branch, whichever it is.
+    const branch = () => (p.grouped || !usualBranch(branchOf(p.s)) ? branchOf(p.s) : undefined);
     const picked = () => p.pick.picked(p.s.id);
     return (
         <div
@@ -413,18 +411,23 @@ function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) =
             onContextMenu={contextMenu} onKeyDown={contextKey}
         >
             <button class="card-hit" onClick={(e) => p.pick.click(e, p.s.id)} onDblClick={(e) => !e.shiftKey && !e.metaKey && !e.ctrlKey && r.setEditing(true)} aria-current={current() ? "page" : undefined} aria-label={rowLabel(p.s, unread(), picked())} title={`${p.s.title}\n${p.s.cwd}`}>
+                <RowGlyph s={p.s} unread={unread()} picked={picked()} />
                 <span class="t">
                     {/* A run's sessions all start from one prompt (the group's label): each says which model it is. */}
                     <Show when={!r.editing()}>{p.s.run ? p.s.run.modelName : p.s.title}</Show>
                 </span>
                 <span class="end">
-                    <RowEnd s={p.s} unread={unread()} picked={picked()} />
-                </span>
-                <span class="m">
                     <Show when={p.s.pinned}>
                         <Pin size={11} class="card-pin" />
                     </Show>
-                    <span class="truncate">{where()}</span>
+                    {(now(), since(p.s.updatedAt))}
+                </span>
+                <span class="m">
+                    <Show when={!p.grouped} fallback={<span class="truncate br-n">{branch() ?? p.s.projectName}</span>}>
+                        <Monogram name={p.s.projectName} cwd={p.s.cwd} size={13} label={monogram(p.s.projectName)[0]} />
+                        <span class="truncate">{p.s.projectName}</span>
+                        <Show when={branch()}>{(b) => <span class="truncate br-n">{b()}</span>}</Show>
+                    </Show>
                     <Show when={provider()}>
                         {(id) => (
                             <span class="card-model" title={modelOf(p.s)}>
@@ -479,15 +482,14 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
                     aria-label={rowLabel(p.s, unread(), picked())}
                     title={`${p.s.title}\n${p.s.cwd}\nUpdated ${(now(), ago(p.s.updatedAt))}`}
                 >
+                    <RowGlyph s={p.s} unread={unread()} picked={picked()} />
                     <span class="truncate">{p.s.run ? `${p.s.run.modelName} · ${p.s.title}` : p.s.title}</span>
                     <Show when={p.s.pinned}>
                         <Pin size={11} class="slim-pin" />
                     </Show>
                 </button>
                 <span class="slim-end">
-                    <span class="t">
-                        <RowEnd s={p.s} unread={unread()} picked={picked()} />
-                    </span>
+                    <span class="t">{(now(), since(p.s.updatedAt))}</span>
                     <span class="slim-acts">
                         <button class="hb sm" title={p.s.pinned ? "Unpin" : "Pin"} aria-label={p.s.pinned ? "Unpin" : "Pin"} onClick={() => void pin(p.s.id, !p.s.pinned)}>
                             <Show when={p.s.pinned} fallback={<Pin size={13} />}>
@@ -613,6 +615,8 @@ export function Sidebar() {
         if (held) next.add(id); else next.delete(id);
         return next;
     });
+    /** Where the footer's switch goes: the scheme that isn't showing. */
+    const other = () => (activeTheme() === "dark" ? "light" : "dark");
     let viewBtn: HTMLButtonElement | undefined;
     let listEl: HTMLElement | undefined;
     let frame = 0;
@@ -926,7 +930,7 @@ export function Sidebar() {
                         const group = () => entry() as Extract<SidebarEntry, { kind: "needs" }>;
                         const members = () => group().ids.filter((id) => sessions().has(id));
                         return <div class="needs-g" data-session-row={key} role="group" aria-label={`Needs you: ${sessionCount(members().length)}`}>
-                            <div class="shelf needs-head"><Hand size={14} /><span>Needs you</span><span class="n">{members().length}</span></div>
+                            <div class="shelf needs-head"><span>Needs you</span><span class="n">{members().length}</span></div>
                             <For each={members()}>{(id) => <Show when={sessions().get(id)}>{(s) => <NeedsRow s={s()} pick={pick} />}</Show>}</For>
                         </div>;
                     }
@@ -965,7 +969,7 @@ export function Sidebar() {
                         const needsYou = () => !open() && (group().ids ?? []).some((id) => sessions().get(id)?.status === "waiting");
                         return <div class={`shelf project-head ${open() ? "" : "folded"}`}>
                             <button class="shelf-toggle" aria-expanded={open()} title={group().cwd} onClick={() => toggleFold(group().cwd)}>
-                                <Folder size={14} /><span class="truncate">{group().name}</span>
+                                <Monogram name={group().name} cwd={group().cwd} /><span class="truncate">{group().name}</span>
                                 <Show when={needsYou()}><span class="wait-dot" title="A session here needs you" /></Show>
                                 <span class="n">{counts().get(key)}</span>
                                 <ChevronUp size={14} class={`settled-chev ${open() ? "" : "closed"}`} />
@@ -994,13 +998,20 @@ export function Sidebar() {
                 <SelectionBar count={selected().length} plan={selectedPlan()} act={(what) => act(what, selected())} clear={() => clear(true)} onKeyDown={onRailKey} />
             </Show>
 
+            {/* One bar: the plans (with none, Settings by name), an update when there is one, light or dark, Settings. */}
             <div class="side-foot">
-                <Show when={plans().length} fallback={<span class="grow" />}>
+                <Show when={plans().length}>
                     <PlanRow plans={plans()} />
                 </Show>
                 <UpdateButton />
-                <button class="hb lg" title={withShortcut("Settings", "app:settings")} aria-label="Settings" onPointerEnter={() => void loadSettings()} onFocus={() => void loadSettings()} onClick={() => setSettingsTab("general")}>
+                <button class="hb lg" title={`Switch to ${other()}`} aria-label={`Switch to ${other()}`} onClick={() => setPrefs("scheme", other())}>
+                    <Show when={other() === "light"} fallback={<Moon size={16} />}>
+                        <Sun size={16} />
+                    </Show>
+                </button>
+                <button class="hb lg side-set" classList={{ wide: !plans().length }} title={withShortcut("Settings", "app:settings")} aria-label="Settings" onPointerEnter={() => void loadSettings()} onFocus={() => void loadSettings()} onClick={() => setSettingsTab("general")}>
                     <Settings size={16} />
+                    <span>Settings</span>
                 </button>
             </div>
         </SidebarFrame>

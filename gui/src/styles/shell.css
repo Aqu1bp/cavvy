@@ -415,7 +415,7 @@
 
 /* ---- Bits of the window ---------------------------------------------- */
 
-/* Not connected: a small note under the title bar. */
+/* Not connected: a note floating under the title bar, in the warning's tint. */
 .main > .banner {
     position: absolute;
     top: calc(var(--bar-h) + 6 * var(--sp));
@@ -425,15 +425,70 @@
     display: flex;
     align-items: center;
     gap: calc(8 * var(--sp));
-    height: calc(30 * var(--sp));
-    padding: 0 calc(14 * var(--sp));
-    border-radius: var(--pill);
+    height: calc(32 * var(--sp));
+    padding: 0 calc(12 * var(--sp));
+    border-radius: var(--r-ctl);
     font-size: 0.857rem;
     font-weight: 500;
     white-space: nowrap;
     color: var(--warn);
-    background: color-mix(in srgb, var(--warn) 12%, var(--sheet));
-    box-shadow: 0 0 0 0.5px var(--line), var(--ctl-shadow);
+    background: linear-gradient(var(--warn-soft) 0 0), var(--sheet);
+    box-shadow: var(--pop-shadow);
+}
+
+/* ---- A state in place of the work -------------------------------------
+   One block in the middle (App.tsx): not connected, a session that wouldn't
+   open, one waiting to reopen. A tile saying which, a line, what to do. */
+.gate {
+    display: grid;
+    justify-items: center;
+    align-content: center;
+    gap: calc(12 * var(--sp));
+    text-align: center;
+}
+
+.gate-ic {
+    display: grid;
+    place-items: center;
+    width: calc(44 * var(--sp));
+    height: calc(44 * var(--sp));
+    border-radius: calc(12 * var(--rs));
+    color: var(--warn);
+    background: var(--warn-soft);
+}
+
+.gate-ic.err {
+    color: var(--danger);
+    background: var(--danger-soft);
+}
+
+.gate :is(h2, p) {
+    max-width: calc(400 * var(--sp));
+    margin: 0;
+}
+
+.splash .gate h2 {
+    margin-top: calc(4 * var(--sp));
+    font-size: 1.143rem;
+    font-weight: 620;
+    letter-spacing: -0.015em;
+}
+
+.gate p {
+    line-height: 1.5;
+    color: var(--fg-2);
+}
+
+.gate .btn {
+    margin-top: calc(4 * var(--sp));
+}
+
+/* What it's doing, with its spinner. */
+.gate-s {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    color: var(--fg-3);
 }
 
 .main > .banner + .banner {

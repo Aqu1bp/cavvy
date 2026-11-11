@@ -72,8 +72,8 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
         presets: [[solidPreset, { generate: "universal", moduleName: "test-renderer" }]], configFile: false, babelrc: false })!.code!;
     const js = new Bun.Transpiler({ loader: "ts" }).transformSync(compiled)
         .replace(/import \{ ([\w$]+) as ([\w$]+) \} from "test-renderer";/g, "const $2 = renderer.$1;");
-    const icons = Object.fromEntries(["Archive", "ArchiveRestore", "Check", "CheckCheck", "ChevronsDownUp", "ChevronsUpDown", "ChevronUp", "CircleAlert", "Download", "Folder", "FolderPlus", "Hand", "Layers", "ListFilter", "MessageSquareText", "MoreHorizontal", "PanelLeft", "Pencil", "Pin", "PinOff", "Plus", "Search", "Settings", "SquarePen", "Trash2", "Undo2", "X", "ProviderIcon", "Logo", "Spinner"].map((name) => [name, () => null]));
-    const scope = { renderer, ...solid, ...order, ...format, ...rail, ...railSelect, ...icons, sessionStatus, rowMenuKey, updateView, createUpdateAction: () => ({ request() {}, pending: () => false, Confirm: () => null }), app, prefs,
+    const icons = Object.fromEntries(["Archive", "ArchiveRestore", "Check", "CheckCheck", "ChevronsDownUp", "ChevronsUpDown", "ChevronUp", "CircleAlert", "Download", "Folder", "FolderPlus", "Hand", "Layers", "ListFilter", "MessageSquareText", "Moon", "MoreHorizontal", "PanelLeft", "Pencil", "Pin", "PinOff", "Plus", "Search", "Settings", "SquarePen", "Sun", "Trash2", "Undo2", "X", "ProviderIcon", "Logo", "Spinner"].map((name) => [name, () => null]));
+    const scope = { renderer, ...solid, ...order, ...format, ...rail, ...railSelect, ...icons, sessionStatus, rowMenuKey, updateView, createUpdateAction: () => ({ request() {}, pending: () => false, Confirm: () => null }), app, prefs, activeTheme: () => "light",
         railSelection, setRailSelection, actionOf: o.actionOf ?? (() => undefined),
         settleSessions: bulk.settle, archiveSessions: bulk.archive, deleteSessions: bulk.deleteSessions,
         // Count work against layout keys, rather than timing a machine-dependent render.
@@ -115,9 +115,12 @@ test("actual sidebar holds hover/menu/rename; open and waiting rows appear past 
         expect(f.ids.slice(-2)).toEqual(["40", "59"]);
         f.nav.props.onPointerLeave();
         expect(f.ids[0]).toBe("40");
-        // Finished since last looked: the unread dot by its time, not a word or a glyph at the start.
-        expect(f.nodes.some((n) => n.props.class === "unread-dot")).toBe(true);
-        expect(f.nodes.some((n) => String(n.props.class).startsWith("st "))).toBe(false);
+        // How each is doing starts its row, in one column (.sg): finished since last looked, the unread dot, not a word.
+        const glyphs = f.nodes.filter((n) => n.props.class === "sg");
+        expect(glyphs.length).toBeGreaterThanOrEqual(f.ids.length);
+        expect(f.nodes.some((n) => n.props.class === "unread-dot" && glyphs.some((g) => f.descendants(g).includes(n)))).toBe(true);
+        // Only the one that needs you has a mark of its own: the hand (in its row, and in its row under Needs you).
+        expect(f.nodes.filter((n) => String(n.props.class).startsWith("st ")).map((n) => n.props.class)).toEqual(["st waiting", "st waiting"]);
         const card = f.nodes.findLast((n) => String(n.props.class).startsWith("card "));
         f.contextMenu(card);
         const held = f.ids;
@@ -162,7 +165,7 @@ test("actual sidebar pages projects and settled, transitions row type, and keeps
     } finally { f.dispose(); }
 });
 
-test("rail rows: needs-you rows get an amber dot and no archive; others archive on hover; headings count their sessions", () => {
+test("rail rows: needs-you rows start with the amber hand and have no archive; others archive on hover; headings count their sessions", () => {
     const f = fixture(6);
     const rowOf = (title: string) => f.nodes.findLast((n) => String(n.props.class).startsWith("card ") && n.querySelector()?.props.title?.startsWith(`${title}\n`));
     const buttons = (row: any) => f.descendants(row).filter((n) => n.tag === "button");
@@ -172,9 +175,10 @@ test("rail rows: needs-you rows get an amber dot and no archive; others archive 
         const waiting = rowOf("Session 1");
         expect(String(waiting.props.class)).toContain("waiting");
         expect(waiting.querySelector().props["aria-label"]).toBe("Session 1, Needs approval");
-        expect(f.descendants(waiting).some((n) => n.props?.class === "wait-dot")).toBe(true);
-        // The dot alone says it: no hand at the start of the row.
-        expect(f.descendants(waiting).some((n) => n.props?.class === "st waiting")).toBe(false);
+        // The hand at the start of the row says it, in the column every row's status is in; its end is only the time.
+        expect(f.descendants(waiting).some((n) => n.props?.class === "st waiting")).toBe(true);
+        expect(f.descendants(waiting).some((n) => n.props?.class === "wait-dot")).toBe(false);
+        expect(f.descendants(rowOf("Session 3")).some((n) => n.props?.class === "sg")).toBe(true);
         expect(buttons(waiting).some((n) => n.props.title === "Archive")).toBe(false);
         expect(buttons(waiting).some((n) => n.props.title === "More")).toBe(true);
         const idle = rowOf("Session 3");

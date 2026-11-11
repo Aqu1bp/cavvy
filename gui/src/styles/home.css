@@ -1,13 +1,16 @@
 /* ---- Home (new session) ------------------------------------------------
    Fills the conversation column under the title bar. One group, centred a
-   little above the middle: the question, the composer with where it runs in a
-   drawer under it, and sessions from the terminal. Short columns show fewer
-   terminal rows (Home.tsx) rather than overflowing. */
+   little above the middle: the question and where it'll be worked on (the
+   project, the branch), the composer with its prefixes on a line under it,
+   a row of ways to start, and sessions from the terminal. Short columns drop
+   the ways to start, then show fewer terminal rows (Home.tsx), rather than
+   overflowing. */
 
 .home {
     position: absolute;
     inset: 0;
-    overflow-y: auto;
+    /* Across, the light behind the composer is cut at the column's edges. */
+    overflow: hidden auto;
     overscroll-behavior: contain;
     scrollbar-width: thin;
 }
@@ -21,12 +24,14 @@
     initial-value: 0px;
 }
 
-/* The group's height (px at 14) is the question and the composer with its strip, the cards above it
-   (--home-cards) and the terminal list (--cli-on, --cli-rows), as Home.tsx sets them; its spare height
-   in the column goes 42% above it. The composer stays where it is as its text grows (down, on Home). */
+/* The group's height (px at 14) is the question, where it runs and the composer with its prefixes (--home-base),
+   the ways to start (--home-starts), the cards above the composer (--home-cards) and the terminal list (--cli-on,
+   --cli-rows), as Home.tsx sets and counts them; its spare height in the column goes 42% above it. The composer
+   stays where it is as its text grows (down, on Home). */
 .home-col {
     --home-card-h: 150;
-    --home-group: calc((252 + var(--home-cards, 0) * var(--home-card-h) + var(--cli-on, 0) * 62 + var(--cli-rows, 0) * 47) * var(--sp));
+    --home-base: 236;
+    --home-group: calc((var(--home-base) + var(--home-starts, 0) * 104 + var(--home-cards, 0) * var(--home-card-h) + var(--cli-on, 0) * 62 + var(--cli-rows, 0) * 47) * var(--sp));
     width: 100%;
     max-width: calc(var(--column-w) + 100 * var(--sp));
     margin: 0 auto;
@@ -49,7 +54,7 @@
 }
 
 .home-q {
-    margin: 0 0 calc(26 * var(--sp));
+    margin: 0 0 calc(10 * var(--sp));
     padding: 0 calc(20 * var(--sp));
     text-align: center;
     font-family: var(--font-prose);
@@ -61,7 +66,79 @@
     animation: home-in 320ms var(--ease) both;
 }
 
-/* The cards before the first message, then the composer and its strip. Its animation (and the terminal
+/* ---- Where: "in <project> on <branch>", finishing the question ------------
+   The two a click from changing: the project's tile (its colour in the rail)
+   and name, then its branch or worktree as machine text. */
+.home-where {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: calc(6 * var(--sp));
+    min-width: 0;
+    height: calc(28 * var(--sp));
+    margin-bottom: calc(20 * var(--sp));
+    color: var(--fg-3);
+    animation: home-in 320ms 30ms var(--ease) both;
+}
+
+.where-ctl {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(7 * var(--sp));
+    min-width: 0;
+    max-width: calc(250 * var(--sp));
+    height: 100%;
+    padding: 0 calc(8 * var(--sp)) 0 calc(7 * var(--sp));
+    border-radius: var(--r-ctl);
+    font-weight: 500;
+    white-space: nowrap;
+    color: var(--fg);
+    background: var(--sheet-2);
+    transition: background 140ms, transform 160ms var(--ease);
+}
+
+.where-ctl svg {
+    flex: none;
+}
+
+.where-ctl .ic {
+    color: var(--fg-3);
+}
+
+.where-ctl .mono {
+    font-size: 0.893rem;
+}
+
+.where-ctl .chv {
+    margin-left: calc(-2 * var(--sp));
+    color: var(--fg-3);
+}
+
+.where-ctl:hover,
+.where-ctl[aria-expanded="true"] {
+    background: var(--press);
+}
+
+.where-ctl:active {
+    transform: scale(0.97);
+}
+
+/* No project yet: choosing one is what there is to do. */
+.where-ctl.lead {
+    padding: 0 calc(10 * var(--sp));
+    color: var(--accent-ink);
+    background: var(--accent);
+}
+
+.where-ctl.lead:hover {
+    background: var(--accent-hover);
+}
+
+.where-ctl.lead svg {
+    color: inherit;
+}
+
+/* The cards before the first message, then the composer and its prefixes. Its animation (and the terminal
    list's) makes each a stacking context, so the composer's menus and pickers would draw under the list after
    it: it's raised over it. */
 .home-composer {
@@ -73,194 +150,37 @@
     animation: home-in 320ms 60ms var(--ease) both;
 }
 
-/* Light behind the composer, in the accent's neighbours: the one place the app glows. Two soft
-   gradients, drawn once: nothing here moves or blurs. */
+/* Light behind the composer, in the accent's neighbours: the one place the app glows. Two pools that meet under the
+   card and reach up behind the question, drawn once: nothing here moves or blurs. */
 .home-composer::before {
     content: "";
     position: absolute;
     z-index: -1;
-    inset: calc(-130 * var(--sp)) calc(-90 * var(--sp)) calc(-70 * var(--sp));
+    inset: calc(-170 * var(--sp)) calc(-140 * var(--sp)) calc(-90 * var(--sp));
     background:
-        radial-gradient(46% 58% at 30% 42%, color-mix(in srgb, var(--accent-2) 15%, transparent), transparent 72%),
-        radial-gradient(44% 56% at 72% 56%, color-mix(in srgb, var(--accent-3) 13%, transparent), transparent 72%);
+        radial-gradient(40% 46% at 33% 50%, color-mix(in srgb, var(--accent-2) 24%, transparent), transparent 72%),
+        radial-gradient(40% 46% at 67% 58%, color-mix(in srgb, var(--accent-3) 21%, transparent), transparent 72%);
     pointer-events: none;
 }
 
-/* Ways to start, under the composer's drawer while nothing is typed. */
-.home-starts {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: calc(8 * var(--sp));
-    height: calc(30 * var(--sp));
-    margin-top: calc(18 * var(--sp));
-    overflow: hidden;
-    transition: opacity 160ms;
-    animation: home-in 320ms 120ms var(--ease) both;
-}
-
-.home-starts.off {
-    opacity: 0;
-}
-
-.home-starts button {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(7 * var(--sp));
-    height: calc(30 * var(--sp));
-    padding: 0 calc(12 * var(--sp)) 0 calc(10 * var(--sp));
-    border-radius: var(--r-ctl);
-    font-size: 0.893rem;
-    font-weight: 500;
-    color: var(--fg-2);
-    background: var(--raised);
-    box-shadow: inset 0 0 0 0.5px var(--line-strong), var(--shadow-sm);
-    white-space: nowrap;
-    transition: color 140ms, box-shadow 140ms, transform 160ms var(--ease);
-}
-
-.home-starts button svg {
-    flex: none;
-    color: var(--accent-text);
-}
-
-.home-starts button:hover {
-    color: var(--fg);
-    box-shadow: inset 0 0 0 0.5px var(--accent-border), var(--ctl-shadow);
-    transform: translateY(-1px);
-}
-
-.home-starts button:active {
-    transform: scale(0.98);
-}
-
-/* A narrow column: a card's text runs to more lines and its buttons stack (composer.css .ask-row). */
-:where(.main[data-narrow~="600"]) {
-    .home-col {
-        --home-card-h: 220;
-    }
-
-    .cli-off {
-        max-width: calc(130 * var(--sp));
-    }
-}
-
-/* A short column: the group closes up a little (and Home.tsx shows fewer terminal rows). */
-:where(.main[data-short~="600"]) {
-    .home-q {
-        margin-bottom: calc(18 * var(--sp));
-    }
-
-    .cli-sessions {
-        margin-top: calc(24 * var(--sp));
-    }
-}
-
-/* Drawn before the window came up, at launch: it's all there when the window is. */
-.home.instant :is(.home-q, .home-composer, .composer-strip, .home-starts, .cli-sessions) {
-    animation: none;
-}
-
-@keyframes home-in {
-    from {
-        opacity: 0;
-        transform: translateY(6px);
-    }
-}
-
-@keyframes home-drawer {
-    from {
-        opacity: 0;
-        transform: translateY(calc(-10 * var(--sp)));
-    }
-}
-
-/* Waiting to reopen the last session. */
-.home-wait {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: calc(12 * var(--sp));
-    padding: calc(24 * var(--sp));
-}
-
-/* ---- The composer's drawer ------------------------------------------------
-   Under a composer given a `strip`: where the session runs (the project, then
-   its branch or worktree), and the composer's three prefixes. It starts just
-   under the card, which sits over its top edge. */
+/* The composer's three prefixes, on a quiet line under it: a keycap and its word; a click types it. */
 .composer-strip {
-    position: relative;
     display: flex;
-    align-items: center;
-    gap: 1px;
-    min-width: 0;
-    height: calc(38 * var(--sp));
-    margin: calc(-9 * var(--sp)) calc(22 * var(--sp)) 0;
-    padding: 1px calc(6 * var(--sp)) 0;
-    border-radius: 0 0 calc(16 * var(--rs)) calc(16 * var(--rs));
-    font-size: 0.893rem;
-    color: var(--fg-2);
-    background: color-mix(in srgb, var(--fg) 3.5%, var(--sheet));
-    box-shadow:
-        inset 0 -0.5px 0 var(--line),
-        inset 0.5px 0 0 var(--line),
-        inset -0.5px 0 0 var(--line);
-    /* One row, always: the chips shrink and their names truncate. */
-    flex-wrap: nowrap;
-    overflow: hidden;
-    animation: home-drawer 360ms 80ms var(--spring) both;
+    justify-content: center;
+    height: calc(22 * var(--sp));
 }
 
-.strip-ctl {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(6 * var(--sp));
-    min-width: 0;
-    max-width: calc(210 * var(--sp));
-    height: calc(26 * var(--sp));
-    padding: 0 calc(7 * var(--sp)) 0 calc(8 * var(--sp));
-    border-radius: var(--pill);
-    font-weight: 500;
-    white-space: nowrap;
-    color: var(--fg-2);
-    transition: background 140ms, color 140ms;
-}
-
-.strip-ctl svg {
-    flex: none;
-}
-
-.strip-ctl .ic {
-    color: var(--fg-3);
-}
-
-.strip-ctl .chv {
-    margin-left: calc(-2 * var(--sp));
-    color: var(--fg-4);
-}
-
-.strip-ctl:hover,
-.strip-ctl[aria-expanded="true"] {
-    background: var(--hover);
-    color: var(--fg);
-}
-
-/* The prefixes: a keycap and its word; a click types it in the composer. */
 .strip-hints {
     display: flex;
-    flex: none;
-    gap: 1px;
+    gap: calc(4 * var(--sp));
 }
 
 .strip-hints button {
     display: inline-flex;
     align-items: center;
     gap: calc(6 * var(--sp));
-    height: calc(24 * var(--sp));
-    padding: 0 calc(8 * var(--sp)) 0 calc(4 * var(--sp));
-    border-radius: var(--pill);
+    padding: 0 calc(8 * var(--sp)) 0 calc(3 * var(--sp));
+    border-radius: var(--r-ctl);
     font-size: 0.857rem;
     color: var(--fg-3);
     transition: background 140ms, color 140ms;
@@ -282,54 +202,168 @@
 }
 
 .strip-hints .k {
-    display: grid;
-    place-items: center;
     min-width: calc(17 * var(--sp));
     height: calc(17 * var(--sp));
     padding: 0 calc(3 * var(--sp));
-    border-radius: calc(5 * var(--rs));
     font: 600 0.75rem/1 var(--font-mono);
-    color: var(--fg-2);
-    background: var(--sheet);
-    box-shadow:
-        inset 0 0 0 0.5px var(--line),
-        0 1px 0 var(--line);
 }
 
-:where(.main[data-narrow~="700"]) {
-    .strip-hints {
-        display: none;
+/* ---- Ways to start: a row of tiles as wide as the composer, while nothing is typed ---- */
+.home-starts {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: calc(8 * var(--sp));
+    /* A tile's label may run to two lines (a narrower column, a monospace theme). */
+    height: calc(88 * var(--sp));
+    margin-top: calc(16 * var(--sp));
+    transition: opacity 160ms;
+    animation: home-in 320ms 120ms var(--ease) both;
+}
+
+.home-starts.off {
+    opacity: 0;
+}
+
+.home-starts button {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: space-between;
+    min-width: 0;
+    padding: calc(12 * var(--sp));
+    border-radius: var(--r-card);
+    font-weight: 500;
+    line-height: 1.3;
+    text-align: left;
+    color: var(--fg-2);
+    background: var(--sheet-2);
+    transition: color 140ms, background 140ms, box-shadow 140ms, transform 160ms var(--ease);
+}
+
+.start-ic {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: calc(28 * var(--sp));
+    height: calc(28 * var(--sp));
+    border-radius: calc(8 * var(--rs));
+    color: var(--accent-text);
+    background: var(--accent-soft);
+}
+
+.home-starts button:hover {
+    color: var(--fg);
+    background: var(--raised);
+    box-shadow: 0 0 0 0.5px var(--line-strong), var(--ctl-shadow);
+    transform: translateY(-2px);
+}
+
+.home-starts button:active {
+    transform: scale(0.98);
+}
+
+/* A narrow column: the tiles two by two, each a row, in the same height; a card's text runs to more lines and its
+   buttons stack (composer.css .ask-row). */
+:where(.main[data-narrow~="600"]) {
+    .home-col {
+        --home-card-h: 220;
+    }
+
+    .home-starts {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .home-starts button {
+        flex-direction: row;
+        align-items: center;
+        justify-content: flex-start;
+        gap: calc(10 * var(--sp));
+        padding: 0 calc(8 * var(--sp));
+        white-space: nowrap;
+    }
+
+    .start-ic {
+        width: calc(24 * var(--sp));
+        height: calc(24 * var(--sp));
+    }
+
+    .cli-off {
+        max-width: calc(130 * var(--sp));
     }
 }
 
+/* A short column: no ways to start (Home.tsx) or prefixes, and the group closes up; then fewer terminal rows. */
+:where(.main[data-short~="600"]) {
+    .home-col {
+        --home-base: 202;
+    }
+
+    .home-where {
+        margin-bottom: calc(16 * var(--sp));
+    }
+
+    .composer-strip {
+        display: none;
+    }
+
+    .cli-sessions {
+        margin-top: calc(24 * var(--sp));
+    }
+}
+
+/* Drawn before the window came up, at launch: it's all there when the window is. */
+.home.instant :is(.home-q, .home-where, .home-composer, .home-starts, .cli-sessions) {
+    animation: none;
+}
+
+@keyframes home-in {
+    from {
+        opacity: 0;
+        transform: translateY(6px);
+    }
+}
+
+/* Waiting to reopen the last session. */
+.home-wait {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: calc(12 * var(--sp));
+    padding: calc(24 * var(--sp));
+}
+
 /* ---- Before the first message: trusting the folder, connecting a model ----
-   Shaped like the request cards (composer.css .ask.glass), with their head and buttons. */
+   Floating like the request cards (composer.css .ask.glass), with their title and buttons: a tinted tile says which
+   it is, then the question, one sentence, and the answers at the trailing edge. */
 .hcard.glass {
-    padding: calc(14 * var(--sp)) calc(14 * var(--sp)) calc(12 * var(--sp)) calc(16 * var(--sp));
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    column-gap: calc(12 * var(--sp));
+    padding: calc(14 * var(--sp)) calc(14 * var(--sp)) calc(12 * var(--sp));
     border-radius: calc(20 * var(--rs));
     animation: ask-rise 460ms var(--spring);
 }
 
-.hcard.glass.trust {
-    box-shadow:
-        0 0 0 1px color-mix(in srgb, var(--warn) 32%, transparent),
-        inset 0 1px 0 var(--ctl-hi),
-        var(--ctl-shadow);
+.hcard-ic {
+    grid-row: span 2;
+    display: grid;
+    place-items: center;
+    width: calc(32 * var(--sp));
+    height: calc(32 * var(--sp));
+    border-radius: calc(10 * var(--rs));
+    color: var(--accent-text);
+    background: var(--accent-soft);
 }
 
-.hcard.glass.connect {
-    box-shadow:
-        0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent),
-        inset 0 1px 0 var(--ctl-hi),
-        var(--ctl-shadow);
-}
-
-.hcard.connect .ask-ic {
-    color: var(--accent);
+.trust .hcard-ic {
+    color: var(--warn);
+    background: var(--warn-soft);
 }
 
 .hcard p {
-    margin: calc(6 * var(--sp)) 0 0 calc(24 * var(--sp));
+    margin: calc(2 * var(--sp)) 0 0;
     font-size: 0.893rem;
     line-height: 1.5;
     color: var(--fg-3);
@@ -348,9 +382,14 @@
     background: var(--hover);
 }
 
+.hcard .ask-row {
+    grid-column: 1 / -1;
+}
+
 /* ---- Continue from your terminal ------------------------------------------
    Claude Code / Codex sessions of this project, to carry on here: a quiet
-   list. Hovering a row swaps its time for Import. */
+   list under a heading, each row the CLI's mark on a tile, what it was about
+   and when. Pointing at a row swaps its time for Import. */
 .cli-sessions {
     margin-top: calc(34 * var(--sp));
     animation: home-in 320ms 120ms var(--ease) both;
@@ -362,10 +401,10 @@
     gap: calc(8 * var(--sp));
     height: calc(24 * var(--sp));
     margin-bottom: calc(4 * var(--sp));
-    padding: 0 calc(2 * var(--sp)) 0 calc(10 * var(--sp));
+    padding: 0 calc(2 * var(--sp)) 0 calc(8 * var(--sp));
     font-size: 0.857rem;
     font-weight: 600;
-    color: var(--fg-3);
+    color: var(--fg-2);
 }
 
 .cli-h .grow {
@@ -375,7 +414,7 @@
 .cli-all {
     height: calc(24 * var(--sp));
     padding: 0 calc(9 * var(--sp));
-    border-radius: var(--pill);
+    border-radius: var(--r-ctl);
     font-weight: 500;
     color: var(--fg-3);
     transition: background 140ms, color 140ms;
@@ -392,7 +431,7 @@
     gap: calc(12 * var(--sp));
     min-width: 0;
     padding: calc(7 * var(--sp)) calc(10 * var(--sp)) calc(7 * var(--sp)) calc(8 * var(--sp));
-    border-radius: calc(14 * var(--rs));
+    border-radius: var(--r-card);
     cursor: default;
     outline: none;
     transition: background 140ms;
@@ -420,8 +459,12 @@
     height: calc(32 * var(--sp));
     border-radius: calc(10 * var(--rs));
     color: var(--fg);
-    background: var(--group);
-    box-shadow: inset 0 0 0 0.5px var(--line);
+    background: var(--sheet-2);
+}
+
+.cli-row:hover .cli-pv {
+    background: var(--raised);
+    box-shadow: var(--shadow-sm);
 }
 
 .cli-main {
@@ -488,14 +531,11 @@
     gap: calc(5 * var(--sp));
     height: calc(26 * var(--sp));
     padding: 0 calc(9 * var(--sp)) 0 calc(12 * var(--sp));
-    border-radius: var(--pill);
+    border-radius: var(--r-ctl);
     font-size: 0.857rem;
     font-weight: 600;
     color: var(--accent-ink);
     background: var(--accent);
-    box-shadow:
-        inset 0 1px 0 color-mix(in srgb, var(--accent-ink) 25%, transparent),
-        0 4px 12px -4px color-mix(in srgb, var(--accent) 60%, transparent);
     opacity: 0;
     transform: translateX(calc(6 * var(--sp)));
     pointer-events: none;
@@ -513,9 +553,9 @@
 
 /* Its CLI isn't turned on: where to turn it on, in place of Import. */
 .cli-off {
-    max-width: calc(220 * var(--sp));
+    max-width: calc(290 * var(--sp));
     font-size: 0.857rem;
-    font-weight: 550;
+    font-weight: 500;
     text-align: right;
     color: var(--accent-text);
 }
@@ -541,7 +581,7 @@
     gap: calc(12 * var(--sp));
     min-width: 0;
     padding: calc(7 * var(--sp)) calc(10 * var(--sp)) calc(7 * var(--sp)) calc(8 * var(--sp));
-    border-radius: calc(10 * var(--rs));
+    border-radius: var(--r-ctl);
     text-align: left;
     color: var(--fg-2);
 }
@@ -573,7 +613,7 @@
 }
 
 .cl-item:hover .cl-act {
-    color: var(--accent);
+    color: var(--accent-text);
 }
 
 .cl-sub {

@@ -1,7 +1,8 @@
-// The title bar over the conversation: the session's title (double-click
-// renames) and branch, the project before it when the rail is hidden, and at
-// the right one glass capsule of tools: the changes, the project's scripts,
-// the terminal, the side panel and the session's menu.
+// The title bar over the conversation: where you are, as one line (the project
+// before the title when the rail is hidden, the session's title, which a
+// double-click renames, its branch), and at the right one glass capsule of
+// tools in groups: the changes, the project's scripts, the terminal and side
+// panel as a pair, the session's menu.
 
 import { createEffect, createMemo, createResource, createSignal, For, on, Show, type JSX } from "solid-js";
 import { Archive, ChevronDown, Copy, Ellipsis, FileDiff, FolderGit2, FolderOpen, GitBranch, Hand, History, PanelBottom, PanelLeft, PanelRight, Pencil, Search, Share, ShieldAlert, Shrink, SquareArrowOutUpRight, SquarePen, SquareTerminal, Trash2 } from "lucide-solid";
@@ -16,6 +17,7 @@ import { copyText, isDesktop, os } from "../lib/platform";
 import { plural, tildify } from "../lib/format";
 import { asking, inFront, needsLine, needsPlace, needsYou } from "../lib/rail";
 import { Menu } from "./ui/Menu";
+import { Monogram } from "./Sidebar";
 import { RunSwitcher } from "./RunSwitcher";
 import { ProjectScripts } from "./ProjectScripts";
 import { shortcut, withShortcut } from "../state/keybindings";
@@ -228,6 +230,7 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                             <button class={`hb ${prefs.panel ? "on" : ""}`} title={withShortcut("Side panel", "app:togglePanel")} aria-label="Toggle panel" aria-pressed={prefs.panel} onClick={() => togglePanel()}>
                                 <PanelRight size={16} />
                             </button>
+                            <span class="sep" />
                             <button ref={moreBtn} class="hb" title="More" aria-label="Session actions" aria-haspopup="menu" aria-expanded={menuOpen()} onClick={() => (setMenuOpen(!menuOpen()), menuOpen() && void refreshEditors())}>
                                 <Ellipsis size={16} />
                             </button>
@@ -242,6 +245,7 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                         {/* With the rail hidden, the project goes before the title (and starts a session in it). */}
                         <span class="proj-box">
                             <button class="proj" title={`New session in ${s().projectName}`} onClick={() => newSession(s().cwd)}>
+                                <Monogram name={s().projectName} cwd={s().cwd} />
                                 <span class="truncate">{s().projectName}</span>
                                 <span class="proj-sep" aria-hidden="true">/</span>
                             </button>
@@ -291,7 +295,7 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
                             )}
                         </Show>
                         <Show when={!s().trusted}>
-                            <span class="pill warn" title="This folder's own configuration (hooks, MCP servers, permission rules) is ignored">
+                            <span class="chip warn" title="This folder's own configuration (hooks, MCP servers, permission rules) is ignored">
                                 <ShieldAlert size={12} /> Untrusted
                             </span>
                         </Show>

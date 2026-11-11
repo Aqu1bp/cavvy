@@ -41,10 +41,11 @@ test("a second launch that raises the window marks it shown, so neither the page
 
 test("Home's entrance is short, and doesn't play when Home was drawn before the window came up", () => {
     const rules = parseRules(readFileSync(join(root, "gui/src/styles/home.css"), "utf8"));
-    // The question, the composer, its drawer and the terminal list. The cards before the first message rise as
-    // request cards do: they come once the folder has been looked at.
-    const entrance = rules.filter((r) => /^home-(in|drawer) /.test(r.decls.get("animation") ?? ""));
-    expect(entrance.map((r) => r.selectors.join()).sort()).toEqual([".cli-sessions", ".composer-strip", ".home-composer", ".home-q"]);
+    // The question, where it runs, the composer (its prefixes under it come with it), the ways to start and the
+    // terminal list. The cards before the first message rise as request cards do: they come once the folder has
+    // been looked at.
+    const entrance = rules.filter((r) => /^home-in /.test(r.decls.get("animation") ?? ""));
+    expect(entrance.map((r) => r.selectors.join()).sort()).toEqual([".cli-sessions", ".home-composer", ".home-q", ".home-starts", ".home-where"]);
     for (const r of entrance) {
         // Its duration, then its delay if it has one.
         const [duration, delay = 0] = [...r.decls.get("animation")!.matchAll(/\b(\d+)ms\b/g)].map((m) => Number(m[1]));
@@ -63,7 +64,7 @@ test("Home drawn before the window is shown is marked to skip its entrance; one 
     const Home = componentCode("Home", {
         node, createSignal: (v: unknown) => [() => v, stub], createResource: () => [() => ({ needsTrust: [], git: false }), { refetch: stub }], For: stub, Show: stub, onCleanup: stub, onMount: stub,
         React: { Fragment: "Fragment" },
-        ChevronDown: stub, Folder: stub, FolderGit2: stub, FolderOpen: stub, KeyRound: stub, Plug: stub, ShieldAlert: stub,
+        Bug: stub, ChevronDown: stub, Compass: stub, FlaskConical: stub, Folder: stub, FolderGit2: stub, FolderOpen: stub, KeyRound: stub, Plug: stub, ScanSearch: stub, ShieldAlert: stub, Monogram: stub,
         app: { conn: "open", homeCwd: "/project", providers: [], projects: [], models: [] }, refreshProjects: stub, reportError: stub, rpc: {}, chooseProject: stub, connectCli: stub, openProject: stub, trustAndContinue: stub,
         requestComposerFocus: stub, setSettingsTab: stub, columnHeight: () => "800px", shellLayout: () => ({ column: { h: 800 } }), sp: (n: number) => n,
         ago: stub, basename: (p: string) => p, tildify: (p: string) => p, now: stub, isWindowShown: () => shown,
