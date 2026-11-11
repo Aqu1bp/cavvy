@@ -67,10 +67,28 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
     const long = () => text().split("\n").length > 14 || text().length > 1400;
     const shell = () => text().startsWith("!");
     createEffect(on(findReveal, (r) => r?.turnId === p.turn.id && r.part === "prompt" && long() && setExpanded(true)));
-    // A message from the agent in another session: drawn as a prompt at the left, under who sent it (opens it).
+    // A message from the agent in another session: a card in the reply's column, not the user's bubble. Its head opens that session.
     const from = p.turn.prompt?.from;
+    if (from) {
+        return (
+            <div class="peer-card">
+                <button class="peer-head" title="Open this session" onClick={() => void activate(from.id)}>
+                    <span class="av">
+                        <MessageSquareText size={13} />
+                    </span>
+                    <span class="peer-who">
+                        <span class="truncate">{from.title}</span>
+                        <small>Message from another session</small>
+                    </span>
+                </button>
+                <div class="peer-body" data-find="prompt">
+                    {text()}
+                </div>
+            </div>
+        );
+    }
     // Started by an event the agent asked to be woken for (a watched pull request), not by the user.
-    if (p.turn.prompt?.wake && !from) {
+    if (p.turn.prompt?.wake) {
         return (
             <div class="wake-row" data-find="prompt" title="The agent asked to be woken for this event">
                 <BellRing size={13} aria-hidden="true" />
@@ -81,15 +99,7 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
     // At the right, as wide as its text: attachments above it, and under it (over the gap, on hover
     // or focus) when it was sent, Copy and Rewind.
     return (
-        <div class={`user-row ${p.turn.prompt?.steered ? "steered" : ""} ${from ? "peer" : ""}`}>
-            <Show when={from}>
-                {(f) => (
-                    <button class="wake-row" data-find-skip title="Open the session that sent this" onClick={() => void activate(f().id)}>
-                        <MessageSquareText size={13} aria-hidden="true" />
-                        <span class="wake-text">From {f().title}</span>
-                    </button>
-                )}
-            </Show>
+        <div class={`user-row ${p.turn.prompt?.steered ? "steered" : ""}`}>
             {/* Sent while the turn before ran, and joined it at its next step (that turn ended for it). */}
             <Show when={p.turn.prompt?.steered}>
                 <span class="steered-tag" data-find-skip title="Sent while it worked: joined the work at its next step">
