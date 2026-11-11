@@ -11,7 +11,7 @@
     width: 100%;
     height: calc(32 * var(--sp));
     padding: 0 calc(10 * var(--sp));
-    border-radius: calc(8 * var(--sp));
+    border-radius: calc(8 * var(--rs));
     font-size: 0.964rem;
     font-weight: 500;
     color: var(--fg-2);
@@ -42,7 +42,7 @@
     width: 100%;
     height: calc(34 * var(--sp));
     padding: 0 calc(10 * var(--sp));
-    border-radius: calc(8 * var(--sp));
+    border-radius: calc(8 * var(--rs));
     font-size: 0.964rem;
     font-weight: 500;
     color: var(--fg-2);
@@ -372,7 +372,7 @@
     max-width: calc(260 * var(--sp));
     padding: 0 calc(26 * var(--sp)) 0 calc(10 * var(--sp));
     border: 0;
-    border-radius: calc(8 * var(--sp));
+    border-radius: calc(8 * var(--rs));
     background-color: var(--sheet);
     box-shadow: 0 0 0 0.5px var(--line), 0 1px 2px var(--line);
     color: var(--fg);
@@ -434,7 +434,7 @@
     flex: 1;
     min-width: 0;
     height: calc(30 * var(--sp));
-    border-radius: calc(8 * var(--sp));
+    border-radius: calc(8 * var(--rs));
     font: 0.857rem var(--font-mono);
 }
 
@@ -460,7 +460,7 @@
     width: calc(28 * var(--sp));
     height: calc(28 * var(--sp));
     flex: none;
-    border-radius: calc(8 * var(--sp));
+    border-radius: calc(8 * var(--rs));
     background: var(--sheet);
     box-shadow: 0 0 0 0.5px var(--line);
     color: var(--fg);
@@ -527,7 +527,7 @@
     align-items: center;
     gap: calc(10 * var(--sp));
     padding: calc(12 * var(--sp)) calc(14 * var(--sp));
-    border-radius: calc(12 * var(--sp));
+    border-radius: calc(12 * var(--rs));
     background: var(--group);
     box-shadow: inset 0 0 0 0.5px var(--line);
 }
@@ -553,7 +553,7 @@
     height: auto;
     min-width: calc(24 * var(--sp));
     padding: calc(4 * var(--sp)) calc(8 * var(--sp));
-    border-radius: calc(6 * var(--sp));
+    border-radius: calc(6 * var(--rs));
     background: var(--sheet);
     box-shadow: 0 0 0 0.5px var(--line), 0 1px 0 var(--line);
     color: var(--fg-2);
@@ -599,7 +599,7 @@
 .sc-issues {
     margin-top: calc(12 * var(--sp));
     padding: calc(10 * var(--sp)) calc(12 * var(--sp));
-    border-radius: calc(12 * var(--sp));
+    border-radius: calc(12 * var(--rs));
     background: var(--warn-bg);
     box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--warn) 40%, transparent);
     font-size: 0.857rem;
@@ -722,7 +722,7 @@
     position: relative;
     width: calc(112 * var(--sp));
     height: calc(72 * var(--sp));
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
     overflow: hidden;
     box-shadow: 0 0 0 0.5px var(--line);
     transition: box-shadow 200ms;
@@ -754,7 +754,7 @@
 .ap-face i,
 .ap-face u {
     display: block;
-    border-radius: calc(5 * var(--sp));
+    border-radius: calc(5 * var(--rs));
 }
 
 .ap-face i {
@@ -776,7 +776,7 @@
 .ap-tint-tiles .ap-pv {
     width: calc(76 * var(--sp));
     height: calc(50 * var(--sp));
-    border-radius: calc(8 * var(--sp));
+    border-radius: calc(8 * var(--rs));
 }
 
 .ap-face.ap-tint {
@@ -787,7 +787,7 @@
 
 .ap-face.ap-tint i,
 .ap-face.ap-tint u {
-    border-radius: calc(4 * var(--sp));
+    border-radius: calc(4 * var(--rs));
 }
 
 /* The rail is the tint itself, with one selected row on it. */
@@ -883,7 +883,7 @@
     font-family: var(--font-mono);
     font-size: 0.86em;
     padding: 1px calc(5 * var(--sp));
-    border-radius: calc(5 * var(--sp));
+    border-radius: calc(5 * var(--rs));
     background: var(--sheet-2);
 }
 

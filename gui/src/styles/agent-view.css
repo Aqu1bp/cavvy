@@ -9,7 +9,7 @@
     gap: calc(10 * var(--sp));
     min-height: calc(54 * var(--sp));
     padding: calc(9 * var(--sp)) calc(10 * var(--sp)) calc(9 * var(--sp)) calc(14 * var(--sp));
-    border-radius: calc(24 * var(--sp));
+    border-radius: calc(24 * var(--rs));
     min-width: 0;
 }
 

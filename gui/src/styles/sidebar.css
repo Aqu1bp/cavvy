@@ -27,7 +27,7 @@
    stays level with the traffic lights as when docked. */
 [data-rail="overlay"] .sidebar {
     padding-top: var(--win-pad);
-    border-radius: 0 calc(14 * var(--sp)) calc(14 * var(--sp)) 0;
+    border-radius: 0 calc(14 * var(--rs)) calc(14 * var(--rs)) 0;
     background: var(--rail-float);
     -webkit-backdrop-filter: blur(30px) saturate(1.8);
     backdrop-filter: blur(30px) saturate(1.8);
@@ -145,7 +145,7 @@
     font: 500 0.786rem/1 var(--font-ui);
     color: var(--fg-3);
     padding: calc(3 * var(--sp)) calc(5 * var(--sp));
-    border-radius: calc(5 * var(--sp));
+    border-radius: calc(5 * var(--rs));
     background: var(--hover);
     white-space: nowrap;
 }
@@ -249,7 +249,7 @@
 
 .settled-head {
     width: 100%;
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
 }
 
 .settled-head:hover {
@@ -276,7 +276,7 @@
     gap: calc(7 * var(--sp));
     margin: calc(-4 * var(--sp)) calc(-8 * var(--sp)) calc(-6 * var(--sp));
     padding: calc(4 * var(--sp)) calc(8 * var(--sp)) calc(6 * var(--sp));
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
     color: inherit;
     font: inherit;
     text-align: left;
@@ -317,7 +317,7 @@
     position: relative;
     flex: none;
     margin-bottom: 1px;
-    border-radius: calc(11 * var(--sp));
+    border-radius: calc(11 * var(--rs));
     transition: background 140ms;
 }
 
@@ -368,7 +368,7 @@
     width: 100%;
     min-width: 0;
     padding: calc(7 * var(--sp)) calc(10 * var(--sp));
-    border-radius: calc(11 * var(--sp));
+    border-radius: calc(11 * var(--rs));
     text-align: left;
     color: inherit;
 }
@@ -627,7 +627,7 @@
     flex: none;
     height: calc(32 * var(--sp));
     margin-bottom: 1px;
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
     color: var(--rail-fg);
     transition: background 140ms;
 }
@@ -654,7 +654,7 @@
     align-items: center;
     gap: calc(9 * var(--sp));
     padding: 0 calc(6 * var(--sp)) 0 calc(10 * var(--sp));
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
     text-align: left;
     color: inherit;
 }
@@ -722,7 +722,7 @@
     min-width: 0;
     height: calc(22 * var(--sp));
     padding: 0 calc(6 * var(--sp));
-    border-radius: calc(6 * var(--sp));
+    border-radius: calc(6 * var(--rs));
     border: 0;
     background: color-mix(in srgb, var(--rail-fg) 7%, transparent);
     color: var(--rail-fg);
@@ -764,7 +764,7 @@
     gap: calc(12 * var(--sp));
     /* The first gauge is centred under the rows' status glyphs (their 18px column starts 8px in). */
     padding: 0 calc(4 * var(--sp)) 0 calc(5 * var(--sp));
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
     overflow: hidden;
     color: var(--rail-fg-2);
     text-align: left;
@@ -950,7 +950,7 @@
 
 .pu-bar {
     height: calc(4 * var(--sp));
-    border-radius: var(--pill);
+    border-radius: var(--r-full);
     background: var(--press);
     overflow: hidden;
 }
@@ -1057,7 +1057,7 @@
     font: 500 0.786rem/1 var(--font-ui);
     color: var(--fg-3);
     padding: calc(3 * var(--sp)) calc(5 * var(--sp));
-    border-radius: calc(5 * var(--sp));
+    border-radius: calc(5 * var(--rs));
     background: var(--hover);
 }
 
@@ -1078,7 +1078,7 @@
     width: 100%;
     height: auto;
     padding: calc(8 * var(--sp)) calc(10 * var(--sp));
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
     background: none;
     color: var(--rail-fg);
     font-size: 0.929rem;

@@ -62,7 +62,7 @@
     font-family: var(--font-mono);
     font-size: 0.95em;
     padding: calc(1 * var(--sp)) calc(4 * var(--sp));
-    border-radius: calc(4 * var(--sp));
+    border-radius: calc(4 * var(--rs));
     color: var(--fg-2);
     background: var(--sheet-2);
     box-shadow: inset 0 0 0 0.5px var(--line);

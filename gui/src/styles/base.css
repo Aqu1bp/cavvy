@@ -387,7 +387,7 @@ h3 {
     gap: calc(8 * var(--sp));
     height: calc(32 * var(--sp));
     padding: 0 calc(14 * var(--sp));
-    border-radius: calc(8 * var(--sp));
+    border-radius: calc(8 * var(--rs));
     font-weight: 500;
     font-size: 0.964rem;
     white-space: nowrap;
@@ -450,7 +450,7 @@ h3 {
     min-width: calc(18 * var(--sp));
     height: calc(18 * var(--sp));
     line-height: calc(18 * var(--sp));
-    border-radius: calc(5 * var(--sp));
+    border-radius: calc(5 * var(--rs));
     background: color-mix(in srgb, currentColor 14%, transparent);
     color: inherit;
     border: 0;
@@ -500,7 +500,7 @@ h3 {
     gap: calc(5 * var(--sp));
     height: calc(22 * var(--sp));
     padding: 0 calc(8 * var(--sp));
-    border-radius: calc(999 * var(--sp));
+    border-radius: calc(999 * var(--rs));
     background: var(--hover);
     color: var(--fg-2);
     font-size: 0.8rem;
@@ -540,7 +540,7 @@ kbd {
     min-width: calc(20 * var(--sp));
     height: calc(20 * var(--sp));
     padding: 0 calc(5 * var(--sp));
-    border-radius: calc(5 * var(--sp));
+    border-radius: calc(5 * var(--rs));
     background: var(--hover);
     color: var(--fg-2);
     font-size: 0.786rem;
@@ -557,7 +557,7 @@ kbd {
     place-items: center;
     width: calc(28 * var(--sp));
     height: calc(28 * var(--sp));
-    border-radius: calc(8 * var(--sp));
+    border-radius: calc(8 * var(--rs));
     color: var(--fg-2);
     flex: none;
     transition: background var(--dur-fast), color var(--dur-fast);
@@ -582,7 +582,7 @@ kbd {
 .hb.sm {
     width: calc(24 * var(--sp));
     height: calc(24 * var(--sp));
-    border-radius: calc(6 * var(--sp));
+    border-radius: calc(6 * var(--rs));
 }
 
 .hb.lg {
@@ -594,7 +594,7 @@ kbd {
 .mg {
     width: calc(16 * var(--sp));
     height: calc(16 * var(--sp));
-    border-radius: calc(4 * var(--sp));
+    border-radius: calc(4 * var(--rs));
     display: inline-grid;
     place-items: center;
     flex: none;
@@ -610,7 +610,7 @@ kbd {
     gap: calc(4 * var(--sp));
     height: calc(20 * var(--sp));
     padding: 0 calc(7 * var(--sp));
-    border-radius: calc(6 * var(--sp));
+    border-radius: calc(6 * var(--rs));
     font-size: 0.786rem;
     font-weight: 500;
     white-space: nowrap;
@@ -690,7 +690,7 @@ input[type="range"] {
 .toggle {
     width: calc(36 * var(--sp));
     height: calc(21 * var(--sp));
-    border-radius: calc(999 * var(--sp));
+    border-radius: calc(999 * var(--rs));
     background: var(--line-strong);
     position: relative;
     transition: background 200ms;
@@ -728,7 +728,7 @@ input[type="range"] {
 .segmented button {
     height: calc(28 * var(--sp));
     padding: 0 calc(12 * var(--sp));
-    border-radius: calc(8 * var(--sp));
+    border-radius: calc(8 * var(--rs));
     font-size: 0.857rem;
     font-weight: 540;
     color: var(--fg-2);
@@ -794,7 +794,7 @@ input[type="range"] {
     background: var(--ctl-strong);
     -webkit-backdrop-filter: blur(16px) saturate(1.08);
     backdrop-filter: blur(16px) saturate(1.08);
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
     box-shadow: var(--pop-shadow);
     padding: calc(4 * var(--sp));
     overflow: auto;
@@ -824,7 +824,7 @@ input[type="range"] {
     gap: calc(10 * var(--sp));
     width: 100%;
     padding: calc(6 * var(--sp)) calc(8 * var(--sp));
-    border-radius: calc(6 * var(--sp));
+    border-radius: calc(6 * var(--rs));
     text-align: left;
     color: var(--fg);
     min-width: 0;
@@ -1035,7 +1035,7 @@ svg.lucide {
 }
 
 /* Text-only recovery stays within its owning block, even for a long stack or tool output. */
-.render-error { margin: calc(12 * var(--sp)) 0; padding: calc(14 * var(--sp)); border: 1px solid var(--line); border-radius: calc(8 * var(--sp)); min-width: 0; }
+.render-error { margin: calc(12 * var(--sp)) 0; padding: calc(14 * var(--sp)); border: 1px solid var(--line); border-radius: calc(8 * var(--rs)); min-width: 0; }
 .render-error p { margin: 0 0 calc(8 * var(--sp)); }
 .render-error pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: calc(240 * var(--sp)); overflow: auto; }
 .render-error-actions { display: flex; flex-wrap: wrap; gap: calc(8 * var(--sp)); align-items: center; }
@@ -1043,7 +1043,7 @@ svg.lucide {
 .session-opening { padding: calc(32 * var(--sp)); max-width: calc(850 * var(--sp)); width: 100%; margin: 0 auto; }
 .session-opening [role="status"] { display: flex; align-items: center; gap: calc(8 * var(--sp)); }
 .session-skeleton { margin-top: calc(24 * var(--sp)); display: grid; gap: calc(12 * var(--sp)); }
-.session-skeleton i { display: block; height: calc(14 * var(--sp)); border-radius: calc(4 * var(--sp)); background: var(--line); }
+.session-skeleton i { display: block; height: calc(14 * var(--sp)); border-radius: calc(4 * var(--rs)); background: var(--line); }
 .session-skeleton i:last-child { width: 65%; }
 
 /* ---- Moving the Electron window ----

@@ -110,7 +110,7 @@
     gap: calc(10 * var(--sp));
     max-width: calc(100% - 32 * var(--sp));
     padding: calc(4 * var(--sp)) calc(4 * var(--sp)) calc(4 * var(--sp)) calc(14 * var(--sp));
-    border-radius: calc(14 * var(--sp));
+    border-radius: calc(14 * var(--rs));
     background: color-mix(in srgb, var(--warn) 10%, var(--sheet-2));
     box-shadow:
         inset 0 0 0 1px color-mix(in srgb, var(--warn) 30%, transparent),

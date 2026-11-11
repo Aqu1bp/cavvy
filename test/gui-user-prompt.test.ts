@@ -62,8 +62,8 @@ test("the bubble's styles: at the right, as wide as its text, its actions over t
     expect(decl(t, ".user-row", "align-self")).toBe("flex-end");
     expect(decl(t, ".user-row", "max-width")).toBe("min(82%, 600 * var(--sp))");
     expect(decl(t, ".user-row", "position")).toBe("relative");
-    expect(decl(t, ".user-row > .user-bubble", "border-radius")).toBe("calc(20 * var(--sp)) calc(20 * var(--sp)) calc(6 * var(--sp)) calc(20 * var(--sp))");
-    expect(decl(t, ".user-row > .user-bubble.short", "border-radius")).toBe("calc(18 * var(--sp)) calc(18 * var(--sp)) calc(6 * var(--sp)) calc(18 * var(--sp))");
+    expect(decl(t, ".user-row > .user-bubble", "border-radius")).toBe("calc(20 * var(--rs)) calc(20 * var(--rs)) calc(6 * var(--rs)) calc(20 * var(--rs))");
+    expect(decl(t, ".user-row > .user-bubble.short", "border-radius")).toBe("calc(18 * var(--rs)) calc(18 * var(--rs)) calc(6 * var(--rs)) calc(18 * var(--rs))");
     expect(decl(t, ".user-bubble", "background")).toBe("var(--bubble)");
     // Absolutely placed under the bubble: showing them moves nothing.
     expect(decl(t, ".user-actions", "position")).toBe("absolute");

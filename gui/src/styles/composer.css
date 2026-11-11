@@ -29,7 +29,7 @@
     position: relative;
     z-index: 2;
     flex: none;
-    border-radius: calc(24 * var(--sp));
+    border-radius: calc(24 * var(--rs));
     padding: calc(10 * var(--sp)) calc(10 * var(--sp)) calc(8 * var(--sp)) calc(16 * var(--sp));
     transition: box-shadow 200ms;
 }
@@ -93,7 +93,7 @@
     display: grid;
     gap: calc(4 * var(--sp));
     padding: calc(7 * var(--sp)) calc(9 * var(--sp));
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
     background: var(--ctl-strong);
     -webkit-backdrop-filter: blur(20px) saturate(1.9);
     backdrop-filter: blur(20px) saturate(1.9);
@@ -158,7 +158,7 @@
     min-width: 0;
     min-height: calc(34 * var(--sp));
     padding: calc(4 * var(--sp)) calc(6 * var(--sp)) calc(4 * var(--sp)) calc(10 * var(--sp));
-    border-radius: calc(12 * var(--sp));
+    border-radius: calc(12 * var(--rs));
     background: var(--hover);
     color: var(--fg-2);
     white-space: nowrap;
@@ -212,7 +212,7 @@
     /* 6px above the box: the composer's column gap is 8px. */
     margin: 0 calc(14 * var(--sp)) calc(-2 * var(--sp));
     padding: calc(4 * var(--sp));
-    border-radius: calc(16 * var(--sp));
+    border-radius: calc(16 * var(--rs));
     animation: c-in 260ms var(--ease);
 }
 
@@ -239,7 +239,7 @@
     min-width: 0;
     height: calc(34 * var(--sp));
     padding: 0 calc(6 * var(--sp)) 0 calc(4 * var(--sp));
-    border-radius: calc(12 * var(--sp));
+    border-radius: calc(12 * var(--rs));
     font-size: 0.929rem;
     color: var(--fg);
     white-space: nowrap;
@@ -270,7 +270,7 @@
     flex: none;
     width: calc(22 * var(--sp));
     height: calc(22 * var(--sp));
-    border-radius: calc(7 * var(--sp));
+    border-radius: calc(7 * var(--rs));
     color: var(--fg-3);
 }
 
@@ -394,7 +394,7 @@
     place-items: center;
     width: calc(26 * var(--sp));
     height: calc(26 * var(--sp));
-    border-radius: calc(8 * var(--sp));
+    border-radius: calc(8 * var(--rs));
     color: var(--fg-3);
     transition: background 140ms, color 140ms;
 }
@@ -582,7 +582,7 @@
     position: relative;
     min-width: calc(44 * var(--sp));
     height: calc(44 * var(--sp));
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
     overflow: hidden;
     /* Under the thumbnail, while it's made. */
     background: var(--sheet);
@@ -696,7 +696,7 @@
     padding: calc(9 * var(--sp)) calc(12 * var(--sp));
     max-height: calc(200 * var(--sp));
     overflow: auto;
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
     background: var(--sheet-2);
     font-family: var(--font-mono);
     font-size: 0.786rem;
@@ -1212,7 +1212,7 @@
     min-height: 0;
     max-height: min(calc(var(--column-h, 100vh) * 0.46), 560 * var(--sp));
     padding: calc(14 * var(--sp)) calc(14 * var(--sp)) calc(12 * var(--sp)) calc(16 * var(--sp));
-    border-radius: calc(20 * var(--sp));
+    border-radius: calc(20 * var(--rs));
     box-shadow:
         0 0 0 1px color-mix(in srgb, var(--warn) 32%, transparent),
         inset 0 1px 0 var(--ctl-hi),
@@ -1295,7 +1295,7 @@
     padding: calc(9 * var(--sp)) calc(12 * var(--sp));
     max-height: calc(150 * var(--sp));
     overflow: auto;
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
     background: var(--sheet-2);
     font-size: 0.893rem;
     line-height: 1.5;
@@ -1331,7 +1331,7 @@
 
 .itab-diff {
     flex: none;
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
     overflow: hidden;
 }
 
@@ -1344,7 +1344,7 @@
     width: 100%;
     padding: calc(8 * var(--sp)) calc(10 * var(--sp));
     border: 0;
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
     resize: none;
     background: var(--sheet-2);
     box-shadow: inset 0 0 0 0.5px var(--line);
@@ -1413,7 +1413,7 @@
     gap: calc(10 * var(--sp));
     width: 100%;
     padding: calc(7 * var(--sp)) calc(10 * var(--sp));
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
     text-align: left;
     transition: background 140ms;
 }
@@ -1569,7 +1569,7 @@
     height: auto;
     min-width: calc(16 * var(--sp));
     padding: calc(3 * var(--sp)) calc(5 * var(--sp));
-    border-radius: calc(5 * var(--sp));
+    border-radius: calc(5 * var(--rs));
     font-size: 0.786rem;
     color: var(--fg-3);
     background: var(--hover);
@@ -1593,7 +1593,7 @@
     max-height: min(calc(320 * var(--sp)), var(--room, calc(320 * var(--sp))));
     overflow-y: auto;
     padding: calc(5 * var(--sp));
-    border-radius: calc(16 * var(--sp));
+    border-radius: calc(16 * var(--rs));
     background: var(--ctl-strong);
     -webkit-backdrop-filter: blur(20px) saturate(1.9);
     backdrop-filter: blur(20px) saturate(1.9);
@@ -1619,13 +1619,13 @@
     width: min(calc(420 * var(--sp)), 100%);
     max-height: min(calc(286 * var(--sp)), var(--room, calc(286 * var(--sp))));
     padding: calc(4 * var(--sp));
-    border-radius: calc(13 * var(--sp));
+    border-radius: calc(13 * var(--rs));
 }
 
 .composer-menu.files .cm-item {
     gap: calc(8 * var(--sp));
     padding: calc(5 * var(--sp)) calc(8 * var(--sp));
-    border-radius: calc(9 * var(--sp));
+    border-radius: calc(9 * var(--rs));
 }
 
 .composer-menu.files .cm-icon {
@@ -1661,7 +1661,7 @@
     width: 100%;
     min-width: 0;
     padding: calc(7 * var(--sp)) calc(10 * var(--sp));
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
     color: var(--fg);
 }
 
@@ -1716,7 +1716,7 @@
 
 .popover.ctx-card {
     padding: 0;
-    border-radius: calc(16 * var(--sp));
+    border-radius: calc(16 * var(--rs));
     max-width: calc(100vw - 16 * var(--sp));
     overflow-wrap: anywhere;
 }
@@ -1753,7 +1753,7 @@
     height: calc(5 * var(--sp));
     margin: calc(10 * var(--sp)) 0 calc(8 * var(--sp));
     overflow: hidden;
-    border-radius: var(--pill);
+    border-radius: var(--r-full);
     background: var(--press);
 }
 
@@ -1817,7 +1817,7 @@
     gap: calc(9 * var(--sp));
     margin: 0 0 calc(12 * var(--sp));
     padding: calc(10 * var(--sp)) calc(11 * var(--sp));
-    border-radius: calc(12 * var(--sp));
+    border-radius: calc(12 * var(--rs));
     background: var(--danger-soft);
 }
 
@@ -1902,7 +1902,7 @@
 
 .popover.effort-pop {
     padding: calc(14 * var(--sp)) calc(14 * var(--sp)) calc(13 * var(--sp));
-    border-radius: calc(16 * var(--sp));
+    border-radius: calc(16 * var(--rs));
     overflow: visible;
 }
 
@@ -2098,7 +2098,7 @@
     height: calc(440 * var(--sp));
     padding: 0;
     overflow: hidden;
-    border-radius: calc(16 * var(--sp));
+    border-radius: calc(16 * var(--rs));
 }
 
 .mp-wrap {
@@ -2142,7 +2142,7 @@
     margin: calc(6 * var(--sp)) calc(6 * var(--sp)) 0;
     padding: 0 calc(5 * var(--sp)) 0 calc(11 * var(--sp));
     height: calc(32 * var(--sp));
-    border-radius: calc(12 * var(--sp));
+    border-radius: calc(12 * var(--rs));
     background: var(--hover);
     color: var(--fg-3);
 }
@@ -2312,7 +2312,7 @@
     min-width: 0;
     height: calc(24 * var(--sp));
     padding: 0 calc(6 * var(--sp)) 0 calc(9 * var(--sp));
-    border-radius: calc(7 * var(--sp));
+    border-radius: calc(7 * var(--rs));
     font-size: 0.821rem;
     font-weight: 500;
     white-space: nowrap;
@@ -2356,7 +2356,7 @@
 /* On the button, a small badge, so it doesn't read on from the name ("Work limit"). */
 .mp-acct-btn .mp-acct-lv {
     padding: calc(2 * var(--sp)) calc(5 * var(--sp));
-    border-radius: calc(4 * var(--sp));
+    border-radius: calc(4 * var(--rs));
     font-size: 0.714rem;
     line-height: 1;
     background: color-mix(in srgb, currentColor 14%, transparent);
@@ -2374,7 +2374,7 @@
     max-height: calc(220 * var(--sp));
     padding: calc(4 * var(--sp));
     overflow-y: auto;
-    border-radius: calc(9 * var(--sp));
+    border-radius: calc(9 * var(--rs));
     /* The picker's own surface (.popover), frosted over the rows it covers. */
     background: var(--ctl-strong);
     -webkit-backdrop-filter: blur(16px) saturate(1.08);
@@ -2392,7 +2392,7 @@
     min-width: 0;
     height: calc(28 * var(--sp));
     padding: 0 calc(10 * var(--sp)) 0 calc(6 * var(--sp));
-    border-radius: calc(6 * var(--sp));
+    border-radius: calc(6 * var(--rs));
     font-size: 0.857rem;
     text-align: left;
     white-space: nowrap;
@@ -2436,7 +2436,7 @@
     gap: calc(7 * var(--sp));
     margin: calc(2 * var(--sp)) calc(8 * var(--sp)) calc(2 * var(--sp));
     padding: calc(6 * var(--sp)) calc(8 * var(--sp));
-    border-radius: calc(8 * var(--sp));
+    border-radius: calc(8 * var(--rs));
     background: color-mix(in srgb, var(--warn) 12%, transparent);
     font-size: 0.857rem;
     line-height: 1.35;
@@ -2505,7 +2505,7 @@
     flex: none;
     min-width: 0;
     height: calc(34 * var(--sp));
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
     /* OpenRouter lists hundreds: rows out of view skip layout and paint. */
     content-visibility: auto;
     contain-intrinsic-size: auto calc(34 * var(--sp));
@@ -2523,7 +2523,7 @@
     min-width: 0;
     height: 100%;
     padding: 0 calc(4 * var(--sp)) 0 calc(10 * var(--sp));
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
     font-size: 0.929rem;
     text-align: left;
 }
@@ -2593,7 +2593,7 @@
     width: calc(26 * var(--sp));
     height: calc(26 * var(--sp));
     margin-right: calc(2 * var(--sp));
-    border-radius: calc(8 * var(--sp));
+    border-radius: calc(8 * var(--rs));
     color: var(--fg-4);
     opacity: 0;
     transition: opacity var(--dur-fast), color var(--dur-fast);
@@ -2627,7 +2627,7 @@
     flex: none;
     width: calc(15 * var(--sp));
     height: calc(15 * var(--sp));
-    border-radius: calc(5 * var(--sp));
+    border-radius: calc(5 * var(--rs));
     box-shadow: inset 0 0 0 1.5px var(--fg-4);
     color: var(--accent-ink);
 }
@@ -2664,7 +2664,7 @@
     gap: calc(7 * var(--sp));
     height: calc(28 * var(--sp));
     padding: 0 calc(8 * var(--sp));
-    border-radius: calc(8 * var(--sp));
+    border-radius: calc(8 * var(--rs));
     font-size: 0.857rem;
     color: var(--fg-2);
     transition: background var(--dur-fast), color var(--dur-fast);
@@ -2760,7 +2760,7 @@
 .mode-menu .menu-item {
     align-items: flex-start;
     padding: calc(7 * var(--sp)) calc(10 * var(--sp));
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
 }
 
 .mode-menu .menu-ico {
@@ -2827,7 +2827,7 @@
     height: calc(17 * var(--sp));
     margin-left: calc(6 * var(--sp));
     padding: 0 calc(6 * var(--sp));
-    border-radius: calc(6 * var(--sp));
+    border-radius: calc(6 * var(--rs));
     background: color-mix(in srgb, var(--fg) 7%, transparent);
     font-size: 0.75rem;
     font-weight: 500;

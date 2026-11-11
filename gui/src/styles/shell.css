@@ -206,7 +206,7 @@
        click to close it): a docked rail made wide would otherwise cover all but a sliver of cut-off words. */
     width: min(var(--rail-w), calc(100% - 64 * var(--sp)));
     grid-template-columns: minmax(0, 1fr);
-    border-radius: 0 calc(14 * var(--sp)) calc(14 * var(--sp)) 0;
+    border-radius: 0 calc(14 * var(--rs)) calc(14 * var(--rs)) 0;
     transform: translateX(calc(-100% - 16px));
 }
 
@@ -333,7 +333,7 @@
     width: min(var(--insp-w), calc(100% - 16 * var(--sp)));
     grid-template-columns: minmax(0, 1fr);
     border-left: 0;
-    border-radius: calc(12 * var(--sp));
+    border-radius: calc(12 * var(--rs));
     box-shadow: var(--pop-shadow);
     transform: translateX(calc(100% + 16px));
     transition: transform var(--dur-panel) var(--ease), bottom var(--dur-panel) var(--ease);
@@ -365,7 +365,7 @@
     bottom: var(--insp-bottom);
     grid-template-columns: minmax(0, 1fr);
     border-left: 0;
-    border-radius: calc(12 * var(--sp));
+    border-radius: calc(12 * var(--rs));
     box-shadow: var(--pop-shadow);
     transition: bottom var(--dur-panel) var(--ease);
     animation: rise var(--dur-panel) var(--ease);

@@ -137,7 +137,7 @@
     height: calc(38 * var(--sp));
     margin: calc(-9 * var(--sp)) calc(22 * var(--sp)) 0;
     padding: 1px calc(6 * var(--sp)) 0;
-    border-radius: 0 0 calc(16 * var(--sp)) calc(16 * var(--sp));
+    border-radius: 0 0 calc(16 * var(--rs)) calc(16 * var(--rs));
     font-size: 0.893rem;
     color: var(--fg-2);
     background: color-mix(in srgb, var(--fg) 3.5%, var(--sheet));
@@ -225,7 +225,7 @@
     min-width: calc(17 * var(--sp));
     height: calc(17 * var(--sp));
     padding: 0 calc(3 * var(--sp));
-    border-radius: calc(5 * var(--sp));
+    border-radius: calc(5 * var(--rs));
     font: 600 0.75rem/1 var(--font-mono);
     color: var(--fg-2);
     background: var(--sheet);
@@ -244,7 +244,7 @@
    Shaped like the request cards (composer.css .ask.glass), with their head and buttons. */
 .hcard.glass {
     padding: calc(14 * var(--sp)) calc(14 * var(--sp)) calc(12 * var(--sp)) calc(16 * var(--sp));
-    border-radius: calc(20 * var(--sp));
+    border-radius: calc(20 * var(--rs));
     animation: ask-rise 460ms var(--spring);
 }
 
@@ -280,7 +280,7 @@
 
 .hcard code {
     padding: 1px calc(5 * var(--sp));
-    border-radius: calc(5 * var(--sp));
+    border-radius: calc(5 * var(--rs));
     font: 0.821rem var(--font-mono);
     color: var(--fg-2);
     background: var(--hover);
@@ -330,7 +330,7 @@
     gap: calc(12 * var(--sp));
     min-width: 0;
     padding: calc(7 * var(--sp)) calc(10 * var(--sp)) calc(7 * var(--sp)) calc(8 * var(--sp));
-    border-radius: calc(14 * var(--sp));
+    border-radius: calc(14 * var(--rs));
     cursor: default;
     outline: none;
     transition: background 140ms;
@@ -356,7 +356,7 @@
     flex: none;
     width: calc(32 * var(--sp));
     height: calc(32 * var(--sp));
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
     color: var(--fg);
     background: var(--group);
     box-shadow: inset 0 0 0 0.5px var(--line);
@@ -479,7 +479,7 @@
     gap: calc(12 * var(--sp));
     min-width: 0;
     padding: calc(7 * var(--sp)) calc(10 * var(--sp)) calc(7 * var(--sp)) calc(8 * var(--sp));
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
     text-align: left;
     color: var(--fg-2);
 }

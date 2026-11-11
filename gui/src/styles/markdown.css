@@ -120,7 +120,7 @@
     font-family: var(--font-mono);
     font-size: 0.85em;
     padding: calc(1.5 * var(--sp)) calc(5 * var(--sp));
-    border-radius: calc(5 * var(--sp));
+    border-radius: calc(5 * var(--rs));
     color: var(--fg);
     background: var(--sheet-2);
     box-shadow: inset 0 0 0 0.5px var(--line);
@@ -290,7 +290,7 @@
     display: inline-block;
     width: calc(13 * var(--sp));
     height: calc(13 * var(--sp));
-    border-radius: calc(4 * var(--sp));
+    border-radius: calc(4 * var(--rs));
     border: 1.5px solid var(--fg-4);
     vertical-align: -1px;
     margin-right: calc(6 * var(--sp));

@@ -27,7 +27,7 @@
     bottom: 0;
     display: flex;
     flex-direction: column;
-    border-radius: calc(16 * var(--sp));
+    border-radius: calc(16 * var(--rs));
     overflow: hidden;
     animation: c-in 260ms var(--ease);
 }
@@ -112,7 +112,7 @@
     width: calc(24 * var(--sp));
     height: calc(24 * var(--sp));
     margin-top: calc(-12 * var(--sp));
-    border-radius: calc(7 * var(--sp));
+    border-radius: calc(7 * var(--rs));
     color: var(--fg-3);
     opacity: 0;
     transition: opacity 120ms, background 120ms, color 120ms;
@@ -160,7 +160,7 @@
     grid-template-columns: calc(18 * var(--sp)) minmax(0, 1fr);
     gap: calc(9 * var(--sp));
     padding: calc(5 * var(--sp)) calc(8 * var(--sp));
-    border-radius: calc(9 * var(--sp));
+    border-radius: calc(9 * var(--rs));
     font-size: 0.929rem;
     line-height: 1.45;
     color: var(--fg);
@@ -219,7 +219,7 @@
 
 .tcard.plan-card {
     margin: calc(4 * var(--sp)) 0 calc(14 * var(--sp));
-    border-radius: calc(14 * var(--sp));
+    border-radius: calc(14 * var(--rs));
     box-shadow: 0 0 0 0.5px var(--line-strong), 0 1px 2px var(--hover);
 }
 

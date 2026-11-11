@@ -36,19 +36,30 @@
        hairlines and shadows. */
     --sp: calc(1px * var(--font-scale));
 
-    /* Shape rule: containers 12-18px, every control is a full pill. */
+    /* Shape. --rs is the unit every corner is measured in (1px at text size 14), and --r-ctl the
+       corner of a control: a button, a field, a row, a menu item. A theme's shape changes both
+       ([data-shape], below): soft is the default, round makes every control a capsule, sharp
+       squares everything off. --r-full stays a capsule whatever the shape: toggles, bars, counts. */
+    --rs: var(--sp);
+    --r-ctl: calc(9 * var(--rs));
+    --r-full: 999px;
+    --pill: var(--r-ctl);
     --r-window: 16px;
-    --r-sheet: 12px;
-    --r-card: calc(12 * var(--sp));
-    --pill: 999px;
+    --r-sheet: 14px;
+    --r-card: calc(14 * var(--rs));
+    --r-pop: calc(14 * var(--rs));
 
-    --radius-xs: calc(6 * var(--sp));
-    --radius-sm: calc(8 * var(--sp));
-    --radius-md: calc(10 * var(--sp));
-    --radius-lg: calc(14 * var(--sp));
-    --radius-xl: calc(18 * var(--sp));
-    --radius-2xl: calc(22 * var(--sp));
-    --radius-card: calc(14 * var(--sp));
+    --radius-xs: calc(6 * var(--rs));
+    --radius-sm: calc(8 * var(--rs));
+    --radius-md: calc(10 * var(--rs));
+    --radius-lg: calc(14 * var(--rs));
+    --radius-xl: calc(18 * var(--rs));
+    --radius-2xl: calc(22 * var(--rs));
+    --radius-card: calc(14 * var(--rs));
+
+    /* Type. --font-prose is what's read at length (replies, the home line); --font-ui everything else. */
+    --font-prose: var(--font-ui);
+    --serif: "New York", "Iowan Old Style", "Charter", "Source Serif 4", Georgia, "Times New Roman", serif;
 
     --gutter: 8px;
     --sidebar-w: 260px;
@@ -96,6 +107,26 @@
     --row-h: calc(30 * var(--sp));
     --header-h: 46px;
     --gap: 0.8;
+}
+
+/* ---- A theme's shape and typeface (state/theme.ts sets them with its colours) ---- */
+[data-shape="round"] {
+    --r-ctl: 999px;
+}
+
+[data-shape="sharp"] {
+    --rs: calc(0.34px * var(--font-scale));
+    --r-ctl: calc(11 * var(--rs));
+    --r-sheet: 6px;
+    --r-window: 10px;
+}
+
+[data-face="mono"] {
+    --font-ui: var(--font-mono);
+}
+
+[data-face="serif"] {
+    --font-prose: var(--serif);
 }
 
 /* The older names (--bg, --fg-muted, --border, ...) are retired: design/glass/PORTING.md maps them to these. */
@@ -413,6 +444,9 @@
 /* Derived from whichever accent is showing. Accent-coloured text leans
    toward --fg, so it reads on the sheet; hover darkens the fill. */
 :root {
+    /* The accent's neighbours, for light that isn't text: the glow behind the home line, the send button's sheen. */
+    --accent-2: color-mix(in oklch, var(--accent) 58%, #b44dff);
+    --accent-3: color-mix(in oklch, var(--accent) 58%, #19c8e6);
     --accent-text: color-mix(in srgb, var(--accent) 82%, var(--fg));
     --accent-hover: color-mix(in srgb, var(--accent) 88%, #000);
     --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);

@@ -78,7 +78,7 @@
     min-width: 0;
     max-width: calc(150 * var(--sp));
     padding: calc(2 * var(--sp)) calc(7 * var(--sp)) calc(2 * var(--sp)) calc(5 * var(--sp));
-    border-radius: calc(6 * var(--sp));
+    border-radius: calc(6 * var(--rs));
     font: 500 0.821rem/1.3 var(--font-mono);
     color: var(--accent-text);
     background: color-mix(in srgb, var(--accent) 11%, transparent);
@@ -244,7 +244,7 @@
     min-height: calc(34 * var(--sp));
     margin: 0 0 calc(8 * var(--sp));
     padding: calc(6 * var(--sp)) calc(8 * var(--sp)) calc(6 * var(--sp)) calc(10 * var(--sp));
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
     font-size: 0.893rem;
     line-height: 1.4;
     color: var(--fg-2);
@@ -291,7 +291,7 @@
 .rf {
     margin-bottom: calc(10 * var(--sp));
     border: 1px solid var(--line);
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
     background: linear-gradient(var(--sheet-2), var(--sheet-2)), var(--insp-bg);
 }
 
@@ -304,7 +304,7 @@
     gap: calc(8 * var(--sp));
     height: calc(38 * var(--sp));
     padding: 0 calc(6 * var(--sp));
-    border-radius: calc(9 * var(--sp)) calc(9 * var(--sp)) 0 0;
+    border-radius: calc(9 * var(--rs)) calc(9 * var(--rs)) 0 0;
     background: var(--insp-bg);
     box-shadow: 0 1px 0 var(--line);
     font-size: 0.893rem;
@@ -319,7 +319,7 @@
 }
 
 .rf.closed .rf-h {
-    border-radius: calc(9 * var(--sp));
+    border-radius: calc(9 * var(--rs));
     box-shadow: none;
 }
 
@@ -329,7 +329,7 @@
     place-items: center;
     width: calc(22 * var(--sp));
     height: calc(22 * var(--sp));
-    border-radius: calc(6 * var(--sp));
+    border-radius: calc(6 * var(--rs));
     color: var(--fg-3);
 }
 
@@ -436,7 +436,7 @@
 .rf-in {
     min-height: 0;
     overflow: hidden;
-    border-radius: 0 0 calc(9 * var(--sp)) calc(9 * var(--sp));
+    border-radius: 0 0 calc(9 * var(--rs)) calc(9 * var(--rs));
 }
 
 .rf.closed .rf-in {
@@ -489,7 +489,7 @@
     min-height: calc(34 * var(--sp));
     margin-bottom: calc(8 * var(--sp));
     padding: calc(6 * var(--sp)) calc(10 * var(--sp));
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
     font-size: 0.893rem;
     line-height: 1.4;
     color: var(--fg-3);
@@ -632,7 +632,7 @@
     column-gap: calc(6 * var(--sp));
     row-gap: calc(4 * var(--sp));
     padding: calc(10 * var(--sp)) calc(12 * var(--sp));
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
     background: var(--sheet-2);
     box-shadow: 0 0 0 0.5px var(--line);
     font-size: 0.893rem;
@@ -698,7 +698,7 @@
 .review .dc-snippet {
     grid-column: 1 / -1;
     margin: calc(2 * var(--sp)) 0 0;
-    border-radius: calc(8 * var(--sp));
+    border-radius: calc(8 * var(--rs));
     background: var(--sheet);
     box-shadow: inset 0 0 0 0.5px var(--line);
 }
@@ -706,7 +706,7 @@
 .review .dc-box {
     gap: calc(8 * var(--sp));
     padding: calc(10 * var(--sp)) calc(12 * var(--sp));
-    border-radius: calc(10 * var(--sp));
+    border-radius: calc(10 * var(--rs));
     background: var(--sheet-2);
     box-shadow: 0 0 0 0.5px var(--line);
 }
@@ -715,7 +715,7 @@
     min-height: calc(56 * var(--sp));
     padding: calc(8 * var(--sp));
     border: 0;
-    border-radius: calc(8 * var(--sp));
+    border-radius: calc(8 * var(--rs));
     background: var(--sheet);
     box-shadow: inset 0 0 0 0.5px var(--line);
     font-size: 0.893rem;

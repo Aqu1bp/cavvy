@@ -16,10 +16,10 @@ const files = readdirSync(dir).filter((f) => f.endsWith(".css"));
 const sheets = Object.fromEntries(files.map((f) => [f, parseRules(readFileSync(join(dir, f), "utf8"))]));
 const decl = (file: string, selector: string, property: string) => sheets[file]!.findLast((r) => r.selectors.includes(selector) && r.decls.has(property))?.decls.get(property);
 
-/** A declaration's value at a text size, for values made of px, 0 and calc(N * var(--sp)) only. */
+/** A declaration's value at a text size, for values made of px, 0 and calc(N * var(--sp)) only (--rs, a corner's unit, is --sp in the default shape). */
 function at(value: string | undefined, size: number): string {
     if (value === undefined) throw new Error("no such declaration");
-    return value.replace(/calc\((-?[\d.]+) \* var\(--sp\)\)/g, (_m, n) => `${+scaled(Number(n), size).toFixed(3)}px`);
+    return value.replace(/calc\((-?[\d.]+) \* var\(--(?:sp|rs)\)\)/g, (_m, n) => `${+scaled(Number(n), size).toFixed(3)}px`);
 }
 
 // Rows, controls and icons people read and click: their px at 14 (as before the change), and the same at 18.
@@ -84,7 +84,7 @@ const FRAME: [file: string, selector: string, property: string, value: string][]
     ["tokens.css", ":root", "--top-line", "34px"],
     ["tokens.css", ":root", "--header-h", "52px"],
     ["tokens.css", ":root", "--r-window", "16px"],
-    ["tokens.css", ":root", "--r-sheet", "12px"],
+    ["tokens.css", ":root", "--r-sheet", "14px"],
     ["tokens.css", ":root", "--gutter", "8px"],
     ["shell.css", ".app", "--win-pad", "8px"],
     ["header.css", ".header .hb", "height", "28px"],

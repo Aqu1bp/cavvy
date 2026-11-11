@@ -96,7 +96,7 @@
 .usage-view { min-width: 0; }
 .usage-view .usage-bar { flex-wrap: wrap; }
 .usage-view h3 { margin: 0; font: inherit; }
-.usage-card { padding: calc(12 * var(--sp)); border: 1px solid var(--line); border-radius: calc(8 * var(--sp)); background: var(--raised); }
+.usage-card { padding: calc(12 * var(--sp)); border: 1px solid var(--line); border-radius: calc(8 * var(--rs)); background: var(--raised); }
 .usage-card span { display: block; color: var(--fg-2); font-size: .8rem; }
 .usage-card strong { display: block; margin-top: calc(8 * var(--sp)); font-size: 1.15rem; font-variant-numeric: tabular-nums; }
 @media (max-width: 520px) {
