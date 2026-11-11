@@ -11,7 +11,7 @@
 // near the view have their diff drawn (lib/review-stack.ts), so a 300-file view opens like one file.
 
 import { batch, createEffect, createMemo, createResource, createSignal, For, on, onCleanup, onMount, Show, untrack } from "solid-js";
-import { Check, ChevronDown, ChevronLeft, ChevronRight, Columns2, FolderGit2, FolderOpen, GitCommitHorizontal, GitPullRequestArrow, MessageSquare, RefreshCw, SquareArrowOutUpRight, X } from "lucide-solid";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Columns2, FileDiff as FileDiffIcon, FolderGit2, FolderOpen, GitCommitHorizontal, GitPullRequestArrow, MessageSquare, RefreshCw, SquareArrowOutUpRight, X } from "lucide-solid";
 import type { FileDiff, GitFileDiff, GitScope, SessionWorktreeInfo } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc } from "../state/app";
@@ -601,7 +601,7 @@ function FileCard(p: {
                         <Show
                             when={!shown().deferred}
                             fallback={
-                                <div class="rv-empty rf-wait selectable">
+                                <div class="rf-wait selectable">
                                     <Show when={!full.loading && full()?.error} fallback={<Spinner size={16} />}>
                                         {full()!.error}{" "}
                                         <button class="link-btn" onClick={() => void refetch()}>
@@ -1102,9 +1102,10 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                     <div class="rv-more">{moreLabel()}</div>
                 </Show>
                 <Show when={!files().length && !asked()?.file}>
-                    <div class="rv-empty selectable">
+                    <div class="rv-empty blank selectable">
                         <Show when={!error()} fallback={<ErrorNote error={error()!} base={base()} onReset={() => setBase(undefined)} />}>
                             <Show when={view()} fallback={<Spinner size={16} />}>
+                                <FileDiffIcon size={22} class="ic" />
                                 {empty()}
                             </Show>
                         </Show>

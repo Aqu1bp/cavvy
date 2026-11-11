@@ -380,8 +380,11 @@
     font-size: 0.82rem;
 }
 
+/* A diff being fetched, or that couldn't be. */
 .rf-wait {
     padding: calc(16 * var(--sp));
+    text-align: center;
+    color: var(--fg-3);
 }
 
 .rf .diff {
@@ -400,14 +403,13 @@
     text-align: center;
 }
 
+/* No files in this view: the side panel's empty state (.blank), its line a third of the way down a box half
+   the window's height. */
 .rv-empty {
-    padding: calc(48 * var(--sp)) calc(16 * var(--sp));
-    text-align: center;
-    color: var(--fg-3);
-    line-height: 1.5;
+    min-height: 50vh;
 }
 
-.rv-empty .link-btn {
+:is(.rv-empty, .rf-wait) .link-btn {
     font-size: inherit;
 }
 

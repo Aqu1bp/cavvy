@@ -13,6 +13,7 @@ const WorkList = component(list, "WorkList", {
     ...background,
     Bot: icon, ChevronRight: icon, Radar: icon, Terminal: icon, Workflow: icon,
     AgentMark: icon,
+    Spinner: icon,
     agentStep,
     ConfirmDialog: () => node("dialog"),
     app: { providers: [] },

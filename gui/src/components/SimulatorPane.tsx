@@ -397,7 +397,7 @@ export function SimulatorPane(p: { handle: SessionHandle }) {
                 </button>
                 <span class="grow" />
                 <Show when={agentActive()}>
-                    <span class="br-who agent" title="You can use it too: the agent is told when you have">
+                    <span class="br-who" title="You can use it too: the agent is told when you have">
                         <span class="br-dot" />
                         <span class="truncate">Agent is using this</span>
                     </span>

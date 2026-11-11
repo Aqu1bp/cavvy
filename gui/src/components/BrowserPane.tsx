@@ -3,7 +3,7 @@
 // it. A person using the page takes the tab from the agent (until they hand it back). The page is sized to the pane.
 
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js";
-import { ArrowLeft, ArrowRight, Globe, Hand, Plus, RotateCw, X } from "lucide-solid";
+import { ArrowLeft, ArrowRight, Globe, Plus, RotateCw, X } from "lucide-solid";
 import type { BrowserCommand, BrowserInput } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc } from "../state/app";
@@ -399,17 +399,12 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                     <Plus size={14} />
                 </button>
                 <span class="grow" />
-                {/* In the tabs' row, which is always there: the page box keeps its size as this comes and goes. */}
+                {/* In the tabs' row, which is always there: the page box keeps its size as this comes and goes. Nothing is
+                    said when the person drove it last: they share the tab, and neither takes it from the other. */}
                 <Show when={status() === "agent"}>
-                    <span class="br-who agent" title="You can use the page too: the agent is told when you have">
+                    <span class="br-who" title="You can use the page too: the agent is told when you have">
                         <span class="br-dot" />
                         <span class="truncate">Agent is using this tab</span>
-                    </span>
-                </Show>
-                <Show when={status() === "human"}>
-                    <span class="br-who" title="The agent is told you used the page">
-                        <Hand size={12} />
-                        <span class="truncate">You're using this tab</span>
                     </span>
                 </Show>
             </div>

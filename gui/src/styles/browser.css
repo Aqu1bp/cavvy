@@ -1,18 +1,21 @@
 /* ---- The Browser pane (BrowserPane), a tab of the side panel ----
-   Back, forward, reload and the address field; under them the session's tabs, and at their right who drove
-   the tab last (the agent, in the accent while it does; or you). Then the page: a canvas the server's frames
-   are drawn on, or in the desktop app the tab's own page laid over the box. A dialog the page asks sits over
-   its foot. None of this changes the page box's size as it comes and goes: the page is sized to it. */
+   Back, forward, reload and the address field; under them the session's tabs, and at their right a note in
+   the accent while the agent is the one driving the tab. Then the page: a canvas the server's frames are
+   drawn on, or in the desktop app the tab's own page laid over the box. A dialog the page asks sits over its
+   foot. None of this changes the page box's size as it comes and goes: the page is sized to it. */
 
 /* The pane fills the panel's body: the page takes what the bars leave. */
 .insp-body.br-body {
     padding: 0;
     overflow: hidden;
+    display: flex;
+    flex-direction: column;
 }
 
 .br-body > .pane {
     flex: 1;
     min-height: 0;
+    display: flex;
 }
 
 .browser-pane {
@@ -110,7 +113,7 @@
     color: var(--fg);
 }
 
-/* Who drove the tab last: the agent, in the accent, or you. Short of room, the tabs' names give way first. */
+/* The agent is driving this tab (the simulator too): said in the accent. Short of room, the tabs' names give way first. */
 .br-who {
     display: inline-flex;
     align-items: center;
@@ -121,16 +124,11 @@
     margin-left: calc(6 * var(--sp));
     padding: 0 calc(8 * var(--sp));
     border-radius: calc(6 * var(--rs));
-    color: var(--fg-3);
-    background: var(--hover);
+    color: var(--accent-text);
+    background: var(--accent-soft);
     font-size: 0.857rem;
     font-weight: 500;
     white-space: nowrap;
-}
-
-.br-who.agent {
-    color: var(--accent-text);
-    background: var(--accent-soft);
 }
 
 .br-dot {
