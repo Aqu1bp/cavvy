@@ -162,12 +162,14 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
         // Answered, the card goes away; if the answer didn't go through, it can be given again.
         if (!(await respond(p.sessionId, p.it.id, { kind: "permission", choice, feedback: choice === "no" ? feedback() : undefined }))) setBusy(false);
     };
+    // Three answers at most: Deny, Allow once, and one broader choice, the one that lasts (always, in this project)
+    // before one for the session. Their keys are 1 and 2, Esc denies.
+    const broader = () => p.it.options.find((o) => o.id === "always") ?? p.it.options.find((o) => o.id !== "yes" && o.id !== "no");
+    const allows = () => [p.it.options.find((o) => o.id === "yes"), broader()].filter((o) => o !== undefined);
     useKeys((k) => {
-        const i = Number(k);
-        if (i >= 1 && i <= p.it.options.length) {
-            const opt = p.it.options[i - 1]!;
-            if (opt.id === "no") setFeedback((f) => f ?? "");
-            else void answer(opt.id);
+        const opt = allows()[Number(k) - 1];
+        if (opt) {
+            void answer(opt.id);
             return true;
         }
         if (k === "Escape") {
@@ -176,10 +178,13 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
         }
         return false;
     });
-    // On screen: at the trailing edge, Deny first and Allow once last, where the eye lands; the broader choices between.
-    const opts = () => p.it.options.map((o, i) => ({ o, key: i + 1 }));
-    const deny = () => opts().filter((x) => x.o.id === "no");
-    const scoped = () => opts().filter((x) => x.o.id !== "no" && x.o.id !== "yes");
+    // On screen: at the trailing edge, Deny first and Allow once last, where the eye lands; the broader choice between.
+    const row = () => [...p.it.options.filter((o) => o.id === "no"), ...allows().slice(1), ...allows().slice(0, 1)].map((o) => ({ o, key: allows().indexOf(o) + 1 }));
+    // A choice says what it is in two or three words ("Always allow", "Allow this session"): its rules (as code) and
+    // the project it's for are its tooltip.
+    const short = (o: PermissionInteraction["options"][number]) => o.label.replace(/ `[^`]*`/, "").replace(/ in \S+$/, "").replace("for the session", "this session");
+    // What it does, in one line of words: the reviewing model's when there is one (it read the action itself), else the agent's own.
+    const words = () => p.it.plain ?? (p.it.command !== undefined || p.it.url ? p.it.description : undefined);
     const Choice = (c: { o: PermissionInteraction["options"][number]; key: number }) => (
         <button
             class={`pbtn ${c.o.id === "yes" ? "primary" : c.o.id === "no" ? "quiet" : "outlined"}`}
@@ -190,7 +195,7 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                 else void answer(c.o.id);
             }}
         >
-            <FitLabel text={c.o.id === "no" && feedback() !== undefined ? "Deny" : c.o.label} />
+            <FitLabel text={c.o.id === "no" && feedback() !== undefined ? "Deny" : short(c.o)} />
             <kbd>{c.o.id === "no" ? "Esc" : c.key}</kbd>
         </button>
     );
@@ -216,10 +221,8 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                 }
             />
             <div class="itab-body">
-                <Show when={p.it.plain}>
-                    <div class="itab-desc selectable">
-                        {p.it.plainLabel ?? "AI summary"}: <b>{p.it.plain}</b>
-                    </div>
+                <Show when={words()}>
+                    <div class="itab-desc selectable" title={p.it.plain ? "Written by a model that read this action" : undefined}>{words()}</div>
                 </Show>
                 <Show when={p.it.dangerous}>
                     <div class="itab-warn selectable">
@@ -228,9 +231,6 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                 </Show>
                 <Show when={p.it.command !== undefined}>
                     <pre class="itab-code ask-cmd mono">{p.it.command}</pre>
-                    <Show when={p.it.description}>
-                        <div class="itab-desc why selectable">{p.it.description}</div>
-                    </Show>
                     <Show when={p.it.hosts?.length}>
                         <div class="itab-desc why selectable">Sandboxed, with network access to {p.it.hosts!.join(", ")}</div>
                     </Show>
@@ -248,16 +248,13 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                 </Show>
                 <Show when={p.it.url}>
                     <div class="itab-code mono">{p.it.url}</div>
-                    <Show when={p.it.description}>
-                        <div class="itab-desc why selectable">{p.it.description}</div>
-                    </Show>
                 </Show>
                 <Show when={p.it.json}>
                     <div class="itab-desc selectable">{p.it.title}</div>
                     <pre class="itab-code mono">{p.it.json}</pre>
                 </Show>
                 {/* Nothing more to show: what it does in words, or, for a tool no heading names, its call. */}
-                <Show when={!p.it.command && !p.it.diff && !p.it.path && !p.it.url && !p.it.json && (p.it.description || p.it.heading === "Use a tool")}>
+                <Show when={!p.it.plain && !p.it.command && !p.it.diff && !p.it.path && !p.it.url && !p.it.json && (p.it.description || p.it.heading === "Use a tool")}>
                     <div class="itab-desc selectable">{p.it.description ?? p.it.title}</div>
                 </Show>
                 <Show when={!p.it.dangerous && p.it.reason && p.it.toolName !== "Bash" && p.it.toolName !== "Monitor"}>
@@ -284,15 +281,8 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                     />
                 </Show>
             </div>
-            {/* Two broader choices don't fit beside Deny and Allow once without cutting their words: they get the row
-                above, as the plan card's quieter actions do. */}
-            <Show when={scoped().length > 1}>
-                <div class="ask-row plan-row quiet-row">
-                    <For each={scoped()}>{Choice}</For>
-                </div>
-            </Show>
-            <div class={`itab-actions ask-row perm-row ${scoped().length > 1 ? "plan-row" : ""}`}>
-                <For each={[...deny(), ...(scoped().length > 1 ? [] : scoped()), ...opts().filter((x) => x.o.id === "yes")]}>{Choice}</For>
+            <div class="itab-actions ask-row perm-row">
+                <For each={row()}>{Choice}</For>
             </div>
         </>
     );

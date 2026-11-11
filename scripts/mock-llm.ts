@@ -742,6 +742,8 @@ export function startMockLlm(o: MockOptions = {}) {
                 if (delay) await Bun.sleep(delay * 100);
                 step = { text: goalVerdict(prompt) };
             }
+            // A permission popup's one-line summary: none from the mock (its canned line said nothing about the action).
+            else if (/for a permission popup/.test(system)) step = { text: "" };
             else if (!body.tools?.length) step = { text: "Summary: the user asked for help; the work is in progress." };
             else if (/what was my first message/i.test(prompt)) step = { text: recall(messages) };
             else if (/\bpause\b/i.test(prompt)) {
