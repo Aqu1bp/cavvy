@@ -714,9 +714,11 @@ describe("symlinks in Cavvy home", () => {
     }));
 
     test("a read through a symlink leading out of the home isn't covered: it's reviewed", linked(() => {
-        for (const command of [`cat ${H}/projects/linked/s.jsonl`, `grep -r token ${H}`, `cat ${H}/projects/*/s.jsonl`, `cat $CAVVY_TEST_NOPE/x`]) {
+        for (const command of [`cat ${H}/projects/linked/s.jsonl`, `grep -r token ${H}`, `cat ${H}/projects/*/s.jsonl`]) {
             expect([command, auto(checker(), { command })]).toMatchObject([command, { behavior: "ask", needsClassifier: true, sandbox: true, sensitive: expect.stringContaining("settings") }]);
         }
+        // A variable it can't work out could lead there too: reviewed as well, and said as what it is.
+        expect(auto(checker(), { command: "cat $CAVVY_TEST_NOPE/x" })).toMatchObject({ behavior: "ask", needsClassifier: true, sandbox: true, sensitive: expect.stringContaining("variable") });
         // Inside the home it's still covered.
         expect(auto(checker(), { command: `cat ${H}/history.jsonl` })).toMatchObject({ behavior: "allow", sandbox: true });
     }));
