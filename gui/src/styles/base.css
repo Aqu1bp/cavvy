@@ -195,7 +195,6 @@ button:disabled {
 :focus-visible {
     outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
     outline-offset: 2px;
-    border-radius: var(--radius-sm);
 }
 
 code,
@@ -1043,11 +1042,6 @@ svg.lucide {
 .render-error pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: calc(240 * var(--sp)); overflow: auto; }
 .render-error-actions { display: flex; flex-wrap: wrap; gap: calc(8 * var(--sp)); align-items: center; }
 .render-error-app { max-width: calc(640 * var(--sp)); margin: 15vh auto; }
-.session-opening { padding: calc(32 * var(--sp)); max-width: calc(850 * var(--sp)); width: 100%; margin: 0 auto; }
-.session-opening [role="status"] { display: flex; align-items: center; gap: calc(8 * var(--sp)); }
-.session-skeleton { margin-top: calc(24 * var(--sp)); display: grid; gap: calc(12 * var(--sp)); }
-.session-skeleton i { display: block; height: calc(14 * var(--sp)); border-radius: calc(4 * var(--rs)); background: var(--line); }
-.session-skeleton i:last-child { width: 65%; }
 
 /* ---- Moving the Electron window ----
    Electron can't start a move from a press the way Tauri's start_dragging does (lib/window-drag.ts): a drag region
