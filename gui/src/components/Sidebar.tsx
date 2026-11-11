@@ -129,13 +129,14 @@ function BulkItems(p: { plan: BulkPlan; close: () => void; clear: () => void }) 
     );
 }
 
-function RowMenu(p: { s: SessionSummary; pick: RailPick; open: boolean; setOpen: (v: boolean) => void; anchor: () => HTMLElement | undefined; returnFocus: () => HTMLElement | undefined; point?: { x: number; y: number }; onRename: () => void }) {
+function RowMenu(p: { s: SessionSummary; pick: RailPick; open: boolean; setOpen: (v: boolean) => void; anchor: () => HTMLElement | undefined; returnFocus: () => HTMLElement | undefined; onRename: () => void }) {
     const close = () => p.setOpen(false);
     // Taken as the menu opens, so it doesn't change under the pointer.
     const group = createMemo(() => (p.open ? untrack(() => p.pick.group(p.s.id)) : undefined));
     return (
-        // From the row's "…", as wide as the row: what's behind doesn't peek out at its edge. At the pointer when right-clicked.
-        <Menu label={group() ? "Selected sessions actions" : "Session actions"} returnFocus={p.returnFocus} point={p.point} open={p.open} anchor={p.anchor} span={p.point ? undefined : () => p.anchor()?.closest<HTMLElement>(".card, .slim") ?? undefined} onClose={close} align="end" width={220}>
+        // Under its row and as wide as it, however it's opened (the row's "…", a right click, the menu key): one
+        // menu in one place, inside the rail, and what's behind doesn't peek out at its edge.
+        <Menu label={group() ? "Selected sessions actions" : "Session actions"} returnFocus={p.returnFocus} open={p.open} anchor={p.anchor} span={() => p.anchor()?.closest<HTMLElement>(".card, .slim") ?? undefined} onClose={close} align="end" width={220}>
             <Show when={group()} fallback={<SingleItems s={p.s} close={close} onRename={p.onRename} />}>
                 {(ids) => <BulkItems plan={p.pick.plan(ids())} close={close} clear={p.pick.clear} />}
             </Show>
@@ -176,26 +177,22 @@ function SingleItems(p: { s: SessionSummary; close: () => void; onRename: () => 
 /** Both row layouts use the same pointer/keyboard invocation and focus target. */
 function useRowMenu(more: () => HTMLElement | undefined) {
     const [menu, setMenu] = createSignal(false);
-    const [point, setPoint] = createSignal<{ x: number; y: number }>();
     let returnTo: HTMLElement | undefined;
     const contextMenu = (e: MouseEvent) => {
         if ((e.target as HTMLElement).closest("input, textarea, [contenteditable]")) return;
         e.preventDefault();
         returnTo = (e.currentTarget as HTMLElement).querySelector<HTMLElement>(".card-hit, .slim-hit") ?? more();
-        setPoint(e.button === 2 ? { x: e.clientX, y: e.clientY } : undefined);
         setMenu(true);
     };
     const contextKey = (e: KeyboardEvent) => rowMenuKey(e, () => {
         returnTo = e.target as HTMLElement;
-        setPoint(undefined);
         setMenu(true);
     });
     const toggleMenu = () => {
         returnTo = more();
-        setPoint(undefined);
         setMenu(!menu());
     };
-    return { menu, setMenu, point, contextMenu, contextKey, toggleMenu, returnFocus: () => returnTo };
+    return { menu, setMenu, contextMenu, contextKey, toggleMenu, returnFocus: () => returnTo };
 }
 
 /** What a screen reader hears for a row: its title, then how it's doing, and whether it's selected. */
@@ -377,7 +374,7 @@ function PlanRow(p: { plans: RailPlan[] }) {
  */
 function NeedsRow(p: { s: SessionSummary; hold: (id: string, held: boolean) => void; pick: RailPick }) {
     const r = useRename(() => p.s);
-    const { menu, setMenu, point, contextMenu, contextKey, returnFocus } = useRowMenu(() => undefined);
+    const { menu, setMenu, contextMenu, contextKey, returnFocus } = useRowMenu(() => undefined);
     const id = p.s.id;
     createEffect(() => p.hold(id, menu() || r.editing()));
     onCleanup(() => p.hold(id, false));
@@ -396,14 +393,14 @@ function NeedsRow(p: { s: SessionSummary; hold: (id: string, held: boolean) => v
             <Show when={r.editing()}>
                 <div class="card-rename">{r.input()}</div>
             </Show>
-            <RowMenu returnFocus={returnFocus} point={point()} s={p.s} pick={p.pick} open={menu()} setOpen={setMenu} anchor={() => el} onRename={() => r.setEditing(true)} />
+            <RowMenu returnFocus={returnFocus} s={p.s} pick={p.pick} open={menu()} setOpen={setMenu} anchor={() => el} onRename={() => r.setEditing(true)} />
         </div>
     );
 }
 
 function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) => void; grouped: boolean; pick: RailPick }) {
     const r = useRename(() => p.s);
-    const { menu, setMenu, point, contextMenu, contextKey, toggleMenu, returnFocus } = useRowMenu(() => more);
+    const { menu, setMenu, contextMenu, contextKey, toggleMenu, returnFocus } = useRowMenu(() => more);
     const id = p.s.id;
     createEffect(() => p.hold(id, menu() || r.editing()));
     onCleanup(() => p.hold(id, false));
@@ -461,14 +458,14 @@ function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) =
             <Show when={r.editing()}>
                 <div class="card-rename">{r.input()}</div>
             </Show>
-            <RowMenu returnFocus={returnFocus} point={point()} s={p.s} pick={p.pick} open={menu()} setOpen={setMenu} anchor={() => more ?? el} onRename={() => r.setEditing(true)} />
+            <RowMenu returnFocus={returnFocus} s={p.s} pick={p.pick} open={menu()} setOpen={setMenu} anchor={() => more ?? el} onRename={() => r.setEditing(true)} />
         </div>
     );
 }
 
 function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) => void; pick: RailPick }) {
     const r = useRename(() => p.s);
-    const { menu, setMenu, point, contextMenu, contextKey, toggleMenu, returnFocus } = useRowMenu(() => more);
+    const { menu, setMenu, contextMenu, contextKey, toggleMenu, returnFocus } = useRowMenu(() => more);
     const id = p.s.id;
     createEffect(() => p.hold(id, menu() || r.editing()));
     onCleanup(() => p.hold(id, false));
@@ -513,7 +510,7 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
                     </span>
                 </span>
             </Show>
-            <RowMenu returnFocus={returnFocus} point={point()} s={p.s} pick={p.pick} open={menu()} setOpen={setMenu} anchor={() => more} onRename={() => r.setEditing(true)} />
+            <RowMenu returnFocus={returnFocus} s={p.s} pick={p.pick} open={menu()} setOpen={setMenu} anchor={() => more} onRename={() => r.setEditing(true)} />
         </div>
     );
 }

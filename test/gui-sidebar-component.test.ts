@@ -431,8 +431,11 @@ for (const layout of ["card", "settled", "archived"] as const) {
                 const more = f.descendants(row).find((n) => n.props?.["aria-haspopup"] === "menu");
                 const menu = f.menus.findLast((p) => p.label === "Session actions" && p.anchor() === more);
                 expect(menu).toBeDefined();
+                // A right click opens it where the row's "…" does (under the row, its width), not at the pointer.
                 f.contextMenu(row);
-                expect(menu.point).toEqual({ x: 40, y: 60 });
+                expect(menu.open).toBe(true);
+                expect(menu.point).toBeUndefined();
+                expect(typeof menu.span).toBe("function");
                 expect(menu.returnFocus()).toBe(hit);
                 menu.onClose();
                 for (const key of ["ContextMenu", "F10"]) {
