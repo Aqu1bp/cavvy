@@ -124,7 +124,7 @@
     min-width: 28px;
     height: 28px;
     padding: 0 8px;
-    border-radius: var(--pill);
+    border-radius: max(calc(var(--r-ctl) - 2px), 0px);
     color: var(--fg-2);
     transition: background 140ms, transform 160ms var(--ease), color 140ms;
 }
@@ -213,8 +213,8 @@
     padding: calc(2 * var(--sp)) calc(4 * var(--sp));
     border-radius: calc(6 * var(--rs));
     font-size: 1rem;
-    font-weight: 650;
-    letter-spacing: -0.01em;
+    font-weight: 620;
+    letter-spacing: -0.014em;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -247,8 +247,12 @@
     min-width: 0;
     max-width: calc(240 * var(--sp));
     flex: 0 1 auto;
-    color: var(--fg-3);
-    font-size: 0.893rem;
+    height: calc(22 * var(--sp));
+    padding: 0 calc(8 * var(--sp)) 0 calc(6 * var(--sp));
+    border-radius: calc(7 * var(--rs));
+    background: var(--hover);
+    color: var(--fg-2);
+    font: 500 0.821rem/1 var(--font-mono);
     white-space: nowrap;
     align-self: center;
 }
@@ -417,7 +421,7 @@ button.bc:hover {
     gap: 1px;
     height: 34px;
     padding: 0 3px;
-    border-radius: var(--pill);
+    border-radius: calc(var(--r-ctl) + 1px);
     flex: none;
 }
 

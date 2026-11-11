@@ -6,7 +6,8 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { runInNewContext } from "vm";
 import * as solid from "../gui/node_modules/solid-js/dist/solid.js";
-import { ACCENTS, appearanceOf, migratePrefs, PREF_DEFAULTS, showAppearance, type Prefs } from "../gui/src/state/prefs-core";
+import { ACCENTS, appearanceOf, migratePrefs, PREF_DEFAULTS, safeLook, showAppearance, type Prefs } from "../gui/src/state/prefs-core";
+import { themeCss, THEMES } from "../gui/src/lib/theme";
 
 const BOOT = readFileSync(new URL("../gui/public/theme-boot.js", import.meta.url), "utf8");
 const PREFS = new Bun.Transpiler({ loader: "ts" }).transformSync(
@@ -143,6 +144,10 @@ describe("first paint and the app agree", () => {
         ...ACCENTS.map((a): [string, unknown] => [`accent ${a.id}`, { scheme: "dark", accent: a.id }]),
         ...(["glass", "tinted", "solid"] as const).flatMap((glass) => (["standard", "high"] as const).map((contrast): [string, unknown] => [`${glass}/${contrast}`, { scheme: "light", glass, contrast }])),
         ...(["clear", "ocean", "accent"] as const).flatMap((tint) => (["glass", "solid"] as const).map((glass): [string, unknown] => [`tint ${tint}/${glass}`, { scheme: "dark", tint, glass, accent: "teal" }])),
+        ...THEMES.slice(1).map((t): [string, unknown] => [`theme ${t.id}`, { look: t.id, lookCss: themeCss(t), lookShape: t.shape, lookFace: t.typeface, lookVersion: 1 }]),
+        ["a theme with an unknown shape and typeface", { look: "x", lookCss: themeCss(THEMES[1]!), lookShape: "blob", lookFace: "comic" }],
+        ["a theme whose palette isn't safe to apply", { look: "x", lookCss: "[data-theme=\"light\"]{--sheet:url(//example.com/x)}", lookShape: "sharp", lookFace: "mono" }],
+        ["a palette with no theme", { lookCss: themeCss(THEMES[1]!), lookShape: "round" }],
     ];
     for (const [name, saved] of cases) {
         for (const dark of [false, true]) {
@@ -269,5 +274,46 @@ describe("the app's preferences", () => {
         await settled();
         expect(later.saved()).toMatchObject({ sidebarWidth: 320 });
         expect(later.writes.filter((w) => w === "storage")).toEqual(["storage", "storage"]);
+    });
+});
+
+describe("a saved theme", () => {
+    test("what lib/theme.ts writes for every built-in theme is safe to apply", () => {
+        for (const theme of THEMES) expect(safeLook(themeCss(theme))).toBe(true);
+    });
+
+    test("anything that could fetch, import or leave the rule is refused", () => {
+        for (const css of ["a{b:url(x)}", "@import 'x';", "a{b:c}</style>", "a{b:\\75rl(x)}", "a{b:expression(1)}", "x".repeat(20000), undefined, 3, {}]) expect(safeLook(css)).toBe(false);
+    });
+
+    test("its shape and typeface go on <html>; without a safe palette it's the default look", () => {
+        const terminal = THEMES.find((t) => t.id === "terminal")!;
+        const stored = JSON.stringify({ look: terminal.id, lookCss: themeCss(terminal), lookShape: terminal.shape, lookFace: terminal.typeface });
+        for (const page of [boot(stored, true), app(stored, true)]) expect(page.dataset).toMatchObject({ shape: "sharp", face: "mono" });
+        const unsafe = JSON.stringify({ look: "x", lookCss: "@import url(x)", lookShape: "sharp", lookFace: "mono" });
+        for (const page of [boot(unsafe, true), app(unsafe, true)]) {
+            expect(page.dataset).not.toHaveProperty("shape");
+            expect(page.dataset).not.toHaveProperty("face");
+        }
+        expect(migratePrefs(JSON.parse(unsafe))).toEqual({});
+    });
+
+    test("your own themes are kept only when every one is a theme", () => {
+        const mine = [{ id: "custom-1", name: "Mine", hue: 20, tint: 0.5, accent: "#ff8800", shape: "round" }];
+        expect(migratePrefs({ customThemes: mine })).toEqual({ customThemes: mine } as Partial<Prefs>);
+        expect(migratePrefs({ customThemes: [...mine, { id: "x", name: "No colours" }] })).toEqual({});
+        expect(migratePrefs({ customThemes: [{ ...mine[0], accent: "red" }] })).toEqual({});
+        expect(migratePrefs({ customThemes: "all" })).toEqual({});
+    });
+
+    test("picking the default theme again leaves nothing of the last one", async () => {
+        const fjord = THEMES.find((t) => t.id === "fjord")!;
+        const later = app(JSON.stringify({ look: fjord.id, lookCss: themeCss(fjord), lookShape: "round", lookFace: "serif", lookVersion: 1 }), false);
+        expect(later.dataset).toMatchObject({ shape: "round", face: "serif" });
+        for (const key of ["look", "lookCss", "lookShape", "lookFace", "lookVersion"] as const) later.setPrefs(key, undefined);
+        await settled();
+        expect(later.dataset).not.toHaveProperty("shape");
+        expect(later.dataset).not.toHaveProperty("face");
+        expect(later.saved()).not.toHaveProperty("lookCss");
     });
 });

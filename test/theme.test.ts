@@ -57,6 +57,12 @@ describe("themes", () => {
         expect(bad.slice(0, 12)).toEqual([]);
     }, 120_000);
 
+    test("a recipe reads under every Window, tint, Contrast and accent too: 24 drawn at random", () => {
+        const random = seeded(7);
+        const recipes: ThemeRecipe[] = [...Array(24)].map(() => ({ hue: random() * 360, tint: random(), accent: `#${Math.floor(random() * 0xffffff).toString(16).padStart(6, "0")}` }));
+        expect(recipes.flatMap((r) => unreadable(r).slice(0, 2).map((f) => `${JSON.stringify(r)} ${f}`)).slice(0, 12)).toEqual([]);
+    }, 120_000);
+
     test("a theme declares every colour the default does, and nothing else", () => {
         const names = (scheme: "light" | "dark") => Object.keys(derive(DEFAULT_THEME, scheme));
         for (const theme of THEMES.slice(1)) for (const scheme of ["light", "dark"] as const) expect(Object.keys(derive(theme, scheme))).toEqual(names(scheme));
