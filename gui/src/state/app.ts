@@ -868,7 +868,8 @@ function backgroundEnded(ev: Extract<ServerEvent, { type: "notify" }>) {
         void activate(ev.sessionId);
         revealBackground(ev.sessionId, ev.task?.id);
     };
-    if (route === "toast") toast(ev.body, ev.task?.outcome === "failed" ? "warn" : ev.task?.outcome === "done" ? "success" : "info", { label: "Show", run: reveal });
+    // The toast says what ended ("Background command finished"); which one is a click away, and in the notification.
+    if (route === "toast") toast(ev.body.split(": ")[0]!, ev.task?.outcome === "failed" ? "warn" : ev.task?.outcome === "done" ? "success" : "info", { label: "Show", run: reveal });
     else desktopEnded(ev.sessionId, ev.title, ev.body, tag, reveal);
 }
 

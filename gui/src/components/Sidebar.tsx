@@ -681,7 +681,11 @@ export function Sidebar() {
                 if (old === undefined) continue;
                 const delta = old - el.getBoundingClientRect().top;
                 if (!delta) continue;
-                const animation = el.animate([{ transform: `translateY(${delta}px)` }, { transform: "translateY(0)" }], { duration: prefs.motion === "smooth" ? 260 : 160, easing: "ease-out" });
+                // A row that changes place by a slot slides there with its neighbours. One that jumps past others
+                // (a session that just moved to the top) fades in near its new place: sliding, it ran through the
+                // rows between, their words over each other.
+                const far = Math.abs(delta) > el.offsetHeight * 1.5;
+                const animation = el.animate(far ? [{ opacity: 0, transform: `translateY(${Math.sign(delta) * 10}px)` }, { opacity: 1, transform: "translateY(0)" }] : [{ transform: `translateY(${delta}px)` }, { transform: "translateY(0)" }], { duration: prefs.motion === "smooth" ? 260 : 160, easing: "ease-out" });
                 animations.add(animation);
                 animation.onfinish = () => animations.delete(animation);
             }
@@ -892,7 +896,7 @@ export function Sidebar() {
                 <Menu label="View options" open={viewOpen()} anchor={() => viewBtn} onClose={() => setViewOpen(false)} align="end" width={220}>
                     <div class="menu-head">Group</div>
                     <button role="menuitemradio" aria-checked={prefs.groupBy === "date"} class="menu-item compact" onClick={() => (setPrefs("groupBy", "date"), setViewOpen(false))}>
-                        <span class="menu-label">Most recent first</span>
+                        <span class="menu-label">By date</span>
                         <Show when={prefs.groupBy === "date"}>
                             <Check size={14} class="menu-check" />
                         </Show>

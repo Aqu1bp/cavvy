@@ -130,7 +130,7 @@ async function local(cwd: string, signal?: AbortSignal) {
     const remotes = remoteNames.split("\n").filter(Boolean);
     const hasUpstream = Boolean(upstreamRemote && merge);
     const remote = hasUpstream ? upstreamRemote : remotes.length === 1 && remotes[0] === "origin" ? "origin" : "";
-    if (!remote || !remotes.includes(remote) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(remote)) throw fail("No unambiguous push remote. Configure an upstream, or a single origin remote, in a terminal.", "invalid");
+    if (!remote || !remotes.includes(remote) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(remote)) throw fail("This branch has no remote to push to. Add one in a terminal.", "invalid");
     if (hasUpstream && !merge.startsWith("refs/heads/")) throw fail("The upstream is not a branch.", "invalid");
     const [target, configuredPushUrls, configuredUrls, rewrites, tracking] = await Promise.all([
         branchName(cwd, hasUpstream ? merge.slice(11) : branch, signal),

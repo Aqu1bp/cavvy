@@ -55,12 +55,12 @@ function sameRows(a: Row[], b: Row[]): boolean {
     return true;
 }
 
-/** "+a −d" with only the sides that changed: "+18", not "+18 −0" (and "+0" when neither did). */
+/** "+a −d" with only the sides that changed: "+18", not "+18 −0"; nothing when no line did (a folder, an empty file). */
 export function Counts(p: { added?: number; removed?: number }) {
     return (
         <>
-            <Show when={p.added || !p.removed}>
-                <span class="add">+{(p.added ?? 0).toLocaleString()}</span>
+            <Show when={p.added}>
+                <span class="add">+{p.added!.toLocaleString()}</span>
             </Show>
             <Show when={p.removed}>
                 <span class="del">−{p.removed!.toLocaleString()}</span>

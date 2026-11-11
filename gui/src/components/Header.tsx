@@ -178,8 +178,8 @@ function ChangesChip(p: { handle: SessionHandle }) {
                         }}
                     >
                         <FileDiff size={15} />
-                        {/* Only the sides that changed: "+18", not "+18 −0". */}
-                        <span class="a" hidden={!c().added && !!c().removed}>+{c().added}</span>
+                        {/* Only the sides that changed: "+18", not "+18 −0"; the mark alone when no line did. */}
+                        <span class="a" hidden={!c().added}>+{c().added}</span>
                         <span class="d" hidden={!c().removed}>−{c().removed}</span>
                     </button>
                     <span class="sep" />

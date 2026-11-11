@@ -153,6 +153,8 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
         const a = p.it.agentId ? h?.view.agents.find((x) => x.id === p.it.agentId) : undefined;
         return a && agentProvider(a, h?.view.state.model?.provider, h?.view.agents);
     };
+    // Its task, without the model's id after it ("(anthropic:claude-…)"): its mark says whose it is.
+    const asker = () => p.it.agentLabel?.replace(/ \([^()\s]+:[^()\s]+\)$/, "");
     const [busy, setBusy] = createSignal(false);
     const answer = async (choice: PermissionInteraction["options"][number]["id"]) => {
         if (busy()) return;
@@ -174,10 +176,10 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
         }
         return false;
     });
-    // On screen: one row at the trailing edge, Deny first and Allow once last, where the eye lands.
+    // On screen: at the trailing edge, Deny first and Allow once last, where the eye lands; the broader choices between.
     const opts = () => p.it.options.map((o, i) => ({ o, key: i + 1 }));
     const deny = () => opts().filter((x) => x.o.id === "no");
-    const allows = () => [...opts().filter((x) => x.o.id !== "no" && x.o.id !== "yes"), ...opts().filter((x) => x.o.id === "yes")];
+    const scoped = () => opts().filter((x) => x.o.id !== "no" && x.o.id !== "yes");
     const Choice = (c: { o: PermissionInteraction["options"][number]; key: number }) => (
         <button
             class={`pbtn ${c.o.id === "yes" ? "primary" : c.o.id === "no" ? "quiet" : "outlined"}`}
@@ -204,9 +206,9 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                     ) : p.it.agentLabel ? (
                         <>
                             <AgentMark provider={askerProvider()} size={12} /> Requested by sub-agent ·{" "}
-                            <Show when={p.it.agentId} fallback={p.it.agentLabel}>
+                            <Show when={p.it.agentId} fallback={asker()}>
                                 <button class="link-btn" tabIndex={-1} title="See what it has done so far" onClick={() => openAgents(p.it.agentId)}>
-                                    {p.it.agentLabel}
+                                    {asker()}
                                 </button>
                             </Show>
                         </>
@@ -282,8 +284,15 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                     />
                 </Show>
             </div>
-            <div class="itab-actions ask-row perm-row">
-                <For each={[...deny(), ...allows()]}>{Choice}</For>
+            {/* Two broader choices don't fit beside Deny and Allow once without cutting their words: they get the row
+                above, as the plan card's quieter actions do. */}
+            <Show when={scoped().length > 1}>
+                <div class="ask-row plan-row quiet-row">
+                    <For each={scoped()}>{Choice}</For>
+                </div>
+            </Show>
+            <div class={`itab-actions ask-row perm-row ${scoped().length > 1 ? "plan-row" : ""}`}>
+                <For each={[...deny(), ...(scoped().length > 1 ? [] : scoped()), ...opts().filter((x) => x.o.id === "yes")]}>{Choice}</For>
             </div>
         </>
     );

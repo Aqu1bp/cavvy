@@ -50,7 +50,8 @@ const GOAL_MARK = /^([◎✓✗]) /;
 function InfoLine(p: { block: NoticeBlock }) {
     let tx: HTMLSpanElement | undefined;
     const mark = () => GOAL_MARK.exec(p.block.text)?.[1];
-    const text = () => (mark() ? p.block.text.slice(2) : p.block.text);
+    // Without a closing list of terminal commands ("(/tasks shows them, …)"): here the side panel has them.
+    const text = () => (mark() ? p.block.text.slice(2) : p.block.text).replace(/ \(\/tasks [^)]*\)\.$/, ".");
     const cut = useCut(() => tx);
     const [open, setOpen] = createSignal(false);
     const long = () => cut() || open() || Boolean(p.block.details?.length);

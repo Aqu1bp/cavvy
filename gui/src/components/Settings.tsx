@@ -14,7 +14,7 @@ import { ACCENTS, CHAT_WIDTHS, prefs, PREF_DEFAULTS, setPrefs, type AccentId, ty
 import { setSettingsTab, settingsTab, type SettingsTab } from "../state/ui";
 import { loadSimulatorState } from "../state/simulator";
 import { canReveal, copyText, isDesktop, mod, openExternal, os, revealPath } from "../lib/platform";
-import { keybindingsFile, keymap, withShortcut } from "../state/keybindings";
+import { keybindingsFile, keymap, keyText, withShortcut } from "../state/keybindings";
 import { ACTIONS, CONTEXTS, KEYBINDINGS_DOCS, formatKeys } from "../../../src/keybindings/core";
 import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { ProviderIcon } from "./ui/ProviderIcon";
@@ -380,9 +380,9 @@ function Appearance() {
     const pickAccent = (id: AccentId) => setPrefs("accent", id === "blue" ? undefined : id);
     return (
         <div class="ap">
-            <Group>Colour scheme</Group>
+            <Group>Color scheme</Group>
             <div class="set-group ap-group">
-                <div class="ap-tiles" role="group" aria-label="Colour scheme">
+                <div class="ap-tiles" role="group" aria-label="Color scheme">
                     <SchemeTile id="system" label="System" />
                     <SchemeTile id="light" label="Light" />
                     <SchemeTile id="dark" label="Dark" />
@@ -411,7 +411,7 @@ function Appearance() {
                         ]}
                     />
                 </Row>
-                <Row title="Window tint" desc="The colour of the glass behind the sidebar." changed={prefs.tint !== PREF_DEFAULTS.tint} reset={() => setPrefs("tint", PREF_DEFAULTS.tint)} class="ap-tint-row">
+                <Row title="Window tint" desc="The color of the glass behind the sidebar." changed={prefs.tint !== PREF_DEFAULTS.tint} reset={() => setPrefs("tint", PREF_DEFAULTS.tint)} class="ap-tint-row">
                     <div class="ap-tiles ap-tint-tiles" role="group" aria-label="Window tint">
                         <TintTile id="clear" label="Clear" />
                         <TintTile id="ocean" label="Ocean" />
@@ -770,9 +770,9 @@ const BUILT_IN: [string, string][] = [
 
 const CONTEXT_TITLES: Record<string, string> = { Global: "Anywhere", Chat: "In the input box", Autocomplete: "In the / and @ menu", Sidebar: "In the session list" };
 
-/** One keystroke as one key cap: "⌘ K". */
+/** One keystroke as one key cap, written as everywhere else: "⌘K", "Ctrl+K". */
 function Cap(p: { keys: string }) {
-    return <kbd>{p.keys.split("+").join(" ")}</kbd>;
+    return <kbd>{keyText(p.keys)}</kbd>;
 }
 
 /** One key sequence as key caps: a chord's strokes one after another. */

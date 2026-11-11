@@ -128,7 +128,7 @@
     bottom: var(--dock-h);
     height: calc(64 * var(--sp));
     z-index: 24;
-    background: linear-gradient(color-mix(in srgb, var(--sheet) 0%, transparent), var(--sheet) 85%);
+    background: linear-gradient(color-mix(in srgb, var(--sheet) 0%, transparent), var(--sheet) 32%);
     pointer-events: none;
     animation: ov-fade 300ms;
 }
@@ -1530,13 +1530,6 @@
     flex: none;
     color: var(--fg-3);
     font-size: 0.857rem;
-}
-
-.tool-tag {
-    display: inline-flex;
-    align-items: center;
-    gap: calc(3 * var(--sp));
-    flex: none;
 }
 
 .tool.st-error .tool-verb {

@@ -48,9 +48,9 @@ export function ProviderIcon(p: { id: string; name?: string; size?: number; clas
         <Show
             when={mark()}
             fallback={
-                // Two letters fit a tile of 18px or more; under that, one letter at a size that still reads.
-                <span class={`provider-mono ${p.class ?? ""}`} style={{ width: `calc(${size()} * var(--sp))`, height: `calc(${size()} * var(--sp))`, "font-size": `calc(${Math.round(size() * (size() >= 18 ? 0.46 : 0.68))} * var(--sp))` }} role={p.label ? "img" : undefined} aria-label={p.label} aria-hidden={p.label ? undefined : "true"}>
-                    {(p.name ?? p.id).replace(/[^A-Za-z0-9]/g, "").slice(0, size() >= 18 ? 2 : 1).toUpperCase()}
+                // Its initial, at a size that reads: two letters in a mark this small never did.
+                <span class={`provider-mono ${p.class ?? ""}`} style={{ width: `calc(${size()} * var(--sp))`, height: `calc(${size()} * var(--sp))`, "font-size": `calc(${Math.round(size() * 0.68)} * var(--sp))` }} role={p.label ? "img" : undefined} aria-label={p.label} aria-hidden={p.label ? undefined : "true"}>
+                    {(p.name ?? p.id).replace(/[^A-Za-z0-9]/g, "").slice(0, 1).toUpperCase()}
                 </span>
             }
         >

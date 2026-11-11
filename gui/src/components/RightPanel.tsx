@@ -70,7 +70,7 @@ function WorkspaceButton(p: { handle: SessionHandle }) {
                     <Copy size={14} /> Copy folder path
                 </button>
                 <button role="menuitem" class="menu-item compact" onClick={() => (close(), newSession(st().cwd))}>
-                    <SquarePen size={14} /> New session in {st().projectName}
+                    <SquarePen size={14} /> New session
                 </button>
                 <button role="menuitem" class="menu-item compact" onClick={() => (close(), setMcpOpen({}))}>
                     <Plug size={14} /> MCP servers
@@ -130,7 +130,7 @@ function FileRow(p: { f: Listed; onOpen: () => void }) {
             </span>
             <Show when={p.f.added || p.f.removed}>
                 <span class="stat">
-                    <Show when={p.f.added || !p.f.removed}>
+                    <Show when={p.f.added}>
                         <span class="add">+{p.f.added}</span>
                     </Show>
                     <Show when={p.f.removed}>

@@ -828,6 +828,8 @@
     min-height: calc(44 * var(--sp));
     max-height: min(calc(7lh + 2 * var(--sp)), calc(var(--column-h, 100vh) * 0.3));
     padding: calc(2 * var(--sp)) 0 0;
+    /* Scrolled, the line above shows a sliver of its descenders in the top padding: faded out. */
+    mask-image: linear-gradient(transparent, #000 4px);
     border: 0;
     resize: none;
     overflow-y: auto;
@@ -2785,41 +2787,6 @@
 /* ---- Used elsewhere, kept here where they started --------------------------------- */
 
 /* The sub-agent view's back control (Agents.tsx) still uses the old control look. */
-.ctl {
-    display: inline-flex;
-    align-items: center;
-    flex: none;
-    gap: calc(6 * var(--sp));
-    height: calc(28 * var(--sp));
-    min-width: 0;
-    padding: 0 calc(10 * var(--sp));
-    border-radius: var(--pill);
-    font-size: 0.929rem;
-    font-weight: 500;
-    color: var(--fg-2);
-    white-space: nowrap;
-    transition: background 140ms, color 140ms;
-}
-
-.ctl:hover,
-.ctl[aria-expanded="true"] {
-    background: var(--hover);
-    color: var(--fg);
-}
-
-.ctl > svg {
-    flex: none;
-}
-
-.ctl .chv {
-    color: var(--fg-3);
-}
-
-.ctl.danger,
-.ctl.danger:hover {
-    color: var(--danger);
-}
-
 .vs {
     flex: none;
     width: 1px;

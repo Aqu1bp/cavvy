@@ -264,6 +264,11 @@
     flex: none;
 }
 
+/* A narrow column: the title has the room, not a stub of the branch. */
+:where(.main[data-narrow~="640"]) .br {
+    display: none;
+}
+
 .crumbs .pill {
     align-self: center;
 }

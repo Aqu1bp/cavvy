@@ -638,6 +638,8 @@ function ToolRowContent(p: ToolRowProps) {
         if (t.diff && t.status === "ok") return undefined;
         if (t.status === "error") return t.summary?.trim() || "Failed";
         if (resultEchoes(t)) return undefined;
+        // A commit's result is its hash and its subject: the row has the subject already.
+        if (t.name === "GitCommit" && label().arg && t.summary?.endsWith(` ${label().arg}`)) return t.summary.slice(0, -label().arg!.length - 1);
         return resultOf(t.summary);
     };
     return (
@@ -751,7 +753,8 @@ function EditCardContent(p: { tool: ToolBlock }) {
     // Refused before it changed anything (not read first, old text not found): the row says Failed, and why under it,
     // as a failed command's does; what it would have written isn't worth opening.
     const refused = () => t().status === "error" && !t().diff;
-    const why = createMemo(() => (refused() ? (t().output ?? "").split("\n").map((l) => l.trim()).filter(Boolean).join(" ") || undefined : undefined));
+    // Its first sentence, in a reader's words: the rest is advice to the model ("It must match the file exactly…").
+    const why = createMemo(() => (refused() ? (t().output ?? "").trim().split(/(?<=\.)\s/)[0]?.replace(/^old_string/, "The text to replace") || undefined : undefined));
     const input = () => (t().diff || refused() ? undefined : Object.keys(t().input ?? {}).length ? JSON.stringify(t().input, null, 2) : undefined);
     const showOutput = () => !refused() && (!t().diff || t().status === "error") && Boolean(t().output?.trim());
     const hasBody = () => Boolean(t().diff || t().diagnostics || input() || showOutput());

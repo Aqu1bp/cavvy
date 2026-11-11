@@ -159,7 +159,8 @@
     display: flex;
     flex-direction: column;
     scrollbar-width: none;
-    mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent 100%);
+    /* Both edges fade: a row scrolled half out isn't cut through its words. The top 8px is a row's own padding. */
+    mask-image: linear-gradient(transparent, #000 8px, #000 calc(100% - 16px), transparent);
 }
 
 .side-list::-webkit-scrollbar {
@@ -542,10 +543,12 @@
     pointer-events: auto;
 }
 
+/* Hidden, it keeps the room the actions over it take, so a long title ends before them, not under them. */
 .card:hover .end,
 .card:focus-within .end,
 .card.menu-open .end {
     visibility: hidden;
+    min-width: calc(46 * var(--sp));
 }
 
 /* Over the title line, its text where the title's was (the hit's padding, less the box's own). */
@@ -605,6 +608,7 @@
 .needs-row:hover .end,
 .needs-row:focus-within .end {
     visibility: visible;
+    min-width: 0;
 }
 
 @keyframes needs-in {
