@@ -2312,6 +2312,20 @@ export class Runtime {
                 if (b.job) this.ui.write({ t: "tool", id: b.id, job: b.job, at: Date.now() });
             }
         }
+        // The turns steered messages ended on the way here (drainedTurn) keep the calls that began in them: none of
+        // theirs is left under way either. One that never arrived whole goes: there's nothing of it to show.
+        for (let i = this.view.turns.findIndex((t) => t.id === turnId); i > 0 && this.view.turns[i]!.prompt?.steered; i--) {
+            const earlier = this.view.turns[i - 1]!;
+            let changed = false;
+            for (const b of [...earlier.blocks]) {
+                if (b.t !== "tool" || (b.status === "running" && background.has(b.id))) continue;
+                if (b.status === "streaming") this.op({ op: "block.remove", turnId: earlier.id, blockId: b.id });
+                else if (b.status === "running" || b.status === "queued" || b.status === "awaiting") this.patchBlock(b.id, { status: "error", summary: reason === "aborted" ? "Interrupted" : "Not run", progress: undefined }, earlier.id);
+                else continue;
+                changed = true;
+            }
+            if (changed) this.syncTurnAll(earlier.id);
+        }
         const status: TurnStatus = reason;
         const end = Date.now();
         this.op({ op: "turn.patch", turnId, patch: { status, endedAt: end, snapshotId: this.snapshotId() } });

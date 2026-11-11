@@ -109,6 +109,20 @@ test("a turn left running with no live line draws its calls under way as rows, t
     } finally { h.dispose(); }
 });
 
+test("a command still arriving with nothing of it here yet draws no row: a spinner alone says nothing", () => {
+    // No live line (a turn a steered message ended keeps the calls that began in it, as rows).
+    const cut = { t: "tool", id: "cut", name: "Bash", title: "Bash", status: "streaming", receiving: 0 };
+    const h = setup([cut as any], false, [], undefined, false);
+    try {
+        expect(row(h.root, "cut")).toBeUndefined();
+        expect(all(h.root).some((n) => has(n, "cmd-card"))).toBe(false);
+        // What it's for has arrived: its row says so.
+        h.op({ op: "block.patch", blockId: "cut", patch: { input: { description: "Survey the repo" } } });
+        expect(text(row(h.root, "cut"))).toContain("Survey the repo");
+        expect(text(h.root)).not.toContain("Couldn't render");
+    } finally { h.dispose(); }
+});
+
 // Count comparisons instead of using a flaky wall-time threshold. The old
 // done().includes(step) executes ~n²/2 identity comparisons on each status change.
 function membershipWork(run: () => void) {

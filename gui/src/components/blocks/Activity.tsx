@@ -922,7 +922,8 @@ function lastLine(text: string | undefined, why = false): string | undefined {
  * a footer with the exit and the time.
  */
 export function CommandCard(p: { tool: ToolBlock }) {
-    return <RenderBoundary raw={() => p.tool}><CommandCardContent {...p} /></RenderBoundary>;
+    // Still arriving, with nothing of it here yet: no row (it would be a spinner with no words beside it).
+    return <RenderBoundary raw={() => p.tool}><Show when={p.tool.status !== "streaming" || commandLabel(p.tool)}><CommandCardContent {...p} /></Show></RenderBoundary>;
 }
 
 function CommandCardContent(p: { tool: ToolBlock }) {
