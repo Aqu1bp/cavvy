@@ -221,7 +221,7 @@ h2,
 h3 {
     margin: 0;
     font-weight: 620;
-    letter-spacing: -0.015em;
+    letter-spacing: -0.017em;
 }
 
 /* Scrollbars: thin and quiet. */
@@ -387,9 +387,9 @@ h3 {
     gap: calc(8 * var(--sp));
     height: calc(32 * var(--sp));
     padding: 0 calc(14 * var(--sp));
-    border-radius: calc(8 * var(--rs));
+    border-radius: var(--r-ctl);
     font-weight: 500;
-    font-size: 0.964rem;
+    font-size: 0.929rem;
     white-space: nowrap;
     transition: background var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast), box-shadow var(--dur-fast), transform 80ms;
     border: 1px solid transparent;
@@ -404,26 +404,27 @@ h3 {
     height: calc(28 * var(--sp));
     padding: 0 calc(10 * var(--sp));
     font-size: 0.857rem;
-    border-radius: var(--radius-sm);
 }
 
+/* The one thing to do next: the accent, lit from above, with a little of its own light under it. */
 .btn.primary {
-    background: var(--accent);
+    background: linear-gradient(180deg, var(--accent), var(--accent-hover));
     color: var(--accent-ink);
-    box-shadow: inset 0 1px rgba(255, 255, 255, 0.14), 0 1px 2px color-mix(in srgb, var(--accent) 30%, transparent);
+    box-shadow: inset 0 1px rgba(255, 255, 255, 0.22), 0 1px 2px color-mix(in srgb, var(--accent) 36%, transparent), 0 6px 14px -6px color-mix(in srgb, var(--accent) 55%, transparent);
 }
 
 .btn.primary:hover:not(:disabled) {
     background: var(--accent-hover);
 }
 
+/* A raised key on the sheet: what else you could do. */
 .btn.secondary {
-    background: transparent;
-    box-shadow: inset 0 0 0 1px var(--line-strong);
+    background: var(--raised);
+    box-shadow: inset 0 0 0 0.5px var(--line-strong), var(--shadow-sm);
 }
 
 .btn.secondary:hover:not(:disabled) {
-    background: var(--hover);
+    background: linear-gradient(var(--hover), var(--hover)), var(--raised);
 }
 
 .btn.ghost {
@@ -438,6 +439,7 @@ h3 {
 .btn.danger {
     background: var(--danger);
     color: var(--sheet);
+    box-shadow: inset 0 1px rgba(255, 255, 255, 0.18), 0 1px 2px color-mix(in srgb, var(--danger) 36%, transparent);
 }
 
 .btn:disabled {
@@ -500,7 +502,7 @@ h3 {
     gap: calc(5 * var(--sp));
     height: calc(22 * var(--sp));
     padding: 0 calc(8 * var(--sp));
-    border-radius: calc(999 * var(--rs));
+    border-radius: calc(7 * var(--rs));
     background: var(--hover);
     color: var(--fg-2);
     font-size: 0.8rem;
@@ -541,7 +543,8 @@ kbd {
     height: calc(20 * var(--sp));
     padding: 0 calc(5 * var(--sp));
     border-radius: calc(5 * var(--rs));
-    background: var(--hover);
+    background: var(--raised);
+    box-shadow: inset 0 0 0 0.5px var(--line-strong), 0 1px 0 var(--line-strong);
     color: var(--fg-2);
     font-size: 0.786rem;
     font-family: var(--font-ui);
@@ -658,9 +661,9 @@ kbd {
 .input,
 .select {
     height: calc(34 * var(--sp));
-    border-radius: var(--radius-md);
+    border-radius: var(--r-ctl);
     border: 1px solid var(--line-strong);
-    background: var(--sheet);
+    background: var(--raised);
     padding: 0 calc(11 * var(--sp));
     min-width: 0;
     transition: border-color var(--dur-fast), box-shadow var(--dur-fast);
@@ -719,8 +722,8 @@ input[type="range"] {
 
 .segmented {
     display: inline-flex;
-    background: var(--hover);
-    border-radius: var(--radius-md);
+    background: var(--press);
+    border-radius: var(--r-ctl);
     padding: calc(2 * var(--sp));
     gap: calc(2 * var(--sp));
 }
@@ -728,9 +731,9 @@ input[type="range"] {
 .segmented button {
     height: calc(28 * var(--sp));
     padding: 0 calc(12 * var(--sp));
-    border-radius: calc(8 * var(--rs));
+    border-radius: max(calc(var(--r-ctl) - 2 * var(--sp)), 0px);
     font-size: 0.857rem;
-    font-weight: 540;
+    font-weight: 500;
     color: var(--fg-2);
     display: inline-flex;
     align-items: center;
@@ -794,9 +797,9 @@ input[type="range"] {
     background: var(--ctl-strong);
     -webkit-backdrop-filter: blur(16px) saturate(1.08);
     backdrop-filter: blur(16px) saturate(1.08);
-    border-radius: calc(10 * var(--rs));
-    box-shadow: var(--pop-shadow);
-    padding: calc(4 * var(--sp));
+    border-radius: calc(12 * var(--rs));
+    box-shadow: var(--pop-shadow), inset 0 1px 0 var(--ctl-hi);
+    padding: calc(5 * var(--sp));
     overflow: auto;
     color: var(--fg);
     animation: pop var(--dur-panel) var(--ease-out);
@@ -813,9 +816,9 @@ input[type="range"] {
     justify-content: space-between;
     gap: calc(8 * var(--sp));
     padding: calc(6 * var(--sp)) calc(8 * var(--sp)) calc(4 * var(--sp));
-    font-size: 0.857rem;
-    font-weight: 500;
-    color: var(--fg-2);
+    font-size: 0.786rem;
+    font-weight: 600;
+    color: var(--fg-3);
 }
 
 .menu-item {
@@ -824,11 +827,11 @@ input[type="range"] {
     gap: calc(10 * var(--sp));
     width: 100%;
     padding: calc(6 * var(--sp)) calc(8 * var(--sp));
-    border-radius: calc(6 * var(--rs));
+    border-radius: calc(7 * var(--rs));
     text-align: left;
     color: var(--fg);
     min-width: 0;
-    font-size: 0.964rem;
+    font-size: 0.929rem;
     font-weight: 500;
 }
 
@@ -863,7 +866,7 @@ input[type="range"] {
 
 .menu-item.current,
 .menu-item.on {
-    background: var(--sheet-2);
+    background: var(--accent-soft);
 }
 
 .menu-item:disabled {
@@ -897,7 +900,7 @@ input[type="range"] {
 .menu-sep {
     height: 1px;
     background: var(--line);
-    margin: calc(4 * var(--sp)) calc(-4 * var(--sp));
+    margin: calc(5 * var(--sp)) calc(-5 * var(--sp));
 }
 
 .menu-note {

@@ -27,6 +27,7 @@ import { ProviderIcon } from "./ui/ProviderIcon";
 import { Logo, Spinner } from "./ui/bits";
 import { updateView } from "../lib/app-update";
 import { actionOf, shortcut, withShortcut } from "../state/keybindings";
+import { loadSettings } from "../lib/settings-chunk";
 
 /** Cards shown before "Show more". */
 const PAGE = SESSION_PAGE;
@@ -547,8 +548,8 @@ function SelectionBar(p: { count: number; plan: BulkPlan; act: (what: "settle" |
 
 /**
  * The top line, level with the traffic lights (macOS): the app's mark just right
- * of them, then hide the rail and start a session, at the rail's far end. Shared
- * with the Settings rail. The mark is the rail's: hidden with it, it goes too.
+ * of them, and hide the rail at its far end. Shared with the Settings rail. The
+ * mark is the rail's: hidden with it, it goes too.
  */
 export function SidebarTop() {
     return (
@@ -557,9 +558,6 @@ export function SidebarTop() {
             <span class="grow" />
             <button class="hb" title={withShortcut("Hide sidebar", "app:toggleSidebar")} aria-label="Hide sidebar" onClick={toggleSidebar}>
                 <PanelLeft size={16} />
-            </button>
-            <button class="hb" title={withShortcut("New session", "app:newSession")} aria-label="New session" onClick={() => (setSettingsTab(undefined), newSession(app.homeCwd))}>
-                <SquarePen size={16} />
             </button>
         </div>
     );
@@ -854,6 +852,12 @@ export function Sidebar() {
 
     return (
         <SidebarFrame>
+            {/* The rail's first row: the one thing most visits start with. */}
+            <button class="side-new" title={withShortcut("New session", "app:newSession")} onClick={() => newSession(app.homeCwd)}>
+                <SquarePen size={15} />
+                <span>New session</span>
+                <Show when={shortcut("app:newSession")}>{(k) => <span class="side-kbd">{os === "macos" ? k().replaceAll("+", "") : k()}</span>}</Show>
+            </button>
             <div class="side-tools">
                 <button class="side-search" title={withShortcut("Search sessions, messages and actions", "app:commandPalette")} onClick={() => setPaletteOpen(true)}>
                     <Search size={14} />
@@ -995,7 +999,7 @@ export function Sidebar() {
                     <PlanRow plans={plans()} />
                 </Show>
                 <UpdateButton />
-                <button class="hb lg" title={withShortcut("Settings", "app:settings")} aria-label="Settings" onClick={() => setSettingsTab("general")}>
+                <button class="hb lg" title={withShortcut("Settings", "app:settings")} aria-label="Settings" onPointerEnter={() => void loadSettings()} onFocus={() => void loadSettings()} onClick={() => setSettingsTab("general")}>
                     <Settings size={16} />
                 </button>
             </div>

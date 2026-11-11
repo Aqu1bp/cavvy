@@ -26,7 +26,7 @@
    in the column goes 42% above it. The composer stays where it is as its text grows (down, on Home). */
 .home-col {
     --home-card-h: 150;
-    --home-group: calc((200 + var(--home-cards, 0) * var(--home-card-h) + var(--cli-on, 0) * 62 + var(--cli-rows, 0) * 47) * var(--sp));
+    --home-group: calc((252 + var(--home-cards, 0) * var(--home-card-h) + var(--cli-on, 0) * 62 + var(--cli-rows, 0) * 47) * var(--sp));
     width: 100%;
     max-width: calc(var(--column-w) + 100 * var(--sp));
     margin: 0 auto;
@@ -49,13 +49,14 @@
 }
 
 .home-q {
-    margin: 0 0 calc(24 * var(--sp));
+    margin: 0 0 calc(26 * var(--sp));
     padding: 0 calc(20 * var(--sp));
     text-align: center;
-    font-size: calc(26 * var(--sp));
+    font-family: var(--font-prose);
+    font-size: calc(30 * var(--sp));
     font-weight: 650;
-    letter-spacing: -0.024em;
-    line-height: 1.2;
+    letter-spacing: -0.028em;
+    line-height: 1.15;
     color: var(--fg);
     animation: home-in 320ms var(--ease) both;
 }
@@ -70,6 +71,67 @@
     flex-direction: column;
     gap: calc(8 * var(--sp));
     animation: home-in 320ms 60ms var(--ease) both;
+}
+
+/* Light behind the composer, in the accent's neighbours: the one place the app glows. Two soft
+   gradients, drawn once: nothing here moves or blurs. */
+.home-composer::before {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    inset: calc(-130 * var(--sp)) calc(-90 * var(--sp)) calc(-70 * var(--sp));
+    background:
+        radial-gradient(46% 58% at 30% 42%, color-mix(in srgb, var(--accent-2) 15%, transparent), transparent 72%),
+        radial-gradient(44% 56% at 72% 56%, color-mix(in srgb, var(--accent-3) 13%, transparent), transparent 72%);
+    pointer-events: none;
+}
+
+/* Ways to start, under the composer's drawer while nothing is typed. */
+.home-starts {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: calc(8 * var(--sp));
+    height: calc(30 * var(--sp));
+    margin-top: calc(18 * var(--sp));
+    overflow: hidden;
+    transition: opacity 160ms;
+    animation: home-in 320ms 120ms var(--ease) both;
+}
+
+.home-starts.off {
+    opacity: 0;
+}
+
+.home-starts button {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(7 * var(--sp));
+    height: calc(30 * var(--sp));
+    padding: 0 calc(12 * var(--sp)) 0 calc(10 * var(--sp));
+    border-radius: var(--r-ctl);
+    font-size: 0.893rem;
+    font-weight: 500;
+    color: var(--fg-2);
+    background: var(--raised);
+    box-shadow: inset 0 0 0 0.5px var(--line-strong), var(--shadow-sm);
+    white-space: nowrap;
+    transition: color 140ms, box-shadow 140ms, transform 160ms var(--ease);
+}
+
+.home-starts button svg {
+    flex: none;
+    color: var(--accent-text);
+}
+
+.home-starts button:hover {
+    color: var(--fg);
+    box-shadow: inset 0 0 0 0.5px var(--accent-border), var(--ctl-shadow);
+    transform: translateY(-1px);
+}
+
+.home-starts button:active {
+    transform: scale(0.98);
 }
 
 /* A narrow column: a card's text runs to more lines and its buttons stack (composer.css .ask-row). */
@@ -95,7 +157,7 @@
 }
 
 /* Drawn before the window came up, at launch: it's all there when the window is. */
-.home.instant :is(.home-q, .home-composer, .composer-strip, .cli-sessions) {
+.home.instant :is(.home-q, .home-composer, .composer-strip, .home-starts, .cli-sessions) {
     animation: none;
 }
 

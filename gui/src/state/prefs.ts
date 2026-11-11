@@ -8,7 +8,7 @@ import { setNativeTheme } from "../lib/platform";
 import { scaled } from "../lib/text-size";
 import { appearanceOf, migratePrefs, PREF_DEFAULTS, showAppearance, type Appearance, type Prefs } from "./prefs-core";
 
-export { ACCENTS, CHAT_WIDTHS, PREF_DEFAULTS, type AccentId, type ContrastId, type GlassId, type Prefs, type Scheme, type TintId } from "./prefs-core";
+export { ACCENTS, CHAT_WIDTHS, LOOK_VERSION, PREF_DEFAULTS, type AccentId, type ContrastId, type FaceId, type GlassId, type Prefs, type SavedTheme, type Scheme, type ShapeId, type TintId } from "./prefs-core";
 
 const KEY = "cavvy.prefs";
 
@@ -36,6 +36,22 @@ export function activeTheme(): "light" | "dark" {
     return prefs.scheme === "system" ? (systemDark() ? "dark" : "light") : prefs.scheme;
 }
 
+/**
+ * A theme's palettes as a stylesheet after the page's own: the same selectors as tokens.css's palettes, so they
+ * take their place, and its Window, Window tint, Contrast and accent rules (more specific) still apply over them.
+ * public/theme-boot.js does the same before the first paint.
+ */
+let lookSheet: CSSStyleSheet | undefined;
+function showLook(css: string | undefined) {
+    try {
+        lookSheet ??= (window as { cavvyLook?: CSSStyleSheet }).cavvyLook ?? new CSSStyleSheet();
+        lookSheet.replaceSync(css ?? "");
+        if (!document.adoptedStyleSheets.includes(lookSheet)) document.adoptedStyleSheets = [...document.adoptedStyleSheets, lookSheet];
+    } catch {
+        // No constructable stylesheets here: the default look.
+    }
+}
+
 createRoot(() => {
     // Only what changed goes to <html> (a write there can restyle the whole window), and the
     // native window hears only of a change of scheme (each time is a call to the app).
@@ -43,6 +59,7 @@ createRoot(() => {
     createEffect(() => {
         const next = appearanceOf(prefs, systemDark());
         showAppearance(document.documentElement, next, shown);
+        if (next.look !== shown?.look && (next.look || shown)) showLook(next.look);
         if (next.theme !== shown?.theme) void setNativeTheme(next.theme);
         shown = next;
     });

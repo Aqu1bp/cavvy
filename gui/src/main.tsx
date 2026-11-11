@@ -23,7 +23,7 @@ import "./styles/composer.css";
 import "./styles/plan.css";
 import "./styles/overlays.css";
 import "./styles/markdown.css";
-import "./state/prefs";
+import { LOOK_VERSION, prefs } from "./state/prefs";
 import { start } from "./state/app";
 import { alignAnimations } from "./lib/stream-clock";
 import { RenderBoundary } from "./components/ui/ErrorBoundary";
@@ -31,4 +31,6 @@ import { App } from "./App";
 
 alignAnimations();
 start();
+// A theme saved by an older version of how palettes are worked out: worked out again, once.
+if (prefs.look && prefs.lookVersion !== LOOK_VERSION) void import("./state/theme").then((m) => m.refreshLook());
 render(() => <RenderBoundary app><App /></RenderBoundary>, document.getElementById("root")!);

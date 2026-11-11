@@ -1,8 +1,8 @@
 /* ---- Rail: the sessions, straight on the window glass ------------------
    No card of its own: the window's material shows through. Its top line
-   (hide, new session) sits at its far end, level with the traffic lights;
-   then search, the list and the plan footer. Rows are pills; the selected
-   one is a raised translucent pill. */
+   (the mark, hide) is level with the traffic lights; then New session,
+   search, the list and the plan footer. The open session's row is raised,
+   with the accent at its edge. */
 
 .sidebar {
     /* The rail's width: it fills .win-rail's track (shell.css), which keeps it while the column opens and closes. */
@@ -35,7 +35,7 @@
 }
 
 .sidebar .hb {
-    border-radius: var(--pill);
+    border-radius: var(--r-ctl);
     color: var(--rail-fg-2);
     transition: background 140ms, color 140ms, transform 160ms var(--ease);
 }
@@ -97,35 +97,62 @@
     flex: none;
 }
 
-/* Search everything (the palette): a pill, like a field. */
+/* New session: a raised key on the glass, the first thing in the rail. Search everything (the
+   palette) under it: a field, quieter. */
+.side-new,
 .side-search {
-    flex: 1;
     min-width: 0;
     display: flex;
     align-items: center;
     gap: calc(8 * var(--sp));
     height: calc(32 * var(--sp));
     padding: 0 calc(6 * var(--sp)) 0 calc(10 * var(--sp));
-    margin-right: calc(2 * var(--sp));
-    border-radius: var(--pill);
-    color: var(--rail-fg-2);
-    background: var(--rail-hover);
-    box-shadow: inset 0 0 0 0.5px var(--rail-sel-stroke);
+    border-radius: var(--r-ctl);
     text-align: left;
-    transition: box-shadow 140ms, color 140ms;
+    transition: background 140ms, box-shadow 140ms, color 140ms, transform 160ms var(--ease);
     /* Its width decides whether the shortcut shows (below). */
     container-type: inline-size;
 }
 
-.side-search:hover {
+.side-new {
+    flex: none;
+    margin-bottom: calc(6 * var(--sp));
+    font-weight: 550;
     color: var(--rail-fg);
+    background: var(--rail-sel);
+    box-shadow: inset 0 0 0 0.5px var(--rail-sel-stroke), var(--shadow-sm);
 }
 
-.side-search > svg {
+.side-new > svg {
+    color: var(--accent-text);
+}
+
+.side-new:hover {
+    box-shadow: inset 0 0 0 0.5px var(--rail-sel-stroke), var(--ctl-shadow);
+}
+
+.side-new:active {
+    transform: scale(0.985);
+}
+
+.side-search {
+    flex: 1;
+    margin-right: calc(2 * var(--sp));
+    color: var(--rail-fg-2);
+    background: var(--rail-hover);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+}
+
+.side-search:hover {
+    color: var(--rail-fg);
+    box-shadow: inset 0 0 0 0.5px var(--line-strong);
+}
+
+:is(.side-new, .side-search) > svg {
     flex: none;
 }
 
-.side-search > span:not(.side-kbd) {
+:is(.side-new, .side-search) > span:not(.side-kbd) {
     flex: 1;
     min-width: 0;
     overflow: hidden;
@@ -143,7 +170,7 @@
 .side-kbd {
     flex: none;
     font: 500 0.786rem/1 var(--font-ui);
-    color: var(--fg-3);
+    color: var(--rail-fg-2);
     padding: calc(3 * var(--sp)) calc(5 * var(--sp));
     border-radius: calc(5 * var(--rs));
     background: var(--hover);
@@ -171,8 +198,9 @@
 }
 
 .side-empty {
-    padding: calc(20 * var(--sp)) calc(8 * var(--sp));
+    padding: calc(20 * var(--sp)) calc(10 * var(--sp));
     color: var(--rail-fg-2);
+    font-size: 0.857rem;
     line-height: 1.5;
 }
 
@@ -184,7 +212,7 @@
     align-items: center;
     gap: calc(7 * var(--sp));
     flex: none;
-    padding: calc(4 * var(--sp)) calc(8 * var(--sp)) calc(6 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp));
     margin-top: calc(14 * var(--sp));
     font-size: 0.857rem;
     font-weight: 600;
@@ -274,9 +302,9 @@
     display: flex;
     align-items: center;
     gap: calc(7 * var(--sp));
-    margin: calc(-4 * var(--sp)) calc(-8 * var(--sp)) calc(-6 * var(--sp));
-    padding: calc(4 * var(--sp)) calc(8 * var(--sp)) calc(6 * var(--sp));
-    border-radius: calc(10 * var(--rs));
+    margin: calc(-4 * var(--sp)) calc(-10 * var(--sp)) calc(-6 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp));
+    border-radius: var(--r-ctl);
     color: inherit;
     font: inherit;
     text-align: left;
@@ -316,8 +344,8 @@
 .card {
     position: relative;
     flex: none;
-    margin-bottom: 1px;
-    border-radius: calc(11 * var(--rs));
+    margin-bottom: calc(2 * var(--sp));
+    border-radius: var(--r-ctl);
     transition: background 140ms;
 }
 
@@ -328,7 +356,19 @@
 
 .card.cur {
     background: var(--rail-sel);
-    box-shadow: inset 0 0 0 0.5px var(--rail-sel-stroke), var(--ctl-shadow);
+    box-shadow: inset 0 0 0 0.5px var(--rail-sel-stroke), var(--shadow-sm);
+}
+
+/* Where you are: the accent, at the open row's leading edge. */
+:is(.card, .slim).cur::before {
+    content: "";
+    position: absolute;
+    left: calc(3 * var(--sp));
+    top: calc(9 * var(--sp));
+    bottom: calc(9 * var(--sp));
+    width: calc(3 * var(--sp));
+    border-radius: var(--r-full);
+    background: var(--accent);
 }
 
 /* Picked for a bulk action (Shift- or ⌘-click): an accent-tinted pill, apart
@@ -367,8 +407,8 @@
     align-items: center;
     width: 100%;
     min-width: 0;
-    padding: calc(7 * var(--sp)) calc(10 * var(--sp));
-    border-radius: calc(11 * var(--rs));
+    padding: calc(7 * var(--sp)) calc(10 * var(--sp)) calc(7 * var(--sp)) calc(12 * var(--sp));
+    border-radius: var(--r-ctl);
     text-align: left;
     color: inherit;
 }
@@ -422,6 +462,7 @@
 .card .t {
     min-width: 0;
     font-weight: 500;
+    letter-spacing: -0.006em;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -491,12 +532,10 @@
 /* Listed by date: Today, Yesterday and so on, over their sessions. */
 .day-head {
     flex: none;
-    padding: calc(12 * var(--sp)) calc(10 * var(--sp)) calc(4 * var(--sp));
-    font-size: 0.75rem;
+    padding: calc(14 * var(--sp)) calc(12 * var(--sp)) calc(5 * var(--sp));
+    font-size: 0.786rem;
     font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: color-mix(in srgb, var(--rail-fg-2) 72%, transparent);
+    color: color-mix(in srgb, var(--rail-fg-2) 80%, transparent);
 }
 
 .day-head:first-child,
@@ -627,7 +666,7 @@
     flex: none;
     height: calc(32 * var(--sp));
     margin-bottom: 1px;
-    border-radius: calc(10 * var(--rs));
+    border-radius: var(--r-ctl);
     color: var(--rail-fg);
     transition: background 140ms;
 }
@@ -643,7 +682,7 @@
 
 .slim.cur {
     background: var(--rail-sel);
-    box-shadow: inset 0 0 0 0.5px var(--rail-sel-stroke), var(--ctl-shadow);
+    box-shadow: inset 0 0 0 0.5px var(--rail-sel-stroke), var(--shadow-sm);
 }
 
 .slim-hit {
@@ -653,8 +692,8 @@
     display: flex;
     align-items: center;
     gap: calc(9 * var(--sp));
-    padding: 0 calc(6 * var(--sp)) 0 calc(10 * var(--sp));
-    border-radius: calc(10 * var(--rs));
+    padding: 0 calc(6 * var(--sp)) 0 calc(12 * var(--sp));
+    border-radius: var(--r-ctl);
     text-align: left;
     color: inherit;
 }
@@ -1077,8 +1116,8 @@
     gap: calc(10 * var(--sp));
     width: 100%;
     height: auto;
-    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
-    border-radius: calc(10 * var(--rs));
+    padding: calc(7 * var(--sp)) calc(10 * var(--sp));
+    border-radius: var(--r-ctl);
     background: none;
     color: var(--rail-fg);
     font-size: 0.929rem;
@@ -1097,7 +1136,11 @@
 
 .sidebar.settings-nav .navi.on {
     background: var(--rail-sel);
-    box-shadow: inset 0 0 0 0.5px var(--rail-sel-stroke);
+    box-shadow: inset 0 0 0 0.5px var(--rail-sel-stroke), var(--shadow-sm);
+}
+
+.sidebar.settings-nav .navi.on svg {
+    color: var(--accent-text);
 }
 
 /* ---- Width: drag the rail's edge --------------------------------------- */

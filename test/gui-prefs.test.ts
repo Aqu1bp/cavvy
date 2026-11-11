@@ -49,7 +49,7 @@ function page(stored: string | null | undefined, dark: boolean, storageThrows = 
 function createStore<T extends object>(initial: T): [T, (key: keyof T, value: unknown) => void] {
     const signals = new Map<PropertyKey, ReturnType<typeof solid.createSignal<unknown>>>();
     const store = {} as T;
-    for (const key of new Set([...Object.keys(initial), "accent"])) {
+    for (const key of new Set([...Object.keys(initial), "accent", "look", "lookCss", "lookShape", "lookFace", "lookVersion"])) {
         const signal = solid.createSignal<unknown>((initial as Record<string, unknown>)[key]);
         signals.set(key, signal);
         Object.defineProperty(store, key, { enumerable: true, get: signal[0] });

@@ -11,6 +11,32 @@ export type ContrastId = "standard" | "high";
 /** Settings → Appearance → Window tint: the colour laid on the glass behind the rail. */
 export type TintId = "clear" | "ocean" | "accent";
 
+/** A theme's corners and typeface (tokens.css, [data-shape] and [data-face]). */
+export type ShapeId = "sharp" | "soft" | "round";
+export type FaceId = "system" | "mono" | "serif";
+
+/** A theme you made: its name and the few choices its colours are worked out from (lib/theme.ts). */
+export interface SavedTheme {
+    id: string;
+    name: string;
+    hue: number;
+    tint: number;
+    accent: string;
+    shape?: ShapeId;
+    typeface?: FaceId;
+}
+
+/** Which derive() (lib/theme.ts) a saved lookCss came from: raise it when the palette's tokens or their working-out change. */
+export const LOOK_VERSION = 1;
+
+/**
+ * A theme's palette as saved is applied as a stylesheet before the first paint, so it's only ever what
+ * lib/theme.ts writes: custom properties with colours, gradients and shadows. Anything else is refused.
+ */
+export function safeLook(css: unknown): css is string {
+    return typeof css === "string" && css.length < 20000 && !/[<>@\\]|url\(|import|expression/i.test(css);
+}
+
 export const ACCENTS: { id: AccentId; name: string; color: string }[] = [
     { id: "blue", name: "Blue", color: "#2a6bff" },
     { id: "indigo", name: "Indigo", color: "#4f46e5" },
@@ -25,8 +51,18 @@ export const ACCENTS: { id: AccentId; name: string; color: string }[] = [
 
 export interface Prefs {
     scheme: Scheme;
-    /** Unset: blue, the default. */
+    /** Unset: the theme's own. */
     accent?: AccentId;
+    /** The theme: a built-in's id (lib/theme.ts THEMES) or one of customThemes'. Unset: Cavvy, what tokens.css holds. */
+    look?: string;
+    /** What that theme gives (lib/theme.ts themeCss), worked out when it was picked, so startup only has to apply it. */
+    lookCss?: string;
+    lookShape?: ShapeId;
+    lookFace?: FaceId;
+    /** The LOOK_VERSION lookCss was made with: an older one is worked out again (state/theme.ts). */
+    lookVersion?: number;
+    /** Themes you've made. */
+    customThemes: SavedTheme[];
     glass: GlassId;
     tint: TintId;
     contrast: ContrastId;
@@ -79,6 +115,7 @@ export const PREF_DEFAULTS: Prefs = {
     terminalHeight: 260,
     reviewWidth: 720,
     favoriteModels: [],
+    customThemes: [],
     chatWidth: "default",
     // "instant" came from t3code; new installs get quick panels. Saved prefs keep their value (they're stored whole).
     motion: "quick",
@@ -88,6 +125,14 @@ const SCHEMES: readonly string[] = ["system", "light", "dark"];
 const GLASSES: readonly string[] = ["glass", "tinted", "solid"];
 const TINTS: readonly string[] = ["clear", "ocean", "accent"];
 const CONTRASTS: readonly string[] = ["standard", "high"];
+const SHAPES: readonly string[] = ["sharp", "soft", "round"];
+const FACES: readonly string[] = ["system", "mono", "serif"];
+
+const isSavedTheme = (t: unknown): t is SavedTheme => {
+    const v = t && typeof t === "object" ? (t as Record<string, unknown>) : undefined;
+    return Boolean(v && typeof v.id === "string" && typeof v.name === "string" && Number.isFinite(v.hue) && Number.isFinite(v.tint) && typeof v.accent === "string" && /^#[0-9a-f]{6}$/i.test(v.accent)
+        && (v.shape === undefined || SHAPES.includes(v.shape as string)) && (v.typeface === undefined || FACES.includes(v.typeface as string)));
+};
 
 /**
  * Saved preferences in today's shape. The six named themes became a scheme
@@ -113,6 +158,11 @@ export function migratePrefs(saved: unknown): Partial<Prefs> {
     if (!GLASSES.includes(out.glass as string)) delete out.glass;
     if (!TINTS.includes(out.tint as string)) delete out.tint;
     if (!ACCENTS.some((a) => a.id === out.accent)) delete out.accent;
+    // A theme: applied only whole. Without a palette that's safe to apply, it's the default look.
+    if (typeof out.look !== "string" || !safeLook(out.lookCss)) for (const key of ["look", "lookCss", "lookShape", "lookFace", "lookVersion"]) delete out[key];
+    if (!SHAPES.includes(out.lookShape as string)) delete out.lookShape;
+    if (!FACES.includes(out.lookFace as string)) delete out.lookFace;
+    if ("customThemes" in out && !(Array.isArray(out.customThemes) && out.customThemes.every(isSavedTheme))) delete out.customThemes;
     // Folded projects: a list of paths, or the default (none).
     if ("collapsedProjects" in out && !(Array.isArray(out.collapsedProjects) && out.collapsedProjects.every((c) => typeof c === "string"))) delete out.collapsedProjects;
     return out as Partial<Prefs>;
@@ -129,13 +179,16 @@ export interface Appearance {
     theme: "light" | "dark";
     dataset: Record<string, string | undefined>;
     style: Record<string, string>;
+    /** The theme's palettes, laid over tokens.css's own; undefined for the default look. */
+    look?: string;
 }
 
 export function appearanceOf(p: Prefs, systemDark: boolean): Appearance {
     const theme = p.scheme === "system" ? (systemDark ? "dark" : "light") : p.scheme;
     return {
         theme,
-        dataset: { theme, scheme: theme, glass: p.glass, tint: p.tint, contrast: p.contrast, accent: p.accent, density: p.density, motion: p.motion },
+        dataset: { theme, scheme: theme, glass: p.glass, tint: p.tint, contrast: p.contrast, accent: p.accent, density: p.density, motion: p.motion, shape: p.lookShape, face: p.lookFace },
+        look: p.lookCss,
         style: {
             "--font-scale": String(p.fontSize / 14),
             "--sidebar-w": `${p.sidebarWidth}px`,

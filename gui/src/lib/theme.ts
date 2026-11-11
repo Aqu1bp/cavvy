@@ -162,7 +162,7 @@ export function derive(recipe: ThemeRecipe, scheme: Scheme): Record<string, stri
     const t = clamp(recipe.tint);
     // Neutrals: a surface carries a little of the hue, ink more, and the darkest surfaces of a dark theme the most.
     const n = (L: number, strength: number) => oklch(L, t * strength, h);
-    const surface = (L: number) => n(L, dark ? 0.03 : 0.014 + (1 - L) * 0.25);
+    const surface = (L: number) => n(L, dark ? 0.03 : 0.009 + (1 - L) * 0.3);
 
     const sheet = surface(dark ? 0.212 : 0.992);
     const sheet2 = surface(dark ? 0.25 : 0.964);
@@ -272,8 +272,8 @@ export function derive(recipe: ThemeRecipe, scheme: Scheme): Record<string, stri
     const glow = (a: number) => css(alpha(WHITE, a));
     const blob = (L: number, C: number, hue: number) => hex(oklch(L, C, hue));
     const backdrop = dark
-        ? `radial-gradient(60% 55% at 12% 8%, ${blob(0.3, 0.05 + t * 0.03, h + 40)} 0%, transparent 62%), radial-gradient(55% 60% at 90% 16%, ${blob(0.29, 0.06 + t * 0.03, h - 14)} 0%, transparent 64%), radial-gradient(70% 60% at 60% 100%, ${blob(0.27, 0.05 + t * 0.03, h + 80)} 0%, transparent 66%), linear-gradient(160deg, ${blob(0.2, 0.02, h + 30)}, ${blob(0.17, 0.03, h)})`
-        : `radial-gradient(60% 55% at 12% 8%, ${blob(0.92, 0.035 + t * 0.02, h + 40)} 0%, transparent 62%), radial-gradient(55% 60% at 90% 16%, ${blob(0.9, 0.04 + t * 0.02, h - 14)} 0%, transparent 64%), radial-gradient(70% 60% at 60% 100%, ${blob(0.91, 0.03 + t * 0.02, h + 80)} 0%, transparent 66%), linear-gradient(160deg, ${blob(0.94, 0.015, h + 30)}, ${blob(0.9, 0.025, h)})`;
+        ? `radial-gradient(60% 55% at 12% 8%, ${blob(0.3, 0.05 + t * 0.03, h + 24)} 0%, transparent 62%), radial-gradient(55% 60% at 90% 16%, ${blob(0.29, 0.06 + t * 0.03, h - 16)} 0%, transparent 64%), radial-gradient(70% 60% at 60% 100%, ${blob(0.27, 0.05 + t * 0.03, h + 46)} 0%, transparent 66%), linear-gradient(160deg, ${blob(0.2, 0.02, h + 14)}, ${blob(0.17, 0.03, h)})`
+        : `radial-gradient(60% 55% at 12% 8%, ${blob(0.92, 0.035 + t * 0.02, h + 24)} 0%, transparent 62%), radial-gradient(55% 60% at 90% 16%, ${blob(0.9, 0.04 + t * 0.02, h - 16)} 0%, transparent 64%), radial-gradient(70% 60% at 60% 100%, ${blob(0.91, 0.03 + t * 0.02, h + 46)} 0%, transparent 66%), linear-gradient(160deg, ${blob(0.94, 0.015, h + 14)}, ${blob(0.9, 0.025, h)})`;
 
     return {
         "color-scheme": scheme,

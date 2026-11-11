@@ -242,3 +242,259 @@
         height: calc(58 * var(--sp));
     }
 }
+
+/* ---- Themes ---------------------------------------------------------------
+   Each tile is the window in small, drawn with the colours that theme gives in
+   the scheme showing (its palette is set on the tile itself, Appearance.tsx
+   ThemeTile), with its corners and typeface. Then one of your own, as you
+   change it. */
+
+.th-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(calc(116 * var(--sp)), 1fr));
+    gap: calc(14 * var(--sp)) calc(12 * var(--sp));
+}
+
+.th-tile {
+    display: flex;
+    flex-direction: column;
+    gap: calc(7 * var(--sp));
+    min-width: 0;
+    font-size: 0.857rem;
+    font-weight: 500;
+    color: var(--fg-2);
+    text-align: left;
+}
+
+.th-tile.on,
+.th-tile:hover {
+    color: var(--fg);
+}
+
+.th-pv {
+    position: relative;
+    display: grid;
+    grid-template-columns: 30% 1fr;
+    gap: calc(4 * var(--sp));
+    aspect-ratio: 8 / 5;
+    padding: calc(5 * var(--sp));
+    border-radius: calc(10 * var(--sp));
+    overflow: hidden;
+    background: var(--backdrop);
+    box-shadow: 0 0 0 0.5px var(--line-strong);
+    transition: box-shadow 160ms, transform 200ms var(--ease);
+}
+
+.th-tile:hover .th-pv {
+    transform: translateY(-1px);
+    box-shadow: 0 0 0 0.5px var(--line-strong), var(--ctl-shadow);
+}
+
+/* The ring is the window's accent, not the tile's own: it says which is picked, in one voice. */
+.th-tile.on .th-pv {
+    box-shadow: 0 0 0 2px var(--sheet), 0 0 0 4px var(--accent);
+}
+
+.th-rail {
+    display: flex;
+    flex-direction: column;
+    gap: calc(3 * var(--sp));
+    padding-top: calc(5 * var(--sp));
+}
+
+.th-rail i {
+    height: calc(6 * var(--sp));
+    border-radius: calc(3 * var(--rs));
+    background: var(--rail-hover);
+}
+
+.th-rail i.cur {
+    background: var(--rail-sel);
+    box-shadow: inset calc(2 * var(--sp)) 0 0 var(--accent);
+}
+
+.th-sheet {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: calc(4 * var(--sp));
+    padding: calc(6 * var(--sp));
+    border-radius: calc(6 * var(--rs));
+    background: var(--sheet);
+    box-shadow: 0 0 0 0.5px var(--line);
+}
+
+.th-sheet u {
+    height: calc(4 * var(--sp));
+    border-radius: var(--r-full);
+    background: var(--fg-4);
+}
+
+.th-sheet u.said {
+    align-self: flex-end;
+    width: 46%;
+    height: calc(9 * var(--sp));
+    border-radius: calc(4 * var(--rs));
+    background: var(--bubble);
+}
+
+.th-sheet u.short {
+    width: 58%;
+}
+
+.th-aa {
+    font: 650 calc(13 * var(--sp)) / 1 var(--font-ui);
+    letter-spacing: -0.02em;
+    color: var(--fg);
+}
+
+.th-pv[data-face="mono"] .th-aa {
+    font-family: var(--font-mono);
+}
+
+.th-pv[data-face="serif"] .th-aa {
+    font-family: var(--serif);
+}
+
+/* Send. */
+.th-sheet b {
+    position: absolute;
+    right: calc(5 * var(--sp));
+    bottom: calc(5 * var(--sp));
+    width: calc(11 * var(--sp));
+    height: calc(11 * var(--sp));
+    border-radius: min(var(--r-ctl), calc(4 * var(--sp)));
+    background: var(--accent);
+}
+
+.th-name {
+    display: flex;
+    align-items: center;
+    gap: calc(4 * var(--sp));
+    padding: 0 calc(2 * var(--sp));
+}
+
+.th-name svg {
+    flex: none;
+    color: var(--accent-text);
+}
+
+.th-new .th-pv {
+    display: grid;
+    grid-template-columns: 1fr;
+    place-items: center;
+    color: var(--fg-3);
+    background: none;
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+.th-new:hover .th-pv,
+.th-new.on .th-pv {
+    color: var(--fg);
+    background: var(--hover);
+}
+
+.th-paste {
+    display: flex;
+    align-items: center;
+    gap: calc(12 * var(--sp));
+    margin-top: calc(12 * var(--sp));
+}
+
+.th-paste .input {
+    flex: 1;
+}
+
+.th-edit {
+    margin-top: calc(16 * var(--sp));
+    animation: rise var(--dur-panel) var(--ease);
+}
+
+.th-field {
+    width: calc(220 * var(--sp));
+}
+
+.th-sliders {
+    display: flex;
+    flex-direction: column;
+    gap: calc(10 * var(--sp));
+    width: calc(220 * var(--sp));
+}
+
+/* The hue's whole circle, then from grey to as much of that hue as the neutrals take. */
+.th-sliders input {
+    appearance: none;
+    width: 100%;
+    height: calc(10 * var(--sp));
+    margin: 0;
+    border-radius: var(--r-full);
+    background: linear-gradient(90deg in oklch longer hue, oklch(0.72 0.14 0), oklch(0.72 0.14 359));
+    box-shadow: inset 0 0 0 0.5px var(--line-strong);
+}
+
+.th-sliders input.th-tint {
+    background: linear-gradient(90deg, oklch(0.72 0 0), oklch(0.72 0.12 calc(var(--th-hue) * 1deg)));
+}
+
+.th-sliders input::-webkit-slider-thumb {
+    appearance: none;
+    width: calc(16 * var(--sp));
+    height: calc(16 * var(--sp));
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.25), 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.th-sliders input:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+    outline-offset: 2px;
+}
+
+.th-accent {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+    font-size: 0.857rem;
+    color: var(--fg-2);
+}
+
+.th-accent input {
+    appearance: none;
+    width: calc(34 * var(--sp));
+    height: calc(24 * var(--sp));
+    padding: 0;
+    border: 0;
+    border-radius: var(--r-ctl);
+    background: none;
+    overflow: hidden;
+    box-shadow: 0 0 0 0.5px var(--line-strong);
+}
+
+.th-accent input::-webkit-color-swatch-wrapper {
+    padding: 0;
+}
+
+.th-accent input::-webkit-color-swatch {
+    border: 0;
+}
+
+.th-acts {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    padding: calc(10 * var(--sp)) calc(12 * var(--sp));
+    border-top: 0.5px solid var(--line);
+}
+
+.th-del:hover:not(:disabled) {
+    color: var(--danger);
+}
+
+/* The theme's own accent, first among the swatches. */
+.ap-swatches .ap-own {
+    margin-right: calc(4 * var(--sp));
+}
+
+[data-motion="instant"] .th-edit {
+    animation: none;
+}

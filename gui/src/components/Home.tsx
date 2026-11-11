@@ -1,10 +1,10 @@
 // Home (a new session): one question; the composer, with where the session will run
-// (project, branch or worktree) and the composer's prefixes in a drawer under it; and
-// sessions from this project's terminal to carry on here. The whole group sits a
-// little above the middle of the column (home.css).
+// (project, branch or worktree) and the composer's prefixes in a drawer under it; a few
+// ways to start, while nothing is typed; and sessions from this project's terminal to
+// carry on here. The whole group sits a little above the middle of the column (home.css).
 
 import { createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js";
-import { ChevronDown, Folder, FolderGit2, FolderOpen, KeyRound, Plug, ShieldAlert } from "lucide-solid";
+import { Bug, ChevronDown, Compass, FlaskConical, Folder, FolderGit2, FolderOpen, KeyRound, Plug, ScanSearch, ShieldAlert } from "lucide-solid";
 import { app, refreshProjects, reportError, rpc } from "../state/app";
 import { chooseProject, connectCli, openProject, trustAndContinue } from "../state/actions";
 import { columnHeight, requestComposerFocus, setFollowing, setSettingsTab, shellLayout } from "../state/ui";
@@ -24,6 +24,14 @@ const HINTS = [
     { key: "/", word: "commands", title: "Commands", starts: true },
     { key: "@", word: "files", title: "Mention a file", starts: false },
     { key: "!", word: "shell", title: "Run a shell command yourself", starts: true },
+];
+
+/** Ways to start, under the composer while it's empty: a click writes the prompt, ready to send or finish. */
+const STARTERS = [
+    { icon: Compass, label: "Explain this codebase", text: "Explain how this codebase is organised and where to start reading." },
+    { icon: Bug, label: "Fix a bug", text: "Fix this bug: " },
+    { icon: FlaskConical, label: "Write tests", text: "Write tests for " },
+    { icon: ScanSearch, label: "Review my changes", text: "Review my uncommitted changes for bugs." },
 ];
 
 /**
@@ -51,7 +59,7 @@ function typeInComposer(root: HTMLElement | undefined, text: string) {
 // Heights (px at text size 14) that decide how many terminal rows fit under the composer, as home.css
 // places the group: the title bar's row and the foot, the question and the composer with its strip, a
 // card above it (taller in a narrow column, its buttons stacked), the list's heading, and a row.
-const FRAME_H = 80, GROUP_H = 200, CARD_H = 150, NARROW_CARD_H = 220, LIST_H = 62, ROW_H = 47;
+const FRAME_H = 80, GROUP_H = 252, CARD_H = 150, NARROW_CARD_H = 220, LIST_H = 62, ROW_H = 47;
 
 /** How many terminal rows fit in the column with `cards` cards above the composer: 3 at most, down to none. */
 function rowsFitting(column: { w: number; h: number }, cards: number): number {
@@ -283,6 +291,20 @@ export function Home() {
                         placeholder={!app.homeCwd ? "Choose a project folder to start" : noModel() ? "Connect a model to start" : "Describe a task or ask a question"}
                     />
                 </div>
+
+                {/* Kept in place once something is typed (unseen), so the group doesn't move under the caret. */}
+                <Show when={app.homeCwd && !noModel()}>
+                    <div class="home-starts" classList={{ off: typed() }} role="group" aria-label="Ways to start" inert={typed()}>
+                        <For each={STARTERS}>
+                            {(st) => (
+                                <button onMouseDown={(e) => e.preventDefault()} onClick={() => typeInComposer(composer, st.text)}>
+                                    <st.icon size={14} />
+                                    {st.label}
+                                </button>
+                            )}
+                        </For>
+                    </div>
+                </Show>
 
                 <Show when={app.homeCwd} keyed>
                     {(cwd) => <CliSessions cwd={cwd} rows={rowsFitting(shellLayout().column, cards())} onShown={shown} />}

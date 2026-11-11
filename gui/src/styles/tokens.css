@@ -154,16 +154,16 @@
 [data-theme="light"] {
     /* palette:light */
     color-scheme: light;
-    --win-base: #eef1f6;
+    --win-base: #eff1f6;
     --win-stroke: rgba(0, 0, 0, 0.22);
     --win-hi: rgba(255, 255, 255, 0.7);
-    --backdrop: radial-gradient(60% 55% at 12% 8%, #e9dffc 0%, transparent 62%), radial-gradient(55% 60% at 90% 16%, #c7e1fc 0%, transparent 64%), radial-gradient(70% 60% at 60% 100%, #f3d8e8 0%, transparent 66%), linear-gradient(160deg, #ebeaf5, #d5dfef);
+    --backdrop: radial-gradient(60% 55% at 12% 8%, #e2e1ff 0%, transparent 62%), radial-gradient(55% 60% at 90% 16%, #c6e2fb 0%, transparent 64%), radial-gradient(70% 60% at 60% 100%, #e8dbf4 0%, transparent 66%), linear-gradient(160deg, #e8ebf6, #d5dfef);
     --sheet: #fbfcff;
-    --sheet-2: #f1f3f8;
-    --bubble: #ebeff4;
-    --insp-bg: #f6f8fc;
-    --term-bg: #f4f7fb;
-    --group: #f2f4f9;
+    --sheet-2: #f1f3f7;
+    --bubble: #eceff3;
+    --insp-bg: #f7f8fc;
+    --term-bg: #f5f7fa;
+    --group: #f2f4f8;
     --seg-on: #ffffff;
     --raised: var(--seg-on);
     --sheet-shadow: 0 0 0 0.5px rgba(18, 22, 30, 0.1), 0 1px 2px rgba(18, 22, 30, 0.04), 0 14px 36px -16px rgba(18, 22, 30, 0.26);
@@ -190,13 +190,13 @@
     --rail-sel: rgba(255, 255, 255, 0.66);
     --rail-sel-stroke: rgba(255, 255, 255, 0.9);
     --rail-hover: rgba(255, 255, 255, 0.34);
-    --rail-float: rgba(238, 241, 246, 0.84);
+    --rail-float: rgba(239, 241, 246, 0.84);
     --accent: #2868fc;
     --accent-ink: #ffffff;
     --ok: #007137;
     --warn: #895800;
     --warn-bg: rgba(255, 179, 70, 0.16);
-    --danger: #bc2025;
+    --danger: #bc1f24;
     --add-bg: #e0f7e5;
     --add-bg-strong: #bcecc8;
     --add-fg: #036a34;
@@ -226,7 +226,7 @@
     --win-base: #0c0e13;
     --win-stroke: rgba(0, 0, 0, 0.6);
     --win-hi: rgba(255, 255, 255, 0.14);
-    --backdrop: radial-gradient(60% 55% at 12% 8%, #332646 0%, transparent 62%), radial-gradient(55% 60% at 90% 16%, #082d4c 0%, transparent 64%), radial-gradient(70% 60% at 60% 100%, #391a2e 0%, transparent 66%), linear-gradient(160deg, #16141e, #080f1c);
+    --backdrop: radial-gradient(60% 55% at 12% 8%, #2b294a 0%, transparent 62%), radial-gradient(55% 60% at 90% 16%, #052e4b 0%, transparent 64%), radial-gradient(70% 60% at 60% 100%, #2e1e3c 0%, transparent 66%), linear-gradient(160deg, #13151f, #080f1c);
     --sheet: #16191d;
     --sheet-2: #1f2226;
     --bubble: #24272b;
