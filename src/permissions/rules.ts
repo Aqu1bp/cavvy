@@ -11,7 +11,7 @@
 
 import { isAbsolute, join } from "path";
 import { homedir } from "os";
-import { analyzeCommand, effectiveArgv, shellCommands, onlySafeAssignments, programNames, runLevels, runs, SHELLS, substitutionBodies } from "./bash-safety";
+import { analyzeCommand, commandsWithDirs, effectiveArgv, isCompound, isReadOnlySimple, shellCommands, onlySafeAssignments, programNames, runLevels, runs, SHELLS, substitutionBodies } from "./bash-safety";
 import { CASE_FOLDS, canonical, spellings } from "../util/files";
 import { isShellTool } from "../tools/types";
 import { APP_NAME } from "../config/name";
@@ -160,6 +160,9 @@ export function bashRuleMatches(spec: string | undefined, command: string, mode:
     // A prefix rule must not approve whatever hides in $(...) or backticks:
     // `Bash(npm test:*)` vs `npm test $(rm -rf src)`. Only an exact rule can.
     if (a.hasSubstitution || a.unparsable || a.unsafeExpansion) return !spec.includes("*") && command.trim() === spec;
+    // Nor a loop, a conditional, a group or a negation by the shell's own word for it: `Bash(!:*)` is not a rule
+    // for whatever is negated, nor `Bash(do:*)` for a loop's body. Its exact text, or a rule for anything at all.
+    if (spec !== "*" && isCompound(a.commands)) return command.trim() === spec;
     // `GIT_EXTERNAL_DIFF=cmd git diff` is not the `git diff` the user allowed.
     if (!a.commands.every((c) => onlySafeAssignments(c.argv))) return false;
     return a.commands.every((c) => matchCommandSpec(spec, effectiveArgv(c.argv).join(" ")));
@@ -187,6 +190,15 @@ function programWords(word: string): string[] {
     return [...new Set([word, ...spellings(word), ...programNames(word)])];
 }
 
+/** The programs of the last command asked about (each rule of a list asks about the same one). */
+let located: { command: string; programs: string[][] } | undefined;
+
+/** Every program a command line runs, compound commands' bodies included (commandsWithDirs). */
+function bodyPrograms(command: string): string[][] {
+    if (located?.command !== command) located = { command, programs: commandsWithDirs(command, undefined).flatMap((c) => c.programs).filter((argv) => argv.length > 0) };
+    return located.programs;
+}
+
 /**
  * Deny if ANY part matches: the whole string, each program a simple command
  * runs (through `env`, `exec`, `nohup` and other wrappers; with a
@@ -197,6 +209,9 @@ function programWords(word: string): string[] {
 function denyMatches(spec: string, command: string, depth: number): boolean {
     if (matchCommandSpec(spec, command)) return true;
     const specs = specSpellings(spec);
+    // What runs inside a loop, a conditional, a group, a function or a `case` too (`for f in *; do rm $f; done`),
+    // as the other checks that protect find it.
+    if (depth === 0 && bodyPrograms(command).some((argv) => programWords(argv[0]!).some((name) => specs.some((s) => matchCommandSpec(s, [name, ...argv.slice(1)].join(" ")))))) return true;
     for (const c of analyzeCommand(command).commands) {
         for (const { argv } of runLevels(c.argv)) {
             const rest = argv.slice(1);
@@ -322,4 +337,30 @@ export function deniedWithin(rules: string[], dir: string, root: string, access:
 export function findMatch(rules: string[], t: RuleTarget, root: string, mode: "allow" | "deny"): string | undefined {
     for (const r of rules) if (ruleMatches(parseRule(r), t, root, mode)) return r;
     return undefined;
+}
+
+/**
+ * The allow rule that lets a shell command line run. One rule can cover the whole line (findMatch). Rules also add
+ * up: each simple command on the line matches one of them, or changes nothing by itself (`cd pkg && npm test`
+ * under `Bash(npm test:*)`; `git add -A && git commit -m x` under a rule for each). That's what "don't ask again"
+ * saves for such a line (suggestBashRules), so the same line runs next time. The first rule that matched is named.
+ * A line with a substitution, or an expansion rules can't see into, is still covered only by its exact text; a
+ * loop or a conditional by no rule but that (its words aren't programs).
+ */
+export function allowedCommand(rules: string[], t: RuleTarget, root: string): string | undefined {
+    const whole = findMatch(rules, t, root, "allow");
+    if (whole || t.command === undefined || !isShellTool(t.toolName)) return whole;
+    const specs = rules.map(parseRule).filter((r) => r.spec && (r.tool === "Bash" || r.tool === "*" || r.tool === t.toolName));
+    if (!specs.length) return undefined;
+    const a = shellCommands(t.command);
+    if (!a.commands.length || a.hasSubstitution || a.unparsable || a.unsafeExpansion || isCompound(a.commands)) return undefined;
+    let first: string | undefined;
+    for (const c of a.commands) {
+        if (!onlySafeAssignments(c.argv)) return undefined;
+        const text = effectiveArgv(c.argv).join(" ");
+        const rule = specs.find((r) => matchCommandSpec(r.spec!, text));
+        if (rule) first ??= rule.raw;
+        else if (!isReadOnlySimple(c.argv)) return undefined;
+    }
+    return first;
 }

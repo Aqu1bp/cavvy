@@ -32,7 +32,7 @@ import type { ApprovedMcpServers } from "../mcp/manager";
 import type { PermissionMode } from "../permissions/modes";
 import { MODE_INFO } from "../permissions/modes";
 import type { Decision } from "../permissions/checker";
-import { PermissionChecker } from "../permissions/checker";
+import { offersLastingRule, PermissionChecker } from "../permissions/checker";
 import { AutoClassifier, needsSummary, summaryFits, type ReviewContext } from "../permissions/classifier";
 import { sandboxKind, sandboxPolicy, type Sandbox } from "../permissions/sandbox";
 import { APP_TITLE, cavvyHome } from "../config/paths";
@@ -3104,7 +3104,7 @@ export class Agent {
             ...(req.incomplete ? { ...decision, grant: undefined } : this.o.checker.withGrant(tool, input, decision, cwd)),
             behavior: "ask" as const,
             reason: decision.behavior === "ask" ? (decision.reason ?? req.reason) : req.reason,
-            suggestions: req.incomplete ? [] : (decision.suggestions ?? (command ? suggestBashRules(command) : tool.category === "mcp" ? [tool.name] : undefined)),
+            suggestions: req.incomplete || !offersLastingRule(tool, decision) ? [] : (decision.suggestions ?? (command ? suggestBashRules(command) : tool.category === "mcp" ? [tool.name] : undefined)),
             sandbox: undefined,
             needsClassifier: undefined,
         };

@@ -26,7 +26,7 @@ import { basename, dirname, join, resolve } from "path";
 import type { HiddenReason, Tool } from "../tools/types";
 import type { PermissionMode } from "./modes";
 import { sandboxAllowedHosts, sandboxExcludedCommands, type Settings } from "../config/settings";
-import { findMatch, EDIT_TOOLS, READ_TOOLS, toolPath, type RuleTarget } from "./rules";
+import { allowedCommand, findMatch, parseRule, EDIT_TOOLS, READ_TOOLS, toolPath, type RuleTarget } from "./rules";
 import { accountTarget, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, type CommandAnalysis, CAVVY_FILES, cavvyHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, suggestBashRules, withoutHeredocData } from "./bash-safety";
 import { accessNeeded, looksDestructive, sandboxEnabled, sandboxKind, sandboxPolicy, type SandboxKind, type SandboxPolicy } from "./sandbox";
 import { stableStringify, type ApprovedAction } from "./classifier";
@@ -39,6 +39,15 @@ import { accountCredentialFiles, accountFolders, accountProtectedPaths } from ".
 import { fileUrlPath, hostOf, navigationTarget, type BrowserApproval } from "../browser/url-policy";
 
 export type Behavior = "allow" | "ask" | "deny";
+
+/**
+ * May a rule kept for good ("don't ask again") be offered for what this decision asks about? Not where it would
+ * allow far more than that: a command asked about for the file or the hosts it names (the rule would be for every
+ * such command), a dangerous one, or what auto mode says it asks about every time.
+ */
+export function offersLastingRule(tool: Pick<Tool<any>, "name">, d: Decision): boolean {
+    return !d.dangerous && !d.everyTime && !(isShellTool(tool.name) && (d.sensitive !== undefined || Boolean(d.listedHosts?.length)));
+}
 
 export interface Decision {
     behavior: Behavior;
@@ -238,10 +247,14 @@ export class PermissionChecker {
         return d;
     }
 
-    /** The decision with the scoped "allow for the session" choice the popup offers, if there is one. */
+    /**
+     * The decision as a prompt offers it, in the terminal and the GUI alike: with the scoped "allow for the session"
+     * choice, if there is one, and with its rules to keep for good only where one may be offered (offersLastingRule).
+     */
     withGrant(tool: Tool<any>, input: any, d: Decision, cwd: string): Decision {
         const grant = d.grant ?? this.grantFor(tool, input, d, cwd);
-        return grant ? { ...d, grant } : d;
+        const offered = grant ? { ...d, grant } : d;
+        return d.suggestions?.length && !offersLastingRule(tool, d) ? { ...offered, suggestions: [] } : offered;
     }
 
     /**
@@ -291,6 +304,8 @@ export class PermissionChecker {
     private grantFor(tool: Tool<any>, input: any, d: Decision, cwd: string): SessionGrant | undefined {
         if (d.dangerous || d.config || d.rule || tool.category === "edit" || tool.category === "read") return undefined;
         if (isShellTool(tool.name)) {
+            // What auto mode asks about every time, it would ask about again under a rule for the session.
+            if (d.everyTime) return undefined;
             const cmd = String(input?.command ?? "");
             if (d.sensitive) {
                 const paths = [...new Set(this.sensitivePaths(heredocDataBlanked(cmd), cwd))];
@@ -494,10 +509,13 @@ export class PermissionChecker {
             if (cfg) return { behavior: "ask", config: true, reason: `This command changes ${cfg} (permissions, hooks, MCP servers or programs git runs); it always needs your approval.` };
         }
 
-        const allowed = findMatch(allow, t, this.root, "allow");
-        // A prefix rule approves the program, not where its output goes:
-        // `Bash(cat:*)` must not approve `cat x > ~/.zshrc`.
-        if (allowed && !(isShellTool(tool.name) && this.redirectsEscape(t.command ?? "", cwd))) return { behavior: "allow", rule: allowed };
+        const allowed = allowedCommand(allow, t, this.root);
+        // A rule approves the program, not everything it can be pointed at: where its output goes
+        // (`Bash(cat:*)` must not approve `cat x > ~/.zshrc`), a file that may hold credentials
+        // (`cp .env /tmp/x` under `Bash(cp:*)`), or, in auto mode, the main branch on the remote
+        // (`Bash(git push:*)`). Those go on to ask as they would with no rule. A rule that is the
+        // line itself, word for word, is the user's yes to exactly that.
+        if (allowed && !(isShellTool(tool.name) && (this.redirectsEscape(t.command ?? "", cwd) || (parseRule(allowed).spec !== (t.command ?? "").trim() && this.beyondRule(judged, cwd, mode))))) return { behavior: "allow", rule: allowed };
 
         switch (tool.category) {
             case "meta":
@@ -668,6 +686,17 @@ export class PermissionChecker {
             const abs = expandPath(r, cwd);
             return !this.inWorkspace(abs) || this.isCavvyConfig(abs);
         });
+    }
+
+    /**
+     * Does the command name something a rule for its program doesn't speak for: a file that may hold credentials
+     * (one it names; a variable or a pattern that can't be worked out isn't held against the rule), or in auto mode
+     * a push to the main branch?
+     */
+    private beyondRule(cmd: string, cwd: string, mode: PermissionMode): boolean {
+        if (this.secretTarget(cmd, cwd, undefined) !== undefined) return true;
+        if (cavvyHomeReads(cmd, cwd, cavvyHome(), this.shellEnv())?.paths.length) return true;
+        return mode === "auto" && pushesDefaultBranch(cmd, cwd) !== undefined;
     }
 
     /** A folder that is, or holds, Cavvy's credential store (for grants of whole folders). */

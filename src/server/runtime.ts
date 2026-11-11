@@ -2462,10 +2462,7 @@ export class Runtime {
 
     private async askPermission(req: PermissionRequest): Promise<PermissionResponse> {
         const { tool, input, decision } = req;
-        // A rule kept for good ("always") isn't offered where it would allow far more than what's asked: a command asked
-        // about for the file or hosts it names (the rule is for every such command, and is matched before those are
-        // looked at), or what auto mode says it asks about every time. The choice for the session stays.
-        const suggestions = (isShellTool(tool.name) && (decision.sensitive || decision.listedHosts?.length)) || decision.everyTime ? [] : (decision.suggestions ?? []);
+        const suggestions = decision.suggestions ?? [];
         const projectName = basename(this.ws.cwd);
         const it: PermissionInteraction = {
             kind: "permission",
