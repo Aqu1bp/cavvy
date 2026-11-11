@@ -10,6 +10,15 @@
     font-size: 0.929rem;
 }
 
+/* The diff reader in the panel's place, the rail still beside it (App.tsx). */
+.insp-rv {
+    display: flex;
+}
+
+.insp-rv > .review {
+    flex: 1;
+}
+
 .insp-main {
     display: flex;
     flex-direction: column;
@@ -33,7 +42,6 @@
     flex-direction: column;
     padding: 0;
     gap: calc(4 * var(--sp));
-    border-radius: 0;
     background: none;
     box-shadow: none;
 }
@@ -104,7 +112,6 @@
     margin: 0;
     font-size: 1.071rem;
     font-weight: 650;
-    letter-spacing: -0.01em;
     text-transform: capitalize;
 }
 
