@@ -753,19 +753,22 @@ function Providers() {
     );
 }
 
+// Shift as the keymap's own rows write it: a symbol on macOS, where a key's parts run together (keyText).
+const shift = os === "macos" ? "⇧" : "Shift";
+
 /** Keys that aren't in the keybindings file: they belong to what's on screen. */
 const BUILT_IN: [string, string][] = [
     [`${mod}+1…9`, "Pick a model (model picker open)"],
     ["Esc", "Deny a permission · close a dialog, Settings or the review"],
     ["1  2  3", "Answer the request on the composer"],
-    [`${mod}+Shift+Enter`, "While working: steer instead of queue, or the other way round (empty input: send the first queued message now)"],
+    [`${mod}+${shift}+Enter`, "While working: steer instead of queue, or the other way round (empty input: send the first queued message now)"],
     ["@", "Mention a file"],
     ["/", "Commands"],
     ["!", "Run a shell command yourself"],
     // Mouse gestures and arrows in the session list: not bindings.
-    ["Shift+Click", "Select the sessions from the last one clicked to this one"],
+    [`${shift}+Click`, "Select the sessions from the last one clicked to this one"],
     [`${mod}+Click`, "Add a session to the selection, or take it out"],
-    ["Shift+↑  Shift+↓", "In the session list: extend the selection · Esc clears it"],
+    [`${shift}+↑  ${shift}+↓`, "In the session list: extend the selection · Esc clears it"],
 ];
 
 const CONTEXT_TITLES: Record<string, string> = { Global: "Anywhere", Chat: "In the input box", Autocomplete: "In the / and @ menu", Sidebar: "In the session list" };

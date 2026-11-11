@@ -1087,7 +1087,13 @@ svg.lucide {
 /* ---- A list with more below --------------------------------------------
    Its bottom edge fades while there's more to scroll to, so the last row in sight isn't cut through its words; at
    the end, and in a list that fits, nothing is drawn. Driven by the list's own scroll position (no script). Where
-   the browser has no scroll timelines the animation ends at once, on nothing drawn: the list is as it was. */
+   the browser has no scroll timelines the animation ends at once, on nothing drawn: the list is as it was.
+   The row the keys select stops above the fade, never under it (lib/composer-menu.ts reads this for its own list). */
+.composer-menu,
+.pal-list {
+    scroll-padding-bottom: calc(30 * var(--sp));
+}
+
 .composer-menu::after,
 .pal-list::after {
     content: "";

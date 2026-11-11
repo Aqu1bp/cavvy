@@ -245,10 +245,9 @@ test("Needs you's rows aren't picked: a ⌘- or Shift-click opens the session, i
     try {
         f.setGroupBy("project");
         f.update("3", { status: "waiting", waitingKind: "permission" });
-        // Its project folded: its own row is under the heading; the order has it once, where it shows, under Needs you.
+        // Its project folded: its own place is under the heading, out of the order next and previous step through.
         f.setCollapsedProjects(["/p/0"]);
-        expect(f.ids.filter((id) => id === "3")).toHaveLength(1);
-        expect(f.ids[0]).toBe("3");
+        expect(f.ids).not.toContain("3");
         expect(pinnedIds(f)).toEqual(["3"]);
         const hit = () => f.descendants(pinnedRows(f)[0]).find((n) => n.props?.class === "card-hit needs-hit");
         f.setRailSelection({ ids: ["1", "2"], anchor: "1" });
@@ -286,17 +285,14 @@ test("Needs you while the rail holds still: rows say how they're doing now, and 
         f.nav.props.onPointerLeave();
         expect(pinnedIds(f)).toEqual(["4"]);
         expect(classes(pinnedRows(f)[0])).toContain("waiting");
-        // Rows picked hold the list, not the group: it follows who's waiting (5 goes up to it, 4 back to its place),
-        // and the rows that stayed in the list keep their order.
+        // Rows picked hold the list, not the group: it follows who's waiting, and the order next and previous step
+        // through stays as it was (each session in its own place, pinned or not).
         f.setRailSelection({ ids: ["0", "1"], anchor: "0" });
-        const rest = (ids: string[]) => ids.filter((id) => id !== "4" && id !== "5");
         const held = f.ids;
         f.update("5", { status: "waiting", updatedAt: 500 });
         f.update("4", { status: "idle" });
         expect(pinnedIds(f)).toEqual(["5"]);
-        expect(f.ids[0]).toBe("5");
-        expect(f.ids.filter((id) => id === "4" || id === "5")).toHaveLength(2);
-        expect(rest(f.ids)).toEqual(rest(held));
+        expect(f.ids).toEqual(held);
     } finally { f.dispose(); }
 });
 
@@ -710,8 +706,7 @@ test("a folded project with a session that needs you shows the amber dot on its 
         expect(dot()).toBe(false);
         f.update("4", { status: "waiting", waitingKind: "permission" });
         expect(dot()).toBe(true);
-        // In the order once: under Needs you, not from under the folded heading.
-        expect(f.ids.filter((id) => id === "4")).toHaveLength(1);
+        expect(f.ids).not.toContain("4");
     } finally { f.dispose(); }
 });
 

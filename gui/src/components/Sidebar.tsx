@@ -14,7 +14,7 @@ import { prefs, setPrefs } from "../state/prefs";
 import { agentFocus, setDeletedOpen, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
 import { frameDrag } from "../lib/drag";
 import { ago, monogram, projectColor, since } from "../lib/format";
-import { holdSidebar, listedOnce, pinnedIds, projectOf, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type SidebarEntry } from "../lib/session-order";
+import { holdSidebar, listedOnce, projectOf, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type SidebarEntry } from "../lib/session-order";
 import { sessionStatus } from "../lib/session-status";
 import { foldOrder, groupCounts, inFront, needsRowLine, needsYou, planFit, railFoot, type RailPlan } from "../lib/rail";
 import { railSelection, setRailSelection, setSidebarOrder } from "../state/sidebar";
@@ -692,8 +692,8 @@ export function Sidebar() {
         });
         return next;
     });
-    // The order next and previous step through: top to bottom as drawn, Needs you first.
-    createEffect(() => setSidebarOrder([...pinnedIds(layout()), ...sidebarIds(layout())]));
+    // Each session in its own place, pinned under Needs you or not: opening one mustn't change what next and previous step to.
+    createEffect(() => setSidebarOrder(sidebarIds(heldLayout())));
     createEffect(() => {
         const pause = held();
         for (const animation of animations) {

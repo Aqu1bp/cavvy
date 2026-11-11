@@ -754,7 +754,7 @@ function EditCardContent(p: { tool: ToolBlock }) {
     // as a failed command's does; what it would have written isn't worth opening.
     const refused = () => t().status === "error" && !t().diff;
     // Its first sentence, in a reader's words: the rest is advice to the model ("It must match the file exactly…").
-    const why = createMemo(() => (refused() ? (t().output ?? "").trim().split(/(?<=\.)\s/)[0]?.replace(/^old_string/, "The text to replace") || undefined : undefined));
+    const why = createMemo(() => (refused() ? (t().output ?? "").trim().split(/(?<=\.)\s/)[0]?.replace(/^old_string( and new_string are)?/, (_, both) => (both ? "The old and new text are" : "The text to replace")) || undefined : undefined));
     const input = () => (t().diff || refused() ? undefined : Object.keys(t().input ?? {}).length ? JSON.stringify(t().input, null, 2) : undefined);
     const showOutput = () => !refused() && (!t().diff || t().status === "error") && Boolean(t().output?.trim());
     const hasBody = () => Boolean(t().diff || t().diagnostics || input() || showOutput());

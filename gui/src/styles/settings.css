@@ -424,7 +424,14 @@
 }
 
 .settings-page .keyin .input,
-.settings-page .prov-add .input,
+.settings-page .prov-add .input {
+    flex: 1;
+    min-width: 0;
+    height: calc(30 * var(--sp));
+    border-radius: calc(8 * var(--sp));
+    font: 0.857rem var(--font-mono);
+}
+
 .prov-group {
     overflow: visible;
 }

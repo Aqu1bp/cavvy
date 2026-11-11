@@ -480,6 +480,14 @@ revealMenuOption(list as any, { getBoundingClientRect: () => ({ top: 190, bottom
 assert.equal(list.scrollTop, 40);
 revealMenuOption(list as any, { getBoundingClientRect: () => ({ top: 80, bottom: 110 }) } as any);
 assert.equal(list.scrollTop, 20);
+// A list whose bottom edge fades (its scroll padding): the row stops above the fade, not under it.
+{
+    const before = (globalThis as any).getComputedStyle;
+    (globalThis as any).getComputedStyle = () => ({ scrollPaddingBottom: "30px" });
+    revealMenuOption(list as any, { getBoundingClientRect: () => ({ top: 150, bottom: 180 }) } as any);
+    assert.equal(list.scrollTop, 30, "a row under the fade is scrolled clear of it");
+    (globalThis as any).getComputedStyle = before;
+}
 // A comment edited (here or in another window) while its message is on the way keeps the new text.
 {
     setComparePicks(undefined);

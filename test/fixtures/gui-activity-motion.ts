@@ -40,7 +40,7 @@ function setup(blocks: any[], expanded = true, agents: any[] = [], session?: str
         handleFor: () => ({ view }), stopBackground: (id: string, ids: string[]) => { stops.push([id, ids]); }, now: clock, motionMs: () => 0, prefs: { expandActivity: expanded, showThinking: true }, findReveal: reveal,
         CodeBlock: (p: any) => { const n = node("code"); solid.createRenderEffect(() => n.text = p.code); return n; },
         DiffView: (p: any) => { const n = node("diff"); solid.createRenderEffect(() => n.text = `diff ${p.diff.path}`); return n; },
-        Counts: (p: { added?: number; removed?: number }) => { const n = node("counts"); solid.createRenderEffect(() => n.text = `${p.added || !p.removed ? `+${p.added ?? 0}` : ""}${p.removed ? ` −${p.removed}` : ""}`); return n; },
+        Counts: (p: { added?: number; removed?: number }) => { const n = node("counts"); solid.createRenderEffect(() => n.text = [p.added ? `+${p.added}` : "", p.removed ? `−${p.removed}` : ""].filter(Boolean).join(" ")); return n; },
         Markdown: () => node("markdown"), Spinner: icon,
         // What a Copy would copy, read when it's pressed.
         CopyButton: (p: any) => { const n = icon(); n.props.label = p.label; n.props.copy = p.text; return n; }, openReview: () => {}, openInEditor: () => {},

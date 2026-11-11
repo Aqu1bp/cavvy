@@ -611,6 +611,15 @@
     min-width: 0;
 }
 
+/* Renamed in place: the field needs the title's line kept (its text is out while it's edited) and the dot gone. */
+.needs-row.renaming .end {
+    visibility: hidden;
+}
+
+.card.renaming .t::before {
+    content: "\200b";
+}
+
 @keyframes needs-in {
     from {
         opacity: 0;

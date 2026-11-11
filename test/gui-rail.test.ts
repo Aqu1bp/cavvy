@@ -263,6 +263,11 @@ test("a session under Needs you is drawn once: not again in its own place, and a
     expect(kinds(order.listedOnce(byDate))).toEqual(["heading:needs", "day:Today", "2", "heading:settled", "3"]);
     expect(order.pinnedIds(byDate)).toEqual(["1"]);
     expect(order.sidebarIds(order.listedOnce(byDate))).toEqual(["2", "3"]);
+    // Next and previous step through the layout before that: each session in its own place, whichever are pinned
+    // (opening a waiting one unpins it, and mustn't change where the next step goes).
+    const unpinned = order.sidebarEntries(list, [], { ...base, groupBy: "date", needs: [], now: 1000 });
+    expect(order.sidebarIds(byDate)).toEqual(order.sidebarIds(unpinned));
+    expect(order.sidebarIds(byDate)).toContain("1");
     const alone = order.sidebarEntries([list[0]!, sess("2", { updatedAt: 0 })], [], { ...base, groupBy: "date", needs: ["1"], now: 10 * 86_400_000 });
     expect(kinds(order.listedOnce(alone))).toEqual(["heading:needs", "day:Older", "2"]);
     // By project: an open project with nothing left goes; a folded one keeps its heading and its sessions.
