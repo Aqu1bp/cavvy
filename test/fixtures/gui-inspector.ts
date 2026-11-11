@@ -148,12 +148,16 @@ test("the side-by-side toggle sets the shared split signal the layout widens the
 
 test("the Changes pane: counts, a row per file opening the reader on it, and the empty and error states", () => {
     const opened: unknown[][] = [];
+    const edited: unknown[][] = [];
     const Pane = component(between(panel, "function FileRow(", "/** Pull requests the agent watches"), "ChangesPane", {
         CHANGE, dirOf, nameOf,
         plural: (n: number, w: string) => `${n} ${n === 1 ? w : `${w}s`}`,
         openReview: (...args: unknown[]) => opened.push(args),
+        openInEditor: (...args: unknown[]) => edited.push(args),
+        editorName: () => "Zed",
         Spinner: () => node("spinner"),
         FileDiff: () => node("icon"),
+        SquareArrowOutUpRight: () => node("icon"),
     });
     const [changes, setChanges] = solid.createSignal<any>({
         repo: true, count: 3, more: 1, atLeast: false, added: 7, removed: 2, error: undefined,
@@ -171,7 +175,12 @@ test("the Changes pane: counts, a row per file opening the reader on it, and the
         expect(rows().map((r) => text(r))).toEqual(["Mindex.tssrc/auth/+6−2", "UREADME.md+1"]);
         rows()[0]!.props.onClick();
         expect(opened.at(-1)).toEqual(["src/auth/index.ts", "uncommitted"]);
-        all(root).find((n) => n.props.class === "btn ghost sm")!.props.onClick();
+        // Beside each row, shown on hover: the file in the editor, by its path in the session's folder.
+        const edit = all(root).filter((n) => n.props.class === "hb sm act");
+        expect(edit.map((n) => [n.props.title, n.props["aria-label"]])).toEqual([["Open in Zed", "Open src/auth/index.ts in editor"], ["Open in Zed", "Open README.md in editor"]]);
+        edit[0]!.props.onClick();
+        expect(edited).toEqual([["src/auth/index.ts", undefined, { gitToken: undefined }]]);
+        all(root).find((n) => n.props.class === "btn secondary sm")!.props.onClick();
         expect(opened.at(-1)).toEqual([undefined, "uncommitted"]);
         // Outside a repository: Cavvy's own record, and the reader opens on it.
         setChanges({ repo: false, count: 1, more: 0, atLeast: false, added: 1, removed: 0, files: [{ path: "notes.md", change: "added", added: 1, removed: 0 }] });
@@ -180,7 +189,8 @@ test("the Changes pane: counts, a row per file opening the reader on it, and the
         // Nothing changed: a blank pane that still opens the reader (the branch, a turn).
         setChanges({ repo: true, count: 0, more: 0, atLeast: false, added: 0, removed: 0, files: [] });
         expect(text(root)).toContain("No changes yet");
-        expect(text(root)).toContain("The working tree matches the last commit.");
+        // Nothing in it to open in an editor.
+        expect(all(root).some((n) => n.props.class === "hb sm act")).toBe(false);
         all(root).find((n) => n.props.class === "link-btn")!.props.onClick();
         expect(opened.at(-1)).toEqual([undefined, "uncommitted"]);
         // Git couldn't say: why, rather than "no changes".

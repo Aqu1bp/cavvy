@@ -58,7 +58,7 @@ async function run() {
         await tick();
         const view = root.querySelector<HTMLElement>(".br-view")!;
         check(view.clientWidth >= 400 && view.clientHeight > 400, `pane collapsed to ${view.clientWidth}x${view.clientHeight}`);
-        check(root.textContent?.includes("No page open"), "empty state missing");
+        check(root.textContent?.includes("Pages the agent opens show up here"), "empty state missing");
         check(calls.some(c => c.method === "browser.watch" && c.params.height > 400), "pane never subscribes at its rendered size");
         adoptBrowserState(id, state(1));
         frame(1, "red");

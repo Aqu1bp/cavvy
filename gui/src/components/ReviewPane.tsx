@@ -11,7 +11,7 @@
 // near the view have their diff drawn (lib/review-stack.ts), so a 300-file view opens like one file.
 
 import { batch, createEffect, createMemo, createResource, createSignal, For, on, onCleanup, onMount, Show, untrack } from "solid-js";
-import { Check, ChevronDown, ChevronLeft, ChevronRight, Columns2, FolderGit2, FolderOpen, GitCommitHorizontal, GitPullRequestArrow, MessageSquare, RefreshCw, SquareArrowOutUpRight, X } from "lucide-solid";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Columns2, FileDiff as FileDiffIcon, FolderGit2, FolderOpen, GitCommitHorizontal, GitPullRequestArrow, MessageSquare, RefreshCw, SquareArrowOutUpRight, X } from "lucide-solid";
 import type { FileDiff, GitFileDiff, GitScope, SessionWorktreeInfo } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc } from "../state/app";
@@ -308,7 +308,9 @@ function FilesMenu(p: { label: string; files: Row[]; more?: string; comments: (f
                                     </span>
                                     <span class="nm">
                                         <b>{nameOf(f.path)}</b>
-                                        <span>{dirOf(f.path) || "./"}</span>
+                                        <span>
+                                            <bdi>{dirOf(f.path) || "./"}</bdi>
+                                        </span>
                                     </span>
                                     <span class="aside">
                                         <Show when={p.comments(f)}>
@@ -563,10 +565,12 @@ function FileCard(p: {
                 <span class={`fs ${ch()}`} title={CHANGE[ch()].label} aria-label={CHANGE[ch()].label}>
                     {CHANGE[ch()].letter}
                 </span>
-                <span class="path" title={p.file.from ? `${p.file.from} → ${p.file.path}` : p.file.path}>
+                <span class="nm" title={p.file.from ? `${p.file.from} → ${p.file.path}` : p.file.path}>
                     <b class="selectable">{nameOf(p.file.path)}</b>
                     <Show when={dirOf(p.file.path) || tag()}>
-                        <span class="selectable">{[dirOf(p.file.path), tag()].filter(Boolean).join(" · ")}</span>
+                        <span class="selectable">
+                            <bdi>{[dirOf(p.file.path), tag()].filter(Boolean).join(" · ")}</bdi>
+                        </span>
                     </Show>
                 </span>
                 <Show when={p.count}>
@@ -578,16 +582,18 @@ function FileCard(p: {
                     )}
                 </Show>
                 <Stat added={shown().added} removed={shown().removed} />
-                <Show when={p.onOpen}>
-                    <button class="open rf-act" title={`Open in ${editorName() ?? "your editor"}`} aria-label={`Open ${p.file.path} in editor`} onClick={() => p.onOpen!()}>
-                        <SquareArrowOutUpRight size={14} />
-                    </button>
-                </Show>
-                <Show when={p.onReveal}>
-                    <button class="open rf-act" title="Reveal in Finder" aria-label={`Reveal ${p.file.path} in Finder`} onClick={() => p.onReveal!()}>
-                        <FolderOpen size={14} />
-                    </button>
-                </Show>
+                <span class="rf-acts rf-act">
+                    <Show when={p.onOpen}>
+                        <button class="hb sm" title={`Open in ${editorName() ?? "your editor"}`} aria-label={`Open ${p.file.path} in editor`} onClick={() => p.onOpen!()}>
+                            <SquareArrowOutUpRight size={13} />
+                        </button>
+                    </Show>
+                    <Show when={p.onReveal}>
+                        <button class="hb sm" title="Reveal in Finder" aria-label={`Reveal ${p.file.path} in Finder`} onClick={() => p.onReveal!()}>
+                            <FolderOpen size={13} />
+                        </button>
+                    </Show>
+                </span>
             </div>
             <div class="rf-b">
                 <div class="rf-in" ref={body}>
@@ -595,7 +601,7 @@ function FileCard(p: {
                         <Show
                             when={!shown().deferred}
                             fallback={
-                                <div class="rv-empty rf-wait selectable">
+                                <div class="rf-wait selectable">
                                     <Show when={!full.loading && full()?.error} fallback={<Spinner size={16} />}>
                                         {full()!.error}{" "}
                                         <button class="link-btn" onClick={() => void refetch()}>
@@ -740,6 +746,8 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     /** Commit opens the Commit dialog with every file; it picks from there. A collapsed folder or a nested repository can't be. */
     const commitPaths = () => files().filter((f) => f.kind !== "folder" && f.kind !== "repo").map(key);
     const commitDisabled = () => commitUnavailable(p.handle) ?? (loading() ? "Wait for changes to finish loading." : error() ? "Refresh the changes before committing." : !commitPaths().length ? "Nothing to commit." : undefined);
+    // What's next is the primary and takes the room (as at the side panel's foot): Commit while this view has something to commit, then Push.
+    const commitNext = () => shownScope() === "uncommitted" && commitPaths().length > 0;
 
     const absolute = (path: string) => {
         const full = path.startsWith("/") ? path : path.startsWith("~/") && app.hello?.homeDir ? `${app.hello.homeDir}/${path.slice(2)}` : `${shownRoot()}/${path}`;
@@ -1094,9 +1102,10 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                     <div class="rv-more">{moreLabel()}</div>
                 </Show>
                 <Show when={!files().length && !asked()?.file}>
-                    <div class="rv-empty selectable">
+                    <div class="rv-empty blank selectable">
                         <Show when={!error()} fallback={<ErrorNote error={error()!} base={base()} onReset={() => setBase(undefined)} />}>
                             <Show when={view()} fallback={<Spinner size={16} />}>
+                                <FileDiffIcon size={22} class="ic" />
                                 {empty()}
                             </Show>
                         </Show>
@@ -1106,14 +1115,14 @@ export function ReviewPane(p: { handle: SessionHandle }) {
             <Show when={!noRepo() && own()}>
                 <div class="insp-foot">
                     <Show when={shownScope() === "uncommitted"}>
-                        <span class="grow" title={commitDisabled() ?? "Commit: pick the files in the Commit dialog"}>
-                            <button class="btn ghost" disabled={Boolean(commitDisabled())} onClick={() => setCommitRequest({ id: id(), paths: commitPaths() })}>
+                        <span classList={{ grow: commitNext() }} title={commitDisabled() ?? "Commit: pick the files in the Commit dialog"}>
+                            <button class={`btn ${commitNext() ? "primary" : "secondary"}`} disabled={Boolean(commitDisabled())} onClick={() => setCommitRequest({ id: id(), paths: commitPaths() })}>
                                 <GitCommitHorizontal size={14} /> Commit…
                             </button>
                         </span>
                     </Show>
-                    <span class="grow" title={commitUnavailable(p.handle)?.replace(/committing/g, "pushing") ?? "Push the branch, and open a pull request"}>
-                        <button class="btn primary" disabled={Boolean(commitUnavailable(p.handle))} onClick={() => setPublishRequest(id())}>
+                    <span classList={{ grow: !commitNext() }} title={commitUnavailable(p.handle)?.replace(/committing/g, "pushing") ?? "Push the branch, and open a pull request"}>
+                        <button class={`btn ${commitNext() ? "secondary" : "primary"}`} disabled={Boolean(commitUnavailable(p.handle))} onClick={() => setPublishRequest(id())}>
                             <GitPullRequestArrow size={14} /> Push…
                         </button>
                     </span>

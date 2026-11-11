@@ -474,7 +474,7 @@ export function SimulatorPane(p: { handle: SessionHandle }) {
                     {(taken) => (
                         <div class="sim-taken" role="status">
                             <span>{taken()}</span>
-                            <button class="btn sm" disabled={busy()} title="Restarts its home screen, closing its apps" onClick={() => command("take_control")}>
+                            <button class="btn secondary sm" disabled={busy()} title="Restarts its home screen, closing its apps" onClick={() => command("take_control")}>
                                 Take control
                             </button>
                         </div>
@@ -497,7 +497,7 @@ export function SimulatorPane(p: { handle: SessionHandle }) {
                                     </button>
                                 </Show>
                                 <Show when={n().retry}>
-                                    <button class="btn sm sim-start" onClick={() => watch()}>
+                                    <button class="btn secondary sm sim-start" onClick={() => watch()}>
                                         Try again
                                     </button>
                                 </Show>

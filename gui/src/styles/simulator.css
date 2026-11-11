@@ -15,17 +15,13 @@
     display: flex;
     align-items: center;
     gap: calc(2 * var(--sp));
-    padding: 0 calc(10 * var(--sp)) calc(6 * var(--sp)) calc(6 * var(--sp));
+    padding: calc(8 * var(--sp));
     flex: none;
     min-width: 0;
 }
 
-.sim-bar .hb {
-    border-radius: var(--pill);
-}
-
 .sim-bar .br-who {
-    padding-right: calc(4 * var(--sp));
+    margin-right: calc(4 * var(--sp));
 }
 
 .sim-device {
@@ -38,7 +34,7 @@
 }
 
 .sim-device:disabled {
-    opacity: 0.5;
+    opacity: 0.45;
 }
 
 .sim-runtime {
@@ -99,25 +95,14 @@
     margin-top: calc(10 * var(--sp));
 }
 
-/* Another tool has taken the device's input, and Take control takes it back: said over the top of the screen. */
+/* Another tool has taken the device's input, and Take control takes it back: said over the top of the screen
+   (the note's own look is browser.css's, with the page's "Loading…"). */
 .sim-taken {
-    position: absolute;
-    left: 50%;
-    top: calc(16 * var(--sp));
-    transform: translateX(-50%);
-    display: flex;
-    align-items: center;
-    gap: calc(10 * var(--sp));
     max-width: calc(100% - 32 * var(--sp));
-    padding: calc(4 * var(--sp)) calc(4 * var(--sp)) calc(4 * var(--sp)) calc(14 * var(--sp));
-    border-radius: calc(14 * var(--rs));
-    background: color-mix(in srgb, var(--warn) 10%, var(--sheet-2));
-    box-shadow:
-        inset 0 0 0 1px color-mix(in srgb, var(--warn) 30%, transparent),
-        0 calc(4 * var(--sp)) calc(14 * var(--sp)) rgb(0 0 0 / 0.18);
-    color: var(--warn);
-    font-size: 0.857rem;
     width: max-content;
+    padding: calc(4 * var(--sp)) calc(4 * var(--sp)) calc(4 * var(--sp)) calc(12 * var(--sp));
+    color: var(--warn);
+    white-space: normal;
 }
 
 .sim-taken span {
@@ -127,7 +112,6 @@
 
 .sim-taken .btn {
     flex: none;
-    border-radius: var(--pill);
 }
 
 .sim-pick .menu-check {

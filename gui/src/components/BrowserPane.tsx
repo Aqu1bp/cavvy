@@ -360,6 +360,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                 <form class="br-address" onSubmit={go}>
                     <input
                         ref={address}
+                        class="input"
                         type="text"
                         inputMode="url"
                         spellcheck={false}
@@ -398,6 +399,8 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                     <Plus size={14} />
                 </button>
                 <span class="grow" />
+                {/* In the tabs' row, which is always there: the page box keeps its size as this comes and goes. Nothing is
+                    said when the person drove it last: they share the tab, and neither takes it from the other. */}
                 <Show when={status() === "agent"}>
                     <span class="br-who" title="You can use the page too: the agent is told when you have">
                         <span class="br-dot" />
@@ -463,9 +466,9 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                                 <Show when={status() === "starting"} fallback={<Globe size={22} class="ic" />}>
                                     <Spinner size={22} class="ic" />
                                 </Show>
-                                <b>{status() === "starting" ? "Starting the browser…" : status() === "crashed" ? "The browser stopped" : "No page open"}</b>
-                                <Show when={status() === "crashed"} fallback="Pages the agent opens show up here.">
-                                    {state()?.error}
+                                <Show when={status() === "crashed"} fallback={status() === "starting" ? "Starting the browser…" : "Pages the agent opens show up here"}>
+                                    <b>The browser stopped</b>
+                                    <span class="selectable">{state()?.error}</span>
                                 </Show>
                             </div>
                         </Show>
@@ -477,7 +480,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                         <div class="br-note br-dialog" role="alertdialog" aria-label={`The page asks: ${d().message}`}>
                             <span class="br-note-text selectable">{d().message}</span>
                             <Show when={d().type === "prompt"}>
-                                <input aria-label="Answer" value={dialogText()} placeholder={d().defaultPrompt} onInput={(e) => setDialogText(e.currentTarget.value)} />
+                                <input class="input" aria-label="Answer" value={dialogText()} placeholder={d().defaultPrompt} onInput={(e) => setDialogText(e.currentTarget.value)} />
                             </Show>
                             <button class="btn primary sm" onClick={() => answer(true)}>
                                 OK

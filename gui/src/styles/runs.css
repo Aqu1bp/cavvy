@@ -32,16 +32,17 @@
     font-variant-numeric: tabular-nums;
 }
 
-/* In the title bar: the run's models as a capsule of their own, beside the tools. */
+/* In the title bar: the run's models as a capsule of their own, beside the tools. Each a control in it:
+   its provider's mark, the model, and how it's doing; the one shown is the selection. */
 .run-switch {
     display: flex;
     align-items: center;
-    gap: 1px;
+    gap: calc(2 * var(--sp));
     min-width: 0;
     max-width: calc(420 * var(--sp));
     height: calc(34 * var(--sp));
     padding: 0 calc(3 * var(--sp));
-    border-radius: var(--pill);
+    border-radius: var(--r-ctl);
     overflow: hidden;
 }
 
@@ -52,12 +53,12 @@
     height: calc(28 * var(--sp));
     min-width: 0;
     max-width: calc(180 * var(--sp));
-    padding: 0 calc(10 * var(--sp));
-    border-radius: var(--pill);
+    padding: 0 calc(8 * var(--sp));
+    border-radius: calc(7 * var(--rs));
     font-size: 0.857rem;
     font-weight: 500;
     color: var(--fg-2);
-    transition: background 140ms, color 140ms;
+    transition: background var(--dur-fast), color var(--dur-fast);
 }
 
 .run-switch .rs svg {
@@ -69,19 +70,33 @@
     color: var(--fg);
 }
 
-.run-switch .rs.on {
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
-    color: var(--fg);
+.run-switch .rs:active {
+    background: var(--press);
 }
 
+.run-switch .rs.on {
+    background: var(--accent-soft);
+    color: var(--accent-text);
+}
+
+/* How it's doing, in a word while that's news ("working", "needs you", "stopped"); done, a check in its place
+   (the word stays in the markup), so the models' names keep the room. */
 .rs-st {
     flex: none;
     font-weight: 400;
     color: var(--fg-3);
 }
 
+.rs-st.st-done {
+    width: calc(12 * var(--sp));
+    height: calc(12 * var(--sp));
+    font-size: 0;
+    background: var(--ok);
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%23000' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 6.5 5 9l4.5-5.5'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
 .rs-st.st-running {
-    color: var(--accent);
+    color: var(--accent-text);
 }
 
 .rs-st.st-waiting {

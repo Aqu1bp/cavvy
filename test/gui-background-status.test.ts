@@ -137,7 +137,7 @@ function renderList(tasks: BackgroundTaskInfo[], agents: AgentRun[] = [], tab: W
         For: (p: { each: unknown[]; children: (x: unknown) => unknown }) => p.each.map((x) => p.children(x)),
         Show: (p: { when: unknown; children: unknown; fallback?: unknown }) => (p.when ? (typeof p.children === "function" ? p.children(() => p.when) : p.children) : p.fallback),
         ConfirmDialog: (p: Record<string, any>) => ({ tag: "ConfirmDialog", props: p, children: [p.children] }),
-        Bot: "Bot", ChevronRight: "ChevronRight", Radar: "Radar", Terminal: "Terminal", Workflow: "Workflow",
+        Bot: "Bot", ChevronRight: "ChevronRight", Radar: "Radar", Terminal: "Terminal", Workflow: "Workflow", Spinner: "Spinner",
         AgentMark: (p: { provider?: string }) => ({ tag: "AgentMark", props: p, children: [] }),
         agentStep,
         app: { providers: [{ id: "claude-code", name: "Claude Code" }] },
@@ -245,6 +245,10 @@ test("finished ones stay under the running ones, in a fold closed while somethin
     expect(fold(open).props.class).toBe("fold-b open");
     expect(open.text).toContain("Write docs");
     expect(open.text).toContain("Done · 3s");
+    // Each row starts with how it stands: turning while it runs, then a check or a cross.
+    const glyphs = (r: ReturnType<typeof renderList>) => elements(r.tree, "span").filter((s) => String(s.props.class).startsWith("ki ")).map((s) => [s.props.class, elements(s, "Spinner").length, elements(s, "path").length]);
+    expect(glyphs(open)).toEqual([["ki st-done", 0, 1]]);
+    expect(glyphs(folded)).toEqual([["ki st-running", 1, 0], ["ki st-failed", 0, 1]]);
     expect(stopsOf(open)).toEqual([]);
     open.buttons.find((b) => text(b.children) === "Clear finished")!.props.onClick();
     await Bun.sleep(0);
