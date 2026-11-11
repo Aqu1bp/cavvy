@@ -113,182 +113,180 @@
     --shiki-token-link: var(--syn-type);
 }
 
-/* ---- Light ------------------------------------------------------------ */
+/* ---- Palettes ----------------------------------------------------------
+   Worked out, not hand-picked: gui/src/lib/theme.ts derives every colour of a
+   scheme from a theme's few choices, and moves each text colour until it
+   reads on the surfaces it sits on. Between the palette marks is what the
+   default theme gives (scripts/theme-tokens.ts writes it; don't edit it
+   here). Any other theme is the same tokens over these (state/theme.ts). */
 :root,
 [data-theme="light"] {
+    /* palette:light */
     color-scheme: light;
-    --win-tint: rgba(246, 247, 250, 0.6);
+    --win-base: #eef1f6;
     --win-stroke: rgba(0, 0, 0, 0.22);
     --win-hi: rgba(255, 255, 255, 0.7);
-    /* A browser has no desktop behind it: this stands in for one. */
-    --backdrop:
-        radial-gradient(60% 55% at 15% 10%, #f3dccb 0%, transparent 62%),
-        radial-gradient(55% 60% at 88% 18%, #d3dff3 0%, transparent 64%),
-        radial-gradient(70% 60% at 60% 100%, #e9d6d9 0%, transparent 66%),
-        linear-gradient(160deg, #efe6df, #d9e1ee);
-
-    --sheet: #fcfcfd;
-    --sheet-2: #f3f4f6;
-    --bubble: #eef0f3; /* what you said, at the right of the conversation */
-    --insp-bg: #f8f8fa;
-    --term-bg: #f7f7f9;
-    --group: #f4f4f6;
+    --backdrop: radial-gradient(60% 55% at 12% 8%, #e9dffc 0%, transparent 62%), radial-gradient(55% 60% at 90% 16%, #c7e1fc 0%, transparent 64%), radial-gradient(70% 60% at 60% 100%, #f3d8e8 0%, transparent 66%), linear-gradient(160deg, #ebeaf5, #d5dfef);
+    --sheet: #fbfcff;
+    --sheet-2: #f1f3f8;
+    --bubble: #ebeff4;
+    --insp-bg: #f6f8fc;
+    --term-bg: #f4f7fb;
+    --group: #f2f4f9;
     --seg-on: #ffffff;
-    --raised: var(--seg-on); /* a piece raised off the sheet: the segmented control's thumb, usage cards */
-    --sheet-shadow: 0 0 0 0.5px rgba(15, 18, 30, 0.1), 0 1px 2px rgba(15, 18, 30, 0.05), 0 12px 32px -14px rgba(15, 18, 30, 0.28);
-
-    --fg: #17181b;
-    --fg-2: #464950;
-    --fg-3: #656870; /* mockup #686b73, nudged for AA */
-    --fg-4: #a3a6ad; /* glyphs and rules only: too faint for text */
-    --line: rgba(15, 18, 30, 0.08);
-    --line-strong: rgba(15, 18, 30, 0.16); /* control outlines, rings' tracks */
-    --hover: rgba(15, 18, 30, 0.045);
-    --press: rgba(15, 18, 30, 0.08);
-
-    --ctl: rgba(255, 255, 255, 0.66);
-    --ctl-strong: rgba(255, 255, 255, 0.86);
-    --ctl-stroke: rgba(15, 18, 30, 0.09);
+    --raised: var(--seg-on);
+    --sheet-shadow: 0 0 0 0.5px rgba(18, 22, 30, 0.1), 0 1px 2px rgba(18, 22, 30, 0.04), 0 14px 36px -16px rgba(18, 22, 30, 0.26);
+    --fg: #171a1e;
+    --fg-2: #45484d;
+    --fg-3: #64676d;
+    --fg-3-hi: #4a4d52;
+    --fg-4: #a2a5a9;
+    --line: rgba(23, 27, 34, 0.085);
+    --line-hi: rgba(23, 27, 34, 0.18);
+    --line-strong: rgba(23, 27, 34, 0.16);
+    --hover: rgba(23, 27, 34, 0.045);
+    --press: rgba(23, 27, 34, 0.08);
+    --ctl: rgba(255, 255, 255, 0.7);
+    --ctl-strong: rgba(255, 255, 255, 0.88);
+    --ctl-stroke: rgba(23, 27, 34, 0.09);
     --ctl-hi: rgba(255, 255, 255, 0.95);
     --ctl-lo: rgba(255, 255, 255, 0.35);
-    --ctl-shadow: 0 1px 1px rgba(15, 18, 30, 0.04), 0 10px 28px -10px rgba(15, 18, 30, 0.22);
-    --pop-shadow: 0 0 0 0.5px rgba(15, 18, 30, 0.12), 0 18px 48px -12px rgba(15, 18, 30, 0.3);
+    --ctl-shadow: 0 1px 1px rgba(18, 22, 30, 0.04), 0 10px 28px -10px rgba(18, 22, 30, 0.2);
+    --pop-shadow: 0 0 0 0.5px rgba(18, 22, 30, 0.12), 0 18px 48px -12px rgba(18, 22, 30, 0.28);
     --sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0) 46%);
-
-    --rail-fg: #1b1c20;
-    --rail-fg-2: #42444b;
-    --rail-sel: rgba(255, 255, 255, 0.62);
+    --rail-fg: #181b1f;
+    --rail-fg-2: #3d4045;
+    --rail-sel: rgba(255, 255, 255, 0.66);
     --rail-sel-stroke: rgba(255, 255, 255, 0.9);
-    --rail-hover: rgba(255, 255, 255, 0.32);
-    --rail-float: rgba(246, 247, 250, 0.82);
-
-    --accent: #2a6bff; /* mockup #2b6cff, nudged for AA under white */
+    --rail-hover: rgba(255, 255, 255, 0.34);
+    --rail-float: rgba(238, 241, 246, 0.84);
+    --accent: #2868fc;
     --accent-ink: #ffffff;
-
-    --ok: #157845; /* mockup #157a46, nudged for AA */
-    --warn: #985a00; /* mockup #9a5b00, nudged for AA */
-    --warn-bg: rgba(255, 179, 64, 0.16);
-    --danger: #c0352f;
-    /* Usage sources (data colours, not the accent): fixed whatever accent is picked, and checked for
-       colour-blind separation as a set in each scheme (all pairs ΔE ≥ 9.2 light, 9.4 dark). */
-    --src-claude: #eb6834;
-    --src-codex: #2a78d6;
-    --src-api: #1baf7a;
-    --add-bg: #e7f6ec;
-    --add-bg-strong: #c9ecd4;
-    --add-fg: #166a37;
-    --del-bg: #fdeeee;
-    --del-bg-strong: #f6d0ce;
-    --del-fg: #a52b27;
-    --find: rgba(255, 196, 0, 0.35);
-    --find-cur: rgba(255, 150, 0, 0.7);
-
-    --syn-keyword: #c2185b;
-    --syn-string: #0b5a2b;
-    --syn-function: #5b3fd0;
-    --syn-comment: #6a6e76; /* mockup #6b7078, nudged for AA */
-    --syn-type: #0b5fb0;
-
-    --plan: #7c4dff;
-    --steer: #7c4dff; /* a message steered into a running turn */
-    --auto: #a35401; /* was #a45501, nudged for AA on the new sheet */
-    --shell: #086f64;
-    --stop: #e5484d;
-    --shadow-sm: 0 1px 2px rgba(15, 18, 30, 0.05);
-    --scrollbar: rgba(15, 18, 30, 0.16);
+    --ok: #007137;
+    --warn: #895800;
+    --warn-bg: rgba(255, 179, 70, 0.16);
+    --danger: #bc2025;
+    --add-bg: #e0f7e5;
+    --add-bg-strong: #bcecc8;
+    --add-fg: #036a34;
+    --del-bg: #ffebe8;
+    --del-bg-strong: #ffcfca;
+    --del-fg: #9e2223;
+    --find: rgba(255, 201, 35, 0.38);
+    --find-cur: rgba(255, 157, 53, 0.7);
+    --syn-keyword: #b10b69;
+    --syn-string: #03642b;
+    --syn-function: #6335be;
+    --syn-comment: #6a6b6f;
+    --syn-type: #005fa7;
+    --plan: #6f46cf;
+    --steer: #6f46cf;
+    --auto: #9a4d00;
+    --shell: #006a62;
+    --stop: #e63839;
+    --shadow-sm: 0 1px 2px rgba(18, 22, 30, 0.05);
+    --scrollbar: rgba(23, 27, 34, 0.16);
+    /* /palette:light */
 }
 
-/* ---- Dark ------------------------------------------------------------- */
 [data-theme="dark"] {
+    /* palette:dark */
     color-scheme: dark;
-    --win-tint: rgba(22, 23, 27, 0.6);
+    --win-base: #0c0e13;
     --win-stroke: rgba(0, 0, 0, 0.6);
     --win-hi: rgba(255, 255, 255, 0.14);
-    --backdrop:
-        radial-gradient(60% 55% at 15% 10%, #3a2a26 0%, transparent 62%),
-        radial-gradient(55% 60% at 88% 18%, #1c2a45 0%, transparent 64%),
-        radial-gradient(70% 60% at 60% 100%, #35232a 0%, transparent 66%),
-        linear-gradient(160deg, #1d1a1b, #12161f);
-
-    --sheet: #131417;
-    --sheet-2: #1c1d21;
-    --bubble: #222328;
-    --insp-bg: #16171a;
-    --term-bg: #101113;
-    --group: #1a1b1f;
-    --seg-on: #2c2d33;
+    --backdrop: radial-gradient(60% 55% at 12% 8%, #332646 0%, transparent 62%), radial-gradient(55% 60% at 90% 16%, #082d4c 0%, transparent 64%), radial-gradient(70% 60% at 60% 100%, #391a2e 0%, transparent 66%), linear-gradient(160deg, #16141e, #080f1c);
+    --sheet: #16191d;
+    --sheet-2: #1f2226;
+    --bubble: #24272b;
+    --insp-bg: #191c20;
+    --term-bg: #111317;
+    --group: #1d1f24;
+    --seg-on: #2e3035;
     --raised: var(--sheet-2);
-    --sheet-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.08), 0 16px 40px -14px rgba(0, 0, 0, 0.7);
-
-    --fg: #ececef;
-    --fg-2: #b9bbc2;
-    --fg-3: #989ba2; /* mockup #8d9098, nudged for AA */
-    --fg-4: #585b63; /* glyphs and rules only: too faint for text */
-    --line: rgba(255, 255, 255, 0.07);
-    --line-strong: rgba(255, 255, 255, 0.13);
-    --hover: rgba(255, 255, 255, 0.05);
-    --press: rgba(255, 255, 255, 0.09);
-
-    --ctl: rgba(38, 39, 44, 0.64);
-    --ctl-strong: rgba(40, 41, 47, 0.88);
-    --ctl-stroke: rgba(255, 255, 255, 0.09);
+    --sheet-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.09), inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 18px 44px -16px rgba(0, 0, 0, 0.7);
+    --fg: #ebedef;
+    --fg-2: #b9bbbe;
+    --fg-3: #9fa2a5;
+    --fg-3-hi: #b4b7bd;
+    --fg-4: #585b5f;
+    --line: rgba(255, 255, 255, 0.075);
+    --line-hi: rgba(255, 255, 255, 0.16);
+    --line-strong: rgba(255, 255, 255, 0.14);
+    --hover: rgba(255, 255, 255, 0.055);
+    --press: rgba(255, 255, 255, 0.095);
+    --ctl: rgba(38, 41, 45, 0.66);
+    --ctl-strong: rgba(40, 42, 47, 0.9);
+    --ctl-stroke: rgba(255, 255, 255, 0.1);
     --ctl-hi: rgba(255, 255, 255, 0.13);
     --ctl-lo: rgba(255, 255, 255, 0.03);
     --ctl-shadow: 0 1px 1px rgba(0, 0, 0, 0.3), 0 14px 32px -10px rgba(0, 0, 0, 0.65);
-    --pop-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 24px 56px -12px rgba(0, 0, 0, 0.75);
+    --pop-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.11), 0 24px 56px -12px rgba(0, 0, 0, 0.78);
     --sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0) 46%);
-
-    --rail-fg: #f1f1f4;
-    --rail-fg-2: #c6c8cf;
+    --rail-fg: #edf0f6;
+    --rail-fg-2: #ced1d7;
     --rail-sel: rgba(255, 255, 255, 0.1);
     --rail-sel-stroke: rgba(255, 255, 255, 0.14);
-    --rail-hover: rgba(255, 255, 255, 0.05);
-    --rail-float: rgba(28, 29, 33, 0.84);
-
-    --accent: #2a6bff; /* mockup #2b6cff, nudged for AA under white */
+    --rail-hover: rgba(255, 255, 255, 0.055);
+    --rail-float: rgba(28, 30, 34, 0.86);
+    --accent: #2868fc;
     --accent-ink: #ffffff;
+    --ok: #69d98d;
+    --warn: #ffbc64;
+    --warn-bg: rgba(255, 179, 70, 0.13);
+    --danger: #ff7e75;
+    --add-bg: rgba(0, 161, 81, 0.16);
+    --add-bg-strong: rgba(0, 161, 81, 0.34);
+    --add-fg: #77de96;
+    --del-bg: rgba(237, 74, 70, 0.15);
+    --del-bg-strong: rgba(237, 74, 70, 0.32);
+    --del-fg: #ffaba2;
+    --find: rgba(255, 201, 35, 0.28);
+    --find-cur: rgba(255, 157, 53, 0.52);
+    --syn-keyword: #ff8dbc;
+    --syn-string: #89e29d;
+    --syn-function: #bfb1ff;
+    --syn-comment: #989b9e;
+    --syn-type: #76bafe;
+    --plan: #b3a0ff;
+    --steer: #b3a0ff;
+    --auto: #ffa15c;
+    --shell: #5fe7d9;
+    --stop: #f14442;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --scrollbar: rgba(255, 255, 255, 0.13);
+    /* /palette:dark */
+}
 
-    --ok: #5fd08b;
-    --warn: #ffc15c;
-    --warn-bg: rgba(255, 179, 64, 0.13);
-    --danger: #ff7b72;
+/* Usage sources (data colours, not the accent): fixed whatever the theme, and checked for
+   colour-blind separation as a set in each scheme (all pairs ΔE ≥ 9.2 light, 9.4 dark). */
+:root,
+[data-theme="light"] {
+    --src-claude: #eb6834;
+    --src-codex: #2a78d6;
+    --src-api: #1baf7a;
+}
+
+[data-theme="dark"] {
     --src-claude: #d95926;
     --src-codex: #3987e5;
     --src-api: #199e70;
-    --add-bg: rgba(46, 160, 67, 0.15);
-    --add-bg-strong: rgba(46, 160, 67, 0.32);
-    --add-fg: #79d995;
-    --del-bg: rgba(248, 81, 73, 0.14);
-    --del-bg-strong: rgba(248, 81, 73, 0.3);
-    --del-fg: #ff958d;
-    --find: rgba(255, 196, 0, 0.28);
-    --find-cur: rgba(255, 150, 0, 0.56); /* mockup 0.6, lowered for AA */
+}
 
-    --syn-keyword: #ff7ab2;
-    --syn-string: #8fe0a6;
-    --syn-function: #b9a3ff;
-    --syn-comment: #8f949c; /* mockup #7d828c, nudged for AA */
-    --syn-type: #6cb6ff;
-
-    --plan: #a78bfa;
-    --steer: #a78bfa;
-    --auto: #f0a24a;
-    --shell: #5eead4;
-    --stop: #ef4444;
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-    --scrollbar: rgba(255, 255, 255, 0.12);
+/* The window's tint: the theme's window colour, let through as far as Settings → Appearance → Window says. */
+:root {
+    --win-tint: color-mix(in srgb, var(--win-base) 60%, transparent);
 }
 
 /* ---- Window (Settings → Appearance) -----------------------------------
    Tinted lets less of the desktop through; solid drops the glass (base.css
    also drops every backdrop-filter). */
-[data-glass="tinted"][data-theme="light"] {
-    --win-tint: rgba(240, 241, 244, 0.82);
-    --rail-sel: rgba(255, 255, 255, 0.85);
+[data-glass="tinted"] {
+    --win-tint: color-mix(in srgb, var(--win-base) 84%, transparent);
 }
 
-[data-glass="tinted"][data-theme="dark"] {
-    --win-tint: rgba(24, 25, 29, 0.84);
+[data-glass="tinted"][data-theme="light"] {
+    --rail-sel: rgba(255, 255, 255, 0.85);
 }
 
 [data-glass="solid"] {
@@ -380,14 +378,9 @@
 }
 
 /* ---- Contrast (Settings → Appearance): stronger text and edges -------- */
-[data-contrast="high"][data-theme="light"] {
-    --fg-3: #4a4d55;
-    --line: rgba(15, 18, 30, 0.18);
-}
-
-[data-contrast="high"][data-theme="dark"] {
-    --fg-3: #b2b5bd;
-    --line: rgba(255, 255, 255, 0.16);
+[data-contrast="high"] {
+    --fg-3: var(--fg-3-hi);
+    --line: var(--line-hi);
 }
 
 /* ---- Accents ----------------------------------------------------------
@@ -435,5 +428,5 @@
 
 /* The mockup's blue is a mid tone: as text on the dark sheet it needs more of --fg. */
 [data-theme="dark"] {
-    --accent-text: color-mix(in srgb, var(--accent) 65%, var(--fg));
+    --accent-text: color-mix(in srgb, var(--accent) 55%, var(--fg));
 }
