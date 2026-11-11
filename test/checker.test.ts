@@ -80,6 +80,15 @@ test("builtin tools have the categories the checker relies on", () => {
     expect(["Task", "TodoWrite", "AskUserQuestion", "ExitPlanMode", "KillShell"].map(cat)).toEqual(["meta", "meta", "meta", "meta", "meta"]);
 });
 
+test("a file named through a variable that can't be worked out is said as that, not as Cavvy's own files", () => {
+    for (const cmd of ["ls $DIR", "cat $FILE", "touch out/$NAME"]) expect([cmd, check(T("Bash"), bash(cmd), "default").sensitive]).toEqual([cmd, "files named through a variable Cavvy can't work out"]);
+    // The line points at them: said so.
+    expect(check(T("Bash"), bash(`cat ${H}/history.jsonl`), "default").sensitive).toBe("Cavvy's settings and session logs");
+    // A loop's variable that only gets printed opens no file: nothing to say (`do` isn't a program reading its words).
+    for (const cmd of ['for i in 1 2 3; do echo "check $i"; sleep 0.1; done', "if true; then echo $X; fi"]) expect([cmd, check(T("Bash"), bash(cmd), "default")]).toEqual([cmd, { behavior: "ask", suggestions: [] }]);
+    expect(check(T("Bash"), bash("for f in a b; do cat $f; done"), "default").sensitive).toBe("files named through a variable Cavvy can't work out");
+});
+
 describe("allow rules for shell commands", () => {
     const allowed = (cmd: string, mode: PermissionMode = "default") => check(T("Bash"), bash(cmd), mode);
 

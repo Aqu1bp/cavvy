@@ -1832,6 +1832,8 @@ export function sensitiveWord(word: string, cavvyHome?: string): string | undefi
 
 /** Cavvy home's other files, as a sensitive target: settings and session logs may hold secrets. */
 export const CAVVY_FILES = "Cavvy's settings and session logs";
+/** What a variable Cavvy can't work out names: it could be those, so it asks, but nothing says it is. */
+export const UNKNOWN_FILES = "files named through a variable Cavvy can't work out";
 
 /** The environment a command's shell starts with: what its variables hold. */
 export type ShellEnv = Record<string, string | undefined>;
@@ -1906,11 +1908,16 @@ const LISTER_READS: Record<string, (w: string) => boolean> = {
 
 const NO_FILE_WORDS = new Set(["echo", "printf", "export", "unset", "true", "false", ":", "exit", "return", "shift"]);
 
+/** A command's text that starts with one of the shell's own words for a loop, a conditional, a group or a negation. */
+const SHELL_WORD = /^(?:do|then|else|elif|if|while|until|!|\{)[ \t]+\S/;
+
 /** What a command reads in Cavvy home: the paths it names there, and whether it may read more than it shows. */
 export interface HomeReads {
     paths: string[];
     /** It may read there through what Cavvy can't follow: an expansion, a pattern, a cd, a substitution. */
     unsure: boolean;
+    /** Nothing on the line points at the home: only a variable or a cd whose value can't be worked out, which could. */
+    guess?: boolean;
 }
 
 /**
@@ -1967,6 +1974,8 @@ export function cavvyHomeReads(cmd: string, cwd: string, cavvyHome: string, env?
         return to !== undefined && (to === "-" || (/[$~]/.test(to) && expandWord(to, look, cwd) === undefined));
     });
     const out: HomeReads = { paths: [], unsure: false };
+    // Something on the line points at the home (its path, a file in it), not only a value that can't be worked out.
+    let pointed = false;
     const touches = (word: string, dir: string, expands: boolean) => {
         let w = /^[\w-]*=/.test(word) && !word.startsWith("-") ? word.slice(word.indexOf("=") + 1) : word.replace(/^--?[\w-]+=/, "");
         if (expands || w.startsWith("~")) {
@@ -1981,12 +1990,12 @@ export function cavvyHomeReads(cmd: string, cwd: string, cavvyHome: string, env?
         for (const p of new Set(parts)) {
             if (!/[*?[]/.test(p)) {
                 const abs = expandPath(p, dir);
-                if (inHome(abs)) (hit = true), out.paths.push(abs);
+                if (inHome(abs)) (hit = pointed = true), out.paths.push(abs);
                 continue;
             }
             const found = expandGlob(p, dir).filter(inHome);
             if (found.length || inHome(expandPath(p.slice(0, p.search(/[*?[]/)).replace(/[^/]*$/, "") || ".", dir))) {
-                hit = true;
+                hit = pointed = true;
                 out.unsure = true;
                 out.paths.push(...found);
             }
@@ -2001,10 +2010,13 @@ export function cavvyHomeReads(cmd: string, cwd: string, cavvyHome: string, env?
         );
     let reads = false;
     for (const { programs, dir, text } of commands) {
-        if (programs.length && !makesOptions(text) && programs.every((argv) => lists(argv) || opensNothing(argv))) continue;
-        if (named(text, dir ?? cwd)) reads = true;
+        // Past the shell's own word a loop's or a conditional's command starts with: `do echo "$i"` opens nothing either.
+        const past = SHELL_WORD.test(text) ? 1 : 0;
+        if (programs.length && !makesOptions(text) && programs.every((argv, level) => ((argv = level ? argv : argv.slice(past)), !argv.length || lists(argv) || opensNothing(argv)))) continue;
+        if (named(text, dir ?? cwd)) reads = pointed = true;
         if (dir === null) {
-            if (lostCd || named(cmd)) return unsure;
+            if (named(cmd)) return unsure;
+            if (lostCd) return { ...unsure, guess: true };
             continue;
         }
         const expanded = new Set(analyzeCommand(text).commands.flatMap((c) => (c.expands ?? []).map((j) => c.argv[j]!)));
@@ -2014,6 +2026,7 @@ export function cavvyHomeReads(cmd: string, cwd: string, cavvyHome: string, env?
     if (!reads && !out.unsure) return undefined;
     // Named but not found word by word (`cat x$HOME_DIR/…`): it may be read some other way.
     if (!out.paths.length) out.unsure = true;
+    if (!pointed) out.guess = true;
     return out;
 }
 

@@ -27,7 +27,7 @@ import type { HiddenReason, Tool } from "../tools/types";
 import type { PermissionMode } from "./modes";
 import { sandboxAllowedHosts, sandboxExcludedCommands, type Settings } from "../config/settings";
 import { allowedCommand, findMatch, parseRule, EDIT_TOOLS, READ_TOOLS, toolPath, type RuleTarget } from "./rules";
-import { accountTarget, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, type CommandAnalysis, CAVVY_FILES, cavvyHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, suggestBashRules, withoutHeredocData } from "./bash-safety";
+import { accountTarget, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, type CommandAnalysis, CAVVY_FILES, UNKNOWN_FILES, cavvyHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, suggestBashRules, withoutHeredocData } from "./bash-safety";
 import { accessNeeded, looksDestructive, sandboxEnabled, sandboxKind, sandboxPolicy, type SandboxKind, type SandboxPolicy } from "./sandbox";
 import { stableStringify, type ApprovedAction } from "./classifier";
 import { isBrowserTool, isQuietBrowserCall, isReadOnly, isShellTool, isSimulatorTool } from "../tools/types";
@@ -394,11 +394,13 @@ export class PermissionChecker {
     private cavvyFilesTarget(cmd: string, cwd: string, policy: SandboxPolicy | undefined): string | undefined {
         const reads = cavvyHomeReads(cmd, cwd, cavvyHome(), this.shellEnv());
         if (!reads) return undefined;
-        if (!policy) return CAVVY_FILES;
+        // Said as what it is: Cavvy's files when the line points at them, else only that it can't tell.
+        const what = reads.guess ? UNKNOWN_FILES : CAVVY_FILES;
+        if (!policy) return what;
         // Each path by where it leads; what it can't pin down (a folder, a pattern, an expansion) only when no symlink leads out of the home.
         const home = cavvyHome();
-        if (reads.unsure && !blocks(policy, home, true)) return CAVVY_FILES;
-        return reads.paths.every((p) => blocks(policy, p, true)) ? undefined : CAVVY_FILES;
+        if (reads.unsure && !blocks(policy, home, true)) return what;
+        return reads.paths.every((p) => blocks(policy, p, true)) ? undefined : what;
     }
 
     /** Does a search command (rg, grep -r, find) have a folder that holds Cavvy's secret files as an operand? */

@@ -892,6 +892,36 @@ test("a turn a steered message ended has no call left under way once the run is 
     await engine.stop();
 });
 
+test("a call stopped while it was still arriving says so only when there's something of it to say it about", async () => {
+    const engine = new Engine({ listModels: async () => [] });
+    const runtime = await engine.createSession(tempDir("stopped-arriving-"));
+    await runtime.ready;
+    const session = runtime.session;
+    session.meta.system = "Test";
+    Object.assign(runtime, {
+        model: { provider: "codex", id: "test" },
+        agent: {
+            delegatedTasks: [],
+            backgroundTasks: () => [],
+            dispose: async () => {},
+            run: async () => {
+                session.push({ role: "user", content: [{ type: "text", text: "build" }] });
+                // One call with what it's for already here, one with nothing yet, when the user stops the turn.
+                (runtime as any).onEvent({ type: "tool_call_start", id: "half", name: "Bash" });
+                (runtime as any).onEvent({ type: "tool_call_delta", id: "half", partial: '{"description":"Build it","command":"make bu' });
+                (runtime as any).onEvent({ type: "tool_call_start", id: "none", name: "Bash" });
+                (runtime as any).onEvent({ type: "turn_end", reason: "aborted" });
+                return "aborted";
+            },
+        },
+    });
+    await runtime.startTurn("build");
+    runtime.flush();
+    const blocks = runtime.snapshot().turns[0]!.blocks;
+    expect(blocks.map((b) => [b.id, b.t === "tool" && b.status, b.t === "tool" && b.summary, b.t === "tool" && b.input?.description])).toEqual([["half", "error", "Interrupted", "Build it"]]);
+    await engine.stop();
+});
+
 test("a reopened task comes back with its own sub-agents, whose calls are in its steps, not in a turn", () => {
     const run = (id: string, parentId?: string): AgentRun => ({ id, turnId: "old", parentId, description: id, agentType: "general-purpose", status: "running", startedAt: 1, toolCount: 0, tokens: 0, blocks: [] });
     const turns: Turn[] = [{ id: "t1", status: "done", endedAt: 50, blocks: [{ t: "tool", id: "task", name: "delegate", title: "delegate", status: "ok", agent: true }] }];
