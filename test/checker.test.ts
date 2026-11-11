@@ -151,7 +151,8 @@ describe("allow rules for shell commands", () => {
         expect(offered(T("Bash"), bash("cp a b"), "default")).toEqual({ rules: ["Bash(cp:*)"], grant: "cp" });
         // Asked about for a file it names: that file for the session, no rule for every `cp`.
         const sandboxed = new PermissionChecker(() => settings, W, () => "seatbelt");
-        expect(offered(T("Bash"), bash("cp .env backup.env"), "auto", sandboxed)).toEqual({ rules: [], grant: join(W, ".env") });
+        expect(offered(T("Bash"), bash("cp .env backup.env"), "auto", sandboxed)).toEqual({ rules: [], grant: ".env" });
+        expect(offered(T("Bash"), bash(`cp ${join(O, ".env")} x`), "auto", sandboxed).grant).toBe(join(O, ".env"));
         expect(offered(T("Bash"), bash("cp .env backup.env && echo $((1+1))"), "auto", sandboxed).rules).toEqual([]);
         // Asked about for the hosts it lists: those hosts for the session.
         expect(offered(T("Bash"), { command: "curl https://x.example/a", allowedHosts: ["x.example"] }, "auto", sandboxed)).toEqual({ rules: [], grant: "x.example" });

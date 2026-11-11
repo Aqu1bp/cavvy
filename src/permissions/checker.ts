@@ -22,7 +22,7 @@
 
 import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "fs";
 import { homedir, tmpdir } from "os";
-import { basename, dirname, join, resolve } from "path";
+import { basename, dirname, join, relative, resolve } from "path";
 import type { HiddenReason, Tool } from "../tools/types";
 import type { PermissionMode } from "./modes";
 import { sandboxAllowedHosts, sandboxExcludedCommands, type Settings } from "../config/settings";
@@ -309,7 +309,12 @@ export class PermissionChecker {
             const cmd = String(input?.command ?? "");
             if (d.sensitive) {
                 const paths = [...new Set(this.sensitivePaths(heredocDataBlanked(cmd), cwd))];
-                return paths.length && paths.every((p) => !isInside(homedir(), p)) ? { label: paths.map((p) => displayHome(p)).join(", "), paths } : undefined;
+                // Named as the command names them where they're the project's own: `.env.local`, not its whole path.
+                const short = (p: string) => {
+                    const within = relative(this.root, p);
+                    return within && !within.startsWith("..") ? within : displayHome(p);
+                };
+                return paths.length && paths.every((p) => !isInside(homedir(), p)) ? { label: paths.map(short).join(", "), paths } : undefined;
             }
             if (d.listedHosts?.length) return { label: d.listedHosts.join(", "), hosts: d.listedHosts };
             const rules = d.suggestions ?? [];
