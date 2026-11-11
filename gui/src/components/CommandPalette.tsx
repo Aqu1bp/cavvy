@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, type JSX } from "solid-js";
-import { Archive, Bot, ChartColumn, FileDiff, FolderGit2, FolderOpen, GitFork, History, MessageSquare, Moon, MoreHorizontal, PanelLeft, PanelRight, Plus, Search, Settings, SquareTerminal, Share, Shrink, Sparkles, Sun, Trash2, User } from "lucide-solid";
+import { Archive, Bot, ChartColumn, FileDiff, FolderGit2, FolderOpen, GitFork, History, MessageSquare, Moon, MoreHorizontal, PanelLeft, PanelRight, Plus, Search, SearchX, Settings, SquareTerminal, Share, Shrink, Sparkles, Sun, Trash2, User } from "lucide-solid";
 import { MODE_LABELS, type SessionSearchHit } from "@shared/protocol";
 import { activate, app, handleFor, reportError, rpc, sessionPresenceVersion } from "../state/app";
 import { archive, chooseProject, exportSession, fork, newSession, openProject, openReview, setMode, togglePanel, toggleSidebar } from "../state/actions";
@@ -231,6 +231,11 @@ export function CommandPalette() {
         close();
         e.run();
     };
+    /** What was typed, short enough for the empty list's one line. */
+    const nothingFor = () => {
+        const typed = q().trim();
+        return typed.length > 48 ? `${typed.slice(0, 48)}…` : typed;
+    };
     const onKey = (e: KeyboardEvent) => {
         const n = results().length;
         if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -245,17 +250,30 @@ export function CommandPalette() {
     };
 
     return (
-        <Dialog open={paletteOpen()} onClose={close} bare top width={620} class="palette">
+        <Dialog open={paletteOpen()} onClose={close} bare top width={640} class="palette">
             <div class="pal-in">
-                <Search size={17} class="pal-search" />
+                <Search size={18} class="pal-search" />
                 <input ref={input} autofocus value={q()} onInput={(e) => setQ(e.currentTarget.value)} onKeyDown={onKey} placeholder="Search sessions, messages, projects and actions" aria-label="Search sessions, messages, projects and actions" spellcheck={false} />
                 <Show when={searching()}>
-                    <Spinner size={13} class="muted" />
+                    <Spinner size={14} class="muted" />
                 </Show>
-                <kbd>Esc</kbd>
             </div>
             <div class="pal-list" ref={list}>
-                <For each={results()} fallback={<div class="pal-empty">{older() === "more" ? "Searching older sessions…" : older() === "incomplete" ? "Nothing found. Some older sessions weren't searched." : searching() ? "Searching messages…" : "Nothing matches."}</div>}>
+                <For
+                    each={results()}
+                    fallback={
+                        <div class="pal-empty" role="status">
+                            {/* Still looking says so; nothing found says what to try. */}
+                            <Show when={!searching() && older() !== "more"} fallback={older() === "more" ? "Searching older sessions…" : "Searching messages…"}>
+                                <span class="pal-ic">
+                                    <SearchX size={18} />
+                                </span>
+                                <b>Nothing matches “{nothingFor()}”</b>
+                                <span>{older() === "incomplete" ? "Some older sessions weren't searched." : "Try a session's title, a word from a message, or an action."}</span>
+                            </Show>
+                        </div>
+                    }
+                >
                     {(e, i) => (
                         <>
                             <Show when={i() === 0 || results()[i() - 1]!.section !== e.section}>
@@ -276,8 +294,9 @@ export function CommandPalette() {
                                 </span>
                                 <Show when={e.kbd || e.end}>
                                     <span class="pal-end">
+                                        {/* One cap a key: Ctrl, then K. */}
                                         <Show when={e.kbd} fallback={e.end}>
-                                            <kbd>{e.kbd}</kbd>
+                                            <For each={e.kbd!.split(" ")}>{(k) => <kbd>{k}</kbd>}</For>
                                         </Show>
                                     </span>
                                 </Show>
@@ -288,6 +307,21 @@ export function CommandPalette() {
                 <Show when={results().length && older()}>
                     <div class="pal-note">{older() === "more" ? "Searching older sessions…" : "Some older sessions weren't searched."}</div>
                 </Show>
+            </div>
+            <div class="pal-foot" aria-hidden="true">
+                <span>
+                    <kbd>↑</kbd>
+                    <kbd>↓</kbd>
+                    Move
+                </span>
+                <span>
+                    <kbd>↵</kbd>
+                    Open
+                </span>
+                <span>
+                    <kbd>esc</kbd>
+                    Close
+                </span>
             </div>
         </Dialog>
     );

@@ -185,7 +185,7 @@ export function CommitDialog() {
                             }}
                         />
                         <div class="commit-generate">
-                            <button class="btn ghost" disabled={!ready() || generating() || committing()} onClick={() => void generate()}>
+                            <button class="btn secondary sm" disabled={!ready() || generating() || committing()} onClick={() => void generate()}>
                                 {generating() ? "Generating…" : "Generate message"}
                             </button>
                             <Show when={model()}>

@@ -107,7 +107,7 @@ test("Add account from the model picker opens that provider's new-account form, 
     } finally { f.dispose(); other.dispose(); setAddAccountFor(undefined); }
 });
 
-test("a connected provider shows its plan, a status dot and its one account's email, and turns off from its menu", async () => {
+test("a connected provider shows its plan, a Connected chip and its one account's email, and turns off from its menu", async () => {
     const offs: number[] = [];
     const f = fixture([{ ...defaultAccount, signedIn: true, email: "me@example.test", plan: "max" }], "claude-code", { info: { configured: true }, props: { onTurnOff: () => offs.push(1) } });
     try {
@@ -115,7 +115,7 @@ test("a connected provider shows its plan, a status dot and its one account's em
         expect(f.calls[0]).toEqual({ method: "accounts.list", params: { provider: "claude-code", refresh: true } });
         expect(f.nodes().find((n) => n.props.class === "tag")).toBeDefined();
         expect(text(f.nodes().find((n) => n.props.class === "tag")!)).toBe("Max");
-        expect(f.nodes().find((n) => n.props.class === "cli-dot")?.props["aria-label"]).toBe("Connected");
+        expect(text(f.nodes().find((n) => n.props.class === "tag ok")!)).toBe("Connected");
         expect(text(f.nodes().find((n) => n.props.class?.startsWith("prov-sub"))!)).toBe("me@example.test");
         f.button("Claude Code actions").props.onClick();
         expect(f.nodes().filter((n) => n.props.role === "menuitem").map((n) => text(n))).toEqual(["Add account…", "Sign in again", "Refresh status", "Learn more…", "Turn off…"]);
@@ -146,7 +146,7 @@ test("a connected provider whose one account is signed out says so instead of th
     const f = fixture([{ ...defaultAccount, signedIn: false }], "codex", { info: { configured: true } });
     try {
         expect(text(f.root)).toContain("Not signed in");
-        expect(f.nodes().some((n) => n.props.class === "cli-dot")).toBe(false);
+        expect(f.nodes().some((n) => n.props.class === "tag ok")).toBe(false);
     } finally { f.dispose(); }
 });
 

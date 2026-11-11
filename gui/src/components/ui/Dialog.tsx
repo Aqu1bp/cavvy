@@ -84,7 +84,7 @@ function DialogInner(p: DialogProps) {
             <div class={`dialog-backdrop ${p.top ? "top" : ""}`} onPointerDown={(e) => e.target === e.currentTarget && p.onClose()}>
                 <div
                     ref={box}
-                    class={`dialog glass ${p.class ?? ""}`}
+                    class={`dialog ${p.class ?? ""}`}
                     style={{ width: `min(calc(${p.width ?? 520} * var(--sp)), calc(100vw - 32px))` }}
                     role="dialog"
                     aria-modal="true"

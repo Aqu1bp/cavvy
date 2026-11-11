@@ -99,7 +99,6 @@ function ArchiveWorktree(p: { id: string; title: string; offer: NonNullable<Retu
                 <button class="btn ghost" disabled={busy()} onClick={close}>
                     Cancel
                 </button>
-                <span class="grow" />
                 <Show when={p.offer.removable}>
                     <Show
                         when={ignored()}

@@ -1,4 +1,4 @@
-// A toast: a small glass pill for a confirmation or an Undo, shown with the error
+// A toast: one floating line for a confirmation or an Undo, shown with the error
 // cards right above the composer (ErrorCards.tsx), and gone on its own. At most
 // two show (state/app.ts queues the rest); pointing at one, or focusing it, holds
 // its timer, so an Undo can't slip away under the cursor. Errors are cards instead.
@@ -16,7 +16,7 @@ export function ToastItem(p: { toast: Toast }) {
     });
     return (
         <div
-            class={`toast glass ${t().level}`}
+            class={`toast ${t().level}`}
             onPointerEnter={() => pauseToast(t().id, "hover", true)}
             onPointerLeave={() => pauseToast(t().id, "hover", false)}
             onFocusIn={() => pauseToast(t().id, "focus", true)}
@@ -24,14 +24,16 @@ export function ToastItem(p: { toast: Toast }) {
                 if (!e.currentTarget.contains(e.relatedTarget as Node | null)) pauseToast(t().id, "focus", false);
             }}
         >
-            <Switch fallback={<Info size={15} />}>
-                <Match when={t().level === "warn"}>
-                    <TriangleAlert size={15} />
-                </Match>
-                <Match when={t().level === "success"}>
-                    <CircleCheck size={15} />
-                </Match>
-            </Switch>
+            <span class="toast-ic">
+                <Switch fallback={<Info size={15} />}>
+                    <Match when={t().level === "warn"}>
+                        <TriangleAlert size={15} />
+                    </Match>
+                    <Match when={t().level === "success"}>
+                        <CircleCheck size={15} />
+                    </Match>
+                </Switch>
+            </span>
             <span class="toast-msg" title={t().message}>
                 {t().message}
             </span>
@@ -46,7 +48,7 @@ export function ToastItem(p: { toast: Toast }) {
                 )}
             </For>
             <button class="icon-btn" onClick={() => dismissToast(t().id)} aria-label="Dismiss">
-                <X size={13} />
+                <X size={14} />
             </button>
         </div>
     );

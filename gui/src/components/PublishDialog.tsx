@@ -58,7 +58,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                         <p class="mono small publish-destination">{view()?.destination}</p>
                         <p class="muted small">{view()?.ahead ?? "Unknown"} ahead · {view()?.behind ?? "Unknown"} behind</p>
                         <Show when={view()?.protected || view()?.defaultUnknown}>
-                            <label class="commit-warning"><input type="checkbox" checked={confirmed()} disabled={busy()} onChange={(e) => setConfirmed(e.currentTarget.checked)} /> I confirm pushing to this protected branch{view()?.defaultUnknown ? " (remote default is unknown)" : ""}.</label>
+                            <label class="commit-warning check-row"><input type="checkbox" checked={confirmed()} disabled={busy()} onChange={(e) => setConfirmed(e.currentTarget.checked)} /> I confirm pushing to this protected branch{view()?.defaultUnknown ? " (remote default is unknown)" : ""}.</label>
                         </Show>
                         <Show when={view()?.prError}><p class="commit-warning">PR state unavailable: {view()?.prError}</p></Show>
                         <Show when={view()?.pr}>
@@ -74,7 +74,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                             <input id="pr-title" class="input" maxlength={250} value={title()} disabled={busy()} onInput={(e) => setTitle(e.currentTarget.value)} />
                             <label class="commit-message-label" for="pr-body">Description</label>
                             <textarea id="pr-body" class="input" rows={6} maxlength={16000} value={body()} disabled={busy()} onInput={(e) => setBody(e.currentTarget.value)} />
-                            <label><input type="checkbox" checked={draft()} disabled={busy()} onChange={(e) => setDraft(e.currentTarget.checked)} /> Draft</label>
+                            <label class="check-row"><input type="checkbox" checked={draft()} disabled={busy()} onChange={(e) => setDraft(e.currentTarget.checked)} /> Draft</label>
                         </Show>
                     </Show>
                 </Show>
@@ -82,8 +82,7 @@ export function PublishDialog(p: { id?: string; onClose: () => void; onPublished
                 <Show when={error()}><pre class="commit-error" role="alert">{error()}</pre></Show>
                 <div class="dialog-actions">
                     <button class="btn ghost" disabled={busy()} onClick={close}>Cancel</button>
-                    <span class="grow" />
-                    <button class="btn" disabled={!ready()} onClick={() => void publish("push")}>{busy() ? "Publishing…" : "Confirm push"}</button>
+                    <button class="btn secondary" disabled={!ready()} onClick={() => void publish("push")}>{busy() ? "Publishing…" : "Confirm push"}</button>
                     <Show when={view()?.gh}><button class="btn primary" disabled={!ready() || !title().trim() || !base().trim()} onClick={() => void publish("pr")}>Confirm · Open pull request</button></Show>
                 </div>
             </div>

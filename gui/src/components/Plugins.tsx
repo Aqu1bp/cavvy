@@ -348,7 +348,7 @@ function PluginCard(p: { plugin: PluginInfo; markets: PluginMarketplaceInfo[]; b
                     {cat().name}
                 </span>
                 <button
-                    class="btn ghost sm pg-install"
+                    class="btn secondary sm pg-install"
                     disabled={Boolean(p.busy)}
                     title="Install for you, in every project"
                     aria-label={`Install ${pl().name}`}
