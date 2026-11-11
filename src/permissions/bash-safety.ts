@@ -1048,8 +1048,10 @@ export function isReadOnlyCommand(cmd: string): boolean {
 /**
  * What keeps a command from being read-only, naming the part (for a
  * read-only agent, so it can drop or replace just that), or undefined.
+ * `vouched`: commands of the line (by their place in shellCommands) something else answers for, an allow rule
+ * say: the rest of the line is judged, as a line, with every check that looks past one command's own words.
  */
-export function notReadOnly(cmd: string): string | undefined {
+export function notReadOnly(cmd: string, vouched?: (index: number) => boolean): string | undefined {
     const a = shellCommands(cmd);
     const clip = (s: string) => (s.length > 120 ? s.slice(0, 117) + "…" : s).replace(/\s+/g, " ");
     if (a.unparsable) return a.heredoc ? "its quotes aren't closed, or its here-document's delimiter can't be read for certain" : "its quotes aren't closed";
@@ -1071,13 +1073,14 @@ export function notReadOnly(cmd: string): string | undefined {
     if (a.commands.some((c) => c.expands?.some((i) => /\$\{?_(?![A-Za-z0-9_])/.test(c.argv[i]!)))) return "it uses `$_`, the last word of the command before";
     // The checks read words as written. An expansion inside other text can be empty and leave text they
     // never saw (an option, say); one standing alone, or before a path, is a value, not hidden text.
-    const spliced = a.commands.flatMap((c) => (c.expands ?? []).map((i) => c.argv[i]!)).find((w) => !STANDALONE_EXPANSION.test(w));
+    const judged = vouched ? a.commands.filter((_, i) => !vouched(i)) : a.commands;
+    const spliced = judged.flatMap((c) => (c.expands ?? []).map((i) => c.argv[i]!)).find((w) => !STANDALONE_EXPANSION.test(w));
     if (spliced !== undefined) return `\`${clip(spliced)}\` has an expansion inside other text, which can leave words the checks never saw (an option, say)`;
-    const g = a.commands.find((c) => globTurnsUnsafe(c));
+    const g = judged.find((c) => globTurnsUnsafe(c));
     if (g) return `a glob in \`${clip(g.text)}\` can expand to a file name that's an option for it`;
-    const m = a.commands.find((c) => mathRuns(c));
+    const m = judged.find((c) => mathRuns(c));
     if (m) return `\`${clip(m.text)}\` has arithmetic that can assign or run code (zsh evaluates it)`;
-    const c = a.commands.find((c) => !isReadOnlySimple(c.argv));
+    const c = judged.find((c) => !isReadOnlySimple(c.argv));
     return c ? `\`${clip(c.text)}\` isn't one of the read-only commands` : undefined;
 }
 
@@ -1772,17 +1775,18 @@ function namesAccount(cmd: string, cwd: string): boolean {
 
 /**
  * What can stand right before a file's name in a command line: its start, a space, a quote, `=`, `:`, `/`, a
- * redirect, the `@` of an upload (`curl -d @.env`), the brace or comma of a list (`{a,.env}`), a parenthesis or a
- * backtick, or a short option it's the value of (`-T.env`, `-o.git/hooks/x`). And what can end one.
+ * redirect, the `@` of an upload (`curl -d @.env`), the brace or comma of a list (`{a,.env}`), a parenthesis, or a
+ * short option it's the value of (`-T.env`, `-o.git/hooks/x`). Not a backtick: in a commit message, `` `.git` `` is
+ * a word about a file, and a command in backticks has a space before the name anyway. And what can end one.
  */
-const BEFORE_PATH = String.raw`(^|[\s'"=:<>@,{(\`]|(?:^|\s)-[A-Za-z]{1,8})`;
+const BEFORE_PATH = String.raw`(^|[\s'"=:<>@,{(]|(?:^|\s)-[A-Za-z0-9]{1,8})`;
 /** The same for a name that can also be a path's last part (`dir/.env`). */
 const BEFORE_NAME = BEFORE_PATH.replace("=:<", "=:/<");
 const NAME_END = String.raw`\s'";|&)>\`,}`;
 
 const SENSITIVE = ([
     // Any suffix (.env.prodüction too); a template only when that's the whole name, as for Read.
-    [new RegExp(String.raw`${BEFORE_NAME}\.env(?!\.(example|sample|template|dist)(?=$|[${NAME_END}]))([.*?[][^${NAME_END}/]*)?(?=$|[${NAME_END}])`), ENV_FILE],
+    [new RegExp(String.raw`${BEFORE_NAME}\.env(?!\.(example|sample|template|dist)(?=$|[${NAME_END}]))([.*?[][^${NAME_END}/]{0,255})?(?=$|[${NAME_END}])`), ENV_FILE],
     [new RegExp(String.raw`${BEFORE_NAME.replace("/<", "/~<")}\.(ssh|aws|gnupg|azure)(\/|\b)|\.kube\/config|\.docker\/config\.json|\.config\/gcloud`), "a credentials directory"],
     [/\.(netrc|npmrc|pypirc|pgpass|git-credentials)\b/, "a credentials file"],
     [/\bid_(rsa|ed25519|ecdsa|dsa)\b(?!\.pub)/, "an SSH private key"],
@@ -2015,8 +2019,9 @@ export function cavvyHomeReads(cmd: string, cwd: string, cavvyHome: string, env?
         if (programs.length && !makesOptions(text) && programs.every((argv, level) => ((argv = level ? argv : argv.slice(past)), !argv.length || lists(argv) || opensNothing(argv)))) continue;
         if (named(text, dir ?? cwd)) reads = pointed = true;
         if (dir === null) {
-            if (named(cmd)) return unsure;
-            if (lostCd) return { ...unsure, guess: true };
+            // With what was found before the folder was lost: a path already named stays named.
+            if (named(cmd)) return { paths: out.paths, unsure: true };
+            if (lostCd) return { paths: out.paths, unsure: true, ...(pointed ? {} : { guess: true }) };
             continue;
         }
         const expanded = new Set(analyzeCommand(text).commands.flatMap((c) => (c.expands ?? []).map((j) => c.argv[j]!)));
@@ -2172,12 +2177,14 @@ export function withoutMessages(cmd: string): string {
  * anything else in it. The word alone when it has none, or more than a check should follow. Not `${x,,}`.
  */
 function braceForms(word: string): string[] {
-    if (!word.includes("{")) return [word];
+    if (!word.includes("{") || !word.includes(",") || !word.includes("}")) return [word];
     let forms = [word];
     for (let n = 0; n < 8; n++) {
         const next: string[] = [];
         for (const f of forms) {
-            const list = /(?<!\$)\{([^{}]*,[^{}]*)\}/.exec(f);
+            // Each part is tried once from each `{` (no comma in the first one): a long word of braces and commas
+            // (a JSON body) costs its length, not its square.
+            const list = /(?<!\$)\{([^{},]*(?:,[^{},]*)+)\}/.exec(f);
             if (!list) next.push(f);
             else for (const part of list[1]!.split(",")) next.push(f.slice(0, list.index) + part + f.slice(list.index + list[0].length));
         }
@@ -2216,8 +2223,11 @@ export function sensitiveTarget(cmd: string, opts: { cwd?: string; cavvyHome?: s
     const look = /[$~]/.test(cmd) ? shellVars(cmd, opts.env) : undefined;
     const vars = (t: string) => (look ? matchSensitive(withVarsExpanded(t, look, opts.cwd ?? process.cwd()), opts.cavvyHome) : undefined);
     // And with its brace lists written out, as the shell does first: `cp .env{,.bak}`, `cat .{env,envrc}`.
-    const braced = commands.flatMap((c) => c.argv.flatMap((w) => braceForms(w).filter((f) => f !== w))).join(" ");
-    const direct = matchSensitive(text, opts.cavvyHome) ?? matchSensitive(unquoted, opts.cavvyHome) ?? vars(text) ?? vars(unquoted) ?? (braced ? matchSensitive(braced, opts.cavvyHome) : undefined);
+    const braced = () => {
+        const forms = commands.flatMap((c) => c.argv.flatMap((w) => braceForms(w).filter((f) => f !== w))).join(" ");
+        return forms ? matchSensitive(forms, opts.cavvyHome) : undefined;
+    };
+    const direct = matchSensitive(text, opts.cavvyHome) ?? matchSensitive(unquoted, opts.cavvyHome) ?? vars(text) ?? vars(unquoted) ?? braced();
     if (direct || !opts.cwd) return direct;
     // Each pattern in every folder its command might run in (`cd private && cat .e*`). A cd
     // can fail (`cd x || cat .e*`) or run in a pipeline's subshell (`cd x | cat .e*`), so the
@@ -2499,7 +2509,7 @@ function commandBodies(original: SimpleCommand[], budget: CommandBudget): { comm
                 cases[cases.length - 1] = "body";
                 text = text.slice(end[0].length).trimStart();
             } else {
-                const prefix = /^(?:(?:if|then|elif|else|while|until|do|done|fi|!)(?:[ \t]+|$)|coproc(?:[ \t]+[A-Za-z_]\w*(?=[ \t]*[{(]))?(?:[ \t]+|$)|(?:function[ \t]+[\w.-]+(?:[ \t]*\(\))?|[\w.-]+[ \t]*\(\))[ \t]*|[{}](?:[ \t]+|$)|[()])/.exec(text);
+                const prefix = /^(?:(?:if|then|elif|else|while|until|do|done|fi|!)(?:[ \t]+|$)|time(?:[ \t]+-p)?[ \t]+(?=[{(!])|coproc(?:[ \t]+[A-Za-z_]\w*(?=[ \t]*[{(]))?(?:[ \t]+|$)|(?:function[ \t]+[\w.-]+(?:[ \t]*\(\))?|[\w.-]+[ \t]*\(\))[ \t]*|[{}](?:[ \t]+|$)|[()])/.exec(text);
                 if (!prefix) {
                     if (/^(for|select)(?:[ \t]|$)/.test(text)) text = "";
                     else break;
@@ -2711,6 +2721,8 @@ export function suggestBashRules(cmd: string): string[] {
         const argv = effectiveArgv(c.argv);
         if (!argv.length || isReadOnlySimple(argv)) continue;
         const prog = argv[0]!;
+        // A program that runs another (`env FOO=1 make`, `xargs`, `nohup`): its rule would be one for anything it runs.
+        if (wrapperOf(prog)) return [];
         let n = TWO_WORD.has(prog) ? 2 : 1;
         if (["npm", "pnpm", "yarn", "bun"].includes(prog) && argv[1] === "run") n = 3;
         if ((prog === "python" || prog === "python3") && argv[1] === "-m") n = 3;

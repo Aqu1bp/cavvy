@@ -101,7 +101,6 @@ import {
     type ChildResult,
     type DelegatedTask,
 } from "./delegation";
-import { suggestBashRules } from "../permissions/bash-safety";
 import { isTrusted, trustedByUser } from "../config/trust";
 import { deniedWithin } from "../permissions/rules";
 import { canonical, expandPath, isInside } from "../util/files";
@@ -2959,7 +2958,8 @@ export class Agent {
             const ask = {
                 ...decision,
                 behavior: "ask" as const,
-                reason: `Runs with ${o.names.length === 1 ? "the secret" : "the secrets"} ${names} in its environment.${decision.behavior === "ask" && decision.reason ? ` ${decision.reason}` : ""}`,
+                // The prompt names the secrets itself (`secrets` below): the reason is only the checker's own, if it has one.
+                reason: decision.behavior === "ask" ? decision.reason : undefined,
                 // Once at a time: an "always" here would also let the agent's own shell run such commands unasked.
                 suggestions: [],
                 sandbox: undefined,
@@ -3103,8 +3103,9 @@ export class Agent {
             // A call the backend gave only part of: nothing to allow for the session, or always.
             ...(req.incomplete ? { ...decision, grant: undefined } : this.o.checker.withGrant(tool, input, decision, cwd)),
             behavior: "ask" as const,
-            reason: decision.behavior === "ask" ? (decision.reason ?? req.reason) : req.reason,
-            suggestions: req.incomplete || !offersLastingRule(tool, decision) ? [] : (decision.suggestions ?? (command ? suggestBashRules(command) : tool.category === "mcp" ? [tool.name] : undefined)),
+            // For a shell command only the checker's own reason: the CLI's is its agent's words, and a prompt's reason reads as Cavvy's.
+            reason: decision.behavior === "ask" ? (decision.reason ?? (command ? undefined : req.reason)) : command ? undefined : req.reason,
+            suggestions: req.incomplete || !offersLastingRule(tool, decision) ? [] : (decision.suggestions ?? (command ? this.o.checker.rulesFor(command, cwd) : tool.category === "mcp" ? [tool.name] : undefined)),
             sandbox: undefined,
             needsClassifier: undefined,
         };

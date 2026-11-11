@@ -11,7 +11,7 @@
 
 import { isAbsolute, join } from "path";
 import { homedir } from "os";
-import { analyzeCommand, commandsWithDirs, effectiveArgv, isCompound, isReadOnlySimple, shellCommands, onlySafeAssignments, programNames, runLevels, runs, SHELLS, substitutionBodies } from "./bash-safety";
+import { analyzeCommand, commandsWithDirs, effectiveArgv, isCompound, notReadOnly, shellCommands, onlySafeAssignments, programNames, runLevels, runs, SHELLS, substitutionBodies } from "./bash-safety";
 import { CASE_FOLDS, canonical, spellings } from "../util/files";
 import { isShellTool } from "../tools/types";
 import { APP_NAME } from "../config/name";
@@ -154,6 +154,8 @@ function matchCommandSpec(spec: string, command: string): boolean {
 export function bashRuleMatches(spec: string | undefined, command: string, mode: "allow" | "deny"): boolean {
     if (!spec) return true;
     if (mode === "deny") return analyzeCommand(command).commands.length > 0 && denyMatches(spec, command, 0);
+    // A rule that is the line itself, word for word, is a yes to exactly that line, whatever is on it.
+    if (!spec.includes("*") && command.trim() === spec) return true;
     // What runs, as the shell reads it: a here-document's data isn't a command to approve (or to hide one).
     const a = shellCommands(command);
     if (!a.commands.length) return false;
@@ -339,13 +341,26 @@ export function findMatch(rules: string[], t: RuleTarget, root: string, mode: "a
     return undefined;
 }
 
+/** An allow rule that is the shell line itself, word for word: the user's yes to exactly that line. */
+export function exactRule(rules: string[], t: RuleTarget): boolean {
+    const line = t.command?.trim();
+    return line !== undefined && rules.map(parseRule).some((r) => r.spec === line && (r.tool === "Bash" || r.tool === "*" || r.tool === t.toolName));
+}
+
+/** An allow rule for every shell command there is (`Bash`, `Bash(*)`): no program is named for it to be about. */
+export function blanketRule(rules: string[], t: RuleTarget): boolean {
+    return rules.map(parseRule).some((r) => (!r.spec || r.spec === "*") && (r.tool === "Bash" || r.tool === "*" || r.tool === t.toolName));
+}
+
 /**
  * The allow rule that lets a shell command line run. One rule can cover the whole line (findMatch). Rules also add
- * up: each simple command on the line matches one of them, or changes nothing by itself (`cd pkg && npm test`
- * under `Bash(npm test:*)`; `git add -A && git commit -m x` under a rule for each). That's what "don't ask again"
- * saves for such a line (suggestBashRules), so the same line runs next time. The first rule that matched is named.
- * A line with a substitution, or an expansion rules can't see into, is still covered only by its exact text; a
- * loop or a conditional by no rule but that (its words aren't programs).
+ * up: each simple command on the line matches one of them (`git add -A && git commit -m x` under a rule for
+ * each), or the rest of the line is read-only as the read-only check judges a line (`cd pkg && npm test` under
+ * `Bash(npm test:*)`): no file written through a redirect, no variable set and then used, no `$_`, no glob that can
+ * turn into an option. That's what "don't ask again" saves for such a line (suggestBashRules), so the same line
+ * runs next time. The first rule that matched is named. A line with a substitution, or an expansion rules can't
+ * see into, is still covered only by its exact text; a loop or a conditional by no rule but that (its words
+ * aren't programs).
  */
 export function allowedCommand(rules: string[], t: RuleTarget, root: string): string | undefined {
     const whole = findMatch(rules, t, root, "allow");
@@ -354,13 +369,12 @@ export function allowedCommand(rules: string[], t: RuleTarget, root: string): st
     if (!specs.length) return undefined;
     const a = shellCommands(t.command);
     if (!a.commands.length || a.hasSubstitution || a.unparsable || a.unsafeExpansion || isCompound(a.commands)) return undefined;
-    let first: string | undefined;
-    for (const c of a.commands) {
-        if (!onlySafeAssignments(c.argv)) return undefined;
-        const text = effectiveArgv(c.argv).join(" ");
-        const rule = specs.find((r) => matchCommandSpec(r.spec!, text));
-        if (rule) first ??= rule.raw;
-        else if (!isReadOnlySimple(c.argv)) return undefined;
-    }
+    if (!a.commands.every((c) => onlySafeAssignments(c.argv))) return undefined;
+    const covering = a.commands.map((c) => specs.find((r) => matchCommandSpec(r.spec!, effectiveArgv(c.argv).join(" ")))?.raw);
+    const first = covering.find((r) => r !== undefined);
+    if (first === undefined) return undefined;
+    // What no rule covers is judged with the rest of its line, not word by word: `npm test; echo > README.md`
+    // under a rule for `npm test` writes a file, whatever `echo` is by itself.
+    if (covering.some((r) => r === undefined) && notReadOnly(t.command, (i) => covering[i] !== undefined) !== undefined) return undefined;
     return first;
 }

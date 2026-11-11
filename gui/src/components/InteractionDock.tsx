@@ -257,7 +257,8 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
                 <Show when={!p.it.command && !p.it.diff && !p.it.path && !p.it.url && !p.it.json && (p.it.description || p.it.heading === "Use a tool")}>
                     <div class="itab-desc selectable">{p.it.description ?? p.it.title}</div>
                 </Show>
-                <Show when={!p.it.dangerous && p.it.reason}>
+                {/* Not beside the hosts line above, which says the same. */}
+                <Show when={!p.it.dangerous && p.it.reason && !p.it.hosts?.length}>
                     <div class="itab-desc why selectable">{p.it.reason}</div>
                 </Show>
                 <Show when={feedback() !== undefined}>

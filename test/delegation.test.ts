@@ -2177,7 +2177,9 @@ describe("secrets in Claude Code and Codex sessions (request_secret, run_with_se
         const perm = t.asked[0]!;
         expect(perm.tool.name).toBe("Bash");
         expect(String((perm.input as any).command)).toStartWith('echo "deploying with $DEPLOY_TOKEN"');
-        expect(perm.decision.reason).toContain("the secret DEPLOY_TOKEN");
+        // The prompt names the secrets itself (from `secrets`): the reason doesn't say them again.
+        expect((perm as { secrets?: string[] }).secrets).toEqual(["DEPLOY_TOKEN"]);
+        expect(perm.decision.reason).toBeUndefined();
         expect(perm.decision.suggestions).toEqual([]);
         expect(perm.title).toBe("RunWithSecrets(DEPLOY_TOKEN)");
         expect(perm.secrets).toEqual(["DEPLOY_TOKEN"]);

@@ -1814,7 +1814,7 @@ export class App {
             header.push(bold(req.title));
         }
         if (decision.dangerous) header.unshift(theme.error(`⚠ ${decision.reason ?? "This action is potentially destructive."}`), "");
-        else if (decision.reason && !isShellTool(tool.name)) header.push("", theme.muted(decision.reason));
+        else if (decision.reason) header.push("", theme.muted(decision.reason));
         if (req.classifierReason) header.push("", theme.autoMode(`Auto mode asked you because: ${req.classifierReason}`));
         // What it does in a line, above the command, marked as the model's.
         if (req.summary) header.unshift(theme.muted("AI summary: ") + bold(req.summary) + (hiddenNote ? theme.warning(hiddenNote) : ""), "");
