@@ -1048,10 +1048,8 @@ export function isReadOnlyCommand(cmd: string): boolean {
 /**
  * What keeps a command from being read-only, naming the part (for a
  * read-only agent, so it can drop or replace just that), or undefined.
- * `vouched`: commands of the line (by their place in shellCommands) something else answers for, an allow rule
- * say: the rest of the line is judged, as a line, with every check that looks past one command's own words.
  */
-export function notReadOnly(cmd: string, vouched?: (index: number) => boolean): string | undefined {
+export function notReadOnly(cmd: string): string | undefined {
     const a = shellCommands(cmd);
     const clip = (s: string) => (s.length > 120 ? s.slice(0, 117) + "…" : s).replace(/\s+/g, " ");
     if (a.unparsable) return a.heredoc ? "its quotes aren't closed, or its here-document's delimiter can't be read for certain" : "its quotes aren't closed";
@@ -1073,14 +1071,13 @@ export function notReadOnly(cmd: string, vouched?: (index: number) => boolean): 
     if (a.commands.some((c) => c.expands?.some((i) => /\$\{?_(?![A-Za-z0-9_])/.test(c.argv[i]!)))) return "it uses `$_`, the last word of the command before";
     // The checks read words as written. An expansion inside other text can be empty and leave text they
     // never saw (an option, say); one standing alone, or before a path, is a value, not hidden text.
-    const judged = vouched ? a.commands.filter((_, i) => !vouched(i)) : a.commands;
-    const spliced = judged.flatMap((c) => (c.expands ?? []).map((i) => c.argv[i]!)).find((w) => !STANDALONE_EXPANSION.test(w));
+    const spliced = a.commands.flatMap((c) => (c.expands ?? []).map((i) => c.argv[i]!)).find((w) => !STANDALONE_EXPANSION.test(w));
     if (spliced !== undefined) return `\`${clip(spliced)}\` has an expansion inside other text, which can leave words the checks never saw (an option, say)`;
-    const g = judged.find((c) => globTurnsUnsafe(c));
+    const g = a.commands.find((c) => globTurnsUnsafe(c));
     if (g) return `a glob in \`${clip(g.text)}\` can expand to a file name that's an option for it`;
-    const m = judged.find((c) => mathRuns(c));
+    const m = a.commands.find((c) => mathRuns(c));
     if (m) return `\`${clip(m.text)}\` has arithmetic that can assign or run code (zsh evaluates it)`;
-    const c = judged.find((c) => !isReadOnlySimple(c.argv));
+    const c = a.commands.find((c) => !isReadOnlySimple(c.argv));
     return c ? `\`${clip(c.text)}\` isn't one of the read-only commands` : undefined;
 }
 
@@ -2528,25 +2525,6 @@ function commandBodies(original: SimpleCommand[], budget: CommandBudget): { comm
 }
 
 /**
- * The shell's own commands that change what the commands after them on a line do: its variables and options, the
- * names it runs things by, where it stands. A rule for one (`Bash(export:*)`) is a rule for that command by itself,
- * never part of what lets a line of several commands run (rules.ts allowedCommand): `export X=-delete; find . $X`.
- * bash's and zsh's, erring on the side of listing one.
- */
-const CHANGES_SHELL = new Set([
-    "export", "declare", "typeset", "local", "readonly", "integer", "float", "private", "read", "mapfile", "readarray", "getopts", "let", "vared",
-    "unset", "set", "setopt", "unsetopt", "shopt", "emulate", "alias", "unalias", "hash", "unhash", "rehash", "enable", "disable", "builtin",
-    "autoload", "functions", "unfunction", "zmodload", "zstyle", "zle", "bindkey", "compdef", "source", ".", "eval", "exec", "trap",
-    "cd", "pushd", "popd", "dirs", "umask", "ulimit", "limit", "unlimit", "noglob", "nocorrect", "fc", "history", "shift", "wait", "sched",
-]);
-
-/** Is this command one of the shell's own that changes what later commands on its line do (`printf -v` sets a variable too)? */
-export function changesShell(argv0: string[]): boolean {
-    const argv = effectiveArgv(argv0);
-    return CHANGES_SHELL.has(argv[0] ?? "") || (argv[0] === "printf" && argv.slice(1).some((a) => /^-[a-zA-Z]*v/.test(a)));
-}
-
-/**
  * Does the line use the shell's compound syntax: a loop, a conditional, a group, a subshell, a function, a `case`,
  * a negation? Its commands start with the shell's own words (`do`, `then`, `{`), which aren't programs a rule can
  * name: nothing approves such a line but its exact text. Yes too when there's more of it than gets looked at.
@@ -2732,9 +2710,9 @@ export function suggestBashRules(cmd: string): string[] {
     const a = shellCommands(cmd);
     // Rules come from what runs, never a here-document's data. When where its data ends isn't certain, none.
     if (a.heredoc && (a.unparsable || a.heredocOpen)) return [];
-    // Only what saving them would let run again (rules.ts allowedCommand): not a line rules can't see into (a
-    // substitution, an expansion, a variable set for a command), nor one whose words are the shell's own (a loop,
-    // a conditional: "always allow for, do, done" allowed nothing).
+    // Not for a line rules can't see into (a substitution, an expansion, a variable set for a command), nor one
+    // whose words are the shell's own (a loop, a conditional: "always allow for, do, done" allowed nothing). The
+    // checker offers of these only one that covers the whole line (PermissionChecker.rulesFor).
     if (a.hasSubstitution || a.unparsable || a.unsafeExpansion || isCompound(a.commands) || !a.commands.every((c) => onlySafeAssignments(c.argv))) return [];
     const out: string[] = [];
     for (const c of a.commands) {
@@ -2742,9 +2720,8 @@ export function suggestBashRules(cmd: string): string[] {
         if (!argv.length || isReadOnlySimple(argv)) continue;
         const prog = argv[0]!;
         // A program that runs another (`env FOO=1 make`, `xargs`, `nohup`): its rule would be one for anything it runs.
-        // Nor one of the shell's own that the line's other commands depend on (`export X=1 && make`), nor a word
-        // that is an option (`time -p make` leaves `-p`): no rule for these lets the line run again.
-        if (wrapperOf(prog) || changesShell(argv) || prog.startsWith("-")) return [];
+        // Nor a word that is an option (`time -p make` leaves `-p`).
+        if (wrapperOf(prog) || prog.startsWith("-")) return [];
         let n = TWO_WORD.has(prog) ? 2 : 1;
         if (["npm", "pnpm", "yarn", "bun"].includes(prog) && argv[1] === "run") n = 3;
         if ((prog === "python" || prog === "python3") && argv[1] === "-m") n = 3;

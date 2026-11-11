@@ -26,7 +26,7 @@ import { basename, dirname, join, relative, resolve } from "path";
 import type { HiddenReason, Tool } from "../tools/types";
 import type { PermissionMode } from "./modes";
 import { sandboxAllowedHosts, sandboxExcludedCommands, type Settings } from "../config/settings";
-import { allowedCommand, blanketRule, exactRule, findMatch, EDIT_TOOLS, READ_TOOLS, toolPath, type RuleTarget } from "./rules";
+import { blanketRule, exactRule, findMatch, EDIT_TOOLS, READ_TOOLS, toolPath, type RuleTarget } from "./rules";
 import { accountTarget, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, type CommandAnalysis, CAVVY_FILES, UNKNOWN_FILES, cavvyHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, suggestBashRules, withoutHeredocData } from "./bash-safety";
 import { accessNeeded, looksDestructive, sandboxEnabled, sandboxKind, sandboxPolicy, type SandboxKind, type SandboxPolicy } from "./sandbox";
 import { stableStringify, type ApprovedAction } from "./classifier";
@@ -516,8 +516,7 @@ export class PermissionChecker {
             if (cfg) return { behavior: "ask", config: true, reason: `This command changes ${cfg.replace(/^cavvy/, "Cavvy")}, which always needs your approval.` };
         }
 
-        // In auto mode a read-only command runs in the sandbox, so it can't ride along on a rule for another one.
-        const allowed = allowedCommand(allow, t, this.root, { readOnlyRest: mode !== "auto" });
+        const allowed = findMatch(allow, t, this.root, "allow");
         // A rule for a program approves the program, not everything it can be pointed at: where its
         // output goes (`Bash(cat:*)` must not approve `cat x > ~/.zshrc`), a file that may hold
         // credentials (`cp .env /tmp/x` under `Bash(cp:*)`), or, in auto mode, the main branch on the
@@ -553,7 +552,7 @@ export class PermissionChecker {
             case "execute": {
                 if (isShellTool(tool.name)) {
                     const cmd = t.command ?? "";
-                    const suggestions = this.rulesFor(cmd, cwd, mode);
+                    const suggestions = this.rulesFor(cmd, cwd);
                     const access = accessNeeded(judged, cwd);
                     const listed = allowedHostsOf(input);
                     const kind = mode === "auto" && input?.dangerouslyDisableSandbox !== true && !this.excluded(cmd) ? this.sandbox() : undefined;
@@ -702,12 +701,13 @@ export class PermissionChecker {
     }
 
     /**
-     * The rules "don't ask again" would save for a shell command line: only ones under which this same line would
-     * run next time. None when a redirect on it leaves the project (no rule speaks for that).
+     * The rule "don't ask again" would save for a shell command line: one under which this same line would run
+     * next time. A rule has to match every command of a line, so a line of several programs gets none (nor one
+     * with a command that only reads beside the program's); nor a line whose redirect leaves the project.
      */
-    rulesFor(cmd: string, cwd: string, mode?: PermissionMode): string[] {
-        const rules = suggestBashRules(cmd);
-        return rules.length && allowedCommand(rules, { toolName: "Bash", command: cmd }, this.root, { readOnlyRest: mode !== "auto" }) !== undefined && !this.redirectsEscape(cmd, cwd) ? rules : [];
+    rulesFor(cmd: string, cwd: string): string[] {
+        const rule = findMatch(suggestBashRules(cmd), { toolName: "Bash", command: cmd }, this.root, "allow");
+        return rule && !this.redirectsEscape(cmd, cwd) ? [rule] : [];
     }
 
     /**
