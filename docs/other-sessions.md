@@ -13,7 +13,7 @@ The terminal reads sessions from disk. It can't drive a session another Cavvy pr
 
 ## Sending
 
-A message shows in the receiving session at the left, under "From" and the sender's title (click it to open the sender). If that session is idle it starts working on the message; if it's working, the message joins its turn at the next step. Its agent is told the message comes from another session's agent, not from you: it acts on it only within what you asked of that session, and asks you before anything you haven't. It can answer the same way, and the answer arrives in the sender as a message.
+A message shows in the receiving session as a quote under "Message from another session": hover that line to see which session sent it, and click it to open that session. If that session is idle it starts working on the message; if it's working, the message joins its turn at the next step. Its agent is told the message comes from another session's agent, not from you: it acts on it only within what you asked of that session, and asks you before anything you haven't. It can answer the same way, and the answer arrives in the sender as a message.
 
 - Sending and starting ask for permission in Manual and Accept edits mode ("don't ask again" allows the tool), go to the reviewer in Auto mode, and are refused in Plan mode. Read-only listing and reading don't ask.
 - A session can't send work to one that asks you less: a Manual session can't send to one in Bypass permissions mode. Ask that session yourself, or change a mode.

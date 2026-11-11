@@ -346,13 +346,8 @@
     color: var(--accent);
 }
 
-.peer-head b {
+.peer-head:hover {
     color: var(--fg-2);
-    font-weight: 500;
-}
-
-.peer-head:hover b {
-    text-decoration: underline;
 }
 
 .peer-body {

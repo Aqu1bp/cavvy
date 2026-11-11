@@ -67,16 +67,14 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
     const long = () => text().split("\n").length > 14 || text().length > 1400;
     const shell = () => text().startsWith("!");
     createEffect(on(findReveal, (r) => r?.turnId === p.turn.id && r.part === "prompt" && long() && setExpanded(true)));
-    // A message from the agent in another session: quoted in the reply's column, not the user's bubble, under who sent it (opens it).
+    // A message from the agent in another session: quoted in the reply's column, not the user's bubble. Which session is on hover; a click opens it.
     const from = p.turn.prompt?.from;
     if (from) {
         return (
             <div class="peer-card">
-                <button class="peer-head" title="Open this session" onClick={() => void activate(from.id)}>
+                <button class="peer-head" title={`From “${from.title}”. Click to open it.`} onClick={() => void activate(from.id)}>
                     <MessageSquareText size={14} aria-hidden="true" />
-                    <span class="truncate">
-                        Message from <b>{from.title}</b>
-                    </span>
+                    Message from another session
                 </button>
                 <div class="peer-body" data-find="prompt">
                     {text()}
