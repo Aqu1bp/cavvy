@@ -1,12 +1,12 @@
 // What the agent is waiting on you for: a permission, a question, a plan, a secret.
-// A glass card in the dock above the composer, ringed in the colour of what it
-// asks (amber for a permission or a secret, the accent for a plan or a
-// question, red for something destructive). Its buttons never take
+// A glass card in the dock above the composer; its icon's tile takes the colour of
+// what it asks (amber for a permission or a secret, the accent for a question, the
+// plan's own for a plan, red for something destructive). Its buttons never take
 // focus by themselves, so an Enter meant for the input can't approve
 // anything; the number keys and Esc work when you're not typing.
 
 import { createEffect, createResource, createUniqueId, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
-import { AlertTriangle, ClipboardList, Eye, EyeOff, FilePen, FolderGit2, Globe, KeyRound, MessageCircleQuestion, Plug, Radar, Save, ShieldAlert, Smartphone, SquareTerminal, GitCommitHorizontal, ArrowUpFromLine, GitPullRequestArrow } from "lucide-solid";
+import { AlertTriangle, Check, ClipboardList, Eye, EyeOff, FilePen, FolderGit2, Globe, KeyRound, MessageCircleQuestion, Plug, Radar, Save, ShieldAlert, Smartphone, SquareTerminal, GitCommitHorizontal, ArrowUpFromLine, GitPullRequestArrow } from "lucide-solid";
 import type { Interaction, PermissionInteraction, PlanInteraction, QuestionInteraction, SecretInteraction } from "@shared/protocol";
 import { openAgents, respond } from "../state/actions";
 import { handleFor, rpc } from "../state/app";
@@ -93,23 +93,26 @@ function FitLabel(p: { text: string }) {
     );
 }
 
-/** A card's title, then its lines under it: `sub` (a hint, or who asked) and `note` (why it's asking), each whole. */
+/** A card's head: its icon in a tile the colour of what it asks, the title, then its lines under it: `sub` (a hint, or who asked) and `note` (why it's asking), each whole. */
 function Head(p: { icon: JSX.Element; title: string; sub?: JSX.Element; note?: string }) {
     return (
-        <>
-            <div class="ask-h">
-                <span class="ask-ic">{p.icon}</span>
+        <div class="ask-h">
+            <span class="ask-ic">{p.icon}</span>
+            <div class="ask-hd">
                 <span class="ask-title selectable">{p.title}</span>
+                <Show when={p.sub}>
+                    <div class="itab-sub selectable">{p.sub}</div>
+                </Show>
+                <Show when={p.note}>
+                    <div class="itab-sub selectable">{p.note}</div>
+                </Show>
             </div>
-            <Show when={p.sub}>
-                <div class="itab-sub selectable">{p.sub}</div>
-            </Show>
-            <Show when={p.note}>
-                <div class="itab-sub selectable">{p.note}</div>
-            </Show>
-        </>
+        </div>
     );
 }
+
+/** A permission's heading says what would be done ("Create a file"): as the card's title it asks. */
+const asks = (heading: string) => (/[.?!:…]$/.test(heading.trim()) ? heading : `${heading.trim()}?`);
 
 function PermIcon(p: { it: PermissionInteraction }) {
     return (
@@ -196,7 +199,7 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
         <>
             <Head
                 icon={<PermIcon it={p.it} />}
-                title={p.it.heading}
+                title={asks(p.it.heading)}
                 note={p.it.classifierReason ? `Auto mode asked because: ${p.it.classifierReason}` : undefined}
                 sub={
                     p.it.where && !p.it.agentLabel ? (
@@ -325,6 +328,9 @@ function QuestionCard(p: { sessionId: string; it: QuestionInteraction }) {
                                         <span class="q-desc">{o.description}</span>
                                     </Show>
                                 </span>
+                                <Show when={picked().includes(o.label)}>
+                                    <Check size={15} stroke-width={2.5} class="q-on" aria-hidden="true" />
+                                </Show>
                             </button>
                         )}
                     </For>
@@ -402,7 +408,7 @@ function SecretCard(p: { sessionId: string; it: SecretInteraction }) {
     });
     return (
         <>
-            <Head icon={<KeyRound size={16} />} title={`The agent asks for a secret: ${p.it.name}`} sub="Only its shell commands see the value" />
+            <Head icon={<KeyRound size={16} />} title={`Give the agent ${p.it.name}?`} sub="Only its shell commands see the value" />
             <div class="itab-body">
                 <p class="secret-purpose selectable" id={descriptionId}>{p.it.purpose}<span class="sr-only"> At least {MIN_SECRET} characters.</span></p>
                 <div class="secret-field">
@@ -474,7 +480,7 @@ function PlanCard(p: { sessionId: string; it: PlanInteraction }) {
     });
     return (
         <>
-            <Head icon={<ClipboardList size={16} />} title="Plan ready for review" sub="Nothing has been changed yet" />
+            <Head icon={<ClipboardList size={16} />} title="Approve this plan?" sub="Nothing has been changed yet" />
             <div class="itab-body">
                 <div class="plan-body" ref={body}>
                     <Markdown text={p.it.plan} />

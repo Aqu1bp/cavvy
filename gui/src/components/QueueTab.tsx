@@ -37,8 +37,8 @@ function nextFrame(fn: () => void) {
 const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 /**
- * Up next: the messages sent while a turn runs, in a small tray on top of the composer, numbered in the
- * order they go. Each says what it will do (join the turn at its next step, run after it, or wait for you
+ * Up next: the messages sent while a turn runs, in a drawer on the composer's top edge, under its heading
+ * and their count, numbered in the order they go. Each says what it will do (join the turn at its next step, run after it, or wait for you
  * after a restart); on hover its buttons take the hint's place: Steer (while it runs) or Send now, Edit,
  * Remove. With more than one, a row moves: drag it (from anywhere but its buttons), or focus it and
  * press ↑/↓. The others slide out of its way and the numbers follow the order being made.
@@ -224,7 +224,10 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
     const sorting = () => sort() !== undefined;
 
     return (
-        <div class="uq-tray glass">
+        <div class="uq-tray tray">
+            <div class="tray-h" aria-hidden="true">
+                Up next <b class="num">{p.state.queued.length}</b>
+            </div>
             <div
                 ref={list}
                 class={`uq-list ${sorting() && sort()!.phase !== "wait" ? "sorting" : ""} ${sort()?.phase === "wait" ? "still" : ""}`}

@@ -760,20 +760,21 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 </div>
             </Show>
             <Show when={p.sessionId ? h() : undefined}>{(handle) => <StepsTray sessionId={p.sessionId!} view={handle().view} />}</Show>
+            {/* The drawers on the card's top edge, joined into one: the steps, the goal, what's scheduled, what's up next. */}
+            <Show when={p.sessionId ? st()?.goal : undefined}>
+                {(goal) => <GoalTab sessionId={p.sessionId!} goal={goal()} />}
+            </Show>
+            <Show when={p.sessionId && st()?.schedules?.length ? listedSchedules(st()!.schedules, handleFor(p.sessionId)?.view.turns.at(-1)?.blocks) : undefined}>
+                {(items) => (
+                    <Show when={items().length}>
+                        <ScheduleTab sessionId={p.sessionId!} items={items()} />
+                    </Show>
+                )}
+            </Show>
             <Show when={p.sessionId && st()?.queued.length}>
                 <QueueTab sessionId={p.sessionId!} state={st()!} dequeue={(i, edit) => void dequeue(i, edit)} />
             </Show>
             <div class="composer-box glass" ref={box}>
-                <Show when={p.sessionId ? st()?.goal : undefined}>
-                    {(goal) => <GoalTab sessionId={p.sessionId!} goal={goal()} />}
-                </Show>
-                <Show when={p.sessionId && st()?.schedules?.length ? listedSchedules(st()!.schedules, handleFor(p.sessionId)?.view.turns.at(-1)?.blocks) : undefined}>
-                    {(items) => (
-                        <Show when={items().length}>
-                            <ScheduleTab sessionId={p.sessionId!} items={items()} />
-                        </Show>
-                    )}
-                </Show>
                 <Show when={comments().length}>
                     <ReviewCommentChips
                         items={comments()}
@@ -855,7 +856,6 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                     <button class="cb" title="Attach files" aria-label="Attach files" onClick={() => fileInput?.click()}>
                         <Paperclip size={16} />
                     </button>
-                    <span class="vsep" aria-hidden="true" />
                     <ModelPicker current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare} />
                     <EffortPicker current={st()?.model} currentRef={app.settings.model} effort={st() ? st()!.effort : app.settings.effort} fast={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy && !st()?.activity?.idle} open={effortOpen()} setOpen={setEffortOpen} placement={menuSide()} />
                     <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} autoAsks={autoAsks()} open={modePickerOpen()} setOpen={setModePickerOpen} placement={menuSide()} />

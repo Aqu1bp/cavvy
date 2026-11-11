@@ -7,7 +7,7 @@ import { stepsKey, stepsLine, stepsStale } from "../lib/plan-chat";
 const [hiddenAt, setHiddenAt] = createSignal<Readonly<Record<string, string>>>({});
 
 /**
- * Steps: the agent's to-do list, as a glass strip on top of the composer (above the Up next tray). One line:
+ * Steps: the agent's to-do list, as the top drawer on the composer (above the goal, schedules and Up next). One line:
  * a ring that fills as steps are done, "3 of 6", and the step under way. Clicked, the whole list opens upward,
  * over the conversation: the line keeps its place in the dock, so neither the composer nor the conversation
  * moves. A finished list reads "All steps done" until the next turn; ✕ hides it until the list changes. Not
@@ -34,7 +34,7 @@ export function StepsTray(p: { sessionId: string; view: SessionView }) {
     return (
         <Show when={shown()}>
             <div class="steps-slot">
-                <div class="steps-tray glass" classList={{ open: open() }}>
+                <div class="steps-tray" classList={{ open: open() }}>
                     <div class="st-list" inert={!open()}>
                         <div>
                             <ul ref={list} id={listId} aria-label={`Steps: ${line().done} of ${line().total} done`}>
