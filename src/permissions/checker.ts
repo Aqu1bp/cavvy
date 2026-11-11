@@ -516,7 +516,8 @@ export class PermissionChecker {
             if (cfg) return { behavior: "ask", config: true, reason: `This command changes ${cfg.replace(/^cavvy/, "Cavvy")}, which always needs your approval.` };
         }
 
-        const allowed = allowedCommand(allow, t, this.root);
+        // In auto mode a read-only command runs in the sandbox, so it can't ride along on a rule for another one.
+        const allowed = allowedCommand(allow, t, this.root, { readOnlyRest: mode !== "auto" });
         // A rule for a program approves the program, not everything it can be pointed at: where its
         // output goes (`Bash(cat:*)` must not approve `cat x > ~/.zshrc`), a file that may hold
         // credentials (`cp .env /tmp/x` under `Bash(cp:*)`), or, in auto mode, the main branch on the
@@ -552,7 +553,7 @@ export class PermissionChecker {
             case "execute": {
                 if (isShellTool(tool.name)) {
                     const cmd = t.command ?? "";
-                    const suggestions = this.rulesFor(cmd, cwd);
+                    const suggestions = this.rulesFor(cmd, cwd, mode);
                     const access = accessNeeded(judged, cwd);
                     const listed = allowedHostsOf(input);
                     const kind = mode === "auto" && input?.dangerouslyDisableSandbox !== true && !this.excluded(cmd) ? this.sandbox() : undefined;
@@ -704,9 +705,9 @@ export class PermissionChecker {
      * The rules "don't ask again" would save for a shell command line: only ones under which this same line would
      * run next time. None when a redirect on it leaves the project (no rule speaks for that).
      */
-    rulesFor(cmd: string, cwd: string): string[] {
+    rulesFor(cmd: string, cwd: string, mode?: PermissionMode): string[] {
         const rules = suggestBashRules(cmd);
-        return rules.length && allowedCommand(rules, { toolName: "Bash", command: cmd }, this.root) !== undefined && !this.redirectsEscape(cmd, cwd) ? rules : [];
+        return rules.length && allowedCommand(rules, { toolName: "Bash", command: cmd }, this.root, { readOnlyRest: mode !== "auto" }) !== undefined && !this.redirectsEscape(cmd, cwd) ? rules : [];
     }
 
     /**

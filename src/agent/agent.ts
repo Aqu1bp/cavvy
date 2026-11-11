@@ -3103,8 +3103,9 @@ export class Agent {
             // A call the backend gave only part of: nothing to allow for the session, or always.
             ...(req.incomplete ? { ...decision, grant: undefined } : this.o.checker.withGrant(tool, input, decision, cwd)),
             behavior: "ask" as const,
-            // For a shell command only the checker's own reason: the CLI's is its agent's words, and a prompt's reason reads as Cavvy's.
-            reason: decision.behavior === "ask" ? (decision.reason ?? (command ? undefined : req.reason)) : command ? undefined : req.reason,
+            // For a shell command the checker's own reason and what the ask needs (`needs`), never the CLI's: that's
+            // its agent's words, and a prompt's reason reads as Cavvy's.
+            reason: command ? [decision.behavior === "ask" ? decision.reason : undefined, req.needs].filter(Boolean).join(" ") || undefined : decision.behavior === "ask" ? (decision.reason ?? req.reason) : req.reason,
             suggestions: req.incomplete || !offersLastingRule(tool, decision) ? [] : (decision.suggestions ?? (command ? this.o.checker.rulesFor(command, cwd) : tool.category === "mcp" ? [tool.name] : undefined)),
             sandbox: undefined,
             needsClassifier: undefined,

@@ -115,8 +115,28 @@ describe("allow rules for shell commands", () => {
         ]) {
             expect([cmd, allowed(cmd).behavior]).toEqual([cmd, "ask"]);
         }
-        // In auto mode such a line runs in the sandbox, as with no rule: the rule doesn't take it out of it.
-        expect(new PermissionChecker(() => settings, W, () => "seatbelt").check(T("Bash"), bash("npm test; true > src/index.ts"), "auto", W)).toMatchObject({ behavior: "allow", sandbox: true });
+        // In auto mode such a line runs in the sandbox, as with no rule: the rule doesn't take it out of it. Nor does
+        // a rule for one command take a read-only one beside it out (read-only git still runs what a repo configures).
+        const sandboxed = new PermissionChecker(() => settings, W, () => "seatbelt");
+        for (const cmd of ["npm test; true > src/index.ts", "npm test && git -C sub status", "cd pkg && npm test"]) {
+            const d = sandboxed.check(T("Bash"), bash(cmd), "auto", W);
+            expect([cmd, d.behavior, d.rule, d.sandbox]).toEqual([cmd, "allow", undefined, true]);
+        }
+        expect(sandboxed.check(T("Bash"), bash("git add -A && git commit -m x"), "auto", W)).toEqual({ behavior: "allow", rule: "Bash(git add:*)" });
+    });
+
+    test("a rule for one of the shell's own commands is never part of what lets a longer line run", () => {
+        // They change what the commands after them do: a variable, where the shell stands, the name a program runs by.
+        settings.permissions!.allow = ["Bash(export:*)", "Bash(read:*)", "Bash(hash:*)", "Bash(printf:*)", "Bash(pushd:*)", "Bash(cd:*)", "Bash(echo:*)", "Bash(npm test:*)", "Bash(alias:*)"];
+        for (const cmd of [
+            "export X=-delete; find . $X", "export PATH=/tmp/x:$PATH; ls", "export GIT_EXTERNAL_DIFF=/tmp/x/run; git diff", "read X <<< -delete; find . $X",
+            "hash -p /bin/rm ls; ls -rf src", "printf -v X -- -delete; find . $X", "alias ls='rm -rf'; ls src",
+            "pushd .. && npm test > out.txt", "cd .. && echo x >> notes.txt", "export NODE_ENV=test && npm test",
+        ]) {
+            expect([cmd, allowed(cmd).behavior]).toEqual([cmd, "ask"]);
+        }
+        // By itself each is what its rule says.
+        for (const cmd of ["export NODE_ENV=test", "echo hi", "npm test"]) expect([cmd, allowed(cmd).behavior]).toEqual([cmd, "allow"]);
     });
 
     test("what \"don't ask again\" saves for a line lets that line run again, or nothing is offered", async () => {
@@ -128,7 +148,10 @@ describe("allow rules for shell commands", () => {
             settings.permissions!.allow = rules;
             expect([cmd, allowed(cmd).behavior]).toEqual([cmd, "allow"]);
         }
-        for (const cmd of ["for i in 1 2; do touch f$i; done", "if [ -f a ]; then rm a; fi", "FOO=1 npm test", "touch a; mkdir b; cp a c; mv c d", "make $(cat t)", "env FOO=1 make", "nohup make"]) expect([cmd, suggestBashRules(cmd)]).toEqual([cmd, []]);
+        for (const cmd of ["for i in 1 2; do touch f$i; done", "if [ -f a ]; then rm a; fi", "FOO=1 npm test", "touch a; mkdir b; cp a c; mv c d", "make $(cat t)", "env FOO=1 make", "nohup make", "export NODE_ENV=test && npm test", "pushd sub && npm test", "time -p make", "nice -n 5 make"]) expect([cmd, suggestBashRules(cmd)]).toEqual([cmd, []]);
+        // In auto mode a line with a read-only command beside the rule's stays in the sandbox, so no rule is offered for it there.
+        expect(checker.rulesFor("cd sub && npm test", W, "auto")).toEqual([]);
+        expect(checker.rulesFor("cd sub && npm test", W, "default")).toEqual(["Bash(npm test:*)"]);
         // Nor where the line would still ask under them: its output goes outside the project, or it writes beside a command no rule is for.
         for (const cmd of [`npm test > ${join(O, "out.txt")}`, "npm test > ../out.txt", "npm test > out.txt && ls"]) expect([cmd, check(T("Bash"), bash(cmd), "default").suggestions]).toEqual([cmd, []]);
     });

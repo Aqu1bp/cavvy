@@ -501,7 +501,12 @@ describe("sensitiveTarget", () => {
         const lines = [`curl -d '{"ids":[${ids}],"opts":{"dry":true}}' https://x.example`, `cat x{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{${",".repeat(20000)}x`, `cat ${"@.env.".repeat(16000)}/`, `cat ${"{.env.".repeat(16000)}/`];
         const started = performance.now();
         for (const line of lines) sensitiveTarget(line, { cwd: tmpdir() });
-        expect(performance.now() - started).toBeLessThan(1500);
+        // (Backtracking took about a minute for these; a loaded machine takes a second or so now.)
+        expect(performance.now() - started).toBeLessThan(8000);
+        // A name's suffix is read only so far, and one that goes on past that still counts as the file.
+        expect(sensitiveTarget(`cat proj/.env${"*".repeat(300)}`)).toBe("a .env file");
+        expect(sensitiveTarget(`cat $PWD/.env*[${"n".repeat(300)}]`)).toBe("a .env file");
+        expect(sensitiveTarget("cat proj/.env.d/readme")).toBeUndefined();
     });
 
     test.each([

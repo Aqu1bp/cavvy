@@ -2481,7 +2481,8 @@ export class Runtime {
             heading: "Use a tool",
             options: [{ id: "yes", label: "Allow once" }],
             dangerous: decision.dangerous,
-            reason: decision.reason ? redact(decision.reason) : undefined,
+            // Asked about for the hosts it lists: the card's hosts line says so already.
+            reason: decision.reason && !decision.listedHosts?.length ? redact(decision.reason) : undefined,
             classifierReason: req.classifierReason ? redact(req.classifierReason) : undefined,
             plain: req.summary ? redact(req.summary) : undefined,
             plainLabel: req.summary ? "AI summary" : undefined,

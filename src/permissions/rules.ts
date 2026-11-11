@@ -11,7 +11,7 @@
 
 import { isAbsolute, join } from "path";
 import { homedir } from "os";
-import { analyzeCommand, commandsWithDirs, effectiveArgv, isCompound, notReadOnly, shellCommands, onlySafeAssignments, programNames, runLevels, runs, SHELLS, substitutionBodies } from "./bash-safety";
+import { analyzeCommand, changesShell, commandsWithDirs, effectiveArgv, isCompound, notReadOnly, shellCommands, onlySafeAssignments, programNames, runLevels, runs, SHELLS, substitutionBodies } from "./bash-safety";
 import { CASE_FOLDS, canonical, spellings } from "../util/files";
 import { isShellTool } from "../tools/types";
 import { APP_NAME } from "../config/name";
@@ -357,12 +357,12 @@ export function blanketRule(rules: string[], t: RuleTarget): boolean {
  * up: each simple command on the line matches one of them (`git add -A && git commit -m x` under a rule for
  * each), or the rest of the line is read-only as the read-only check judges a line (`cd pkg && npm test` under
  * `Bash(npm test:*)`): no file written through a redirect, no variable set and then used, no `$_`, no glob that can
- * turn into an option. That's what "don't ask again" saves for such a line (suggestBashRules), so the same line
+ * turn into an option. A command of the shell's own that changes what follows it is never the matched one. That's what "don't ask again" saves for such a line (suggestBashRules), so the same line
  * runs next time. The first rule that matched is named. A line with a substitution, or an expansion rules can't
  * see into, is still covered only by its exact text; a loop or a conditional by no rule but that (its words
  * aren't programs).
  */
-export function allowedCommand(rules: string[], t: RuleTarget, root: string): string | undefined {
+export function allowedCommand(rules: string[], t: RuleTarget, root: string, o: { readOnlyRest?: boolean } = {}): string | undefined {
     const whole = findMatch(rules, t, root, "allow");
     if (whole || t.command === undefined || !isShellTool(t.toolName)) return whole;
     const specs = rules.map(parseRule).filter((r) => r.spec && (r.tool === "Bash" || r.tool === "*" || r.tool === t.toolName));
@@ -370,11 +370,15 @@ export function allowedCommand(rules: string[], t: RuleTarget, root: string): st
     const a = shellCommands(t.command);
     if (!a.commands.length || a.hasSubstitution || a.unparsable || a.unsafeExpansion || isCompound(a.commands)) return undefined;
     if (!a.commands.every((c) => onlySafeAssignments(c.argv))) return undefined;
-    const covering = a.commands.map((c) => specs.find((r) => matchCommandSpec(r.spec!, effectiveArgv(c.argv).join(" ")))?.raw);
+    // One of the shell's own commands that changes what the next ones do (`export`, `read`, `cd`, `pushd`, `hash`)
+    // is never one a rule answers for here: `export X=-delete; find . $X`, `pushd ~ && make > .zshrc`.
+    const covering = a.commands.map((c) => (changesShell(c.argv) ? undefined : specs.find((r) => matchCommandSpec(r.spec!, effectiveArgv(c.argv).join(" ")))?.raw));
     const first = covering.find((r) => r !== undefined);
     if (first === undefined) return undefined;
+    if (covering.every((r) => r !== undefined)) return first;
     // What no rule covers is judged with the rest of its line, not word by word: `npm test; echo > README.md`
-    // under a rule for `npm test` writes a file, whatever `echo` is by itself.
-    if (covering.some((r) => r === undefined) && notReadOnly(t.command, (i) => covering[i] !== undefined) !== undefined) return undefined;
-    return first;
+    // under a rule for `npm test` writes a file, whatever `echo` is by itself. Not at all where a read-only
+    // command wouldn't simply run (`readOnlyRest` false: auto mode keeps those in the sandbox, and a rule's line
+    // runs outside it).
+    return o.readOnlyRest !== false && notReadOnly(t.command, (i) => covering[i] !== undefined) === undefined ? first : undefined;
 }

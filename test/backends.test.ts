@@ -409,7 +409,7 @@ describe("Claude Code backend", () => {
         expect(a.asked).toHaveLength(1);
     });
 
-    test("a prompt for an agent CLI's command offers no rule to keep where it would cover more than what's asked, nor the CLI's words as the reason", async () => {
+    test("a prompt for an agent CLI's command offers no rule to keep where it would cover more than what's asked", async () => {
         process.env.FAKE_SCENARIO = "bash";
         // Asked about for the credentials file it names: no rule for every `cp`, and the reason is the checker's.
         process.env.FAKE_COMMAND = "cp .env backup.env";
@@ -422,11 +422,10 @@ describe("Claude Code backend", () => {
             const b = await makeAgent({ provider: "claude-code", ask: () => ({ allow: false }) });
             await b.run("loop");
             expect(b.asked[0]!.decision.suggestions).toEqual([]);
-            // An ordinary command: nothing of the checker's to say, so no reason line at all.
+            // An ordinary command: the rule that would let it run again.
             process.env.FAKE_COMMAND = "npm test";
             const c = await makeAgent({ provider: "claude-code", ask: () => ({ allow: false }) });
             await c.run("test");
-            expect(c.asked[0]!.decision.reason).toBeUndefined();
             expect(c.asked[0]!.decision.suggestions).toEqual(["Bash(npm test:*)"]);
         } finally {
             delete process.env.FAKE_COMMAND;
