@@ -170,8 +170,8 @@ export function TerminalPanel(p: { cwd?: string; hidden?: boolean }) {
                         <button class="hb sm terminal-tab-x" title="Close terminal and stop its shell" aria-label={tab.script ? `Close terminal ${tab.script.setup?.label ?? tab.script.name}` : `Close terminal ${tab.number}`} onClick={() => close(tab)}><X size={12} /></button>
                     </div>}</For>
                 </div>
+                <span class="terminal-cwd truncate" title={p.cwd}><bdi>{tildify(p.cwd ?? "", app.hello?.homeDir)}</bdi></span>
                 <button class="hb sm" title={full() ? `${MAX_TABS} terminals are open in this window` : "New terminal"} aria-label="New terminal" disabled={!restored() || app.conn !== "open" || full()} onClick={add}><Plus size={15} /></button>
-                <span class="terminal-cwd truncate" title={p.cwd}>{tildify(p.cwd ?? "", app.hello?.homeDir)}</span>
                 <button class="hb sm" title={terminalMax() ? "Restore" : "Maximize"} aria-label={terminalMax() ? "Restore terminal size" : "Maximize terminal"} aria-pressed={terminalMax()} onClick={() => setTerminalMax(!terminalMax())}>{terminalMax() ? <Minimize2 size={14} /> : <Maximize2 size={14} />}</button>
                 <button class="hb sm" title={withShortcut("Hide terminal", "app:toggleTerminal")} aria-label="Hide terminal" onClick={() => setTerminalOpen(false)}><ChevronDown size={15} /></button>
             </div>
@@ -389,13 +389,29 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
         fit = new FitAddon();
         term.loadAddon(fit);
         term.open(container);
+        // xterm draws on a canvas: its colours are the tokens', read again whenever the palette may have changed (the
+        // scheme, the accent, the contrast, a theme's own stylesheet) and given to it only if they did.
+        let themed = "";
         const theme = () => {
             const style = getComputedStyle(container);
-            term.options.theme = { background: style.getPropertyValue("--term-bg").trim(), foreground: style.getPropertyValue("--fg").trim(), cursor: style.getPropertyValue("--fg").trim(), selectionBackground: "#80808060" };
+            const v = (name: string) => style.getPropertyValue(name).trim();
+            const dark = v("color-scheme").includes("dark");
+            const [background, foreground, accent, red, green, yellow, magenta, cyan] = ["--term-bg", "--fg", "--accent", "--danger", "--ok", "--warn", "--plan", "--shell"].map(v);
+            const next = {
+                background, foreground, cursor: foreground, cursorAccent: background,
+                selectionBackground: /^#[\da-f]{6}$/i.test(accent!) ? `${accent}40` : "#80808060",
+                // The 16 colours a program asks for by number: readable on --term-bg in either scheme, where xterm's own are made for black.
+                black: v(dark ? "--fg-4" : "--fg"), white: v(dark ? "--fg-2" : "--fg-3"), brightBlack: v("--fg-3"), brightWhite: v(dark ? "--fg" : "--fg-2"),
+                red, green, yellow, blue: accent, magenta, cyan, brightRed: red, brightGreen: green, brightYellow: yellow, brightBlue: accent, brightMagenta: magenta, brightCyan: cyan,
+            };
+            const key = JSON.stringify(next);
+            if (key !== themed) term.options.theme = next;
+            themed = key;
         };
         theme();
         const themeObserver = new MutationObserver(theme);
-        themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+        themeObserver.observe(document.documentElement, { attributes: true });
+        if (document.head) themeObserver.observe(document.head, { childList: true, subtree: true, characterData: true });
         term.attachCustomKeyEventHandler((e) => {
             // Leave the app's toggle (and its chords) and clipboard shortcuts to their owners.
             if (terminalKey(e) === "app") return false;

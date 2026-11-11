@@ -1,12 +1,13 @@
 /* ---- Project scripts (title line) ----------------------------------- */
 
-/* Run the main script | open the menu: one pill in the title bar's capsule, split by a hairline. */
+/* Run the main script | open the menu: one control in the title bar's capsule, split by a hairline. Hovered, the
+   whole of it fills, and the half under the pointer a step more. */
 .script-split {
     display: inline-flex;
     align-items: center;
     flex: none;
-    border-radius: var(--pill);
-    transition: background 140ms;
+    border-radius: var(--r-ctl);
+    transition: background var(--dur-fast);
 }
 
 .script-split:has(.script-split-main):hover,
@@ -16,17 +17,17 @@
 
 .script-split .script-split-main {
     max-width: calc(160 * var(--sp));
-    padding: 0 calc(6 * var(--sp)) 0 calc(9 * var(--sp));
-    border-radius: var(--pill) 0 0 var(--pill);
-    font-size: 0.893rem;
+    padding: 0 calc(6 * var(--sp)) 0 calc(8 * var(--sp));
+    border-radius: var(--r-ctl) 0 0 var(--r-ctl);
+    font-size: 0.857rem;
     font-weight: 500;
 }
 
 .script-split .script-split-more {
     position: relative;
     min-width: calc(22 * var(--sp));
-    padding: 0 calc(6 * var(--sp)) 0 calc(4 * var(--sp));
-    border-radius: 0 var(--pill) var(--pill) 0;
+    padding: 0 calc(5 * var(--sp)) 0 calc(4 * var(--sp));
+    border-radius: 0 var(--r-ctl) var(--r-ctl) 0;
 }
 
 .script-split .script-split-more::before {
@@ -64,18 +65,27 @@
     padding: calc(1 * var(--sp)) calc(4 * var(--sp));
     border-radius: calc(4 * var(--rs));
     color: var(--fg-2);
-    background: var(--sheet-2);
-    box-shadow: inset 0 0 0 0.5px var(--line);
+    background: var(--hover);
     white-space: nowrap;
 }
 
-/* A script: run it by clicking the row; edit, reorder and delete on hover. */
+/* A script: its glyph in a quiet tile, its name, and its command under it. Run it by clicking the row; edit,
+   reorder and delete on hover. */
 .script-row {
     position: relative;
 }
 
+.script-run > svg {
+    box-sizing: content-box;
+    padding: calc(5 * var(--sp));
+    border-radius: calc(7 * var(--rs));
+    background: var(--hover);
+}
+
 .script-row .menu-desc {
     margin-top: 1px;
+    font-size: 0.786rem;
+    color: var(--fg-3);
 }
 
 .script-acts {

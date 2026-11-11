@@ -8,12 +8,12 @@
 // drawn. The plan and its steps are in the conversation (Composer, Activity).
 
 import { createEffect, createMemo, createResource, createSignal, For, Match, on, onCleanup, Show, Switch } from "solid-js";
-import { Bot, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitCommitHorizontal, GitPullRequestArrow, Globe, KeyRound, Plug, Smartphone, SquarePen, Terminal, X } from "lucide-solid";
+import { Bot, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitCommitHorizontal, GitPullRequestArrow, Globe, KeyRound, Plug, Smartphone, SquareArrowOutUpRight, SquarePen, Terminal, X } from "lucide-solid";
 import type { ChangesInfo, GitFileDiff } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc, toast } from "../state/app";
 import { inspectorPane, setCommitRequest, setInspectorPane, setMcpOpen } from "../state/ui";
-import { newSession, openReview } from "../state/actions";
+import { editorName, newSession, openInEditor, openReview } from "../state/actions";
 import { needsAttention, shownName, statusLabel } from "../lib/mcp";
 import { commitUnavailable, sessionReadReady, useGitChanges } from "../state/changes";
 import { canReveal, copyText, openExternal, revealPath } from "../lib/platform";
@@ -113,30 +113,40 @@ function useFolderChanges(handle: () => SessionHandle) {
     });
 }
 
-function FileRow(p: { f: Listed; onOpen: () => void }) {
+/** `onEdit`: opens the file in the editor, where there's a file to open (not one deleted, a folder or a repository). */
+function FileRow(p: { f: Listed; onOpen: () => void; onEdit?: () => void }) {
     const c = () => CHANGE[p.f.change];
     return (
-        <button class="file" title={p.f.from ? `${p.f.from} → ${p.f.path}` : undefined} onClick={() => p.onOpen()}>
-            <span class={`fs ${p.f.change}`} title={c().label} aria-label={c().label}>
-                {c().letter}
-            </span>
-            <span class="nm">
-                <b class="truncate">{nameOf(p.f.path)}</b>
-                <Show when={dirOf(p.f.path)}>
-                    <span class="truncate">{dirOf(p.f.path)}</span>
-                </Show>
-            </span>
-            <Show when={p.f.added || p.f.removed}>
-                <span class="stat">
-                    <Show when={p.f.added || !p.f.removed}>
-                        <span class="add">+{p.f.added}</span>
-                    </Show>
-                    <Show when={p.f.removed}>
-                        <span class="del">−{p.f.removed}</span>
+        <div class="file-row" classList={{ swap: !!p.onEdit }}>
+            <button class="file" title={p.f.from ? `${p.f.from} → ${p.f.path}` : undefined} onClick={() => p.onOpen()}>
+                <span class={`fs ${p.f.change}`} title={c().label} aria-label={c().label}>
+                    {c().letter}
+                </span>
+                <span class="nm">
+                    <b>{nameOf(p.f.path)}</b>
+                    <Show when={dirOf(p.f.path)}>
+                        <span>
+                            <bdi>{dirOf(p.f.path)}</bdi>
+                        </span>
                     </Show>
                 </span>
+                <Show when={p.f.added || p.f.removed}>
+                    <span class="stat">
+                        <Show when={p.f.added || !p.f.removed}>
+                            <span class="add">+{p.f.added}</span>
+                        </Show>
+                        <Show when={p.f.removed}>
+                            <span class="del">−{p.f.removed}</span>
+                        </Show>
+                    </span>
+                </Show>
+            </button>
+            <Show when={p.onEdit}>
+                <button class="hb sm act" title={`Open in ${editorName() ?? "your editor"}`} aria-label={`Open ${p.f.path} in editor`} onClick={() => p.onEdit!()}>
+                    <SquareArrowOutUpRight size={13} />
+                </button>
             </Show>
-        </button>
+        </div>
     );
 }
 
@@ -145,6 +155,8 @@ function ChangesPane(p: { changes: ReturnType<ReturnType<typeof useFolderChanges
     const c = () => p.changes;
     // Git's uncommitted view, or (outside a repository) Cavvy's own record.
     const open = (path?: string, token?: string) => openReview(path, c()?.repo === false ? "cavvy" : "uncommitted", undefined, token);
+    // The server opens it within the session's folders (fs.open), by its path there or its handle.
+    const edit = (f: Listed) => (f.change === "deleted" || f.kind === "repo" || f.kind === "submodule" || f.kind === "folder" ? undefined : () => void openInEditor(f.path, undefined, { gitToken: f.pathToken }));
     return (
         <Show when={c()} fallback={<div class="blank" aria-busy="true"><Spinner size={16} /></div>}>
             {(ch) => (
@@ -162,8 +174,7 @@ function ChangesPane(p: { changes: ReturnType<ReturnType<typeof useFolderChanges
                                     </>
                                 }
                             >
-                                <b>No changes yet</b>
-                                {ch().repo ? "The working tree matches the last commit." : ch().untracked ? "This session isn't saved yet." : "Files Cavvy edits in this session show up here."}
+                                {ch().repo ? "No changes yet" : ch().untracked ? "This session isn't saved yet" : "Files Cavvy edits show up here"}
                             </Show>
                             <button class="link-btn" onClick={() => open()}>
                                 {ch().repo ? "Review the branch or a turn" : "Open the diff reader"}
@@ -179,11 +190,11 @@ function ChangesPane(p: { changes: ReturnType<ReturnType<typeof useFolderChanges
                                 in {ch().count.toLocaleString()}
                                 {ch().atLeast ? "+" : ""} {ch().count === 1 ? "file" : "files"}
                             </span>
-                            <button class="btn ghost sm" title="Open the diff reader" onClick={() => open()}>
+                            <button class="btn secondary sm" title="Open the diff reader" onClick={() => open()}>
                                 Review
                             </button>
                         </div>
-                        <For each={ch().files}>{(f) => <FileRow f={f} onOpen={() => open(f.path, f.pathToken)} />}</For>
+                        <For each={ch().files}>{(f) => <FileRow f={f} onOpen={() => open(f.path, f.pathToken)} onEdit={edit(f)} />}</For>
                         <Show when={ch().more}>
                             <div class="file-more">
                                 {ch().more.toLocaleString()}
@@ -211,14 +222,14 @@ function Watches(p: { handle: SessionHandle }) {
                         <div class={`task swap ${w.url ? "click" : ""}`}>
                             <Show when={w.url}>{(url) => <button class="task-hit" aria-label={`Open ${w.label}`} onClick={() => void openExternal(url())} />}</Show>
                             <span class="ki watch">
-                                <GitPullRequestArrow size={14} />
+                                <GitPullRequestArrow size={16} />
                             </span>
                             <span class="tx">
                                 <b>{w.label.replace(/ in \S+$/, "")}</b>
                                 <span>Wakes the agent on news</span>
                             </span>
                             <span class={`meta ${tone(w.detail)}`}>{w.detail}</span>
-                            <button class="act" title="Stop watching" aria-label={`Stop watching ${w.label}`} onClick={() => void rpc.call("session.stopWatch", { id: p.handle.id, watchId: w.id }).catch(reportError)}>
+                            <button class="hb sm act" title="Stop watching" aria-label={`Stop watching ${w.label}`} onClick={() => void rpc.call("session.stopWatch", { id: p.handle.id, watchId: w.id }).catch(reportError)}>
                                 <X size={14} />
                             </button>
                         </div>
@@ -245,14 +256,14 @@ function SessionGroup(p: { handle: SessionHandle }) {
                     {(name) => (
                         <div class="task swap">
                             <span class="ki">
-                                <KeyRound size={14} />
+                                <KeyRound size={16} />
                             </span>
                             <span class="tx">
                                 <b class="mono">{name}</b>
                                 <span>New shell commands see ${name}</span>
                             </span>
                             <span class="meta" />
-                            <button class="act" title="Forget" aria-label={`Forget ${name}`} onClick={() => void rpc.call("session.forgetSecret", { id: p.handle.id, name }).catch(reportError)}>
+                            <button class="hb sm act" title="Forget" aria-label={`Forget ${name}`} onClick={() => void rpc.call("session.forgetSecret", { id: p.handle.id, name }).catch(reportError)}>
                                 <X size={14} />
                             </button>
                         </div>
@@ -262,9 +273,8 @@ function SessionGroup(p: { handle: SessionHandle }) {
                     {(m) => (
                         <div class="task click">
                             <button class="task-hit" aria-label={`MCP server ${shownName(m.name)}: ${statusLabel(m).text}`} onClick={() => setMcpOpen({ focus: m.name })} />
-                            <span class="ki">
-                                <Plug size={14} />
-                                <span class={`nd ${m.status === "failed" ? "st-failed" : "st-waiting"}`} />
+                            <span class={`ki ${m.status === "failed" ? "st-failed" : "st-waiting"}`}>
+                                <Plug size={16} />
                             </span>
                             <span class="tx">
                                 <b>{shownName(m.name)}</b>
@@ -289,8 +299,7 @@ function AgentsPane(p: { handle: SessionHandle; rows: WorkRow[] }) {
             fallback={
                 <div class="blank">
                     <Bot size={22} class="ic" />
-                    <b>No agents yet</b>
-                    Sub-agents and tasks given to other models show up here.
+                    Sub-agents and delegated tasks show up here
                 </div>
             }
         >
@@ -309,8 +318,7 @@ function CommandsPane(p: { handle: SessionHandle; rows: WorkRow[] }) {
             fallback={
                 <div class="blank">
                     <Terminal size={22} class="ic" />
-                    <b>No background commands</b>
-                    Shells and monitors the agent leaves running show up here.
+                    Background commands show up here
                 </div>
             }
         >
@@ -327,16 +335,18 @@ function PanelFoot(p: { handle: SessionHandle; changes: ReturnType<ReturnType<ty
     createEffect(on(() => p.handle.id, () => setPublish(undefined)));
     const paths = () => (p.changes?.files ?? []).filter((f) => f.kind !== "folder" && f.kind !== "repo").map((f) => f.path);
     const commitOff = () => commitUnavailable(p.handle) ?? (p.changes?.error ? "Refresh the changes before committing." : !paths().length ? "Nothing to commit." : undefined);
+    // What's next is the primary and takes the room: Commit while there's something to commit, then Push.
+    const commitNext = () => paths().length > 0;
     return (
         <Show when={p.changes?.repo}>
             <div class="insp-foot">
-                <span class="grow" title={commitOff() ?? "Commit the changed files"}>
-                    <button class="btn ghost" disabled={Boolean(commitOff())} onClick={() => setCommitRequest({ id: p.handle.id, paths: paths() })}>
+                <span classList={{ grow: commitNext() }} title={commitOff() ?? "Commit the changed files"}>
+                    <button class={`btn ${commitNext() ? "primary" : "secondary"}`} disabled={Boolean(commitOff())} onClick={() => setCommitRequest({ id: p.handle.id, paths: paths() })}>
                         <GitCommitHorizontal size={14} /> Commit…
                     </button>
                 </span>
-                <span class="grow" title={commitUnavailable(p.handle)?.replace(/committing/g, "pushing") ?? "Push the branch, and open a pull request"}>
-                    <button class="btn primary" disabled={Boolean(commitUnavailable(p.handle))} onClick={() => setPublish(p.handle.id)}>
+                <span classList={{ grow: !commitNext() }} title={commitUnavailable(p.handle)?.replace(/committing/g, "pushing") ?? "Push the branch, and open a pull request"}>
+                    <button class={`btn ${commitNext() ? "secondary" : "primary"}`} disabled={Boolean(commitUnavailable(p.handle))} onClick={() => setPublish(p.handle.id)}>
                         <GitPullRequestArrow size={14} /> Push…
                     </button>
                 </span>

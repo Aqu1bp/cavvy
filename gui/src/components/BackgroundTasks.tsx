@@ -17,6 +17,7 @@ import { duration, plural } from "../lib/format";
 import { now } from "../lib/clock";
 import { ConfirmDialog } from "./ui/ConfirmDialog";
 import { AgentMark } from "./ui/AgentMark";
+import { Spinner } from "./ui/bits";
 import { agentStep } from "../lib/agent-marks";
 
 /** Rows cleared from a session's Finished folds, by clearKey: the server keeps no list of sub-agents to clear. */
@@ -30,6 +31,24 @@ export function uncleared(sessionId: string, rows: WorkRow[]): WorkRow[] {
 
 function KindIcon(p: { kind: WorkRow["kind"] }) {
     return p.kind === "shell" ? <Terminal size={14} /> : p.kind === "monitor" ? <Radar size={14} /> : p.kind === "agent" ? <Bot size={14} /> : <Workflow size={14} />;
+}
+
+/** How a row that isn't running stands, drawn: a check, a cross, a square (stopped), a mark that it waits for the person. */
+const ENDED: Record<string, string> = { done: "M3.5 8.5l3 3 6-6.5", failed: "M4.5 4.5l7 7m0-7-7 7", stopped: "M5.5 5.5h5v5h-5z", waiting: "M8 4v5m0 2.8v.1" };
+
+/** A row's first column: turning while it runs, then how it ended. What it says in words is the row's time ("Done · 3s"). */
+function StatusGlyph(p: { status: WorkRow["status"] }) {
+    return (
+        <span class={`ki st-${p.status}`}>
+            <Show when={ENDED[p.status]} fallback={<Spinner size={16} />}>
+                {(d) => (
+                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d={d()} />
+                    </svg>
+                )}
+            </Show>
+        </span>
+    );
 }
 
 function Item(p: { handle: SessionHandle; at: Placed }) {
@@ -61,22 +80,22 @@ function Item(p: { handle: SessionHandle; at: Placed }) {
     return (
         <div class={`task k-${r().kind} ${target() ? "swap" : ""} ${r().agent ? "click" : ""} ${live() ? "" : "gone"} ${p.at.depth ? "child" : ""}`} style={p.at.depth ? { "--depth": Math.min(p.at.depth, 4) } : undefined}>
             <Show when={r().agent}>{(a) => <button class="task-hit" aria-label={`Open ${r().label}`} onClick={() => openAgents(a().id)} />}</Show>
-            {/* Who runs it is said on the second line, except while that says what it's doing. */}
-            <span class="ki" title={doing() ? who() : undefined}>
-                <Show when={mark()} fallback={<KindIcon kind={r().kind} />}>
-                    {(id) => <AgentMark provider={id()} class="pm" />}
-                </Show>
-                <span class={`nd st-${r().status}`} />
-            </span>
+            <StatusGlyph status={r().status} />
             <span class="tx">
                 <b class={r().kind === "shell" ? "mono" : ""}>{r().label}</b>
-                <span class={doing() ? "doing" : ""} title={step()?.full} aria-label={step()?.full}>
-                    {doing() ?? who()}
+                {/* Who runs it: its mark, then its name, except while the line says what it's doing (the name is the mark's tooltip then). */}
+                <span class="by" title={doing() ? who() : undefined}>
+                    <Show when={mark()} fallback={<KindIcon kind={r().kind} />}>
+                        {(id) => <AgentMark provider={id()} class="pm" />}
+                    </Show>
+                    <span class={doing() ? "doing" : ""} title={step()?.full} aria-label={step()?.full}>
+                        {doing() ?? who()}
+                    </span>
                 </span>
             </span>
             <span class={`meta ${rowTone(r()) ? `tone-${rowTone(r())}` : ""}`}>{rowMeta(r(), p.handle.view.state.shells, now(), duration, runner())}</span>
             <Show when={target()}>
-                <button class="act stop" title="Stop" aria-label={`Stop ${kindName(r()).toLowerCase()}: ${r().label}`} disabled={stopping()} onClick={() => void stop()}>
+                <button class="hb sm act stop" title="Stop" aria-label={`Stop ${kindName(r()).toLowerCase()}: ${r().label}`} disabled={stopping()} onClick={() => void stop()}>
                     <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
                         <rect x="1" y="1" width="8" height="8" rx="2" fill="currentColor" />
                     </svg>

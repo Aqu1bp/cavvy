@@ -1,4 +1,7 @@
-/* ---- Terminal: the sheet's bottom row, under the conversation and the inspector ---- */
+/* ---- Terminal: the sheet's bottom row, under the conversation and the inspector ----
+   A strip of tabs drawn as the side panel's are (panel.css: text, the current one underlined on the
+   strip's edge), the folder and the panel's buttons at its right, then xterm on --term-bg, its colours
+   read from the tokens (TerminalPanel). */
 
 .terminal-panel {
     grid-row: 2;
@@ -39,12 +42,13 @@
     padding-left: calc(92px - var(--win-pad, 8px));
 }
 
+/* The panel's top edge: drag it (or use the arrow keys) for its height. The edge lights up under the pointer. */
 .terminal-resize {
     position: absolute;
     top: 0;
     left: 0;
     right: 0;
-    height: 6px;
+    height: 8px;
     cursor: row-resize;
     z-index: 3;
     touch-action: none;
@@ -56,10 +60,10 @@
     top: 0;
     left: 0;
     right: 0;
-    height: 1px;
+    height: calc(2 * var(--sp));
     background: var(--accent);
     opacity: 0;
-    transition: opacity 150ms;
+    transition: opacity var(--dur-fast);
 }
 
 .terminal-resize:hover::after,
@@ -76,31 +80,31 @@
     display: flex;
     align-items: center;
     gap: calc(2 * var(--sp));
-    height: calc(38 * var(--sp));
-    padding: 0 calc(6 * var(--sp)) 0 calc(8 * var(--sp));
+    height: calc(36 * var(--sp));
+    padding: 0 calc(8 * var(--sp));
     flex: none;
+    border-bottom: 0.5px solid var(--line);
     font-size: 0.929rem;
 }
 
-.terminal-toolbar .hb {
-    border-radius: var(--pill);
-}
-
+/* As tall as the strip, so a tab's underline lies on the strip's edge. */
 .terminal-tabs {
     display: flex;
-    gap: calc(2 * var(--sp));
+    align-items: center;
+    align-self: stretch;
     min-width: 0;
     overflow-x: auto;
     scrollbar-width: none;
 }
 
 .terminal-tab {
+    position: relative;
     display: inline-flex;
     align-items: center;
     gap: calc(2 * var(--sp));
     height: calc(28 * var(--sp));
-    padding: 0 calc(3 * var(--sp)) 0 calc(10 * var(--sp));
-    border-radius: var(--pill);
+    padding: 0 calc(4 * var(--sp)) 0 calc(8 * var(--sp));
+    border-radius: var(--r-ctl);
     flex: none;
     color: var(--fg-3);
     font-weight: 500;
@@ -110,19 +114,27 @@
 
 .terminal-tab:hover {
     background: var(--hover);
-    color: var(--fg-2);
+    color: var(--fg);
 }
 
 .terminal-tab.on {
-    background: var(--sheet);
     color: var(--fg);
-    box-shadow: 0 0 0 0.5px var(--line);
+}
+
+/* The underline (panel.css), let down from the tab's box to the strip's edge: the strip is 36 tall, or
+   maximized the title bar's height. */
+.terminal-tab.on::after {
+    bottom: calc(-4 * var(--sp));
+}
+
+.terminal-panel.max .terminal-tab.on::after {
+    bottom: calc(14 * var(--sp) + var(--win-pad, 8px) - var(--top-line));
 }
 
 .terminal-tab > button[role="tab"] {
     display: inline-flex;
     align-items: center;
-    gap: calc(7 * var(--sp));
+    gap: calc(6 * var(--sp));
     height: 100%;
     color: inherit;
     white-space: nowrap;
@@ -149,20 +161,22 @@
     opacity: 1;
 }
 
+/* The folder: short of room, it gives way from its left. */
 .terminal-cwd {
     margin-left: auto;
     padding: 0 calc(8 * var(--sp));
     max-width: 40%;
+    direction: rtl;
     color: var(--fg-3);
     font-family: var(--font-mono);
-    font-size: 0.821rem;
+    font-size: 0.857rem;
 }
 
 .terminal-screen {
     flex: 1;
     min-height: 0;
     flex-direction: column;
-    padding: calc(2 * var(--sp)) calc(6 * var(--sp)) calc(6 * var(--sp)) calc(14 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(6 * var(--sp)) calc(8 * var(--sp)) calc(16 * var(--sp));
 }
 
 .terminal-emulator {
@@ -186,7 +200,15 @@
     align-items: center;
     justify-content: space-between;
     gap: calc(8 * var(--sp));
-    padding: calc(8 * var(--sp)) calc(14 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(16 * var(--sp));
     color: var(--fg-3);
     font-size: 0.857rem;
+}
+
+/* Under a screen: its shell has exited or is away. */
+.terminal-screen > .terminal-message {
+    margin: calc(8 * var(--sp)) 0 0 calc(-8 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(4 * var(--sp)) calc(4 * var(--sp)) calc(12 * var(--sp));
+    border-radius: var(--r-ctl);
+    background: var(--hover);
 }
