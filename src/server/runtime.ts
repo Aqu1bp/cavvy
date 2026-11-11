@@ -2462,7 +2462,10 @@ export class Runtime {
 
     private async askPermission(req: PermissionRequest): Promise<PermissionResponse> {
         const { tool, input, decision } = req;
-        const suggestions = decision.suggestions ?? [];
+        // A rule kept for good ("always") isn't offered where it would allow far more than what's asked: a command asked
+        // about for the file or hosts it names (the rule is for every such command, and is matched before those are
+        // looked at), or what auto mode says it asks about every time. The choice for the session stays.
+        const suggestions = (isShellTool(tool.name) && (decision.sensitive || decision.listedHosts?.length)) || decision.everyTime ? [] : (decision.suggestions ?? []);
         const projectName = basename(this.ws.cwd);
         const it: PermissionInteraction = {
             kind: "permission",
@@ -2489,11 +2492,10 @@ export class Runtime {
             if (input.description) it.description = redact(String(input.description));
             if (req.secrets?.length) it.secrets = [...req.secrets];
             if (decision.sandbox && Array.isArray(input.allowedHosts)) it.hosts = input.allowedHosts.map(String);
-            // Not beside a narrower grant (only the paths or hosts it asked about): a rule for the whole command, kept
-            // for good, would allow far more than what's asked here.
-            if (!decision.dangerous && suggestions.length && (!decision.grant || decision.grant.rules?.length)) {
+            if (!decision.dangerous && suggestions.length) {
                 const label = suggestions.map((s) => s.replace(/^Bash\((.*?)(:\*)?\)$/, "$1")).join(", ");
-                it.options.push({ id: "always", label: `Always allow \`${label}\` in ${projectName}`, short: `Always allow \`${label}\`` });
+                // On its button the commands are code: a backtick in one's name would end that early.
+                it.options.push({ id: "always", label: `Always allow \`${label}\` in ${projectName}`, short: `Always allow \`${label.replaceAll("`", "'")}\`` });
             }
         } else if (tool.category === "edit") {
             const p = toolPath(tool.name, input) ?? "";

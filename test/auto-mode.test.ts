@@ -288,3 +288,11 @@ test("auto mode always asks before a push to the main branch, without consulting
     expect(r.reviews).toHaveLength(0);
     expect(r.asked).toBe(1);
 });
+
+test("what auto mode asks about every time says so, so no rule kept for good is offered for it", () => {
+    const ws = workspace();
+    const checker = new PermissionChecker(() => ({}) as any, ws, () => "seatbelt");
+    expect(checker.check(tool("Bash"), { command: "git push origin HEAD:main" }, "auto", ws)).toMatchObject({ behavior: "ask", everyTime: true });
+    // Another mode makes no such promise.
+    expect(checker.check(tool("Bash"), { command: "git push origin HEAD:main" }, "default", ws).everyTime).toBeUndefined();
+});
