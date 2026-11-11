@@ -1,7 +1,8 @@
 /* ---- Title bar ----------------------------------------------------------
-   Plain title on the sheet, the tools in one glass capsule at the far end.
-   The conversation scrolls under a soft blurred edge, like macOS's scroll
-   edge effect. (Where the bar sits in the sheet is the shell's.) */
+   Where you are, as one line on the sheet: the project (while the rail is
+   hidden), the session's title, its branch. The tools in one glass capsule at
+   the far end, in groups. The conversation scrolls under the bar's soft edge.
+   (Where the bar sits in the sheet is the shell's.) */
 
 /* Its content sits on the window's top line (--top-line, tokens.css), level
    with the traffic lights and the rail's buttons. The bar starts --win-pad
@@ -140,10 +141,12 @@
     background: var(--press);
 }
 
+/* On (the terminal, the side panel, the changes while they're open): the selection's tint. */
 .header .hb.on,
-.header .hb[aria-pressed="true"] {
-    color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
+.header .hb[aria-pressed="true"],
+.header .hb[aria-pressed="true"]:hover {
+    color: var(--accent-text);
+    background: var(--accent-soft);
 }
 
 .header .hb:disabled {
@@ -184,6 +187,12 @@
 
 .proj:hover {
     color: var(--fg);
+}
+
+/* The project's tile, the colour it has in the rail. */
+.proj .mg {
+    align-self: center;
+    margin-right: calc(7 * var(--sp));
 }
 
 /* Its name and the stroke keep their own widths (a long name is cut at its own limit), so the box cuts them as it
@@ -259,10 +268,12 @@
 
 .br svg {
     flex: none;
+    color: var(--fg-3);
 }
 
-.crumbs .pill {
+.crumbs .chip {
     align-self: center;
+    flex: none;
 }
 
 /* Settings and a sub-agent's view: crumbs in the same voice. */
@@ -311,21 +322,19 @@ button.bc:hover {
 }
 
 /* ---- Needs you, while the rail is hidden --------------------------------
-   An amber glass pill just before the tools, as tall as the capsule beside
-   it: one session by name, or how many. Narrow, the words go. */
+   An amber chip just before the tools, a button's height: one session by
+   name, or how many. Narrow, the words go. */
 
 .needs {
     display: inline-flex;
     align-items: center;
-    align-self: stretch;
+    align-self: center;
     gap: calc(7 * var(--sp));
     min-width: 0;
     max-width: calc(340 * var(--sp));
-    /* The capsule's height beside it (stretched); on its own (a sub-agent's view), a button's. */
-    min-height: calc(28 * var(--sp));
-    padding: 0 calc(14 * var(--sp)) 0 calc(12 * var(--sp));
-    margin-right: calc(4 * var(--sp));
-    border-radius: var(--pill);
+    height: calc(28 * var(--sp));
+    padding: 0 calc(11 * var(--sp)) 0 calc(9 * var(--sp));
+    border-radius: var(--r-ctl);
     flex: 0 1 auto;
     color: var(--warn);
     font-weight: 500;
@@ -335,13 +344,13 @@ button.bc:hover {
 }
 
 :is(.header, .set-top) .needs.glass {
-    background-image: linear-gradient(color-mix(in srgb, var(--warn) 10%, transparent), color-mix(in srgb, var(--warn) 5%, transparent));
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--warn) 34%, transparent), inset 0 1px 0 var(--ctl-hi), var(--ctl-shadow);
+    background-image: linear-gradient(var(--warn-soft), var(--warn-soft));
+    box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--warn) 30%, transparent), var(--ctl-shadow);
 }
 
 /* Following the end (base.css): its tint, over the same plain colour as the capsule beside it. */
 [data-following] :is(.header, .set-top) .needs.glass {
-    background-image: linear-gradient(color-mix(in srgb, var(--warn) 10%, transparent), color-mix(in srgb, var(--warn) 5%, transparent)), linear-gradient(var(--ctl), var(--ctl));
+    background-image: linear-gradient(var(--warn-soft), var(--warn-soft)), linear-gradient(var(--ctl), var(--ctl));
 }
 
 .needs:hover,
@@ -376,11 +385,6 @@ button.bc:hover {
     margin-left: calc(-2 * var(--sp));
 }
 
-/* In Settings' top line (it covers the rail and the title bar): a button's height, beside Close. */
-.set-top .needs {
-    align-self: center;
-}
-
 /* Getting narrow: the title gives up room first, so the session's own title keeps some. */
 :where(.main[data-narrow~="700"]) .needs {
     max-width: calc(220 * var(--sp));
@@ -392,7 +396,7 @@ button.bc:hover {
 }
 
 :where(.main[data-narrow~="600"]) .needs {
-    padding: 0 calc(11 * var(--sp));
+    padding: 0 calc(9 * var(--sp));
 }
 
 /* One session: its count shows only when its name doesn't. */
@@ -425,33 +429,39 @@ button.bc:hover {
     flex: none;
 }
 
+/* Between its groups: the changes | the scripts | the terminal and the side panel | the session's menu. */
 .cap .sep {
     width: 1px;
     height: 16px;
-    margin: 0 3px;
-    background: var(--line);
+    margin: 0 4px;
+    background: var(--line-strong);
     flex: none;
+}
+
+/* The changes: the one with figures, so a chip of its own in the capsule. */
+.header .hb.diffchip {
+    gap: 6px;
+    padding: 0 9px 0 7px;
+    color: var(--fg-2);
+    background: var(--hover);
+    font: 600 0.893rem var(--font-mono);
+    font-variant-numeric: tabular-nums;
+}
+
+.header .hb.diffchip:hover {
+    background: var(--press);
+}
+
+.header .hb.diffchip.on {
+    background: var(--accent-soft);
 }
 
 .diffchip .a {
     color: var(--add-fg);
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
 }
 
 .diffchip .d {
     color: var(--del-fg);
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-}
-
-.header .hb.diffchip {
-    gap: 5px;
-    color: var(--fg-2);
-}
-
-.header .hb.diffchip.on {
-    color: var(--fg);
 }
 
 /* A shortcut at the end of a menu row (the session menu's Find). */

@@ -167,7 +167,7 @@ test("a prefix goes in where the caret is, as typing would: an @ after a word ge
     const inserted: string[] = [];
     let exec = false;
     const doc = { execCommand: (_c: string, _u: boolean, t: string) => (exec && inserted.push(t), exec) };
-    const typeIn = componentCode("typeInComposer", { document: doc }, undefined, "Home") as (root: unknown, text: string) => void;
+    const typeIn = componentCode("typeInComposer", { document: doc, Bug: "Bug", Compass: "Compass", FlaskConical: "FlaskConical", ScanSearch: "ScanSearch" }, undefined, "Home") as (root: unknown, text: string) => void;
     const ta = { value: "fix the test", selectionStart: 3, selectionEnd: 3, focused: false, focus() { this.focused = true; }, setSelectionRange(a: number, b: number) { this.selectionStart = a; this.selectionEnd = b; }, dispatchEvent: (e: Event) => void events.push(e.type) };
     const root = { querySelector: (q: string) => (q === "textarea" ? ta : null) };
     typeIn(root, "@");
@@ -197,7 +197,7 @@ function home(o: { cwd?: string; needsTrust?: string[]; askTrust?: boolean; mode
     const Home = componentCode("Home", {
         node, Show, For, createSignal, onCleanup: stub, onMount: stub, React: { Fragment: "Fragment" },
         createResource: () => [() => ({ needsTrust: o.needsTrust ?? [], askTrust: o.askTrust, git: true, branch: "main" }), { refetch: stub }],
-        ChevronDown: "ChevronDown", Folder: "Folder", FolderGit2: "FolderGit2", FolderOpen: "FolderOpen", KeyRound: "KeyRound", Plug: "Plug", ShieldAlert: "ShieldAlert",
+        Bug: "Bug", ChevronDown: "ChevronDown", Compass: "Compass", FlaskConical: "FlaskConical", Folder: "Folder", FolderGit2: "FolderGit2", FolderOpen: "FolderOpen", KeyRound: "KeyRound", Plug: "Plug", ScanSearch: "ScanSearch", ShieldAlert: "ShieldAlert",
         app: { conn: "open", homeCwd: o.cwd === undefined ? "/work/cavvy" : o.cwd || undefined, providers: o.providers ?? [], projects: [], models: o.models ?? [{ models: [{}] }], modelsLoaded: true, modelsLoading: false },
         refreshProjects: stub, reportError: stub, rpc: {}, chooseProject: stub,
         connectCli: async (pr: { id: string }) => (connected.push(pr.id), true),
@@ -208,22 +208,27 @@ function home(o: { cwd?: string; needsTrust?: string[]; askTrust?: boolean; mode
         ago: stub, basename: (p: string) => p.split("/").pop(), tildify: (p: string) => p, now: stub, isWindowShown: () => true,
         document: { execCommand: () => false },
         CliSessions: (p: Record<string, any>) => (cliProps.push(p), { tag: "CliSessions", props: p, children: [] }),
-        Composer: tagged("Composer"), ErrorCards: tagged("ErrorCards"), Menu: tagged("Menu"), ProviderIcon: tagged("ProviderIcon"), WorktreePicker: tagged("WorktreePicker"),
+        Composer: tagged("Composer"), ErrorCards: tagged("ErrorCards"), Menu: tagged("Menu"), ProviderIcon: tagged("ProviderIcon"), WorktreePicker: tagged("WorktreePicker"), Monogram: tagged("Monogram"),
     }) as () => Element;
     const tree = Home();
     const composer = elements(tree, "Composer")[0]!;
-    return { tree, composer, strip: composer.props.strip, trusts, connected, tabs, cliProps };
+    return { tree, composer, strip: composer.props.strip, where: byClass(tree, "div", "home-where")[0]!, trusts, connected, tabs, cliProps };
 }
 
-test("Home is the question, then the composer with the project, its worktree and the three prefixes in the strip under it", () => {
+test("Home is the question and where it runs (the project, its worktree), then the composer with the three prefixes in the strip under it", () => {
     const h = home();
     expect(text(elements(h.tree, "h1"))).toBe("What should we work on?");
     expect(elements(h.tree, "Logo")).toHaveLength(0);
     expect(h.composer.props.placeholder).toBe("Describe a task or ask a question");
     expect(h.composer.props.variant).toBe("home");
-    const chip = byClass(h.strip, "button", "strip-ctl")[0]!;
+    // Under the question, finishing it: "in <project> on <branch>", each a click from changing. Not in the strip.
+    expect(text(h.where)).toBe("incavvyon");
+    const chip = byClass(h.where, "button", "where-ctl")[0]!;
     expect(text(chip)).toBe("cavvy");
-    expect(elements(h.strip, "WorktreePicker")[0]!.props).toMatchObject({ cwd: "/work/cavvy", branch: "main" });
+    expect(chip.props["aria-haspopup"]).toBe("menu");
+    expect(elements(chip, "Monogram")[0]!.props).toMatchObject({ name: "cavvy", cwd: "/work/cavvy" });
+    expect(elements(h.where, "WorktreePicker")[0]!.props).toMatchObject({ cwd: "/work/cavvy", branch: "main" });
+    expect(elements(h.strip, "WorktreePicker")).toHaveLength(0);
     const hints = elements(byClass(h.strip, "span", "strip-hints"), "button");
     expect(hints.map((b) => [text(elements(b, "kbd")), text(b)])).toEqual([["/", "/commands"], ["@", "@files"], ["!", "!shell"]]);
     // Pressing one leaves the caret in the composer.
@@ -233,6 +238,28 @@ test("Home is the question, then the composer with the project, its worktree and
     // No cards when there's nothing to ask.
     expect(byClass(h.tree, "div", "hcard")).toHaveLength(0);
     expect(h.cliProps[0]).toMatchObject({ cwd: "/work/cavvy", rows: 3 });
+    // Four ways to start, in a row under the composer; a click writes the prompt and leaves the caret in the composer.
+    const starts = elements(byClass(h.tree, "div", "home-starts"), "button");
+    expect(starts.map(text)).toEqual(["Explain this codebase", "Fix a bug", "Write tests", "Review my changes"]);
+    const ta = { value: "", selectionStart: 0, selectionEnd: 0, focus: stub, setSelectionRange: stub, dispatchEvent: stub };
+    byClass(h.tree, "div", "home-composer")[0]!.props.ref({ querySelector: (q: string) => (q === "textarea" ? ta : null) });
+    starts[1]!.props.onClick();
+    expect(ta.value).toBe("Fix this bug: ");
+});
+
+test("the ways to start give way before the terminal's sessions do: only where they cost the list no row", () => {
+    const starts = (o: Parameters<typeof home>[0]) => byClass(home(o).tree, "div", "home-starts").length;
+    const rows = (o: Parameters<typeof home>[0]) => home(o).cliProps[0]!.rows;
+    // 1360×880 and 1024×700 windows: the tiles and three rows.
+    expect([starts({ height: 864 }), rows({ height: 864 })]).toEqual([1, 3]);
+    expect([starts({ height: 684 }), rows({ height: 684 })]).toEqual([1, 3]);
+    // A 720×480 window, or a card over the composer in a window of middling height: the rows keep their room.
+    expect([starts({ height: 480, width: 720 }), rows({ height: 480, width: 720 })]).toEqual([0, 2]);
+    expect([starts({ height: 684, needsTrust: [".mcp.json"] }), rows({ height: 684, needsTrust: [".mcp.json"] })]).toEqual([0, 3]);
+    expect(starts({ height: 864, needsTrust: [".mcp.json"] })).toBe(1);
+    // No project, or no model to send to: nothing to start.
+    expect(starts({ cwd: "" })).toBe(0);
+    expect(starts({ models: [] })).toBe(0);
 });
 
 test("/ and ! type only into an empty composer, as it is when clicked, whatever filled or cleared it; @ goes anywhere", () => {
@@ -264,8 +291,11 @@ test("with no folder Home asks for one, and the strip has no prefixes", () => {
     const h = home({ cwd: "" });
     expect(text(elements(h.tree, "h1"))).toBe("Choose a project to start");
     expect(h.composer.props.placeholder).toBe("Choose a project folder to start");
-    expect(text(byClass(h.strip, "button", "strip-ctl")[0]!)).toBe("Choose a project");
-    expect(byClass(h.strip, "span", "strip-hints")).toHaveLength(0);
+    // Choosing one is the thing to do: the one control under the question, with no "in" or "on" around it.
+    expect(text(h.where)).toBe("Choose a project");
+    expect(byClass(h.where, "button", "where-ctl")[0]!.props.classList).toEqual({ lead: true });
+    expect(h.strip).toBeUndefined();
+    expect(byClass(h.tree, "span", "strip-hints")).toHaveLength(0);
     expect(elements(h.tree, "CliSessions")).toHaveLength(0);
 });
 

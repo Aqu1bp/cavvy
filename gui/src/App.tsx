@@ -1,6 +1,6 @@
 import { RenderBoundary } from "./components/ui/ErrorBoundary";
 import { batch, createEffect, createMemo, createSignal, lazy, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
-import { PlugZap } from "lucide-solid";
+import { CircleAlert, PlugZap } from "lucide-solid";
 import { ErrorCards } from "./components/ErrorCards";
 import { activate, app, attentionCount, handleFor, restoreActiveSession, rpc, type SessionHandle } from "./state/app";
 import { cycleSession, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
@@ -45,31 +45,35 @@ import { Logo, Spinner } from "./components/ui/bits";
 function Disconnected() {
     return (
         <div class="splash">
-            <Switch
-                fallback={
-                    <>
+            {/* One block in the window's middle (shell.css .gate): the mark or what's wrong, a line, what to do. */}
+            <div class="gate">
+                <Switch
+                    fallback={
+                        <>
+                            <Logo size={44} />
+                            <div class="gate-s" role="status">
+                                <Spinner size={14} /> {app.conn === "reconnecting" ? "Reconnecting to Cavvy server…" : "Starting…"}
+                            </div>
+                        </>
+                    }
+                >
+                    <Match when={app.conn === "unauthorized"}>
                         <Logo size={44} />
-                        <Spinner size={18} />
-                        <div class="muted">{app.conn === "reconnecting" ? "Reconnecting to Cavvy server…" : "Starting…"}</div>
-                    </>
-                }
-            >
-                <Match when={app.conn === "unauthorized"}>
-                    <Logo size={44} />
-                    <h2>Open Cavvy from your terminal</h2>
-                    <p class="muted">
-                        Run <code>cavvy gui</code> and use the link it opens or prints.
-                    </p>
-                </Match>
-                <Match when={app.conn === "unavailable"}>
-                    <PlugZap size={36} class="tone-warn" />
-                    <h2>Can't reach Cavvy server</h2>
-                    <p class="muted">{isDesktop ? "The background process stopped. Quit and reopen the app." : "Is `cavvy gui` still running? Still trying to reconnect…"}</p>
-                </Match>
-            </Switch>
-            <button class="btn secondary" onClick={() => rpc.reconnectNow()}>
-                Reconnect now
-            </button>
+                        <h2>Open Cavvy from your terminal</h2>
+                        <p>
+                            Run <code>cavvy gui</code> and use the link it opens or prints.
+                        </p>
+                    </Match>
+                    <Match when={app.conn === "unavailable"}>
+                        <span class="gate-ic"><PlugZap size={22} /></span>
+                        <h2>Can't reach Cavvy server</h2>
+                        <p>{isDesktop ? "The background process stopped. Quit and reopen the app." : "Is `cavvy gui` still running? Still trying to reconnect…"}</p>
+                    </Match>
+                </Switch>
+                <button class="btn secondary" onClick={() => rpc.reconnectNow()}>
+                    Reconnect now
+                </button>
+            </div>
         </div>
     );
 }
@@ -547,10 +551,14 @@ export function App() {
                                         <Match when={openingScreen() && app.opening}>
                                             {(opening) => <>
                                                 <Header title={(app.sessions.find((s) => s.id === opening().id) ?? app.archived.find((s) => s.id === opening().id))?.title} />
-                                                <div class="session-opening" aria-busy={!opening().error}>
-                                                    <Show when={opening().error} fallback={<Show when={opening().visible}><div role="status"><Spinner size={16} /> Opening session…</div><div class="session-skeleton" aria-hidden="true"><i /><i /><i /></div></Show>}>
-                                                        <p role="alert" class="selectable">Couldn't open this session: {opening().error}</p>
-                                                        <button class="ghost-btn" disabled={app.conn !== "open"} onClick={() => void activate(opening().id)}>Retry opening session</button>
+                                                {/* Where the conversation will be (stage.css): a prompt and a reply's lines in outline, then what's happening where the reply's live line goes. */}
+                                                <div class="opening" aria-busy={!opening().error}>
+                                                    <Show when={opening().error} fallback={<Show when={opening().visible}><div class="opening-sk" aria-hidden="true"><i /><i /><i /><i /></div><div class="gate-s" role="status"><Spinner size={14} /> Opening session…</div></Show>}>
+                                                        <div class="gate">
+                                                            <span class="gate-ic err"><CircleAlert size={22} /></span>
+                                                            <p role="alert" class="selectable">Couldn't open this session: {opening().error}</p>
+                                                            <button class="btn secondary" disabled={app.conn !== "open"} onClick={() => void activate(opening().id)}>Retry opening session</button>
+                                                        </div>
                                                     </Show>
                                                 </div>
                                             </>}
@@ -563,9 +571,9 @@ export function App() {
                                         </Match>
                                         <Match when={app.activeId}>
                                             <Header />
-                                            <div class="home-wait">
-                                                <p class="muted" role="status">Waiting to reopen your session…</p>
-                                                <button class="ghost-btn" disabled={app.conn !== "open"} onClick={() => void restoreActiveSession()}>Retry opening session</button>
+                                            <div class="home-wait gate">
+                                                <div class="gate-s" role="status"><Spinner size={14} /> Waiting to reopen your session…</div>
+                                                <button class="btn secondary" disabled={app.conn !== "open"} onClick={() => void restoreActiveSession()}>Retry opening session</button>
                                             </div>
                                         </Match>
                                     </Switch>

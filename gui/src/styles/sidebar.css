@@ -1,8 +1,8 @@
 /* ---- Rail: the sessions, straight on the window glass ------------------
    No card of its own: the window's material shows through. Its top line
-   (the mark, hide) is level with the traffic lights; then New session,
-   search, the list and the plan footer. The open session's row is raised,
-   with the accent at its edge. */
+   (the mark, hide) is level with the traffic lights; then New session, one
+   bar of tools, the list and the footer's bar. Every row starts with how
+   it's doing, in one column; the open one is raised, the accent at its edge. */
 
 .sidebar {
     /* The rail's width: it fills .win-rail's track (shell.css), which keeps it while the column opens and closes. */
@@ -13,7 +13,7 @@
     position: relative;
     min-height: 0;
     min-width: 0;
-    padding: 0 calc(10 * var(--sp)) calc(4 * var(--sp)) calc(12 * var(--sp));
+    padding: 0 calc(10 * var(--sp)) calc(8 * var(--sp)) calc(12 * var(--sp));
     color: var(--rail-fg);
     background: transparent;
     font-size: 0.929rem;
@@ -89,16 +89,8 @@
     margin-left: calc(var(--brand-x) - 12 * var(--sp));
 }
 
-.side-tools {
-    display: flex;
-    align-items: center;
-    gap: calc(2 * var(--sp));
-    margin-bottom: calc(14 * var(--sp));
-    flex: none;
-}
-
-/* New session: a raised key on the glass, the first thing in the rail. Search everything (the
-   palette) under it: a field, quieter. */
+/* New session: a raised key on the glass, the first thing in the rail. Under it one bar of tools: search everything
+   (the palette), then how the list is shown and opening a project, behind a hairline. */
 .side-new,
 .side-search {
     min-width: 0;
@@ -117,7 +109,7 @@
 .side-new {
     flex: none;
     margin-bottom: calc(6 * var(--sp));
-    font-weight: 550;
+    font-weight: 500;
     color: var(--rail-fg);
     background: var(--rail-sel);
     box-shadow: inset 0 0 0 0.5px var(--rail-sel-stroke), var(--shadow-sm);
@@ -135,17 +127,27 @@
     transform: scale(0.985);
 }
 
+.side-tools {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    margin-bottom: calc(6 * var(--sp));
+    padding-right: calc(2 * var(--sp));
+    border-radius: var(--r-ctl);
+    background: var(--rail-hover);
+    flex: none;
+}
+
 .side-search {
     flex: 1;
     margin-right: calc(2 * var(--sp));
+    border-radius: var(--r-ctl) 0 0 var(--r-ctl);
     color: var(--rail-fg-2);
-    background: var(--rail-hover);
-    box-shadow: inset 0 0 0 0.5px var(--line);
+    box-shadow: 0.5px 0 0 var(--line-strong);
 }
 
 .side-search:hover {
     color: var(--rail-fg);
-    box-shadow: inset 0 0 0 0.5px var(--line-strong);
 }
 
 :is(.side-new, .side-search) > svg {
@@ -182,11 +184,12 @@
     min-height: 0;
     overflow-y: auto;
     margin: 0 calc(-4 * var(--sp));
-    padding: 0 calc(4 * var(--sp)) calc(12 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(4 * var(--sp)) calc(12 * var(--sp));
     display: flex;
     flex-direction: column;
     scrollbar-width: none;
-    mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent 100%);
+    /* Rows fade out under the tools and into the footer as they scroll; at rest the first starts clear of the fade. */
+    mask-image: linear-gradient(to bottom, transparent, #000 calc(8 * var(--sp)), #000 calc(100% - 16px), transparent);
 }
 
 .side-list::-webkit-scrollbar {
@@ -197,11 +200,26 @@
     flex: none;
 }
 
+/* Nothing to list (yet): a quiet glyph and one line, in the rail's upper third. The glyph is three rows of a list. */
 .side-empty {
-    padding: calc(20 * var(--sp)) calc(10 * var(--sp));
+    display: grid;
+    justify-items: center;
+    gap: calc(12 * var(--sp));
+    padding: 16vh calc(16 * var(--sp)) 0;
     color: var(--rail-fg-2);
     font-size: 0.857rem;
     line-height: 1.5;
+    text-align: center;
+    text-wrap: balance;
+}
+
+.side-empty::before {
+    content: "";
+    width: calc(34 * var(--sp));
+    height: calc(26 * var(--sp));
+    opacity: 0.3;
+    background: linear-gradient(currentColor 0 0) 0 0 / 100% 22% no-repeat, linear-gradient(currentColor 0 0) 0 50% / 72% 22% no-repeat, linear-gradient(currentColor 0 0) 0 100% / 88% 22% no-repeat;
+    border-radius: calc(3 * var(--rs));
 }
 
 /* ---- Group headings: a project, Settled, Archived ---------------------- */
@@ -210,9 +228,9 @@
     position: relative;
     display: flex;
     align-items: center;
-    gap: calc(7 * var(--sp));
+    gap: calc(8 * var(--sp));
     flex: none;
-    padding: calc(4 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp)) calc(12 * var(--sp));
     margin-top: calc(14 * var(--sp));
     font-size: 0.857rem;
     font-weight: 600;
@@ -226,6 +244,7 @@
 
 .shelf > svg {
     flex: none;
+    width: calc(16 * var(--sp));
 }
 
 .shelf .n {
@@ -242,7 +261,7 @@
     height: calc(22 * var(--sp));
     padding: 0 calc(8 * var(--sp));
     margin: calc(-3 * var(--sp)) calc(-4 * var(--sp)) calc(-3 * var(--sp)) 0;
-    border-radius: var(--pill);
+    border-radius: var(--r-ctl);
     color: var(--rail-fg-2);
     font-size: 0.857rem;
     font-weight: 500;
@@ -277,7 +296,7 @@
 
 .settled-head {
     width: 100%;
-    border-radius: calc(10 * var(--rs));
+    border-radius: var(--r-ctl);
 }
 
 .settled-head:hover {
@@ -293,17 +312,16 @@
     transform: rotate(180deg);
 }
 
-/* Grouped by project, a heading folds its sessions under it (and unfolds
-   them), like Settled. Its New session takes the count's place on hover,
-   beside the chevron. */
+/* Grouped by project, a heading (the project's tile, its name in the rail's ink) folds its sessions under it and
+   unfolds them, like Settled. Its New session takes the count's place on hover, beside the chevron. */
 .shelf-toggle {
     flex: 1;
     min-width: 0;
     display: flex;
     align-items: center;
-    gap: calc(7 * var(--sp));
-    margin: calc(-4 * var(--sp)) calc(-10 * var(--sp)) calc(-6 * var(--sp));
-    padding: calc(4 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp));
+    gap: calc(8 * var(--sp));
+    margin: calc(-4 * var(--sp)) calc(-10 * var(--sp)) calc(-6 * var(--sp)) calc(-12 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp)) calc(12 * var(--sp));
     border-radius: var(--r-ctl);
     color: inherit;
     font: inherit;
@@ -311,6 +329,7 @@
     transition: color 140ms;
 }
 
+.shelf-toggle .truncate,
 .shelf-toggle:hover {
     color: var(--rail-fg);
 }
@@ -337,9 +356,10 @@
     margin-top: calc(2 * var(--sp));
 }
 
-/* ---- A session in play: title, when | project · branch -----------------
-   No glyph at the start: how it's doing is said at the end (RowEnd), so a
-   quiet row is just its words and the titles all start at one edge. */
+/* ---- A session in play --------------------------------------------------
+   How it's doing | title | when, then under the title its project and branch.
+   The glyphs share one column down the rail (.sg), so the titles all start at
+   one edge and a glance down it reads every session. */
 
 .card {
     position: relative;
@@ -350,60 +370,49 @@
 }
 
 .card:hover,
-.card.menu-open {
+.card.menu-open,
+.slim:hover,
+.slim.menu-open {
     background: var(--rail-hover);
 }
 
-.card.cur {
+:is(.card, .slim).cur {
     background: var(--rail-sel);
     box-shadow: inset 0 0 0 0.5px var(--rail-sel-stroke), var(--shadow-sm);
 }
 
-/* Where you are: the accent, at the open row's leading edge. */
-:is(.card, .slim).cur::before {
+/* Where you are: the accent, at the open row's leading edge (and the open section's, in Settings). */
+:is(.card, .slim).cur::before,
+.settings-nav .navi.on::before {
     content: "";
     position: absolute;
     left: calc(3 * var(--sp));
-    top: calc(9 * var(--sp));
-    bottom: calc(9 * var(--sp));
+    top: 26%;
+    bottom: 26%;
     width: calc(3 * var(--sp));
     border-radius: var(--r-full);
     background: var(--accent);
 }
 
-/* Picked for a bulk action (Shift- or ⌘-click): an accent-tinted pill, apart
+/* Picked for a bulk action (Shift- or ⌘-click): an accent-tinted row, apart
    from the open session's raised one; a check in an accent disc for its glyph. */
-.card.picked,
-.slim.picked {
+:is(.card, .slim).picked {
     background: var(--accent-soft);
     box-shadow: inset 0 0 0 0.5px var(--accent-border);
 }
 
-.card.picked:hover,
-.slim.picked:hover {
+:is(.card, .slim).picked:hover {
     background: color-mix(in srgb, var(--accent) 17%, transparent);
 }
 
-.card.cur.picked,
-.slim.cur.picked {
+:is(.card, .slim).cur.picked {
     box-shadow: inset 0 0 0 1px var(--accent-border), var(--ctl-shadow);
-}
-
-.sidebar .st.pick {
-    width: calc(16 * var(--sp));
-    height: calc(16 * var(--sp));
-    margin: 1px;
-    place-content: center;
-    justify-self: center;
-    border-radius: 50%;
-    background: var(--accent);
-    color: var(--accent-ink);
 }
 
 .card-hit {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    column-gap: calc(9 * var(--sp));
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    column-gap: calc(8 * var(--sp));
     align-items: center;
     width: 100%;
     min-width: 0;
@@ -424,30 +433,42 @@
     outline-offset: -2px;
 }
 
-/* The status glyph: a working ring, a hand while it needs you, a check when it finished unseen. */
+/* The status column: a working ring, a hand while it needs you, a mark where it stopped, a dot when it finished
+   unseen, a quiet ring when there's no news. */
+.sg {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: calc(16 * var(--sp));
+    height: calc(18 * var(--sp));
+}
+
 .sidebar .st {
     display: grid;
     place-items: center;
-    height: calc(18 * var(--sp));
-    color: var(--rail-fg-2);
 }
 
 .sidebar .st.waiting {
     color: var(--warn);
 }
 
-.sidebar .st.done {
-    color: var(--ok);
-}
-
 .sidebar .st.error {
     color: var(--danger);
 }
 
+/* (.pick is also the composer's pickers: none of their box here.) */
+.sidebar .st.pick {
+    width: calc(16 * var(--sp));
+    height: calc(16 * var(--sp));
+    padding: 0;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--accent-ink);
+}
+
 .sidebar .spin-ring {
-    display: inline-block;
-    width: calc(14 * var(--sp));
-    height: calc(14 * var(--sp));
+    width: calc(13 * var(--sp));
+    height: calc(13 * var(--sp));
     border-radius: 50%;
     border: 2px solid color-mix(in srgb, var(--accent) 22%, transparent);
     border-top-color: var(--accent);
@@ -457,6 +478,27 @@
 /* Words coming out say it's working: this would have the window drawn again for no news (lib/reveal.ts). */
 [data-flowing] .sidebar .cur .spin-ring {
     animation: none;
+}
+
+.sidebar :is(.unread-dot, .idle-dot, .wait-dot) {
+    width: calc(7 * var(--sp));
+    height: calc(7 * var(--sp));
+    border-radius: 50%;
+    flex: none;
+}
+
+.sidebar .unread-dot {
+    background: var(--accent);
+}
+
+.sidebar .idle-dot {
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--rail-fg) 24%, transparent);
+}
+
+/* A folded project with a session that needs you: an amber dot on its heading. */
+.sidebar .wait-dot {
+    background: var(--warn);
+    box-shadow: 0 0 0 3px var(--warn-bg);
 }
 
 .card .t {
@@ -469,7 +511,7 @@
 }
 
 .card.unread .t {
-    font-weight: 650;
+    font-weight: 600;
 }
 
 /* Working in the background: it can recede, without fading below AA. */
@@ -481,32 +523,45 @@
     color: var(--rail-fg);
 }
 
+/* When it last moved, at the row's end. */
 .card .end,
 .slim .t {
     display: flex;
     align-items: center;
-    gap: calc(6 * var(--sp));
-    font-size: 0.821rem;
+    gap: calc(5 * var(--sp));
+    font-size: 0.786rem;
     color: var(--rail-fg-2);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
 }
 
-.card .end {
-    grid-row: 1;
-    grid-column: 2;
-}
-
-/* Where it is, a step quieter than the time: the title carries the row. */
+/* Where it is, under the title: the project's tile and name, then the branch, which gives way first. */
 .card .m {
-    grid-column: 1 / span 2;
+    grid-column: 2 / -1;
     display: flex;
     align-items: center;
     gap: calc(6 * var(--sp));
     min-width: 0;
     margin-top: 1px;
-    font-size: 0.821rem;
-    color: color-mix(in srgb, var(--rail-fg-2) 72%, transparent);
+    font-size: 0.857rem;
+    color: var(--rail-fg-2);
+}
+
+.card .m .mg {
+    border-radius: calc(4 * var(--rs));
+}
+
+.card .m > .truncate {
+    flex: none;
+    max-width: 72%;
+}
+
+.card .m > .br-n {
+    flex: 0 1 auto;
+}
+
+.truncate + .br-n::before {
+    content: "· ";
 }
 
 .card-pin,
@@ -535,7 +590,7 @@
     padding: calc(14 * var(--sp)) calc(12 * var(--sp)) calc(5 * var(--sp));
     font-size: 0.786rem;
     font-weight: 600;
-    color: color-mix(in srgb, var(--rail-fg-2) 80%, transparent);
+    color: var(--rail-fg-2);
 }
 
 .day-head:first-child,
@@ -543,29 +598,10 @@
     padding-top: calc(4 * var(--sp));
 }
 
-.sidebar .unread-dot {
-    width: calc(7 * var(--sp));
-    height: calc(7 * var(--sp));
-    border-radius: 50%;
-    background: var(--accent);
-    flex: none;
-}
-
-/* Needs you: an amber dot, no words; its row keeps no archive button. */
-.sidebar .wait-dot {
-    width: calc(8 * var(--sp));
-    height: calc(8 * var(--sp));
-    margin-right: calc(2 * var(--sp));
-    border-radius: 50%;
-    background: var(--warn);
-    box-shadow: 0 0 0 3px var(--warn-bg);
-    flex: none;
-}
-
 /* Archive and More take the time's place while you point at the row. */
 .sess-acts {
     position: absolute;
-    top: calc(6 * var(--sp));
+    top: calc(4 * var(--sp));
     right: calc(6 * var(--sp));
     display: flex;
     align-items: center;
@@ -581,16 +617,18 @@
     pointer-events: auto;
 }
 
+/* Unseen, the time keeps the actions' width, so a long title ends before them. */
 .card:hover .end,
 .card:focus-within .end,
 .card.menu-open .end {
     visibility: hidden;
+    min-width: calc(44 * var(--sp));
 }
 
-/* Over the title line, its text where the title's was (the hit's padding, less the box's own). */
+/* Over the title line, its text where the title's was (after the glyph's column, less the box's own padding). */
 .card-rename {
     position: absolute;
-    left: calc(4 * var(--sp));
+    left: calc(30 * var(--sp));
     right: calc(8 * var(--sp));
     top: calc(5 * var(--sp));
 }
@@ -607,12 +645,21 @@
 
 /* ---- Needs you: pinned above the list until answered -------------------
    Every session waiting on you but the open one (its request is in front of
-   you), as amber rows saying what it asks; each keeps its own row below.
-   One answered while the rail holds still is a plain row until it goes. */
+   you), together on one amber ground, each saying what it asks; each keeps
+   its own row below. One answered while the rail holds still is a plain row
+   until it goes. */
 
 .needs-g {
     flex: none;
     margin-bottom: calc(14 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(4 * var(--sp)) calc(2 * var(--sp));
+    border-radius: var(--r-card);
+    background: var(--warn-bg);
+}
+
+.needs-g .shelf {
+    padding-left: calc(8 * var(--sp));
+    padding-right: calc(8 * var(--sp));
 }
 
 .needs-g + .shelf {
@@ -622,28 +669,31 @@
 .needs-head,
 .needs-head .n {
     color: var(--warn);
+    opacity: 1;
 }
 
 .needs-row {
     animation: needs-in 420ms var(--spring);
 }
 
-.needs-row.waiting {
-    background: color-mix(in srgb, var(--warn) 9%, transparent);
+.needs-row .card-hit {
+    padding-left: calc(8 * var(--sp));
+    padding-right: calc(8 * var(--sp));
 }
 
 .needs-row.waiting:hover {
-    background: color-mix(in srgb, var(--warn) 15%, transparent);
+    background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
 
 .needs-row.waiting .m {
     color: var(--warn);
 }
 
-/* No actions take the dot's place here. */
+/* No actions take the time's place here. */
 .needs-row:hover .end,
 .needs-row:focus-within .end {
     visibility: visible;
+    min-width: 0;
 }
 
 @keyframes needs-in {
@@ -675,32 +725,17 @@
     height: calc(28 * var(--sp));
 }
 
-.slim:hover,
-.slim.menu-open {
-    background: var(--rail-hover);
-}
-
-.slim.cur {
-    background: var(--rail-sel);
-    box-shadow: inset 0 0 0 0.5px var(--rail-sel-stroke), var(--shadow-sm);
-}
-
 .slim-hit {
     flex: 1;
     min-width: 0;
     height: 100%;
     display: flex;
     align-items: center;
-    gap: calc(9 * var(--sp));
+    gap: calc(8 * var(--sp));
     padding: 0 calc(6 * var(--sp)) 0 calc(12 * var(--sp));
     border-radius: var(--r-ctl);
     text-align: left;
     color: inherit;
-}
-
-.slim .st {
-    width: calc(18 * var(--sp));
-    flex: none;
 }
 
 .slim-end {
@@ -726,6 +761,7 @@
 .slim:focus-within .t,
 .slim.menu-open .t {
     visibility: hidden;
+    min-width: calc(40 * var(--sp));
 }
 
 .slim:hover .slim-acts,
@@ -735,8 +771,8 @@
 }
 
 .slim.more {
-    gap: calc(9 * var(--sp));
-    padding: 0 calc(8 * var(--sp));
+    gap: calc(8 * var(--sp));
+    padding: 0 calc(12 * var(--sp));
     color: var(--rail-fg-2);
     font-size: 0.857rem;
 }
@@ -746,12 +782,12 @@
 }
 
 .slim.more > svg {
-    width: calc(18 * var(--sp));
+    width: calc(16 * var(--sp));
     flex: none;
 }
 
 .slim > .sess-rename {
-    margin: 0 calc(8 * var(--sp)) 0 calc(4 * var(--sp));
+    margin: 0 calc(8 * var(--sp)) 0 calc(30 * var(--sp));
 }
 
 /* Renaming edits the title in place: the same type and spot, a quiet field around it, not a box over the row. */
@@ -773,24 +809,44 @@
     outline: none;
 }
 
-/* ---- Footer: the plans' usage, and Settings ----------------------------
-   One row, the gear's height, however many plans are signed in: a gauge per
-   plan, its mark in a thin ring that fills as its fullest window does, then
-   the figure. No fills or pills: near a limit the ring and figure turn amber
-   (75%), then red (90%, and at the limit). Nothing reported yet: an empty
-   ring, no figure. Lean on purpose: four fit beside the gear at the default
-   width. Short of room (a narrow or floating rail), the % signs go first;
-   only what still doesn't fit folds into "+N" (Sidebar.tsx PlanRow, lib/rail.ts
-   planFit). The row opens the detail card. */
+/* ---- Footer: one bar: the plans' usage, light or dark, Settings ---------
+   A quiet bar on the glass, as wide as the rows. A gauge per plan signed in,
+   its mark in a thin ring that fills as its fullest window does, then the
+   figure: near a limit the ring and figure turn amber (75%), then red (90%,
+   and at the limit). Nothing reported yet: an empty ring, no figure. Short of
+   room (a narrow or floating rail), the % signs go first; only what still
+   doesn't fit folds into "+N" (Sidebar.tsx PlanRow, lib/rail.ts planFit). The
+   gauges open the detail card. With no plan, Settings is there by name. */
 
 .side-foot {
     display: flex;
     align-items: center;
+    justify-content: flex-end;
     gap: calc(2 * var(--sp));
-    height: calc(44 * var(--sp));
-    padding: calc(6 * var(--sp)) 0 0;
-    border-top: 0.5px solid var(--line);
+    height: calc(40 * var(--sp));
+    padding: 0 calc(4 * var(--sp));
+    border-radius: var(--r-card);
+    background: var(--rail-hover);
     flex: none;
+}
+
+/* Settings by name, at the bar's start, while no plan's gauges are there. */
+.side-set span {
+    display: none;
+}
+
+.side-foot .side-set.wide {
+    order: -1;
+    width: auto;
+    margin-right: auto;
+    display: flex;
+    gap: calc(8 * var(--sp));
+    padding: 0 calc(10 * var(--sp)) 0 calc(8 * var(--sp));
+    font-weight: 500;
+}
+
+.side-set.wide span {
+    display: inline;
 }
 
 .side-foot .plans {
@@ -801,9 +857,9 @@
     display: flex;
     align-items: center;
     gap: calc(12 * var(--sp));
-    /* The first gauge is centred under the rows' status glyphs (their 18px column starts 8px in). */
-    padding: 0 calc(4 * var(--sp)) 0 calc(5 * var(--sp));
-    border-radius: calc(10 * var(--rs));
+    /* The first gauge is centred under the rows' status glyphs (their 16px column starts 8px into the bar). */
+    padding: 0 calc(4 * var(--sp));
+    border-radius: var(--r-ctl);
     overflow: hidden;
     color: var(--rail-fg-2);
     text-align: left;
@@ -920,6 +976,7 @@
 
 .pl.more {
     padding: 0 calc(6 * var(--sp));
+    border-radius: calc(7 * var(--rs));
     color: var(--rail-fg-2);
     background: color-mix(in srgb, var(--rail-fg) 7%, transparent);
 }
@@ -1078,12 +1135,12 @@
     gap: calc(6 * var(--sp));
     width: 100%;
     height: auto;
-    padding: calc(4 * var(--sp)) calc(8 * var(--sp)) calc(12 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(8 * var(--sp)) calc(14 * var(--sp)) calc(12 * var(--sp));
     border-radius: 0;
     background: none;
     color: var(--rail-fg-2);
     font-size: 0.929rem;
-    font-weight: 600;
+    font-weight: 500;
 }
 
 .sidebar.settings-nav .set-back:hover {
@@ -1113,10 +1170,11 @@
 .sidebar.settings-nav .navi {
     display: flex;
     align-items: center;
+    position: relative;
     gap: calc(10 * var(--sp));
     width: 100%;
-    height: auto;
-    padding: calc(7 * var(--sp)) calc(10 * var(--sp));
+    height: calc(32 * var(--sp));
+    padding: 0 calc(10 * var(--sp)) 0 calc(12 * var(--sp));
     border-radius: var(--r-ctl);
     background: none;
     color: var(--rail-fg);

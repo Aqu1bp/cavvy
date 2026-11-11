@@ -65,6 +65,54 @@
     pointer-events: auto;
 }
 
+/* ---- A session opening (App.tsx) ------------------------------------------
+   In the conversation's column, under the title bar: a prompt's bubble and a
+   reply's lines in outline, holding still, then what's happening where the
+   reply's live line would be. One that wouldn't open says so in the middle
+   (shell.css .gate). */
+.opening {
+    flex: 1;
+    display: grid;
+    align-content: start;
+    width: 100%;
+    max-width: calc(var(--column-w) + 64 * var(--sp));
+    margin: 0 auto;
+    padding: calc(14 * var(--sp)) calc(32 * var(--sp));
+}
+
+.opening > .gate {
+    margin-top: 16vh;
+}
+
+.opening-sk {
+    display: grid;
+    gap: calc(12 * var(--sp));
+    margin-bottom: calc(20 * var(--sp));
+}
+
+.opening-sk i {
+    height: calc(12 * var(--sp));
+    border-radius: calc(6 * var(--rs));
+    background: var(--sheet-2);
+}
+
+.opening-sk i:first-child {
+    justify-self: end;
+    width: 42%;
+    height: calc(40 * var(--sp));
+    margin-bottom: calc(14 * var(--sp));
+    border-radius: calc(18 * var(--rs));
+    background: var(--bubble);
+}
+
+.opening-sk i:nth-child(3) {
+    width: 88%;
+}
+
+.opening-sk i:last-child {
+    width: 56%;
+}
+
 :where(.main[data-narrow~="700"]) {
     .stage .transcript {
         padding-inline: calc(22 * var(--sp));

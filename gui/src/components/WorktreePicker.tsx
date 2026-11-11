@@ -8,7 +8,7 @@ import { tildify } from "../lib/format";
 import { Popover } from "./ui/Popover";
 import { NewWorktreeDialog, RemoveWorktreeDialog, type NewWorktreeRequest, type RemoveWorktreeRequest } from "./WorktreeDialogs";
 
-/** Home's branch control, in the strip under the composer: the project's worktrees, to run the new chat in one, remove one Cavvy made, or make one. */
+/** Home's branch control, after the project under the question: the project's worktrees, to run the new chat in one, remove one Cavvy made, or make one. */
 export function WorktreePicker(p: { cwd: string; branch?: string }) {
     const [open, setOpen] = createSignal(false);
     const [creating, setCreating] = createSignal<NewWorktreeRequest>();
@@ -38,11 +38,11 @@ export function WorktreePicker(p: { cwd: string; branch?: string }) {
     };
 
     return <>
-        <button ref={anchor} class="strip-ctl" title={`${tildify(p.cwd, app.hello?.homeDir)}: choose the worktree for this new chat`} aria-label="Choose worktree" aria-haspopup="menu" aria-expanded={open()} onClick={toggle}>
+        <button ref={anchor} class="where-ctl" title={`${tildify(p.cwd, app.hello?.homeDir)}: choose the worktree for this new chat`} aria-label="Choose worktree" aria-haspopup="menu" aria-expanded={open()} onClick={toggle}>
             <Show when={current() && !current()!.main} fallback={<GitBranch size={14} class="ic" />}>
                 <FolderGit2 size={14} class="ic" />
             </Show>
-            <span class="truncate">{p.branch || "Detached HEAD"}</span>
+            <span class="truncate mono">{p.branch || "Detached HEAD"}</span>
             <ChevronDown size={12} stroke-width={2} class="chv" />
         </button>
         <Popover open={open()} anchor={() => anchor} onClose={() => setOpen(false)} placement="bottom" align="start" width={400}>
