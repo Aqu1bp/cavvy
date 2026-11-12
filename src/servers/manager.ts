@@ -9,7 +9,7 @@
 
 import { PROTOCOL_VERSION } from "../server/protocol";
 import { loadScope } from "../config/settings";
-import { thisBuild, UNKNOWN_BUILD } from "./build";
+import { thisBuild, UNKNOWN_BUILD, type BuildSource } from "./build";
 import { exchangeCode, ServerLink, type LinkState } from "./connect";
 import { countCopied, describeCopy, describeLeft, planCopy, sendCopy } from "./copy";
 import type { HostCheck } from "./host";
@@ -113,7 +113,13 @@ export class ServerLinks {
     /** The key each unknown host offered, by the server's name: what `trust` saves is what was shown. */
     private offered = new Map<string, { entry: ServerEntry; key: OfferedHostKey }>();
 
-    constructor(private o: { onProgress?: (p: ServerProgress) => void; onLink?: (e: ServerLinkEvent) => void } = {}) {}
+    /** `source`: where builds for servers come from (tests bring their own; otherwise this checkout). */
+    constructor(private o: { onProgress?: (p: ServerProgress) => void; onLink?: (e: ServerLinkEvent) => void; source?: BuildSource } = {}) {}
+
+    /** This Cavvy's own build, as a server would have it. */
+    private build(): string {
+        return this.o.source?.id ?? thisBuild();
+    }
 
     list(): ServerSummary[] {
         return listServers().map((s) => ({ name: s.name, destination: s.destination, connected: this.links.get(s.name)?.link.state.state === "connected" }));
@@ -161,7 +167,7 @@ export class ServerLinks {
         this.o.onProgress?.({ name: entry.name, text: `Connecting to ${hostOf(entry)}…` });
         let note: string | undefined;
         try {
-            const setup = await setUpServer(entry, { progress: this.progress(entry.name) });
+            const setup = await setUpServer(entry, { progress: this.progress(entry.name), source: this.o.source });
             if (setup.kept === "newer") note = "It runs a newer Cavvy than this machine.";
         } catch (e) {
             const unknown = await this.unknown(entry.name, entry, e).catch(() => undefined);
@@ -218,7 +224,7 @@ export class ServerLinks {
         const service = serviceReport(facts);
         return {
             running: Boolean(status),
-            current: !status || thisBuild() === UNKNOWN_BUILD || status.build === thisBuild(),
+            current: !status || this.build() === UNKNOWN_BUILD || status.build === this.build(),
             clis: check.clis.map((c) => ({ id: c.id, product: c.product, installed: c.installed, signedIn: c.signedIn, on: c.on, install: c.install })),
             git: check.git,
             gh: check.gh,
@@ -234,6 +240,7 @@ export class ServerLinks {
         let busy: { working: number; waiting: number } | undefined;
         try {
             const r = await setUpServer(entry, {
+                source: this.o.source,
                 progress: this.progress(name),
                 confirmRestart: async (b) => {
                     busy = b;
@@ -307,7 +314,7 @@ export class ServerLinks {
                 // Stopped there on purpose, or never set up: opening it is asking for it, so it's started (or set up).
                 if (first instanceof NotSetUp || first instanceof StoppedThere) {
                     this.o.onProgress?.({ name, text: `Starting Cavvy on ${name}…` });
-                    await setUpServer(entry, { progress: this.progress(name) });
+                    await setUpServer(entry, { progress: this.progress(name), source: this.o.source });
                     return await open();
                 }
                 throw first;

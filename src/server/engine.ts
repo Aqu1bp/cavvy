@@ -135,6 +135,8 @@ export interface EngineOptions {
     editorEnv?: () => DetectEnv;
     /** Starts an editor (tests record the argv instead). */
     launchEditor?: (argv: string[]) => Promise<void>;
+    /** Where builds of Cavvy for servers come from (tests bring their own; otherwise this checkout). */
+    serverBuilds?: import("../servers/build").BuildSource;
     /** This Cavvy is reached from other machines (it's a server's): a CLI's sign-in can't open the person's browser. */
     away?: boolean;
 }
@@ -1754,6 +1756,7 @@ export class Engine {
         if (!this.serverLinks) {
             const { ServerLinks } = await import("../servers/manager");
             this.serverLinks = new ServerLinks({
+                source: this.o.serverBuilds,
                 onProgress: (e) => this.serverAskers.get(e.name)?.send({ type: "servers.progress", ...e }),
                 onLink: (e) => this.broadcast({ type: "servers.link", ...e }),
             });

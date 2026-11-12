@@ -13,8 +13,6 @@ setDefaultTimeout(60_000);
 const iso = isolate();
 const fake = fakeSsh();
 const A = "aaaaaaaaaaaa-1";
-// This Cavvy's own build, as the pretend server will have it: nothing is compiled or copied.
-process.env.CAVVY_BUILD = A;
 
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { startServer } = await import("../src/server/server");
@@ -81,8 +79,8 @@ async function until(what: string, ok: () => boolean | Promise<boolean>, ms = 20
     throw new Error(`timed out waiting for ${what}`);
 }
 
-// This machine's own Cavvy, and a window on it.
-const mine = await startServer({ token: "mine" });
+// This machine's own Cavvy: its build is the one the pretend server has, so nothing is compiled or copied.
+const mine = await startServer({ token: "mine", serverBuilds: source });
 const here = new Window(`ws://127.0.0.1:${mine.port}/ws`, "mine");
 expect(await here.opened.promise).toBe(true);
 
