@@ -339,6 +339,8 @@ export class UpdateFailed extends ServerError {
         message: string,
         /** What runs there now: the build before, when it could be put back. */
         readonly status?: HostStatus,
+        /** Neither the build asked for nor the one before it started: nothing runs there now. */
+        readonly down = false,
     ) {
         super(message);
     }
@@ -353,7 +355,7 @@ export async function applyBuild(e: ServerEntry, build: string, signal?: AbortSi
     if (r.code === 48) throw new ServerError(`Cavvy on ${e.name} is being updated right now. Try again in a minute.`);
     if (r.code === 44) throw new UpdateFailed(`Cavvy didn't start on ${hostOf(e)}, so it's back on the version before.`, status);
     const why = said(r.stderr);
-    throw new UpdateFailed(`Cavvy didn't start on ${hostOf(e)}${why ? `: ${why}` : "."}`);
+    throw new UpdateFailed(`Cavvy didn't start on ${hostOf(e)}${why ? `: ${why}` : "."}`, undefined, r.code === 45);
 }
 
 /** The build the server ran before the one it runs now, if it's still there: prints `previous=`. */

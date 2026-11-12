@@ -449,7 +449,13 @@ async function rollback(args: string[]): Promise<number> {
             } catch (x) {
                 // Said as what it is here: "back on the version before" would read as the going back having worked.
                 if (!(x instanceof UpdateFailed)) throw x;
-                err(x.status ? `The version before didn't start on ${e.name}, so it still runs the one it had.` : `The version before didn't start on ${e.name}, and the one it had didn't start again either. Start it: ${APP_NAME} servers update ${e.name}`);
+                err(
+                    x.status
+                        ? `The version before didn't start on ${e.name}, so it still runs the one it had.`
+                        : x.down
+                          ? `The version before didn't start on ${e.name}, and the one it had didn't start again either: nothing runs there now. Start it: ${APP_NAME} servers update ${e.name}`
+                          : `${e.name} couldn't be put back on the version before. ${printable(x.message, 2000)}`,
+                );
                 return 1;
             }
             out(`${e.name} is back on the version it ran before.`);
