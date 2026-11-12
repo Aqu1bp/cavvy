@@ -18,6 +18,9 @@ export type BackgroundStopResult = "stopped" | "timeout" | "failed" | "not_stopp
 import type { McpApprovalInfo, McpListInfo, McpServerInfo, McpServerStatus } from "../mcp/info";
 import type { PluginListing, PluginScope } from "../plugins/info";
 
+import type { AddResult, ConnectResult, ServerCheck, ServerProblem, ServerSummary, UpdateResult } from "../servers/manager";
+export type { AddResult, ConnectResult, ServerCheck, ServerProblem, ServerSummary, UnknownHost, UpdateResult } from "../servers/manager";
+
 export const PROTOCOL_VERSION = 1;
 
 /**
@@ -1624,6 +1627,10 @@ export type SimulatorCommand = "select" | "boot" | "shutdown" | "take_control";
 // Events
 
 export type ServerEvent =
+    /** A step of what's being done to a server (servers.add, servers.update, servers.connect), for the window that asked. */
+    | { type: "servers.progress"; name: string; text: string; percent?: number }
+    /** A server this Cavvy is connected to came back, is being reached again, or is gone (to every window). */
+    | { type: "servers.link"; name: string; state: "connected" | "reconnecting" | "stopped"; problem?: ServerProblem }
     /** A session's browser changed: its tabs, who drives them, or whether it runs (sent to the windows that have the session open). */
     | { type: "browser.state"; sessionId: string; state: BrowserState }
     /**
@@ -1729,6 +1736,18 @@ export interface HelloResult {
 }
 
 export interface Methods {
+    // Servers: other machines this Cavvy runs on, reached over SSH (src/servers/manager.ts). Not offered by a
+    // server's own Cavvy. A call that needs the user's word says so in its result; `trust` carries the answer to
+    // an unknown host's key back: the fingerprints that were shown.
+    "servers.list": { params: Record<string, never>; result: { servers: ServerSummary[] } };
+    "servers.add": { params: { name: string; destination: string; port?: number; identityFile?: string; trust?: string[] }; result: AddResult };
+    "servers.copy": { params: { name: string }; result: { took: string; left?: string } };
+    "servers.check": { params: { name: string }; result: ServerCheck };
+    "servers.connect": { params: { name: string; trust?: string[] }; result: ConnectResult };
+    "servers.update": { params: { name: string; force?: boolean; trust?: string[] }; result: UpdateResult };
+    "servers.disconnect": { params: { name: string }; result: null };
+    "servers.stop": { params: { name: string }; result: null };
+    "servers.remove": { params: { name: string }; result: { signedOut: boolean } };
     "terminal.open": { params: { id: string; cwd: string; cols: number; rows: number; login?: { provider: string; accountId: string } }; result: { id: string; cwd: string } };
     "terminal.write": { params: { id: string; data: string }; result: null };
     /** The window has drawn this many characters of the terminal's output (flow control). */
