@@ -83,6 +83,7 @@ import { ACTIONS, CONTEXTS, KEYBINDINGS_DOCS } from "../keybindings/core";
 import { ensureKeybindingsFile } from "../keybindings/file";
 import { isWebUrl } from "../mcp/oauth";
 import { stoppedMonitorNote } from "../tools/monitor";
+import { onServer } from "../servers/role";
 
 export interface Command {
     name: string;
@@ -1398,7 +1399,7 @@ async function configCommand(app: App) {
             { label: "Web search backend", value: "webSearch", detail: s.webSearch ?? "auto", description: "auto · anthropic · brave · tavily · duckduckgo · off" },
             { label: "Notifications", value: "notifications", detail: notificationMode(s), description: `auto · terminal · bell · system · off (prompts, turns over ${notifyAfterMs(s) / 1000}s)` },
             { label: "Messages sent while working", value: "followUpBehavior", detail: s.followUpBehavior === "queue" ? "queue" : "steer", description: "steer joins the turn at its next step · queue waits for it to end (tab does the other)" },
-            { label: "Default permission mode", value: "defaultMode", detail: MODE_INFO[s.permissions?.defaultMode ?? "default"].label, description: "mode at startup" },
+            { label: "Default permission mode", value: "defaultMode", detail: MODE_INFO[s.permissions?.defaultMode ?? (onServer() ? "bypassPermissions" : "default")].label, description: "mode at startup" },
             { label: "Bypass in shift+tab cycle", value: "allowBypass", detail: onOff(s.permissions?.allowBypass), description: "lets shift+tab reach bypass permissions" },
             { label: "Small model", value: "smallModel", detail: s.smallModel ?? "auto", description: "for session titles and summaries" },
             { label: "Auto-mode reviewer", value: "reviewModel", detail: s.reviewModel ?? "auto", description: "checks actions in auto mode (auto: Sonnet 5.5 with an Anthropic key)" },
@@ -1439,8 +1440,9 @@ async function configCommand(app: App) {
                 break;
             }
             case "defaultMode": {
-                const order: PermissionMode[] = ["default", "acceptEdits", "plan", "auto"];
-                const cur = s.permissions?.defaultMode ?? "default";
+                // On one of the user's servers Bypass is where it starts, so it's one of the choices there.
+                const order: PermissionMode[] = ["default", "acceptEdits", "plan", "auto", ...(onServer() ? (["bypassPermissions"] as const) : [])];
+                const cur = s.permissions?.defaultMode ?? (onServer() ? "bypassPermissions" : "default");
                 const next = order[(order.indexOf(cur) + 1) % order.length]!;
                 save((x) => ((x.permissions ??= {}).defaultMode = next));
                 break;

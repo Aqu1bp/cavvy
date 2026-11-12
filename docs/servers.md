@@ -47,6 +47,16 @@ A `LocalForward` in your SSH config for that host is opened along with Cavvy's o
 
 Sessions on a server are its own: its folders, its `~/.cavvy`, its settings and memory. The GUI's server there is the same one the desktop app runs locally, so sub-agents, other sessions, schedules, pull request watching and worktrees work as they do here, with the server's tools and sign-ins.
 
+## Permissions on a server
+
+A server is there to run agents freely, and it can be rebuilt. So on a machine Cavvy was put on with `cavvy servers add`:
+
+- Sessions start in **Bypass**: tools run without asking. `cavvy servers add` says so. To start them in another mode, set it in the server's own settings (Settings in its GUI, `/config` in its terminal app, or `permissions.defaultMode`); a mode asked for (`--permission-mode`, the mode picker) is always the one a session gets.
+- What still asks, in every mode, is what reaches beyond the machine: a force-push, a push to the default branch (`main`, `master`, `trunk`), publishing a package, reading saved secrets, and anything that touches Cavvy's own credentials or who may connect to the server. What only the server itself would lose (`rm -rf ~`, `sudo`, a script piped into a shell) doesn't. Your own computer keeps its full list ([permissions](permissions.md)).
+- Deny rules apply as anywhere.
+
+Claude Code and Codex apply their own sandboxes and rules to what they run. Cavvy's sandbox is for models used with an API key, in Auto mode: on Linux it's bubblewrap, off until `"sandbox": true` in the server's settings. `cavvy servers check` says which mode sessions start in and how the sandbox stands.
+
 ## Keeping it running, and updating
 
 Where the server has systemd, Cavvy runs as a user service: started at boot, restarted if it crashes. That needs "lingering" for your user, which Cavvy turns on itself; where the server refuses, Cavvy still runs but won't come back after a reboot, and `cavvy servers check` gives the command an administrator runs to fix that (`sudo loginctl enable-linger <user>`).
