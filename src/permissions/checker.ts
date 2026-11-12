@@ -456,7 +456,7 @@ export class PermissionChecker {
             dangerous = dangerousReason(t.command ?? "", 0, false, server);
             // A server runs without asking, and a push there is an agent's own doing: one to the default branch is
             // asked about in every mode, as Auto asks here. Looked for only where the word is: it reads the command again.
-            const push = server && !dangerous && /\bpush\b/.test(judged) ? pushesDefaultBranch(judged, cwd) : undefined;
+            const push = server && !dangerous && /push/.test(judged.replace(/['"\\]/g, "")) ? pushesDefaultBranch(judged, cwd) : undefined;
             // Not a command too long to read through: that says nothing of a push, and would ask for every such command.
             if (push && push !== ANALYSIS_LIMIT) {
                 if (push.endsWith("(branch unknown)")) unknownPush = true;

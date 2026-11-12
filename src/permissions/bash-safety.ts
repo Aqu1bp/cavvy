@@ -1591,8 +1591,10 @@ function namesServerFolder(word: string): boolean {
     return false;
 }
 
-/** Programs that publish a package with a `publish` word among their arguments, whatever options come before it. */
-const PUBLISHERS = ["npm", "pnpm", "yarn", "bun", "cargo", "uv", "poetry"];
+/** Programs that publish a package when `publish` is what they're told to do, whatever options come before it. */
+const PUBLISHERS = ["npm", "pnpm", "yarn", "bun", "cargo", "uv", "poetry", "pdm", "hatch", "flit", "deno", "lerna", "changeset", "vsce", "jsr", "gradle", "gradlew"];
+/** What those are told to do when a later `publish` is only a name: a package, a test, a script's argument. */
+const NOT_PUBLISHING = new Set(["install", "i", "add", "remove", "rm", "uninstall", "un", "view", "info", "show", "help", "test", "t", "search", "why", "ls", "list", "outdated", "update", "up", "upgrade", "link", "create", "init", "doc", "docs", "bench", "check", "clippy", "fmt", "tree"]);
 
 /**
  * A command that changes what others have, read from its words as the shell would run them: a `git push` that
@@ -1601,6 +1603,11 @@ const PUBLISHERS = ["npm", "pnpm", "yarn", "bun", "cargo", "uv", "poetry"];
  */
 function reachesBeyond(argv: string[]): string | undefined {
     const prog = argv[0];
+    // What a package runner runs (`npx lerna publish`, `bunx changeset@2 publish`): judged as itself.
+    if (runs(prog, "npx", "bunx", "pnpx")) {
+        const at = argv.findIndex((a, i) => i > 0 && !a.startsWith("-"));
+        return at > 0 ? reachesBeyond([argv[at]!.replace(/(?<=.)@[^/]*$/, ""), ...argv.slice(at + 1)]) : undefined;
+    }
     if (runs(prog, "git")) {
         const { index } = gitSubcommand(argv);
         if (argv[index] !== "push") return undefined;
@@ -1612,9 +1619,14 @@ function reachesBeyond(argv: string[]): string | undefined {
         return undefined;
     }
     const args = argv.slice(1);
-    if (runs(prog, ...PUBLISHERS) && args.includes("publish")) return "publishes a package";
-    if (runs(prog, "twine") && args.includes("upload")) return "publishes a package";
-    if (runs(prog, "gem") && args[0] === "push") return "publishes a package";
+    // Up to a `--`: what follows is handed on to something else (`npm test -- publish`).
+    const own = args.includes("--") ? args.slice(0, args.indexOf("--")) : args;
+    const told = own.find((a) => !a.startsWith("-"));
+    if (runs(prog, ...PUBLISHERS) && own.includes("publish") && !(told !== undefined && NOT_PUBLISHING.has(told))) return "publishes a package";
+    if (runs(prog, "twine") && told === "upload") return "publishes a package";
+    if (runs(prog, "gem") && told === "push") return "publishes a package";
+    if (runs(prog, "mvn", "mvnw") && own.includes("deploy")) return "publishes a package";
+    if (runs(prog, "dotnet") && told === "nuget" && own.includes("push")) return "publishes a package";
     return undefined;
 }
 
@@ -2500,19 +2512,23 @@ const PUSH_VALUE_OPTS = new Set(["-o", "--push-option", "--repo", "--receive-pac
 export function pushesDefaultBranch(cmd: string, cwd?: string): string | undefined {
     const commands = commandsWithDirs(cmd, cwd);
     // The branch an earlier command on the line moved to (`git checkout main && git merge x && git push`): what a
-    // later push with no branch named sends, whatever is checked out as this is read.
-    let moved: string | undefined;
+    // later push from the same folder sends when it names no branch, whatever is checked out as this is read.
+    let moved: { to: string; dir: string | null | undefined } | undefined;
     for (const { programs, dir } of commands) {
         for (const argv of programs) {
             if (!runs(argv[0], "git")) continue;
             const { index: i, dirs } = gitSubcommand(argv);
             if (argv[i] === "checkout" || argv[i] === "switch") {
                 const rest = argv.slice(i + 1);
-                // `checkout <tree> -- <paths>` and `checkout -- <paths>` bring files back and move nowhere.
-                if (rest.includes("--")) continue;
+                const words = rest.filter((a) => !a.startsWith("-"));
                 const made = rest.findIndex((a) => /^-[bBcC]$/.test(a) || a === "--create" || a === "--force-create" || a === "--orphan");
-                const to = made >= 0 ? rest[made + 1] : rest.find((a) => !a.startsWith("-"));
-                if (to) moved = to;
+                // Somewhere else's checkout (-C), files brought back (`checkout <tree> <paths>`, `--`, -p) and a
+                // detached head move this folder's branch nowhere.
+                if (dirs.length || rest.includes("--") || rest.some((a) => a === "-p" || a === "--patch" || a === "--detach" || a === "-d")) continue;
+                let to: string | undefined;
+                if (made >= 0) to = rest[made + 1];
+                else if (words.length === 1) to = rest.some((a) => a === "-t" || a === "--track") ? words[0]!.replace(/^[^/]+\//, "") : words[0];
+                if (to) moved = { to, dir };
                 continue;
             }
             if (argv[i] !== "push") continue;
@@ -2525,13 +2541,16 @@ export function pushesDefaultBranch(cmd: string, cwd?: string): string | undefin
             }
             // positional[0] is the remote; the rest are refspecs ([+]src[:dst]).
             const specs = positional.slice(1);
-            const branch = moved ?? (typeof dir === "string" ? headBranch(resolve(dir, ...dirs)) : undefined);
+            // Only ever a reason more to ask: a single word may be a file brought back, not a branch, so one that
+            // isn't the default branch's name leaves the branch to what's checked out now.
+            const here = moved && !dirs.length && moved.dir === dir && DEFAULT_BRANCH.test(moved.to) ? moved.to : undefined;
+            const branch = here ?? (typeof dir === "string" ? headBranch(resolve(dir, ...dirs)) : undefined);
             // Without a refspec git pushes the current branch (push.default "simple").
             if (!specs.length && branch && DEFAULT_BRANCH.test(branch)) return `git push from ${branch}`;
-            if (!specs.length && dir === null && !moved) return "git push (branch unknown)";
+            if (!specs.length && dir === null && !here) return "git push (branch unknown)";
             for (const spec of specs) {
                 let dst = spec.replace(/^\+/, "").split(":").pop()!;
-                if ((dst === "HEAD" || dst === "@") && dir === null && !moved) return "git push to HEAD (branch unknown)";
+                if ((dst === "HEAD" || dst === "@") && dir === null && !here) return "git push to HEAD (branch unknown)";
                 if ((dst === "HEAD" || dst === "@") && branch) dst = branch;
                 if (DEFAULT_BRANCH.test(dst)) return `git push to ${dst.replace(/^refs\/heads\//, "")}`;
             }

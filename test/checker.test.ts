@@ -1331,6 +1331,18 @@ describe("on one of the user's servers", () => {
         ["git checkout main && git merge feat && git push", /pushes to the default branch \(git push from main\)/],
         ["git switch main && git pull && git push origin HEAD", /pushes to the default branch \(git push to main\)/],
         ["git checkout -B master origin/master && git push", /pushes to the default branch/],
+        ["git checkout -t origin/main && git push", /pushes to the default branch/],
+        ["deno publish", /publishes a package/],
+        ["pdm publish", /publishes a package/],
+        ["npx lerna publish", /publishes a package/],
+        ["npx changeset publish", /publishes a package/],
+        ["vsce publish", /publishes a package/],
+        ["./gradlew publish", /publishes a package/],
+        ["mvn -B deploy", /publishes a package/],
+        ["dotnet nuget push x.nupkg", /publishes a package/],
+        ["yarn workspace pkg publish", /publishes a package/],
+        ["yarn workspaces foreach npm publish", /publishes a package/],
+        ["bun run publish", /publishes a package/],
     ] as const)("%p asks in Bypass, there", (cmd, why) => {
         const d = on(cmd);
         expect(d).toMatchObject({ behavior: "ask", dangerous: true });
@@ -1358,8 +1370,38 @@ describe("on one of the user's servers", () => {
         "bun run publish-docs",
         "cargo build --release",
         "echo publish",
+        "bun test publish",
+        "cargo test publish",
+        "npm test -- publish",
+        "npm install publish",
+        "npm view publish",
+        "yarn add publish",
+        "cargo add publish",
+        "npm help publish",
+        "mvn package",
+        "dotnet build",
+        `git "pu"sh origin feat`,
     ])("%p runs in Bypass, there", (cmd) => {
         expect(on(cmd)).toMatchObject({ behavior: "allow" });
+    });
+
+    test("a push after files were brought back from another branch is a push of the branch that's checked out", () => {
+        // In a repository on main: bringing a file back from elsewhere moves nowhere, and the push is main's.
+        const repo = realpathSync(mkdtempSync(join(tmpdir(), "cavvy-test-repo-")));
+        try {
+            mkdirSync(join(repo, ".git"));
+            writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
+            const there = new PermissionChecker(() => settings, repo, () => undefined, () => true);
+            const at = (cmd: string) => there.check(T("Bash"), bash(cmd), "bypassPermissions", repo);
+            for (const cmd of ["git checkout HEAD~1 src/app.ts && git commit -am revert && git push", "git checkout feat src/app.ts && git push", "git checkout -p feat && git push", "git checkout README.md && git push", "git checkout feat -- a.ts && git push", "git -C ../other checkout feat && git push", `git p''ush origin main`, `git "pu"sh`]) {
+                expect([cmd, at(cmd)]).toEqual([cmd, expect.objectContaining({ behavior: "ask", dangerous: true, reason: expect.stringContaining("pushes to the default branch") })]);
+            }
+            // A branch moved to that isn't known to be one is no reason to stop asking either: what's checked out is main.
+            expect(at("git checkout feat && git push")).toMatchObject({ behavior: "ask", dangerous: true });
+            expect(at("git push origin feat")).toMatchObject({ behavior: "allow" });
+        } finally {
+            rmSync(repo, { recursive: true, force: true });
+        }
     });
 
     test("a push whose branch can't be worked out is asked about as what it may be, and isn't one of the few that can't be allowed for the session", () => {

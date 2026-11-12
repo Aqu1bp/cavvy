@@ -9,7 +9,7 @@
 // runs from a server's install. Changing that would take replacing the program the user starts, which is past
 // anything asking about commands can guard.
 
-import { realpathSync } from "fs";
+import { lstatSync, realpathSync } from "fs";
 import { homedir } from "os";
 import { join, sep } from "path";
 
@@ -21,11 +21,29 @@ const real = (p: string) => {
     }
 };
 
-/** Whether `program` is in the server install under `home` (through links: the service runs `current/cavvy`). */
+/** A folder that is one, not a link to one: a link could name any folder as the server's install. */
+const folder = (p: string) => {
+    try {
+        return lstatSync(p).isDirectory();
+    } catch {
+        return false;
+    }
+};
+
+/**
+ * Whether `program` is in the server install under `home`: under <home>/.cavvy/server/builds, each of those a folder
+ * of its own. The program may be reached through links (the service runs `current/cavvy`); the install may not.
+ */
 export function inServerInstall(program: string, home: string): boolean {
-    const builds = real(join(home, ".cavvy", "server", "builds"));
+    const base = real(home);
     const p = real(program);
-    return builds !== undefined && p !== undefined && p.startsWith(builds + sep);
+    if (base === undefined || p === undefined) return false;
+    let at = base;
+    for (const part of [".cavvy", "server", "builds"]) {
+        at = join(at, part);
+        if (!folder(at)) return false;
+    }
+    return p.startsWith(at + sep);
 }
 
 let known: boolean | undefined;

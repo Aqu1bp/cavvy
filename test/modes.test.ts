@@ -125,6 +125,24 @@ describe("the mode sessions start in", () => {
         expect(inServerInstall(join(server, "builds", "0123456789ab", "out"), home)).toBe(false);
         // No install at all, as on the user's own computer.
         expect(inServerInstall(program, join(home, "elsewhere"))).toBe(false);
+        // Nor a link standing in for the install's folders, naming somewhere the user's own Cavvy is.
+        const other = join(home, "other");
+        mkdirSync(join(other, "apps"), { recursive: true });
+        writeFileSync(join(other, "apps", "cavvy"), "");
+        for (const [link, target, prog] of [
+            [join(other, ".cavvy", "server", "builds"), join(other, "apps"), join(other, "apps", "cavvy")],
+            [join(home, "linked", ".cavvy", "server"), join(home, ".cavvy", "server"), program],
+            [join(home, "whole", ".cavvy"), join(home, ".cavvy"), program],
+        ] as const) {
+            const base = link.split("/.cavvy")[0]!;
+            mkdirSync(join(link, ".."), { recursive: true });
+            symlinkSync(target, link);
+            expect([link, inServerInstall(prog, base)]).toEqual([link, false]);
+        }
+        // A home that is itself reached through a link is still a home.
+        symlinkSync(home, join(home, "..", `home-link-${process.pid}`));
+        expect(inServerInstall(program, join(home, "..", `home-link-${process.pid}`))).toBe(true);
+        rmSync(join(home, "..", `home-link-${process.pid}`), { force: true });
         // This test runs from source with nothing standing in for a server's program: not a server.
         const { onServer, forgetServerRole } = await import("../src/servers/role");
         forgetServerRole();
