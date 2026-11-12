@@ -771,6 +771,10 @@ test("a task an old live process lists after the session switched accounts keeps
     // The background sub-agent ends; then, before its report turn, the same process lists another task for a while.
     process.env.FAKE_SCENARIO = "agent-background";
     process.env.FAKE_LATE_TASK = "1500";
+    // A task that leaves Claude Code's list ends after a grace period; 3 s of it would put this test at its 5 s limit.
+    const { liveTiming } = await import("../src/backends/claude-live");
+    const unlistedMs = liveTiming.unlistedMs;
+    liveTiming.unlistedMs = 100;
     const cwd = realpathSync(tempDir("account-old-process-"));
     const session = Session.create(cwd, { persist: false });
     session.setAccount("claude-code", selected.id);
@@ -791,6 +795,7 @@ test("a task an old live process lists after the session switched accounts keeps
         expect(existsSync(selected.folder)).toBe(false);
     } finally {
         delete process.env.FAKE_LATE_TASK;
+        liveTiming.unlistedMs = unlistedMs;
         engine.runtimes.clear();
         await agent.dispose();
         await (client as any).shutdown?.();
