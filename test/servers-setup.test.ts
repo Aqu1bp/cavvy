@@ -522,6 +522,31 @@ describe("the terminal's commands", () => {
         }
     });
 
+    test("gui --server: the terminal window closing signs out too", async () => {
+        const proc = spawnCavvy(A, ["gui", "--server", "box", "--no-open"]);
+        let said = "";
+        void (async () => {
+            const d = new TextDecoder();
+            for await (const chunk of proc.stderr) said += d.decode(chunk, { stream: true });
+        })();
+        try {
+            await until("the link", () => /Open \(one-time link\): http/.test(said));
+            const m = /http:\/\/127\.0\.0\.1:(\d+)\/#code=([\w-]+)/.exec(said)!;
+            const token = await exchangeCode(Number(m[1]), m[2]!);
+            proc.kill("SIGHUP");
+            expect(await proc.exited).toBe(0);
+            const other = new ServerLink(entry);
+            await other.start();
+            try {
+                expect(await new Client(other.localPort!, token).opened.promise).toBe(false);
+            } finally {
+                await other.stop();
+            }
+        } finally {
+            proc.kill("SIGKILL");
+        }
+    });
+
     test("remove: it's forgotten here, this machine is signed out there, and the line to put it back is given", async () => {
         const r = await cavvy("servers", "remove", "box");
         expect(r).toEqual({ code: 0, out: "Removed box.\nTo put it back: cavvy servers add box dev@box.example\n", err: "" });
@@ -672,6 +697,36 @@ describe("a server that stopped badly", () => {
         const r = await setUpServer(entry, { source: noGui, confirmRestart: async () => true });
         expect(r.status.pid).toBe(before!.pid);
         expect(r.replaced).toBeUndefined();
+    });
+});
+
+describe("changing what a server runs", () => {
+    test("no room for a build is said before one is made", async () => {
+        fake.diskFree(120);
+        try {
+            const d = source("dddddddddddd-4");
+            await expect(setUpServer(entry, { source: d, confirmRestart: async () => true })).rejects.toThrow("There isn't room on box.example for Cavvy: it needs 400 MB free, and there are 120.");
+            expect(d.built).toBe(0);
+            expect(await remoteStatus(entry)).toMatchObject({ running: true, build: B });
+        } finally {
+            fake.diskFree();
+        }
+    });
+
+    test("one at a time; a change that was cut off doesn't hold up the next", async () => {
+        const marker = join(serverDir, "applying");
+        // Another change under way: its shell is alive (this test's own pid stands in).
+        mkdirSync(marker);
+        writeFileSync(join(marker, "pid"), String(process.pid));
+        await expect(setUpServer(entry, { source: source(A), confirmRestart: async () => true })).rejects.toThrow("Cavvy on box is being updated right now. Try again in a minute.");
+        expect(await remoteStatus(entry)).toMatchObject({ running: true, build: B });
+        // One that was killed part way: nothing has that pid any more.
+        const gone = Bun.spawn(["true"]);
+        await gone.exited;
+        writeFileSync(join(marker, "pid"), String(gone.pid));
+        const r = await setUpServer(entry, { source: source(A), confirmRestart: async () => true });
+        expect(r.status).toMatchObject({ running: true, build: A });
+        expect(existsSync(marker)).toBe(false);
     });
 });
 

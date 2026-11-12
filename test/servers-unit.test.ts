@@ -16,7 +16,7 @@ const { draftServer, saveServer, listServers, removeServer, requireServer, thisD
 const { compareBuilds, SERVER_BUN, thisBuild } = await import("../src/servers/build");
 const { parseFacts, targetFor, checkRoom } = await import("../src/servers/remote");
 const { MachineSignIns } = await import("../src/servers/host");
-const { planCopy, portableMcpServer, portableSettings, describeCopy, countCopied } = await import("../src/servers/copy");
+const { planCopy, portableMcpServer, portableRule, portableSettings, describeCopy, describeLeft, countCopied } = await import("../src/servers/copy");
 const { checkLines, parseServerSpec } = await import("../src/servers/cli");
 const { UNIT } = await import("../src/servers/service");
 import type { ServerEntry } from "../src/servers/store";
@@ -151,7 +151,18 @@ describe("what an ssh failure means", () => {
             process.env.SSH_AUTH_SOCK = sock;
             const e = sshFailure(denied, { ...entry, identityFile: locked });
             expect([e.kind, e.message]).toEqual(["auth", "box.example refused this key."]);
+
+            // The agent asked is the one ssh would use for that server, which its config may name (a password manager's).
+            delete process.env.SSH_AUTH_SOCK;
+            expect(sshFailure(denied, { ...entry, identityFile: locked }).kind).toBe("passphrase");
+            fake.settings([`identityagent ${sock}`]);
+            expect(sshFailure(denied, { ...entry, identityFile: locked }).kind).toBe("auth");
+            // And where the config says to use none, a key in the usual agent doesn't count.
+            process.env.SSH_AUTH_SOCK = sock;
+            fake.settings(["identityagent none"]);
+            expect(sshFailure(denied, { ...entry, identityFile: locked }).kind).toBe("passphrase");
         } finally {
+            fake.settings();
             if (before === undefined) delete process.env.SSH_AUTH_SOCK;
             else process.env.SSH_AUTH_SOCK = before;
             agent.kill();
@@ -166,6 +177,8 @@ describe("trusting a server's key", () => {
         fake.settings(["userknownhostsfile /dev/null"]);
         try {
             const key = await offeredHostKey(e);
+            // The look at the key runs Cavvy's own command too, whatever the user's config would run there.
+            expect(fake.calls().findLast((c) => c.opts.StrictHostKeyChecking === "no")!.opts).toMatchObject({ RemoteCommand: "none", PreferredAuthentications: "none" });
             const trusted = trustHostKey(e, key);
             expect(trusted.knownHostsFile).toBe(ownKnownHosts());
             expect(readFileSync(ownKnownHosts(), "utf-8").trim().split("\n")).toEqual(key.lines);
@@ -413,6 +426,47 @@ describe("what the one-time copy carries", () => {
         } as any);
         expect(out).toEqual({ model: "anthropic:claude", permissions: { allow: ["Bash(npm test:*)"] }, mcpServers: { fine: { url: "https://mcp.example.com/sse" } } } as any);
         expect(JSON.stringify(out)).not.toMatch(/abc123|hunter2|Bearer|sk-/);
+    });
+
+    test("only what can't be holding a key goes: a key needn't look like one, so nothing is searched for one", () => {
+        // An MCP server is copied for being a plain public address, or one package to run. These are neither.
+        for (const c of [
+            { url: "https://mcp.zapier.com/api/mcp/s/Zx81kq0TtR7vLm2Qp9aB/mcp" },
+            { url: "https://mcp.pipedream.net/3f2a9c1e-77b4-4e0d-9a51-0c2d6e8f1a23/github" },
+            { url: "https://mcp.example.com/sse#token=abc123" },
+            { command: "npx", args: ["mcp-remote", "https://user:hunter2@mcp.example.com/sse"] },
+            { command: "npx", args: ["-y", "some-mcp", "-k", "abc123secret"] },
+            { command: "npx", args: ["-y", "some-mcp", "hunter2"] },
+            { command: "docker", args: ["run", "-i", "-e", "TOKEN", "ghcr.io/example/mcp"] },
+            { command: "npx", args: [] },
+            { command: "sh", args: ["-c", "TOKEN=abc npx some-mcp"] },
+            // A program of this machine's, or a file on it.
+            { command: "node", args: ["server.js"] },
+            { command: "my-mcp", args: ["serve"] },
+            { command: "pnpm", args: ["some-mcp"] },
+        ]) expect(portableMcpServer(c as any)).toBe(false);
+        for (const c of [
+            { url: "https://mcp.example.com/sse" },
+            { url: "https://fetch.example.com/mcp" },
+            { url: "wss://api.example.org/v1/mcp" },
+            { command: "npx", args: ["-y", "@modelcontextprotocol/server-memory"] },
+            { command: "uvx", args: ["mcp-server-git"] },
+            { command: "bunx", args: ["some-mcp@1.2.3"] },
+            { command: "pnpm", args: ["dlx", "some-mcp"] },
+            { command: "pipx", args: ["run", "mcp-server-fetch"] },
+        ]) expect(portableMcpServer(c as any)).toBe(true);
+
+        // A rule is copied for being plain words: no options, assignments, addresses or quotes, where a key would sit.
+        for (const r of ['Bash(curl -H "Authorization: Bearer abc123def456ghi789jkl" https://api.example.com/v1:*)', "Bash(curl -u admin:hunter2 https://ci.example.com:*)", "Bash(PGPASSWORD=hunter2 psql -h db:*)", "Bash(mysql -pS3cret:*)", "Bash(ssh admin@host:*)", "WebFetch(https://user:pw@example.com)", "not a rule("]) expect(portableRule(r)).toBe(false);
+        for (const r of ["Edit", "Bash(npm run lint:*)", "Bash(git push origin main:*)", "Read(./secrets/**)", "Read(~/notes/*.md)", "WebFetch(domain:example.com)", "mcp__docs__search"]) expect(portableRule(r)).toBe(true);
+
+        // What stays is counted, so the user is told.
+        const left = { servers: [] as string[], rules: 0 };
+        portableSettings({ permissions: { allow: ["Edit", "Bash(curl -u admin:hunter2 https://ci.example.com:*)"], deny: ["Bash(PGPASSWORD=x psql:*)"] }, mcpServers: { docs: { url: "https://mcp.example.com/sse" }, zap: { url: "https://mcp.zapier.com/api/mcp/s/Zx81kq0TtR7vLm2Qp9aB/mcp" }, local: { command: "node", args: ["server.js"] } } } as any, left);
+        expect(left).toEqual({ servers: ["zap", "local"], rules: 2 });
+        expect(describeLeft(left)).toBe("2 MCP servers and 2 permission rules");
+        expect(describeLeft({ servers: ["x"], rules: 0 })).toBe("1 MCP server");
+        expect(describeLeft({ servers: [], rules: 0 })).toBe("");
     });
 
     test("memory, skills and commands go; keys, and files that read like they hold one, stay", () => {

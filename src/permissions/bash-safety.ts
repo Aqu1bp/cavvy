@@ -1420,6 +1420,28 @@ export function shellWord(w: string): string {
 /** The argv checks of dangerousReason, for each program the command runs (through env, exec, nohup…), by any name it's found by. */
 const HOST_CONTROL = "controls who can connect to this server";
 
+/** What a word with one brace list stands for: `{host,}` is `host` and nothing; `a{b,c}d` is `abd` and `acd`. */
+function braceWords(word: string): string[] {
+    const m = /^([^{}]*)\{([^{}]*)\}([^{}]*)$/.exec(word);
+    return m ? m[2]!.split(",").map((alt) => m[1] + alt + m[3]) : [word];
+}
+
+/** Does a word name the folder a server keeps its sign-ins in (`.cavvy/server`), written out or as a pattern that matches it? */
+function namesServerFolder(word: string): boolean {
+    const m = /(?:^|\/)\.(?:cavvy|harness)\/([^/]+)(?:\/|$)/.exec(word);
+    if (!m) return false;
+    const segment = m[1]!;
+    if (segment === "server") return true;
+    if (!/[*?[]/.test(segment)) return false;
+    // The pattern as the shell would match it against "server".
+    const re = segment.replace(/[.+^${}()|\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+    try {
+        return new RegExp(`^${re}$`).test("server");
+    } catch {
+        return true;
+    }
+}
+
 function dangerousArgv(argv0: string[], depth: number): string | undefined {
     for (const { argv, at } of runLevels(argv0)) {
         // What env -S's string runs: checked as a command line of its own, so the patterns see it too.
@@ -1433,9 +1455,16 @@ function dangerousArgv(argv0: string[], depth: number): string | undefined {
         // answer its own prompts (src/servers/host.ts). Read from the words as the shell would run them, so quoting one
         // doesn't hide it; everything under `host` but the commands that only look counts, a word still to be worked
         // out (`$verb`) included.
-        if (runs(prog, "cavvy", "harness") && (args[0] === "host" || /[$`]/.test(args[0] ?? "")) && !["", "status", "check", "version", "-h", "--help"].includes(args[1] ?? "")) {
+        // A program still to be worked out (`$c host pair`) counts as Cavvy when what follows is `host`; and `{host,}`
+        // is `host` once the shell has expanded it.
+        const first = args[0] ?? "";
+        const isHost = first === "host" || /[$`]/.test(first) || (/[{}]/.test(first) && braceWords(first).includes("host"));
+        if ((runs(prog, "cavvy", "harness") || (/[$`]/.test(prog ?? "") && first === "host")) && isHost && !["", "status", "check", "version", "-h", "--help"].includes(args[1] ?? "")) {
             return HOST_CONTROL;
         }
+        // The server's own folder, in the words as the shell has unquoted them (`~/.cavvy/'server'/…`), and behind a
+        // pattern that would match it (`~/.cavvy/serve?/…`).
+        if (argv.some(namesServerFolder)) return "touches Cavvy credential store";
         if (runs(prog, "rm") && opts.some((a) => /^-[a-zA-Z]*[rR]/.test(a) || a === "--recursive") && operands.some((o) => criticalTarget(o))) {
             return "recursive delete of a root, home or parent directory";
         }

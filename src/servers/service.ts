@@ -128,13 +128,23 @@ echo "user=$(id -un)"
 const APPLY = `${LIB}
 new="$1"
 [ -x "$d/builds/$new/cavvy" ] || { echo "no build $new there" >&2; exit 43; }
-# One machine at a time: two changing what runs would each undo the other. A folder left by one that was cut off
-# stops counting after ten minutes.
+# Carried through once begun, whatever becomes of the connection that asked: its closing, or nobody left to read
+# what's printed, mustn't stop this between stopping one build and starting another.
+trap '' HUP PIPE
+# One at a time: two changing what runs would each undo the other. The folder names the shell doing it; one whose
+# shell is gone (it was killed) doesn't count.
 if ! mkdir "$d/applying" 2>/dev/null; then
-    if [ -n "$(find "$d/applying" -maxdepth 0 -mmin +10 2>/dev/null)" ]; then rmdir "$d/applying" 2>/dev/null; mkdir "$d/applying" 2>/dev/null || exit 48
-    else exit 48; fi
+    other=$(cat "$d/applying/pid" 2>/dev/null)
+    if [ -n "$other" ] && kill -0 "$other" 2>/dev/null; then exit 48; fi
+    # No pid yet: another began this moment.
+    if [ -z "$other" ] && [ -z "$(find "$d/applying" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then exit 48; fi
+    rm -rf "$d/applying"
+    mkdir "$d/applying" 2>/dev/null || exit 48
 fi
-trap 'rmdir "$d/applying" 2>/dev/null' EXIT
+echo $$ > "$d/applying/pid"
+trap 'rm -rf "$d/applying"' EXIT
+# A shell that dies of a signal skips that (dash does): ended by one, it leaves the ordinary way.
+trap 'exit 130' INT TERM
 prev=$(current || true)
 stop
 rm -f "$d/stopped"
@@ -200,13 +210,17 @@ c=$("$bin" host check) || exit 1
 echo "check=$c"
 `;
 
-/** Removes builds no longer wanted: every one but the current, the one before it ($1) and the one named $2. */
+/**
+ * Removes builds no longer wanted: every one but the current, the one before it ($1), the one named $2, and any
+ * put there in the last hour (another machine may have just copied its own, and not started it yet).
+ */
 const PRUNE = `${LIB}
 cur=$(current || true)
 for b in "$d"/builds/*/; do
     [ -d "$b" ] || continue
     n=$(basename "$b")
     case "$n" in "$cur"|"$1"|"$2") continue ;; esac
+    [ -n "$(find "$b" -maxdepth 0 -mmin +60 2>/dev/null)" ] || continue
     rm -rf "$b"
 done
 exit 0
@@ -323,7 +337,7 @@ export async function applyBuild(e: ServerEntry, build: string, signal?: AbortSi
     const r = await ssh(e, remoteSh(timed(APPLY), [build]), { timeoutMs: (serviceTiming.startWaitSeconds * 2 + 90) * 1000, signal });
     const status = readStatus(value(r.stdout, "status"));
     if (r.code === 0 && status) return status;
-    if (r.code === 48) throw new ServerError(`Another machine is setting ${e.name} up right now. Try again in a minute.`);
+    if (r.code === 48) throw new ServerError(`Cavvy on ${e.name} is being updated right now. Try again in a minute.`);
     if (r.code === 44) throw new UpdateFailed(`Cavvy didn't start on ${hostOf(e)}, so it's back on the version before.`, status);
     const why = said(r.stderr);
     throw new UpdateFailed(`Cavvy didn't start on ${hostOf(e)}${why ? `: ${why}` : "."}`);

@@ -7,7 +7,7 @@ import { loadScope } from "../config/settings";
 import { childEnv } from "../util/env";
 import { thisBuild, UNKNOWN_BUILD } from "./build";
 import { ServerLink, type LinkState } from "./connect";
-import { countCopied, describeCopy, planCopy, sendCopy } from "./copy";
+import { countCopied, describeCopy, describeLeft, planCopy, sendCopy } from "./copy";
 import type { HostCheck, HostStatus } from "./host";
 import { ensureBuildThere, ServerBusy, setUpServer, type SetupProgress, type SetupResult } from "./install";
 import { probeServer, remoteBuildDir } from "./remote";
@@ -70,7 +70,7 @@ async function ask(title: string, header: string[], yes: string, no: string): Pr
  * Runs it, and if the server's key isn't known yet, shows the key and asks; once trusted, runs it again. Hands
  * back the server as it's now reached: trusting can add where its key is kept, which a saved server keeps.
  */
-async function withTrust<T>(e: ServerEntry, run: (e: ServerEntry) => Promise<T>, o: { saved?: boolean } = {}): Promise<{ entry: ServerEntry; value: T }> {
+async function withTrust<T>(e: ServerEntry, run: (e: ServerEntry) => Promise<T>, o: { saved?: boolean; onTrusted?: (entry: ServerEntry) => void } = {}): Promise<{ entry: ServerEntry; value: T }> {
     try {
         return { entry: e, value: await run(e) };
     } catch (first) {
@@ -81,6 +81,8 @@ async function withTrust<T>(e: ServerEntry, run: (e: ServerEntry) => Promise<T>,
         if (!(await ask(`Trust ${host}?`, ["This machine hasn't connected to it before. Its key:", ...key.fingerprints.map((f) => `  ${f}`)], "Trust", "Cancel"))) throw new ServerError("Not trusted, so not connected.");
         const entry = trustHostKey(e, key);
         if (o.saved && entry !== e) saveServer(entry);
+        // Told before it's used: whatever the run after this does, even fail, the caller has the server as it's now reached.
+        o.onTrusted?.(entry);
         return { entry, value: await run(entry) };
     }
 }
@@ -206,6 +208,9 @@ async function offerCopy(e: ServerEntry, wanted: boolean | undefined) {
         // What the server took, which isn't always what was offered: it keeps what it has.
         const took = describeCopy(countCopied(await sendCopy(e, plan)));
         err(took ? `Copied your ${took}.` : `${e.name} already had them.`);
+        // Not in silence: they're in the settings here, and the user would look for them there.
+        const left = describeLeft(plan.left);
+        if (left) err(`Not copied, since they could hold a key or need this machine: ${left}.`);
     } catch (x) {
         if (!report(x)) throw x;
     } finally {
@@ -223,7 +228,7 @@ async function add(args: string[]): Promise<number> {
     err(`Connecting to ${hostOf(e)}…`);
     let setup: SetupResult | undefined;
     try {
-        ({ entry: e, value: setup } = await withTrust(e, (entry) => setUpServer(entry, setupOptions(entry))));
+        ({ value: setup } = await withTrust(e, (entry) => setUpServer(entry, setupOptions(entry)), { onTrusted: (entry) => (e = entry) }));
     } catch (x) {
         // It's there and working, on its own version: added, and updated another time.
         if (!(x instanceof ServerBusy)) throw x;
@@ -395,8 +400,7 @@ export async function runOnServer(spec: string, forwarded: string[]): Promise<nu
         const env = TERMINAL_ENV.filter((k) => process.env[k]).map((k) => `${k}=${shQuote(process.env[k]!)}`);
         const command = `env ${["CAVVY_NO_KEYCHAIN=1", ...env].join(" ")} ${remoteSh(RUN, [build, folder, ...forwarded])}`;
         // Asked first without the terminal, so a server that can't be reached, or has no build yet, is said in plain words.
-        const asked = await withTrust(e, (entry) => ssh(entry, remoteSh(`[ -x "${remoteBuildDir("$1")}/cavvy" ] || exit ${NO_BUILD}`, [build]), { timeoutMs: 45_000 }), { saved: true });
-        e = asked.entry;
+        const asked = await withTrust(e, (entry) => ssh(entry, remoteSh(`[ -x "${remoteBuildDir("$1")}/cavvy" ] || exit ${NO_BUILD}`, [build]), { timeoutMs: 45_000 }), { saved: true, onTrusted: (entry) => (e = entry) });
         if (asked.value.code === NO_BUILD) {
             err(`Setting up Cavvy on ${e.name}…`);
             await ensureBuildThere(e, { progress: progress() });
@@ -477,7 +481,7 @@ export async function guiOnServer(name: string, o: { open: boolean }): Promise<n
         };
         let up: Awaited<ReturnType<typeof connect>>;
         try {
-            ({ entry: e, value: up } = await withTrust(e, connect, { saved: true }));
+            ({ value: up } = await withTrust(e, connect, { saved: true, onTrusted: (entry) => (e = entry) }));
         } catch (x) {
             if (!(x instanceof NotSetUp)) throw x;
             err(`Setting up Cavvy on ${e.name}…`);
@@ -487,6 +491,8 @@ export async function guiOnServer(name: string, o: { open: boolean }): Promise<n
         const quit = () => void up.link.stop({ signOut: true });
         process.on("SIGINT", quit);
         process.on("SIGTERM", quit);
+        // The terminal window closing ends it too, and signs out the same.
+        process.on("SIGHUP", quit);
         const failed = await up.over;
         // What this connection signed in stops working with it: a page left open has nothing good for whatever
         // listens on its port next.

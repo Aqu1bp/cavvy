@@ -30,6 +30,8 @@ in="$b/.incoming-$id-$$"
 find "$b" -maxdepth 1 -name '.incoming-*' -mmin +30 -exec rm -rf {} + 2>/dev/null || true
 mkdir "$in"
 trap 'rm -rf "$in"' EXIT
+# A shell that dies of a signal skips that (dash does): ended by one, it leaves the ordinary way.
+trap 'exit 1' HUP INT TERM
 tar -xzf - -C "$in"
 got=$( (sha256sum "$in/cavvy" 2>/dev/null || shasum -a 256 "$in/cavvy") | cut -d' ' -f1)
 if [ "$got" != "$2" ]; then echo "expected $2, got $got" >&2; exit 41; fi
@@ -147,6 +149,8 @@ export async function setUpServer(e: ServerEntry, o: SetupOptions = {}): Promise
     };
     // Another build is certain to restart it: asked before anything is built or copied for nothing.
     if (!settled) await mayRestart();
+    // And no room for one is said before it's built, not after.
+    if (!facts.builds.includes(id)) checkRoom(facts, e);
     const build = !facts.builds.includes(id) || wantsGui ? await source.build(target, { onStep: o.progress?.step, signal: o.signal }) : undefined;
     const send = build !== undefined && (!facts.builds.includes(id) || (build.gui && !facts.guiBuilds.includes(id)));
     // The GUI didn't build here after all: what's there is as good as it gets, and restarting it would change nothing.
@@ -166,6 +170,7 @@ export async function ensureBuildThere(e: ServerEntry, o: { progress?: SetupProg
     const target = targetFor(facts, e);
     const source = o.source ?? localSource();
     if (facts.builds.includes(source.id)) return;
+    checkRoom(facts, e);
     await sendBuild(e, await source.build(target, { onStep: o.progress?.step, signal: o.signal }), facts, o);
     // Each change here makes another build: the ones before it go, but for what runs there.
     void pruneBuilds(e, facts.current, source.id);

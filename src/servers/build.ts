@@ -161,9 +161,10 @@ export async function serverBuild(target: LinuxTarget, o: { onStep?: (text: stri
     const bundle = join(dir, "bundle.tar.gz");
     if (existsSync(meta) && existsSync(bundle)) {
         try {
-            const m = JSON.parse(readFileSync(meta, "utf-8")) as { sha256?: unknown; gui?: unknown };
-            // One made before the GUI was built here is made again with it.
-            if (typeof m.sha256 === "string" && /^[0-9a-f]{64}$/.test(m.sha256) && (m.gui === true || !guiAvailable())) return { id, target, bundle, bundleBytes: statSync(bundle).size, sha256: m.sha256, gui: m.gui === true };
+            const m = JSON.parse(readFileSync(meta, "utf-8")) as { sha256?: unknown; gui?: unknown; guiFailed?: unknown };
+            // One made before the GUI was built here is made again with it. Not one whose GUI was tried and didn't
+            // build: this build's name covers the GUI's sources, so it would fail the same way again.
+            if (typeof m.sha256 === "string" && /^[0-9a-f]{64}$/.test(m.sha256) && (m.gui === true || m.guiFailed === true || !guiAvailable())) return { id, target, bundle, bundleBytes: statSync(bundle).size, sha256: m.sha256, gui: m.gui === true };
         } catch {
             // made again below
         }
@@ -191,12 +192,14 @@ export async function serverBuild(target: LinuxTarget, o: { onStep?: (text: stri
 
         const guiDist = join(root, "gui", "dist");
         let gui = false;
+        let guiFailed = false;
         if (existsSync(join(root, "gui", "node_modules"))) {
             o.onStep?.("Building its GUI…");
             const g = await run([bun, "run", "build"], join(root, "gui"), o.signal);
             if (!g.ok && o.signal?.aborted) throw new ServerError("Stopped.");
             gui = g.ok && existsSync(join(guiDist, "index.html"));
             // Said, not swallowed: the build goes without it, and `gui --server` would be where it's missed.
+            guiFailed = !gui;
             if (!gui) o.onStep?.(`The GUI didn't build, so the server gets Cavvy without it:\n${g.out}`);
         } else gui = existsSync(join(guiDist, "index.html"));
         if (gui) cpSync(guiDist, join(stage, "gui"), { recursive: true });
@@ -211,7 +214,7 @@ export async function serverBuild(target: LinuxTarget, o: { onStep?: (text: stri
         rmSync(dir, { recursive: true, force: true });
         mkdirSync(dir, { mode: 0o700 });
         renameSync(out, bundle);
-        writeFileSync(meta, JSON.stringify({ sha256, gui }) + "\n");
+        writeFileSync(meta, JSON.stringify({ sha256, gui, ...(guiFailed ? { guiFailed } : {}) }) + "\n");
         prune(id);
         return { id, target, bundle, bundleBytes: statSync(bundle).size, sha256, gui };
     } finally {

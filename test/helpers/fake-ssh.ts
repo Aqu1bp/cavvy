@@ -27,6 +27,8 @@ export interface FakeServer {
     restoreHostKey(): void;
     /** What `ssh -G` says about the server, as lines ("userknownhostsfile /dev/null"); none: the usual. */
     settings(lines?: string[]): void;
+    /** The pretend server's disk has this many MB free (undefined: as this machine's has). */
+    diskFree(mb?: number): void;
     /** Commands' connections are lost this long after they start (undefined: they aren't). */
     dropSessions(afterMs?: number): void;
     /** With `systemd`: what was asked of the pretend service manager, in order ("enable cavvy.service"). */
@@ -113,6 +115,10 @@ export function fakeSsh(o: { systemd?: boolean } = {}): FakeServer {
         settings(lines) {
             behavior.settings = lines;
             save();
+        },
+        diskFree(mb) {
+            if (mb === undefined) rmSync(join(dir, "bin", "df"), { force: true });
+            else shim("df", `echo "Filesystem 1024-blocks Used Available Capacity Mounted on"\necho "/dev/fake 100000000 1 ${mb * 1024} 1% /"`);
         },
         dropSessions(afterMs) {
             behavior.dropSessionAfterMs = afterMs;

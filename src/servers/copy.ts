@@ -8,9 +8,11 @@
 //     that reads like it has one in it;
 //   - hooks and the status line: they're commands, and would run on the server;
 //   - the permission mode: a server decides its own;
-//   - MCP servers that name a file or an address on this machine or its
-//     network, or that have a key in their address or arguments. Ones started
-//     by a bare command (`npx …`) or at a public address do go.
+//   - permission rules and MCP servers, unless they're of a shape that can't
+//     hold a key: a rule of plain words with no options in it; an MCP server
+//     that's only a package to run (`npx -y @scope/server`) or a public
+//     address with a plain path. A key can sit anywhere in the others, so
+//     they aren't searched for one: they stay, and the user is told how many.
 //
 // Nothing already on the server is replaced: a file that's there is kept.
 
@@ -51,56 +53,110 @@ const SETTINGS_KEYS = [
     "worktree",
 ] as const satisfies readonly (keyof Settings)[];
 
-const looksLocal = (s: string) => /^(~|\.{1,2}(\/|$)|\/)/.test(s) || s.includes(homedir());
-
-/** An option whose value is a credential, by its name: `--api-key`, `--token=…`, `-H Authorization: …`. */
-const SECRET_OPTION = /^-{1,2}[\w-]*(key|token|secret|password|passwd|auth|credential|bearer|header)[\w-]*(=|$)|^-H$/i;
-
 /** A host only this machine, or its own network, can reach. */
 function localHost(host: string): boolean {
     const h = host.toLowerCase().replace(/^\[|\]$/g, "");
-    return h === "localhost" || h === "0.0.0.0" || h === "::" || h === "::1" || h.endsWith(".local") || h.endsWith(".localhost") || !h.includes(".") || /^(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h) || /^f[cde]/.test(h);
+    // An address written out in IPv6: its private and link-local ranges. (A name can start with these letters too.)
+    if (h.includes(":")) return h === "::" || h === "::1" || /^f[cde]/.test(h);
+    return h === "localhost" || h === "0.0.0.0" || h.endsWith(".local") || h.endsWith(".localhost") || !h.includes(".") || /^(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h);
 }
 
 /**
- * An MCP server that would work from another machine as it's written, and
- * holds nothing secret: no environment or headers, and nothing in its
- * address or arguments where a key goes (a sign-in in the address, a query,
- * an option named for a key) or that reads like one.
+ * A word that's plainly a name: letters first, then letters, a few digits, and
+ * dots, dashes or underscores between. Not something made up of letters and
+ * digits at random, which is what a key or a token in an address looks like.
+ */
+function plainWord(s: string): boolean {
+    return s.length <= 40 && /^[A-Za-z][A-Za-z0-9]*([._-][A-Za-z0-9]+)*$/.test(s) && (s.match(/\d/g)?.length ?? 0) <= 3;
+}
+
+/** A package as a runner takes it: `name`, `@scope/name`, either with `@version`. */
+function packageSpec(s: string): boolean {
+    const m = /^(@[a-z0-9][a-z0-9._-]*\/)?([a-z0-9][a-z0-9._-]*)(@[A-Za-z0-9][A-Za-z0-9._-]*)?$/.exec(s);
+    return m !== null && plainWord(m[2]!.replace(/^[0-9]+/, "x")) && s.length <= 100;
+}
+
+/**
+ * Programs that fetch a package and run it, and the word each needs first to do that. Only these: any other program
+ * (`node server.js`, `docker run …`) runs what's on this machine, or takes arguments that can't be told from a key.
+ */
+const RUNNERS: Record<string, string | undefined> = { npx: undefined, bunx: undefined, uvx: undefined, pnpm: "dlx", yarn: "dlx", pipx: "run" };
+/** Options a runner takes that say nothing but how to run: none of them has a value. */
+const RUNNER_FLAGS = new Set(["-y", "--yes", "-q", "--quiet", "--silent"]);
+
+/**
+ * An MCP server whose settings can't be holding a key, and that would work
+ * from another machine as written. Told by what it IS, not by looking for
+ * keys in it (a key can sit anywhere: in an address's path, after a short
+ * option, as a password in an address given as an argument):
+ *   - an address that's only a public host and a path of plain words; or
+ *   - a package runner (`npx`, `uvx`, …), its own flags, and one package.
+ * No environment, headers, folder or secret of its own either. Anything else
+ * stays, and the user is told which (CopyPlan.left).
  */
 export function portableMcpServer(c: McpServerConfig): boolean {
     if (c.plugin || c.env || c.headers || c.cwd || c.oauth?.clientSecret) return false;
     if (matchesSecretPattern(JSON.stringify(c))) return false;
     if (c.url) {
-        if (c.command) return false;
+        if (c.command || c.args?.length) return false;
         let u: URL;
         try {
             u = new URL(c.url);
         } catch {
             return false;
         }
-        return /^(https?|wss?):$/.test(u.protocol) && !u.username && !u.password && !u.search && !localHost(u.hostname);
+        if (!/^(https?|wss?):$/.test(u.protocol) || u.username || u.password || u.search || u.hash || localHost(u.hostname)) return false;
+        return u.pathname.split("/").filter(Boolean).every(plainWord);
     }
-    if (!c.command || /[/\\]/.test(c.command) || looksLocal(c.command)) return false;
-    return !(c.args ?? []).some((a) => looksLocal(a) || SECRET_OPTION.test(a) || /(key|token|secret|password)=/i.test(a));
+    if (!c.command || !Object.hasOwn(RUNNERS, c.command)) return false;
+    const first = RUNNERS[c.command];
+    const args = first === undefined ? (c.args ?? []) : c.args?.[0] === first ? c.args.slice(1) : undefined;
+    if (!args?.length) return false;
+    return args.slice(0, -1).every((a) => RUNNER_FLAGS.has(a)) && packageSpec(args.at(-1)!);
 }
 
-/** The settings a server gets: what's safe to carry, and nothing else. */
-export function portableSettings(s: Settings): Settings {
+/**
+ * A permission rule that can't be holding a key: a tool's name alone, or a
+ * tool with words in plain characters, none of them an option (`-u …`), an
+ * assignment (`TOKEN=…`), an address or anything quoted.
+ */
+export function portableRule(rule: string): boolean {
+    if (matchesSecretPattern(rule)) return false;
+    const m = /^([A-Za-z][A-Za-z0-9_-]*)(?:\((.*)\))?$/s.exec(rule);
+    if (!m) return false;
+    const body = m[2];
+    if (body === undefined) return true;
+    if (!/^[A-Za-z0-9 ._/*:~-]+$/.test(body) || body.includes("://")) return false;
+    return !body.split(" ").some((w) => w.startsWith("-"));
+}
+
+/** What a copy leaves on this machine because it could hold a key or needs this machine: said, so nothing is missed in silence. */
+export interface LeftBehind {
+    /** MCP servers, by name. */
+    servers: string[];
+    rules: number;
+}
+
+/** The settings a server gets: what's safe to carry, and nothing else. `left` is filled with what wasn't. */
+export function portableSettings(s: Settings, left: LeftBehind = { servers: [], rules: 0 }): Settings {
     const out: Record<string, unknown> = {};
     for (const k of SETTINGS_KEYS) if (s[k] !== undefined) out[k] = s[k];
     const p = s.permissions;
     if (p) {
-        // The rules, not the mode: what a server asks about is its own decision. Not a rule with a key written into it.
-        const rules = Object.fromEntries(
-            (["allow", "ask", "deny"] as const)
-                .map((k) => [k, (Array.isArray(p[k]) ? p[k]! : []).filter((r) => typeof r === "string" && !matchesSecretPattern(r))] as const)
-                .filter(([, list]) => list.length),
-        );
+        // The rules, not the mode: what a server asks about is its own decision.
+        const rules: Record<string, string[]> = {};
+        for (const k of ["allow", "ask", "deny"] as const) {
+            const all = (Array.isArray(p[k]) ? p[k]! : []).filter((r): r is string => typeof r === "string");
+            const kept = all.filter(portableRule);
+            left.rules += all.length - kept.length;
+            if (kept.length) rules[k] = kept;
+        }
         if (Object.keys(rules).length) out.permissions = rules;
     }
-    const servers = Object.entries(s.mcpServers ?? {}).filter(([, c]) => c && typeof c === "object" && portableMcpServer(c));
-    if (servers.length) out.mcpServers = Object.fromEntries(servers);
+    const servers = Object.entries(s.mcpServers ?? {}).filter(([, c]) => c && typeof c === "object");
+    const kept = servers.filter(([, c]) => portableMcpServer(c));
+    left.servers.push(...servers.filter(([, c]) => !portableMcpServer(c)).map(([name]) => name));
+    if (kept.length) out.mcpServers = Object.fromEntries(kept);
     // Whatever else reads like a key (a model name wouldn't): that setting stays here.
     for (const k of Object.keys(out)) if (matchesSecretPattern(JSON.stringify(out[k]))) delete out[k];
     return out as Settings;
@@ -118,6 +174,8 @@ export interface CopyPlan {
     stage: string;
     /** What goes, by kind. */
     counts: { settings: boolean; memory: number; skills: number; commands: number };
+    /** What's in the settings here and doesn't go. */
+    left: LeftBehind;
     files: number;
     cleanup(): void;
 }
@@ -193,7 +251,8 @@ export function planCopy(settings: Settings | undefined): CopyPlan {
     const codex = process.env.CODEX_HOME || join(homedir(), ".codex");
     const counts = { settings: false, memory: 0, skills: 0, commands: 0 };
 
-    const portable = settings ? portableSettings(settings) : {};
+    const left: LeftBehind = { servers: [], rules: 0 };
+    const portable = settings ? portableSettings(settings, left) : {};
     if (Object.keys(portable).length) {
         mkdirSync(join(dir, ".cavvy"), { recursive: true });
         writeFileSync(join(dir, ".cavvy", "settings.json"), JSON.stringify(portable, null, 2) + "\n");
@@ -217,7 +276,7 @@ export function planCopy(settings: Settings | undefined): CopyPlan {
     stage.tree(join(claude, "skills"), ".claude/skills");
     counts.skills = skillsIn(join(dir, ".cavvy", "skills")) + skillsIn(join(dir, ".claude", "skills"));
     counts.commands = stage.tree(paths.userCommands(), ".cavvy/commands");
-    return { stage: dir, counts, files: stage.files, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+    return { stage: dir, counts, left, files: stage.files, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
 /** What a set of copied files is, by kind: the paths are as they sit under the server's home. */
@@ -238,12 +297,20 @@ export function describeCopy(c: CopyPlan["counts"]): string {
     return `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
 }
 
+/** "2 MCP servers and 1 rule": what a plan leaves here, for the line that says so. Empty when nothing is. */
+export function describeLeft(left: LeftBehind): string {
+    const parts = [...(left.servers.length ? [`${left.servers.length} MCP server${left.servers.length === 1 ? "" : "s"}`] : []), ...(left.rules ? [`${left.rules} permission rule${left.rules === 1 ? "" : "s"}`] : [])];
+    return parts.join(" and ");
+}
+
 /** Unpacks stdin beside the server's home and moves in each file that isn't there yet. */
 const RECEIVE = `
 set -e
 umask 077
 t=$(mktemp -d "\${TMPDIR:-/tmp}/cavvy-copy.XXXXXX")
 trap 'rm -rf "$t"' EXIT
+# A shell that dies of a signal skips that (dash does): ended by one, it leaves the ordinary way.
+trap 'exit 1' HUP INT TERM
 tar -xzf - -C "$t"
 cd "$t"
 find . -type f | while IFS= read -r f; do

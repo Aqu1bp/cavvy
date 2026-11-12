@@ -218,6 +218,8 @@ export class ServerLink {
     private port?: number;
     /** This link's sign-ins on the server, by the name each was made under: taken away when it's stopped for good. */
     private readonly client = randomBytes(8).toString("hex");
+    /** It has signed in at least once: there may be something on the server to take away. */
+    private signedIn = false;
     private stopping = new AbortController();
     private current: LinkState = { state: "connecting" };
     private first?: Promise<void>;
@@ -257,6 +259,7 @@ export class ServerLink {
     private async open(resume = false): Promise<void> {
         const signal = this.stopping.signal;
         const pairing = await pairOverSsh(this.entry, { ...thisDesktop(), client: this.client }, { signal, resume });
+        this.signedIn = true;
         this.tunnel = await Tunnel.open(this.entry, pairing.port, { localPort: this.port, signal, run: pairing.run });
         this.port = this.tunnel.localPort;
         this.set({ state: "connected", localPort: this.port, pairing });
@@ -325,12 +328,12 @@ export class ServerLink {
      */
     stop(o: { signOut?: boolean } = {}): Promise<void> {
         return (this.ending ??= (async () => {
-            const was = this.current.state;
             this.stopping.abort();
             await this.tunnel?.stop();
             if (this.current.state !== "stopped") this.set({ state: "stopped" });
-            // Not held up for long by a server that can't be reached: its sign-ins end by themselves.
-            if (o.signOut && was !== "stopped") await Promise.race([revokeOverSsh(this.entry, thisDesktop().id, { client: this.client }).catch(() => undefined), Bun.sleep(6000)]);
+            // Also when it had already given up: what it signed in earlier is still good on the server. Not held up
+            // for long by a server that can't be reached: its sign-ins end by themselves.
+            if (o.signOut && this.signedIn) await Promise.race([revokeOverSsh(this.entry, thisDesktop().id, { client: this.client }).catch(() => undefined), Bun.sleep(6000)]);
         })());
     }
 }

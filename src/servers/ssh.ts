@@ -163,9 +163,9 @@ function tool(name: string): string | undefined {
     return Bun.which(name, { PATH: process.env.PATH ?? "" }) ?? undefined;
 }
 
-function output(argv: string[]): string | undefined {
+function output(argv: string[], env: Record<string, string> = {}): string | undefined {
     try {
-        const r = Bun.spawnSync(argv, { stdin: "ignore", stdout: "pipe", stderr: "ignore", env: childEnv() });
+        const r = Bun.spawnSync(argv, { stdin: "ignore", stdout: "pipe", stderr: "ignore", env: { ...childEnv(), ...env } });
         return r.exitCode === 0 ? r.stdout.toString() : undefined;
     } catch {
         return undefined;
@@ -179,11 +179,16 @@ function output(argv: string[]): string | undefined {
 function lockedKey(e: ServerEntry): string | undefined {
     const keygen = tool("ssh-keygen");
     if (!keygen) return undefined;
-    const files = (e.identityFile ? [e.identityFile] : (sshSettings(e).get("identityfile") ?? [])).filter((f) => existsSync(expand(f)));
+    const cfg = sshSettings(e);
+    const files = (e.identityFile ? [e.identityFile] : (cfg.get("identityfile") ?? [])).filter((f) => existsSync(expand(f)));
     if (!files.length) return undefined;
     const add = tool("ssh-add");
-    // "256 SHA256:… comment (ED25519)": what the agent holds, by fingerprint.
-    const held = new Set((add ? (output([add, "-l"]) ?? "") : "").split("\n").map((l) => l.split(" ")[1]).filter(Boolean));
+    // The agent ssh itself would ask for this server: one its config names (a password manager's), none, or the usual.
+    const named = cfg.get("identityagent")?.[0];
+    const agent = named === undefined || named === "SSH_AUTH_SOCK" ? process.env.SSH_AUTH_SOCK : named === "none" ? undefined : expand(named);
+    // "256 SHA256:… comment (ED25519)": what that agent holds, by fingerprint.
+    const listed = add && agent ? (output([add, "-l"], { SSH_AUTH_SOCK: agent }) ?? "") : "";
+    const held = new Set(listed.split("\n").map((l) => l.split(" ")[1]).filter(Boolean));
     for (const f of files) {
         if (!keyNeedsPassphrase(f)) continue;
         const print = output([keygen, "-l", "-f", expand(f)])?.split(" ")[1];
@@ -331,7 +336,7 @@ export async function offeredHostKey(e: ServerEntry, signal?: AbortSignal): Prom
     const dir = mkdtempSync(join(tmpdir(), "cavvy-hostkey-"));
     const file = join(dir, "known_hosts");
     try {
-        const opts = ["BatchMode=yes", "StrictHostKeyChecking=no", `UserKnownHostsFile=${file}`, "GlobalKnownHostsFile=/dev/null", "PreferredAuthentications=none", "PubkeyAuthentication=no", "PasswordAuthentication=no", "KbdInteractiveAuthentication=no", "ConnectTimeout=10", "ConnectionAttempts=1", "ClearAllForwardings=yes", "ForwardAgent=no", "UpdateHostKeys=no", "ControlMaster=no", "ControlPath=none"];
+        const opts = ["BatchMode=yes", "StrictHostKeyChecking=no", `UserKnownHostsFile=${file}`, "GlobalKnownHostsFile=/dev/null", "PreferredAuthentications=none", "PubkeyAuthentication=no", "PasswordAuthentication=no", "KbdInteractiveAuthentication=no", "ConnectTimeout=10", "ConnectionAttempts=1", "ClearAllForwardings=yes", "ForwardAgent=no", "UpdateHostKeys=no", "ControlMaster=no", "ControlPath=none", "RemoteCommand=none", "PermitLocalCommand=no"];
         const argv = [sshBin(), ...opts.flatMap((x) => ["-o", x]), ...(e.port ? ["-p", String(e.port)] : []), "-T", "--", e.destination, "true"];
         const proc = Bun.spawn(argv, { stdin: "ignore", stdout: "ignore", stderr: "pipe", env: childEnv() });
         const kill = () => proc.kill();
