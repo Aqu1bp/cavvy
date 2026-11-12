@@ -98,6 +98,11 @@ export async function sendToSession(peers: SessionPeers | undefined, input: Reco
     }
 }
 
+/** A started session's title: the one given, else the prompt's start, on one line. */
+function sessionTitle(title: unknown, prompt: string): string {
+    return (str(title).trim() || prompt).replace(/\s+/g, " ").trim().slice(0, 80);
+}
+
 /** The model and effort asked for, if any. */
 function startChoice(input: Record<string, unknown>): StartChoice {
     const model = str(input.model).trim();
@@ -110,7 +115,7 @@ export async function startSession(peers: SessionPeers | undefined, input: Recor
     if (!peers.start) return cannotDrive();
     try {
         const prompt = checkMessage(input.prompt, "prompt");
-        const title = (str(input.title).trim() || prompt).replace(/\s+/g, " ").slice(0, 80);
+        const title = sessionTitle(input.title, prompt);
         const s = await peers.start({ prompt, title, ...startChoice(input) });
         const on = [s.model, s.effort ? `${s.effort} effort` : ""].filter(Boolean).join(" at ");
         return { text: `Started session ${s.id} (“${s.title}”) in ${s.cwd}${on ? `, on ${on}` : ""}. It's working on the prompt now; it shows in the user's session list. An answer, if it sends one, arrives here as a message.`, summary: `Started “${s.title}”` };
@@ -152,9 +157,10 @@ const previewSend = async (input: { id?: unknown; message?: unknown }, ctx: Tool
 };
 
 const previewStart = async (input: { title?: unknown; prompt?: unknown; model?: unknown; effort?: unknown }) => {
-    const title = str(input.title).trim();
+    // The title the session gets, short enough that what it runs on stays in view after it.
+    const title = str(input.title).trim() ? sessionTitle(input.title, "") : "";
     const { model, effort } = startChoice(input);
-    const on = [model, effort ? `${effort} effort` : ""].filter(Boolean).join(", ");
+    const on = [model?.replace(/\s+/g, " ").slice(0, 80), effort ? `${effort} effort` : ""].filter(Boolean).join(", ");
     return { summary: `Start a session${title ? `: “${title}”` : ""}${on ? ` (${on})` : ""}`, body: str(input.prompt).trim() || undefined };
 };
 

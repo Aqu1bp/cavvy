@@ -496,6 +496,19 @@ function withoutStateNotes(m: Message): Message {
     return content.length === m.content.length ? m : { ...m, content };
 }
 
+/** Longest summary a permission prompt shows: it heads the prompt, so the rest of what's asked stays in view. */
+const MAX_PREVIEW_SUMMARY = 200;
+
+/**
+ * A preview's summary on one line and bounded, as the prompts show it. Part of it can come from the model (a title, an
+ * element's name), which mustn't push what's asked out of sight with line breaks or length.
+ */
+export function oneLineSummary(d: ToolDisplay | undefined): ToolDisplay | undefined {
+    if (!d?.summary) return d;
+    const t = d.summary.replace(/\s+/g, " ").trim();
+    return { ...d, summary: t.length > MAX_PREVIEW_SUMMARY ? `${t.slice(0, MAX_PREVIEW_SUMMARY - 1)}…` : t };
+}
+
 export class Agent {
     readonly session: Session;
     model: ModelInfo;
@@ -3190,6 +3203,7 @@ export class Agent {
                 // preview is optional
             }
         }
+        preview = oneLineSummary(preview);
         const ask = {
             // A call the backend gave only part of: nothing to allow for the session, or always.
             ...(req.incomplete ? { ...decision, grant: undefined } : this.o.checker.withGrant(tool, input, decision, cwd)),
@@ -3441,7 +3455,7 @@ export class Agent {
 
         let preview: ToolDisplay | undefined;
         try {
-            preview = await tool.preview?.(input, ctx);
+            preview = oneLineSummary(await tool.preview?.(input, ctx));
         } catch {
             // preview is optional
         }

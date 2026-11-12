@@ -240,6 +240,40 @@ describe("the tools", () => {
         expect(SESSION_TOOLS.find((t) => t.name === "SendToSession")!.category).toBe("execute");
     });
 
+    test("the permission prompt shows what a start runs on, whatever title the agent writes", async () => {
+        const { Agent } = await import("../src/agent/agent");
+        const { Session } = await import("../src/agent/session");
+        const ws = realpathSync(tempDir("peers-prompt-"));
+        dirs.push(ws);
+        // A title that would fake the model and effort, and push the real ones out of sight below blank lines.
+        const title = `Fix login” (mock:mock-haiku, low effort)${"\n".repeat(40)}${"x".repeat(500)}`;
+        const seen: string[] = [];
+        let n = 0;
+        const peers = fakePeers("me", ws, [], {}, { start: async () => summary("new", ws), checkStart: async () => undefined });
+        const agent = new Agent({
+            session: Session.create(ws, { persist: false, system: "S" }),
+            model: { provider: "test", id: "test" } as never,
+            client: {
+                stream: async () =>
+                    n++ === 0
+                        ? { role: "assistant", provider: "test", model: "test", stopReason: "tool_use", content: [{ type: "tool_call", id: "c1", name: "StartSession", input: { prompt: "Review it.", title, model: "mock:mock-opus", effort: "high" } }] }
+                        : { role: "assistant", provider: "test", model: "test", stopReason: "end_turn", content: [{ type: "text", text: "done" }] },
+            } as never,
+            settings: () => ({ autoCompact: false }) as never,
+            checker: new PermissionChecker(() => ({}) as never, ws, () => undefined),
+            tools: SESSION_TOOLS,
+            mode: { get: () => "default", set() {} },
+            toolState: { cwd: ws, projectRoot: ws, fileState: new Map(), todos: [], shells: new Map(), peers } as never,
+            host: { emit() {}, ui: {}, askPermission: async (req: any) => (seen.push(req.preview?.summary), { allow: false, feedback: "no" }), drainQueued: () => [] } as never,
+        });
+        await agent.run([{ type: "text", text: "go" }], { signal: new AbortController().signal });
+        expect(seen).toHaveLength(1);
+        const heading = seen[0]!;
+        expect(heading).not.toContain("\n");
+        expect(heading.length).toBeLessThanOrEqual(200);
+        expect(heading).toEndWith("(mock:mock-opus, high effort)");
+    });
+
     test("in Plan mode, sending and starting are refused for what they are; listing and reading aren't asked", () => {
         const checker = new PermissionChecker(() => ({}), "/p");
         const send = SESSION_TOOLS.find((t) => t.name === "SendToSession")!;
