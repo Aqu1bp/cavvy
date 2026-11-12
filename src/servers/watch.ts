@@ -8,6 +8,21 @@
 
 import type { ConnectResult, MachineOverview, ServerEvent, SessionSummary } from "../server/protocol";
 
+/** A call of a tool this machine lends, as the server sent it. */
+export interface LentCall {
+    tool: string;
+    input: Record<string, unknown>;
+    /** The session on the server that asked. */
+    session: { id: string; title: string };
+}
+
+/** What this machine answers one with. */
+export interface LentResult {
+    text: string;
+    isError?: boolean;
+    images?: { type: "image"; mediaType: string; data: string }[];
+}
+
 /** What a session on another machine has to tell its user. */
 export type MachineNotice = Pick<Extract<ServerEvent, { type: "servers.notify" }>, "sessionId" | "kind" | "title" | "body">;
 
@@ -37,6 +52,10 @@ export class MachineWatch {
             reach: (renew: boolean) => Promise<ConnectResult | { status: "disconnected" }>;
             changed: () => void;
             notice: (n: MachineNotice) => void;
+            /** What this machine lends the server's sessions (src/tools/lent.ts), said once the connection is up. */
+            lends?: () => string[];
+            /** Runs a call of one of those, through this machine's own checks. */
+            lend?: (call: LentCall, signal: AbortSignal) => Promise<LentResult>;
             retryMs?: number[];
             idleRetryMs?: number;
         },
@@ -109,6 +128,9 @@ export class MachineWatch {
         this.ws = ws;
         let listed = false;
         const waiting = new Map<number, (result: unknown) => void>();
+        /** Calls of tools this machine lends that are running here, by the server's id for each. */
+        const lending = new Map<string, AbortController>();
+        let next = 3;
         const timeout = setTimeout(() => ws.close(), REPLY_MS);
         ws.onopen = () => {
             waiting.set(1, (result) => {
@@ -119,6 +141,8 @@ export class MachineWatch {
                 for (const s of Array.isArray(result) ? (result as SessionSummary[]) : []) if (s && typeof s.id === "string") this.sessions.set(s.id, s);
                 this.state = "connected";
                 this.o.changed();
+                const kinds = this.o.lends?.() ?? [];
+                if (kinds.length && this.o.lend) ws.send(JSON.stringify({ id: 2, method: "offers.set", params: { kinds } }));
             });
             ws.send(JSON.stringify({ id: 1, method: "sessions.list", params: { limit: 100 } }));
         };
@@ -149,10 +173,28 @@ export class MachineWatch {
                 if (this.sessions.delete(ev.id)) this.o.changed();
             } else if (ev.type === "notify" && ev.kind !== "background") {
                 this.o.notice({ sessionId: ev.sessionId, kind: ev.kind, title: ev.title, body: ev.body });
+            } else if (ev.type === "offers.call" && this.o.lend && typeof ev.callId === "string" && !lending.has(ev.callId)) {
+                const stop = new AbortController();
+                lending.set(ev.callId, stop);
+                const call: LentCall = { tool: String(ev.tool), input: ev.input && typeof ev.input === "object" ? ev.input : {}, session: { id: String(ev.session?.id ?? ""), title: String(ev.session?.title ?? "") } };
+                void this.o
+                    .lend(call, stop.signal)
+                    .catch((e): LentResult => ({ text: `It couldn't be run: ${(e as Error).message}`, isError: true }))
+                    .then((r) => {
+                        lending.delete(ev.callId);
+                        // Given up there meanwhile, or the connection is another one now: nobody waits for it.
+                        if (stop.signal.aborted || ws.readyState !== WebSocket.OPEN) return;
+                        ws.send(JSON.stringify({ id: next++, method: "offers.result", params: { callId: ev.callId, ...r } }));
+                    });
+            } else if (ev.type === "offers.cancel") {
+                lending.get(ev.callId)?.abort();
             }
         };
         ws.onclose = () => {
             clearTimeout(timeout);
+            // Whoever asked can't be answered any more.
+            for (const stop of lending.values()) stop.abort();
+            lending.clear();
             if (this.ws !== ws) return;
             this.ws = undefined;
             if (this.stopped) return;

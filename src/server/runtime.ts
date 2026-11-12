@@ -53,7 +53,7 @@ import { agentCli, steersMidTurn, type AttachmentKind } from "../backends/defs";
 import { claudeCompactAt, cliCompactSetting, cavvyCompactAt, modelKeys } from "../backends/compact-at";
 import { account, accountSwitch, removedAccount, removedAccountNote, switchHow } from "../providers/accounts";
 import { attachmentsNote, readsPdf } from "../providers/files";
-import { continuationGroups, modelRef, parseModelRef, textOf, toolCallsOf, assistantText, type AttachedPart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart, type UserContent } from "../providers/types";
+import { continuationGroups, modelRef, parseModelRef, textOf, toolCallsOf, assistantText, type AttachedPart, type ImagePart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart, type UserContent } from "../providers/types";
 import { expandMentions } from "../ui/mentions";
 import { expandMcpMentions, findMcpMentions } from "../mcp/mentions";
 import type { McpAsker } from "../mcp/elicitation";
@@ -447,6 +447,8 @@ export class Runtime {
         this.toolState.browser.onChange(() => this.engine.sendBrowser(this.id, this.browser.state()));
         // So does the simulator, so the window hears when the agent starts or uses one (it starts nothing until then).
         this.toolState.simulator = new SimulatorSession({ settings: () => this.settings() });
+        // Tools this machine hasn't got and another of the user's machines lends it (its Mac's simulators).
+        this.toolState.lends = { call: (tool, input, signal) => engine.borrow(this, tool, input, signal) };
         this.toolState.simulator.onChange(() => this.engine.sendSimulator(this.id, this.simulator.state()));
         this.toolState.secrets!.onChange(() => this.setState({ secrets: this.toolState.secrets!.names() }));
         this.schedules = new SessionSchedules({
@@ -4244,7 +4246,33 @@ export class Runtime {
     /** Schedules run only while it's loaded: one that will run keeps it open with no window on it (it isn't busy, though). */
     get scheduled(): boolean {
         const s = this.schedules.scheduler;
-        return s.active > 0 || s.list().some((j) => j.due);
+        return this.lending > 0 || s.active > 0 || s.list().some((j) => j.due);
+    }
+
+    /** Calls of this machine's tools that another machine asked for and that are running here (lend): it isn't closed meanwhile. */
+    private lending = 0;
+    /** It's the session a session on another machine is lent this machine's tools through (Engine.lend). */
+    guest = false;
+
+    /**
+     * Runs a tool of this machine's for a session on another of the user's machines (Engine.lend). This session is
+     * where that shows: what's asked of the user is asked here, under this machine's mode and rules, and what was
+     * run is noted here.
+     */
+    async lend(tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal): Promise<{ text: string; isError?: boolean; images?: ImagePart[] }> {
+        await this.ready.catch(() => undefined);
+        const agent = this.agent;
+        if (!agent) return { text: "Cavvy on that machine has no model set up yet, which it needs before it lends its tools.", isError: true };
+        this.lending++;
+        try {
+            const r = await agent.runLent(tool, input, signal);
+            const line = `${redact(tool.title(input))}${r.isError ? ": not done" : ""}`;
+            this.session.recordNotice("info", line);
+            this.notice(line, "info");
+            return r;
+        } finally {
+            this.lending--;
+        }
     }
 
     /** SessionEnd hooks and background shells, when the server stops or the session is closed. */

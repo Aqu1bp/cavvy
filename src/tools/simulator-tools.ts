@@ -11,6 +11,7 @@ import { simulatorsLikely } from "../simulator/simctl";
 import { sentence, SimulatorError, SimulatorSession } from "../simulator/session";
 import { redact } from "../util/redact";
 import { imageMarkdown, saveScreenshot } from "./browser-tools";
+import { lent } from "./lent";
 import type { Tool, ToolContext, ToolResult } from "./types";
 
 /** The names these tools have when Cavvy serves them to Claude Code and Codex (mcp__cavvy__simulator_act). */
@@ -378,10 +379,32 @@ export const SIMULATOR_TOOL_HEADINGS: Record<string, string> = {
     SimulatorAct: "Act on the simulator",
 };
 
-export const SIMULATOR_TOOLS: Tool<any>[] = [SimulatorControlTool, SimulatorSnapshotTool, SimulatorActTool, SimulatorScreenshotTool];
+/**
+ * On a machine with no simulators of its own that is lent another's (the user's Mac's: src/tools/lent.ts), a call
+ * goes there. What it names (an app's path) is the other machine's, so it's checked there, not here.
+ */
+function lendable(tool: Tool<any>): Tool<any> {
+    const far = (ctx: Pick<ToolContext, "state">) => (simulatorsLikely() ? undefined : ctx.state.lends);
+    const { run, validate } = tool;
+    return {
+        ...tool,
+        ...(validate ? { validate: (input: any, ctx: ToolContext) => (far(ctx) ? undefined : validate.call(tool, input, ctx)) } : {}),
+        run: (input, ctx) => far(ctx)?.call(tool.name, input as Record<string, unknown>, ctx.signal) ?? run.call(tool, input, ctx),
+    };
+}
+
+export const SIMULATOR_TOOLS: Tool<any>[] = [SimulatorControlTool, SimulatorSnapshotTool, SimulatorActTool, SimulatorScreenshotTool].map(lendable);
+
+/** The simulator tools as they run where the simulators are: what a machine that lends them runs (Engine.lend). */
+export const OWN_SIMULATOR_TOOLS: Tool<any>[] = [SimulatorControlTool, SimulatorSnapshotTool, SimulatorActTool, SimulatorScreenshotTool];
 
 /** Whether the tools are offered: the setting is on, and this Mac has Xcode's simulators. */
 export function simulatorAvailable(settings: Settings): boolean {
+    return simulatorEnabled(settings) && (simulatorsLikely() || lent("simulator"));
+}
+
+/** This machine has simulators of its own that it may lend. */
+export function simulatorsToLend(settings: Settings): boolean {
     return simulatorEnabled(settings) && simulatorsLikely();
 }
 

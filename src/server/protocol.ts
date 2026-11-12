@@ -1708,6 +1708,12 @@ export type ServerEvent =
      * left out when it's this computer's own session, told to a window that's on a server.
      */
     | { type: "servers.notify"; name?: string; sessionId: string; kind: "done" | "permission" | "question" | "plan" | "error"; title: string; body: string }
+    /**
+     * A session here calls a tool the connected machine lends (offers.set): that machine runs it, through its own
+     * checks, and answers with offers.result. offers.cancel: the call was given up here.
+     */
+    | { type: "offers.call"; callId: string; tool: string; input: Record<string, unknown>; session: { id: string; title: string } }
+    | { type: "offers.cancel"; callId: string }
     /** A session's browser changed: its tabs, who drives them, or whether it runs (sent to the windows that have the session open). */
     | { type: "browser.state"; sessionId: string; state: BrowserState }
     /**
@@ -1818,6 +1824,13 @@ export interface Methods {
     // Servers: other machines this Cavvy runs on, reached over SSH (src/servers/manager.ts). Not offered by a
     // server's own Cavvy. A call that needs the user's word says so in its result; `trust` carries the answer to
     // an unknown host's key back: the fingerprints that were shown.
+    /**
+     * Only a server's own Cavvy takes these, from one of the user's machines connected to it: what that machine
+     * lends the server's sessions (kinds: src/tools/lent.ts; none: nothing any more), and the result of a call the
+     * server sent it (offers.call).
+     */
+    "offers.set": { params: { kinds: string[] }; result: null };
+    "offers.result": { params: { callId: string; text: string; isError?: boolean; images?: { type: "image"; mediaType: string; data: string }[] }; result: null };
     "servers.list": { params: Record<string, never>; result: { servers: ServerSummary[] } };
     /**
      * Each server's sessions, kept up to date from then on (servers.overview events) for the window that asks, which

@@ -18,7 +18,7 @@ import { probeServer } from "./remote";
 import { NotSetUp, remoteCheck, remoteStatus, revokeOverSsh, serviceReport, stopRemote, StoppedThere } from "./service";
 import { hostOf, offeredHostKey, printable, SshError, trustHostKey, type OfferedHostKey } from "./ssh";
 import { draftServer, getServer, listServers, removeServer, requireServer, saveServer, ServerError, thisDesktop, type ServerEntry } from "./store";
-import { MachineWatch, type MachineNotice } from "./watch";
+import { MachineWatch, type LentCall, type LentResult, type MachineNotice } from "./watch";
 
 export interface ServerProgress {
     name: string;
@@ -98,6 +98,9 @@ export class ServerLinks {
             onOverview?: (m: MachineOverview) => void;
             /** A session on a watched server has something to tell its user. */
             onNotice?: (name: string, n: MachineNotice) => void;
+            /** What this machine lends its servers' sessions (src/tools/lent.ts), and the running of one call of it. */
+            lends?: () => string[];
+            lend?: (name: string, call: LentCall, signal: AbortSignal) => Promise<LentResult>;
             source?: BuildSource;
             renewAfterMs?: number;
             watchRetryMs?: number[];
@@ -123,6 +126,8 @@ export class ServerLinks {
                 reach: async (renew) => (this.apart.has(name) ? { status: "disconnected" } : this.connect(name, { retry: true, renew })),
                 changed: () => this.tell(name),
                 notice: (n) => this.o.onNotice?.(name, n),
+                lends: this.o.lends,
+                lend: this.o.lend && ((call, signal) => this.o.lend!(name, call, signal)),
                 retryMs: this.o.watchRetryMs,
             });
             this.watches.set(name, w);

@@ -16,7 +16,8 @@ import { deleteScript, findScript, findSetupScript, listScripts, markUsed, reord
 import { checkGrant, SetupTickets, setupTrusted } from "./setup";
 import { RpcError } from "./rpc-error";
 export { RpcError };
-import { readdirSync, realpathSync, statSync } from "fs";
+import { randomUUID } from "crypto";
+import { mkdirSync, readdirSync, realpathSync, statSync } from "fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { homedir, hostname, userInfo } from "os";
 import { APP_VERSION, cavvyHome, paths } from "../config/paths";
@@ -54,6 +55,10 @@ import { expandPath, isInside, MAX_SHOWN_IMAGE, sniffImage } from "../util/files
 import { maskKey, redact } from "../util/redact";
 import { searchResources } from "../mcp/mentions";
 import { cleanTitle, modelSummary, promptTitle, Runtime } from "./runtime";
+import { LENDABLE, setLent, type Lendable } from "../tools/lent";
+import { OWN_SIMULATOR_TOOLS, simulatorsToLend } from "../tools/simulator-tools";
+import type { ToolResult } from "../tools/types";
+import type { LentCall, LentResult } from "../servers/watch";
 import type { PeerHost } from "./session-peers";
 import type { WakeMemory } from "../agent/wakes";
 import { forkUiLog } from "./history";
@@ -536,7 +541,7 @@ export class Engine {
 
     sessionChanged(rt: Runtime) {
         // An empty new session isn't listed. A turn can end with nothing in the history (a !command, a prompt a hook blocked): its row has to hear that it ended.
-        if (!rt.session.messages.length && !rt.busy && rt.firstPrompt() === undefined) return;
+        if (!rt.guest && !rt.session.messages.length && !rt.busy && rt.firstPrompt() === undefined) return;
         const member = readStore().runs?.flatMap((r) => r.sessions).find((s) => s.id === rt.id);
         const outcome = runOutcome(rt);
         if (member && member.outcome !== outcome) updateStore((s) => {
@@ -867,7 +872,7 @@ export class Engine {
             out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false, run: runs.get(s.id) });
         }
         for (const rt of this.runtimes.values()) {
-            if (!rt.session.messages.length && !rt.busy) continue;
+            if (!rt.guest && !rt.session.messages.length && !rt.busy) continue;
             // By when it last worked, which its file can't say yet while it works (Session.worked writes a line a minute).
             out.set(rt.id, this.summaryOf(rt));
         }
@@ -1209,6 +1214,7 @@ export class Engine {
     /** A window went away (closed, reloading, or lost its connection). Its terminals wait a while for it to come back. */
     dropClient(client: EngineClient) {
         this.clients.delete(client);
+        if (this.lender === client) this.setLender(undefined, []);
         for (const [name, asker] of this.serverAskers) if (asker === client) this.serverAskers.delete(name);
         this.terminals.drop(client);
         for (const rt of this.runtimes.values()) rt.browser.unwatch(client);
@@ -1749,6 +1755,72 @@ export class Engine {
         return { provider: id, masked: maskKey(value), warning, model: this.adoptDefaultModel(id) };
     }
 
+    /** On a server: the connected machine that lends this one its tools (offers.set), and the calls it's running. */
+    private lender?: EngineClient;
+    private lentCalls = new Map<string, { client: EngineClient; done: (r: ToolResult) => void }>();
+
+    /**
+     * A session here calls a tool another of the user's machines lends (src/tools/lent.ts): sent to that machine,
+     * which runs it through its own checks. Answers when it does, when the call is given up here, or when that
+     * machine goes away.
+     */
+    borrow(rt: Runtime, tool: string, input: Record<string, unknown>, signal: AbortSignal): Promise<ToolResult> {
+        const client = this.lender;
+        if (!client) return Promise.resolve({ content: "This runs on your Mac, and Cavvy there isn't connected to this machine right now. Ask the user to open Cavvy on their Mac, then try again.", isError: true });
+        const callId = randomUUID();
+        return new Promise((resolve) => {
+            const done = (r: ToolResult) => {
+                if (!this.lentCalls.delete(callId)) return;
+                signal.removeEventListener("abort", stop);
+                resolve(r);
+            };
+            const stop = () => {
+                client.send({ type: "offers.cancel", callId });
+                done({ content: "Interrupted by user", isError: true });
+            };
+            this.lentCalls.set(callId, { client, done });
+            signal.addEventListener("abort", stop, { once: true });
+            client.send({ type: "offers.call", callId, tool, input, session: { id: rt.id, title: this.notifyTitle(rt) } });
+        });
+    }
+
+    /** The machine that lends is another one now, or none: its calls end, and sessions learn what they have. */
+    private setLender(client: EngineClient | undefined, kinds: Lendable[]) {
+        const was = this.lender;
+        this.lender = kinds.length ? client : undefined;
+        setLent(kinds);
+        if (was && was !== this.lender) for (const c of [...this.lentCalls.values()]) if (c.client === was) c.done({ content: "Your Mac's Cavvy went away before it answered.", isError: true });
+    }
+
+    /** On the user's own machine: the local session each session on a server is lent tools through, by server and session. */
+    private guests = new Map<string, string>();
+
+    /**
+     * A session on one of this machine's servers calls a tool this machine lends. It runs in a session of this
+     * machine's own, one per session there, named for it: that's where the user is asked (under this machine's mode
+     * and rules), where the simulator shows, and where what was run is noted.
+     */
+    private async lend(name: string, call: LentCall, signal: AbortSignal): Promise<LentResult> {
+        const tool = OWN_SIMULATOR_TOOLS.find((t) => t.name === call.tool);
+        if (!tool || !simulatorsToLend(loadSettings(homedir(), { trusted: false }))) return { text: `${call.tool} isn't lent by this machine.`, isError: true };
+        if (!/^[\w.-]{1,120}$/.test(call.session.id)) return { text: "That session can't be told apart.", isError: true };
+        const key = `${name}\0${call.session.id}`;
+        let rt = this.runtimes.get(this.guests.get(key) ?? "");
+        if (!rt) {
+            const known = this.guests.get(key);
+            const folder = join(cavvyHome(), "guests", name);
+            mkdirSync(folder, { recursive: true });
+            rt = known && findSessionAnywhere(known) ? this.openSession(known) : await this.createSession(folder);
+            this.guests.set(key, rt.id);
+            // Listed though nothing was ever said in it: it's where the user answers, and sees what was done.
+            rt.guest = true;
+            // Named for where it's from, in words that are this machine's own: the server's title is its to choose.
+            if (!known) rt.rename(cleanTitle(`${name}: ${(await import("../servers/ssh")).printable(call.session.title, 80) || "a session"}`));
+            this.unloadLater(rt.id);
+        }
+        return rt.lend(tool, call.input, signal);
+    }
+
     private serverLinks?: import("../servers/manager").ServerLinks;
     /** The window a server's progress is told to: the one that last asked for something slow of it. */
     private serverAskers = new Map<string, EngineClient>();
@@ -1769,6 +1841,8 @@ export class Engine {
                 onOverview: (machine) => {
                     for (const c of this.clients) if (c.watching) c.send({ type: "servers.overview", machine });
                 },
+                lends: () => (simulatorsToLend(loadSettings(homedir(), { trusted: false })) ? ["simulator"] : []),
+                lend: (name, call, signal) => this.lend(name, call, signal),
                 onNotice: (name, n) => {
                     // A window on that server hears it from there. Otherwise one window says it, not each of them.
                     if ([...this.clients].some((c) => c.machine === name)) return;
@@ -2621,6 +2695,21 @@ export class Engine {
                 return await this.addKey(optStr(p.provider), str(p.key, "key"));
             case "providers.connectCli":
                 return await this.connectCli(str(p.provider, "provider"));
+            case "offers.set": {
+                // Only a server takes what another machine lends: the user's own machine is lent nothing by a client.
+                if (!this.o.away) throw new RpcError("This machine isn't lent tools.", "unsupported");
+                const kinds = (Array.isArray(p.kinds) ? p.kinds : []).filter((k: unknown): k is Lendable => LENDABLE.includes(k as Lendable));
+                if (kinds.length) this.setLender(client, kinds);
+                else if (this.lender === client) this.setLender(undefined, []);
+                return null;
+            }
+            case "offers.result": {
+                const call = this.lentCalls.get(str(p.callId, "callId"));
+                if (!call || call.client !== client) return null;
+                const images = (Array.isArray(p.images) ? p.images : []).filter((i: any) => i && i.type === "image" && typeof i.mediaType === "string" && typeof i.data === "string").slice(0, 8);
+                call.done({ content: typeof p.text === "string" ? p.text : "", ...(p.isError === true ? { isError: true } : {}), ...(images.length ? { images } : {}) });
+                return null;
+            }
             case "servers.list":
                 return { servers: (await this.servers(client)).list() };
             case "servers.overview": {

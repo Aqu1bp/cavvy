@@ -11,6 +11,7 @@ import type { LspManager } from "../lsp/manager";
 import type { DiagnosticReport } from "../lsp/diagnostics";
 import type { BrowserSession } from "../browser/session";
 import type { SimulatorSession } from "../simulator/session";
+import type { Lends } from "./lent";
 import type { SessionPeers } from "../agent/peers";
 
 
@@ -89,6 +90,8 @@ export interface ToolState {
     browser?: BrowserSession;
     /** The session's use of Xcode's simulators (src/simulator); made when it's first needed, closed with the session, shared with its sub-agents. */
     simulator?: SimulatorSession;
+    /** The way to a machine that lends this one tools it hasn't got (the user's Mac and its simulators: src/tools/lent.ts). */
+    lends?: Lends;
     /** Events that wake the session's agent (watched pull requests, monitors); the host starts a turn for them when idle. */
     wakes?: WakeQueue;
     /** Things watching in the background for this session, by id; the host stops them when the session closes. */
