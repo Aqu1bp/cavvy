@@ -460,10 +460,14 @@ export class Engine {
                     continue;
                 }
                 const goes = this.working.resume(id);
+                // Its turn ended since the list was read (the user got to it first): nothing to carry on.
+                if (goes === "gone") continue;
                 const rt = this.openSession(id);
                 await rt.ready;
-                if (goes) rt.resumeAfterRestart();
+                if (goes === "go") rt.resumeAfterRestart();
                 else rt.notRestarted();
+                // With no window on it, it's closed again once it has nothing running, as one a schedule opened is.
+                this.unloadLater(id);
             } catch (err) {
                 this.working.ended(id);
                 this.log(`Couldn't carry session ${id} on after the restart: ${(err as Error).message}`);

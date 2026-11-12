@@ -27,27 +27,38 @@ test("a session is on the list from its turn's start to its end, and the list is
     w.ended("never there");
 });
 
-test("carried on by itself only so often within the hour: after that it's taken off the list", () => {
+test("carried on by itself only so often within the hour, however its turns ended between: after that it's taken off the list", () => {
     const file = join(dir, "b.json");
-    const w = new WorkingIndex(file);
-    w.started("one", "/srv/app");
     const t = 1_000_000_000_000;
-    for (let i = 0; i < MAX_RESTART_RESUMES; i++) expect(new WorkingIndex(file).resume("one", t + i * 1000)).toBe(true);
-    const again = new WorkingIndex(file);
-    expect(again.resume("one", t + 60_000)).toBe(false);
+    const at = (ms: number) => new WorkingIndex(file, () => t + ms);
+    at(0).started("one", "/srv/app");
+    for (let i = 0; i < MAX_RESTART_RESUMES; i++) {
+        const w = at(i * 1000);
+        expect(w.resume("one")).toBe("go");
+        // The turn it was given ends, and another starts before Cavvy goes down again: it still counts.
+        w.ended("one");
+        expect(kept(file)).toEqual([]);
+        w.started("one", "/srv/app");
+    }
+    expect(at(60_000).resume("one")).toBe("capped");
     expect(kept(file)).toEqual([]);
-    // Long enough after, it has its share again.
-    w.started("two", "/srv/site");
-    const later = new WorkingIndex(file);
-    for (let i = 0; i < MAX_RESTART_RESUMES; i++) later.resume("two", t);
-    expect(new WorkingIndex(file).resume("two", t + RESUME_WINDOW_MS + 1)).toBe(true);
-    expect(new WorkingIndex(file).resume("gone")).toBe(false);
+    // Off the list (its turn ended since the list was read, or it never was on it): nothing to carry on or to say.
+    expect(at(61_000).resume("one")).toBe("gone");
+    expect(at(61_000).resume("never")).toBe("gone");
+    // Long enough after, it has its share again, and what's past isn't kept.
+    at(62_000).started("one", "/srv/app");
+    expect(at(RESUME_WINDOW_MS + 5000).resume("one")).toBe("go");
+    at(2 * RESUME_WINDOW_MS + 6000).ended("one");
+    expect(existsSync(file)).toBe(false);
 });
 
 test("a list that isn't one is read as none; entries that aren't sessions are dropped", () => {
     const file = join(dir, "c.json");
     writeFileSync(file, "not json");
     expect(new WorkingIndex(file).entries()).toEqual([]);
-    writeFileSync(file, JSON.stringify({ sessions: { ok: { cwd: "/srv/app", resumed: [1, "x", 2] }, "../bad": { cwd: "/x" }, nocwd: {}, list: [] } }));
-    expect(new WorkingIndex(file).entries()).toEqual([["ok", { cwd: "/srv/app", resumed: [1, 2] }]]);
+    writeFileSync(file, JSON.stringify({ sessions: { ok: { cwd: "/srv/app" }, "../bad": { cwd: "/x" }, nocwd: {}, list: [] }, carried: { ok: [1, "x", Date.now()], "../bad": [Date.now()], odd: "x" } }));
+    const w = new WorkingIndex(file);
+    expect(w.entries()).toEqual([["ok", { cwd: "/srv/app" }]]);
+    w.started("two", "/srv/site");
+    expect(Object.keys(JSON.parse(readFileSync(file, "utf-8")).carried)).toEqual(["ok"]);
 });

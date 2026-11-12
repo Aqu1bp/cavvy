@@ -659,12 +659,21 @@ export class Runtime {
      * way; if the user gets there first (a message, a question to answer), it's theirs.
      */
     resumeAfterRestart(tries = 0) {
+        this.carryingOn = false;
+        // The user's own turn, or a message of theirs about to run: its end takes the session off the list.
         if (this.closed || this.busy || this.nextQueued()) return;
         // Messages held back since the restart don't hold it up: they wait for the user, as they would have.
-        const ready = !this.pending.size && !this.switching && !this.committing && !this.goal.pending() && Boolean(this.agent) && !this.needsAccount();
+        const model = Boolean(this.agent) && !this.needsAccount();
+        const ready = model && !this.pending.size && !this.switching && !this.committing && !this.goal.pending();
         if (!ready) {
-            if (tries < 60) setTimeout(() => this.resumeAfterRestart(tries + 1), 1000).unref?.();
-            return;
+            if (tries < 60) {
+                this.carryingOn = true;
+                setTimeout(() => this.resumeAfterRestart(tries + 1), 1000).unref?.();
+                return;
+            }
+            // Left for the user, and off the list: or a restart days later would start it when it wasn't working.
+            this.engine.turnRunning(this, false);
+            return this.sayKept(`It didn't continue by itself after Cavvy restarted${model ? "" : ": its model isn't available"}. Send a message to go on.`, "warn");
         }
         this.scheduledLabel = RESTART_LABEL;
         this.scheduledResume = true;
@@ -678,8 +687,17 @@ export class Runtime {
 
     /** It was cut off by a restart again and again: said, and left for the user. */
     notRestarted() {
-        this.notice(`It didn't continue by itself: Cavvy restarted ${MAX_RESTART_RESUMES} times within an hour while it was working. Send a message to go on.`, "warn");
+        this.sayKept(`It didn't continue by itself: Cavvy restarted ${MAX_RESTART_RESUMES} times within an hour while it was working. Send a message to go on.`, "warn");
     }
+
+    /** A notice that's kept with the session: still there after the next restart. */
+    private sayKept(text: string, level: "info" | "warn" | "error") {
+        this.session.recordNotice(level, text);
+        this.notice(text, level);
+    }
+
+    /** Waiting to carry on after a restart (resumeAfterRestart): not to be closed meanwhile. */
+    private carryingOn = false;
 
     /**
      * Picks up again by itself once the limit that stopped the last turn resets, as that turn's end would have had it
@@ -4280,7 +4298,7 @@ export class Runtime {
     /** Schedules run only while it's loaded: one that will run keeps it open with no window on it (it isn't busy, though). */
     get scheduled(): boolean {
         const s = this.schedules.scheduler;
-        return s.active > 0 || s.list().some((j) => j.due);
+        return this.carryingOn || s.active > 0 || s.list().some((j) => j.due);
     }
 
     /** SessionEnd hooks and background shells, when the server stops or the session is closed. */

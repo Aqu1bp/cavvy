@@ -73,8 +73,9 @@ When Cavvy on a server stops while sessions are working and then starts again (a
 What doesn't carry on:
 
 - A turn you had stopped yourself, or that had ended.
-- Anything after `cavvy servers stop`: a server stopped on purpose starts again with nothing running.
+- Anything after `cavvy servers stop`: a server stopped on purpose starts again with nothing running. Stopped any other way (`cavvy host stop` on the server itself, its service manager), the sessions carry on at its next start.
 - A session that Cavvy has already carried on three times within an hour: it says so and waits for you, in case it's what keeps bringing Cavvy down.
+- A session that can't go on within a minute of the start, because its model isn't available there any more: it says so and waits for you.
 
 ## How a machine signs in
 
