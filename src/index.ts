@@ -702,7 +702,9 @@ async function main() {
     }
     // On a server: `gui --server <name>` is its GUI in a browser here, and `--server <name>[:<folder>]` the terminal
     // app running there, with the rest of the line passed to it as typed.
-    const onServer = argv.indexOf("--server");
+    // Before a `--`, after which everything is the prompt.
+    const options = argv.indexOf("--");
+    const onServer = argv.slice(0, options < 0 ? argv.length : options).indexOf("--server");
     if (onServer >= 0 && sub !== "serve" && sub !== "host") {
         const spec = argv[onServer + 1];
         if (!spec || spec.startsWith("-")) die("--server needs a server's name (see `cavvy servers`).");
