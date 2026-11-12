@@ -17,12 +17,22 @@ const REPO = resolve(import.meta.dir, "..", "..");
 export interface FakeServer {
     /** The pretend server's home folder. */
     home: string;
+    /** The stand-in for ssh: what CAVVY_SSH names while this server is the one in use. */
+    bin: string;
     /** Makes every connection fail one way (undefined: connect normally again). */
     fail(kind?: "timeout" | "refused" | "dns" | "auth" | "closed"): void;
     /** The server starts offering another host key, as a rebuilt one would. */
     changeHostKey(): void;
     /** The key it first had, again. */
     restoreHostKey(): void;
+    /** What `ssh -G` says about the server, as lines ("userknownhostsfile /dev/null"); none: the usual. */
+    settings(lines?: string[]): void;
+    /** Commands' connections are lost this long after they start (undefined: they aren't). */
+    dropSessions(afterMs?: number): void;
+    /** With `systemd`: what was asked of the pretend service manager, in order ("enable cavvy.service"). */
+    asked(): string[];
+    /** With `systemd`: whether the server lets a user's services outlive their sign-in when asked. */
+    allowLinger(yes: boolean): void;
     /** As if the user had connected to it before: its key is in the pretend known_hosts. */
     trust(host: string): void;
     knownHosts(): string;
@@ -40,7 +50,12 @@ function keygen(file: string) {
     if (r.exitCode !== 0) throw new Error(`ssh-keygen failed: ${r.stderr.toString()}`);
 }
 
-export function fakeSsh(): FakeServer {
+/**
+ * `systemd`: the pretend server has a service manager, of a kind: it answers, records what it's asked, and says
+ * whether lingering is on. It starts nothing itself, and lingering is refused until allowLinger(true), so Cavvy
+ * there runs detached as on a server that refuses it.
+ */
+export function fakeSsh(o: { systemd?: boolean } = {}): FakeServer {
     // Short: a socket's path under it has to fit in 104 bytes on macOS.
     const dir = mkdtempSync("/tmp/cvr-");
     const home = join(dir, "home");
@@ -55,9 +70,17 @@ export function fakeSsh(): FakeServer {
     shim("uname", 'case "$1" in -s) echo Linux ;; -m) echo x86_64 ;; *) echo "Linux fake 6.8.0 x86_64" ;; esac');
     // A login shell that says nothing, so the system's profile can't add this machine's tools to the pretend server's PATH.
     shim("quiet-shell", "exit 0");
-    // No service manager, on any machine the tests run on: Cavvy runs detached (the real one is tried on a real server).
-    shim("systemctl", "exit 1");
-    shim("loginctl", "exit 1");
+    if (o.systemd) {
+        shim("systemctl", `[ "$1 $2" = "--user show-environment" ] && exit 0\nshift\necho "$*" >> ${JSON.stringify(join(dir, "systemctl.log"))}\nexit 0`);
+        shim(
+            "loginctl",
+            `f=${JSON.stringify(join(dir, "linger"))}\ncase "$1" in\n  show-user) cat "$f" 2>/dev/null || echo no ;;\n  enable-linger) [ -f ${JSON.stringify(join(dir, "linger-allowed"))} ] || exit 1; echo yes > "$f" ;;\n  *) exit 1 ;;\nesac`,
+        );
+    } else {
+        // No service manager, on any machine the tests run on: Cavvy runs detached (the real one is tried on a real server).
+        shim("systemctl", "exit 1");
+        shim("loginctl", "exit 1");
+    }
     shim("getconf", 'if [ "$1" = GNU_LIBC_VERSION ]; then echo "glibc 2.39"; else PATH="$FAKE_REAL_PATH" exec getconf "$@"; fi');
     const bin = join(dir, "ssh");
     writeFileSync(bin, `#!/bin/sh\nFAKE_SSH_DIR=${JSON.stringify(dir)} exec ${JSON.stringify(process.execPath)} --no-env-file ${JSON.stringify(join(REPO, "test", "helpers", "fake-ssh-main.ts"))} "$@"\n`);
@@ -72,6 +95,7 @@ export function fakeSsh(): FakeServer {
 
     return {
         home,
+        bin,
         fail(kind) {
             behavior.fail = kind;
             save();
@@ -85,6 +109,24 @@ export function fakeSsh(): FakeServer {
         restoreHostKey() {
             delete behavior.hostKey;
             save();
+        },
+        settings(lines) {
+            behavior.settings = lines;
+            save();
+        },
+        dropSessions(afterMs) {
+            behavior.dropSessionAfterMs = afterMs;
+            save();
+        },
+        asked: () =>
+            existsSync(join(dir, "systemctl.log"))
+                ? readFileSync(join(dir, "systemctl.log"), "utf-8")
+                      .split("\n")
+                      .filter(Boolean)
+                : [],
+        allowLinger(yes) {
+            if (yes) writeFileSync(join(dir, "linger-allowed"), "");
+            else rmSync(join(dir, "linger-allowed"), { force: true });
         },
         trust(host) {
             writeFileSync(join(dir, "known_hosts"), `${host} ${hostKey()}\n`, { flag: "a" });
@@ -112,7 +154,7 @@ export function fakeSsh(): FakeServer {
             // CLIs, whatever is installed on the machine the tests run on.
             const program = o.broken
                 ? "#!/bin/sh\necho 'cannot execute binary file: Exec format error' >&2\nexit 126\n"
-                : `#!/bin/sh\nPATH=/usr/bin:/bin:/usr/sbin:/sbin; SHELL=${join(dir, "bin", "quiet-shell")}; CAVVY_BUILD=${id}; export PATH SHELL CAVVY_BUILD\nexec ${JSON.stringify(process.execPath)} --no-env-file --config=${JSON.stringify(join(REPO, "bunfig.toml"))} ${JSON.stringify(join(REPO, "src", "index.ts"))} "$@"\n`;
+                : `#!/bin/sh\nPATH=/usr/bin:/bin:/usr/sbin:/sbin; SHELL=${join(dir, "bin", "quiet-shell")}; CAVVY_BUILD=${id}; CAVVY_GUI_DIST="$(dirname "$0")/gui"; export PATH SHELL CAVVY_BUILD CAVVY_GUI_DIST\nexec ${JSON.stringify(process.execPath)} --no-env-file --config=${JSON.stringify(join(REPO, "bunfig.toml"))} ${JSON.stringify(join(REPO, "src", "index.ts"))} "$@"\n`;
             writeFileSync(join(stage, "cavvy"), program);
             chmodSync(join(stage, "cavvy"), 0o755);
             if (o.gui) {

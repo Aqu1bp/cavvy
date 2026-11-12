@@ -40,6 +40,10 @@ interface Behavior {
     fail?: "timeout" | "refused" | "dns" | "auth" | "closed";
     /** The key the server offers (a public key line's type and base64), when it isn't the first one it had. */
     hostKey?: string;
+    /** What `ssh -G` says, in place of the usual: lines like "userknownhostsfile /dev/null". */
+    settings?: string[];
+    /** A command's connection is lost this many milliseconds in. */
+    dropSessionAfterMs?: number;
 }
 const behavior: Behavior = existsSync(join(dir, "behavior.json")) ? JSON.parse(readFileSync(join(dir, "behavior.json"), "utf-8")) : {};
 appendFileSync(join(dir, "calls.jsonl"), JSON.stringify({ opts: Object.fromEntries(opts), flags: [...flags], port, forward, separated, dest, command }) + "\n");
@@ -49,9 +53,13 @@ const fail = (text: string): never => {
     process.exit(255);
 };
 
-const knownHosts = join(dir, "known_hosts");
+// As ssh does: the file named on the command line, else the one its settings name, else the usual one.
+const said = (key: string) => behavior.settings?.find((l) => l.toLowerCase().startsWith(`${key} `))?.slice(key.length + 1).split(" ")[0];
+const knownHosts = opts.get("UserKnownHostsFile") && opts.get("StrictHostKeyChecking") === "yes" ? opts.get("UserKnownHostsFile")! : (said("userknownhostsfile") ?? join(dir, "known_hosts"));
 if (flags.has("-G")) {
-    process.stdout.write(`hostname ${host}\nuserknownhostsfile ${knownHosts} ${knownHosts}2\n`);
+    const lines = [`hostname ${host}`, ...(port ? [`port ${port}`] : []), ...(behavior.settings ?? [])];
+    if (!said("userknownhostsfile")) lines.push(`userknownhostsfile ${knownHosts} ${knownHosts}2`);
+    process.stdout.write(lines.join("\n") + "\n");
     process.exit(0);
 }
 
@@ -69,7 +77,7 @@ if (opts.get("StrictHostKeyChecking") === "no" && opts.get("UserKnownHostsFile")
     process.stderr.write(`Warning: Permanently added '${name}' (ED25519) to the list of known hosts.\n`);
     fail(`${dest}: Permission denied (publickey).`);
 }
-const known = existsSync(knownHosts)
+const known = knownHosts !== "/dev/null" && existsSync(knownHosts)
     ? readFileSync(knownHosts, "utf-8")
           .split("\n")
           .filter((l) => l.split(" ")[0] === name)
@@ -130,4 +138,11 @@ env.HOME = join(dir, "home");
 env.PATH = `${join(dir, "bin")}:${process.env.PATH ?? ""}`;
 env.FAKE_REAL_PATH = process.env.PATH ?? "";
 const proc = Bun.spawn(["sh", "-c", command!], { stdin: "inherit", stdout: "inherit", stderr: "inherit", env, cwd: env.HOME });
+if (behavior.dropSessionAfterMs !== undefined) {
+    // The connection goes, and with it what was running at the other end.
+    setTimeout(() => {
+        proc.kill("SIGKILL");
+        fail("client_loop: send disconnect: Broken pipe");
+    }, behavior.dropSessionAfterMs);
+}
 process.exit(await proc.exited);

@@ -5,14 +5,14 @@
 import { APP_NAME } from "../config/paths";
 import { loadScope } from "../config/settings";
 import { childEnv } from "../util/env";
-import { thisBuild } from "./build";
+import { thisBuild, UNKNOWN_BUILD } from "./build";
 import { ServerLink, type LinkState } from "./connect";
-import { describeCopy, planCopy, sendCopy } from "./copy";
+import { countCopied, describeCopy, planCopy, sendCopy } from "./copy";
 import type { HostCheck, HostStatus } from "./host";
 import { ensureBuildThere, ServerBusy, setUpServer, type SetupProgress, type SetupResult } from "./install";
-import { BUILD_ID, probeServer, remoteBuildDir } from "./remote";
-import { NotSetUp, remoteCheck, remoteStatus, revokeOverSsh, stopRemote } from "./service";
-import { hostOf, offeredHostKey, remoteSh, shQuote, ssh, sshCommandArgv, SshError, trustHostKey } from "./ssh";
+import { probeServer, remoteBuildDir } from "./remote";
+import { NotSetUp, remoteCheck, remoteStatus, revokeOverSsh, serviceReport, stopRemote, type ServiceReport } from "./service";
+import { hostOf, offeredHostKey, printable, remoteSh, shQuote, ssh, sshCommandArgv, SshError, trustHostKey } from "./ssh";
 import { draftServer, listServers, removeServer, requireServer, saveServer, ServerError, thisDesktop, type ServerEntry } from "./store";
 
 const out = (line = "") => process.stdout.write(line + "\n");
@@ -37,14 +37,15 @@ A server is any Linux machine you reach with ssh. Your SSH config, keys and agen
 
 /** Says why something on a server failed, as the user needs it. False for anything that isn't theirs to read. */
 function report(e: unknown): boolean {
+    // Some of these words are a server's own: nothing in them may draw on the terminal.
     if (e instanceof SshError) {
-        err(e.message);
-        if (e.detail) err(`  ${e.detail}`);
-        if (e.fix) err(`  ${e.fix}`);
+        err(printable(e.message, 2000));
+        if (e.detail) err(`  ${printable(e.detail)}`);
+        if (e.fix) err(`  ${printable(e.fix)}`);
         return true;
     }
     if (e instanceof ServerError) {
-        err(e.message);
+        err(printable(e.message, 2000));
         return true;
     }
     return false;
@@ -65,18 +66,22 @@ async function ask(title: string, header: string[], yes: string, no: string): Pr
     );
 }
 
-/** Runs it, and if the server's key isn't known yet, shows the key and asks; once trusted, runs it again. */
-async function withTrust<T>(e: ServerEntry, run: () => Promise<T>): Promise<T> {
+/**
+ * Runs it, and if the server's key isn't known yet, shows the key and asks; once trusted, runs it again. Hands
+ * back the server as it's now reached: trusting can add where its key is kept, which a saved server keeps.
+ */
+async function withTrust<T>(e: ServerEntry, run: (e: ServerEntry) => Promise<T>, o: { saved?: boolean } = {}): Promise<{ entry: ServerEntry; value: T }> {
     try {
-        return await run();
+        return { entry: e, value: await run(e) };
     } catch (first) {
         if (!(first instanceof SshError) || first.kind !== "host-unknown") throw first;
         const key = await offeredHostKey(e);
         const host = hostOf(e);
         if (!interactive()) throw new SshError("host-unknown", `${host} isn't a server this machine has connected to before.`, `Its key: ${key.fingerprints.join(", ")}`, "Run this in a terminal to check it and trust it.");
         if (!(await ask(`Trust ${host}?`, ["This machine hasn't connected to it before. Its key:", ...key.fingerprints.map((f) => `  ${f}`)], "Trust", "Cancel"))) throw new ServerError("Not trusted, so not connected.");
-        trustHostKey(e, key);
-        return run();
+        const entry = trustHostKey(e, key);
+        if (o.saved && entry !== e) saveServer(entry);
+        return { entry, value: await run(entry) };
     }
 }
 
@@ -122,13 +127,13 @@ function setupOptions(e: ServerEntry, o: { force?: boolean; update?: boolean } =
 }
 
 /** Said when a server can't keep Cavvy as a service. */
-function serviceLines(service: SetupResult["service"]): string[] {
+function serviceLines(service: ServiceReport | undefined): string[] {
     if (!service || service.service) return [];
     return [service.lingerFix ? `It won't start Cavvy again after a reboot. To fix that, run on it: ${service.lingerFix}` : "It won't start Cavvy again after a reboot."];
 }
 
 /** What a server lacks, as lines: only what the user would act on. */
-export function checkLines(c: HostCheck, service?: SetupResult["service"]): string[] {
+export function checkLines(c: HostCheck, service?: ServiceReport): string[] {
     const lines = serviceLines(service);
     const have = c.clis.filter((x) => x.installed);
     for (const cli of have) if (cli.signedIn === false) lines.push(`${cli.product} isn't signed in there. On it: ${cli.signIn}`);
@@ -145,7 +150,7 @@ export function checkLines(c: HostCheck, service?: SetupResult["service"]): stri
 
 async function check(e: ServerEntry): Promise<HostCheck | undefined> {
     try {
-        return JSON.parse(await remoteCheck(e)) as HostCheck;
+        return await remoteCheck(e);
     } catch (x) {
         if (!(x instanceof ServerError)) throw x;
         return undefined;
@@ -184,6 +189,7 @@ function parseAdd(args: string[]): { name?: string; destination?: string; flags:
     return { name: rest[0], destination: rest[1], flags };
 }
 
+/** The one-time copy. It's an extra: failing, it's said and the server is still added. */
 async function offerCopy(e: ServerEntry, wanted: boolean | undefined) {
     if (wanted === false) return;
     let settings;
@@ -197,8 +203,11 @@ async function offerCopy(e: ServerEntry, wanted: boolean | undefined) {
         const what = describeCopy(plan.counts);
         if (!what) return;
         if (wanted === undefined && !(await ask(`Copy your ${what} to ${e.name}?`, ["Keys aren't copied."], "Copy", "Skip"))) return;
-        const n = await sendCopy(e, plan);
-        err(n ? `Copied your ${what}.` : `${e.name} already had them.`);
+        // What the server took, which isn't always what was offered: it keeps what it has.
+        const took = describeCopy(countCopied(await sendCopy(e, plan)));
+        err(took ? `Copied your ${took}.` : `${e.name} already had them.`);
+    } catch (x) {
+        if (!report(x)) throw x;
     } finally {
         plan.cleanup();
     }
@@ -210,11 +219,11 @@ async function add(args: string[]): Promise<number> {
         err(`Usage: ${APP_NAME} servers add <name> <user@host> [--port n] [--identity file]`);
         return 1;
     }
-    const e = draftServer({ name, destination, port: flags.port, identityFile: flags.identityFile });
+    let e = draftServer({ name, destination, port: flags.port, identityFile: flags.identityFile });
     err(`Connecting to ${hostOf(e)}…`);
     let setup: SetupResult | undefined;
     try {
-        setup = await withTrust(e, () => setUpServer(e, setupOptions(e)));
+        ({ entry: e, value: setup } = await withTrust(e, (entry) => setUpServer(entry, setupOptions(entry))));
     } catch (x) {
         // It's there and working, on its own version: added, and updated another time.
         if (!(x instanceof ServerBusy)) throw x;
@@ -227,7 +236,7 @@ async function add(args: string[]): Promise<number> {
     out(setup.kept === "newer" ? `${e.name} is ready. It runs a newer Cavvy than this machine.` : `${e.name} is ready.`);
     out("Only put credentials on it that you'd accept an agent using.");
     const c = await check(e);
-    for (const line of c ? checkLines(c, setup.service) : []) out(line);
+    for (const line of c ? checkLines(c, setup.service) : serviceLines(setup.service)) out(line);
     out(`Work there: ${APP_NAME} --server ${e.name}   or   ${APP_NAME} gui --server ${e.name}`);
     return 0;
 }
@@ -243,10 +252,10 @@ async function checkCommand(names: string[]): Promise<number> {
         try {
             const [status, facts] = await Promise.all([remoteStatus(e), probeServer(e)]);
             out(statusLine(e, status));
-            if (status && status.build !== thisBuild()) out(`  It runs a different version from this machine's: ${APP_NAME} servers update ${e.name}`);
+            // Only a Cavvy that knows which build it is can say another one differs, or bring it level.
+            if (status && thisBuild() !== UNKNOWN_BUILD && status.build !== thisBuild()) out(`  It runs a different version from this machine's: ${APP_NAME} servers update ${e.name}`);
             const c = await check(e);
-            const service = facts.systemd && facts.linger ? { service: true } : { service: false, lingerFix: facts.systemd && /^[\w.-]+$/.test(facts.user) ? `sudo loginctl enable-linger ${facts.user}` : undefined };
-            const lines = c ? checkLines(c, service) : [];
+            const lines = c ? checkLines(c, serviceReport(facts)) : [];
             for (const line of lines) out(`  ${line}`);
             if (c && !lines.length) out("  Nothing missing.");
         } catch (x) {
@@ -266,7 +275,7 @@ async function update(args: string[]): Promise<number> {
         return 1;
     }
     const e = requireServer(name);
-    const r = await withTrust(e, () => setUpServer(e, setupOptions(e, { force, update: true })));
+    const { value: r } = await withTrust(e, (entry) => setUpServer(entry, setupOptions(entry, { force, update: true })), { saved: true });
     if (r.kept === "newer") out(`${e.name} runs a newer Cavvy than this machine, so it was left as it is. Update Cavvy here, or use --force.`);
     else if (r.kept) out(`${e.name} was left on its own version.`);
     else out(r.replaced ? `${e.name} is updated.` : `${e.name} is up to date.`);
@@ -287,14 +296,11 @@ async function stop(args: string[]): Promise<number> {
     } catch (x) {
         if (!(x instanceof NotSetUp)) throw x;
     }
-    if (!status) {
-        out(`Cavvy isn't running on ${e.name}.`);
-        return 0;
-    }
-    if ((status.working || status.waiting) && !args.includes("--force") && !(await ask(`Stop Cavvy on ${e.name}?`, [busyLine(status)], "Stop", "Cancel"))) {
+    if (status && (status.working || status.waiting) && !args.includes("--force") && !(await ask(`Stop Cavvy on ${e.name}?`, [busyLine(status)], "Stop", "Cancel"))) {
         err(`${e.name} is working (${busyLine(status)}). To stop it anyway: ${APP_NAME} servers stop ${e.name} --force`);
         return 1;
     }
+    // Also when it isn't answering: one that's only starting, or about to be started again, is stopped for good too.
     await stopRemote(e);
     out(`Cavvy on ${e.name} is stopped.`);
     return 0;
@@ -383,24 +389,32 @@ function continueCommand(spec: string): string {
 export async function runOnServer(spec: string, forwarded: string[]): Promise<number> {
     try {
         const { name, folder } = parseServerSpec(spec);
-        const e = requireServer(name);
+        let e = requireServer(name);
         const build = thisBuild();
-        if (!BUILD_ID.test(build)) throw new ServerError("This copy of Cavvy can't tell which build it is, so it can't run on a server.");
+        if (build === UNKNOWN_BUILD) throw new ServerError("This copy of Cavvy can't tell which build it is, so it can't run on a server. Run it from a checkout.");
         const env = TERMINAL_ENV.filter((k) => process.env[k]).map((k) => `${k}=${shQuote(process.env[k]!)}`);
         const command = `env ${["CAVVY_NO_KEYCHAIN=1", ...env].join(" ")} ${remoteSh(RUN, [build, folder, ...forwarded])}`;
         // Asked first without the terminal, so a server that can't be reached, or has no build yet, is said in plain words.
-        const there = await withTrust(e, () => ssh(e, remoteSh(`[ -x "${remoteBuildDir("$1")}/cavvy" ] || exit ${NO_BUILD}`, [build]), { timeoutMs: 45_000 }));
-        if (there.code === NO_BUILD) {
+        const asked = await withTrust(e, (entry) => ssh(entry, remoteSh(`[ -x "${remoteBuildDir("$1")}/cavvy" ] || exit ${NO_BUILD}`, [build]), { timeoutMs: 45_000 }), { saved: true });
+        e = asked.entry;
+        if (asked.value.code === NO_BUILD) {
             err(`Setting up Cavvy on ${e.name}…`);
             await ensureBuildThere(e, { progress: progress() });
         }
         const tty = interactive();
-        const proc = Bun.spawn(sshCommandArgv(e, command, { tty }), { stdin: "inherit", stdout: "inherit", stderr: "inherit", env: childEnv() });
-        // Ctrl+C belongs to the Cavvy over there: the terminal passes it on, and this process waits for ssh.
-        const ignore = () => {};
-        process.on("SIGINT", ignore);
+        // Off a terminal, the Cavvy there reads what's piped in. A terminal that's only standing by (output is piped, input
+        // isn't) is nothing to read: handed over, it would be a pipe that never ends, and the Cavvy there would wait on it.
+        const stdin = !tty && process.stdin.isTTY ? "ignore" : "inherit";
+        const proc = Bun.spawn(sshCommandArgv(e, command, { tty }), { stdin, stdout: "inherit", stderr: "inherit", env: childEnv() });
+        // Ctrl+C belongs to the Cavvy over there: with a terminal it's passed on as a key; without one, ssh takes it and ends.
+        let interrupted = false;
+        const onInterrupt = () => {
+            interrupted = true;
+        };
+        process.on("SIGINT", onInterrupt);
         const code = await proc.exited;
-        process.off("SIGINT", ignore);
+        process.off("SIGINT", onInterrupt);
+        if (interrupted && !tty) return 130;
         // 255 is ssh's own failure; killed, it's gone the same way.
         if (code === 255 || proc.signalCode) {
             // The Cavvy there couldn't put the terminal back as it found it.
@@ -409,6 +423,8 @@ export async function runOnServer(spec: string, forwarded: string[]): Promise<nu
             if (tty) err(`Continue with: ${continueCommand(spec)}`);
             return 1;
         }
+        // Checked a moment ago, and gone since: another machine brought the server to its own build in between.
+        if (code === NO_BUILD) err(`Cavvy on ${e.name} changed just now. Run that again.`);
         return code === NO_FOLDER || code === NO_BUILD ? 1 : code;
     } catch (x) {
         if (report(x)) return 1;
@@ -430,25 +446,29 @@ function openBrowser(url: string) {
 
 export async function guiOnServer(name: string, o: { open: boolean }): Promise<number> {
     try {
-        const e = requireServer(name);
+        let e = requireServer(name);
         let lastRun: string | undefined;
         /** Connects and keeps connected; `over` settles when it's stopped, with why if it wasn't stopped here. */
-        const connect = async () => {
+        const connect = async (entry: ServerEntry) => {
             const over = Promise.withResolvers<ServerError | undefined>();
-            const link = new ServerLink(e, {
+            const link = new ServerLink(entry, {
                 onState(s: LinkState) {
                     if (s.state === "connected") {
-                        if (!s.pairing.gui) return over.resolve(new ServerError(`Cavvy on ${e.name} was set up without its GUI. Build the GUI here (bun install --cwd gui && bun run gui:build), then: ${APP_NAME} servers update ${e.name}`));
+                        if (!s.pairing.gui) return over.resolve(new ServerError(`Cavvy on ${entry.name} was set up without its GUI. Build the GUI here (bun install --cwd gui && bun run gui:build), then: ${APP_NAME} servers update ${entry.name}`));
                         const url = `http://127.0.0.1:${s.localPort}`;
-                        const run = s.pairing.run;
-                        // A server that restarted has forgotten every sign-in: the page needs a new one.
-                        if (lastRun !== run) {
-                            const link = `${url}/#code=${s.pairing.code}`;
-                            err(lastRun === undefined ? `\n  ${e.name} is at ${url}\n  Open (one-time link): ${link}\n  Ctrl+C disconnects. Work there keeps running.\n` : `Cavvy on ${e.name} restarted. Open: ${link}`);
+                        const link = `${url}/#code=${s.pairing.code}`;
+                        if (lastRun === undefined) {
+                            err(`\n  ${entry.name} is at ${url}\n  Open (one-time link): ${link}\n  Ctrl+C disconnects. Work there keeps running.\n`);
                             if (o.open) openBrowser(link);
-                        } else err(`Reconnected to ${e.name}.`);
-                        lastRun = run;
-                    } else if (s.state === "reconnecting" && s.attempt === 1) err(`Connection to ${e.name} lost. Reconnecting…`);
+                        } else if (lastRun !== s.pairing.run) {
+                            // A server that restarted has forgotten every sign-in: the page needs a new one.
+                            err(`Cavvy on ${entry.name} restarted. Open: ${link}`);
+                            if (o.open) openBrowser(link);
+                        }
+                        // The page may have given up, or its sign-in run out, while this was away: a link for that, not opened.
+                        else err(`Reconnected to ${entry.name}. If the page asks you to sign in: ${link}`);
+                        lastRun = s.pairing.run;
+                    } else if (s.state === "reconnecting" && s.attempt === 1) err(`Connection to ${entry.name} lost. Reconnecting…`);
                     else if (s.state === "stopped") over.resolve(s.error);
                 },
             });
@@ -457,18 +477,20 @@ export async function guiOnServer(name: string, o: { open: boolean }): Promise<n
         };
         let up: Awaited<ReturnType<typeof connect>>;
         try {
-            up = await withTrust(e, connect);
+            ({ entry: e, value: up } = await withTrust(e, connect, { saved: true }));
         } catch (x) {
             if (!(x instanceof NotSetUp)) throw x;
             err(`Setting up Cavvy on ${e.name}…`);
             await setUpServer(e, setupOptions(e));
-            up = await connect();
+            up = await connect(e);
         }
-        const quit = () => void up.link.stop();
+        const quit = () => void up.link.stop({ signOut: true });
         process.on("SIGINT", quit);
         process.on("SIGTERM", quit);
         const failed = await up.over;
-        await up.link.stop();
+        // What this connection signed in stops working with it: a page left open has nothing good for whatever
+        // listens on its port next.
+        await up.link.stop({ signOut: true });
         if (failed) {
             report(failed);
             return 1;

@@ -8,18 +8,20 @@
 //     that reads like it has one in it;
 //   - hooks and the status line: they're commands, and would run on the server;
 //   - the permission mode: a server decides its own;
-//   - MCP servers that run a program or name a file on this machine.
+//   - MCP servers that name a file or an address on this machine or its
+//     network, or that have a key in their address or arguments. Ones started
+//     by a bare command (`npx …`) or at a public address do go.
 //
 // Nothing already on the server is replaced: a file that's there is kept.
 
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { join, relative, sep } from "path";
 import { cavvyHome, paths } from "../config/paths";
 import type { McpServerConfig, Settings } from "../config/settings";
 import { childEnv } from "../util/env";
 import { matchesSecretPattern } from "../util/secret-patterns";
-import { hostOf, remoteSh, ssh } from "./ssh";
+import { hostOf, printable, remoteSh, ssh } from "./ssh";
 import { ServerError, type ServerEntry } from "./store";
 
 /** Settings that are a way of working, and can't hold a secret or run a command. */
@@ -51,12 +53,36 @@ const SETTINGS_KEYS = [
 
 const looksLocal = (s: string) => /^(~|\.{1,2}(\/|$)|\/)/.test(s) || s.includes(homedir());
 
-/** An MCP server that would work from another machine as it's written, and holds nothing secret. */
+/** An option whose value is a credential, by its name: `--api-key`, `--token=…`, `-H Authorization: …`. */
+const SECRET_OPTION = /^-{1,2}[\w-]*(key|token|secret|password|passwd|auth|credential|bearer|header)[\w-]*(=|$)|^-H$/i;
+
+/** A host only this machine, or its own network, can reach. */
+function localHost(host: string): boolean {
+    const h = host.toLowerCase().replace(/^\[|\]$/g, "");
+    return h === "localhost" || h === "0.0.0.0" || h === "::" || h === "::1" || h.endsWith(".local") || h.endsWith(".localhost") || !h.includes(".") || /^(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h) || /^f[cde]/.test(h);
+}
+
+/**
+ * An MCP server that would work from another machine as it's written, and
+ * holds nothing secret: no environment or headers, and nothing in its
+ * address or arguments where a key goes (a sign-in in the address, a query,
+ * an option named for a key) or that reads like one.
+ */
 export function portableMcpServer(c: McpServerConfig): boolean {
     if (c.plugin || c.env || c.headers || c.cwd || c.oauth?.clientSecret) return false;
-    if (c.url) return !c.command && /^(https?|wss?):\/\//.test(c.url) && !/\/\/(localhost|127\.|\[::1\])/.test(c.url);
+    if (matchesSecretPattern(JSON.stringify(c))) return false;
+    if (c.url) {
+        if (c.command) return false;
+        let u: URL;
+        try {
+            u = new URL(c.url);
+        } catch {
+            return false;
+        }
+        return /^(https?|wss?):$/.test(u.protocol) && !u.username && !u.password && !u.search && !localHost(u.hostname);
+    }
     if (!c.command || /[/\\]/.test(c.command) || looksLocal(c.command)) return false;
-    return !(c.args ?? []).some(looksLocal);
+    return !(c.args ?? []).some((a) => looksLocal(a) || SECRET_OPTION.test(a) || /(key|token|secret|password)=/i.test(a));
 }
 
 /** The settings a server gets: what's safe to carry, and nothing else. */
@@ -65,12 +91,18 @@ export function portableSettings(s: Settings): Settings {
     for (const k of SETTINGS_KEYS) if (s[k] !== undefined) out[k] = s[k];
     const p = s.permissions;
     if (p) {
-        // The rules, not the mode: what a server asks about is its own decision.
-        const rules = Object.fromEntries((["allow", "ask", "deny"] as const).filter((k) => Array.isArray(p[k]) && p[k]!.length).map((k) => [k, p[k]]));
+        // The rules, not the mode: what a server asks about is its own decision. Not a rule with a key written into it.
+        const rules = Object.fromEntries(
+            (["allow", "ask", "deny"] as const)
+                .map((k) => [k, (Array.isArray(p[k]) ? p[k]! : []).filter((r) => typeof r === "string" && !matchesSecretPattern(r))] as const)
+                .filter(([, list]) => list.length),
+        );
         if (Object.keys(rules).length) out.permissions = rules;
     }
     const servers = Object.entries(s.mcpServers ?? {}).filter(([, c]) => c && typeof c === "object" && portableMcpServer(c));
     if (servers.length) out.mcpServers = Object.fromEntries(servers);
+    // Whatever else reads like a key (a model name wouldn't): that setting stays here.
+    for (const k of Object.keys(out)) if (matchesSecretPattern(JSON.stringify(out[k]))) delete out[k];
     return out as Settings;
 }
 
@@ -118,7 +150,8 @@ class Stage {
         if (!body.includes(0) && matchesSecretPattern(body.toString("utf-8"))) return false;
         const dest = join(this.dir, to);
         mkdirSync(join(dest, ".."), { recursive: true });
-        cpSync(from, dest);
+        // The bytes read, not a copy of the entry: a file linked in from elsewhere (a dotfiles folder) goes as a file.
+        writeFileSync(dest, body, { mode: statSync(from).mode & 0o777 });
         this.files++;
         this.bytes += size;
         return true;
@@ -187,6 +220,17 @@ export function planCopy(settings: Settings | undefined): CopyPlan {
     return { stage: dir, counts, files: stage.files, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
+/** What a set of copied files is, by kind: the paths are as they sit under the server's home. */
+export function countCopied(paths: string[]): CopyPlan["counts"] {
+    const skill = /^\.(cavvy|claude)\/skills\/[^/]+\/SKILL\.md$/;
+    return {
+        settings: paths.includes(".cavvy/settings.json"),
+        memory: paths.filter((p) => /^\.cavvy\/[^/]+\.md$|^\.claude\/CLAUDE\.md$|^\.claude\/rules\/|^\.codex\/AGENTS\.md$/.test(p)).length,
+        skills: paths.filter((p) => skill.test(p)).length,
+        commands: paths.filter((p) => p.startsWith(".cavvy/commands/")).length,
+    };
+}
+
 /** "settings, memory, 12 skills and 3 commands": what a plan carries, for the line that says so. */
 export function describeCopy(c: CopyPlan["counts"]): string {
     const parts = [...(c.settings ? ["settings"] : []), ...(c.memory ? ["memory"] : []), ...(c.skills ? [`${c.skills} skill${c.skills === 1 ? "" : "s"}`] : []), ...(c.commands ? [`${c.commands} command${c.commands === 1 ? "" : "s"}`] : [])];
@@ -211,13 +255,16 @@ find . -type f | while IFS= read -r f; do
 done
 `;
 
-/** Sends a plan's files. Returns how many the server took (the rest were there already). */
-export async function sendCopy(e: ServerEntry, plan: CopyPlan, signal?: AbortSignal): Promise<number> {
-    if (!plan.files) return 0;
+/** Sends a plan's files. Returns the ones the server took, as paths under its home (the rest were there already). */
+export async function sendCopy(e: ServerEntry, plan: CopyPlan, signal?: AbortSignal): Promise<string[]> {
+    if (!plan.files) return [];
     const tar = Bun.spawn(["tar", "-czf", "-", "-C", plan.stage, "."], { stdin: "ignore", stdout: "pipe", stderr: "ignore", env: { ...childEnv(), COPYFILE_DISABLE: "1" } });
     const body = new Uint8Array(await new Response(tar.stdout).arrayBuffer());
     if ((await tar.exited) !== 0) throw new ServerError("Couldn't pack your settings to copy.");
     const r = await ssh(e, remoteSh(RECEIVE), { stdin: body, timeoutMs: 120_000, signal });
-    if (r.code !== 0) throw new ServerError(`Couldn't copy your settings to ${hostOf(e)}: ${r.stderr.trim().split("\n").at(-1) ?? `exit ${r.code}`}`);
-    return r.stdout.split("\n").filter((l) => l.startsWith("copied=")).length;
+    if (r.code !== 0) throw new ServerError(`Couldn't copy your settings to ${hostOf(e)}: ${printable(r.stderr.trim().split("\n").at(-1) ?? `exit ${r.code}`)}`);
+    return r.stdout
+        .split("\n")
+        .filter((l) => l.startsWith("copied="))
+        .map((l) => l.slice("copied=".length));
 }

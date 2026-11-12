@@ -5,11 +5,16 @@
 // "SSH", the tunnel, and the server's own code. What isn't: the network, and
 // systemd (the pretend server has none, so Cavvy runs detached there).
 
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from "fs";
+import { connect as tcp } from "net";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 import { fakeSsh } from "./helpers/fake-ssh";
+
+// Each step is a real command on the pretend server, and some wait for a server to start or to give up: more than
+// the default five seconds on a slow or busy machine.
+setDefaultTimeout(60_000);
 
 const iso = isolate();
 const fake = fakeSsh();
@@ -18,7 +23,7 @@ const { setUpServer, ServerBusy } = await import("../src/servers/install");
 const { probeServer } = await import("../src/servers/remote");
 const { offeredHostKey, trustHostKey, SshError } = await import("../src/servers/ssh");
 const { ServerLink, exchangeCode } = await import("../src/servers/connect");
-const { remoteStatus, revokeOverSsh, stopRemote, serviceTiming, StoppedThere, UpdateFailed } = await import("../src/servers/service");
+const { remoteStatus, revokeOverSsh, setUpService, stopRemote, serviceTiming, StoppedThere, UpdateFailed } = await import("../src/servers/service");
 const { thisDesktop } = await import("../src/servers/store");
 import type { BuildSource } from "../src/servers/build";
 import type { LinkState } from "../src/servers/connect";
@@ -35,14 +40,14 @@ writeFileSync(join(fake.home, ".cavvy", "settings.json"), JSON.stringify({ model
 
 const A = "aaaaaaaaaaaa-1";
 const B = "bbbbbbbbbbbb-2";
-function source(id: string, o: { gui?: boolean; relation?: ReturnType<BuildSource["compare"]>; bundle?: () => ReturnType<typeof fake.bundle> } = {}): BuildSource & { built: number } {
+function source(id: string, o: { gui?: boolean; relation?: ReturnType<BuildSource["compare"]>; bundle?: () => ReturnType<typeof fake.bundle>; on?: typeof fake } = {}): BuildSource & { built: number } {
     const s = {
         id,
         gui: Boolean(o.gui),
         built: 0,
         async build() {
             s.built++;
-            return (o.bundle ?? (() => fake.bundle(id, { gui: o.gui })))();
+            return (o.bundle ?? (() => (o.on ?? fake).bundle(id, { gui: o.gui })))();
         },
         compare: (theirs: string) => (theirs === id ? "same" : (o.relation ?? "older")),
     };
@@ -83,6 +88,35 @@ class Client {
         if (m.error) throw new Error(m.error.message);
         return m.result;
     }
+}
+
+/** The status of one raw HTTP request, with exactly these headers (a page's Host and Origin can't be set through fetch). */
+function rawStatus(port: number, method: string, path: string, headers: Record<string, string>, body = ""): Promise<number> {
+    return new Promise((resolve, reject) => {
+        const socket = tcp(port, "127.0.0.1");
+        let got = "";
+        socket.on("connect", () => socket.write(`${method} ${path} HTTP/1.1\r\n${Object.entries({ Connection: "close", ...(body ? { "Content-Length": String(Buffer.byteLength(body)) } : {}), ...headers }).map(([k, v]) => `${k}: ${v}\r\n`).join("")}\r\n${body}`));
+        // As soon as the status is in: the server may keep the connection open after answering.
+        socket.on("data", (d) => {
+            got += d.toString("latin1");
+            const status = /^HTTP\/1\.1 (\d{3})/.exec(got)?.[1];
+            if (!status) return;
+            socket.destroy();
+            resolve(Number(status));
+        });
+        socket.on("error", reject);
+        socket.on("close", () => resolve(0));
+    });
+}
+
+/** `cavvy …` as its own process, on build `build`, with no terminal to ask at. */
+function spawnCavvy(build: string, args: string[]) {
+    return Bun.spawn([process.execPath, "--no-env-file", `--config=${join(import.meta.dir, "..", "bunfig.toml")}`, join(import.meta.dir, "..", "src", "index.ts"), ...args], {
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { ...process.env, CAVVY_BUILD: build } as Record<string, string>,
+    });
 }
 
 async function until(what: string, ok: () => boolean | Promise<boolean>, ms = 20_000) {
@@ -247,8 +281,34 @@ describe("connecting", () => {
         expect(await stranger.opened.promise).toBe(false);
     });
 
+    test("only this server's own page, at the tunnel's own address, may sign in or connect", async () => {
+        const port = link.localPort!;
+        const here = `127.0.0.1:${port}`;
+        // A page that rebinds a name to this address still sends its own name.
+        expect(await rawStatus(port, "GET", "/healthz", { Host: "evil.example:80" })).toBe(403);
+        expect(await rawStatus(port, "GET", "/healthz", { Host: `127.0.0.1.evil.example:${port}` })).toBe(403);
+        expect(await rawStatus(port, "GET", "/healthz", { Host: here })).toBe(200);
+        // A page some other local program serves can't trade a code, nor connect with a token it got hold of.
+        expect(await rawStatus(port, "POST", "/auth/exchange", { Host: here, Origin: "http://127.0.0.1:3000", "Content-Type": "application/json" }, '{"code":"x"}')).toBe(403);
+        expect(await rawStatus(port, "POST", "/auth/exchange", { Host: here, Origin: `http://localhost:${port}`, "Content-Type": "application/json" }, '{"code":"x"}')).toBe(403);
+        const upgrade = { Host: here, Upgrade: "websocket", Connection: "Upgrade", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==", "Sec-WebSocket-Version": "13", "Sec-WebSocket-Protocol": `cavvy.v1, auth.${token}` };
+        expect(await rawStatus(port, "GET", "/ws", { ...upgrade, Origin: "http://127.0.0.1:3000" })).toBe(403);
+        expect(await rawStatus(port, "GET", "/ws", { ...upgrade, Origin: "https://evil.example" })).toBe(403);
+        // The desktop app's own pages are never driven through a tunnel.
+        expect(await rawStatus(port, "GET", "/browser-host", upgrade)).toBe(404);
+        // The server's own page, served from this very address, is let in.
+        const own = new WebSocket(`ws://${here}/ws`, { protocols: ["cavvy.v1", `auth.${token}`], headers: { Origin: `http://${here}` } } as any);
+        expect(await new Promise((r) => ((own.onopen = () => r(true)), (own.onerror = () => r(false))))).toBe(true);
+        own.close();
+    });
+
     test("asking to sign in with wrong codes writes nothing on the server", async () => {
-        const list = () => readdirSync(serverDir, { recursive: true }).sort();
+        // Names, sizes and times: nothing new, and nothing there added to.
+        const list = () =>
+            (readdirSync(serverDir, { recursive: true }) as string[]).sort().map((f) => {
+                const st = lstatSync(join(serverDir, f));
+                return `${f} ${st.isDirectory() ? "" : st.size} ${st.isDirectory() ? "" : st.mtimeMs}`;
+            });
         const before = list();
         const tries = await Promise.all(Array.from({ length: 40 }, (_, i) => fetch(`http://127.0.0.1:${link.localPort}/auth/exchange`, { method: "POST", body: JSON.stringify({ code: `wrong-${i}` }) }).then((r) => r.status)));
         expect(new Set(tries)).toEqual(new Set([401]));
@@ -311,12 +371,7 @@ describe("connecting", () => {
 describe("the terminal's commands", () => {
     /** `cavvy …` as its own process, on the build the pretend server runs, with no terminal to ask at. */
     async function cavvy(...args: string[]): Promise<{ code: number; out: string; err: string }> {
-        const proc = Bun.spawn([process.execPath, "--no-env-file", `--config=${join(import.meta.dir, "..", "bunfig.toml")}`, join(import.meta.dir, "..", "src", "index.ts"), ...args], {
-            stdin: "ignore",
-            stdout: "pipe",
-            stderr: "pipe",
-            env: { ...process.env, CAVVY_BUILD: A } as Record<string, string>,
-        });
+        const proc = spawnCavvy(A, args);
         const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
         return { code, out, err };
     }
@@ -382,15 +437,88 @@ describe("the terminal's commands", () => {
         const theirs = readFileSync(join(fake.home, ".cavvy", "settings.json"), "utf-8");
         const plan = planCopy({ model: "anthropic:claude" });
         try {
-            expect(await sendCopy(entry, plan)).toBe(2);
+            expect((await sendCopy(entry, plan)).sort()).toEqual([".cavvy/CAVVY.md", ".cavvy/commands/ship.md"]);
             expect(readFileSync(join(fake.home, ".cavvy", "CAVVY.md"), "utf-8")).toBe("From this machine.\n");
             expect(readFileSync(join(fake.home, ".cavvy", "commands", "ship.md"), "utf-8")).toBe("Ship it.\n");
             expect(readFileSync(join(fake.home, ".cavvy", "settings.json"), "utf-8")).toBe(theirs);
             expect(lstatSync(join(fake.home, ".cavvy", "CAVVY.md")).mode & 0o077).toBe(0);
             // A second time, everything is there already.
-            expect(await sendCopy(entry, plan)).toBe(0);
+            expect(await sendCopy(entry, plan)).toEqual([]);
         } finally {
             plan.cleanup();
+        }
+    });
+
+    test("--server: a connection lost part way is said, and so is not a command that failed there", async () => {
+        fake.dropSessions(1500);
+        try {
+            const r = await cavvy("--server", "box", "-p", "hangforever please");
+            expect(r.code).toBe(1);
+            expect(r.err).toContain("Connection to box lost.\n");
+            // Off a terminal there's no session on screen to continue.
+            expect(r.err).not.toContain("Continue with");
+        } finally {
+            fake.dropSessions();
+        }
+    });
+
+    test("--server after -- is the prompt's own words, and nothing goes to a server", async () => {
+        const calls = fake.calls().length;
+        const r = await cavvy("-p", "explain", "--", "--server", "box");
+        // This machine has no model in these tests: the prompt was taken as one, here.
+        expect(r.err).toContain("No model configured");
+        expect(fake.calls().length).toBe(calls);
+    });
+
+    test("stop: Cavvy there stops, also when asked a second time; check says so", async () => {
+        expect(await cavvy("servers", "stop", "box")).toEqual({ code: 0, out: "Cavvy on box is stopped.\n", err: "" });
+        expect(await remoteStatus(entry)).toBeUndefined();
+        expect(await cavvy("servers", "stop", "box")).toEqual({ code: 0, out: "Cavvy on box is stopped.\n", err: "" });
+        expect((await cavvy("servers", "check")).out.split("\n")[0]).toBe("box: Cavvy isn't running there.");
+    });
+
+    test("gui --server: starts it again, gives the link, comes back after a drop with a new one, and signs out when it ends", async () => {
+        const proc = spawnCavvy(A, ["gui", "--server", "box", "--no-open"]);
+        let said = "";
+        void (async () => {
+            const d = new TextDecoder();
+            for await (const chunk of proc.stderr) said += d.decode(chunk, { stream: true });
+        })();
+        try {
+            await until("the link", () => /Open \(one-time link\): http/.test(said));
+            const first = /box is at http:\/\/127\.0\.0\.1:(\d+)\n\s+Open \(one-time link\): http:\/\/127\.0\.0\.1:\d+\/#code=([\w-]+)\n\s+Ctrl\+C disconnects\. Work there keeps running\./.exec(said)!;
+            expect(first).not.toBeNull();
+            const port = Number(first[1]);
+            const token = await exchangeCode(port, first[2]!);
+            expect(await new Client(port, token).opened.promise).toBe(true);
+            expect(await remoteStatus(entry)).toMatchObject({ running: true, build: A });
+
+            fake.dropTunnel();
+            await until("it to come back", () => /Reconnected to box\./.test(said));
+            expect(said).toContain("Connection to box lost. Reconnecting…\n");
+            // A page that gave up meanwhile, or whose sign-in ran out, has a link to sign in with: the same address, a new code.
+            const again = new RegExp(`Reconnected to box\\. If the page asks you to sign in: http://127\\.0\\.0\\.1:${port}/#code=([\\w-]+)\\n`).exec(said)!;
+            expect(again).not.toBeNull();
+            expect(again[1]).not.toBe(first[2]);
+            const second = await exchangeCode(port, again[1]!);
+
+            proc.kill("SIGINT");
+            expect(await proc.exited).toBe(0);
+            // What it signed in went with it: a page left open holds nothing good for whatever listens on that port next.
+            const other = new ServerLink(entry);
+            await other.start();
+            try {
+                const s = other.state;
+                if (s.state !== "connected") throw new Error("not connected");
+                expect(await new Client(s.localPort, token).opened.promise).toBe(false);
+                expect(await new Client(s.localPort, second).opened.promise).toBe(false);
+                // This machine's other connections keep their own.
+                expect(await new Client(s.localPort, await exchangeCode(s.localPort, s.pairing.code)).opened.promise).toBe(true);
+            } finally {
+                await other.stop();
+            }
+        } finally {
+            proc.kill("SIGKILL");
         }
     });
 
@@ -515,6 +643,66 @@ describe("updating a server", () => {
             expect(await remoteStatus(entry)).toMatchObject({ running: true, build: B });
         } finally {
             await link.stop();
+        }
+    });
+});
+
+describe("a server that stopped badly", () => {
+    test("a lock it left, naming a pid some other program has now, doesn't keep Cavvy from starting", async () => {
+        await stopRemote(entry);
+        // As after losing power and a reboot: the lock and the state name a server that's gone, and the lock's pid is alive
+        // (this test's own) but isn't one.
+        writeFileSync(join(serverDir, "host.lock"), JSON.stringify({ pid: process.pid, at: Date.now() - 60_000 }));
+        writeFileSync(join(serverDir, "state.json"), JSON.stringify({ pid: 1, start: "long ago", port: 1, build: B, version: "1.0.0", protocol: 1, startedAt: "" }));
+        const link = new ServerLink(entry);
+        await link.start();
+        try {
+            const s = await remoteStatus(entry);
+            expect(s).toMatchObject({ running: true, build: B });
+            expect(s!.pid).not.toBe(process.pid);
+        } finally {
+            await link.stop();
+        }
+    });
+
+    test("a GUI that couldn't be built here doesn't have every set-up restart the server", async () => {
+        const before = await remoteStatus(entry);
+        // This machine means to send the GUI, and the build it makes comes without one.
+        const noGui = { ...source(B), gui: true };
+        const r = await setUpServer(entry, { source: noGui, confirmRestart: async () => true });
+        expect(r.status.pid).toBe(before!.pid);
+        expect(r.replaced).toBeUndefined();
+    });
+});
+
+describe("a server with a service manager", () => {
+    test("Cavvy is its service only where it would outlive the connection; where that's refused, it says what to run", async () => {
+        const sys = fakeSsh({ systemd: true });
+        const box: ServerEntry = { name: "sys", destination: "dev@sys.example", addedAt: new Date().toISOString() };
+        try {
+            sys.trust("sys.example");
+            const r = await setUpServer(box, { source: source(A, { on: sys }) });
+            // Lingering refused: not a service, and not left to start at the next sign-in either (it would stop with it).
+            expect(r.service?.service).toBe(false);
+            expect(r.service?.lingerFix).toMatch(/^sudo loginctl enable-linger \S+$/);
+            expect(sys.asked()).toContain("disable cavvy.service");
+            expect(sys.asked()).not.toContain("enable cavvy.service");
+            expect(sys.asked()).not.toContain("start cavvy.service");
+            // It runs all the same, detached.
+            expect(r.status).toMatchObject({ running: true, build: A });
+
+            sys.allowLinger(true);
+            expect(await setUpService(box)).toEqual({ service: true });
+            expect(sys.asked()).toContain("enable cavvy.service");
+
+            await stopRemote(box);
+            expect(await remoteStatus(box)).toBeUndefined();
+            // Stopped for good: not started at boot again.
+            expect(sys.asked().at(-1)).toBe("disable cavvy.service");
+        } finally {
+            await stopRemote(box).catch(() => undefined);
+            sys.cleanup();
+            process.env.CAVVY_SSH = fake.bin;
         }
     });
 });

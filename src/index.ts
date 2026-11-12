@@ -689,9 +689,12 @@ async function main() {
     // Only Cavvy's own env files (never the project's .env; Bun's auto-load is off).
     const installDir = dirname(import.meta.dir);
     const env = loadCavvyEnv([join(cavvyHome(), ".env"), join(installDir, ".env")]);
+    const sub = argv[0];
+    // What a server runs for others keeps its keys in the 0600 file: a keyring there is only reachable while someone
+    // is signed in to the machine, and this runs when nobody is. Decided before the first key is looked up.
+    if (sub === "host") process.env.CAVVY_NO_KEYCHAIN ??= "1";
     await preloadKeys();
 
-    const sub = argv[0];
     if (sub === "auth") process.exit(await authCommand(argv.slice(1)));
     if (sub === "models") process.exit(await modelsCommand(argv.slice(1)));
     if (sub === "mcp") process.exit(await mcpCli(argv.slice(1), cwd));

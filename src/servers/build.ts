@@ -16,7 +16,7 @@ import { ServerError } from "./store";
 /**
  * The Bun a server's Cavvy runs on, whichever Bun compiles it: the one the
  * desktop app's server uses (desktop-electron/pack.ts) and CI tests with
- * (.github/workflows/ci.yml). test/servers-build.test.ts holds the three together.
+ * (.github/workflows/ci.yml). test/servers-unit.test.ts holds the three together.
  */
 export const SERVER_BUN = "1.4.4";
 
@@ -44,6 +44,9 @@ function git(root: string, args: string[]): string | undefined {
     return r.exitCode === 0 ? r.stdout.toString() : undefined;
 }
 
+/** What thisBuild() says when it can't tell: a compiled Cavvy that wasn't told, with no checkout to ask. */
+export const UNKNOWN_BUILD = "unknown-build";
+
 let known: string | undefined;
 
 /**
@@ -58,7 +61,7 @@ export function thisBuild(): string {
     if (typeof CAVVY_BUILD_ID === "string" && BUILD_ID.test(CAVVY_BUILD_ID)) return (known = CAVVY_BUILD_ID);
     const root = sourceRoot();
     const commit = root ? git(root, ["rev-parse", "--verify", "HEAD"])?.trim() : undefined;
-    if (!root || !commit || !/^[0-9a-f]{40}$/.test(commit)) return (known = "unknown-build");
+    if (!root || !commit || !/^[0-9a-f]{40}$/.test(commit)) return (known = UNKNOWN_BUILD);
     const changed = (git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ...BUILD_PATHS]) ?? "").split("\0").filter(Boolean);
     if (!changed.length) return (known = commit.slice(0, 12));
     const h = createHash("sha256");
@@ -166,7 +169,7 @@ export async function serverBuild(target: LinuxTarget, o: { onStep?: (text: stri
         }
     }
     const root = sourceRoot();
-    if (!root || id === "unknown-build") throw new ServerError("This copy of Cavvy can't make a server's build: it isn't running from a checkout.");
+    if (!root || id === UNKNOWN_BUILD) throw new ServerError("This copy of Cavvy can't make a server's build: it isn't running from a checkout.");
     // Bun itself when Cavvy runs on it; `bun` on PATH otherwise.
     const bun = /(^|[/\\])bun(\.exe)?$/.test(process.execPath) ? process.execPath : Bun.which("bun", { PATH: process.env.PATH ?? "" });
     if (!bun) throw new ServerError("Making a server's build needs Bun (https://bun.sh), which isn't on PATH.");
@@ -193,6 +196,8 @@ export async function serverBuild(target: LinuxTarget, o: { onStep?: (text: stri
             const g = await run([bun, "run", "build"], join(root, "gui"), o.signal);
             if (!g.ok && o.signal?.aborted) throw new ServerError("Stopped.");
             gui = g.ok && existsSync(join(guiDist, "index.html"));
+            // Said, not swallowed: the build goes without it, and `gui --server` would be where it's missed.
+            if (!gui) o.onStep?.(`The GUI didn't build, so the server gets Cavvy without it:\n${g.out}`);
         } else gui = existsSync(join(guiDist, "index.html"));
         if (gui) cpSync(guiDist, join(stage, "gui"), { recursive: true });
 

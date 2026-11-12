@@ -30,8 +30,6 @@ let keychainAvailable: boolean | undefined;
 async function keychainWorks(): Promise<boolean> {
     if (keychainAvailable !== undefined) return keychainAvailable;
     if (process.env.CAVVY_NO_KEYCHAIN || process.env.HARNESS_NO_KEYCHAIN) return (keychainAvailable = false);
-    // A server's keyring is there only while someone is signed in to it, and its Cavvy runs when nobody is.
-    if (existsSync(paths.hostMarker())) return (keychainAvailable = false);
     try {
         await Bun.secrets.get({ service: SERVICE, name: "__probe__" });
         keychainAvailable = true;

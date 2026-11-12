@@ -12,6 +12,7 @@
 //     through the tunnel for a token of its own. Tokens live in this process's
 //     memory: a restart signs every machine out, and each signs in again over
 //     SSH, which is what proves who it is. Nothing a machine keeps signs it in.
+//     A token makes connections for twelve hours; one already made stays.
 //   - `cavvy host` commands reach the running server over a socket in that
 //     folder, which only this user can open.
 //
@@ -21,10 +22,10 @@
 // agents may act freely.
 
 import { createHash, randomBytes } from "crypto";
-import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, closeSync, existsSync, openSync, readFileSync, rmSync, statSync, unlinkSync } from "fs";
 import { homedir, totalmem } from "os";
 import { join } from "path";
-import { hold, SessionInUseError, takeOver } from "../agent/session";
+import { hold, SessionInUseError } from "../agent/session";
 import { AGENT_CLIS } from "../backends/defs";
 import { findCli } from "../backends/cli";
 import { cachedChrome } from "../browser/chrome";
@@ -107,16 +108,19 @@ function isHost(pid: number): boolean {
 // Sign-ins.
 
 const CODE_TTL_MS = 120_000;
-/** A machine signs in again when its connection is made anew, so this only bounds one left open. */
+/** How long a token can make new connections. A machine signs in again whenever its link to the server is made anew. */
 const TOKEN_TTL_MS = 12 * 3600_000;
 const MAX_CODES = 32;
 const MAX_TOKENS = 256;
 const MACHINE_ID = /^[0-9a-f]{32}$/;
+/** One of a machine's connections to the server (connect.ts ServerLink), so its sign-ins can be taken away alone. */
+const CLIENT_ID = /^[0-9a-f]{16}$/;
 
 const digest = (s: string) => createHash("sha256").update(s).digest("hex");
 
 interface Grant {
     machine: string;
+    client?: string;
     expires: number;
     /** A token's own text, so it stops being redacted once it's no good. */
     secret?: string;
@@ -139,13 +143,13 @@ export class MachineSignIns implements SignIns {
         this.tokens.delete(key);
     }
 
-    /** A code that signs `machine` in, once, within two minutes. */
-    pair(machine: string): string {
+    /** A code that signs `machine` in, once, within two minutes. `client`: which of its connections asks. */
+    pair(machine: string, client?: string): string {
         this.prune();
         // Each is made by someone already signed in over SSH; the oldest go so they can't pile up.
         while (this.codes.size >= MAX_CODES) this.codes.delete(this.codes.keys().next().value!);
         const code = randomBytes(24).toString("base64url");
-        this.codes.set(digest(code), { machine, expires: this.now() + CODE_TTL_MS });
+        this.codes.set(digest(code), { machine, client, expires: this.now() + CODE_TTL_MS });
         return code;
     }
 
@@ -159,11 +163,11 @@ export class MachineSignIns implements SignIns {
         const token = randomBytes(32).toString("hex");
         // Kept out of transcripts and tool output, like the desktop app's own token.
         registerSecret(token, "sign-in");
-        this.tokens.set(digest(token), { machine: grant.machine, expires: this.now() + TOKEN_TTL_MS, secret: token });
+        this.tokens.set(digest(token), { machine: grant.machine, client: grant.client, expires: this.now() + TOKEN_TTL_MS, secret: token });
         return token;
     }
 
-    check(token: string): string | undefined {
+    check(token: string): { machine: string; client?: string } | undefined {
         if (!/^[0-9a-f]{64}$/.test(token)) return undefined;
         const key = digest(token);
         const grant = this.tokens.get(key);
@@ -172,13 +176,14 @@ export class MachineSignIns implements SignIns {
             this.drop(key);
             return undefined;
         }
-        return grant.machine;
+        return { machine: grant.machine, client: grant.client };
     }
 
-    /** Everything that signs `machine` in stops working. */
-    revoke(machine: string) {
-        for (const [k, g] of this.codes) if (g.machine === machine) this.codes.delete(k);
-        for (const [k, g] of this.tokens) if (g.machine === machine) this.drop(k);
+    /** What signs `machine` in stops working: all of it, or what one of its clients was given. */
+    revoke(machine: string, client?: string) {
+        const theirs = (g: Grant) => g.machine === machine && (client === undefined || g.client === client);
+        for (const [k, g] of this.codes) if (theirs(g)) this.codes.delete(k);
+        for (const [k, g] of this.tokens) if (theirs(g)) this.drop(k);
     }
 }
 
@@ -241,10 +246,19 @@ function die(msg: string): never {
     process.exit(1);
 }
 
-/** Makes this process the server here, or says which process already is. */
+/**
+ * Makes this process the server here, or says which process already is
+ * (-1: one that's claiming it this moment and never finished).
+ *
+ * A lock can name a process that's running and isn't the server: the server
+ * died without letting go (the machine lost power, it was killed), and after
+ * a reboot some other program has its pid. The session lock this builds on
+ * only gives way to a pid that's gone, so that lock is removed here, under the
+ * same guard file that keeps two starters from each removing the other's.
+ */
 function claim(): number | undefined {
     const lock = `${lockTarget()}.lock`;
-    for (let attempt = 0; attempt < 5; attempt++) {
+    for (let attempt = 0; attempt < 6; attempt++) {
         try {
             hold(lockTarget());
             return undefined;
@@ -261,11 +275,40 @@ function claim(): number | undefined {
                 Bun.sleepSync(400);
                 continue;
             }
-            // Some other program with a dead server's pid.
-            if (!takeOver(lock)) die(`couldn't take over ${lock}. Delete it if no Cavvy server is running.`);
+            removeForeignLock(lock, e.pid);
         }
     }
     return -1;
+}
+
+/** Removes the lock if it still names `pid` and that still isn't the server. */
+function removeForeignLock(lock: string, pid: number) {
+    const guard = `${lock}.takeover`;
+    let fd: number;
+    try {
+        fd = openSync(guard, "wx", 0o600);
+    } catch {
+        // Another starter is at it; one that crashed doing so left this behind.
+        try {
+            if (Date.now() - statSync(guard).mtimeMs > 10_000) unlinkSync(guard);
+        } catch {
+            // gone meanwhile
+        }
+        return;
+    }
+    try {
+        const named = Number((JSON.parse(readFileSync(lock, "utf-8")) as { pid?: unknown }).pid);
+        if (named === pid && !isHost(pid)) unlinkSync(lock);
+    } catch {
+        // gone, or not a lock: the next attempt sees what's there
+    } finally {
+        closeSync(fd);
+        try {
+            unlinkSync(guard);
+        } catch {
+            // already gone
+        }
+    }
 }
 
 export interface HostRunEnv {
@@ -287,17 +330,17 @@ export async function hostRun(args: string[], env: HostRunEnv): Promise<void> {
     const dir = ensureDir(hostDir());
     chmodSync(dir, 0o700);
     const other = claim();
-    if (other !== undefined) {
-        process.stderr.write(`${APP_NAME}: a server is already running here${other > 0 ? ` (pid ${other})` : ""}.\n`);
+    if (other !== undefined && other > 0) {
+        process.stderr.write(`${APP_NAME}: a server is already running here (pid ${other}).\n`);
         process.exit(0);
     }
+    // Not "already running": nothing is, and whatever starts servers should know this one didn't.
+    if (other !== undefined) die(`couldn't take ${lockTarget()}.lock. Delete it if no Cavvy server is running here.`);
     const base = { pid: process.pid, start: processStart(process.pid), startedAt: new Date().toISOString(), ...hostVersion() };
     /** This run, as machines tell it from the one before (it's in every health check, so nothing secret). */
     const run = `${process.pid}-${Date.now().toString(36)}`;
     const writeState = (p: number) => writeJson(stateFile(), { ...base, port: p } satisfies HostState, 0o600);
     writeState(0);
-    // From here on this machine keeps its keys in the 0600 file: a keyring here is only there while someone is signed in.
-    if (!existsSync(paths.hostMarker())) writeFileSync(paths.hostMarker(), "", { mode: 0o600 });
 
     const log = (msg: string) => process.stderr.write(`[${APP_NAME} host] ${redact(msg)}\n`);
     if (loginEnv) {
@@ -307,7 +350,9 @@ export async function hostRun(args: string[], env: HostRunEnv): Promise<void> {
     const { startServer } = await import("../server/server");
     const { defaultStatic } = await import("../server/cli");
     const signIns = new MachineSignIns();
-    const staticDir = defaultStatic();
+    // The GUI that came with this build. CAVVY_GUI_DIST, when set, is the only place looked in (tests name the build's own).
+    const named = process.env.CAVVY_GUI_DIST;
+    const staticDir = named === undefined ? defaultStatic() : existsSync(join(named, "index.html")) ? named : undefined;
     const srv = await startServer({ host: "127.0.0.1", port, signIns, run, staticDir, startCwd: homedir(), fallbackModel: env.fallbackModel, log });
     for (const n of env.notes) log(`note: ${n}`);
 
@@ -350,16 +395,18 @@ export async function hostRun(args: string[], env: HostRunEnv): Promise<void> {
                 // no body
             }
             const machine = typeof body.machine === "string" && MACHINE_ID.test(body.machine) ? body.machine : undefined;
+            const client = typeof body.client === "string" && CLIENT_ID.test(body.client) ? body.client : undefined;
             if (path === "/pair") {
                 if (!machine) return Response.json({ error: "A machine id is 32 hex digits." }, { status: 400 });
                 noteMachine(machine, cleanLabel(body.label));
-                return Response.json({ code: signIns.pair(machine), port: srv.port, run, gui: Boolean(staticDir), ...hostVersion() });
+                return Response.json({ code: signIns.pair(machine, client), port: srv.port, run, gui: Boolean(staticDir), ...hostVersion() });
             }
             if (path === "/revoke") {
                 if (!machine) return Response.json({ error: "A machine id is 32 hex digits." }, { status: 400 });
-                signIns.revoke(machine);
-                noteMachine(machine, undefined);
-                return Response.json({ closed: srv.dropMachine(machine) });
+                signIns.revoke(machine, client);
+                // The machine itself is forgotten only when all of it is signed out.
+                if (!client) noteMachine(machine, undefined);
+                return Response.json({ closed: srv.dropMachine(machine, client) });
             }
             if (path === "/stop") {
                 setTimeout(() => void shutdown(0), 50);
@@ -469,7 +516,7 @@ export async function hostCommand(args: string[], env: HostRunEnv): Promise<numb
     if (sub === "pair") {
         const machine = flag("--machine");
         if (!machine || !MACHINE_ID.test(machine)) die("pair needs --machine <id>");
-        const r = await control<Record<string, unknown>>("/pair", { machine, label: flag("--label") });
+        const r = await control<Record<string, unknown>>("/pair", { machine, label: flag("--label"), client: flag("--client") });
         if (!r) return NOT_RUNNING;
         print(r);
         return 0;
@@ -477,7 +524,7 @@ export async function hostCommand(args: string[], env: HostRunEnv): Promise<numb
     if (sub === "revoke") {
         const machine = flag("--machine");
         if (!machine || !MACHINE_ID.test(machine)) die("revoke needs --machine <id>");
-        const r = await control<Record<string, unknown>>("/revoke", { machine });
+        const r = await control<Record<string, unknown>>("/revoke", { machine, client: flag("--client") });
         // With no server running, nothing signs that machine in anyway.
         print(r ?? { closed: 0 });
         return 0;

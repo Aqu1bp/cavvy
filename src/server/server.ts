@@ -48,8 +48,8 @@ export interface ServeOptions extends EngineOptions {
 export interface SignIns {
     /** A pairing code's sign-in, once: the token its machine connects with from then on. */
     redeem(code: string): string | undefined;
-    /** The machine a token signs in, while it's good. */
-    check(token: string): string | undefined;
+    /** Who a token signs in, while it's good: the machine, and which of its connections made the sign-in. */
+    check(token: string): { machine: string; client?: string } | undefined;
 }
 
 export interface RunningServer {
@@ -59,8 +59,8 @@ export interface RunningServer {
     token: string;
     /** A single-use link for a browser. */
     loginUrl(): string;
-    /** Closes every connection a machine has (its sign-in was taken away). */
-    dropMachine(id: string): number;
+    /** Closes the connections a machine has (its sign-in was taken away): all of them, or those one of its clients signed in. */
+    dropMachine(id: string, client?: string): number;
     /** Connections open now, by machine (with `signIns`). */
     machines(): Map<string, number>;
     stop(): Promise<void>;
@@ -95,8 +95,9 @@ function sameSecret(a: string, b: string): boolean {
 
 interface Conn {
     browser: boolean;
-    /** The machine it signed in as (with `signIns`). */
+    /** The machine it signed in as (with `signIns`), and which of that machine's clients made the sign-in. */
     machine?: string;
+    signedInBy?: string;
     /** The desktop app's browser (browser/host.ts), on /browser-host: not a window, and no RPC. */
     desktop?: { host?: DesktopHost };
     held: Map<string, { id: string; tab?: number; input: BrowserInput }>;
@@ -207,8 +208,8 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                 }
                 const protocols = (req.headers.get("sec-websocket-protocol") ?? "").split(",").map((s) => s.trim());
                 const auth = protocols.find((p) => p.startsWith("auth."))?.slice(5) ?? "";
-                const machine = signIns?.check(auth);
-                if (!protocols.includes(SUBPROTOCOL) || (signIns ? machine === undefined : !sameSecret(auth, token))) {
+                const who = signIns?.check(auth);
+                if (!protocols.includes(SUBPROTOCOL) || (signIns ? who === undefined : !sameSecret(auth, token))) {
                     debug(`refused WebSocket without the token (origin ${req.headers.get("origin")})`);
                     return new Response("Unauthorized", { status: 401 });
                 }
@@ -219,7 +220,7 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                     return new Response("Bad window key", { status: 400 });
                 }
                 debug(`WebSocket from ${req.headers.get("origin") ?? "no origin"}`);
-                const conn: Conn = { browser: url.pathname === "/browser-stream", machine, held: new Map(), client: { subs: new Set(), send: () => {}, window }, ...(url.pathname === "/browser-host" ? { desktop: {} } : {}) };
+                const conn: Conn = { browser: url.pathname === "/browser-stream", machine: who?.machine, signedInBy: who?.client, held: new Map(), client: { subs: new Set(), send: () => {}, window }, ...(url.pathname === "/browser-host" ? { desktop: {} } : {}) };
                 if (srv.upgrade(req, { data: conn, headers: { "Sec-WebSocket-Protocol": SUBPROTOCOL } })) return undefined;
                 return new Response("Upgrade failed", { status: 400 });
             }
@@ -349,10 +350,10 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
             codes.set(code, Date.now() + CODE_TTL_MS);
             return `${url}/#code=${code}`;
         },
-        dropMachine(id: string) {
+        dropMachine(id: string, client?: string) {
             let n = 0;
             for (const ws of [...sockets]) {
-                if (ws.data.machine !== id) continue;
+                if (ws.data.machine !== id || (client !== undefined && ws.data.signedInBy !== client)) continue;
                 ws.close(4001, "Signed out");
                 n++;
             }

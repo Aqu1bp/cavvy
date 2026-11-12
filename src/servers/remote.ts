@@ -9,7 +9,7 @@
 //   ~/.cavvy/server/…                      the running server's own files (host.ts)
 
 import { ServerError, type ServerEntry } from "./store";
-import { hostOf, remoteSh, sshOk } from "./ssh";
+import { hostOf, printable, remoteSh, ssh } from "./ssh";
 
 /** `$HOME`-relative, for scripts: always inside double quotes there. */
 export const REMOTE_DIR = "$HOME/.cavvy/server";
@@ -80,7 +80,8 @@ export function parseFacts(out: string): ServerFacts {
         const i = line.indexOf("=");
         if (i <= 0) continue;
         const k = line.slice(0, i).trim();
-        const v = line.slice(i + 1).trim();
+        // Shown to the user in places (the system's name, the user's): nothing that would draw on a terminal.
+        const v = printable(line.slice(i + 1).trim(), 200);
         if (k === "build" || k === "gui") {
             if (BUILD_ID.test(v)) (k === "build" ? builds : guiBuilds).push(v);
         } else if (!one.has(k)) one.set(k, v);
@@ -110,13 +111,22 @@ export function parseFacts(out: string): ServerFacts {
 }
 
 export async function probeServer(e: ServerEntry, signal?: AbortSignal): Promise<ServerFacts> {
-    const facts = parseFacts(await sshOk(e, remoteSh(PROBE), { timeoutMs: 45_000, signal }));
+    const r = await ssh(e, remoteSh(PROBE), { timeoutMs: 45_000, signal });
+    // csh and tcsh can't take a quoted script of several lines, which is how every command is sent (ssh.ts remoteSh).
+    if (r.code !== 0 && /Unmatched ['"]/.test(r.stderr)) throw new ServerError(`Cavvy can't run commands on ${hostOf(e)}: your login shell there is csh or tcsh. It needs sh, bash, zsh, dash or ksh.`);
+    if (r.code !== 0) throw new ServerError(`A command on ${hostOf(e)} failed (${r.code}): ${printable(r.stderr.trim().split("\n").at(-1) ?? "no output")}`);
+    const facts = parseFacts(r.stdout);
     if (!facts.os || !facts.home) throw new ServerError(`${hostOf(e)} didn't answer as a server Cavvy can read (no \`sh\`, \`uname\` or home folder there).`);
     return facts;
 }
 
 /** Room a build and its copy in transit need. */
 const NEEDED_MB = 400;
+
+/** Throws when there isn't room for a build to be copied there. Asked only when one will be. */
+export function checkRoom(facts: ServerFacts, e: ServerEntry) {
+    if (facts.diskFreeMb !== undefined && facts.diskFreeMb < NEEDED_MB) throw new ServerError(`There isn't room on ${hostOf(e)} for Cavvy: it needs ${NEEDED_MB} MB free, and there are ${facts.diskFreeMb}.`);
+}
 
 /** Which build runs there, or why none does: thrown as what the user reads. */
 export function targetFor(facts: ServerFacts, e: ServerEntry): LinuxTarget {
@@ -126,7 +136,6 @@ export function targetFor(facts: ServerFacts, e: ServerEntry): LinuxTarget {
     const arch = facts.arch === "x86_64" || facts.arch === "amd64" ? "x64" : facts.arch === "aarch64" || facts.arch === "arm64" ? "arm64" : undefined;
     if (!arch) throw cant(`it needs an x64 or arm64 processor, and this is ${facts.arch || "unknown"}.`);
     if (!facts.libc.startsWith("glibc")) throw cant(facts.libc === "musl" ? "it needs glibc, and this system uses musl (Alpine)." : "it needs glibc, which wasn't found there.");
-    if (facts.diskFreeMb !== undefined && facts.diskFreeMb < NEEDED_MB) throw cant(`it needs ${NEEDED_MB} MB free, and there are ${facts.diskFreeMb}.`);
     if (arch === "arm64") return "linux-arm64";
     return facts.avx2 ? "linux-x64" : "linux-x64-baseline";
 }

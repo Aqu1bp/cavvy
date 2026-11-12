@@ -12,9 +12,9 @@
 // as itself within the wait, the build before it is put back and started.
 
 import { ServerError, type ServerEntry } from "./store";
-import { hostOf, remoteSh, ssh, shQuote } from "./ssh";
-import { BUILD_ID, REMOTE_DIR } from "./remote";
-import { NOT_RUNNING, type HostStatus } from "./host";
+import { hostOf, printable, remoteSh, ssh, shQuote } from "./ssh";
+import { BUILD_ID, REMOTE_DIR, type ServerFacts } from "./remote";
+import { NOT_RUNNING, type HostCheck, type HostStatus } from "./host";
 
 /**
  * The unit. `mixed`: stopping it asks Cavvy alone to stop, which closes its
@@ -109,8 +109,11 @@ if has_systemd; then
     mkdir -p "$(dirname "$unit")"
     printf '%s' "$1" > "$unit.tmp" && mv -f "$unit.tmp" "$unit"
     systemctl --user daemon-reload
-    systemctl --user enable cavvy.service >/dev/null 2>&1
     [ "$(linger)" = "yes" ] || loginctl enable-linger --no-ask-password >/dev/null 2>&1 || true
+    # Started at boot only where it would keep running with nobody signed in. Without that, the unit would start
+    # at the next login and take Cavvy down with it when that connection closed.
+    if [ "$(linger)" = "yes" ]; then systemctl --user enable cavvy.service >/dev/null 2>&1
+    else systemctl --user disable cavvy.service >/dev/null 2>&1 || true; fi
     echo "systemd=1"
     echo "linger=$(linger)"
 fi
@@ -125,6 +128,13 @@ echo "user=$(id -un)"
 const APPLY = `${LIB}
 new="$1"
 [ -x "$d/builds/$new/cavvy" ] || { echo "no build $new there" >&2; exit 43; }
+# One machine at a time: two changing what runs would each undo the other. A folder left by one that was cut off
+# stops counting after ten minutes.
+if ! mkdir "$d/applying" 2>/dev/null; then
+    if [ -n "$(find "$d/applying" -maxdepth 0 -mmin +10 2>/dev/null)" ]; then rmdir "$d/applying" 2>/dev/null; mkdir "$d/applying" 2>/dev/null || exit 48
+    else exit 48; fi
+fi
+trap 'rmdir "$d/applying" 2>/dev/null' EXIT
 prev=$(current || true)
 stop
 rm -f "$d/stopped"
@@ -144,7 +154,8 @@ exit 45
 /**
  * Starts it if it isn't running, and signs machine $1 (called $2) in: prints `pair=` with the code. $3 is
  * `resume` for a connection coming back by itself, which doesn't start a server that was stopped on purpose
- * (exit 47): only someone asking to connect does.
+ * (exit 47): only someone asking to connect does. $4, when there is one, names which of the machine's
+ * connections asks.
  */
 const CONNECT = `${LIB}
 [ -x "$bin" ] || exit 46
@@ -154,7 +165,8 @@ if ! status >/dev/null; then
     start
     wait_up "" || exit 45
 fi
-p=$("$bin" host pair --machine "$1" --label "$2") || exit 45
+if [ -n "$4" ]; then p=$("$bin" host pair --machine "$1" --label "$2" --client "$4") || exit 45
+else p=$("$bin" host pair --machine "$1" --label "$2") || exit 45; fi
 echo "pair=$p"
 `;
 
@@ -174,15 +186,18 @@ if has_systemd && [ -f "$unit" ]; then systemctl --user disable cavvy.service >/
 exit 0
 `;
 
+/** Signs machine $1 out: all of it, or what its connection $2 signed in. */
 const REVOKE = `${LIB}
 [ -x "$bin" ] || exit 0
-"$bin" host revoke --machine "$1" >/dev/null 2>&1
+if [ -n "$2" ]; then "$bin" host revoke --machine "$1" --client "$2" >/dev/null 2>&1
+else "$bin" host revoke --machine "$1" >/dev/null 2>&1; fi
 exit 0
 `;
 
 const CHECK = `${LIB}
 [ -x "$bin" ] || exit 46
-"$bin" host check
+c=$("$bin" host check) || exit 1
+echo "check=$c"
 `;
 
 /** Removes builds no longer wanted: every one but the current, the one before it ($1) and the one named $2. */
@@ -219,15 +234,77 @@ export interface ServiceReport {
     lingerFix?: string;
 }
 
+function report(systemd: boolean, linger: boolean, user: string): ServiceReport {
+    if (systemd && linger) return { service: true };
+    return { service: false, lingerFix: systemd && /^[\w.-]+$/.test(user) ? `sudo loginctl enable-linger ${shQuote(user)}` : undefined };
+}
+
+/** The same report, from what a probe found, for a server that's only being looked at. */
+export function serviceReport(facts: ServerFacts): ServiceReport {
+    return report(facts.systemd, facts.linger === true, facts.user);
+}
+
+const count = (v: unknown) => (typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : 0);
+
+/**
+ * A status as the server printed it, with only what has the shape it should:
+ * the server's words are shown to the user and decide what's done next, and a
+ * server that isn't what it seems could print anything.
+ */
+function readStatus(text: string | undefined): HostStatus | undefined {
+    const s = json<Record<string, unknown>>(text);
+    if (!s || s.running !== true || typeof s.build !== "string" || !BUILD_ID.test(s.build)) return undefined;
+    if (typeof s.pid !== "number" || !Number.isInteger(s.pid) || s.pid <= 0) return undefined;
+    if (typeof s.port !== "number" || !Number.isInteger(s.port) || s.port < 0 || s.port > 65535) return undefined;
+    const machines = (Array.isArray(s.machines) ? s.machines : []).flatMap((m: unknown) => {
+        const x = (m && typeof m === "object" ? m : {}) as Record<string, unknown>;
+        return typeof x.id === "string" && /^[0-9a-f]{32}$/.test(x.id) ? [{ id: x.id, label: printable(String(x.label ?? ""), 60), connections: count(x.connections) }] : [];
+    });
+    return {
+        running: true,
+        pid: s.pid,
+        start: typeof s.start === "string" ? printable(s.start, 80) : undefined,
+        port: s.port,
+        startedAt: typeof s.startedAt === "string" ? printable(s.startedAt, 40) : "",
+        version: printable(String(s.version ?? ""), 40),
+        protocol: count(s.protocol),
+        build: s.build,
+        sessions: count(s.sessions),
+        working: count(s.working),
+        waiting: count(s.waiting),
+        machines,
+        gui: s.gui === true,
+    };
+}
+
+/** What a server says it has for agents, with only what has the shape it should (see readStatus). */
+function readCheck(text: string | undefined): HostCheck | undefined {
+    const c = json<Record<string, unknown>>(text);
+    if (!c || !Array.isArray(c.clis)) return undefined;
+    const flag = (v: unknown) => (typeof v === "boolean" ? v : undefined);
+    const gh = (c.gh && typeof c.gh === "object" ? c.gh : {}) as Record<string, unknown>;
+    return {
+        clis: c.clis.flatMap((v: unknown) => {
+            const x = (v && typeof v === "object" ? v : {}) as Record<string, unknown>;
+            if (typeof x.id !== "string" || !/^[a-z0-9-]{1,40}$/.test(x.id)) return [];
+            return [{ id: x.id, product: printable(String(x.product ?? x.id), 60), installed: x.installed === true, signedIn: flag(x.signedIn), install: printable(String(x.install ?? ""), 200), signIn: printable(String(x.signIn ?? ""), 120) }];
+        }),
+        git: c.git === true,
+        gh: { installed: gh.installed === true, signedIn: flag(gh.signedIn) },
+        browser: c.browser === true,
+        sandbox: typeof c.sandbox === "string" ? printable(c.sandbox, 40) : undefined,
+        memMb: count(c.memMb),
+    };
+}
+
+/** What the server's last line of complaint was, safe to show. */
+const said = (stderr: string) => printable(stderr.trim().split("\n").at(-1) ?? "");
+
 /** Sets the server up to keep Cavvy running, as well as it allows. */
 export async function setUpService(e: ServerEntry, signal?: AbortSignal): Promise<ServiceReport> {
     const r = await ssh(e, remoteSh(timed(SETUP), [UNIT]), { timeoutMs: 60_000, signal });
-    if (r.code !== 0) throw new ServerError(`Couldn't set ${hostOf(e)} up to keep Cavvy running: ${r.stderr.trim().split("\n").at(-1) ?? `exit ${r.code}`}`);
-    const systemd = value(r.stdout, "systemd") === "1";
-    const linger = value(r.stdout, "linger") === "yes";
-    const user = value(r.stdout, "user") ?? "";
-    if (systemd && linger) return { service: true };
-    return { service: false, lingerFix: systemd && /^[\w.-]+$/.test(user) ? `sudo loginctl enable-linger ${shQuote(user)}` : undefined };
+    if (r.code !== 0) throw new ServerError(`Couldn't set ${hostOf(e)} up to keep Cavvy running: ${said(r.stderr) || `exit ${r.code}`}`);
+    return report(value(r.stdout, "systemd") === "1", value(r.stdout, "linger") === "yes", value(r.stdout, "user") ?? "");
 }
 
 export class UpdateFailed extends ServerError {
@@ -244,14 +321,16 @@ export class UpdateFailed extends ServerError {
 export async function applyBuild(e: ServerEntry, build: string, signal?: AbortSignal): Promise<HostStatus> {
     if (!BUILD_ID.test(build)) throw new ServerError("That isn't a build.");
     const r = await ssh(e, remoteSh(timed(APPLY), [build]), { timeoutMs: (serviceTiming.startWaitSeconds * 2 + 90) * 1000, signal });
-    const status = json<HostStatus>(value(r.stdout, "status"));
+    const status = readStatus(value(r.stdout, "status"));
     if (r.code === 0 && status) return status;
-    const said = r.stderr.trim().split("\n").at(-1);
+    if (r.code === 48) throw new ServerError(`Another machine is setting ${e.name} up right now. Try again in a minute.`);
     if (r.code === 44) throw new UpdateFailed(`Cavvy didn't start on ${hostOf(e)}, so it's back on the version before.`, status);
-    throw new UpdateFailed(`Cavvy didn't start on ${hostOf(e)}${said ? `: ${said}` : "."}`);
+    const why = said(r.stderr);
+    throw new UpdateFailed(`Cavvy didn't start on ${hostOf(e)}${why ? `: ${why}` : "."}`);
 }
 
 export interface Pairing {
+    /** Good once, for two minutes. */
     code: string;
     /** The server's own port. */
     port: number;
@@ -272,15 +351,30 @@ export class StoppedThere extends ServerError {}
 
 /**
  * Starts the server's Cavvy if it isn't running and makes a code that signs this machine in. `resume`: for a
- * connection coming back by itself, which leaves a server that was stopped on purpose stopped.
+ * connection coming back by itself, which leaves a server that was stopped on purpose stopped. `client`: which
+ * of this machine's connections the sign-in is for, so it can be taken away alone.
  */
-export async function pairOverSsh(e: ServerEntry, machine: { id: string; label: string }, o: { signal?: AbortSignal; resume?: boolean } = {}): Promise<Pairing> {
-    const r = await ssh(e, remoteSh(timed(CONNECT), [machine.id, machine.label, o.resume ? "resume" : "start"]), { timeoutMs: (serviceTiming.startWaitSeconds + 30) * 1000, signal: o.signal });
+export async function pairOverSsh(e: ServerEntry, machine: { id: string; label: string; client?: string }, o: { signal?: AbortSignal; resume?: boolean } = {}): Promise<Pairing> {
+    const r = await ssh(e, remoteSh(timed(CONNECT), [machine.id, machine.label, o.resume ? "resume" : "start", machine.client ?? ""]), { timeoutMs: (serviceTiming.startWaitSeconds + 30) * 1000, signal: o.signal });
     if (r.code === 46) throw new NotSetUp(`Cavvy isn't set up on ${hostOf(e)}.`);
     if (r.code === 47) throw new StoppedThere(`Cavvy on ${e.name} was stopped.`);
-    const p = json<Pairing>(value(r.stdout, "pair"));
-    if (r.code !== 0 || !p || typeof p.code !== "string" || typeof p.port !== "number" || typeof p.run !== "string") throw new ServerError(`Cavvy didn't start on ${hostOf(e)}${r.stderr.trim() ? `: ${r.stderr.trim().split("\n").at(-1)}` : "."}`);
-    return p;
+    const p = json<Record<string, unknown>>(value(r.stdout, "pair"));
+    // Every part goes into a link that's printed and opened, or decides what's connected to: only the shapes Cavvy makes.
+    const ok =
+        r.code === 0 &&
+        p !== undefined &&
+        typeof p.code === "string" &&
+        /^[A-Za-z0-9_-]{16,64}$/.test(p.code) &&
+        typeof p.port === "number" &&
+        Number.isInteger(p.port) &&
+        p.port >= 1 &&
+        p.port <= 65535 &&
+        typeof p.run === "string" &&
+        /^[0-9a-z-]{1,40}$/.test(p.run) &&
+        typeof p.build === "string" &&
+        BUILD_ID.test(p.build);
+    if (!ok) throw new ServerError(`Cavvy didn't start on ${hostOf(e)}${said(r.stderr) ? `: ${said(r.stderr)}` : "."}`);
+    return { code: p.code as string, port: p.port as number, run: p.run as string, gui: p.gui === true, build: p.build as string, version: printable(String(p.version ?? ""), 40), protocol: count(p.protocol) };
 }
 
 /** What runs there: undefined when nothing does. Throws NotSetUp when Cavvy isn't there at all. */
@@ -288,8 +382,7 @@ export async function remoteStatus(e: ServerEntry, signal?: AbortSignal): Promis
     const r = await ssh(e, remoteSh(timed(STATUS)), { timeoutMs: 30_000, signal });
     if (r.code === 46) throw new NotSetUp(`Cavvy isn't set up on ${hostOf(e)}.`);
     if (r.code === NOT_RUNNING) return undefined;
-    const s = json<HostStatus>(value(r.stdout, "status"));
-    return r.code === 0 && s?.running ? s : undefined;
+    return r.code === 0 ? readStatus(value(r.stdout, "status")) : undefined;
 }
 
 /** Stops the server's Cavvy and leaves it stopped (not started again at boot). */
@@ -297,17 +390,18 @@ export async function stopRemote(e: ServerEntry, signal?: AbortSignal): Promise<
     await ssh(e, remoteSh(timed(STOP)), { timeoutMs: 60_000, signal });
 }
 
-/** This machine's sign-ins there stop working. */
-export async function revokeOverSsh(e: ServerEntry, machine: string, signal?: AbortSignal): Promise<void> {
-    await ssh(e, remoteSh(timed(REVOKE), [machine]), { timeoutMs: 30_000, signal });
+/** This machine's sign-ins there stop working: all of them, or the ones its connection `client` made. */
+export async function revokeOverSsh(e: ServerEntry, machine: string, o: { client?: string; signal?: AbortSignal } = {}): Promise<void> {
+    await ssh(e, remoteSh(timed(REVOKE), [machine, o.client ?? ""]), { timeoutMs: 30_000, signal: o.signal });
 }
 
-/** The server's own account of what's there for agents (host.ts HostCheck), as JSON text. */
-export async function remoteCheck(e: ServerEntry, signal?: AbortSignal): Promise<string> {
+/** The server's own account of what's there for agents. */
+export async function remoteCheck(e: ServerEntry, signal?: AbortSignal): Promise<HostCheck> {
     const r = await ssh(e, remoteSh(timed(CHECK)), { timeoutMs: 60_000, signal });
     if (r.code === 46) throw new NotSetUp(`Cavvy isn't set up on ${hostOf(e)}.`);
-    if (r.code !== 0) throw new ServerError(`Couldn't check ${hostOf(e)}: ${r.stderr.trim().split("\n").at(-1) ?? `exit ${r.code}`}`);
-    return r.stdout;
+    const check = r.code === 0 ? readCheck(value(r.stdout, "check")) : undefined;
+    if (!check) throw new ServerError(`Couldn't check ${hostOf(e)}${said(r.stderr) ? `: ${said(r.stderr)}` : "."}`);
+    return check;
 }
 
 /** Builds the server no longer needs go: all but the one running, `previous` and `keep`. */

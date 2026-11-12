@@ -9,9 +9,9 @@
 import { createReadStream } from "fs";
 import { localSource, type BuildSource, type ServerBuild } from "./build";
 import type { HostStatus } from "./host";
-import { probeServer, REMOTE_DIR, targetFor, type ServerFacts } from "./remote";
+import { checkRoom, probeServer, REMOTE_DIR, targetFor, type ServerFacts } from "./remote";
 import { applyBuild, pruneBuilds, remoteStatus, NotSetUp, setUpService, type ServiceReport } from "./service";
-import { hostOf, remoteSh, ssh } from "./ssh";
+import { hostOf, printable, remoteSh, ssh } from "./ssh";
 import { ServerError, type ServerEntry } from "./store";
 
 /**
@@ -26,8 +26,8 @@ id="$1"
 mkdir -p "$b"
 chmod 700 "${REMOTE_DIR}"
 in="$b/.incoming-$id-$$"
-# What a copy of this build that was cut off left behind.
-rm -rf "$b"/.incoming-"$id"-*
+# What copies that were cut off left behind. Not one still arriving from another machine: only what's sat for half an hour.
+find "$b" -maxdepth 1 -name '.incoming-*' -mmin +30 -exec rm -rf {} + 2>/dev/null || true
 mkdir "$in"
 trap 'rm -rf "$in"' EXIT
 tar -xzf - -C "$in"
@@ -52,6 +52,7 @@ export interface SetupProgress {
 export async function sendBuild(e: ServerEntry, build: ServerBuild, facts: ServerFacts, o: { progress?: SetupProgress; signal?: AbortSignal } = {}): Promise<void> {
     // There already, with its GUI if this one has it.
     if (facts.builds.includes(build.id) && (!build.gui || facts.guiBuilds.includes(build.id))) return;
+    checkRoom(facts, e);
     const host = hostOf(e);
     o.progress?.step(`Copying Cavvy to ${e.name}…`);
     const r = await ssh(e, remoteSh(RECEIVE, [build.id, build.sha256]), {
@@ -62,7 +63,7 @@ export async function sendBuild(e: ServerEntry, build: ServerBuild, facts: Serve
         onSent: (sent) => o.progress?.copied?.(sent, build.bundleBytes),
     });
     if (r.code === 0) return;
-    const said = r.stderr.trim().split("\n").slice(-3).join(" ").slice(0, 400);
+    const said = printable(r.stderr.trim().split("\n").slice(-3).join(" "), 400);
     if (r.code === 41) throw new ServerError(`The copy of Cavvy that reached ${host} isn't the one sent (${said}). Nothing was installed.`);
     if (r.code === 42) throw new ServerError(`Cavvy doesn't run on ${host}: ${said || "it didn't start."}`);
     throw new ServerError(`Couldn't copy Cavvy to ${host}: ${said || `exit ${r.code}`}`);
@@ -134,14 +135,24 @@ export async function setUpServer(e: ServerEntry, o: SetupOptions = {}): Promise
         o.progress?.step(`Starting Cavvy on ${e.name}…`);
         return { facts, status: await applyBuild(e, theirs, o.signal), kept: relation };
     }
-    // The same build, but put there before its GUI was built here: sent again with it.
-    const lacksGui = source.gui && !facts.guiBuilds.includes(id);
-    if (running && relation === "same" && facts.current === id && !lacksGui) return { facts, status: running, service: await setUpService(e, o.signal) };
-    if (running && (running.working > 0 || running.waiting > 0)) {
+    const settled = Boolean(running) && relation === "same" && facts.current === id;
+    // The same build, but put there before its GUI was built here: sent again with it, if a build made now has it.
+    const wantsGui = source.gui && !facts.guiBuilds.includes(id);
+    if (settled && !wantsGui) return { facts, status: running!, service: await setUpService(e, o.signal) };
+    /** Everything past this restarts the server: asked about first when that would cut work off. */
+    const mayRestart = async () => {
+        if (!running || (running.working === 0 && running.waiting === 0)) return;
         const busy = { working: running.working, waiting: running.waiting };
         if (!(await o.confirmRestart?.(busy))) throw new ServerBusy(e.name, busy, running);
-    }
-    if (!facts.builds.includes(id) || lacksGui) await sendBuild(e, await source.build(target, { onStep: o.progress?.step, signal: o.signal }), facts, o);
+    };
+    // Another build is certain to restart it: asked before anything is built or copied for nothing.
+    if (!settled) await mayRestart();
+    const build = !facts.builds.includes(id) || wantsGui ? await source.build(target, { onStep: o.progress?.step, signal: o.signal }) : undefined;
+    const send = build !== undefined && (!facts.builds.includes(id) || (build.gui && !facts.guiBuilds.includes(id)));
+    // The GUI didn't build here after all: what's there is as good as it gets, and restarting it would change nothing.
+    if (settled && !send) return { facts, status: running!, service: await setUpService(e, o.signal) };
+    if (settled) await mayRestart();
+    if (send) await sendBuild(e, build, facts, o);
     const service = await setUpService(e, o.signal);
     o.progress?.step(`Starting Cavvy on ${e.name}…`);
     const status = await applyBuild(e, id, o.signal);
@@ -156,4 +167,6 @@ export async function ensureBuildThere(e: ServerEntry, o: { progress?: SetupProg
     const source = o.source ?? localSource();
     if (facts.builds.includes(source.id)) return;
     await sendBuild(e, await source.build(target, { onStep: o.progress?.step, signal: o.signal }), facts, o);
+    // Each change here makes another build: the ones before it go, but for what runs there.
+    void pruneBuilds(e, facts.current, source.id);
 }

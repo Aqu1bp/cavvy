@@ -1344,8 +1344,6 @@ const DANGEROUS: [RegExp, string][] = [
     [/\bgit\s+(reset\s+--hard|clean\s+-[a-zA-Z]*f)/, "discards uncommitted work"],
     [/\b(crontab\s+-r|launchctl\s+(unload|remove|bootout))\b/, "removes scheduled jobs or system services"],
     [/\b(npm|pnpm|yarn)\s+publish\b|\bcargo\s+publish\b|\btwine\s+upload\b|\bgem\s+push\b/, "publishes a package"],
-    // On a server: an agent that could sign a machine in could connect as one and answer its own prompts (src/servers/host.ts).
-    [/\b(cavvy|harness)\s+host\s+(run|pair|revoke|stop)\b/, "controls who can connect to this server"],
     [/\bhistory\s+-c\b/, "clears shell history"],
 ];
 
@@ -1420,6 +1418,8 @@ export function shellWord(w: string): string {
 }
 
 /** The argv checks of dangerousReason, for each program the command runs (through env, exec, nohup…), by any name it's found by. */
+const HOST_CONTROL = "controls who can connect to this server";
+
 function dangerousArgv(argv0: string[], depth: number): string | undefined {
     for (const { argv, at } of runLevels(argv0)) {
         // What env -S's string runs: checked as a command line of its own, so the patterns see it too.
@@ -1429,6 +1429,13 @@ function dangerousArgv(argv0: string[], depth: number): string | undefined {
         const dd = args.indexOf("--");
         const opts = dd < 0 ? args : args.slice(0, dd);
         const operands = dd < 0 ? positional(args) : [...positional(args.slice(0, dd)), ...args.slice(dd + 1)];
+        // On a server: `cavvy host pair` signs a machine in, and an agent that could run it could connect as one and
+        // answer its own prompts (src/servers/host.ts). Read from the words as the shell would run them, so quoting one
+        // doesn't hide it; everything under `host` but the commands that only look counts, a word still to be worked
+        // out (`$verb`) included.
+        if (runs(prog, "cavvy", "harness") && (args[0] === "host" || /[$`]/.test(args[0] ?? "")) && !["", "status", "check", "version", "-h", "--help"].includes(args[1] ?? "")) {
+            return HOST_CONTROL;
+        }
         if (runs(prog, "rm") && opts.some((a) => /^-[a-zA-Z]*[rR]/.test(a) || a === "--recursive") && operands.some((o) => criticalTarget(o))) {
             return "recursive delete of a root, home or parent directory";
         }
@@ -1487,7 +1494,7 @@ function anyCase(re: RegExp): RegExp {
 }
 
 /** Matched in every spelling of the command, like SENSITIVE. */
-const CREDENTIAL_STORE = anyCase(/\.(cavvy|harness)\/(credentials|providers)\.json/);
+const CREDENTIAL_STORE = anyCase(/\.(cavvy|harness)\/(credentials|providers)\.json|\.(cavvy|harness)\/server(?=$|[/\s'";|&)<>])/);
 const STARTUP_FILE = anyCase(/>\s*~\/\.(bash|zsh)(rc|_profile|env)|>\s*~\/\.profile/);
 
 /** Programs that only read or copy their input, whatever their options: a here-document's data stays data with them (not sort: --compress-program runs one). */

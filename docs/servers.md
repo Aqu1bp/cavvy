@@ -11,13 +11,13 @@ cavvy gui --server box                   # the server's GUI, in your browser
 
 `--port` and `--identity <file>` say how to connect when that isn't in your SSH config. Everything else in `~/.ssh/config` applies (a `Host` alias, `ProxyJump`, your agent): Cavvy runs the system's `ssh`.
 
-A server needs Linux on x64 or arm64 with glibc (so not Alpine), about 400 MB of disk, and nothing installed beforehand. Only put credentials on a server that you'd accept an agent using: agents there run as the user you signed in as, so they can read what that user can.
+A server needs Linux on x64 or arm64 with glibc (so not Alpine), about 400 MB of disk, and nothing installed beforehand. Your login shell there has to be sh, bash, zsh, dash or ksh (not csh or tcsh). Only put credentials on a server that you'd accept an agent using: agents there run as the user you signed in as, so they can read what that user can.
 
 ## Adding a server
 
 `cavvy servers add` connects, checks the machine can run Cavvy, copies this machine's build of Cavvy to it, and starts it. Then it says what the server is missing for agents to use: an agent CLI (Claude Code, Codex), `git`, the GitHub CLI, a Chrome for the Browser tool. Install and sign in to those on the server as you would anywhere, for example from `cavvy --server box` or a plain `ssh`. API keys for the server are added there too (`cavvy --server box auth add`, or Settings in its GUI) and are kept in a file only your user there can read.
 
-You're offered a one-time copy of this machine's settings, memory, skills and commands (`--copy` or `--no-copy` to answer ahead). Keys and sign-ins are never copied, nor hooks and the status line (they're commands, and would run there), the permission mode, or MCP servers that run a program or name a file on this machine. Nothing already on the server is replaced.
+You're offered a one-time copy of this machine's settings, memory, skills and commands (`--copy` or `--no-copy` to answer ahead). Your permission rules go with the settings, and so do MCP servers started by a bare command (`npx …`) or at a public address. Never copied: keys and sign-ins, anything with a key written into it (an MCP server's address or arguments, a rule, a memory file), hooks and the status line (they're commands, and would run there), the permission mode, and MCP servers that name a file or an address on this machine or its network. Nothing already on the server is replaced, and Cavvy says what the server took.
 
 What can go wrong, and what you see:
 
@@ -25,8 +25,8 @@ What can go wrong, and what you see:
 |---|---|
 | The server doesn't answer | `Can't reach <host>.`, with ssh's own line. Nothing is added. |
 | It refuses your key | `<host> refused this key.` |
-| Your key needs its passphrase | `This key needs its passphrase. Add it to ssh-agent, then retry.`, with the `ssh-add` command. Cavvy never asks for a passphrase or a password. |
-| First connection | Its key's fingerprint, and `Trust <host>?`. Only the key you were shown is saved to your `known_hosts`. Without a terminal to ask at, nothing is trusted. |
+| Your key needs its passphrase, and no agent holds it | `This key needs its passphrase. Add it to ssh-agent, then retry.`, with the `ssh-add` command. Cavvy never asks for a passphrase or a password. |
+| First connection | Its key's fingerprint, and `Trust <host>?`. Only the key you were shown is saved: to your `known_hosts`, or to Cavvy's own list when your SSH config keeps no keys for that host. Without a terminal to ask at, nothing is trusted. |
 | Its key changed | `<host>'s identity changed.`, with the `ssh-keygen -R` command that removes the old one. Cavvy never accepts a changed key itself. |
 | It can't run Cavvy | `Cavvy can't run on <host>:` and why (not Linux, the processor, musl, no room). |
 | The copy arrived changed, or doesn't start there | It says so, and nothing is installed. |
@@ -35,7 +35,9 @@ What can go wrong, and what you see:
 
 `cavvy --server <name>[:<folder>]` runs the terminal app on the server over SSH, in that folder (your home there without one). Everything after it goes to that Cavvy: `-c`, `-r <id>`, `-p "…"`, `auth add`. If the connection drops, that terminal app ends with it, and Cavvy says `Connection to <name> lost.` and how to continue the session (`-c`); the session is saved as it goes.
 
-`cavvy gui --server <name>` opens the server's GUI in your browser through an SSH tunnel, and stays running to keep the tunnel up. Ctrl+C disconnects; work on the server keeps running, and connecting again shows it where it is, with any question it's waiting on. If the connection drops, the tunnel comes back by itself (`Connection to <name> lost. Reconnecting…`). A failure that needs you (your key refused, the server's key changed) is said once and not retried.
+`cavvy gui --server <name>` opens the server's GUI in your browser through an SSH tunnel, and stays running to keep the tunnel up. Ctrl+C disconnects and signs the page out; work on the server keeps running, and connecting again shows it where it is, with any question it's waiting on. If the connection drops, the tunnel comes back by itself (`Connection to <name> lost. Reconnecting…`), at the same address, and prints a new sign-in link in case the page asks for one. A failure that needs you (your key refused, the server's key changed) is said once and not retried.
+
+A `LocalForward` in your SSH config for that host is opened along with Cavvy's own tunnel; if its port is taken, the connection fails.
 
 Sessions on a server are its own: its folders, its `~/.cavvy`, its settings and memory. The GUI's server there is the same one the desktop app runs locally, so sub-agents, other sessions, schedules, pull request watching and worktrees work as they do here, with the server's tools and sign-ins.
 
@@ -61,8 +63,8 @@ A server runs the build of Cavvy that the machine setting it up runs, made from 
 
 - Cavvy on a server listens on the server's loopback address only. Nothing is opened to the network, and no port needs opening in a firewall beyond SSH.
 - One Cavvy runs per user on a server, however many machines connect. A machine quitting or disconnecting doesn't stop it.
-- To connect, a machine runs a command on the server over SSH that makes a one-time code (good for two minutes), opens an SSH tunnel to Cavvy's port, and trades the code through the tunnel for a token of its own. Tokens are kept in the server's memory, last twelve hours at most, and are gone when Cavvy there restarts: a machine signs in again over SSH each time it connects. Nothing stored on your machine signs it in; your SSH key is what does.
-- `cavvy servers remove` signs the machine out on the server: its open connections close and its tokens stop working.
-- Agents on a server are the same user as Cavvy there, so file permissions don't keep them out of its folder. Cavvy's permission checker treats the server's own folder (`~/.cavvy/server`) as it does its credential files, and asks before a command that runs `cavvy host`, which is how a machine is signed in.
+- To connect, a machine runs a command on the server over SSH that makes a one-time code (good for two minutes), opens an SSH tunnel to Cavvy's port, and trades the code through the tunnel for a token of its own. Tokens are kept in the server's memory, make new connections for twelve hours, and are gone when Cavvy there restarts: a machine signs in again over SSH each time it connects. Nothing stored on your machine signs it in; your SSH key is what does.
+- `cavvy gui --server` signs out what it signed in when it ends. `cavvy servers remove` signs the whole machine out: its open connections close and its tokens stop working.
+- Agents on a server are the same user as Cavvy there, so file permissions don't keep them out of its folder. Cavvy's permission checker treats the server's own folder (`~/.cavvy/server`) as it does its credential files: the file tools are refused there, and a shell command that names it, or that runs `cavvy host` to sign a machine in, is asked about. That's a guard against an agent wandering in, not a wall against one set on it.
 
 `cavvy host` is what the server runs (`cavvy host run`, started by the service). You don't need to run it yourself.

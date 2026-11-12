@@ -3,24 +3,30 @@
 // is signed in, and what a settings copy carries.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { FAKE, isolate, tempDir } from "./helpers/isolate";
+import { fakeSsh } from "./helpers/fake-ssh";
 
 const iso = isolate();
-const { sshFailure, shQuote, remoteSh, sshCommandArgv, sshTunnelArgv, keyNeedsPassphrase } = await import("../src/servers/ssh");
+// What ssh says about a server (`ssh -G`) decides some of this: the stand-in says it, not this machine's own config.
+const fake = fakeSsh();
+const { sshFailure, shQuote, remoteSh, sshCommandArgv, sshTunnelArgv, keyNeedsPassphrase, printable, offeredHostKey, trustHostKey, ownKnownHosts } = await import("../src/servers/ssh");
 const { draftServer, saveServer, listServers, removeServer, requireServer, thisDesktop, serversFile } = await import("../src/servers/store");
 const { compareBuilds, SERVER_BUN, thisBuild } = await import("../src/servers/build");
-const { parseFacts, targetFor } = await import("../src/servers/remote");
+const { parseFacts, targetFor, checkRoom } = await import("../src/servers/remote");
 const { MachineSignIns } = await import("../src/servers/host");
-const { planCopy, portableMcpServer, portableSettings, describeCopy } = await import("../src/servers/copy");
+const { planCopy, portableMcpServer, portableSettings, describeCopy, countCopied } = await import("../src/servers/copy");
 const { checkLines, parseServerSpec } = await import("../src/servers/cli");
 const { UNIT } = await import("../src/servers/service");
 import type { ServerEntry } from "../src/servers/store";
 
 const entry: ServerEntry = { name: "box", destination: "dev@box.example", addedAt: "2026-01-01T00:00:00.000Z" };
 
-afterAll(() => iso.cleanup());
+afterAll(() => {
+    fake.cleanup();
+    iso.cleanup();
+});
 
 describe("what an ssh failure means", () => {
     // ssh's own words, as OpenSSH prints them.
@@ -38,6 +44,10 @@ describe("what an ssh failure means", () => {
         ["client_loop: send disconnect: Broken pipe", "unreachable"],
         ["Timeout, server box.example not responding.", "unreachable"],
         ["Connection to box.example closed by remote host.", "unreachable"],
+        // Off the network in ways that word it differently: still only "can't reach it".
+        ["ssh: connect to host box.example port 22: Network is down", "unreachable"],
+        ["ssh: connect to host box.example port 22: Can't assign requested address", "unreachable"],
+        ["ssh: connect to host box.example port 22: Software caused connection abort", "unreachable"],
         ["dev@box.example: Permission denied (publickey).", "auth"],
         ["dev@box.example: Permission denied (publickey,password).", "auth"],
         ["Received disconnect from 192.0.2.7 port 22:2: Too many authentication failures", "auth"],
@@ -56,11 +66,38 @@ describe("what an ssh failure means", () => {
         expect(permanent("Host key for box.example has changed and you have requested strict checking.")).toBe(true);
     });
 
-    test("a changed key in the usual file needs no file named; ssh's own line is the detail", () => {
-        const home = process.env.HOME!;
-        const e = sshFailure(`Offending ED25519 key in ${home}/.ssh/known_hosts:3\nHost key for [box.example]:2222 has changed and you have requested strict checking.\nHost key verification failed.`, entry);
-        expect(e.fix).toBe("ssh-keygen -R '[box.example]:2222'");
+    test("a changed key: the fix names this server as ssh keeps it, and the file only when it isn't the usual one", () => {
+        const changed = "Host key for box.example has changed and you have requested strict checking.\nHost key verification failed.";
+        fake.settings(["userknownhostsfile ~/.ssh/known_hosts"]);
+        try {
+            expect(sshFailure(changed, entry).fix).toBe("ssh-keygen -R box.example");
+            expect(sshFailure(changed, { ...entry, port: 2222 }).fix).toBe("ssh-keygen -R '[box.example]:2222'");
+            fake.settings(["hostkeyalias build-box", "userknownhostsfile /etc/ssh/known"]);
+            expect(sshFailure(changed, entry).fix).toBe("ssh-keygen -R build-box -f /etc/ssh/known");
+        } finally {
+            fake.settings();
+        }
         expect(sshFailure("ssh: connect to host box.example port 22: Connection refused", entry).detail).toBe("ssh: connect to host box.example port 22: Connection refused");
+    });
+
+    test("a server can't have another host's key forgotten: the fix never takes a name or a file from the failure's text", () => {
+        // What a command on the server could print, exiting as ssh does when it fails.
+        const forged = "@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\nOffending ED25519 key in /Users/me/.ssh/known_hosts:7\nHost key for github.com has changed and you have requested strict checking.\nHost key verification failed.";
+        fake.settings(["userknownhostsfile ~/.ssh/known_hosts"]);
+        try {
+            const e = sshFailure(forged, entry);
+            expect(e.message).toBe("box.example's identity changed.");
+            expect(e.fix).toBe("ssh-keygen -R box.example");
+        } finally {
+            fake.settings();
+        }
+    });
+
+    test("nothing a server says can draw on the terminal", () => {
+        const e = sshFailure("\u001b[2J\u001b]0;owned\u0007ssh: something \u009bodd\r\n", entry);
+        expect(e.detail).toBe("[2J]0;ownedssh: something odd");
+        expect(printable("a\tb\nc\u0000\u001b[31m")).toBe("a\tb\nc[31m");
+        expect(printable("x".repeat(500)).length).toBe(300);
     });
 
     test("a key file ssh won't use, or can't find, is said as that and not as a refusal", () => {
@@ -71,44 +108,107 @@ describe("what an ssh failure means", () => {
         expect([missing.kind, missing.message]).toEqual(["identity", "Can't read the key at ~/.ssh/box."]);
     });
 
+    const keys = tempDir("cavvy-servers-key-");
+    const locked = join(keys, "locked");
+    const open = join(keys, "open");
+    const denied = "dev@box.example: Permission denied (publickey).";
+
     test("a key that needs its passphrase is said as that, with the command that loads it", () => {
-        const dir = tempDir("cavvy-servers-key-");
-        const locked = join(dir, "locked");
-        const open = join(dir, "open");
         expect(Bun.spawnSync(["ssh-keygen", "-q", "-t", "ed25519", "-N", "a passphrase", "-f", locked]).exitCode).toBe(0);
         expect(Bun.spawnSync(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", open]).exitCode).toBe(0);
         expect(keyNeedsPassphrase(locked)).toBe(true);
         expect(keyNeedsPassphrase(open)).toBe(false);
-        const e = sshFailure("dev@box.example: Permission denied (publickey).", { ...entry, identityFile: locked });
+        const e = sshFailure(denied, { ...entry, identityFile: locked });
         expect([e.kind, e.message, e.fix]).toEqual(["passphrase", "This key needs its passphrase. Add it to ssh-agent, then retry.", `ssh-add ${locked}`]);
-        expect(sshFailure("dev@box.example: Permission denied (publickey).", { ...entry, identityFile: open }).message).toBe("box.example refused this key.");
+        expect(sshFailure(denied, { ...entry, identityFile: open }).message).toBe("box.example refused this key.");
+    });
+
+    test("so is the key ssh picks by itself: the usual ones, or one its config names", () => {
+        fake.settings([`identityfile ${join(keys, "missing")}`, `identityfile ${open}`, `identityfile ${locked}`]);
+        try {
+            const e = sshFailure(denied, entry);
+            expect([e.kind, e.message, e.fix]).toEqual(["passphrase", "Your SSH key needs its passphrase. Add it to ssh-agent, then retry.", `ssh-add ${locked}`]);
+            // With none of them locked, the server refused them.
+            fake.settings([`identityfile ${open}`]);
+            expect([sshFailure(denied, entry).kind, sshFailure(denied, entry).message]).toEqual(["auth", "box.example refused your SSH keys."]);
+        } finally {
+            fake.settings();
+        }
+    });
+
+    test("a locked key the agent holds, refused, is the server's refusal: loading it again would change nothing", async () => {
+        // An agent of the test's own, with the key in it.
+        const sock = `/tmp/cv-agent-${process.pid}.sock`;
+        const agent = Bun.spawn(["ssh-agent", "-D", "-a", sock], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+        const askpass = join(keys, "askpass.sh");
+        writeFileSync(askpass, "#!/bin/sh\necho 'a passphrase'\n");
+        chmodSync(askpass, 0o755);
+        const before = process.env.SSH_AUTH_SOCK;
+        try {
+            for (let i = 0; i < 100 && !existsSync(sock); i++) await Bun.sleep(20);
+            const add = Bun.spawnSync(["ssh-add", locked], { stdin: "ignore", stdout: "ignore", stderr: "pipe", env: { ...process.env, SSH_AUTH_SOCK: sock, SSH_ASKPASS: askpass, SSH_ASKPASS_REQUIRE: "force", DISPLAY: ":0" } as Record<string, string> });
+            expect(add.stderr.toString() + add.exitCode).toContain("Identity added");
+            process.env.SSH_AUTH_SOCK = sock;
+            const e = sshFailure(denied, { ...entry, identityFile: locked });
+            expect([e.kind, e.message]).toEqual(["auth", "box.example refused this key."]);
+        } finally {
+            if (before === undefined) delete process.env.SSH_AUTH_SOCK;
+            else process.env.SSH_AUTH_SOCK = before;
+            agent.kill();
+            await agent.exited;
+        }
+    });
+});
+
+describe("trusting a server's key", () => {
+    test("where the user's ssh config keeps no keys for it, the key goes in Cavvy's own file, once, and the server remembers that", async () => {
+        const e = { ...entry, destination: "dev@passing.example" };
+        fake.settings(["userknownhostsfile /dev/null"]);
+        try {
+            const key = await offeredHostKey(e);
+            const trusted = trustHostKey(e, key);
+            expect(trusted.knownHostsFile).toBe(ownKnownHosts());
+            expect(readFileSync(ownKnownHosts(), "utf-8").trim().split("\n")).toEqual(key.lines);
+            // Its connections name that file, so the key is found (the stand-in refuses a host it isn't given a key for).
+            expect(sshCommandArgv(trusted, "true")).toContain(`UserKnownHostsFile=${ownKnownHosts()}`);
+            const { ssh } = await import("../src/servers/ssh");
+            expect((await ssh(trusted, "echo there")).stdout).toBe("there\n");
+            await expect(ssh(e, "echo there")).rejects.toMatchObject({ kind: "host-unknown" });
+            // Trusted again, nothing is added twice.
+            trustHostKey(trusted, key);
+            expect(readFileSync(ownKnownHosts(), "utf-8").trim().split("\n")).toEqual(key.lines);
+        } finally {
+            fake.settings();
+        }
     });
 });
 
 describe("the command line ssh gets", () => {
     test("the destination comes after --, nothing asks or accepts a key, and the user's shared connections aren't used", () => {
-        process.env.CAVVY_SSH = "/usr/bin/ssh";
-        try {
+        {
             const argv = sshCommandArgv({ ...entry, port: 2222, identityFile: "/keys/box" }, "true");
             expect(argv.slice(-4)).toEqual(["-T", "--", "dev@box.example", "true"]);
             const opts = argv.flatMap((a, i) => (argv[i - 1] === "-o" ? [a] : []));
             expect(opts).toEqual(expect.arrayContaining(["BatchMode=yes", "StrictHostKeyChecking=yes", "ForwardAgent=no", "ControlMaster=no", "ControlPath=none", "ClearAllForwardings=yes", "IdentitiesOnly=yes"]));
+            expect(argv[0]).toBe(fake.bin);
             expect(argv.join(" ")).not.toMatch(/accept-new|StrictHostKeyChecking=no/);
             expect(argv).toEqual(expect.arrayContaining(["-p", "2222", "-i", "/keys/box"]));
             const tunnel = sshTunnelArgv(entry, 5001, 6001);
             expect(tunnel.slice(-6)).toEqual(["-N", "-T", "-L", "127.0.0.1:5001:127.0.0.1:6001", "--", "dev@box.example"]);
             expect(tunnel).toContain("ExitOnForwardFailure=yes");
             expect(tunnel).not.toContain("ClearAllForwardings=yes");
-        } finally {
-            delete process.env.CAVVY_SSH;
+            // Whatever the user's config would run there, the command is Cavvy's.
+            expect(opts).toContain("RemoteCommand=none");
         }
     });
 
     test("a script's arguments reach it as they were, whatever is in them", () => {
-        const args = ["plain", "two words", "it's", '"quoted"', "$HOME `id` $(id)", "semi;colon && more", "", "-n", "new\nline", "~/x"];
+        const args = ["plain", "two words", "it's", '"quoted"', "$HOME `id` $(id)", "semi;colon && more", "", "-n", "new\nline", "~/x", "=ls", "a=b"];
         const r = Bun.spawnSync(["sh", "-c", remoteSh('for a in "$@"; do printf "%s\\0" "$a"; done', args)]);
         expect(r.stdout.toString().split("\0").slice(0, -1)).toEqual(args);
         expect(shQuote("safe-word_1.2/x")).toBe("safe-word_1.2/x");
+        // zsh would look a bare `=ls` up as a command.
+        expect(shQuote("=ls")).toBe("'=ls'");
     });
 });
 
@@ -118,6 +218,13 @@ describe("the saved servers", () => {
         for (const destination of ["", "-oProxyCommand=evil", "dev@box example", "dev@box;id", "$(id)@box", "dev@box\nx", "ssh://dev@box/path"]) expect(() => draftServer({ name: "box", destination })).toThrow(/isn't an SSH destination/);
         for (const destination of ["box", "dev@box.example", "dev@192.0.2.7", "dev@[2001:db8::1]", "my_alias-2"]) expect(draftServer({ name: "box", destination }).destination).toBe(destination);
         expect(() => draftServer({ name: "box", destination: "dev@box", port: 70000 })).toThrow(/port/);
+    });
+
+    test("a key file named from the folder it was added in is kept as its full path; one from home stays from home", () => {
+        expect(draftServer({ name: "box", destination: "dev@box", identityFile: "keys/box.pem" }).identityFile).toBe(join(process.cwd(), "keys", "box.pem"));
+        expect(draftServer({ name: "box", destination: "dev@box", identityFile: "./box.pem" }).identityFile).toBe(join(process.cwd(), "box.pem"));
+        expect(draftServer({ name: "box", destination: "dev@box", identityFile: "~/.ssh/box" }).identityFile).toBe("~/.ssh/box");
+        expect(draftServer({ name: "box", destination: "dev@box", identityFile: "/keys/box" }).identityFile).toBe("/keys/box");
     });
 
     test("saved, listed, removed and put back; the file is the user's alone and holds no sign-in", () => {
@@ -190,7 +297,10 @@ describe("what a server is", () => {
         expect(() => targetFor(f("os=FreeBSD\narch=amd64\nhome=/h\nlibc=unknown"), entry)).toThrow("Cavvy can't run on box.example: it needs Linux, and this is FreeBSD.");
         expect(() => targetFor(f("os=Linux\narch=armv7l\nhome=/h\nlibc=glibc 2.39"), entry)).toThrow("it needs an x64 or arm64 processor, and this is armv7l.");
         expect(() => targetFor(f("os=Linux\narch=x86_64\nhome=/h\nlibc=musl"), entry)).toThrow("it needs glibc, and this system uses musl (Alpine).");
-        expect(() => targetFor(f("os=Linux\narch=x86_64\nhome=/h\nlibc=glibc 2.39\ndisk=120"), entry)).toThrow("it needs 400 MB free, and there are 120.");
+        // Room is asked about only when a build will be copied: a server that's short of it can still be looked at.
+        expect(targetFor(f("os=Linux\narch=x86_64\nhome=/h\nlibc=glibc 2.39\navx2=1\ndisk=120"), entry)).toBe("linux-x64");
+        expect(() => checkRoom(f("os=Linux\nhome=/h\ndisk=120"), entry)).toThrow("There isn't room on box.example for Cavvy: it needs 400 MB free, and there are 120.");
+        expect(() => checkRoom(f("os=Linux\nhome=/h\ndisk=4000"), entry)).not.toThrow();
     });
 
     test("its service asks Cavvy alone to stop, outlives a command killed for memory, and gives up on a crash loop", () => {
@@ -210,16 +320,28 @@ describe("signing a machine in", () => {
         const token = s.redeem(code)!;
         expect(token).toMatch(/^[0-9a-f]{64}$/);
         expect(s.redeem(code)).toBeUndefined();
-        expect(s.check(token)).toBe(M);
+        expect(s.check(token)).toEqual({ machine: M, client: undefined });
         expect(s.check("0".repeat(64))).toBeUndefined();
         expect(s.check(code)).toBeUndefined();
 
         const late = s.pair(M);
         now += 120_001;
         expect(s.redeem(late)).toBeUndefined();
-        expect(s.check(token)).toBe(M);
+        expect(s.check(token)?.machine).toBe(M);
         now += 12 * 3600_000;
         expect(s.check(token)).toBeUndefined();
+    });
+
+    test("one of a machine's connections can be signed out alone", () => {
+        const s = new MachineSignIns();
+        const tab = s.redeem(s.pair(M, "aaaaaaaaaaaaaaaa"))!;
+        const other = s.redeem(s.pair(M, "bbbbbbbbbbbbbbbb"))!;
+        const plain = s.redeem(s.pair(M))!;
+        expect(s.check(tab)).toEqual({ machine: M, client: "aaaaaaaaaaaaaaaa" });
+        s.revoke(M, "aaaaaaaaaaaaaaaa");
+        expect(s.check(tab)).toBeUndefined();
+        expect(s.check(other)?.client).toBe("bbbbbbbbbbbbbbbb");
+        expect(s.check(plain)?.machine).toBe(M);
     });
 
     test("signing one machine out leaves the others in", () => {
@@ -230,7 +352,7 @@ describe("signing a machine in", () => {
         s.revoke(M);
         expect(s.check(mine)).toBeUndefined();
         expect(s.redeem(pending)).toBeUndefined();
-        expect(s.check(theirs)).toBe(N);
+        expect(s.check(theirs)?.machine).toBe(N);
     });
 
     test("codes nobody uses don't pile up: the oldest go", () => {
@@ -270,6 +392,29 @@ describe("what the one-time copy carries", () => {
         expect(portableMcpServer({ url: "https://x.example/mcp", oauth: { clientId: "id" } })).toBe(true);
     });
 
+    test("a key written into an MCP server's address or arguments, or into a rule, stays here", () => {
+        const out = portableSettings({
+            model: "anthropic:claude",
+            permissions: { allow: ["Bash(npm test:*)", `Bash(curl -H "Authorization: Bearer ${FAKE.openai}" https://api.example.com:*)`] },
+            mcpServers: {
+                fine: { url: "https://mcp.example.com/sse" },
+                query: { url: "https://mcp.example.com/sse?api_key=abc123" },
+                userinfo: { url: "https://user:hunter2@mcp.example.com/sse" },
+                keyArg: { command: "npx", args: ["-y", "some-mcp", "--api-key", "abc123"] },
+                keyEquals: { command: "npx", args: ["-y", "some-mcp", "--token=abc123"] },
+                keyShaped: { command: "npx", args: ["-y", "some-mcp", FAKE.anthropic] },
+                header: { command: "npx", args: ["-y", "mcp-remote", "https://x.example/mcp", "--header", "X-Key: abc"] },
+                // Reachable only from this machine or its network.
+                lan: { url: "http://192.168.1.10:8080/mcp" },
+                any: { url: "http://0.0.0.0:8080/mcp" },
+                bonjour: { url: "http://printer.local/mcp" },
+                bare: { url: "http://devbox:3000/mcp" },
+            },
+        } as any);
+        expect(out).toEqual({ model: "anthropic:claude", permissions: { allow: ["Bash(npm test:*)"] }, mcpServers: { fine: { url: "https://mcp.example.com/sse" } } } as any);
+        expect(JSON.stringify(out)).not.toMatch(/abc123|hunter2|Bearer|sk-/);
+    });
+
     test("memory, skills and commands go; keys, and files that read like they hold one, stay", () => {
         const claude = process.env.CLAUDE_CONFIG_DIR!;
         const codex = process.env.CODEX_HOME!;
@@ -293,14 +438,29 @@ describe("what the one-time copy carries", () => {
         put(join(elsewhere, "SKILL.md"), "---\nname: linked\n---\nLinked.\n");
         symlinkSync(elsewhere, join(iso.home, "skills", "linked"));
         symlinkSync("/etc/hosts", join(iso.home, "skills", "review", "hosts"));
+        // A memory file and a command kept in a dotfiles folder and linked in: they go as the files they are.
+        const dotfiles = tempDir("cavvy-servers-dotfiles-");
+        put(join(dotfiles, "rule.md"), "Tabs, not spaces.\n");
+        mkdirSync(join(claude, "rules"), { recursive: true });
+        symlinkSync(join(dotfiles, "rule.md"), join(claude, "rules", "style.md"));
+        put(join(dotfiles, "deploy.md"), "Deploy it.\n");
+        symlinkSync(join(dotfiles, "deploy.md"), join(iso.home, "commands", "deploy.md"));
 
         const plan = planCopy({ model: "anthropic:claude", env: { X: "y" } } as any);
         try {
             const files = (Bun.spawnSync(["find", ".", "-type", "f"], { cwd: plan.stage }).stdout.toString().trim().split("\n")).map((f) => f.slice(2)).sort();
-            expect(files).toEqual([".cavvy/CAVVY.md", ".cavvy/commands/ship.md", ".cavvy/settings.json", ".cavvy/skills/linked/SKILL.md", ".cavvy/skills/review/SKILL.md", ".cavvy/skills/review/run.sh", ".claude/CLAUDE.md", ".claude/skills/notes/SKILL.md", ".codex/AGENTS.md"]);
+            expect(files).toEqual([".cavvy/CAVVY.md", ".cavvy/commands/deploy.md", ".cavvy/commands/ship.md", ".cavvy/settings.json", ".cavvy/skills/linked/SKILL.md", ".cavvy/skills/review/SKILL.md", ".cavvy/skills/review/run.sh", ".claude/CLAUDE.md", ".claude/rules/style.md", ".claude/skills/notes/SKILL.md", ".codex/AGENTS.md"]);
+            // Real files with what the links name in them, not links to this machine's paths (find -type f above saw them).
+            expect(readFileSync(join(plan.stage, ".claude", "rules", "style.md"), "utf-8")).toBe("Tabs, not spaces.\n");
+            expect(lstatSync(join(plan.stage, ".cavvy", "commands", "deploy.md")).isSymbolicLink()).toBe(false);
+            expect(lstatSync(join(plan.stage, ".cavvy", "skills", "review", "run.sh")).mode & 0o100).toBe(0o100);
             expect(JSON.parse(readFileSync(join(plan.stage, ".cavvy", "settings.json"), "utf-8"))).toEqual({ model: "anthropic:claude" });
-            expect(plan.counts).toEqual({ settings: true, memory: 3, skills: 3, commands: 1 });
-            expect(describeCopy(plan.counts)).toBe("settings, memory, 3 skills and 1 command");
+            expect(plan.counts).toEqual({ settings: true, memory: 4, skills: 3, commands: 2 });
+            expect(describeCopy(plan.counts)).toBe("settings, memory, 3 skills and 2 commands");
+            // What a server took is counted the same way, from the files it names.
+            expect(countCopied(files)).toEqual(plan.counts);
+            expect(describeCopy(countCopied([".cavvy/commands/ship.md"]))).toBe("1 command");
+            expect(describeCopy(countCopied([]))).toBe("");
         } finally {
             plan.cleanup();
         }

@@ -128,6 +128,19 @@ describe("cavvy credential store is denied", () => {
         expect(check(T("Grep"), { pattern: "sk-", path: paths.credentialsFile() }, "auto").behavior).toBe("deny");
     });
 
+    test.each(MODES)("a server's own folder, through which machines sign in to it, is denied to the file tools (%s)", (mode) => {
+        expect(check(T("Read"), { file_path: join(H, "server", "state.json") }, mode).behavior).toBe("deny");
+        expect(check(T("Write"), write(join(H, "server", "builds", "x", "cavvy")), mode).behavior).toBe("deny");
+        // The list of servers this machine knows holds no sign-in.
+        expect(check(T("Read"), { file_path: join(H, "servers.json") }, mode).behavior).not.toBe("deny");
+    });
+
+    test("in bypass mode a shell command still asks before it touches that folder or signs a machine in", () => {
+        expect(check(T("Bash"), bash("curl -s --unix-socket ~/.cavvy/server/control.sock -X POST http://x/pair"), "bypassPermissions").behavior).toBe("ask");
+        expect(check(T("Bash"), bash("cavvy host 'pair' --machine x"), "bypassPermissions").behavior).toBe("ask");
+        expect(check(T("Bash"), bash("cavvy host status"), "bypassPermissions").behavior).toBe("allow");
+    });
+
     test("relative, dotted and symlinked paths resolve to the store", () => {
         expect(check(T("Read"), { file_path: "credentials.json" }, "default", H).behavior).toBe("deny");
         expect(check(T("Read"), { file_path: join(H, "sub", "..", "providers.json") }).behavior).toBe("deny");

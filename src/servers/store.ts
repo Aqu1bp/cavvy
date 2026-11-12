@@ -6,7 +6,7 @@
 import { randomBytes } from "crypto";
 import { existsSync, readFileSync } from "fs";
 import { hostname } from "os";
-import { join } from "path";
+import { isAbsolute, join, resolve } from "path";
 import { cavvyHome } from "../config/paths";
 import { writeJson } from "../config/settings";
 
@@ -16,8 +16,10 @@ export interface ServerEntry {
     /** As ssh takes it: `user@host`, or a Host from ~/.ssh/config. */
     destination: string;
     port?: number;
-    /** A private key file, when it isn't one ssh would find by itself. */
+    /** A private key file, when it isn't one ssh would find by itself: a full path, or one from home (`~/…`). */
     identityFile?: string;
+    /** Where this server's host key is kept, when the user's ssh config keeps none for it (ssh.ts trustHostKey). */
+    knownHostsFile?: string;
     addedAt: string;
 }
 
@@ -73,7 +75,13 @@ function checked(e: Partial<ServerEntry>): ServerEntry {
     if (e.identityFile !== undefined) {
         const f = String(e.identityFile);
         if (!f || /[\0\n\r]/.test(f)) throw new ServerError("That isn't a key file's path.");
-        out.identityFile = f;
+        // Not as typed: a path from the folder it was added in would only work from there.
+        out.identityFile = f === "~" || f.startsWith("~/") || isAbsolute(f) ? f : resolve(f);
+    }
+    if (e.knownHostsFile !== undefined) {
+        const f = String(e.knownHostsFile);
+        if (!isAbsolute(f) || /[\0\n\r]/.test(f)) throw new ServerError("That isn't a known-hosts file's path.");
+        out.knownHostsFile = f;
     }
     return out;
 }
@@ -94,7 +102,7 @@ export function requireServer(name: string): ServerEntry {
 }
 
 /** What `add` would save, checked, without saving it (the connection is tried first). */
-export function draftServer(e: { name: string; destination: string; port?: number; identityFile?: string }): ServerEntry {
+export function draftServer(e: { name: string; destination: string; port?: number; identityFile?: string; knownHostsFile?: string }): ServerEntry {
     const entry = checked(e);
     if (getServer(entry.name)) throw new ServerError(`There's already a server named ${entry.name}.`);
     return entry;

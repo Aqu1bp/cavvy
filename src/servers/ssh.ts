@@ -12,6 +12,7 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFile
 import { homedir, tmpdir } from "os";
 import { dirname, join } from "path";
 import { childEnv } from "../util/env";
+import { cavvyHome } from "../config/paths";
 import { ServerError, type ServerEntry } from "./store";
 
 export type SshFailure =
@@ -71,11 +72,15 @@ function baseOptions(e: ServerEntry, o: { forwardings?: boolean } = {}): string[
         "ForwardAgent=no",
         "ForwardX11=no",
         "PermitLocalCommand=no",
+        // The command is Cavvy's, whatever the user's config would run there.
+        "RemoteCommand=none",
         // A connection of its own: not one a ControlMaster in the user's config shares, which would outlive it.
         "ControlMaster=no",
         "ControlPath=none",
         ...(o.forwardings ? ["ExitOnForwardFailure=yes"] : ["ClearAllForwardings=yes"]),
     ];
+    // Where this server's key was saved, when the user's config keeps none for it (trustHostKey).
+    if (e.knownHostsFile) opts.push(`UserKnownHostsFile=${expand(e.knownHostsFile)}`);
     const argv = opts.flatMap((x) => ["-o", x]);
     if (e.port) argv.push("-p", String(e.port));
     if (e.identityFile) argv.push("-i", expand(e.identityFile), "-o", "IdentitiesOnly=yes");
@@ -84,12 +89,16 @@ function baseOptions(e: ServerEntry, o: { forwardings?: boolean } = {}): string[
 
 /** POSIX quoting: one word, whatever is in it. */
 export function shQuote(s: string): string {
-    return /^[A-Za-z0-9_@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
+    // Not `=`: zsh reads a word that starts with one as a command to look up.
+    return /^[A-Za-z0-9_@%+:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
 /**
  * A script for the server's `sh`, with its arguments ($1…), as the one command
- * ssh sends. The login shell there only has to run `sh -c '…'`, whichever it is.
+ * ssh sends. The login shell there only has to run `sh -c '…'`: sh, bash, zsh,
+ * dash and ksh read that as written. csh and tcsh can't take a quoted string
+ * of several lines (probeServer says so), and fish reads `\\` inside quotes as
+ * one backslash, so an argument with two in a row arrives with one there.
  */
 export function remoteSh(script: string, args: string[] = []): string {
     return ["sh", "-c", shQuote(script), "cavvy", ...args.map(shQuote)].join(" ");
@@ -111,10 +120,76 @@ const lines = (text: string) =>
         .map((l) => l.replace(/\r$/, "").trim())
         .filter(Boolean);
 
+/** Text from a server or from ssh, safe to print: no control characters (a hostile server would draw on the terminal with them). */
+export function printable(text: string, max = 300): string {
+    // eslint-disable-next-line no-control-regex
+    return text.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "").slice(0, max);
+}
+
 /** ssh's own line about what went wrong: not its banners or warnings. */
 function sshLine(stderr: string): string | undefined {
-    const all = lines(stderr).filter((l) => !/^(Warning: Permanently added|\*\*|@@@|debug\d:)/.test(l));
+    const all = lines(printable(stderr, 8000)).filter((l) => !/^(Warning: Permanently added|\*\*|@@@|debug\d:)/.test(l));
     return (all.find((l) => /^ssh: |^ssh_|Permission denied|Host key verification failed|kex_|Connection (closed|reset|timed out|refused)|Too many authentication|Could not resolve|Bad (owner|configuration)|No such file|not accessible/i.test(l)) ?? all.at(-1))?.slice(0, 300);
+}
+
+/** What ssh would do for this server, by its own account (`ssh -G`): each setting's values. Empty when ssh can't say. */
+function sshSettings(e: ServerEntry): Map<string, string[]> {
+    const out = new Map<string, string[]>();
+    try {
+        const r = Bun.spawnSync([sshBin(), "-G", ...(e.port ? ["-p", String(e.port)] : []), "--", e.destination], { stdin: "ignore", stdout: "pipe", stderr: "ignore", env: childEnv() });
+        for (const line of lines(r.stdout.toString())) {
+            const i = line.indexOf(" ");
+            if (i <= 0) continue;
+            const key = line.slice(0, i).toLowerCase();
+            out.set(key, [...(out.get(key) ?? []), line.slice(i + 1).trim()]);
+        }
+    } catch {
+        // nothing known
+    }
+    return out;
+}
+
+/** The name ssh keeps this server's key under. */
+function knownName(e: ServerEntry): string {
+    const cfg = sshSettings(e);
+    const alias = cfg.get("hostkeyalias")?.[0];
+    if (alias) return alias;
+    const host = cfg.get("hostname")?.[0] ?? hostOf(e);
+    const port = Number(cfg.get("port")?.[0] ?? e.port ?? 22);
+    return port && port !== 22 ? `[${host}]:${port}` : host;
+}
+
+function tool(name: string): string | undefined {
+    return Bun.which(name, { PATH: process.env.PATH ?? "" }) ?? undefined;
+}
+
+function output(argv: string[]): string | undefined {
+    try {
+        const r = Bun.spawnSync(argv, { stdin: "ignore", stdout: "pipe", stderr: "ignore", env: childEnv() });
+        return r.exitCode === 0 ? r.stdout.toString() : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * A key file ssh would use for this server that's encrypted and that no agent
+ * holds: nothing can use it without its passphrase, which Cavvy never asks for.
+ */
+function lockedKey(e: ServerEntry): string | undefined {
+    const keygen = tool("ssh-keygen");
+    if (!keygen) return undefined;
+    const files = (e.identityFile ? [e.identityFile] : (sshSettings(e).get("identityfile") ?? [])).filter((f) => existsSync(expand(f)));
+    if (!files.length) return undefined;
+    const add = tool("ssh-add");
+    // "256 SHA256:… comment (ED25519)": what the agent holds, by fingerprint.
+    const held = new Set((add ? (output([add, "-l"]) ?? "") : "").split("\n").map((l) => l.split(" ")[1]).filter(Boolean));
+    for (const f of files) {
+        if (!keyNeedsPassphrase(f)) continue;
+        const print = output([keygen, "-l", "-f", expand(f)])?.split(" ")[1];
+        if (!print || !held.has(print)) return f;
+    }
+    return undefined;
 }
 
 /** Why ssh itself failed (exit 255), from what it wrote. */
@@ -122,19 +197,22 @@ export function sshFailure(stderr: string, e: ServerEntry): SshError {
     const host = hostOf(e);
     const detail = sshLine(stderr);
     if (/REMOTE HOST IDENTIFICATION HAS CHANGED|Host key for .+ has changed|Offending .*key in /.test(stderr)) {
-        const file = /Offending \S+ key in (.+?):\d+/.exec(stderr)?.[1];
-        const known = /Host key for (\S+) has changed/.exec(stderr)?.[1] ?? host;
+        // The name and the file are this machine's own account of that server, never what the failure's text names:
+        // a server's command can print these lines too, and would have the user forget some other host's key.
+        const file = e.knownHostsFile ?? sshSettings(e).get("userknownhostsfile")?.[0]?.split(" ")[0];
         const standard = !file || expand(file) === join(homedir(), ".ssh", "known_hosts");
-        return new SshError("host-changed", `${host}'s identity changed.`, "If you rebuilt it, remove its old key, then add it again.", `ssh-keygen -R ${shQuote(known)}${standard ? "" : ` -f ${shQuote(file!)}`}`);
+        return new SshError("host-changed", `${host}'s identity changed.`, "If you rebuilt it, remove its old key, then add it again.", `ssh-keygen -R ${shQuote(knownName(e))}${standard ? "" : ` -f ${shQuote(file!)}`}`);
     }
     if (/Host key verification failed|No \S+ host key is known for|No host key is known for/.test(stderr)) return new SshError("host-unknown", `${host} isn't a server this machine has connected to before.`, detail);
     if (/Bad owner or permissions|UNPROTECTED PRIVATE KEY FILE|bad permissions/.test(stderr)) return new SshError("identity", e.identityFile ? `ssh won't use the key at ${e.identityFile}.` : "ssh won't use one of your SSH files.", detail);
     if (/no such identity|Identity file .* not accessible|Load key .*: (No such file|invalid format|error in libcrypto)/i.test(stderr) && e.identityFile) return new SshError("identity", `Can't read the key at ${e.identityFile}.`, detail);
     if (/Permission denied \(|Too many authentication failures|No more authentication methods|Authentication failed/.test(stderr)) {
-        if (e.identityFile && keyNeedsPassphrase(e.identityFile)) return new SshError("passphrase", "This key needs its passphrase. Add it to ssh-agent, then retry.", detail, `ssh-add ${shQuote(e.identityFile)}`);
+        const locked = lockedKey(e);
+        if (locked) return new SshError("passphrase", `${e.identityFile ? "This key" : "Your SSH key"} needs its passphrase. Add it to ssh-agent, then retry.`, detail, `ssh-add ${shQuote(locked)}`);
         return new SshError("auth", e.identityFile ? `${host} refused this key.` : `${host} refused your SSH keys.`, detail);
     }
-    if (/Could not resolve hostname|Name or service not known|nodename nor servname|Temporary failure in name resolution|timed out|Connection refused|No route to host|Network is unreachable|Connection closed by|closed by remote host|Connection reset|kex_exchange_identification|Broken pipe|Host is down|Timeout, server .* not responding/i.test(stderr)) {
+    // Whatever kept the connection from being made: the reason varies with the system and how it's off the network.
+    if (/^ssh: connect to host /m.test(stderr) || /Could not resolve hostname|Name or service not known|nodename nor servname|Temporary failure in name resolution|timed out|Connection refused|No route to host|Network is (unreachable|down)|Connection closed by|closed by remote host|Connection reset|Connection abort|kex_exchange_identification|Broken pipe|Host is down|Timeout, server .* not responding/i.test(stderr)) {
         return new SshError("unreachable", `Can't reach ${host}.`, detail);
     }
     if (/Killed by signal \d+/.test(stderr)) return new SshError("other", `The connection to ${host} was cut off.`);
@@ -143,7 +221,7 @@ export function sshFailure(stderr: string, e: ServerEntry): SshError {
 
 /** Whether a private key file is encrypted (so only an agent holding it can use it here). */
 export function keyNeedsPassphrase(file: string): boolean {
-    const keygen = Bun.which("ssh-keygen", { PATH: process.env.PATH ?? "" });
+    const keygen = tool("ssh-keygen");
     const path = expand(file);
     if (!keygen || !existsSync(path)) return false;
     const r = Bun.spawnSync([keygen, "-y", "-P", "", "-f", path], { stdin: "ignore", stdout: "ignore", stderr: "pipe", env: childEnv() });
@@ -233,13 +311,6 @@ export async function ssh(e: ServerEntry, command: string, o: SshRunOptions = {}
     }
 }
 
-/** Runs it and returns its output, or throws with what it wrote when it fails. */
-export async function sshOk(e: ServerEntry, command: string, o: SshRunOptions = {}): Promise<string> {
-    const r = await ssh(e, command, o);
-    if (r.code !== 0) throw new ServerError(`A command on ${hostOf(e)} failed (${r.code}): ${(lines(r.stderr).at(-1) ?? lines(r.stdout).at(-1) ?? "no output").slice(0, 300)}`);
-    return r.stdout;
-}
-
 // ---------------------------------------------------------------------------
 // A host key ssh doesn't know yet.
 
@@ -287,24 +358,26 @@ export async function offeredHostKey(e: ServerEntry, signal?: AbortSignal): Prom
     }
 }
 
-/** Where ssh keeps the hosts this user trusts for that destination. */
-function knownHostsFile(e: ServerEntry): string {
-    try {
-        const r = Bun.spawnSync([sshBin(), "-G", ...(e.port ? ["-p", String(e.port)] : []), "--", e.destination], { stdin: "ignore", stdout: "pipe", stderr: "ignore", env: childEnv() });
-        const first = /^userknownhostsfile\s+(\S+)/im.exec(r.stdout.toString())?.[1];
-        if (first && first !== "/dev/null") return expand(first);
-    } catch {
-        // the usual place
-    }
-    return join(homedir(), ".ssh", "known_hosts");
-}
+/** Cavvy's own list of servers' keys, for a server whose keys the user's ssh config keeps nowhere. */
+export const ownKnownHosts = () => join(cavvyHome(), "known_hosts");
 
-/** The user said to trust it: the key they were shown is saved, and only that one. */
-export function trustHostKey(e: ServerEntry, key: OfferedHostKey) {
-    const file = knownHostsFile(e);
+/**
+ * The user said to trust it: the key they were shown is saved, and only that
+ * one, where ssh keeps this user's keys for that server. Where their config
+ * keeps none (`UserKnownHostsFile /dev/null`, as for machines that come and
+ * go), it goes in Cavvy's own file, and the entry says so (`knownHostsFile`),
+ * since Cavvy's connections check the key every time.
+ */
+export function trustHostKey<T extends ServerEntry>(e: T, key: OfferedHostKey): T {
+    const configured = e.knownHostsFile ?? sshSettings(e).get("userknownhostsfile")?.[0]?.split(" ")[0];
+    const own = configured === "/dev/null" || configured === "none";
+    const file = own ? ownKnownHosts() : expand(configured ?? join("~", ".ssh", "known_hosts"));
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
     const fresh = !existsSync(file);
     const before = fresh ? "" : readFileSync(file, "utf-8");
-    appendFileSync(file, (before && !before.endsWith("\n") ? "\n" : "") + key.lines.join("\n") + "\n", { mode: 0o600 });
+    const have = new Set(lines(before));
+    const add = key.lines.filter((l) => !have.has(l));
+    if (add.length) appendFileSync(file, (before && !before.endsWith("\n") ? "\n" : "") + add.join("\n") + "\n", { mode: 0o600 });
     if (fresh) chmodSync(file, 0o600);
+    return own ? { ...e, knownHostsFile: file } : e;
 }
