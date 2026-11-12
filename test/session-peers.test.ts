@@ -419,8 +419,21 @@ describe("in the app", () => {
         expect((await startSession(a.toolState.peers, { prompt: "One more." })).text).toContain("started 5 sessions in the last hour");
         const child = engine.runtimes.get(ids[0]!)!;
         expect((await startSession(child.toolState.peers, { prompt: "A grandchild." })).text).toContain("was started by another session");
+        // After a restart (what's kept in memory gone), its first message, from its starter, still says so.
+        (engine as any).sessionStarts.startedBy.clear();
+        await until(() => child.session.messages.length > 0);
+        expect((await startSession(child.toolState.peers, { prompt: "A grandchild." })).text).toContain("was started by another session");
         for (const id of ids) await until(() => !engine.runtimes.get(id)?.busy);
-    }, 30_000);
+        // Calls at once count as they're made: no more than 5 start, however many are asked for together.
+        const c = await engine.createSession(project, { mode: "bypassPermissions" });
+        await c.ready;
+        const together = await Promise.all(Array.from({ length: 8 }, (_, i) => startSession(c.toolState.peers, { prompt: `Together ${i}.` })));
+        expect(together.filter((r) => !r.isError)).toHaveLength(5);
+        for (const r of together.filter((r) => !r.isError)) {
+            const id = /Started session (\S+)/.exec(r.text)![1]!;
+            await until(() => !engine.runtimes.get(id)?.busy);
+        }
+    }, 40_000);
 
     test("a session started by another runs on its Claude Code and Codex accounts", async () => {
         const a = await engine.createSession(project, { mode: "bypassPermissions" });

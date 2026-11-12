@@ -17,7 +17,7 @@ A message shows in the receiving session as a quote under "Message from another 
 
 - Sending and starting ask for permission in Manual and Accept edits mode ("don't ask again" allows the tool), go to the reviewer in Auto mode, and are refused in Plan mode. Read-only listing and reading don't ask.
 - A session can't send work to one that asks you less: a Manual session can't send to one in Bypass permissions mode. Ask that session yourself, or change a mode.
-- A session started by another gets the starter's mode or the folder's default mode, whichever asks you more, the starter's model unless the agent names another, and the starter's Claude Code and Codex accounts. It can't start sessions itself, and a session starts at most 5 an hour, so sessions can't multiply on their own.
+- A session started by another gets the starter's mode or the folder's default mode, whichever asks you more, the starter's model unless the agent names another, and the starter's Claude Code and Codex accounts. It can't start sessions itself, and a session starts at most 5 an hour (counted while Cavvy runs), so sessions can't multiply on their own.
 - Pressing Esc in a session holds messages from other sessions until you next send it something, as it holds pull request and monitor events. Messages from other sessions start or join at most 20 turns an hour in a session (events count toward the turns they start), so two agents answering each other can't run on unattended. Both limits are kept while Cavvy runs, through closing and reopening the session.
 - A session that's closed is opened to take a message, and closed again once it's done, unless a window shows it. A session open in a terminal can't take one: it says so to the sender.
 

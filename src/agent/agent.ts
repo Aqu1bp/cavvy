@@ -2947,8 +2947,8 @@ export class Agent {
         if (e.type !== "tool_start" && e.type !== "tool_end") return;
         // The session tools' calls by their arguments too: Claude Code sends no call id with them (servedSessionCaller).
         if (servedSessionTool(MCP_SERVER_NAME, e.call.name)) {
-            if (e.type === "tool_start") this.sessionCalls.push({ name: e.call.name, input: (e.call.input ?? {}) as Record<string, unknown>, sub: into === this.servedSub, claimed: false });
-            else this.sessionCalls = this.sessionCalls.filter((c) => c.claimed || c.name !== e.call.name);
+            if (e.type === "tool_start") this.sessionCalls.push({ id: e.call.id, name: e.call.name, input: (e.call.input ?? {}) as Record<string, unknown>, sub: into === this.servedSub, claimed: false });
+            else this.sessionCalls = this.sessionCalls.filter((c) => c.id !== e.call.id);
         }
         if (!e.call.name.startsWith(`mcp__${MCP_SERVER_NAME}__monitor`) && !servedSessionTool(MCP_SERVER_NAME, e.call.name)) return;
         if (e.type === "tool_start") into.add(e.call.id);
@@ -2956,7 +2956,7 @@ export class Agent {
     }
 
     /** The backend's calls of the served session tools, by name and arguments, and whose they are (a sub-agent's or not). */
-    private sessionCalls: { name: string; input: Record<string, unknown>; sub: boolean; claimed: boolean }[] = [];
+    private sessionCalls: { id: string; name: string; input: Record<string, unknown>; sub: boolean; claimed: boolean }[] = [];
 
     /**
      * Whose a served session tool's call is, by its id, else by its name and arguments (Claude Code sends no id): "main",

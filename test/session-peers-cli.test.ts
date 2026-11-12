@@ -95,8 +95,8 @@ for (const asAgent of [false, true]) {
 }
 
 for (const live of [true, false])
-    for (const steered of [false, true])
-        test(`Claude Code (${mode(live)}): a message its turn never read is taken back on Esc${steered ? ", with the user's steer after it" : ""}, and stays taken back after a reopen`, async () => {
+    for (const steered of [false, true, "first"] as const)
+        test(`Claude Code (${mode(live)}): a message its turn never read is taken back on Esc${steered === "first" ? ", joined to a turn the user steered" : steered ? ", with the user's steer after it" : ""}, and stays taken back after a reopen`, async () => {
             await kit.withApp(
                 "claude-code",
                 live,
@@ -107,9 +107,14 @@ for (const live of [true, false])
                     // "hang": the CLI's turn runs until it's stopped, and never reads what's steered in.
                     await b.send("work on it");
                     await until(() => b.busy);
+                    if (steered === "first") {
+                        await b.send("and the tests too", undefined, false, "steer");
+                        // Its turn shows once the CLI's side takes it (at once when live).
+                        await until(() => h.turns().length === 2, 2_000).catch(() => undefined);
+                    }
                     await sendToSession(a.toolState.peers, { id: b.id, message: "Also check the migration." });
                     await until(() => peerBlocks(h.turns()).length === 1);
-                    if (steered) await b.send("and the tests too", undefined, false, "steer");
+                    if (steered === true) await b.send("and the tests too", undefined, false, "steer");
                     await Bun.sleep(200);
                     b.interrupt();
                     await until(() => b.idle && !b.busy);
@@ -127,3 +132,27 @@ for (const live of [true, false])
                 { env: { FAKE_SCENARIO: "hang" } },
             );
         }, 40_000);
+
+test("Claude Code: two send_to_session calls said in one response both go, though it sends no call ids", async () => {
+    await kit.withApp(
+        "claude-code",
+        true,
+        async (h) => {
+            const b = await h.engine.createSession(h.cwd, { mode: "bypassPermissions" });
+            await b.ready;
+            await b.setModel("mock:mock-opus");
+            await b.send("hello");
+            await until(() => b.idle && !b.busy && b.session.messages.length > 0);
+            process.env.FAKE_MCP_BATCH = "1";
+            process.env.FAKE_MCP_CALLS = JSON.stringify([
+                { server: "cavvy", tool: "send_to_session", args: { id: b.id, message: "First." } },
+                { server: "cavvy", tool: "send_to_session", args: { id: b.id, message: "Second." } },
+            ]);
+            await h.send("call both");
+            const results = h.lines().flatMap((l: any) => (l.mcpResult ? [l.mcpResult] : []));
+            expect(results).toHaveLength(2);
+            for (const r of results) expect(r.text).toContain("Sent to session");
+        },
+        { env: { FAKE_SCENARIO: "mcp" } },
+    );
+}, 40_000);

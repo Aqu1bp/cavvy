@@ -69,6 +69,7 @@
 // FAKE_CRASH_ON_SECOND=1  exits without a result on its second prompt
 // FAKE_MCP_CALLS     the "mcp" scenario's tool calls to servers from mcp_set_servers: [{ server?, tool, args }]
 // FAKE_MCP_AS_AGENT=1  the "mcp" scenario's calls are made by a sub-agent (under an Agent call)
+// FAKE_MCP_BATCH=1   the "mcp" scenario's calls are all said first (one response with several), then run one by one
 // FAKE_MCP_REFUSE=1  answers mcp_set_servers with an error; hang leaves it unanswered, exit stops the CLI
 // FAKE_LOG_ENV=1     logs its whole environment at start
 // FAKE_TRANSCRIPTS=1 keeps each session as a transcript under its config folder's projects/ (CLAUDE_CONFIG_DIR, or
@@ -1215,7 +1216,10 @@ async function turn(content: any[], uuid?: string) {
             const s = mcpServers.get(name);
             const id = `toolu_m${prompts}_${i}`;
             const tool = `mcp__${name}__${c.tool}`;
-            if (parent) sub(parent, "assistant", [{ type: "tool_use", id, name: tool, input: c.args }]);
+            // FAKE_MCP_BATCH=1: all the calls are said first (one response with several), then run one by one.
+            if (process.env.FAKE_MCP_BATCH === "1") {
+                if (i === 0) for (const [j, d] of calls.entries()) toolUse(`toolu_m${prompts}_${j}`, `mcp__${d.server ?? [...mcpServers.keys()][0] ?? "none"}__${d.tool}`, d.args);
+            } else if (parent) sub(parent, "assistant", [{ type: "tool_use", id, name: tool, input: c.args }]);
             else toolUse(id, tool, c.args);
             if (!s) {
                 toolResult(id, `No such tool available: ${tool}`, true);

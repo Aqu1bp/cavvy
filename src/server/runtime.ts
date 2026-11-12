@@ -2940,6 +2940,8 @@ export class Runtime {
             if (prev) {
                 for (const b of turn.blocks) this.op({ op: "block", turnId: prev.id, block: b });
                 for (const m of [this.toolTurn, this.responseTurn]) for (const [k, v] of m) if (v === turn.id) m.set(k, prev.id);
+                // Messages from other sessions shown in it go with its blocks: a withdrawal finds them where they are now.
+                for (const [k, v] of this.peerBlocks) if (v.turnId === turn.id) this.peerBlocks.set(k, { ...v, turnId: prev.id });
                 for (const a of this.view.agents) if (a.turnId === turn.id) this.op({ op: "agent.patch", id: a.id, patch: { turnId: prev.id } });
                 this.op({ op: "turn.patch", turnId: prev.id, patch: { status: turn.status, endedAt: turn.endedAt } });
             }

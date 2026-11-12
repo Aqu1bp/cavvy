@@ -102,27 +102,33 @@ export function appPeers(host: PeerHost, self: Runtime): SessionPeers {
             return { summary: runtimeSummary(rt), delivery: deliver(rt, text) };
         },
         start: async ({ prompt, title, model }) => {
-            // No chains: a session another started can't start more. And no more than so many an hour from one.
-            if (host.starts.startedBy.has(self.id)) throw new PeerError("This session was started by another session, so it can't start sessions itself. Ask the user to start it, or send the request to the session that started this one.");
+            // No chains: a session another started can't start more (its first message, from its starter, says so after a
+            // restart too). And no more than so many an hour from one, counted before anything is awaited.
+            const first = self.session.messages[0];
+            if (host.starts.startedBy.has(self.id) || (first?.role === "user" && first.meta?.kind === "wake" && first.meta.from)) throw new PeerError("This session was started by another session, so it can't start sessions itself. Ask the user to start it, or send the request to the session that started this one.");
             const now = Date.now();
             const times = (host.starts.times.get(self.id) ?? []).filter((t) => now - t < 3_600_000);
             if (times.length >= MAX_STARTS_PER_HOUR) throw new PeerError(`This session has started ${MAX_STARTS_PER_HOUR} sessions in the last hour, as many as it may. Ask the user before starting more.`);
+            host.starts.times.set(self.id, [...times, now]);
+            /** A start that didn't happen doesn't count. */
+            const uncount = () => host.starts.times.set(self.id, (host.starts.times.get(self.id) ?? []).filter((t) => t !== now));
             let rt: Runtime;
             try {
                 // On the starter's Claude Code and Codex accounts, as a plan taken to a worktree is.
                 const accounts = Object.fromEntries(ACCOUNT_PROVIDERS.map((p) => [p, self.session.accountId(p)]));
                 rt = await host.create(self.ws.cwd, { mode: narrowerMode(self.mode, host.defaultMode(self.ws)), accounts });
             } catch (e) {
+                uncount();
                 throw new PeerError(`The session couldn't be started: ${redact((e as Error).message)}`);
             }
             const ref = model ?? self.session.model;
             try {
                 if (ref) await rt.setModel(ref);
             } catch (e) {
+                uncount();
                 host.release(rt.id);
                 throw new PeerError(`The session couldn't be started on ${ref}: ${redact((e as Error).message)}`);
             }
-            host.starts.times.set(self.id, [...times, now]);
             host.starts.startedBy.set(rt.id, self.id);
             rt.rename(title);
             deliver(rt, prompt);
