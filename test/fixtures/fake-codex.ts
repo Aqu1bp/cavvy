@@ -523,14 +523,19 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         const cmd = { type: "commandExecution", id: `hang-${turnId}`, command: "/bin/zsh -lc 'sleep 60'", cwd, status: "inProgress", commandActions: [{ type: "unknown", command: "sleep 60" }], aggregatedOutput: null, exitCode: null };
         if (!stream) notify("item/started", { threadId, turnId, item: cmd });
         else notify("item/started", { threadId, turnId, item: { type: "agentMessage", id: `stream-${turnId}`, text: "" } });
-        // FAKE_HANG_STRAY=1: as Codex 0.167 does on Linux, the command is a process of its own with no process id
-        // given for it, and an interrupt ends the turn and leaves it running, its item never completed.
-        // The command starts a moment into the turn, as it does once a model has answered.
-        if (!stream && process.env.FAKE_HANG_STRAY === "1") await Bun.sleep(300);
-        const stray = !stream && process.env.FAKE_HANG_STRAY === "1" ? Bun.spawn(["sleep", "30"], { stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: true }) : undefined;
-        if (stray) {
+        // FAKE_HANG_STRAY=1: as Codex 0.167 does on Linux, the command ("sleep 60", a shell leading a group of its
+        // own, with a child that takes no notice of being asked to stop) has no process id given for it, and an
+        // interrupt ends the turn and leaves it running, its item never completed. Beside it, started in the same
+        // turn, a process of another name in a group of its own (as a background sub-agent's command, or what an
+        // MCP server starts): `other`. Both start a moment into the turn, as they do once a model has answered.
+        let stray: ReturnType<typeof Bun.spawn> | undefined;
+        if (!stream && process.env.FAKE_HANG_STRAY === "1") {
+            await Bun.sleep(1000);
+            stray = Bun.spawn(["sh", "-c", "(trap '' TERM; exec sleep 60) & wait"], { stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: true });
+            const other = Bun.spawn(["sleep", "61"], { stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: true });
             stray.unref();
-            log({ stray: stray.pid });
+            other.unref();
+            log({ stray: stray.pid, other: other.pid });
         }
         const until = Date.now() + Number(process.env.FAKE_HANG_MS ?? 10000);
         let woken = false;

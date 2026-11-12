@@ -17,7 +17,7 @@
 // - Plan limits come with turns; between them status reads go to the live
 //   app-server (account/rateLimits/read).
 
-import { descendantsOf, endGroupsStartedUnder } from "../util/process-tree";
+import { descendantsOf, endCommandsUnder } from "../util/process-tree";
 import type { NativeGoal } from "../agent/goal";
 import type { PermissionMode } from "../permissions/modes";
 import type { ProviderDef } from "../providers/registry";
@@ -1015,7 +1015,11 @@ export class CodexLiveConnection extends CodexTurn {
         this.events({ t: "turn_started", ref: id, origin });
         // What Codex is running before the turn has run anything, for endStopped: the turn's own are what came after.
         const pid = this.rpc.proc.pid;
-        if (pid) this.before.set(id, descendantsOf(pid));
+        if (pid) {
+            // A turn that never comes to an end here leaves its entry: only the latest few are kept.
+            for (const old of [...this.before.keys()].slice(0, -7)) this.before.delete(old);
+            this.before.set(id, descendantsOf(pid));
+        }
         // Started for the goal before its pause was in, the session being on another model now: it stops at once.
         if (origin === "goal" && this.goalLeft) void this.interruptTurn(id);
     }
@@ -1055,16 +1059,17 @@ export class CodexLiveConnection extends CodexTurn {
 
     /**
      * A turn that was stopped while a command ran: Codex ends the turn and, for a command it gave no process id
-     * (seen with 0.167 on Linux), leaves the command running, with nothing to list or stop it by. So the process
-     * groups Codex has started since the turn began are ended here (a command runs in a group of its own; a helper
-     * of Codex's, such as an MCP server, shares Codex's), or "Interrupted" would be said of something still going.
+     * (seen with 0.167 on Linux), leaves the command running, with nothing to list or stop it by. So that command
+     * is ended here, or "Interrupted" would be said of something still going: the process group Codex started
+     * since the turn began whose command line is the command's. Nothing else of Codex's is touched (its helpers
+     * and MCP servers, what those start, a background sub-agent's own commands, a background command it tracks).
      */
-    private async endStopped(running: Promise<ReadonlySet<number> | undefined> | undefined) {
+    private async endStopped(commands: string[], running: Promise<ReadonlySet<number> | undefined> | undefined) {
         const pid = this.rpc.proc.pid;
         const before = await running;
-        // Without what it was running beforehand there's no telling a helper of Codex's from the command: left.
+        // Without what it was running beforehand there's no telling an earlier command of the same words from this one: left.
         if (!pid || !before) return;
-        const ended = await endGroupsStartedUnder(pid, before);
+        const ended = await endCommandsUnder(pid, before, commands);
         liveDebug("codex", "ended what a stopped command left", { thread: this.threadId, count: ended.length });
     }
 
@@ -1074,8 +1079,8 @@ export class CodexLiveConnection extends CodexTurn {
      */
     private closeTurnItems(turn: string, interrupted = false) {
         const fresh: Terminal[] = [];
-        // The turn was stopped in the middle of a command which Codex gave no process to stop it by.
-        let stopped = false;
+        // The commands the turn was stopped in the middle of, which Codex gave no process to stop them by.
+        const stopped: string[] = [];
         for (const [id, it] of [...this.items]) {
             if (it.sub) continue;
             if (it.name === "Bash" && it.processId) {
@@ -1087,10 +1092,10 @@ export class CodexLiveConnection extends CodexTurn {
                 liveDebug("codex", "background terminal", { thread: this.threadId, turn, item: id, processId: it.processId });
                 continue;
             }
-            if (interrupted && it.name === "Bash") stopped = true;
+            if (interrupted && it.name === "Bash" && typeof it.input.command === "string") stopped.push(it.input.command);
             this.endItem(id, it, this.aborted ? "Interrupted by user" : "Codex stopped before this finished.", true);
         }
-        if (stopped) void this.endStopped(this.before.get(turn));
+        if (stopped.length) void this.endStopped(stopped, this.before.get(turn));
         this.before.delete(turn);
         for (const [thread, sub] of [...this.subs]) {
             // Done: one set going again in a later turn shows under that turn's call (its label is kept).
