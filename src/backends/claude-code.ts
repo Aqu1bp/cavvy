@@ -64,6 +64,7 @@ import type { AgentCliStatus } from "./index";
 import { servedBrowserTool } from "../tools/browser-tools";
 import { servedSimulatorTool } from "../tools/simulator-tools";
 import { servedSessionTool } from "../tools/session-tools";
+import { SESSION_VAR } from "../util/session-processes";
 
 /** checkAgentCli, imported when it's asked for (index.ts imports this file). */
 async function checkAgentCliLazy(providerId: string, signal?: AbortSignal, accountId?: string): Promise<AgentCliStatus> {
@@ -1325,7 +1326,8 @@ class ClaudeTurn {
         let env: ReturnType<typeof accountEnv>;
         try {
             env = accountEnv(this.def.id, this.t.accountId, this.t.cwd);
-            this.proc = new JsonLinesProcess(this.bin, this.args(), { cwd: this.t.cwd, env });
+            // Marked as its session's, as a live process is (LiveCliSession.start): a sub-agent's turns run here.
+            this.proc = new JsonLinesProcess(this.bin, this.args(), { cwd: this.t.cwd, env: this.t.processMark ? { ...env, [SESSION_VAR]: this.t.processMark } : env });
         } catch (e) {
             this.agentsFile?.remove();
             throw e;
