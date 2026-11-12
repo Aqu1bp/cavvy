@@ -115,13 +115,14 @@ export function homeRpc(own: Rpc): Rpc {
     return home ?? own;
 }
 
-/** Puts this window on a server, or back on this computer, and loads it again there. */
-export function switchMachine(name: string | undefined) {
+/** Puts this window on a server, or back on this computer, and loads it again there: on `session`, when one is given. */
+export function switchMachine(name: string | undefined, session?: string) {
     try {
         if (name) sessionStorage.setItem(MACHINE_KEY, name);
         else sessionStorage.removeItem(MACHINE_KEY);
         // Where the window was (its session, its project) is the other machine's: here it would name nothing, or the wrong thing.
-        sessionStorage.removeItem("cavvy.navigation");
+        if (session) sessionStorage.setItem("cavvy.navigation", JSON.stringify({ activeId: session }));
+        else sessionStorage.removeItem("cavvy.navigation");
     } catch {
         return;
     }

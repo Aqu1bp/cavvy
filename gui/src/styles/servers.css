@@ -104,3 +104,59 @@
     overflow: hidden;
     white-space: nowrap;
 }
+
+/* The other machines' sessions, between the sidebar's own list and its foot (components/OtherMachines.tsx). */
+.sidebar .others {
+    flex: none;
+    max-height: 40%;
+    overflow-y: auto;
+    padding: 0 calc(8 * var(--sp)) calc(4 * var(--sp));
+}
+
+.sidebar .others:empty {
+    display: none;
+}
+
+.others .om-h {
+    display: flex;
+    align-items: baseline;
+    gap: calc(8 * var(--sp));
+    width: 100%;
+    margin-top: calc(8 * var(--sp));
+    padding: calc(4 * var(--sp)) calc(8 * var(--sp));
+    border: 0;
+    border-radius: calc(6 * var(--sp));
+    background: none;
+    color: var(--rail-fg-2);
+    font: inherit;
+    font-size: 0.786rem;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+}
+
+.others .om-h:hover,
+.others .om-more:hover {
+    color: var(--rail-fg);
+}
+
+.others .om-n {
+    flex: none;
+    font-weight: 400;
+}
+
+.others .om-more {
+    padding: calc(2 * var(--sp)) calc(8 * var(--sp));
+    border: 0;
+    background: none;
+    color: var(--rail-fg-2);
+    font: inherit;
+    font-size: 0.786rem;
+    cursor: pointer;
+}
+
+.others .om-h:focus-visible,
+.others .om-more:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: -2px;
+}

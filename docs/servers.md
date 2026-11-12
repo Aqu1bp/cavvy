@@ -51,6 +51,8 @@ The button beside Settings, at the foot of the sidebar, lists your machines: thi
 
 Picking a server puts that window on it: its sessions, folders, models and settings are the server's, and the button carries the server's name. Other windows stay where they are. Picking this machine brings the window back. A window opens on this machine when the app starts.
 
+Under a window's own sessions, the sidebar lists the other machines: each server (and, in a window on a server, this machine) with up to five of its sessions in play, those waiting for you first, then the working ones. A click on a session puts the window on that machine with it open; the machine's name takes you there. A server that can't be reached, was stopped, or needs your word says so beside its name. Listing a server starts nothing on it. When a session on a machine no window is on finishes or needs you, the notification names the machine, and a click on it opens that session there.
+
 What a window on a server doesn't have: the desktop app's own browser pane and the Finder (choosing a folder uses Cavvy's own list of the server's folders; Reveal isn't offered). The Browser tool there needs a Chrome on the server.
 
 If the connection drops, the window keeps what it shows and says why beside `Reconnecting…`; it comes back by itself. A message you send while it's down stays in the box. When getting back needs you, the window asks: the server's key is one this machine hasn't seen (**Trust**), the Cavvy there is another version (**Update**, which asks first if that would stop work there), or Cavvy there was stopped on purpose (**Start**: a window never starts it again by itself).

@@ -853,7 +853,8 @@ function onEvent(ev: ServerEvent) {
             if (!prefs.notifications) return;
             if (focused() && app.activeId === ev.sessionId) return;
             if (ev.kind === "done" && focused()) return;
-            void notify(ev.title, ev.body, () => void activate(ev.sessionId));
+            // In a window on a server the machine is named, as it is for sessions on machines no window is on.
+            void notify(machine ? `${ev.title} · ${machine}` : ev.title, ev.body, () => void activate(ev.sessionId));
             return;
         }
     }
@@ -939,7 +940,7 @@ export function start() {
                 // To a server's Cavvy this window is a page like any other: what the desktop app lends its own Cavvy
                 // (its browser, its folders) is this computer's, not the server's.
                 setApp("hello", await rpc.call("hello", { client: isDesktop && !machine ? "desktop" : "browser" }));
-                if (machine) void serversUi().then((m) => m.setMachineIssue(undefined));
+                if (machine || app.hello?.servers) void serversUi().then((m) => m.connected());
                 await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders(), refreshKeybindings().catch(() => undefined)]);
                 void refreshModels().catch(() => undefined);
                 void refreshLimits().catch(() => undefined);
