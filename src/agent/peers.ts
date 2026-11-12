@@ -11,9 +11,9 @@
 import { readFileSync, realpathSync, statSync } from "fs";
 import { dirname, join, resolve, sep } from "path";
 import type { ProviderListing } from "../providers/models";
-import type { Message, UserMessage } from "../providers/types";
+import type { Message, ModelInfo, UserMessage } from "../providers/types";
 import { modelRef } from "../providers/types";
-import type { Effort } from "../config/settings";
+import { EFFORT_LEVELS, type Effort } from "../config/settings";
 import type { PermissionMode } from "../permissions/modes";
 import { redact } from "../util/redact";
 import { findSessionAnywhere, listAllSessions, Session, sessionHolder } from "./session";
@@ -67,22 +67,33 @@ export interface StartChoice {
 export class PeerError extends Error {}
 
 const SHOWN_PER_PROVIDER = 12;
+const SHOWN_OF_ONE = 200;
+
+/** The efforts a model takes, as Cavvy names them (a listing may name others: Codex's "ultra"); every one when it doesn't say. */
+export function modelEfforts(m: Pick<ModelInfo, "effortLevels">): Effort[] {
+    return m.effortLevels ? m.effortLevels.filter((e) => EFFORT_LEVELS.includes(e)) : EFFORT_LEVELS;
+}
 
 /**
- * The models a session can be started on, with the efforts each takes: those of the providers set up here, a
- * few of each, or every one of `provider`'s.
+ * The models a session can be started on, with the efforts each takes: a few of each provider's set up here, or
+ * `provider`'s, those whose id or name has `match` in it first (all of them when none does).
  */
-export function modelChoices(listings: ProviderListing[], provider?: string): string {
+export function modelChoices(listings: ProviderListing[], provider?: string, match?: string): string {
     const out: string[] = [];
+    const q = match?.trim().toLowerCase();
     for (const l of listings) {
         if (provider && l.provider.id !== provider) continue;
-        if (!l.models.length) continue;
-        const shown = provider ? l.models.slice(0, 200) : l.models.slice(0, SHOWN_PER_PROVIDER);
+        let models = l.models;
+        const found = q ? models.filter((m) => m.id.toLowerCase().includes(q) || (m.name ?? "").toLowerCase().includes(q)) : [];
+        if (found.length) models = found;
+        if (!models.length) continue;
+        const shown = models.slice(0, provider ? SHOWN_OF_ONE : SHOWN_PER_PROVIDER);
         for (const m of shown) {
-            const bits = [m.name && m.name !== m.id ? m.name : "", m.effortLevels?.length ? `effort ${m.effortLevels.join(", ")}` : ""].filter(Boolean);
+            const efforts = m.effortLevels ? modelEfforts(m) : [];
+            const bits = [m.name && m.name !== m.id ? m.name : "", efforts.length ? `effort ${efforts.join(", ")}` : ""].filter(Boolean);
             out.push(`  ${modelRef(m)}${bits.length ? ` (${bits.join("; ")})` : ""}`);
         }
-        if (l.models.length > shown.length) out.push(`  … and ${l.models.length - shown.length} more of ${l.provider.name}'s: model "${l.provider.id}:" lists them all`);
+        if (models.length > shown.length) out.push(`  … and ${models.length - shown.length} more of ${l.provider.name}'s: model "${l.provider.id}:<part of an id or name>" lists those that have it`);
     }
     return out.length ? `Models (provider:model):\n${out.join("\n")}` : "No models are listed here.";
 }

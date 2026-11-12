@@ -4,10 +4,9 @@
 // the session first when it isn't open (and letting it go again once it's
 // done, as one no window shows is).
 
-import { inheritedEffort } from "../agent/delegation";
-import { diskPeers, freerMode, modelChoices, narrowerMode, PeerError, peerWake, readFromDisk, type Delivery, type PeerStatus, type PeerSummary, type SessionPeers, type StartChoice } from "../agent/peers";
+import { diskPeers, freerMode, modelChoices, modelEfforts, narrowerMode, PeerError, peerWake, readFromDisk, type Delivery, type PeerStatus, type PeerSummary, type SessionPeers, type StartChoice } from "../agent/peers";
 import { findSessionAnywhere, sessionHolder } from "../agent/session";
-import { EFFORT_LEVELS, type Effort } from "../config/settings";
+import type { Effort } from "../config/settings";
 import { ACCOUNT_PROVIDERS } from "../providers/accounts";
 import { clientFor, resolveModelInfo, type ProviderListing } from "../providers/models";
 import { getProvider } from "../providers/registry";
@@ -83,11 +82,11 @@ export function appPeers(host: PeerHost, self: Runtime): SessionPeers {
      * The model and effort to start a session on: as asked (a model a provider set up here has, an effort it takes), else
      * this session's (its effort where the model takes it). Throws PeerError, with the models there are.
      */
-    const choose = async ({ model, effort }: StartChoice): Promise<{ ref: string; effort?: Effort }> => {
+    const choose = async ({ model, effort }: StartChoice): Promise<{ ref: string; efforts: Effort[]; effort?: Effort; asked: boolean }> => {
         const listings = host.listings();
         const shown = (t: string) => `"${redact(t).slice(0, 120)}"`;
-        const refuse = (why: string, provider?: string): never => {
-            throw new PeerError(`${why}\n\n${modelChoices(listings, provider)}`);
+        const refuse = (why: string, provider?: string, match?: string): never => {
+            throw new PeerError(`${why}\n\n${modelChoices(listings, provider, match)}`);
         };
         const ref = model ?? (self.model ? modelRef(self.model) : self.session.model);
         if (!ref) return refuse("This session has no model to start one on: say which.");
@@ -103,11 +102,14 @@ export function appPeers(host: PeerHost, self: Runtime): SessionPeers {
         const listed = listings.find((l) => l.provider.id === def.id)?.models ?? [];
         // This session's own model is what it runs on, listed or not; one asked for has to be listed (where its provider lists any).
         const info = !model && self.model ? self.model : (listed.find((m) => m.id === p.id) ?? (listed.length ? undefined : resolveModelInfo(ref)));
-        if (!info) return refuse(`${def.name} has no model ${shown(p.id)}.`, def.id);
-        const levels = info.effortLevels ?? EFFORT_LEVELS;
-        if (effort === undefined) return { ref, effort: inheritedEffort(info, self.settings().effort) };
-        if (!levels.includes(effort as Effort)) throw new PeerError(`${ref} doesn't take ${shown(effort)} effort. It takes: ${levels.join(", ") || "none"}.`);
-        return { ref, effort: effort as Effort };
+        if (!info) return refuse(`${def.name} has no model ${shown(p.id)}.`, def.id, p.id);
+        const efforts = modelEfforts(info);
+        if (effort === undefined) {
+            const mine = self.settings().effort;
+            return { ref, efforts, effort: mine && efforts.includes(mine) ? mine : undefined, asked: false };
+        }
+        if (!efforts.includes(effort as Effort)) throw new PeerError(`${ref} doesn't take ${shown(effort)} effort. It takes: ${efforts.join(", ") || "none"}.`);
+        return { ref, efforts, effort: effort as Effort, asked: true };
     };
 
     return {
@@ -191,11 +193,14 @@ export function appPeers(host: PeerHost, self: Runtime): SessionPeers {
                 host.release(rt.id);
                 throw new PeerError(`The session couldn't be started on ${chosen.ref}${why ? `: ${why}` : "."}`);
             }
-            if (chosen.effort && chosen.effort !== rt.settings().effort) rt.setEffort(chosen.effort);
+            // One asked for is the session's own, whatever the folder's default becomes; the starter's only where it differs.
+            if (chosen.effort && (chosen.asked || chosen.effort !== rt.settings().effort)) rt.setEffort(chosen.effort);
             host.starts.startedBy.set(rt.id, self.id);
             rt.rename(title);
             deliver(rt, prompt);
-            return { ...runtimeSummary(rt), effort: rt.settings().effort };
+            // The effort it runs at, said only where the model takes it (a provider puts another at the nearest it takes).
+            const runs = rt.settings().effort;
+            return { ...runtimeSummary(rt), effort: runs && chosen.efforts.includes(runs) ? runs : undefined };
         },
     };
 }

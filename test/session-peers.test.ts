@@ -455,7 +455,20 @@ describe("in the app", () => {
         const listing = () => [{ provider: getProvider("mock"), status: "ok", models: [
             { provider: "mock", id: "mock-opus", name: "Mock Opus", effortLevels: ["low", "medium", "high"] },
             { provider: "mock", id: "mock-haiku", name: "Mock Haiku" },
+            // A listing may name efforts Cavvy doesn't (Codex's "ultra"): not offered.
+            { provider: "mock", id: "mock-sol", name: "Mock Sol", effortLevels: ["high", "max", "ultra"] },
+            ...Array.from({ length: 230 }, (_, i) => ({ provider: "mock", id: `mock-extra-${i}` })),
         ] }];
+        /** The folder's default effort, for a while. */
+        const withDefault = async <T>(rt: Rt, effort: string, f: () => Promise<T>) => {
+            const before = rt.ws.settings.effort;
+            rt.ws.settings.effort = effort as never;
+            try {
+                return await f();
+            } finally {
+                rt.ws.settings.effort = before;
+            }
+        };
         const listed = <T>(f: () => Promise<T>) => async () => {
             const before = engine.listings;
             engine.listings = listing() as never;
@@ -480,7 +493,17 @@ describe("in the app", () => {
             a.setEffort("low");
             const d = engine.runtimes.get(startedId((await startSession(a.toolState.peers, { prompt: "Write the changelog." })).text))!;
             expect(d.settings().effort).toBe("low");
-            for (const rt of [n, d]) await until(() => turns(rt).length > 0 && rt.idle && turns(rt).at(-1)!.status !== "running");
+            // Asked for, it's the session's own, though it's the folder's default now.
+            const kept = await withDefault(a, "medium", async () => engine.runtimes.get(startedId((await startSession(a.toolState.peers, { prompt: "Check the logs.", model: "mock:mock-opus", effort: "medium" })).text))!);
+            expect(kept.effort).toBe("medium");
+            // Not asked for, and the model doesn't take the effort it would run at: none is claimed.
+            const clamped = await withDefault(a, "max", async () => {
+                a.setEffort("max");
+                return startSession(a.toolState.peers, { prompt: "Tidy the README.", model: "mock:mock-opus" });
+            });
+            expect(clamped.text).toMatch(/on mock:mock-opus\. It's working/);
+            const c = engine.runtimes.get(startedId(clamped.text))!;
+            for (const rt of [n, d, kept, c]) await until(() => turns(rt).length > 0 && rt.idle && turns(rt).at(-1)!.status !== "running");
         }), 30_000);
 
         test("one it can't start on is refused before the user is asked, with the models there are, and nothing starts", listed(async () => {
@@ -494,6 +517,14 @@ describe("in the app", () => {
             const all = (await refusal({ model: "elsewhere:x" }))!;
             expect(all).toContain("mock:mock-opus (Mock Opus; effort low, medium, high)");
             expect(all).toContain("mock:mock-haiku (Mock Haiku)");
+            expect(all).toContain("mock:mock-sol (Mock Sol; effort high, max)");
+            expect(await refusal({ model: "mock:mock-sol", effort: "max" })).toBeUndefined();
+            // An unknown id narrows the provider's list to the models that have it; more than are shown says how to narrow it.
+            const narrowed = (await refusal({ model: "mock:extra-22" }))!;
+            expect(narrowed).toContain("mock:mock-extra-22");
+            expect(narrowed).not.toContain("mock:mock-opus");
+            const whole = (await refusal({ model: "mock:" }))!;
+            expect(whole).toContain('… and 33 more of Mock\'s: model "mock:<part of an id or name>" lists those that have it');
             expect(await refusal({ model: "mock:mock-opus", effort: "max" })).toContain('mock:mock-opus doesn\'t take "max" effort. It takes: low, medium, high.');
             expect(await refusal({ model: "mock:mock-opus", effort: "high" })).toBeUndefined();
             expect(await refusal({})).toBeUndefined();
@@ -515,10 +546,16 @@ describe("in the app", () => {
                 return this.id === a.id ? setModel.call(this, ref, o) : false;
             };
             try {
+                const before = new Set(engine.runtimes.keys());
                 const r = await startSession(a.toolState.peers, { prompt: "Review it.", model: "mock:mock-haiku" });
                 expect(r.isError).toBe(true);
                 expect(r.text).toContain("couldn't be started on mock:mock-haiku");
                 expect(engine.sessionStarts.times.get(a.id) ?? []).toEqual([]);
+                // The session made for it never got the prompt, and is let go.
+                const made = [...engine.runtimes.values()].filter((rt) => !before.has(rt.id));
+                expect(made).toHaveLength(1);
+                expect(made[0]!.session.messages).toEqual([]);
+                await until(() => !engine.runtimes.has(made[0]!.id));
             } finally {
                 Runtime.prototype.setModel = setModel;
             }
