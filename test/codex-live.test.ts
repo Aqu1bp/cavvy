@@ -179,6 +179,51 @@ describe("background terminals", () => {
         expect(pids()).toHaveLength(1);
     });
 
+    // Codex 0.167 gives a command it asked about first no process id, and runs it on past its turn (measured with the
+    // real CLI on macOS and Linux): only its list of what it's running names it.
+    test("a command Codex asked about first, its turn stopped at once: named from Codex's list, it's a background task and can be stopped", async () => {
+        Object.assign(process.env, { FAKE_SCENARIO: "hang", FAKE_HANG_ASK: "1", FAKE_HANG_MS: "20000" });
+        const a = await makeAgent({ mode: "default", ask: async () => ({ allow: true }) as any });
+        const stop = new AbortController();
+        const running = a.run("go", stop.signal);
+        await until(() => logLines().some((l) => l.terminalStarted), "the command to start");
+        // Before Cavvy has asked by itself: the stop asks first.
+        expect(calls("thread/backgroundTerminals/list")).toEqual([]);
+        stop.abort();
+        expect(await running).toBe("aborted");
+        expect(calls("thread/backgroundTerminals/list")[0]).toEqual({ threadId: "thr-new" });
+        expect(a.task("hang-turn-1")).toMatchObject({ provider: "codex", kind: "shell", status: "running", stoppable: true, label: "sleep 60" });
+        expect(JSON.stringify(a.events)).toContain("Still running in the background (process 40001)");
+        expect(JSON.stringify(a.events)).not.toContain("Interrupted by user");
+        expect(await a.agent.stopBackground(["hang-turn-1"])).toEqual({ "hang-turn-1": "stopped" });
+        expect(calls("thread/backgroundTerminals/terminate")).toEqual([{ threadId: "thr-new", processId: "40001" }]);
+        expect(a.task("hang-turn-1")?.status).toBe("stopped");
+        // Stopped by the user: nothing starts a turn for it.
+        await Bun.sleep(300);
+        expect(a.wakes).toEqual([]);
+    });
+
+    test("a command Codex asked about first, still running when its turn ends by itself: a background task, as one with a process id is", async () => {
+        Object.assign(process.env, { FAKE_SCENARIO: "hang", FAKE_HANG_ASK: "1", FAKE_HANG_MS: "700" });
+        const a = await makeAgent({ mode: "default", ask: async () => ({ allow: true }) as any });
+        expect(await a.run("go")).toBe("done");
+        expect(a.task("hang-turn-1")).toMatchObject({ kind: "shell", status: "running", stoppable: true });
+        expect(JSON.stringify(a.events)).toContain("Still running in the background (process 40001)");
+        expect(await a.agent.stopBackground()).toEqual({ "hang-turn-1": "stopped" });
+    });
+
+    test("a stopped turn's command that Codex doesn't list ends with the turn, as before", async () => {
+        Object.assign(process.env, { FAKE_SCENARIO: "hang", FAKE_HANG_ASK: "1", FAKE_HANG_MS: "20000", FAKE_HANG_START_MS: "5000" });
+        const a = await makeAgent({ mode: "default", ask: async () => ({ allow: true }) as any });
+        const stop = new AbortController();
+        const running = a.run("go", stop.signal);
+        await until(() => calls("thread/backgroundTerminals/list").length > 0, "Cavvy to ask what's running");
+        stop.abort();
+        expect(await running).toBe("aborted");
+        expect(a.task("hang-turn-1")).toBeUndefined();
+        expect(JSON.stringify(a.events)).toContain("Interrupted by user");
+    });
+
     test("codex.wakeOnBackgroundCommand false: no turn starts for it; Codex hears with the next prompt", async () => {
         process.env.FAKE_CODEX_SCENARIOS = "bg,cmd";
         process.env.FAKE_BG_MS = "100";
@@ -348,52 +393,6 @@ describe("Esc interrupts the turn, never the app-server or its background work",
             expect(pids()).toEqual([pid!]);
             expect(calls("thread/resume")).toEqual([]);
         });
-
-    test("a command Codex leaves running when the turn is stopped, with no process id to stop it by, is ended; nothing else of Codex's is", async () => {
-        /** Whether anything is left of a process group. */
-        const groupAlive = (pgid: number) => {
-            try {
-                process.kill(-pgid, 0);
-                return true;
-            } catch {
-                return false;
-            }
-        };
-        process.env.FAKE_SCENARIO = "hang";
-        process.env.FAKE_HANG_PHASE = "tool";
-        process.env.FAKE_HANG_STRAY = "1";
-        process.env.FAKE_HELPER = "1";
-        let started: { stray?: number; other?: number } = {};
-        try {
-            const a = await makeAgent();
-            const stop = new AbortController();
-            const running = a.run("go", stop.signal);
-            await until(() => logLines().some((l) => l.stray), "the command to be running");
-            started = logLines().find((l) => l.stray)!;
-            const helper = logLines().find((l) => l.helper)!.helper as number;
-            expect([groupAlive(started.stray!), alive(started.other!), alive(helper)]).toEqual([true, true, true]);
-            stop.abort();
-            expect(await running).toBe("aborted");
-            // Codex ended the turn and said nothing of the command. All of it is ended here: its shell, and the
-            // child that took no notice of being asked.
-            await until(() => !groupAlive(started.stray!), "the command, and what it ran, to be ended", 8000);
-            // What Codex was running before the turn, what else was started under it meanwhile, and Codex, are left.
-            const [pid] = pids();
-            expect([alive(helper), alive(started.other!), alive(pid!)]).toEqual([true, true, true]);
-            expect(JSON.stringify(a.events)).toContain("Interrupted by user");
-        } finally {
-            for (const pid of [started.stray, started.other]) {
-                try {
-                    if (pid) process.kill(-pid, "SIGKILL");
-                } catch {
-                    // gone
-                }
-            }
-            delete process.env.FAKE_HANG_STRAY;
-            delete process.env.FAKE_HELPER;
-            process.env.FAKE_SCENARIO = "cmd";
-        }
-    }, 20_000);
 
     test("with a background command and a sub-agent working: the turn and the sub-agent's turn stop, the command goes on", async () => {
         process.env.FAKE_CODEX_SCENARIOS = "bg,bgagent";

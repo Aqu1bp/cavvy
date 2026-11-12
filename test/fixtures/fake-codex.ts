@@ -36,7 +36,9 @@
 //                     did, #310); the answer is logged (childAsked), and it ends the sub-agent's turn: completed once
 //                     approved, else interrupted (as Codex does)
 // FAKE_SCENARIO=hang   the turn runs a foreground command (FAKE_HANG_PHASE=tool, default) or streams text
-//                     (FAKE_HANG_PHASE=stream) until interrupted (or FAKE_HANG_MS, default 10000)
+//                     (FAKE_HANG_PHASE=stream) until interrupted (or FAKE_HANG_MS, default 10000); FAKE_HANG_ASK=1: it asks
+//                     about the command first, and the command then runs on past its turn, named only by
+//                     thread/backgroundTerminals/list (FAKE_HANG_START_MS after the answer, default 30)
 // FAKE_ENV_FILE       a JSON file of FAKE_* settings, read again with every message: a test changes them between
 //                     turns of one live app-server as it would between per-turn ones (only those read per turn)
 // FAKE_CRASH_FILE     exits (code 3) as soon as this file exists (and removes it): a crash on demand
@@ -128,14 +130,6 @@ import { callTool, connect, type McpServerRef } from "./mcp-call";
 const log = (o: unknown) => {
     if (process.env.FAKE_LOG) appendFileSync(process.env.FAKE_LOG, JSON.stringify(o) + "\n");
 };
-// FAKE_HELPER=1: a process the app-server starts for itself as it comes up (as it does an MCP server), which no turn
-// started and nothing should end.
-if (process.env.FAKE_HELPER === "1") {
-    const helper = Bun.spawn(["sleep", "31"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
-    helper.unref();
-    log({ helper: helper.pid });
-    process.on("exit", () => helper.kill());
-}
 const argv = process.argv.slice(2);
 const cwd = process.cwd();
 log({ argv, pid: process.pid, cwd, sawOpenAiKey: Boolean(process.env.OPENAI_API_KEY), sawApiKey: Boolean(process.env.ANTHROPIC_API_KEY), claudeConfigDir: process.env.CLAUDE_CONFIG_DIR, codexHome: process.env.CODEX_HOME, sawOauthToken: Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN) });
@@ -520,22 +514,26 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
     if (scenario === "hang") {
         // Works until interrupted: in a foreground command (tool), or streaming its answer (stream).
         const stream = process.env.FAKE_HANG_PHASE === "stream";
-        const cmd = { type: "commandExecution", id: `hang-${turnId}`, command: "/bin/zsh -lc 'sleep 60'", cwd, status: "inProgress", commandActions: [{ type: "unknown", command: "sleep 60" }], aggregatedOutput: null, exitCode: null };
+        // FAKE_HANG_ASK=1: a command it asks about first, as Codex 0.167 runs one: its item never says which process
+        // it is, and it runs on when its turn ends (stopped, or over after FAKE_HANG_MS) with no item/completed. Only
+        // thread/backgroundTerminals/list has it, by the item's id.
+        const asks = !stream && process.env.FAKE_HANG_ASK === "1";
+        const cmd = { type: "commandExecution", id: `hang-${turnId}`, command: "/bin/zsh -lc 'sleep 60'", cwd, status: "inProgress", commandActions: [{ type: "unknown", command: "sleep 60" }], aggregatedOutput: null, exitCode: null, ...(asks ? { processId: null, source: "agent" } : {}) };
         if (!stream) notify("item/started", { threadId, turnId, item: cmd });
         else notify("item/started", { threadId, turnId, item: { type: "agentMessage", id: `stream-${turnId}`, text: "" } });
-        // FAKE_HANG_STRAY=1: as Codex 0.167 does on Linux, the command ("sleep 60", a shell leading a group of its
-        // own, with a child that takes no notice of being asked to stop) has no process id given for it, and an
-        // interrupt ends the turn and leaves it running, its item never completed. Beside it, started in the same
-        // turn, a process of another name in a group of its own (as a background sub-agent's command, or what an
-        // MCP server starts): `other`. Both start a moment into the turn, as they do once a model has answered.
-        let stray: ReturnType<typeof Bun.spawn> | undefined;
-        if (!stream && process.env.FAKE_HANG_STRAY === "1") {
-            await Bun.sleep(1000);
-            stray = Bun.spawn(["sh", "-c", "(trap '' TERM; exec sleep 60) & wait"], { stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: true });
-            const other = Bun.spawn(["sleep", "61"], { stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: true });
-            stray.unref();
-            other.unref();
-            log({ stray: stray.pid, other: other.pid });
+        if (asks) {
+            const d = (await serverRequest("item/commandExecution/requestApproval", { threadId, turnId, itemId: cmd.id, command: cmd.command, cwd, commandActions: cmd.commandActions, availableDecisions: ["accept", "decline", "cancel"] }))?.decision;
+            if (d !== "accept") {
+                notify("item/completed", { threadId, turnId, item: { ...cmd, status: "declined" } });
+                return finish(t.interrupted ? "interrupted" : "completed");
+            }
+            // It starts a moment after the answer.
+            for (const starts = Date.now() + Number(process.env.FAKE_HANG_START_MS ?? 30); Date.now() < starts && !t.interrupted; ) await Bun.sleep(10);
+            // Stopped before it started: nothing runs, and nothing is said of the command.
+            if (t.interrupted) return finish("interrupted");
+            const processId = String(++processSeq);
+            terminals.set(processId, { threadId, turnId, item: { ...cmd, processId, source: "unifiedExecStartup" } });
+            log({ terminalStarted: { processId, itemId: cmd.id } });
         }
         const until = Date.now() + Number(process.env.FAKE_HANG_MS ?? 10000);
         let woken = false;
@@ -550,9 +548,8 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
             }
         }
         log({ hangEnded: { turnId, interrupted: t.interrupted } });
-        if (stray && t.interrupted) {
-            // nothing said of the command: the turn just ends
-        } else if (!stream) notify("item/completed", { threadId, turnId, item: { ...cmd, status: t.interrupted ? "failed" : "completed", exitCode: t.interrupted ? -1 : 0, aggregatedOutput: "" } });
+        if (asks) return finish(t.interrupted ? "interrupted" : "completed");
+        if (!stream) notify("item/completed", { threadId, turnId, item: { ...cmd, status: t.interrupted ? "failed" : "completed", exitCode: t.interrupted ? -1 : 0, aggregatedOutput: "" } });
         else notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `stream-${turnId}`, text: "more more" } });
         return finish(t.interrupted ? "interrupted" : "completed");
     }
