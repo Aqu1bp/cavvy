@@ -409,6 +409,29 @@ describe("Claude Code backend", () => {
         expect(a.asked).toHaveLength(1);
     });
 
+    test("a prompt for an agent CLI's command offers no rule to keep where it would cover more than what's asked", async () => {
+        process.env.FAKE_SCENARIO = "bash";
+        // Asked about for the credentials file it names: no rule for every `cp`, and the reason is the checker's.
+        process.env.FAKE_COMMAND = "cp .env backup.env";
+        try {
+            const a = await makeAgent({ provider: "claude-code", ask: () => ({ allow: false }) });
+            await a.run("copy it");
+            expect(a.asked[0]!.decision).toMatchObject({ behavior: "ask", suggestions: [], reason: "This command reads or touches a .env file, which may contain credentials." });
+            // A loop: no rule would let it run again, so none is offered.
+            process.env.FAKE_COMMAND = "for f in a b; do touch $f; done";
+            const b = await makeAgent({ provider: "claude-code", ask: () => ({ allow: false }) });
+            await b.run("loop");
+            expect(b.asked[0]!.decision.suggestions).toEqual([]);
+            // An ordinary command: the rule that would let it run again.
+            process.env.FAKE_COMMAND = "npm test";
+            const c = await makeAgent({ provider: "claude-code", ask: () => ({ allow: false }) });
+            await c.run("test");
+            expect(c.asked[0]!.decision.suggestions).toEqual(["Bash(npm test:*)"]);
+        } finally {
+            delete process.env.FAKE_COMMAND;
+        }
+    });
+
     test("the next turn resumes the session; one that's gone starts over with the conversation", async () => {
         const { run, session, events } = await makeAgent({ provider: "claude-code", ask: () => ({ allow: true }) });
         await run("first");

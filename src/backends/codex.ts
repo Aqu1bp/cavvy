@@ -2063,7 +2063,7 @@ export class CodexTurn {
                 // network says something. One in another folder is checked as `cd <folder> && …`, where it runs,
                 // and only inside the workspace: a search there (`rg --hidden .`) reads what the checker can't see.
                 const asksAlways = !net && insideWorkspace(dir, this.t.cwd, this.t.additionalDirectories) && codexPolicy(this.turnMode ?? this.cliSession.mode(), [], Boolean(this.t.readOnly)).approvalPolicy === "untrusted";
-                const a = await this.ask({ toolName: "Bash", input: { command, description: typeof p.reason === "string" ? p.reason : undefined }, reason: `${typeof p.reason === "string" ? p.reason : ""}${net}`.trim() || undefined, asksAlways, agentLabel, ...this.subAsk(from), callId: typeof p.itemId === "string" ? p.itemId : undefined });
+                const a = await this.ask({ toolName: "Bash", input: { command, description: typeof p.reason === "string" ? p.reason : undefined }, reason: `${typeof p.reason === "string" ? p.reason : ""}${net}`.trim() || undefined, ...(net ? { needs: net.trim() } : {}), asksAlways, agentLabel, ...this.subAsk(from), callId: typeof p.itemId === "string" ? p.itemId : undefined });
                 return { decision: this.decision(a, p.itemId, from) };
             }
             case "item/fileChange/requestApproval": {

@@ -22,12 +22,12 @@
 
 import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "fs";
 import { homedir, tmpdir } from "os";
-import { basename, dirname, join, resolve } from "path";
+import { basename, dirname, join, relative, resolve } from "path";
 import type { HiddenReason, Tool } from "../tools/types";
 import type { PermissionMode } from "./modes";
 import { sandboxAllowedHosts, sandboxExcludedCommands, type Settings } from "../config/settings";
-import { findMatch, EDIT_TOOLS, READ_TOOLS, toolPath, type RuleTarget } from "./rules";
-import { accountTarget, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, type CommandAnalysis, CAVVY_FILES, cavvyHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, suggestBashRules, withoutHeredocData } from "./bash-safety";
+import { blanketRule, exactRule, findMatch, EDIT_TOOLS, READ_TOOLS, toolPath, type RuleTarget } from "./rules";
+import { accountTarget, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, type CommandAnalysis, CAVVY_FILES, UNKNOWN_FILES, cavvyHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, suggestBashRules, withoutHeredocData } from "./bash-safety";
 import { accessNeeded, looksDestructive, sandboxEnabled, sandboxKind, sandboxPolicy, type SandboxKind, type SandboxPolicy } from "./sandbox";
 import { stableStringify, type ApprovedAction } from "./classifier";
 import { isBrowserTool, isQuietBrowserCall, isReadOnly, isShellTool, isSimulatorTool } from "../tools/types";
@@ -39,6 +39,15 @@ import { accountCredentialFiles, accountFolders, accountProtectedPaths } from ".
 import { fileUrlPath, hostOf, navigationTarget, type BrowserApproval } from "../browser/url-policy";
 
 export type Behavior = "allow" | "ask" | "deny";
+
+/**
+ * May a rule kept for good ("don't ask again") be offered for what this decision asks about? Not where it would
+ * allow far more than that: a command asked about for the file or the hosts it names (the rule would be for every
+ * such command), a dangerous one, or what auto mode says it asks about every time.
+ */
+export function offersLastingRule(tool: Pick<Tool<any>, "name">, d: Decision): boolean {
+    return !d.dangerous && !d.everyTime && !(isShellTool(tool.name) && (d.sensitive !== undefined || Boolean(d.listedHosts?.length)));
+}
 
 export interface Decision {
     behavior: Behavior;
@@ -238,10 +247,14 @@ export class PermissionChecker {
         return d;
     }
 
-    /** The decision with the scoped "allow for the session" choice the popup offers, if there is one. */
+    /**
+     * The decision as a prompt offers it, in the terminal and the GUI alike: with the scoped "allow for the session"
+     * choice, if there is one, and with its rules to keep for good only where one may be offered (offersLastingRule).
+     */
     withGrant(tool: Tool<any>, input: any, d: Decision, cwd: string): Decision {
         const grant = d.grant ?? this.grantFor(tool, input, d, cwd);
-        return grant ? { ...d, grant } : d;
+        const offered = grant ? { ...d, grant } : d;
+        return d.suggestions?.length && !offersLastingRule(tool, d) ? { ...offered, suggestions: [] } : offered;
     }
 
     /**
@@ -291,10 +304,17 @@ export class PermissionChecker {
     private grantFor(tool: Tool<any>, input: any, d: Decision, cwd: string): SessionGrant | undefined {
         if (d.dangerous || d.config || d.rule || tool.category === "edit" || tool.category === "read") return undefined;
         if (isShellTool(tool.name)) {
+            // What auto mode asks about every time, it would ask about again under a rule for the session.
+            if (d.everyTime) return undefined;
             const cmd = String(input?.command ?? "");
             if (d.sensitive) {
                 const paths = [...new Set(this.sensitivePaths(heredocDataBlanked(cmd), cwd))];
-                return paths.length && paths.every((p) => !isInside(homedir(), p)) ? { label: paths.map((p) => displayHome(p)).join(", "), paths } : undefined;
+                // Named as the command names them where they're the project's own: `.env.local`, not its whole path.
+                const short = (p: string) => {
+                    const within = relative(this.root, p);
+                    return within && !within.startsWith("..") ? within : displayHome(p);
+                };
+                return paths.length && paths.every((p) => !isInside(homedir(), p)) ? { label: paths.map(short).join(", "), paths } : undefined;
             }
             if (d.listedHosts?.length) return { label: d.listedHosts.join(", "), hosts: d.listedHosts };
             const rules = d.suggestions ?? [];
@@ -320,7 +340,7 @@ export class PermissionChecker {
         for (const word of new Set([...a.commands.flatMap((c) => c.argv), ...a.redirects])) {
             // Variables by their values, as the shell gets them: `$CAVVY_HOME/credentials.json`.
             const value = /[$~]/.test(word) ? expandWord(word, look, cwd) : word;
-            if (value === undefined || !sensitiveWord(value, cavvyHome())) continue;
+            if (value === undefined || !(sensitiveWord(value, cavvyHome()) || sensitiveWord(pathIn(value), cavvyHome()))) continue;
             const abs = wordPath(value, cwd);
             if (abs) out.push({ word, abs });
         }
@@ -379,11 +399,13 @@ export class PermissionChecker {
     private cavvyFilesTarget(cmd: string, cwd: string, policy: SandboxPolicy | undefined): string | undefined {
         const reads = cavvyHomeReads(cmd, cwd, cavvyHome(), this.shellEnv());
         if (!reads) return undefined;
-        if (!policy) return CAVVY_FILES;
+        // Said as what it is: Cavvy's files when the line points at them, else only that it can't tell.
+        const what = reads.guess ? UNKNOWN_FILES : CAVVY_FILES;
+        if (!policy) return what;
         // Each path by where it leads; what it can't pin down (a folder, a pattern, an expansion) only when no symlink leads out of the home.
         const home = cavvyHome();
-        if (reads.unsure && !blocks(policy, home, true)) return CAVVY_FILES;
-        return reads.paths.every((p) => blocks(policy, p, true)) ? undefined : CAVVY_FILES;
+        if (reads.unsure && !blocks(policy, home, true)) return what;
+        return reads.paths.every((p) => blocks(policy, p, true)) ? undefined : what;
     }
 
     /** Does a search command (rg, grep -r, find) have a folder that holds Cavvy's secret files as an operand? */
@@ -494,13 +516,18 @@ export class PermissionChecker {
         }
         if (isShellTool(tool.name)) {
             const cfg = configTarget(judged, cavvyHome());
-            if (cfg) return { behavior: "ask", config: true, reason: `This command changes ${cfg} (permissions, hooks, MCP servers or programs git runs); it always needs your approval.` };
+            if (cfg) return { behavior: "ask", config: true, reason: `This command changes ${cfg.replace(/^cavvy/, "Cavvy")}, which always needs your approval.` };
         }
 
         const allowed = findMatch(allow, t, this.root, "allow");
-        // A prefix rule approves the program, not where its output goes:
-        // `Bash(cat:*)` must not approve `cat x > ~/.zshrc`.
-        if (allowed && !(isShellTool(tool.name) && this.redirectsEscape(t.command ?? "", cwd))) return { behavior: "allow", rule: allowed };
+        // A rule for a program approves the program, not everything it can be pointed at: where its
+        // output goes (`Bash(cat:*)` must not approve `cat x > ~/.zshrc`), a file that may hold
+        // credentials (`cp .env /tmp/x` under `Bash(cp:*)`), or, in auto mode, the main branch on the
+        // remote (`Bash(git push:*)`). Those go on to ask as they would with no rule. Not so a rule
+        // that is the line itself, word for word, or one for every shell command (`Bash`): each is
+        // the user's yes to this line, whichever rule of the list matched first.
+        const named = allowed && isShellTool(tool.name) && !exactRule(allow, t) && !blanketRule(allow, t);
+        if (allowed && !(isShellTool(tool.name) && this.redirectsEscape(t.command ?? "", cwd)) && !(named && this.beyondRule(judged, cwd, mode))) return { behavior: "allow", rule: allowed };
 
         switch (tool.category) {
             case "meta":
@@ -528,7 +555,7 @@ export class PermissionChecker {
             case "execute": {
                 if (isShellTool(tool.name)) {
                     const cmd = t.command ?? "";
-                    const suggestions = suggestBashRules(cmd);
+                    const suggestions = this.rulesFor(cmd, cwd);
                     const access = accessNeeded(judged, cwd);
                     const listed = allowedHostsOf(input);
                     const kind = mode === "auto" && input?.dangerouslyDisableSandbox !== true && !this.excluded(cmd) ? this.sandbox() : undefined;
@@ -541,7 +568,10 @@ export class PermissionChecker {
                     const needReview = listed.filter((h) => !auto.includes(h) && !this.grants(cwd).hosts.includes(h));
                     const hosts = [...new Set([...auto, ...listed])];
                     const opensHosts = sandbox && needReview.length > 0;
-                    const sensitive = this.sensitiveTarget(judged, cwd, sandbox);
+                    const target = this.sensitiveTarget(judged, cwd, sandbox);
+                    // A variable that can't be worked out is why a command that only reads asks at all. One that asks
+                    // anyway (`kill $PID`, `make $TARGET`) isn't said to touch credentials for it. Auto mode's reviewer still hears.
+                    const sensitive = target === UNKNOWN_FILES && mode !== "auto" && !isReadOnlyCommand(cmd) ? undefined : target;
                     if (sensitive && mode !== "auto") return { behavior: "ask", sensitive, reason: `This command reads or touches ${sensitive}, which may contain credentials.` };
                     // It would only fail in the sandbox: say how to ask for the network before running it.
                     if (sandbox && access.network && !hosts.length) return { behavior: "deny", reason: networkAdvice(access.network, cmd) };
@@ -671,6 +701,29 @@ export class PermissionChecker {
             const abs = expandPath(r, cwd);
             return !this.inWorkspace(abs) || this.isCavvyConfig(abs);
         });
+    }
+
+    /**
+     * The rule "don't ask again" would save for a shell command line: one under which this same line would run
+     * next time. A rule has to match every command of a line, so a line of several programs gets none (nor one
+     * with a command that only reads beside the program's); nor a line whose redirect leaves the project.
+     */
+    rulesFor(cmd: string, cwd: string): string[] {
+        const rule = findMatch(suggestBashRules(cmd), { toolName: "Bash", command: cmd }, this.root, "allow");
+        return rule && !this.redirectsEscape(cmd, cwd) ? [rule] : [];
+    }
+
+    /**
+     * Does the command name something a rule for its program doesn't speak for: a file that may hold credentials
+     * (one it names; a variable or a pattern that can't be worked out isn't held against the rule), or in auto mode
+     * a push to the main branch?
+     */
+    private beyondRule(cmd: string, cwd: string, mode: PermissionMode): boolean {
+        if (this.secretTarget(cmd, cwd, undefined) !== undefined) return true;
+        // Cavvy's own files when the line points at them, by a path or by going there (`cd ~/.cavvy && cat settings.json`).
+        const home = cavvyHomeReads(cmd, cwd, cavvyHome(), this.shellEnv());
+        if (home && !home.guess) return true;
+        return mode === "auto" && pushesDefaultBranch(cmd, cwd) !== undefined;
     }
 
     /** A folder that is, or holds, Cavvy's credential store (for grants of whole folders). */
@@ -957,9 +1010,14 @@ function displayHome(p: string): string {
     return p === h ? "~" : p.startsWith(h + "/") ? "~" + p.slice(h.length) : p;
 }
 
+/** The path in a command word: past `name=` or `--option=`, an upload's `@` (`-d @.env`), a short option it's the value of (`-T.env`). */
+function pathIn(word: string): string {
+    return (/^[\w-]*=/.test(word) && !word.startsWith("-") ? word.slice(word.indexOf("=") + 1) : word.replace(/^--?[\w-]+=/, "")).replace(/^@|^-[A-Za-z0-9]{1,8}(?=[.~/])/, "");
+}
+
 /** Where a command word points: `~` and $HOME expanded, a glob cut back to the folder before it. Not for words with other variables. */
 function wordPath(word: string, cwd: string): string | undefined {
-    const w = /^[\w-]*=/.test(word) && !word.startsWith("-") ? word.slice(word.indexOf("=") + 1) : word.replace(/^--?[\w-]+=/, "");
+    const w = pathIn(word);
     if (!w || /[$`]/.test(w.replace(/^\$\{?HOME\}?(?=\/|$)/, ""))) return undefined;
     const at = w.search(/[*?[]/);
     const p = at < 0 ? w : w.slice(0, at).replace(/[^/]*$/, "") || ".";

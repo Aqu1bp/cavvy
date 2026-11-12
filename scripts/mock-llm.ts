@@ -28,6 +28,8 @@
 //   "tooldemo"       a turn whose calls arrive slowly (a 4k-character Write, an Edit), between thoughts and a command:
 //                    the states a call goes through, and the moves between them
 //   "livecmd"        runs a command that prints a line every half second for 6s (the live line opens to it)
+//   "askwhy"         commands whose approval says why it asks, and what it offers: one that copies a .env file (the
+//                    file for the session), one program ("don't ask again" saves its rule), two programs (only once)
 //   "cmdrows"        commands as rows: a passing test run, one without a description, a heredoc, a failure, one in the background
 //   "waitcheck"      starts a background command, then waits and checks it in one response
 //   "use the x skill" loads skill x (Skill tool), then quotes the start of its instructions
@@ -480,6 +482,15 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         return steps[toolRounds];
     }
     if (/\blivecmd\b/.test(p)) return toolRounds === 0 ? { text: "Running it.", calls: [{ name: "Bash", args: { command: 'for i in $(seq 1 12); do echo "✓ check $i of 12"; sleep 0.5; done', description: "Run the checks" } }] } : { text: "All 12 checks pass." };
+    if (/\baskwhy\b/.test(p)) {
+        const steps: Step[] = [
+            { text: "Keeping a copy of the local settings.", calls: [{ name: "Bash", args: { command: "cp .env.local .env.backup", description: "Back up the local settings" } }] },
+            { text: "And a folder for the report.", calls: [{ name: "Bash", args: { command: "mkdir -p reports/drafts", description: "Make the report's folder" } }] },
+            { text: "With today's file in it.", calls: [{ name: "Bash", args: { command: "mkdir -p reports && touch reports/today.md", description: "Make the report's file" } }] },
+            { text: "Done." },
+        ];
+        return steps[Math.min(toolRounds, steps.length - 1)]!;
+    }
     if (/\bstubborn\b/.test(p)) return toolRounds === 0 ? { text: "Running it.", calls: [{ name: "Bash", args: { command: "trap '' TERM; sleep 3", description: "Wait, ignoring SIGTERM" } }] } : { text: "Done." };
     // A fast model's turn: quick steps in three rounds, then a long reply, all at one rate.
     const fast = /\bfastdemo (\d+|burst)\b/.exec(p);

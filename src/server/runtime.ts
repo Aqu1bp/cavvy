@@ -2322,6 +2322,28 @@ export class Runtime {
         return id !== this.turnSnapshotFloor ? id : undefined;
     }
 
+    /**
+     * A turn's calls that never finished, once its run is over: they say so ("Interrupted", "Not run"). One still
+     * arriving with nothing of it here yet goes instead: there's no call to speak of, and its row would say only
+     * how it ended. Calls whose work goes on in the `background` stay as they are. True when anything changed.
+     */
+    private settleCalls(turn: Turn, reason: TurnEndReason, background: Set<string>): boolean {
+        let changed = false;
+        for (const b of [...turn.blocks]) {
+            if (b.t !== "tool" || (b.status === "running" && background.has(b.id))) continue;
+            if (b.status !== "running" && b.status !== "streaming" && b.status !== "queued" && b.status !== "awaiting") continue;
+            changed = true;
+            if (b.status === "streaming" && !Object.keys(b.input ?? {}).length) {
+                this.op({ op: "block.remove", turnId: turn.id, blockId: b.id });
+                continue;
+            }
+            this.patchBlock(b.id, { status: "error", summary: reason === "aborted" ? "Interrupted" : "Not run", progress: undefined, receiving: undefined }, turn.id);
+            // Never ended, so never recorded: what it was about is kept for a reopen all the same.
+            if (b.job) this.ui.write({ t: "tool", id: b.id, job: b.job, at: Date.now() });
+        }
+        return changed;
+    }
+
     private endTurn(reason: TurnEndReason) {
         this.argsSoFar.clear();
         const turnId = this.turnId;
@@ -2330,27 +2352,12 @@ export class Runtime {
         // A call whose work goes on in the background (a sub-agent the CLI keeps running past the turn): it ends when that does.
         const background = new Set((this.agent?.backgroundTasks() ?? []).flatMap((t) => (t.status === "running" && t.toolUseId ? [t.toolUseId] : [])));
         // Tool calls that never finished (interrupted, or not run after a denial).
-        for (const b of turn?.blocks ?? []) {
-            if (b.t === "tool" && b.status === "running" && background.has(b.id)) continue;
-            if (b.t === "tool" && (b.status === "running" || b.status === "streaming" || b.status === "queued" || b.status === "awaiting")) {
-                this.patchBlock(b.id, { status: reason === "aborted" ? "error" : "error", summary: reason === "aborted" ? "Interrupted" : "Not run", progress: undefined, receiving: undefined }, turnId);
-                // Never ended, so never recorded: what it was about is kept for a reopen all the same.
-                if (b.job) this.ui.write({ t: "tool", id: b.id, job: b.job, at: Date.now() });
-            }
-        }
+        if (turn) this.settleCalls(turn, reason, background);
         // The turns steered messages ended on the way here (drainedTurn) keep the calls that began in them: none of
-        // theirs is left under way either. One that never arrived whole goes: there's nothing of it to show.
+        // theirs is left under way either.
         for (let i = this.view.turns.findIndex((t) => t.id === turnId); i > 0 && this.view.turns[i]!.prompt?.steered; i--) {
             const earlier = this.view.turns[i - 1]!;
-            let changed = false;
-            for (const b of [...earlier.blocks]) {
-                if (b.t !== "tool" || (b.status === "running" && background.has(b.id))) continue;
-                if (b.status === "streaming") this.op({ op: "block.remove", turnId: earlier.id, blockId: b.id });
-                else if (b.status === "running" || b.status === "queued" || b.status === "awaiting") this.patchBlock(b.id, { status: "error", summary: reason === "aborted" ? "Interrupted" : "Not run", progress: undefined }, earlier.id);
-                else continue;
-                changed = true;
-            }
-            if (changed) this.syncTurnAll(earlier.id);
+            if (this.settleCalls(earlier, reason, background)) this.syncTurnAll(earlier.id);
         }
         const status: TurnStatus = reason;
         const end = Date.now();
@@ -2488,10 +2495,7 @@ export class Runtime {
 
     private async askPermission(req: PermissionRequest): Promise<PermissionResponse> {
         const { tool, input, decision } = req;
-        // A rule kept for good ("always") isn't offered where it would allow far more than what's asked: a command asked
-        // about for the file or hosts it names (the rule is for every such command, and is matched before those are
-        // looked at), or what auto mode says it asks about every time. The choice for the session stays.
-        const suggestions = (isShellTool(tool.name) && (decision.sensitive || decision.listedHosts?.length)) || decision.everyTime ? [] : (decision.suggestions ?? []);
+        const suggestions = decision.suggestions ?? [];
         const projectName = basename(this.ws.cwd);
         const it: PermissionInteraction = {
             kind: "permission",
@@ -2503,7 +2507,8 @@ export class Runtime {
             heading: "Use a tool",
             options: [{ id: "yes", label: "Allow once" }],
             dangerous: decision.dangerous,
-            reason: decision.reason ? redact(decision.reason) : undefined,
+            // Asked about for the hosts it lists: the card's hosts line says so already.
+            reason: decision.reason && !decision.listedHosts?.length ? redact(decision.reason) : undefined,
             classifierReason: req.classifierReason ? redact(req.classifierReason) : undefined,
             plain: req.summary ? redact(req.summary) : undefined,
             plainLabel: req.summary ? "AI summary" : undefined,

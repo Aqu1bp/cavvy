@@ -365,7 +365,7 @@ function grokTool(call: GateCall, cwd: string): GateTool | undefined {
             if (cut(command)) return tooLong("The command");
             // Run in another folder than Cavvy's (a subagent's own cwd, a worktree): Cavvy's checks assume its own.
             const elsewhere = Boolean(call.cwd && canonical(call.cwd) !== canonical(cwd));
-            return { toolName: "Bash", input: { command, ...(str(i.description) && !cut(i.description) ? { description: i.description } : {}) }, ...(elsewhere ? { elsewhere, reason: `It runs in ${call.cwd}.` } : {}) };
+            return { toolName: "Bash", input: { command, ...(str(i.description) && !cut(i.description) ? { description: i.description } : {}) }, ...(elsewhere ? { elsewhere, reason: `It runs in ${call.cwd}.`, needs: `It runs in ${call.cwd}.` } : {}) };
         }
         case "write": {
             const file = path("file_path", "path");

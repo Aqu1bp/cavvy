@@ -38,6 +38,11 @@ export interface BackendPermission {
     title?: string;
     /** Why the backend asks. */
     reason?: string;
+    /**
+     * What the ask needs beyond the command, in Cavvy's own words (the host Codex wants the network for). A shell
+     * command's prompt shows it; the backend's `reason` there is its agent's words, which a prompt doesn't show as Cavvy's.
+     */
+    needs?: string;
     /** A preview Cavvy can't compute itself (a patch). */
     preview?: ToolDisplay;
     /** More files the same change writes: deny rules for any of them refuse it, and only rules covering all of them approve it. */

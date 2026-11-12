@@ -1770,16 +1770,28 @@ function namesAccount(cmd: string, cwd: string): boolean {
     return analysis.redirects.some((p) => dirs.some((d) => touches(p, d)));
 }
 
+/**
+ * What can stand right before a file's name in a command line: its start, a space, a quote, `=`, `:`, `/`, a
+ * redirect, the `@` of an upload (`curl -d @.env`), the brace or comma of a list (`{a,.env}`), a parenthesis, or a
+ * short option it's the value of (`-T.env`, `-o.git/hooks/x`). Not a backtick: in a commit message, `` `.git` `` is
+ * a word about a file, and a command in backticks has a space before the name anyway. And what can end one.
+ */
+const BEFORE_PATH = String.raw`(^|[\s'"=:<>@,{(]|(?:^|\s)-[A-Za-z0-9]{1,8})`;
+/** The same for a name that can also be a path's last part (`dir/.env`). */
+const BEFORE_NAME = BEFORE_PATH.replace("=:<", "=:/<");
+const NAME_END = String.raw`\s'";|&)>\`,}`;
+
 const SENSITIVE = ([
-    // Any suffix (.env.prodüction too); a template only when that's the whole name, as for Read.
-    [/(^|[\s'"=:/<])\.env(?!\.(example|sample|template|dist)(?=$|[\s'";|&)>]))([.*?[][^\s'";|&)>/]*)?(?=$|[\s'";|&)>])/, ENV_FILE],
-    [/(^|[\s'"=:/~])\.(ssh|aws|gnupg|azure)(\/|\b)|\.kube\/config|\.docker\/config\.json|\.config\/gcloud/, "a credentials directory"],
+    // Any suffix (.env.prodüction too); a template only when that's the whole name, as for Read. A suffix is read
+    // 255 characters far (a line of `=.env.=.env.…` then costs its length, not its square); a longer one counts.
+    [new RegExp(String.raw`${BEFORE_NAME}\.env(?!\.(example|sample|template|dist)(?=$|[${NAME_END}]))(?:(?=$|[${NAME_END}])|[.*?[](?:[^${NAME_END}/]{0,254}(?=$|[${NAME_END}])|[^${NAME_END}/]{255}))`), ENV_FILE],
+    [new RegExp(String.raw`${BEFORE_NAME.replace("/<", "/~<")}\.(ssh|aws|gnupg|azure)(\/|\b)|\.kube\/config|\.docker\/config\.json|\.config\/gcloud`), "a credentials directory"],
     [/\.(netrc|npmrc|pypirc|pgpass|git-credentials)\b/, "a credentials file"],
     [/\bid_(rsa|ed25519|ecdsa|dsa)\b(?!\.pub)/, "an SSH private key"],
     [/Library\/Keychains|\bsecurity\s+(find|dump|export)-/, "the system keychain"],
     [/\.(cavvy|harness)\/(credentials|providers)\.json/, "Cavvy credential store"],
     [/\.codex\/auth\.json|\.claude\/\.credentials\.json|\.config\/gh\/hosts\.yml/, "a CLI's sign-in file"],
-    [/(^|[\s'"=:])(~|\$HOME|\$\{HOME\})\/\.(cavvy|harness)\/accounts(?=$|[/\s'";|&)])/, "Cavvy credential store"],
+    [new RegExp(String.raw`${BEFORE_PATH}(~|\$HOME|\$\{HOME\})\/\.(cavvy|harness)\/accounts(?=$|[/${NAME_END}])`), "Cavvy credential store"],
     [/\b(grep|egrep|fgrep|rg|ag|ack)\b[^|;&\n]*\s(~|\$HOME|\$\{HOME\}|\/Users\/[^\s/]+|\/home\/[^\s/]+|\/)\/?(?=$|[\s;|&)])/, "your whole home directory"],
     [/\bkubectl\s+get\s+secrets?\b|\bkubectl\s+config\s+view\b[^|;&\n]*--raw/, "cluster secrets"],
     [/\bgcloud\b[^|;&\n]*\b(print-(access|identity|refresh)-token|config-helper)\b/, "a Google Cloud access token"],
@@ -1822,6 +1834,8 @@ export function sensitiveWord(word: string, cavvyHome?: string): string | undefi
 
 /** Cavvy home's other files, as a sensitive target: settings and session logs may hold secrets. */
 export const CAVVY_FILES = "Cavvy's settings and session logs";
+/** What a variable Cavvy can't work out names: it could be those, so it asks, but nothing says it is. */
+export const UNKNOWN_FILES = "files named through a variable Cavvy can't work out";
 
 /** The environment a command's shell starts with: what its variables hold. */
 export type ShellEnv = Record<string, string | undefined>;
@@ -1896,11 +1910,16 @@ const LISTER_READS: Record<string, (w: string) => boolean> = {
 
 const NO_FILE_WORDS = new Set(["echo", "printf", "export", "unset", "true", "false", ":", "exit", "return", "shift"]);
 
+/** A command's text that starts with one of the shell's own words for a loop, a conditional, a group or a negation. */
+const SHELL_WORD = /^(?:do|then|else|elif|if|while|until|!|\{)[ \t]+\S/;
+
 /** What a command reads in Cavvy home: the paths it names there, and whether it may read more than it shows. */
 export interface HomeReads {
     paths: string[];
     /** It may read there through what Cavvy can't follow: an expansion, a pattern, a cd, a substitution. */
     unsure: boolean;
+    /** Nothing on the line points at the home: only a variable or a cd whose value can't be worked out, which could. */
+    guess?: boolean;
 }
 
 /**
@@ -1917,7 +1936,7 @@ export function readsCavvyHome(cmd: string, cwd: string, cavvyHome: string, env?
 export function cavvyHomeReads(cmd: string, cwd: string, cavvyHome: string, env?: ShellEnv): HomeReads | undefined {
     const homes = [...new Set([cavvyHome, canonical(cavvyHome), ...homeAliases(cavvyHome)].flatMap(spellings))];
     const inHome =(p: string) => [p, canonical(p)].flatMap(spellings).some((f) => homes.some((h) => isInside(f, h)));
-    const res = homes.map((h) => anyCase(new RegExp(`(^|[\\s'"=:<>])${h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|[/\\s'";|&)<>])`)));
+    const res = homes.map((h) => anyCase(new RegExp(`${BEFORE_PATH}${h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|[/<${NAME_END}])`)));
     const look = shellVars(cmd, env);
     const named = (text: string, pwd = cwd) => {
         const texts = [text, withVarsExpanded(text, look, pwd)].flatMap(spellings);
@@ -1957,6 +1976,8 @@ export function cavvyHomeReads(cmd: string, cwd: string, cavvyHome: string, env?
         return to !== undefined && (to === "-" || (/[$~]/.test(to) && expandWord(to, look, cwd) === undefined));
     });
     const out: HomeReads = { paths: [], unsure: false };
+    // Something on the line points at the home (its path, a file in it), not only a value that can't be worked out.
+    let pointed = false;
     const touches = (word: string, dir: string, expands: boolean) => {
         let w = /^[\w-]*=/.test(word) && !word.startsWith("-") ? word.slice(word.indexOf("=") + 1) : word.replace(/^--?[\w-]+=/, "");
         if (expands || w.startsWith("~")) {
@@ -1971,12 +1992,12 @@ export function cavvyHomeReads(cmd: string, cwd: string, cavvyHome: string, env?
         for (const p of new Set(parts)) {
             if (!/[*?[]/.test(p)) {
                 const abs = expandPath(p, dir);
-                if (inHome(abs)) (hit = true), out.paths.push(abs);
+                if (inHome(abs)) (hit = pointed = true), out.paths.push(abs);
                 continue;
             }
             const found = expandGlob(p, dir).filter(inHome);
             if (found.length || inHome(expandPath(p.slice(0, p.search(/[*?[]/)).replace(/[^/]*$/, "") || ".", dir))) {
-                hit = true;
+                hit = pointed = true;
                 out.unsure = true;
                 out.paths.push(...found);
             }
@@ -1991,10 +2012,14 @@ export function cavvyHomeReads(cmd: string, cwd: string, cavvyHome: string, env?
         );
     let reads = false;
     for (const { programs, dir, text } of commands) {
-        if (programs.length && !makesOptions(text) && programs.every((argv) => lists(argv) || opensNothing(argv))) continue;
-        if (named(text, dir ?? cwd)) reads = true;
+        // Past the shell's own word a loop's or a conditional's command starts with: `do echo "$i"` opens nothing either.
+        const past = SHELL_WORD.test(text) ? 1 : 0;
+        if (programs.length && !makesOptions(text) && programs.every((argv, level) => ((argv = level ? argv : argv.slice(past)), !argv.length || lists(argv) || opensNothing(argv)))) continue;
+        if (named(text, dir ?? cwd)) reads = pointed = true;
         if (dir === null) {
-            if (lostCd || named(cmd)) return unsure;
+            // With what was found before the folder was lost: a path already named stays named.
+            if (named(cmd)) return { paths: out.paths, unsure: true };
+            if (lostCd) return { paths: out.paths, unsure: true, ...(pointed ? {} : { guess: true }) };
             continue;
         }
         const expanded = new Set(analyzeCommand(text).commands.flatMap((c) => (c.expands ?? []).map((j) => c.argv[j]!)));
@@ -2004,6 +2029,7 @@ export function cavvyHomeReads(cmd: string, cwd: string, cavvyHome: string, env?
     if (!reads && !out.unsure) return undefined;
     // Named but not found word by word (`cat x$HOME_DIR/…`): it may be read some other way.
     if (!out.paths.length) out.unsure = true;
+    if (!pointed) out.guess = true;
     return out;
 }
 
@@ -2145,6 +2171,29 @@ export function withoutMessages(cmd: string): string {
 }
 
 /**
+ * A word with its brace lists written out (`.env{,.bak}` is `.env` and `.env.bak`), as the shell does before it reads
+ * anything else in it. The word alone when it has none, or more than a check should follow. Not `${x,,}`.
+ */
+function braceForms(word: string): string[] {
+    if (!word.includes("{") || !word.includes(",") || !word.includes("}")) return [word];
+    let forms = [word];
+    for (let n = 0; n < 8; n++) {
+        const next: string[] = [];
+        for (const f of forms) {
+            // Each part is tried once from each `{` (no comma in the first one): a long word of braces and commas
+            // (a JSON body) costs its length, not its square.
+            const list = /(?<!\$)\{([^{},]*(?:,[^{},]*)+)\}/.exec(f);
+            if (!list) next.push(f);
+            else for (const part of list[1]!.split(",")) next.push(f.slice(0, list.index) + part + f.slice(list.index + list[0].length));
+        }
+        if (next.length > 64) return [word];
+        if (next.length === forms.length) break;
+        forms = next;
+    }
+    return forms;
+}
+
+/**
  * Commands that look at credential files ask first even when read-only.
  * Output is redacted either way; this keeps the model from going fishing.
  * With `cwd`, glob words are expanded so `cat .e*` is caught too. A search's
@@ -2171,7 +2220,12 @@ export function sensitiveTarget(cmd: string, opts: { cwd?: string; cavvyHome?: s
     // And with the variables it can work out filled in: `cat $CAVVY_HOME/credentials.json`.
     const look = /[$~]/.test(cmd) ? shellVars(cmd, opts.env) : undefined;
     const vars = (t: string) => (look ? matchSensitive(withVarsExpanded(t, look, opts.cwd ?? process.cwd()), opts.cavvyHome) : undefined);
-    const direct = matchSensitive(text, opts.cavvyHome) ?? matchSensitive(unquoted, opts.cavvyHome) ?? vars(text) ?? vars(unquoted);
+    // And with its brace lists written out, as the shell does first: `cp .env{,.bak}`, `cat .{env,envrc}`.
+    const braced = () => {
+        const forms = commands.flatMap((c) => c.argv.flatMap((w) => braceForms(w).filter((f) => f !== w))).join(" ");
+        return forms ? matchSensitive(forms, opts.cavvyHome) : undefined;
+    };
+    const direct = matchSensitive(text, opts.cavvyHome) ?? matchSensitive(unquoted, opts.cavvyHome) ?? vars(text) ?? vars(unquoted) ?? braced();
     if (direct || !opts.cwd) return direct;
     // Each pattern in every folder its command might run in (`cd private && cat .e*`). A cd
     // can fail (`cd x || cat .e*`) or run in a pipeline's subshell (`cd x | cat .e*`), so the
@@ -2186,7 +2240,7 @@ export function sensitiveTarget(cmd: string, opts: { cwd?: string; cavvyHome?: s
             if (dirs && dirs.length > 32) dirs = null;
             continue;
         }
-        for (const w of argv) {
+        for (const w of argv.flatMap(braceForms)) {
             if (!/[*?[]/.test(w)) continue;
             const relative = !/^(\/|~|\$\{?HOME\}?(\/|$))/.test(w);
             if (relative && !dirs) return "files a pattern matches in a folder Cavvy can't work out";
@@ -2205,9 +2259,9 @@ export function sensitiveTarget(cmd: string, opts: { cwd?: string; cavvyHome?: s
 // permissions, hooks, MCP servers, skills, git hooks/fsmonitor. A shell command
 // that isn't read-only and names one asks, like an Edit of the same file would.
 // OpenCode's global config (~/.config/opencode, $XDG_CONFIG_HOME/opencode) too; see configTarget for where it is.
-const CONFIG_PATH = /(^|[\s'"=:/])(\.cavvy|\.harness|\.codex|\.opencode|\.grok|\.agents|\.mcp\.json|opencode\.jsonc?|\.git|\.config\/opencode|\$\{?XDG_CONFIG_HOME\}?\/opencode)(?=$|[/\s'";|&)>])/i;
+const CONFIG_PATH = new RegExp(String.raw`${BEFORE_NAME}(\.cavvy|\.harness|\.codex|\.opencode|\.grok|\.agents|\.mcp\.json|opencode\.jsonc?|\.git|\.config\/opencode|\$\{?XDG_CONFIG_HOME\}?\/opencode)(?=$|[/${NAME_END}])`, "i");
 // .claude/ too, but see claudeConfigIn.
-const CLAUDE_DIR = /(^|[\s'"=:/])\.claude(?=$|[/\s'";|&)>])/gi;
+const CLAUDE_DIR = new RegExp(String.raw`${BEFORE_NAME}\.claude(?=$|[/${NAME_END}])`, "gi");
 const WORKTREE = /\/worktrees\/([^/\s'"`;|&()<>*?[\]{}$\\]+)(?=$|[/\s'";|&)>])/iy;
 
 /**
@@ -2404,6 +2458,28 @@ function caseHeader(text: string): { end: number; found: boolean } | undefined {
     return { end: text.length, found: false };
 }
 
+/** A command's text without the `)` that closes a subshell after it: one outside quotes that no `(` in the text opened. */
+function withoutSubshellClose(text: string): string {
+    if (!text.endsWith(")")) return text;
+    let quote: string | undefined;
+    let depth = 0;
+    let cut = -1;
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i]!;
+        if (ch === "\\" && quote !== "'") { i++; cut = -1; continue; }
+        if (quote) {
+            if (ch === quote) quote = undefined;
+            continue;
+        }
+        if (ch === "'" || ch === '"' || ch === "`") { quote = ch; cut = -1; }
+        else if (ch === "(") { depth++; cut = -1; }
+        else if (ch === ")" && depth) { depth--; cut = -1; }
+        else if (ch === ")") { if (cut < 0) cut = i; }
+        else if (ch !== " " && ch !== "\t") cut = -1;
+    }
+    return cut < 0 ? text : text.slice(0, cut).trimEnd();
+}
+
 /** Bodies are extra evidence for protective checks, never grounds for approving shell syntax. */
 function commandBodies(original: SimpleCommand[], budget: CommandBudget): { commands: SimpleCommand[]; compoundAt: number } {
     const commands: SimpleCommand[] = [];
@@ -2431,7 +2507,7 @@ function commandBodies(original: SimpleCommand[], budget: CommandBudget): { comm
                 cases[cases.length - 1] = "body";
                 text = text.slice(end[0].length).trimStart();
             } else {
-                const prefix = /^(?:(?:if|then|elif|else|while|until|do|done|fi|!)(?:[ \t]+|$)|(?:function[ \t]+[\w.-]+(?:[ \t]*\(\))?|[\w.-]+[ \t]*\(\))[ \t]*|[{}](?:[ \t]+|$)|[()])/.exec(text);
+                const prefix = /^(?:(?:if|then|elif|else|while|until|do|done|fi|!)(?:[ \t]+|$)|time(?:[ \t]+-p)?[ \t]+(?=[{(!])|coproc(?:[ \t]+[A-Za-z_]\w*(?=[ \t]*[{(]))?(?:[ \t]+|$)|(?:function[ \t]+[\w.-]+(?:[ \t]*\(\))?|[\w.-]+[ \t]*\(\))[ \t]*|[{}](?:[ \t]+|$)|[()])/.exec(text);
                 if (!prefix) {
                     if (/^(for|select)(?:[ \t]|$)/.test(text)) text = "";
                     else break;
@@ -2440,10 +2516,22 @@ function commandBodies(original: SimpleCommand[], budget: CommandBudget): { comm
             if (compoundAt < 0) compoundAt = commands.length;
             if (n === 31) budget.exhausted = true;
         }
+        // A subshell closes against its last word: `(cd pkg && npm publish)` runs `npm publish`, not `npm publish)`.
+        text = withoutSubshellClose(text);
         if (text !== c.text && compoundAt < 0) compoundAt = commands.length;
         if (text) commands.push(...(text === c.text ? [c] : analyzeCommand(text, true).commands.map((body) => ({ ...body, stdinScripts: c.stdinScripts }))));
     }
     return { commands, compoundAt };
+}
+
+/**
+ * Does the line use the shell's compound syntax: a loop, a conditional, a group, a subshell, a function, a `case`,
+ * a negation? Its commands start with the shell's own words (`do`, `then`, `{`), which aren't programs a rule can
+ * name: nothing approves such a line but its exact text. Yes too when there's more of it than gets looked at.
+ */
+export function isCompound(commands: SimpleCommand[]): boolean {
+    const budget: CommandBudget = { commands: 4096, maxDepth: 4, exhausted: false };
+    return commandBodies(commands, budget).compoundAt >= 0 || budget.exhausted;
 }
 
 /** The programs find may execute, including multiple -exec primaries. */
@@ -2622,11 +2710,18 @@ export function suggestBashRules(cmd: string): string[] {
     const a = shellCommands(cmd);
     // Rules come from what runs, never a here-document's data. When where its data ends isn't certain, none.
     if (a.heredoc && (a.unparsable || a.heredocOpen)) return [];
+    // Not for a line rules can't see into (a substitution, an expansion, a variable set for a command), nor one
+    // whose words are the shell's own (a loop, a conditional: "always allow for, do, done" allowed nothing). The
+    // checker offers of these only one that covers the whole line (PermissionChecker.rulesFor).
+    if (a.hasSubstitution || a.unparsable || a.unsafeExpansion || isCompound(a.commands) || !a.commands.every((c) => onlySafeAssignments(c.argv))) return [];
     const out: string[] = [];
     for (const c of a.commands) {
         const argv = effectiveArgv(c.argv);
         if (!argv.length || isReadOnlySimple(argv)) continue;
         const prog = argv[0]!;
+        // A program that runs another (`env FOO=1 make`, `xargs`, `nohup`): its rule would be one for anything it runs.
+        // Nor a word that is an option (`time -p make` leaves `-p`).
+        if (wrapperOf(prog) || prog.startsWith("-")) return [];
         let n = TWO_WORD.has(prog) ? 2 : 1;
         if (["npm", "pnpm", "yarn", "bun"].includes(prog) && argv[1] === "run") n = 3;
         if ((prog === "python" || prog === "python3") && argv[1] === "-m") n = 3;
@@ -2634,5 +2729,6 @@ export function suggestBashRules(cmd: string): string[] {
         const rule = `Bash(${words.join(" ")}:*)`;
         if (!out.includes(rule)) out.push(rule);
     }
-    return out.slice(0, 3);
+    // More programs than a choice can name: none, rather than rules for some of them.
+    return out.length > 3 ? [] : out;
 }
