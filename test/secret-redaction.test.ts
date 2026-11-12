@@ -224,3 +224,15 @@ test("a model's text as one line to decide on: no line breaks, controls or bidi,
     expect(emoji.isWellFormed()).toBe(true);
     expect(emoji).toBe(`${"a".repeat(198)}…`);
 });
+
+test("a model's text as one line keeps what words and emoji are made of, and fits its bound once redacted", () => {
+    // Joiners and soft hyphens stay (an emoji family, a Persian word, a hyphenation point); bidi controls don't.
+    expect(redactedLine("👨\u200d👩\u200d👧 می\u200cخواهم co\u00adoperate", 200)).toBe("👨\u200d👩\u200d👧 می\u200cخواهم co\u00adoperate");
+    expect(redactedLine("a\u202eb\u2067c\u200fd", 200)).toBe("a b c d");
+    // A redaction can be longer than what it replaces: the line still fits.
+    const tokens = Array.from({ length: 5 }, () => "xoxb-1234567890").join(" ");
+    const line = redactedLine(tokens, 80);
+    expect(line.length).toBeLessThanOrEqual(80);
+    expect(line).not.toContain("xoxb");
+    expect(line).toEndWith("…");
+});

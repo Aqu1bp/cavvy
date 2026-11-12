@@ -276,6 +276,41 @@ describe("the tools", () => {
         expect(heading).not.toMatch(/[\u202a-\u202e\u2066-\u2069]/);
     });
 
+    test("a start's prompt keeps what it runs on in view, though the title's redactions are longer than it", async () => {
+        const { oneLineSummary } = await import("../src/agent/agent");
+        const { StartSessionTool } = await import("../src/tools/session-tools");
+        const title = Array.from({ length: 5 }, () => "xoxb-1234567890").join(" ");
+        const preview = await StartSessionTool.preview!({ prompt: "x", title, model: "bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0", effort: "xhigh" } as never, {} as never);
+        expect(oneLineSummary(preview)!.summary).toEndWith("(bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0, xhigh effort)");
+    });
+
+    test("a CLI's own permission request gets a one-line heading too", async () => {
+        const { Agent } = await import("../src/agent/agent");
+        const { Session } = await import("../src/agent/session");
+        const ws = realpathSync(tempDir("peers-prompt-cli-"));
+        dirs.push(ws);
+        const seen: string[] = [];
+        // A CLI backend that asks about a call of its own, with a preview it wrote.
+        const backend = {
+            agentBackend: true, listModels: async () => [], setMode() {},
+            stream: async () => { throw new Error("Not a chat provider"); },
+            compact: async () => { throw new Error("Not compacting"); },
+            runTurn: async (turn: any) => {
+                await turn.session.permission({ toolName: "Bash", input: { command: "ls" }, preview: { summary: `List files\u202e${"\n".repeat(20)}${"z".repeat(300)}` } });
+                return { reason: "done", text: "Done", answer: "Done", actions: [] };
+            },
+        };
+        const agent = new Agent({
+            session: Session.create(ws, { persist: false }), model: { provider: "claude-code", id: "default" } as never, client: backend as never,
+            settings: () => ({ delegation: false }) as never, checker: new PermissionChecker(() => ({}) as never, ws), tools: [],
+            mode: { get: () => "default", set() {} },
+            toolState: { cwd: ws, projectRoot: ws, fileState: new Map(), todos: [], shells: new Map() } as never,
+            host: { emit() {}, ui: {}, askPermission: async (req: any) => (seen.push(req.preview?.summary), { allow: false, feedback: "no" }) } as never,
+        });
+        await agent.run([{ type: "text", text: "go" }], { signal: new AbortController().signal });
+        expect(seen).toEqual([`List files ${"z".repeat(188)}…`]);
+    });
+
     test("every tool's prompt heading is one plain line, whatever its preview says", async () => {
         const { Agent } = await import("../src/agent/agent");
         const { Session } = await import("../src/agent/session");
