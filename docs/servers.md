@@ -60,11 +60,21 @@ cavvy servers stop <name>     # stop Cavvy there
 cavvy servers remove <name>   # forget it here, and sign this machine out of it
 ```
 
-A server runs the build of Cavvy that the machine setting it up runs, made from the checkout that machine's Cavvy came from. `update` restarts Cavvy there, which ends turns in flight and drops questions waiting for an answer, so it asks first when sessions are working (`Stop work on <name> to update?`). The new build is tried before the old one is given up: if it doesn't start, the build before it is put back and started. A server on a newer build than this machine's is left alone, so two machines that share a server don't each put their own version back; `--force` replaces it anyway.
+A server runs the build of Cavvy that the machine setting it up runs, made from the checkout that machine's Cavvy came from. `update` restarts Cavvy there, which cuts off turns in flight and drops questions waiting for an answer, so it asks first when sessions are working (`Stop work on <name> to update?`). What was cut off isn't lost: see [after a restart](#after-a-restart). The new build is tried before the old one is given up: if it doesn't start, the build before it is put back and started. A server on a newer build than this machine's is left alone, so two machines that share a server don't each put their own version back; `--force` replaces it anyway.
 
 `stop` waits until Cavvy there has closed its sessions and gone, and it stays stopped: a connection that was open says `Cavvy on <name> was stopped.` and doesn't start it again by reconnecting. Connecting again (`cavvy gui --server`, `cavvy servers update`) starts it.
 
 `remove` doesn't stop Cavvy on the server or delete anything there. The line it prints puts the server back.
+
+## After a restart
+
+When Cavvy on a server stops while sessions are working and then starts again (an update, a reboot where it runs as a service, a crash), those sessions carry on by themselves: each shows its turn as stopped where it was cut off, then a new turn, `Cavvy restarted while you were working, which cut your last turn off. Continue where you left off.` A question a session was waiting on is gone with the restart; the session goes on and asks again if it still needs to. Messages you had queued wait for you, as after any stop.
+
+What doesn't carry on:
+
+- A turn you had stopped yourself, or that had ended.
+- Anything after `cavvy servers stop`: a server stopped on purpose starts again with nothing running.
+- A session that Cavvy has already carried on three times within an hour: it says so and waits for you, in case it's what keeps bringing Cavvy down.
 
 ## How a machine signs in
 
