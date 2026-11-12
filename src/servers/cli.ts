@@ -2,7 +2,10 @@
 // the terminal's side of servers. What they do is in the modules beside this
 // one, which the GUI server uses too; here are only the words and the prompts.
 
-import { APP_NAME } from "../config/paths";
+import { randomBytes } from "crypto";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { join } from "path";
+import { APP_NAME, cavvyHome } from "../config/paths";
 import { loadScope } from "../config/settings";
 import { childEnv } from "../util/env";
 import { thisBuild, UNKNOWN_BUILD } from "./build";
@@ -10,7 +13,7 @@ import { ServerLink, type LinkState } from "./connect";
 import { countCopied, describeCopy, describeLeft, planCopy, sendCopy } from "./copy";
 import type { HostCheck, HostStatus } from "./host";
 import { ensureBuildThere, ServerBusy, setUpServer, type SetupProgress, type SetupResult } from "./install";
-import { probeServer, remoteBuildDir } from "./remote";
+import { probeServer, REMOTE_DIR, remoteBuildDir } from "./remote";
 import { NotSetUp, remoteCheck, remoteStatus, revokeOverSsh, serviceReport, stopRemote, type ServiceReport } from "./service";
 import { hostOf, offeredHostKey, printable, remoteSh, shQuote, ssh, sshCommandArgv, SshError, trustHostKey } from "./ssh";
 import { draftServer, listServers, removeServer, requireServer, saveServer, ServerError, thisDesktop, type ServerEntry } from "./store";
@@ -372,16 +375,23 @@ export async function serversCommand(args: string[]): Promise<number> {
 const NO_BUILD = 97;
 const NO_FOLDER = 96;
 
+/** When process $1 started, in whatever form the system has (Linux: from /proc; elsewhere: ps): only ever compared with itself. */
+const STARTED = `started() { awk '{print $22}' "/proc/$1/stat" 2>/dev/null || ps -o lstart= -p "$1" 2>/dev/null | awk '{$1=$1; print}'; }`;
+
 /**
  * Runs this machine's build of Cavvy in a folder there ($2), under the user's
- * login shell so the tools it puts on PATH are found. $1: the build. The rest
- * go to Cavvy as they were typed.
+ * login shell so the tools it puts on PATH are found. $1: the build. $3 and
+ * $4: this machine and this run of `--server`, under which the process leaves
+ * its pid (see LEFTOVERS). The rest go to Cavvy as they were typed.
  */
 const RUN = `
 b="${remoteBuildDir("$1")}/cavvy"
 [ -x "$b" ] || exit ${NO_BUILD}
 dir="$2"
-shift 2
+runs="${REMOTE_DIR}/runs/$3"
+${STARTED}
+mkdir -p "$runs" && echo "$$ $(started $$)" > "$runs/$4"
+shift 4
 case "$dir" in "~") dir="$HOME" ;; "~/"*) dir="$HOME/\${dir#\\~/}" ;; esac
 cd -- "$dir" 2>/dev/null || { echo "No folder $dir there." >&2; exit ${NO_FOLDER}; }
 sh=\${SHELL:-/bin/sh}
@@ -390,6 +400,63 @@ case "\${sh##*/}" in
     *) exec "$b" "$@" ;;
 esac
 `;
+
+/**
+ * Before a run: is build $1 there (exit ${NO_BUILD} if not), and the Cavvys
+ * this machine ($2) left running there are ended. A connection that's lost
+ * without a word (a laptop closing, a network going) isn't noticed by the
+ * server for a long while, so the Cavvy it carried runs on, holding its
+ * session: "continue with -c" would be refused. Each run is known by an id
+ * ($3 lists the ones whose terminal here is still open); a process left by any
+ * other run of this machine is hung up on, as its lost connection would have,
+ * if it's still the process that wrote the file (its start time says).
+ */
+const LEFTOVERS = `
+runs="${REMOTE_DIR}/runs/$2"
+${STARTED}
+if [ -d "$runs" ]; then
+    for f in "$runs"/*; do
+        [ -f "$f" ] || continue
+        case " $3 " in *" $(basename "$f") "*) continue ;; esac
+        read -r pid start < "$f" || true
+        if [ -n "$pid" ] && [ -n "$start" ] && [ "$(started "$pid")" = "$start" ]; then
+            kill -HUP "$pid" 2>/dev/null
+            n=0
+            while kill -0 "$pid" 2>/dev/null && [ "$n" -lt 40 ]; do sleep 0.1; n=$((n + 1)); done
+            kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
+        fi
+        rm -f "$f"
+    done
+fi
+[ -x "${remoteBuildDir("$1")}/cavvy" ] || exit ${NO_BUILD}
+`;
+
+/** The `--server` runs of this machine whose terminals are open: each leaves its pid here while it runs. */
+const localRuns = () => join(cavvyHome(), "run", "server-runs");
+
+/** The ids of the runs still going here. Files left by ones that died are cleared away. */
+function openRuns(): string[] {
+    const open: string[] = [];
+    let names: string[] = [];
+    try {
+        names = readdirSync(localRuns());
+    } catch {
+        return open;
+    }
+    for (const id of names) {
+        const file = join(localRuns(), id);
+        let alive = false;
+        try {
+            process.kill(Number(readFileSync(file, "utf-8")), 0);
+            alive = true;
+        } catch (x) {
+            alive = (x as NodeJS.ErrnoException).code === "EPERM";
+        }
+        if (alive && /^[0-9a-f]{16}$/.test(id)) open.push(id);
+        else rmSync(file, { force: true });
+    }
+    return open;
+}
 
 /** What the terminal says about itself, which a remote Cavvy needs to draw as it would here. */
 const TERMINAL_ENV = ["COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "LC_TERMINAL", "LC_TERMINAL_VERSION"];
@@ -411,9 +478,12 @@ export async function runOnServer(spec: string, forwarded: string[]): Promise<nu
         const build = thisBuild();
         if (build === UNKNOWN_BUILD) throw new ServerError("This copy of Cavvy can't tell which build it is, so it can't run on a server. Run it from a checkout.");
         const env = TERMINAL_ENV.filter((k) => process.env[k]).map((k) => `${k}=${shQuote(process.env[k]!)}`);
-        const command = `env ${["CAVVY_NO_KEYCHAIN=1", ...env].join(" ")} ${remoteSh(RUN, [build, folder, ...forwarded])}`;
-        // Asked first without the terminal, so a server that can't be reached, or has no build yet, is said in plain words.
-        const asked = await withTrust(e, (entry) => ssh(entry, remoteSh(`[ -x "${remoteBuildDir("$1")}/cavvy" ] || exit ${NO_BUILD}`, [build]), { timeoutMs: 45_000 }), { saved: true, onTrusted: (entry) => (e = entry) });
+        const machine = thisDesktop().id;
+        const run = randomBytes(8).toString("hex");
+        const command = `env ${["CAVVY_NO_KEYCHAIN=1", ...env].join(" ")} ${remoteSh(RUN, [build, folder, machine, run, ...forwarded])}`;
+        // Asked first without the terminal, so a server that can't be reached, or has no build yet, is said in plain
+        // words; and what earlier runs from here left running there is ended, so their sessions can be continued.
+        const asked = await withTrust(e, (entry) => ssh(entry, remoteSh(LEFTOVERS, [build, machine, openRuns().join(" ")]), { timeoutMs: 45_000 }), { saved: true, onTrusted: (entry) => (e = entry) });
         if (asked.value.code === NO_BUILD) {
             err(`Setting up Cavvy on ${e.name}…`);
             await ensureBuildThere(e, { progress: progress() });
@@ -422,6 +492,11 @@ export async function runOnServer(spec: string, forwarded: string[]): Promise<nu
         // Off a terminal, the Cavvy there reads what's piped in. A terminal that's only standing by (output is piped, input
         // isn't) is nothing to read: handed over, it would be a pipe that never ends, and the Cavvy there would wait on it.
         const stdin = !tty && process.stdin.isTTY ? "ignore" : "inherit";
+        // Known as open here for as long as it runs: the next run from this machine leaves it alone.
+        mkdirSync(localRuns(), { recursive: true, mode: 0o700 });
+        writeFileSync(join(localRuns(), run), String(process.pid), { mode: 0o600 });
+        const closed = () => rmSync(join(localRuns(), run), { force: true });
+        process.on("exit", closed);
         const proc = Bun.spawn(sshCommandArgv(e, command, { tty }), { stdin, stdout: "inherit", stderr: "inherit", env: childEnv() });
         // Ctrl+C belongs to the Cavvy over there: with a terminal it's passed on as a key; without one, ssh takes it and ends.
         let interrupted = false;

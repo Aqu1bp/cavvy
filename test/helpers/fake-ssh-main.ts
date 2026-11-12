@@ -45,6 +45,11 @@ interface Behavior {
     settings?: string[];
     /** A command's connection is lost this many milliseconds in. */
     dropSessionAfterMs?: number;
+    /**
+     * A command's connection is lost this many milliseconds in without the server noticing (a laptop closing, a
+     * network going): ssh gives up here, and what was running at the other end runs on.
+     */
+    vanishSessionAfterMs?: number;
 }
 const behavior: Behavior = existsSync(join(dir, "behavior.json")) ? JSON.parse(readFileSync(join(dir, "behavior.json"), "utf-8")) : {};
 appendFileSync(join(dir, "calls.jsonl"), JSON.stringify({ opts: Object.fromEntries(opts), flags: [...flags], port, forward, separated, dest, command }) + "\n");
@@ -141,7 +146,8 @@ env.FAKE_REAL_PATH = process.env.PATH ?? "";
 // In a process group of its own, so that a lost connection can take everything it started with it, as a server
 // does when a session's connection goes: where `sh` doesn't replace itself with the command (dash), killing `sh`
 // alone would leave the command running, still holding this test's pipes open.
-const child = spawn("sh", ["-c", command!], { stdio: "inherit", env, cwd: env.HOME, detached: true });
+// One that will be left running takes nothing of this process's with it: it would hold the test's pipes open.
+const child = spawn("sh", ["-c", command!], { stdio: behavior.vanishSessionAfterMs !== undefined ? "ignore" : "inherit", env, cwd: env.HOME, detached: true });
 const exited = new Promise<number>((resolve) => child.on("exit", (code, signal) => resolve(code ?? (signal ? 128 : 1))));
 if (behavior.dropSessionAfterMs !== undefined) {
     setTimeout(() => {
@@ -152,5 +158,11 @@ if (behavior.dropSessionAfterMs !== undefined) {
         }
         fail("client_loop: send disconnect: Broken pipe");
     }, behavior.dropSessionAfterMs);
+}
+if (behavior.vanishSessionAfterMs !== undefined) {
+    setTimeout(() => {
+        child.unref();
+        fail(`Timeout, server ${host} not responding.`);
+    }, behavior.vanishSessionAfterMs);
 }
 process.exit(await exited);

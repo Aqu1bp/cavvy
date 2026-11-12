@@ -35,7 +35,7 @@ What can go wrong, and what you see:
 
 ## Working there
 
-`cavvy --server <name>[:<folder>]` runs the terminal app on the server over SSH, in that folder (your home there without one). Everything after it goes to that Cavvy: `-c`, `-r <id>`, `-p "…"`, `auth add`. If the connection drops, that terminal app ends with it, and Cavvy says `Connection to <name> lost.` and how to continue the session (`-c`); the session is saved as it goes.
+`cavvy --server <name>[:<folder>]` runs the terminal app on the server over SSH, in that folder (your home there without one). Everything after it goes to that Cavvy: `-c`, `-r <id>`, `-p "…"`, `auth add`. If the connection drops, that terminal app ends with it, and Cavvy says `Connection to <name> lost.` and how to continue the session (`-c`); the session is saved as it goes. A server can take a long while to notice a connection that went without a word (a laptop closing), and the terminal app there runs on meanwhile: the next `cavvy --server` to that server from this machine ends it first, so the session can be continued.
 
 `cavvy gui --server <name>` opens the server's GUI in your browser through an SSH tunnel, and stays running to keep the tunnel up. Ctrl+C disconnects and signs the page out; work on the server keeps running, and connecting again shows it where it is, with any question it's waiting on. If the connection drops, the tunnel comes back by itself (`Connection to <name> lost. Reconnecting…`), at the same address, and prints a new sign-in link in case the page asks for one. A failure that needs you (your key refused, the server's key changed) is said once and not retried.
 

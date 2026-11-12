@@ -31,6 +31,8 @@ export interface FakeServer {
     diskFree(mb?: number): void;
     /** Commands' connections are lost this long after they start (undefined: they aren't). */
     dropSessions(afterMs?: number): void;
+    /** Commands' connections are lost this long in without the server noticing: what they started runs on. */
+    vanishSessions(afterMs?: number): void;
     /** With `systemd`: what was asked of the pretend service manager, in order ("enable cavvy.service"). */
     asked(): string[];
     /** With `systemd`: whether the server lets a user's services outlive their sign-in when asked. */
@@ -122,6 +124,10 @@ export function fakeSsh(o: { systemd?: boolean } = {}): FakeServer {
         },
         dropSessions(afterMs) {
             behavior.dropSessionAfterMs = afterMs;
+            save();
+        },
+        vanishSessions(afterMs) {
+            behavior.vanishSessionAfterMs = afterMs;
             save();
         },
         asked: () =>

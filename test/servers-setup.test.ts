@@ -133,6 +133,7 @@ async function until(what: string, ok: () => boolean | Promise<boolean>, ms = 20
 afterEach(() => {
     fake.fail();
     fake.dropSessions();
+    fake.vanishSessions();
     fake.diskFree();
     fake.settings();
 });
@@ -484,6 +485,30 @@ describe("the terminal's commands", () => {
         } finally {
             fake.dropSessions();
         }
+    });
+
+    test("--server: a Cavvy left running there by a connection lost without a word is ended by the next run", async () => {
+        const gone = (pid: number) => {
+            try {
+                process.kill(pid, 0);
+                return false;
+            } catch {
+                return true;
+            }
+        };
+        // The laptop closes: ssh gives up here, and the server, which hasn't noticed, lets the Cavvy there run on.
+        fake.vanishSessions(1500);
+        const lost = await cavvy("--server", "box", "-p", "hangforever please");
+        fake.vanishSessions();
+        expect(lost.code).toBe(1);
+        expect(lost.err).toContain("Connection to box lost.\n");
+        const runs = join(serverDir, "runs", thisDesktop().id);
+        const left = readdirSync(runs).map((id) => ({ id, pid: Number(readFileSync(join(runs, id), "utf-8").split(/\s/)[0]) })).filter((r) => !gone(r.pid));
+        expect(left).toHaveLength(1);
+        // It holds its session, so continuing would be refused, until the next run from this machine ends it.
+        expect(await cavvy("--server", "box", "--version")).toMatchObject({ code: 0, out: "1.0.0\n" });
+        await until("the one left behind to be gone", () => gone(left[0]!.pid), 10_000);
+        expect(readdirSync(runs)).not.toContain(left[0]!.id);
     });
 
     test("--server after -- is the prompt's own words, and nothing goes to a server", async () => {
