@@ -1675,6 +1675,7 @@ export class Agent {
             agents: this.nativeAgents(trusted),
             signal,
             sessionKey: this.session.meta.id,
+            processMark: this.state.session,
             session,
             sink,
         };
