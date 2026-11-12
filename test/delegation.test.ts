@@ -1732,6 +1732,29 @@ describe("Browser tools for Codex and Claude Code", () => {
         expect(asked.map((r) => r.tool.name)).toEqual(["mcp__cavvy__browser_snapshot"]);
     });
 
+    test("an ask rule for the served name doesn't ask about a call its input already rules out", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        // goto without a url can't run: refused as it is, with no prompt; one that can run is still asked about.
+        calls([{ tool: "browser_navigate", args: { action: "goto" } }, { tool: "browser_navigate", args: { url: "https://example.com" } }]);
+        const { run, asked } = await codex({ settings: { permissions: { ask: ["mcp__cavvy__browser_navigate"] } }, ask: () => ({ allow: false }) });
+        await run("open it");
+        const [bad, good] = mcpResults();
+        expect(bad).toMatchObject({ tool: "browser_navigate", isError: true });
+        expect(bad.text).toContain("goto needs a url");
+        expect(good.text).toContain("declined");
+        expect(asked.map((r) => r.tool.name)).toEqual(["mcp__cavvy__browser_navigate"]);
+    });
+
+    test("a deny rule for the served name refuses a call as denied, whatever its input", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([{ tool: "browser_navigate", args: { action: "goto" } }, { tool: "browser_navigate", args: { url: "https://example.com" } }]);
+        const { run, asked } = await codex({ settings: { permissions: { deny: ["mcp__cavvy__browser_navigate"] } } });
+        await run("open it");
+        for (const r of mcpResults()) expect(r.text).toContain("Denied by permission rule mcp__cavvy__browser_navigate");
+        expect(mcpResults()).toHaveLength(2);
+        expect(asked).toEqual([]);
+    });
+
     test("the rules that cover the tool by its own name hold on this path too: a host, a file, plan mode", async () => {
         process.env.FAKE_SCENARIO = "mcp";
         mkdirSync(join(cwd, "private"), { recursive: true });

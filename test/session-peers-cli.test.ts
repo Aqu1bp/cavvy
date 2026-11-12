@@ -156,6 +156,24 @@ test("Claude Code: start_session on a model there isn't is refused with the mode
     );
 }, 40_000);
 
+test("Claude Code: with a rule to always ask before start_session, a model there isn't is refused without asking", async () => {
+    await kit.withApp(
+        "claude-code",
+        true,
+        async (h) => {
+            const { getProvider } = await import("../src/providers/registry");
+            h.engine.listings = [{ provider: getProvider("claude-code")!, status: "ok", models: [{ provider: "claude-code", id: "opus", name: "Opus" }] }] as never;
+            process.env.FAKE_MCP_CALLS = JSON.stringify([{ server: "cavvy", tool: "start_session", args: { prompt: "Review the auth module.", model: "claude-code:fable-5.2" } }]);
+            // A prompt would hold the turn, and this wouldn't end.
+            await h.send("start a session on Fable 5.2");
+            const result = h.lines().find((l: any) => l.mcpResult)?.mcpResult;
+            expect(result?.isError).toBe(true);
+            expect(result?.text).toContain('Claude Code has no model "fable-5.2"');
+        },
+        { env: { FAKE_SCENARIO: "mcp" }, settings: { permissions: { allowBypass: true, ask: ["mcp__cavvy__start_session"] } } },
+    );
+}, 40_000);
+
 test("Claude Code: two send_to_session calls said in one response both go, though it sends no call ids", async () => {
     await kit.withApp(
         "claude-code",
