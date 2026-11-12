@@ -22,6 +22,8 @@ export interface WakeInput {
 
 export interface Wake extends WakeInput {
     at: number;
+    /** A message that joined a running turn: when the hourly count was taken for it (drainRunning), so putBack undoes that one. */
+    counted?: number;
 }
 
 /**
@@ -123,15 +125,21 @@ export class WakeQueue {
             if (this.items.length && !this.memory.paused) this.retryAtLimit();
             return events;
         }
-        this.memory.started.push(this.now());
-        return this.items.splice(0);
+        const at = this.now();
+        this.memory.started.push(at);
+        const taken = this.items.splice(0);
+        for (const w of taken) if (w.from) w.counted = at;
+        return taken;
     }
 
-    /** Messages that were taken but never reached the model (its turn ended first): first in line again, not counted. */
+    /** Wakes taken to join a turn that never reached the model (it ended first): first in line again, their counts undone. */
     putBack(wakes: Wake[]) {
         if (this.disposed || !wakes.length) return;
-        this.items.unshift(...wakes);
-        this.memory.started.pop();
+        for (const at of new Set(wakes.flatMap((w) => (w.counted === undefined ? [] : [w.counted])))) {
+            const i = this.memory.started.indexOf(at);
+            if (i >= 0) this.memory.started.splice(i, 1);
+        }
+        this.items.unshift(...wakes.map(({ counted: _, ...w }) => w));
         this.schedule(this.coalesceMs);
     }
 

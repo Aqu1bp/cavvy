@@ -1035,8 +1035,9 @@ export class Agent {
             if (!signal.aborted) {
                 const steer = await this.drainSteering(signal);
                 const queued = steer.texts;
-                // Not into a round the user denied: that ends the turn, and the wake would go unanswered.
-                const woke = denied ? undefined : this.takeWakes();
+                // Not into a round that ends the turn (the user denied a call, a hook stopped it or blocked the batch): the wake
+                // would go unanswered, shown as taken. It waits for the next turn instead.
+                const woke = denied || this.hookStop || batchBlocked ? undefined : this.takeWakes();
                 if (queued.length) extra.push({ type: "text", text: `${STEERING}${joinSteered(queued, "\n\n")}` }, ...steer.attachments, ...steer.context.map(reminder));
                 if (woke) {
                     extra.push(reminder(woke.text));
@@ -2327,8 +2328,8 @@ export class Agent {
         let declined = false;
         /** What drainQueued handed over that came from wakes, not the user. */
         const wakeTexts = new Set<string>();
-        /** The wakes in each (by its text): messages from other sessions the backend never read go back in the queue. */
-        const wokeBy = new Map<string, Wake[]>();
+        /** The wakes in each (by its SteerMessage id), and the reminder stored for them: a batch with messages from other sessions the backend never read is taken back. */
+        const wokeBy = new Map<number, { wakes: Wake[]; message: Message }>();
         /** What drainQueued handed over from the user, to the words they typed (what hooks added follows). */
         const typed = new Map<string, string>();
         /** The user's messages as stored, by their SteerMessage.id (two with the same words are two), with what the host handed over for each. */
@@ -2413,20 +2414,26 @@ export class Agent {
                 const back = mine.length ? this.unsteer(mine.map((m) => stored.get(m.id!)!)) : new Set<number>();
                 for (const id of back) stored.delete(id);
                 messages = messages.filter((m) => m.id === undefined || !back.has(m.id));
-                // Messages from other sessions it never read: shown as joined no longer, and first in line again, for a turn of
-                // their own (or the next that runs). The events with them go in the note, as before.
-                const unread = messages.filter((m) => wakeTexts.has(m.text)).flatMap((m) => wokeBy.get(m.text) ?? []);
-                const unreadPeers = unread.filter((w) => w.from);
-                for (const w of unreadPeers) this.emit({ type: "peer_withdrawn", key: peerKey(w) });
-                if (unreadPeers.length) this.state.wakes?.putBack(unreadPeers);
-                const news = messages
-                    .filter((m) => wakeTexts.has(m.text))
-                    .flatMap((m) => {
-                        const wakes = wokeBy.get(m.text);
-                        if (!wakes?.some((w) => w.from)) return [m.text];
-                        const events = wakes.filter((w) => !w.from);
-                        return events.length ? [reminder(formatWakes(events)).text] : [];
-                    });
+                // A batch with messages from other sessions it never read: taken out of the history (when nothing was said after
+                // it), shown as joined no longer, and back first in line, events and all, for the turn that comes next or one
+                // of their own. One that can't be taken out stays, and goes in the note with the next prompt, as events do.
+                const withdrawn = new Set<SteerMessage>();
+                for (const m of messages) {
+                    // By its id; by its words where a backend handed it back without one.
+                    const key = m.id !== undefined && wokeBy.has(m.id) ? m.id : [...wokeBy].find(([, b]) => textOf(b.message) === m.text)?.[0];
+                    const batch = key === undefined ? undefined : wokeBy.get(key);
+                    if (!batch?.wakes.some((w) => w.from)) continue;
+                    const i = this.session.messages.indexOf(batch.message);
+                    const said = (x: Message) => x.role === "user" && ["prompt", "command", "wake"].includes(x.meta?.kind ?? "prompt");
+                    if (i < 0 || this.session.messages.some((x, j) => j > i && said(x))) continue;
+                    this.session.withdraw(i);
+                    for (const w of batch.wakes) if (w.from) this.emit({ type: "peer_withdrawn", key: peerKey(w) });
+                    this.state.wakes?.putBack(batch.wakes);
+                    wokeBy.delete(key!);
+                    withdrawn.add(m);
+                }
+                messages = messages.filter((m) => !withdrawn.has(m));
+                const news = messages.filter((m) => wakeTexts.has(m.text)).map((m) => m.text);
                 const said = messages.filter((m) => !wakeTexts.has(m.text) && m.text).map((m) => m.text);
                 // With the words they were stored with: a catch-up that has those leaves the note out (missedPrompt).
                 // Their images and PDFs too (a prompt's, kept by the backend): the note has them, and the prompt that carries it sends them.
@@ -2492,8 +2499,9 @@ export class Agent {
                     const m = this.session.push({ role: "user", content: [reminder(woke.text)], meta: { kind: "reminder", ...(woke.peers ? { peers: woke.peers } : {}) } });
                     const text = textOf(m);
                     wakeTexts.add(text);
-                    wokeBy.set(text, woke.wakes);
-                    out.push({ text, images: [], documents: [] });
+                    const wid = ++this.steerIds;
+                    wokeBy.set(wid, { wakes: woke.wakes, message: m });
+                    out.push({ id: wid, text, images: [], documents: [] });
                 }
                 if (this.cutOff) {
                     t?.refused();
@@ -2937,9 +2945,36 @@ export class Agent {
     private noteServedCall(e: AgentEvent, into: Set<string>): void {
         if (e.type === "subagent") return this.noteServedCall(e.event, this.servedSub);
         if (e.type !== "tool_start" && e.type !== "tool_end") return;
+        // The session tools' calls by their arguments too: Claude Code sends no call id with them (servedSessionCaller).
+        if (servedSessionTool(MCP_SERVER_NAME, e.call.name)) {
+            if (e.type === "tool_start") this.sessionCalls.push({ name: e.call.name, input: (e.call.input ?? {}) as Record<string, unknown>, sub: into === this.servedSub, claimed: false });
+            else this.sessionCalls = this.sessionCalls.filter((c) => c.claimed || c.name !== e.call.name);
+        }
         if (!e.call.name.startsWith(`mcp__${MCP_SERVER_NAME}__monitor`) && !servedSessionTool(MCP_SERVER_NAME, e.call.name)) return;
         if (e.type === "tool_start") into.add(e.call.id);
         else into.delete(e.call.id);
+    }
+
+    /** The backend's calls of the served session tools, by name and arguments, and whose they are (a sub-agent's or not). */
+    private sessionCalls: { name: string; input: Record<string, unknown>; sub: boolean; claimed: boolean }[] = [];
+
+    /**
+     * Whose a served session tool's call is, by its id, else by its name and arguments (Claude Code sends no id): "main",
+     * "sub" (one of the backend's sub-agents), or undefined when no call of the backend's matches it after a moment.
+     */
+    private async servedSessionCaller(name: string, input: Record<string, unknown>, callId?: string): Promise<"main" | "sub" | undefined> {
+        if (callId) return (await this.fromBackendSubagent(callId)) ? "sub" : this.servedMain.has(callId) ? "main" : undefined;
+        const same = (a: Record<string, unknown>) => [...new Set([...Object.keys(a), ...Object.keys(input)])].every((k) => JSON.stringify(a[k]) === JSON.stringify(input[k]));
+        const served = `mcp__${MCP_SERVER_NAME}__${name}`;
+        for (let i = 0; i < 40; i++) {
+            const c = this.sessionCalls.find((x) => !x.claimed && x.name === served && same(x.input));
+            if (c) {
+                c.claimed = true;
+                return c.sub ? "sub" : "main";
+            }
+            await Bun.sleep(50);
+        }
+        return undefined;
     }
 
     /** A served call one of the backend's sub-agents made. Its event may come just after the call, so this waits a moment for it. */
@@ -2963,8 +2998,13 @@ export class Agent {
     private async runServed(tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal, callId?: string): Promise<ServerToolResult> {
         // Only the main agent can be woken, so a sub-agent gets no Monitor (Cavvy's sub-agents don't either). Nor can its stop end the main turn.
         if (tool.name === "Monitor" && callId && (await this.fromBackendSubagent(callId))) return { text: "Monitor isn't available to sub-agents: only the main agent can be woken by one.", isError: true };
-        // Nor the user's other sessions: a message is from this session, and an answer to it wakes the main agent.
-        if (SESSION_TOOL_NAMES.includes(tool.name) && callId && (await this.fromBackendSubagent(callId))) return { text: "Other sessions can't be reached from a sub-agent: only the main agent can reach them.", isError: true };
+        // Nor the user's other sessions: a message is from this session, and an answer to it wakes the main agent. Sending
+        // and starting also refuse a call that can't be told to be the main agent's.
+        if (SESSION_TOOL_NAMES.includes(tool.name)) {
+            const caller = await this.servedSessionCaller(servedSessionName(tool.name)!, input, callId);
+            if (caller === "sub") return { text: "Other sessions can't be reached from a sub-agent: only the main agent can reach them.", isError: true };
+            if (caller === undefined && !isReadOnly(tool, input)) return { text: "Couldn't tell which agent made this call, so it wasn't sent. Only the main agent can send to or start sessions.", isError: true };
+        }
         // The CLI approves Cavvy's tools without asking: a rule naming the tool as served is enforced here, before the checks its own name gets.
         const served = servedBrowserName(tool.name) ?? servedSimulatorName(tool.name) ?? servedWorktreeFor(tool.name) ?? servedSessionName(tool.name);
         if (served) {

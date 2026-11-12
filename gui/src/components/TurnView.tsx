@@ -651,7 +651,7 @@ function TurnViewContent(p: TurnViewProps) {
                         <Match when={b().t === "notice" && (b() as NoticeBlock)}>{(n) => <Notice block={n()} state={p.state} />}</Match>
                         <Match when={b().t === "compact" && (b() as CompactBlock)}>{(c) => <Compacted block={c()} />}</Match>
                         <Match when={b().t === "imported" && (b() as ImportedBlock)}>{(c) => <Imported block={c()} />}</Match>
-                        <Match when={b().t === "peer" && (b() as PeerBlock)}>{(m) => <PeerQuote from={m().from} text={m().text} />}</Match>
+                        <Match when={b().t === "peer" && (b() as PeerBlock)}>{(m) => <PeerQuote from={m().from} text={m().text} find={m().id} reveal={findReveal()?.part === m().id} />}</Match>
                         <Match when={b().t === "shell" && (b() as ShellBlock)}>{(s) => <Shell block={s()} />}</Match>
                     </Switch>
                 )}

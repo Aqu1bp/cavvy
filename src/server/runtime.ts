@@ -1917,7 +1917,13 @@ export class Runtime {
             case "peer_withdrawn": {
                 const at = this.peerBlocks.get(e.key);
                 this.peerBlocks.delete(e.key);
-                if (at) this.op({ op: "block.remove", turnId: at.turnId, blockId: at.blockId });
+                if (!at) break;
+                this.op({ op: "block.remove", turnId: at.turnId, blockId: at.blockId });
+                // Dropped from the turn's logged steps too, whether or not this turn's steps are still being kept (a steer
+                // that came after it, or the turn's end, lets them go): a reopen mustn't show it joined.
+                const turn = findTurn(this.view, at.turnId);
+                const place = turn && this.backendTurns.has(at.turnId) ? this.stepsPlace(at.turnId, turn) : undefined;
+                if (place) this.ui.write({ t: "step", ...place, drop: at.blockId });
                 break;
             }
             case "retry": {
@@ -3472,8 +3478,10 @@ export class Runtime {
         const wakes = this.toolState.wakes!.takeForTurn();
         if (!wakes.length) return;
         // Messages from one other session: shown as it wrote them, as from it.
-        const from = wakesFrom(wakes);
-        const display = from ? wakes.map((w) => w.message ?? w.label).join("\n\n") : wakeDisplay(wakes);
+        const sender = wakesFrom(wakes);
+        // Shown as said, keys redacted, as a message that joins a turn is.
+        const from = sender && { id: sender.id, title: redact(sender.title) };
+        const display = from ? redact(wakes.map((w) => w.message ?? w.label).join("\n\n")) : wakeDisplay(wakes);
         void this.startTurn(formatWakes(wakes), { display, kind: "wake", wakes, ...(from ? { from } : {}) }).catch((e) => this.notice(redact((e as Error).message), "error"));
     }
 

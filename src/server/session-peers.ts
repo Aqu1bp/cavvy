@@ -22,7 +22,12 @@ export interface PeerHost {
     defaultMode(ws: Workspace): PermissionMode;
     /** Let it go once it has nothing to do, unless a window has it open. */
     release(id: string): void;
+    /** Sessions started by another, and when each session started others: kept while the server runs. */
+    starts: { startedBy: Map<string, string>; times: Map<string, number[]> };
 }
+
+/** Sessions one may start an hour: an agent that starts sessions needs the user before it starts many. */
+export const MAX_STARTS_PER_HOUR = 5;
 
 function statusOf(rt: Runtime): PeerStatus {
     if (rt.status === "waiting") return "waiting";
@@ -97,6 +102,11 @@ export function appPeers(host: PeerHost, self: Runtime): SessionPeers {
             return { summary: runtimeSummary(rt), delivery: deliver(rt, text) };
         },
         start: async ({ prompt, title, model }) => {
+            // No chains: a session another started can't start more. And no more than so many an hour from one.
+            if (host.starts.startedBy.has(self.id)) throw new PeerError("This session was started by another session, so it can't start sessions itself. Ask the user to start it, or send the request to the session that started this one.");
+            const now = Date.now();
+            const times = (host.starts.times.get(self.id) ?? []).filter((t) => now - t < 3_600_000);
+            if (times.length >= MAX_STARTS_PER_HOUR) throw new PeerError(`This session has started ${MAX_STARTS_PER_HOUR} sessions in the last hour, as many as it may. Ask the user before starting more.`);
             let rt: Runtime;
             try {
                 // On the starter's Claude Code and Codex accounts, as a plan taken to a worktree is.
@@ -112,6 +122,8 @@ export function appPeers(host: PeerHost, self: Runtime): SessionPeers {
                 host.release(rt.id);
                 throw new PeerError(`The session couldn't be started on ${ref}: ${redact((e as Error).message)}`);
             }
+            host.starts.times.set(self.id, [...times, now]);
+            host.starts.startedBy.set(rt.id, self.id);
             rt.rename(title);
             deliver(rt, prompt);
             return runtimeSummary(rt);

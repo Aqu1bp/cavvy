@@ -913,6 +913,9 @@ export class Engine {
         return m;
     }
 
+    /** Sessions started by another session's agent, and when each started others (session-peers.ts start's bounds). */
+    private sessionStarts = { startedBy: new Map<string, string>(), times: new Map<string, number[]>() };
+
     /** What a session's agent reaching the others (session-peers.ts) does through the engine. */
     peerHost(): PeerHost {
         return {
@@ -932,6 +935,7 @@ export class Engine {
             },
             defaultMode: (ws) => this.defaultMode(ws),
             release: (id) => this.unloadLater(id),
+            starts: this.sessionStarts,
         };
     }
 

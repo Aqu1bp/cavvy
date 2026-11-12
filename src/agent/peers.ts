@@ -84,10 +84,14 @@ function real(path: string): string {
  * The folder that names a session's project: its repository's main checkout (a worktree's `.git` file points into
  * it), or the folder itself outside one. Read from the files, so no git runs.
  */
-export function projectOf(cwd: string, cache?: Map<string, string>): string {
+/** Folders' projects, kept across listings (a repository's layout seldom changes): bounded, the oldest go first. */
+const projects = new Map<string, string>();
+const MAX_PROJECTS = 5_000;
+
+export function projectOf(cwd: string, cache: Map<string, string> = projects): string {
     // Real paths: git writes them in a worktree's .git file, and a folder opened through a link (macOS's /tmp) has another.
     const key = real(resolve(cwd));
-    const hit = cache?.get(key);
+    const hit = cache.get(key);
     if (hit) return hit;
     let found = key;
     for (let dir = key; ; ) {
@@ -117,7 +121,8 @@ export function projectOf(cwd: string, cache?: Map<string, string>): string {
         if (up === dir) break;
         dir = up;
     }
-    cache?.set(key, found);
+    cache.set(key, found);
+    if (cache === projects && projects.size > MAX_PROJECTS) projects.delete(projects.keys().next().value!);
     return found;
 }
 
@@ -191,11 +196,10 @@ function ago(ms: number, now: number): string {
 /** The listing: other sessions, this project's unless `all`, matching `query` (title or id), newest first. */
 export function listText(peers: SessionPeers, o: { all?: boolean; query?: string; limit?: number }, now = Date.now()): { text: string; count: number } {
     const limit = Math.max(1, Math.min(Math.floor(o.limit ?? 20), PEER_LIMITS.maxList));
-    const cache = new Map<string, string>();
-    const here = projectOf(peers.cwd, cache);
+    const here = projectOf(peers.cwd);
     const q = o.query?.trim().toLowerCase();
     // Filtered as they're read, newest first: a search, or this project's, reads only until it has enough.
-    const match = (s: PeerSummary) => s.id !== peers.self && (o.all || projectOf(s.cwd, cache) === here) && (!q || s.title.toLowerCase().includes(q) || s.id.toLowerCase().includes(q));
+    const match = (s: PeerSummary) => s.id !== peers.self && (o.all || projectOf(s.cwd) === here) && (!q || s.title.toLowerCase().includes(q) || s.id.toLowerCase().includes(q));
     const listed = peers.list({ limit, match });
     const rows = listed.rows.filter(match).slice(0, limit);
     // It stopped looking before it had enough: say so, not that there are no more.
@@ -216,6 +220,11 @@ function promptOf(m: UserMessage): string {
     return (m.meta?.display ?? (first?.type === "text" ? first.text : "")).replace(REMINDERS, "").trim();
 }
 
+/** Text quoted under a heading: its own lines that start with "#" are escaped, so it can't pass for another heading ("## User"). */
+function quoted(text: string): string {
+    return text.replace(/^(\s*)#/gm, "$1\\#");
+}
+
 /** One turn as the model reads it: who started it, what was said, and the tools used as one line. */
 function turnText(msgs: Message[]): string {
     const head = msgs[0] as UserMessage;
@@ -223,7 +232,7 @@ function turnText(msgs: Message[]): string {
     const from = head.meta?.from;
     const label =
         kind === "summary" ? "Summary of the conversation before this point" : from ? `Message from session ${from.id} (“${oneLine(from.title, 80)}”)` : kind === "wake" ? "Event (not from the user)" : kind === "command" ? "User (command)" : "User";
-    const out = [`## ${label}\n${kind === "summary" ? head.content.map((p) => (p.type === "text" ? p.text : "")).join("") : promptOf(head)}`];
+    const out = [`## ${label}\n${quoted(kind === "summary" ? head.content.map((p) => (p.type === "text" ? p.text : "")).join("") : promptOf(head))}`];
     const said: string[] = [];
     const tools = new Map<string, number>();
     const flushTools = () => {
@@ -239,14 +248,14 @@ function turnText(msgs: Message[]): string {
         // A message from another session that joined the turn, where it joined.
         if (m.role === "user") {
             if (m.meta?.peers?.length) flushSaid();
-            for (const p of m.meta?.peers ?? []) out.push(`## Message from session ${p.from.id} (“${oneLine(p.from.title, 80)}”)\n${p.text}`);
+            for (const p of m.meta?.peers ?? []) out.push(`## Message from session ${p.from.id} (“${oneLine(p.from.title, 80)}”)\n${quoted(p.text)}`);
             continue;
         }
         for (const p of m.content) {
             if (p.type === "tool_call") tools.set(p.name, (tools.get(p.name) ?? 0) + 1);
             else if (p.type === "text" && p.text.trim()) {
                 flushTools();
-                said.push(p.text.trim());
+                said.push(quoted(p.text.trim()));
             }
         }
     }

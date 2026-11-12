@@ -1329,6 +1329,8 @@ export class App {
                 noticesUpTo(from + i);
                 if (m.role === "user") {
                     const kind = m.meta?.kind ?? "prompt";
+                    // Messages from other sessions that joined the turn here: who sent each, and what it said.
+                    for (const p of m.meta?.peers ?? []) out.push("", ...wrapLine(theme.muted("↻ ") + theme.subtle(truncate(`Message from “${p.from.title}”: ${p.text}`, cols * 2)), cols - 2));
                     // A message from another session: who sent it, then what it said.
                     if (kind === "wake") out.push("", ...wrapLine(theme.muted("↻ ") + theme.subtle(truncate(`${m.meta?.from ? `Message from “${m.meta.from.title}”: ` : ""}${m.meta?.display ?? ""}`, cols * 2)), cols - 2));
                     else if (kind === "prompt" || kind === "summary") {
