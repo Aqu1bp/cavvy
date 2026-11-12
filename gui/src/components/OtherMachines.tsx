@@ -147,8 +147,8 @@ export function watchOthers(hereName: string) {
         }, reportError);
     };
     if (started) {
-        // The window's own Cavvy came back: for a window on this computer, that's who keeps the list.
-        if (!home) load();
+        // The window's own Cavvy came back, or a server was added: for a window on this computer, that's who keeps the list.
+        if (!home || home.state === "open") load();
         return;
     }
     started = true;

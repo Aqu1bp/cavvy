@@ -216,6 +216,8 @@ function AddServerDialog() {
     /** What the copy leaves here, said so nobody looks for it there. */
     const notCopied = (left?: string) => (left ? `Not copied, since they could hold a key: ${left}.` : undefined);
     const finish = async (r: Extract<AddResult, { status: "added" }>, copied?: string) => {
+        // The first server: its sessions are listed from now on, not from the window's next start.
+        watchOthers(HERE);
         let lines: string[] | undefined;
         try {
             lines = checkLines(r.name, await servers().call("servers.check", { name: r.name }));
