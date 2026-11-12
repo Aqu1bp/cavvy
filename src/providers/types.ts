@@ -80,6 +80,10 @@ export interface UserMessage {
          * words as stored. A catch-up that has those messages already leaves it out, or they'd go twice.
          */
         resends?: string[];
+        /** A wake that is a message from the agent in another session (src/agent/peers.ts): who sent it. */
+        from?: { id: string; title: string };
+        /** Messages from other sessions' agents that joined the turn here (a reminder, or tool results): who, and what they said. */
+        peers?: { from: { id: string; title: string }; text: string }[];
     };
 }
 

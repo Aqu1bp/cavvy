@@ -373,7 +373,15 @@ export interface ShellBlock {
     running: boolean;
 }
 
-export type Block = TextBlock | ThinkingBlock | ToolBlock | NoticeBlock | CompactBlock | ImportedBlock | ShellBlock;
+export type Block = TextBlock | ThinkingBlock | ToolBlock | NoticeBlock | CompactBlock | ImportedBlock | ShellBlock | PeerBlock;
+
+/** A message from the agent in another session that joined this turn: who sent it, and what it said. */
+export interface PeerBlock {
+    t: "peer";
+    id: string;
+    from: { id: string; title: string };
+    text: string;
+}
 
 export type TurnStatus = "running" | "done" | "aborted" | "error" | "denied" | "max_turns" | "blocked";
 
@@ -389,6 +397,8 @@ export interface TurnPrompt {
     scheduled?: string;
     /** Started by an event the agent asked to be woken for (a watched pull request, a monitor), not by the user. */
     wake?: boolean;
+    /** A wake that is a message from the agent in another session: who sent it (`text` is the message). */
+    from?: { id: string; title: string };
     /** Position of the prompt in the session's messages, when it can be rewound to. */
     index?: number;
     /**

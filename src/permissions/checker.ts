@@ -463,6 +463,9 @@ export class PermissionChecker {
             if (tool.name === "EnterWorktree" || tool.name === "ExitWorktree") {
                 return { behavior: "deny", reason: "Plan mode is active: the session stays where it is, in no new worktree. Call ExitPlanMode with your plan first." };
             }
+            if (tool.name === "SendToSession" || tool.name === "StartSession") {
+                return { behavior: "deny", reason: "Plan mode is active: other sessions can be listed and read, but not sent to or started. Call ExitPlanMode with your plan first." };
+            }
             // Commit, push, open a pull request.
             if (tool.category === "execute" && !isShellTool(tool.name) && !isReadOnly(tool, input)) {
                 return { behavior: "deny", reason: "Plan mode is active: nothing can be committed or pushed. Call ExitPlanMode with your plan first." };

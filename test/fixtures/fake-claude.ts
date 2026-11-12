@@ -68,6 +68,8 @@
 // FAKE_IGNORE_STOP=1   ignores interrupt requests and SIGTERM
 // FAKE_CRASH_ON_SECOND=1  exits without a result on its second prompt
 // FAKE_MCP_CALLS     the "mcp" scenario's tool calls to servers from mcp_set_servers: [{ server?, tool, args }]
+// FAKE_MCP_AS_AGENT=1  the "mcp" scenario's calls are made by a sub-agent (under an Agent call)
+// FAKE_MCP_BATCH=1   the "mcp" scenario's calls are all said first (one response with several), then run one by one
 // FAKE_MCP_REFUSE=1  answers mcp_set_servers with an error; hang leaves it unanswered, exit stops the CLI
 // FAKE_LOG_ENV=1     logs its whole environment at start
 // FAKE_TRANSCRIPTS=1 keeps each session as a transcript under its config folder's projects/ (CLAUDE_CONFIG_DIR, or
@@ -1203,12 +1205,22 @@ async function turn(content: any[], uuid?: string) {
     else if (scenario === "mcp") {
         const calls: { server?: string; tool: string; args: Record<string, unknown> }[] = JSON.parse(process.env.FAKE_MCP_CALLS ?? "[]");
         const results: string[] = [];
+        // FAKE_MCP_AS_AGENT=1: the calls are a sub-agent's (an Agent call's), which shares the session's MCP servers.
+        const parent = process.env.FAKE_MCP_AS_AGENT === "1" ? "toolu_mcp_agent" : undefined;
+        if (parent) {
+            toolUse(parent, "Agent", { description: "Look around", prompt: "Look around", subagent_type: "general-purpose" });
+            out({ type: "system", subtype: "task_started", task_id: "agent-1", tool_use_id: parent, description: "Look around", subagent_type: "general-purpose", is_backgrounded: false, session_id: sessionId });
+        }
         for (const [i, c] of calls.entries()) {
             const name = c.server ?? [...mcpServers.keys()][0] ?? "none";
             const s = mcpServers.get(name);
             const id = `toolu_m${prompts}_${i}`;
             const tool = `mcp__${name}__${c.tool}`;
-            toolUse(id, tool, c.args);
+            // FAKE_MCP_BATCH=1: all the calls are said first (one response with several), then run one by one.
+            if (process.env.FAKE_MCP_BATCH === "1") {
+                if (i === 0) for (const [j, d] of calls.entries()) toolUse(`toolu_m${prompts}_${j}`, `mcp__${d.server ?? [...mcpServers.keys()][0] ?? "none"}__${d.tool}`, d.args);
+            } else if (parent) sub(parent, "assistant", [{ type: "tool_use", id, name: tool, input: c.args }]);
+            else toolUse(id, tool, c.args);
             if (!s) {
                 toolResult(id, `No such tool available: ${tool}`, true);
                 results.push(`(no ${tool})`);

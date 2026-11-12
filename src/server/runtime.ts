@@ -5,13 +5,15 @@
 
 import { NO_SCHEDULES, SessionSchedules, type ScheduleAction } from "../agent/schedule-host";
 import { CRON_TOOLS, jobLine } from "../agent/schedule-tools";
+import { SESSION_TOOLS } from "../tools/session-tools";
+import { appPeers } from "./session-peers";
 import type { ScheduledJob } from "../agent/schedule";
 import { GIT_TOOL_HEADINGS } from "../tools/git-tools";
 import { BROWSER_TOOL_HEADINGS } from "../tools/browser-tools";
 import { BrowserSession } from "../browser/session";
 import { SimulatorSession } from "../simulator/session";
 import { SIMULATOR_TOOL_HEADINGS } from "../tools/simulator-tools";
-import { WakeQueue, WatcherMap, formatWakes, stopWatchers, wakeDisplay, type Wake } from "../agent/wakes";
+import { WakeQueue, WatcherMap, formatWakes, stopWatchers, wakeDisplay, wakesFrom, type Wake } from "../agent/wakes";
 import { turnDuration } from "./duration";
 import { existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
@@ -111,6 +113,7 @@ import type {
     NoticeData,
     StoppedTask,
 } from "./protocol";
+import type { PeerBlock } from "./protocol";
 import { applyOp, coalesce, findBlock, findTurn, type SessionView } from "./timeline";
 import { planTitle } from "./plans";
 import type { Engine, Workspace } from "./engine";
@@ -434,7 +437,7 @@ export class Runtime {
         const effort = opts.resumed ? this.ui.state.effort : undefined;
         if (effort && EFFORT_LEVELS.includes(effort)) this.effort = effort;
         // Secrets live as long as the session is loaded: unloading it (closed, or idle with no window on it) drops them.
-        this.toolState = { cwd: ws.cwd, projectRoot: ws.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore(), wakes: new WakeQueue(), watchers: new WatcherMap(), background: new SessionBackground(session) };
+        this.toolState = { cwd: ws.cwd, projectRoot: ws.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore(), wakes: new WakeQueue({ memory: engine.wakeMemory(session.meta.id) }), watchers: new WatcherMap(), background: new SessionBackground(session) };
         // The worktree the agent moved to, if it's still one.
         this.workingIn = session.workdir ? this.worktreeAt(session.workdir) : undefined;
         this.placeAgent(parseModelRef(session.model ?? "")?.provider);
@@ -464,6 +467,8 @@ export class Runtime {
             if (!this.closed) this.setState({ watches: (this.toolState.watchers as WatcherMap).info() });
         };
         this.toolState.wakes!.onReady(() => this.wake());
+        // The user's other sessions, for its agent to list, read, send to and start.
+        this.toolState.peers = appPeers(engine.peerHost(), this);
         this.checker = new PermissionChecker(() => this.settings(), ws.cwd);
         this.classifier = new AutoClassifier(undefined);
         this.reviewer = ws.settings.reviewModel;
@@ -1527,11 +1532,11 @@ export class Runtime {
         const native = this.nativeSearch();
         const off = this.settings().webSearch === "off";
         const skill = skillTool(this.ws.skills);
-        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off)) && offered(t, this.settings())), ...(skill ? [skill] : []), ...CRON_TOOLS, ...this.ws.mcp.tools()];
+        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off)) && offered(t, this.settings())), ...(skill ? [skill] : []), ...CRON_TOOLS, ...SESSION_TOOLS, ...this.ws.mcp.tools()];
     }
 
     private toolMeta(call: ToolCallPart): ToolMeta {
-        const tool = BUILTIN_TOOLS.find((t) => t.name === call.name) ?? CRON_TOOLS.find((t) => t.name === call.name) ?? (call.name === "Skill" ? (skillTool(this.ws.skills) as Tool<any> | undefined) : undefined) ?? this.ws.mcp.tools().find((t) => t.name === call.name);
+        const tool = BUILTIN_TOOLS.find((t) => t.name === call.name) ?? CRON_TOOLS.find((t) => t.name === call.name) ?? SESSION_TOOLS.find((t) => t.name === call.name) ?? (call.name === "Skill" ? (skillTool(this.ws.skills) as Tool<any> | undefined) : undefined) ?? this.ws.mcp.tools().find((t) => t.name === call.name);
         let title = call.name;
         try {
             if (tool) title = tool.title(call.input ?? {});
@@ -1900,6 +1905,27 @@ export class Runtime {
             case "notice":
                 this.notice(e.message, e.level, e.data);
                 break;
+            case "peer_message": {
+                // Shown where it joined the turn, whole and from whom; taken back if it never reached the model.
+                const turn = this.currentTurn();
+                this.closeOpen();
+                const block: PeerBlock = { t: "peer", id: this.newId(), from: { id: e.from.id, title: redact(e.from.title) }, text: redact(e.text) };
+                this.peerBlocks.set(e.key, { turnId: turn.id, blockId: block.id });
+                this.op({ op: "block", turnId: turn.id, block });
+                break;
+            }
+            case "peer_withdrawn": {
+                const at = this.peerBlocks.get(e.key);
+                this.peerBlocks.delete(e.key);
+                if (!at) break;
+                this.op({ op: "block.remove", turnId: at.turnId, blockId: at.blockId });
+                // Dropped from the turn's logged steps too, whether or not this turn's steps are still being kept (a steer
+                // that came after it, or the turn's end, lets them go): a reopen mustn't show it joined.
+                const turn = findTurn(this.view, at.turnId);
+                const place = turn && this.backendTurns.has(at.turnId) ? this.stepsPlace(at.turnId, turn) : undefined;
+                if (place) this.ui.write({ t: "step", ...place, drop: at.blockId });
+                break;
+            }
             case "retry": {
                 // The partial response is thrown away and asked for again.
                 const turnId = this.turnId;
@@ -2537,6 +2563,11 @@ export class Runtime {
             if (req.preview?.body) it.command = redact(req.preview.body);
             if (req.preview?.summary) it.description = redact(req.preview.summary);
             if (suggestions.length) it.options.push({ id: "always", label: `Always allow in ${projectName}`, short: "Always allow" });
+        } else if (tool.name === "SendToSession" || tool.name === "StartSession") {
+            // To which session ("Send a message to “Fix login”"), and all it's told, scrolling as a command does.
+            it.heading = req.preview?.summary ? redact(req.preview.summary) : tool.name === "StartSession" ? "Start a session" : "Send a message to another session";
+            if (req.preview?.body) it.command = redact(req.preview.body);
+            if (suggestions.length) it.options.push({ id: "always", label: `Always allow in ${projectName}`, short: "Always allow" });
         } else if (tool.category === "mcp") {
             // Its own name in words ("Create issue"), and the server it's from.
             const m = /^mcp__(.+?)__(.+)$/.exec(tool.name);
@@ -2909,6 +2940,8 @@ export class Runtime {
             if (prev) {
                 for (const b of turn.blocks) this.op({ op: "block", turnId: prev.id, block: b });
                 for (const m of [this.toolTurn, this.responseTurn]) for (const [k, v] of m) if (v === turn.id) m.set(k, prev.id);
+                // Messages from other sessions shown in it go with its blocks: a withdrawal finds them where they are now.
+                for (const [k, v] of this.peerBlocks) if (v.turnId === turn.id) this.peerBlocks.set(k, { ...v, turnId: prev.id });
                 for (const a of this.view.agents) if (a.turnId === turn.id) this.op({ op: "agent.patch", id: a.id, patch: { turnId: prev.id } });
                 this.op({ op: "turn.patch", turnId: prev.id, patch: { status: turn.status, endedAt: turn.endedAt } });
             }
@@ -3095,7 +3128,7 @@ export class Runtime {
     /** `mentionsIn`: the part of `text` the user wrote, whose @mentions attach files and MCP resources (a skill's or an MCP prompt's text is sent as written). */
     /** `goal`: a turn the goal started (src/agent/goal.ts). */
     /** `adopt`: a wake turn its agent CLI started by itself (AgentHost.wake): nothing is sent, the turn takes its events. */
-    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; attachments?: AttachedPart[]; about?: string; mentionsIn?: string; wakes?: Wake[]; goal?: boolean; adopt?: BackendWake; admitted?: { context?: string } } = {}) {
+    async startTurn(text: string, opts: { display?: string; kind?: "prompt" | "command" | "wake"; attachments?: AttachedPart[]; about?: string; mentionsIn?: string; wakes?: Wake[]; goal?: boolean; adopt?: BackendWake; admitted?: { context?: string }; from?: { id: string; title: string } } = {}) {
         // The user's own turn overtakes a pending goal check, and a paused goal picks up after it. A scheduled prompt
         // leaves a paused goal paused; the resume after a usage limit is the exception, as in Claude Code.
         // A watch's events don't either: they aren't the user's.
@@ -3141,7 +3174,7 @@ export class Runtime {
         const attached = attachedPrompt(opts.attachments, false);
         const turn: Turn = {
             id: this.newId(),
-            prompt: { text: display, ...attached, ...(opts.kind === "command" ? { command: true } : {}), ...(scheduled ? { scheduled } : {}), ...(opts.kind === "wake" ? { wake: true } : { index }) },
+            prompt: { text: display, ...attached, ...(opts.kind === "command" ? { command: true } : {}), ...(scheduled ? { scheduled } : {}), ...(opts.kind === "wake" ? { wake: true } : { index }), ...(opts.from ? { from: opts.from } : {}) },
             blocks: [],
             status: "running",
             startedAt: this.turnStartedAt,
@@ -3185,7 +3218,7 @@ export class Runtime {
                 const images = parts.filter((p): p is AttachedPart => p.type === "image");
                 this.pendingPrompt = { seg: this.segment, index, attachments: images };
                 if (images.length) this.op({ op: "turn.patch", turnId: turn.id, patch: { prompt: { ...turn.prompt!, ...attachedPrompt(images) } } });
-                reason = await agent.run(parts, { signal: ac.signal, display, kind: opts.kind, ...(opts.adopt ? { adopt: opts.adopt } : {}), admitted: opts.admitted });
+                reason = await agent.run(parts, { signal: ac.signal, display, kind: opts.kind, ...(opts.adopt ? { adopt: opts.adopt } : {}), admitted: opts.admitted, ...(opts.from ? { from: opts.from } : {}) });
             }
         } catch (e) {
             const message = `Unexpected error: ${redact((e as Error).message)}`;
@@ -3430,7 +3463,7 @@ export class Runtime {
         // The session's CLI account was removed (#410): nothing runs until the user picks another (releaseForAccount looks again).
         if (this.needsAccount()) return;
         // A model switch, a commit, the agent still starting, a goal between its turns (it goes first, as with
-        // scheduled prompts): look again in a moment.
+        // scheduled prompts; wakes join its turns): look again in a moment.
         if (this.switching || this.commitDone || !this.agent || this.goal.pending()) {
             const t = setTimeout(again, 1000);
             t.unref?.();
@@ -3446,11 +3479,19 @@ export class Runtime {
         }
         const wakes = this.toolState.wakes!.takeForTurn();
         if (!wakes.length) return;
-        void this.startTurn(formatWakes(wakes), { display: wakeDisplay(wakes), kind: "wake", wakes }).catch((e) => this.notice(redact((e as Error).message), "error"));
+        // Messages from one other session: shown as it wrote them, as from it.
+        const sender = wakesFrom(wakes);
+        // Shown as said, keys redacted, as a message that joins a turn is.
+        const from = sender && { id: sender.id, title: redact(sender.title) };
+        const display = from ? redact(wakes.map((w) => w.message ?? w.label).join("\n\n")) : wakeDisplay(wakes);
+        void this.startTurn(formatWakes(wakes), { display, kind: "wake", wakes, ...(from ? { from } : {}) }).catch((e) => this.notice(redact((e as Error).message), "error"));
     }
 
     /** Turns agent CLIs started by themselves, waiting for the session to be free to adopt them (wake). */
     private adopts: BackendWake[] = [];
+
+    /** Where each message from another session that joined a turn is shown (by its key), so it can be taken back. */
+    private peerBlocks = new Map<string, { turnId: string; blockId: string }>();
 
     /** Agent CLIs whose process for this session an account change is letting go of (setAccount), with how many such releases are under way. */
     private releasing = new Map<string, number>();
@@ -4173,6 +4214,17 @@ export class Runtime {
 
     private async hook(event: HookEvent, payload: Record<string, unknown>, signal?: AbortSignal, settings = sessionHookSettings(this.settings(), this.agent?.model.provider)): Promise<void> {
         await fireHooks(settings, event, { session_id: this.id, ...payload }, this.toolState.cwd, (msg, level = "warn") => this.notice(msg, level), signal);
+    }
+
+    /**
+     * What a wake would wait for, idle as it is (wake()): a turn coming that it joins ("turn": the user's messages
+     * queued, a goal between its turns), or the user ("user": an account to run on, or messages held since a stop or a
+     * restart until they send or remove them).
+     */
+    get wakeWaitsFor(): "turn" | "user" | undefined {
+        if (this.needsAccount()) return "user";
+        if (this.queued.length && !this.nextQueued()) return "user";
+        return this.queued.length || this.goal.pending() ? "turn" : undefined;
     }
 
     /** Nothing running, waiting for the user, or still to be delivered to the model: closing it loses nothing. */

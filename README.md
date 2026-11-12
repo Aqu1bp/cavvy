@@ -76,6 +76,7 @@ In the terminal app, `/login` adds an API key (or `/login claude-code`, `/login 
 | [Browser](docs/browser.md) | The browser tools and the Browser pane |
 | [Simulator](docs/simulator.md) | iOS simulators the agent drives, and the Simulator pane |
 | [Sub-agents on other models](docs/sub-agents.md) | Delegating a task to another provider's model |
+| [Other sessions](docs/other-sessions.md) | The agent listing, reading, messaging and starting your other sessions |
 | [Asking for secrets](docs/secrets.md) | Tokens the agent asks you for, kept out of its sight |
 | [Project files](docs/project-files.md) | `CAVVY.md` and other memory files, settings files, trust |
 | [MCP](docs/mcp.md) · [Plugins](docs/plugins.md) · [Hooks](docs/hooks.md) | Extending it |

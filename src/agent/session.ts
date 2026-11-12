@@ -28,6 +28,8 @@ export interface SessionMeta {
     system?: string;
     /** Made by forking another session (src/agent/fork.ts). */
     forkOf?: ForkOrigin;
+    /** Started by another session's agent (src/agent/peers.ts StartSession): its id. Such a session can't start more. */
+    startedBy?: string;
 }
 
 export interface ForkOrigin {
@@ -858,6 +860,14 @@ export class Session {
         }
     }
 
+    /**
+     * Read only, without claiming it: another session's agent reading this one (src/agent/peers.ts). What a process that
+     * has it open is still writing may be missing; nothing is ever written.
+     */
+    static peek(file: string): Session {
+        return Session.read(file, false);
+    }
+
     private static read(file: string, persist = true): Session {
         const writtenAt = statSync(file).mtimeMs;
         const text = readFileSync(file, "utf-8");
@@ -867,7 +877,7 @@ export class Session {
             if (!raw.trim()) continue;
             try {
                 const l = JSON.parse(raw) as Line;
-                if (l.t === "meta") meta = { id: l.id, cwd: l.cwd, createdAt: l.createdAt, version: l.version, system: l.system, ...(l.forkOf ? { forkOf: l.forkOf } : {}) };
+                if (l.t === "meta") meta = { id: l.id, cwd: l.cwd, createdAt: l.createdAt, version: l.version, system: l.system, ...(l.forkOf ? { forkOf: l.forkOf } : {}), ...(typeof l.startedBy === "string" ? { startedBy: l.startedBy } : {}) };
                 else lines.push(l);
             } catch {
                 // a torn final line from a crash; ignore it
@@ -1657,7 +1667,11 @@ export function heldSessionFolders(): string[] {
  * session records its own folder, so the lossy folder names under
  * ~/.cavvy/projects/ don't matter. Only the newest `limit` files are read.
  */
-export function listAllSessions(limit = 200): SessionSummary[] {
+/**
+ * `match`: only sessions it accepts are listed, and their files are read newest first until `limit` match (or
+ * `maxRead` files are read): a search reads no more than it needs.
+ */
+export function listAllSessions(limit = 200, o: { match?: (s: SessionSummary) => boolean; maxRead?: number; capped?: () => void } = {}): SessionSummary[] {
     const root = paths.projectsDir();
     if (!existsSync(root)) return [];
     const files: { f: string; file: string; mtimeMs: number; createdAt: number }[] = [];
@@ -1689,7 +1703,7 @@ export function listAllSessions(limit = 200): SessionSummary[] {
     const out = newestByWork(files, limit, ({ f, file, mtimeMs, createdAt }) => {
         const head = sessionHead(file);
         if (!head.count || !head.cwd) return;
-        return {
+        const s: SessionSummary = {
             id: f.replace(/\.jsonl$/, ""),
             file,
             cwd: head.cwd,
@@ -1699,7 +1713,8 @@ export function listAllSessions(limit = 200): SessionSummary[] {
             messages: head.count,
             model: head.model,
         };
-    });
+        return !o.match || o.match(s) ? s : undefined;
+    }, o.maxRead, o.capped);
     saveSessionHeads();
     return out;
 }
@@ -1713,11 +1728,17 @@ function workTime(head: SessionHead, mtimeMs: number): number {
  * The `limit` sessions that worked last, newest first. A file is never older than its last worked line, so files are
  * read newest first, and only until the rest can't be among them: as few as are listed when nothing but work wrote.
  */
-function newestByWork<F extends { mtimeMs: number }>(files: F[], limit: number, summary: (f: F) => SessionSummary | undefined): SessionSummary[] {
+function newestByWork<F extends { mtimeMs: number }>(files: F[], limit: number, summary: (f: F) => SessionSummary | undefined, maxRead = Infinity, capped?: () => void): SessionSummary[] {
     files.sort((a, b) => b.mtimeMs - a.mtimeMs);
     const out: SessionSummary[] = [];
     const byWork = (a: SessionSummary, b: SessionSummary) => b.updatedAt - a.updatedAt;
+    let read = 0;
     for (const f of files) {
+        // A filtered listing that finds few: it stops after reading so many, newest first.
+        if (++read > maxRead) {
+            if (out.length < limit) capped?.();
+            break;
+        }
         if (out.length >= limit) {
             out.sort(byWork).length = limit;
             if (limit === 0 || f.mtimeMs < out[limit - 1]!.updatedAt) break;

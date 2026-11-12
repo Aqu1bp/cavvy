@@ -72,6 +72,9 @@ function blockText(b: Block, counted = false): string | undefined {
             const meta = counted ? undefined : b.status === "denied" ? "Declined" : b.diff && b.status === "ok" ? undefined : b.summary;
             return [cardOf(b) ? undefined : l.verb, l.arg, meta].filter(Boolean).join(" ");
         }
+        case "peer":
+            // A message from another session that joined the turn, as it's quoted.
+            return b.text;
         case "notice":
             // As it reads opened (lib/notices.ts): its title or line, then what folds under it.
             return noticeReads(b, Date.now());

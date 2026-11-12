@@ -325,6 +325,44 @@
     white-space: nowrap;
 }
 
+/* A message from the agent in another session: quoted in the reply's column (it isn't the user's), under who sent it. */
+.peer-card {
+    max-width: min(82%, 600 * var(--sp));
+    margin-bottom: calc(14 * var(--sp));
+}
+
+.peer-head {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    max-width: 100%;
+    margin-bottom: calc(6 * var(--sp));
+    color: var(--fg-3);
+    font-size: 0.857rem;
+}
+
+.peer-head svg {
+    flex: none;
+    color: var(--accent);
+}
+
+.peer-head:hover {
+    color: var(--fg-2);
+    cursor: pointer;
+}
+
+.peer-card .more {
+    padding-left: calc(16 * var(--sp));
+}
+
+.peer-body {
+    padding: calc(2 * var(--sp)) 0 calc(2 * var(--sp)) calc(14 * var(--sp));
+    border-left: 2px solid var(--accent);
+    line-height: 1.55;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
 /* The bubble's look; its shape in the conversation is .user-row's (a sub-agent's task uses it too). */
 .user-bubble {
     min-width: 0;
@@ -396,14 +434,16 @@
     color: var(--fg-3);
 }
 
-.user-bubble.clamped .user-text {
+.user-bubble.clamped .user-text,
+.peer-body.clamped {
     display: -webkit-box;
     -webkit-line-clamp: 14;
     -webkit-box-orient: vertical;
     overflow: hidden;
 }
 
-.user-bubble .more {
+.user-bubble .more,
+.peer-card .more {
     display: flex;
     margin-top: calc(6 * var(--sp));
     color: var(--fg-2);

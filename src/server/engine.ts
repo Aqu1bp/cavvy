@@ -54,6 +54,8 @@ import { expandPath, isInside, MAX_SHOWN_IMAGE, sniffImage } from "../util/files
 import { maskKey, redact } from "../util/redact";
 import { searchResources } from "../mcp/mentions";
 import { cleanTitle, modelSummary, promptTitle, Runtime } from "./runtime";
+import type { PeerHost } from "./session-peers";
+import type { WakeMemory } from "../agent/wakes";
 import { forkUiLog } from "./history";
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
 import { cavvyLinks, importModel, linkKey, writeImportedSession, type CavvyLinks } from "./cli-import";
@@ -886,11 +888,13 @@ export class Engine {
         return m;
     }
 
-    async createSession(cwd: string, opts: { model?: string; mode?: PermissionModeId; accounts?: Record<string, string> } = {}): Promise<Runtime> {
+    async createSession(cwd: string, opts: { model?: string; mode?: PermissionModeId; accounts?: Record<string, string>; startedBy?: string } = {}): Promise<Runtime> {
         const p = resolve(expandHome(cwd));
         if (!isDir(p)) throw new RpcError(`${p} isn't a folder`);
         const ws = this.workspaceFor(p);
         const session = Session.create(p);
+        // Kept in its first line, so it lasts through compaction and restarts (StartSession's bound on chains).
+        if (opts.startedBy) session.meta.startedBy = opts.startedBy;
         // Apply inherited selections before Runtime starts model setup; native threads stay fresh.
         for (const [provider, id] of Object.entries(opts.accounts ?? {})) session.setAccount(provider, id);
         const mode = opts.mode && PERMISSION_MODES.includes(opts.mode) ? opts.mode : this.defaultMode(ws);
@@ -900,6 +904,41 @@ export class Engine {
         await rt.ready.catch(() => undefined);
         if (opts.model) await rt.setModel(opts.model);
         return rt;
+    }
+
+    /** Each session's wake memory (wakes.ts WakeMemory), kept while the server runs: closing a session doesn't lift Esc or the hourly limit. */
+    private wakeMemories = new Map<string, WakeMemory>();
+
+    wakeMemory(id: string): WakeMemory {
+        let m = this.wakeMemories.get(id);
+        if (!m) this.wakeMemories.set(id, (m = { started: [], paused: false }));
+        return m;
+    }
+
+    /** Sessions started by another session's agent, and when each started others (session-peers.ts start's bounds). */
+    private sessionStarts = { startedBy: new Map<string, string>(), times: new Map<string, number[]>() };
+
+    /** What a session's agent reaching the others (session-peers.ts) does through the engine. */
+    peerHost(): PeerHost {
+        return {
+            live: () => this.runtimes.values(),
+            get: (id) => this.runtimes.get(id),
+            open: async (id) => {
+                if (this.stopping) throw new RpcError("Cavvy server is stopping.", "stopping");
+                while (this.closing.has(id)) await this.afterClosing(id);
+                const loaded = this.runtimes.has(id);
+                const rt = this.openSession(id);
+                if (!loaded) await rt.ready.catch(() => undefined);
+                return rt;
+            },
+            create: (cwd, o) => {
+                if (this.stopping) throw new RpcError("Cavvy server is stopping.", "stopping");
+                return this.createSession(cwd, { mode: o.mode, accounts: o.accounts, startedBy: o.startedBy });
+            },
+            defaultMode: (ws) => this.defaultMode(ws),
+            release: (id) => this.unloadLater(id),
+            starts: this.sessionStarts,
+        };
     }
 
     /** What a run (runs.ts) does through the engine. */

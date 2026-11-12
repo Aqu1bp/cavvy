@@ -11,6 +11,7 @@ import type { LspManager } from "../lsp/manager";
 import type { DiagnosticReport } from "../lsp/diagnostics";
 import type { BrowserSession } from "../browser/session";
 import type { SimulatorSession } from "../simulator/session";
+import type { SessionPeers } from "../agent/peers";
 
 
 /** One completion on the session's own model for an MCP server's sampling request: at most `maxTokens`, with why it stopped. */
@@ -94,6 +95,8 @@ export interface ToolState {
     watchers?: Map<string, Watcher>;
     /** The session's background work as one list: what agent CLIs report, beside its delegated tasks and shells (src/agent/background.ts). */
     background?: SessionBackground;
+    /** The user's other sessions, as this one's main agent may reach them (src/agent/peers.ts); not given to sub-agents. */
+    peers?: SessionPeers;
 }
 
 /** Something a tool left running that raises wakes (a pull request watch, a monitor). */
