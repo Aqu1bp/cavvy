@@ -8,7 +8,7 @@ import { planLimitKey, type PlanLimits } from "@shared/protocol";
 import type { AppUpdateInfo, GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
 import { applyOp, fromWireLimits, fromWireState, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
-import { credentials, focused, notify, isDesktop, showWindow, windowKey } from "../lib/platform";
+import { credentials, focused, machine, notify, isDesktop, showWindow, windowKey } from "../lib/platform";
 import { prefs, setPrefs } from "./prefs";
 import { backgroundOf, COALESCE_MS, combineEnded, noticeRoute, tabOf, workTabFor } from "../lib/background";
 import { mayCreateFiles } from "../lib/pathcache";
@@ -27,7 +27,9 @@ import { composerDrafts } from "../lib/composer-draft";
 import { onStep } from "../lib/stream-clock";
 import { keyedTurn, placeBefore, type TurnKey } from "../lib/transcript-scroll";
 
-export const rpc = new Rpc(credentials, windowKey);
+// On a server, the window talks to the Cavvy there; this computer's own Cavvy says where that is (lib/machines.ts).
+export const serversUi = () => import("../components/Servers");
+export const rpc = new Rpc(machine ? async () => (await serversUi()).machineCredentials() : credentials, windowKey);
 rpc.retriesCredentials = isDesktop;
 
 // ---------------------------------------------------------------------------
@@ -932,7 +934,10 @@ export function start() {
         if (s !== "open") return;
         void (async () => {
             try {
-                setApp("hello", await rpc.call("hello", { client: isDesktop ? "desktop" : "browser" }));
+                // To a server's Cavvy this window is a page like any other: what the desktop app lends its own Cavvy
+                // (its browser, its folders) is this computer's, not the server's.
+                setApp("hello", await rpc.call("hello", { client: isDesktop && !machine ? "desktop" : "browser" }));
+                if (machine) void serversUi().then((m) => m.setMachineIssue(undefined));
                 await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders(), refreshKeybindings().catch(() => undefined)]);
                 void refreshModels().catch(() => undefined);
                 void refreshLimits().catch(() => undefined);

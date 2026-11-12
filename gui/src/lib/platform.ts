@@ -31,6 +31,21 @@ export interface ElectronBridge {
 
 export const electron: ElectronBridge | undefined = typeof window !== "undefined" ? (window as unknown as { cavvyDesktop?: ElectronBridge }).cavvyDesktop : undefined;
 export const isElectron = electron !== undefined;
+
+export const MACHINE_KEY = "cavvy.machine";
+/**
+ * The server this window works on (lib/machines.ts); undefined: this computer. Only the desktop app's windows can
+ * be on a server. It's fixed for the page's life: switching reloads the window.
+ */
+export const machine: string | undefined = (() => {
+    if (!isElectron) return undefined;
+    try {
+        return sessionStorage.getItem(MACHINE_KEY) || undefined;
+    } catch {
+        return undefined;
+    }
+})();
+
 /** The desktop app, either shell: a window of its own, the server beside it, native dialogs. */
 export const isDesktop = isTauri || isElectron;
 
@@ -159,6 +174,8 @@ export function forgetToken() {
 
 /** A native folder picker; undefined when there's none (the browser), so the GUI shows its own. */
 export async function pickFolder(defaultPath?: string, title = "Open a project folder"): Promise<string | null | undefined> {
+    // The folders are the server's: the system's own picker shows this computer's.
+    if (machine) return undefined;
     if (electron) return electron.pickFolder({ defaultPath, title });
     if (!isTauri) return undefined;
     const { open } = await import("@tauri-apps/plugin-dialog");
@@ -182,7 +199,7 @@ export async function revealPath(path: string) {
     await revealItemInDir(path);
 }
 
-export const canReveal = isDesktop;
+export const canReveal = isDesktop && !machine;
 
 export async function copyText(text: string): Promise<boolean> {
     try {

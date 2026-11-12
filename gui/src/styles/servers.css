@@ -1,0 +1,96 @@
+/* Servers (components/Servers.tsx): the list of machines, adding one, and the cover while a window reaches its server. */
+.server-row {
+    display: flex;
+    align-items: center;
+    gap: calc(2 * var(--sp));
+}
+
+.server-dialog {
+    display: flex;
+    flex-direction: column;
+    gap: calc(12 * var(--sp));
+    padding: calc(20 * var(--sp));
+}
+
+.server-dialog h2 {
+    font-size: 1.05rem;
+}
+
+.server-dialog form {
+    display: flex;
+    flex-direction: column;
+    gap: calc(10 * var(--sp));
+}
+
+.server-dialog label {
+    display: flex;
+    flex-direction: column;
+    gap: calc(4 * var(--sp));
+    font-size: 0.86rem;
+    color: var(--text-2);
+}
+
+.server-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: calc(8 * var(--sp));
+    margin-top: calc(4 * var(--sp));
+}
+
+.server-working {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    color: var(--text-2);
+}
+
+.server-key {
+    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
+    border: 0.5px solid var(--line);
+    border-radius: calc(8 * var(--sp));
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+
+.server-problem {
+    display: flex;
+    flex-direction: column;
+    gap: calc(4 * var(--sp));
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+
+.server-lacks {
+    margin: 0;
+    padding-left: calc(18 * var(--sp));
+    display: flex;
+    flex-direction: column;
+    gap: calc(4 * var(--sp));
+    font-size: 0.86rem;
+    color: var(--text-2);
+}
+
+.server-cover {
+    display: contents;
+}
+
+.server-cover .server-actions {
+    justify-content: center;
+}
+
+.server-cover .server-key,
+.server-cover .server-problem {
+    max-width: calc(520 * var(--sp));
+}
+
+/* The machine this window is on, beside Settings: on a server the button carries the server's name. */
+.app[data-machine] .side-foot .machine {
+    width: auto;
+    max-width: calc(130 * var(--sp));
+    padding: 0 calc(8 * var(--sp));
+    gap: calc(6 * var(--sp));
+    color: var(--text);
+    font-size: 0.8rem;
+    overflow: hidden;
+    white-space: nowrap;
+}

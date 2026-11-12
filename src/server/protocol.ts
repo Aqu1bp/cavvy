@@ -18,9 +18,6 @@ export type BackgroundStopResult = "stopped" | "timeout" | "failed" | "not_stopp
 import type { McpApprovalInfo, McpListInfo, McpServerInfo, McpServerStatus } from "../mcp/info";
 import type { PluginListing, PluginScope } from "../plugins/info";
 
-import type { AddResult, ConnectResult, ServerCheck, ServerProblem, ServerSummary, UpdateResult } from "../servers/manager";
-export type { AddResult, ConnectResult, ServerCheck, ServerProblem, ServerSummary, UnknownHost, UpdateResult } from "../servers/manager";
-
 export const PROTOCOL_VERSION = 1;
 
 /**
@@ -1625,6 +1622,64 @@ export type SimulatorCommand = "select" | "boot" | "shutdown" | "take_control";
 
 // ---------------------------------------------------------------------------
 // Events
+
+// Servers: what the calls below hand back (src/servers/manager.ts makes them).
+
+/** A server as a window lists it. */
+export interface ServerSummary {
+    name: string;
+    destination: string;
+    /** Connected to from this Cavvy right now. */
+    connected: boolean;
+}
+
+/** Why something on a server didn't happen, in words for the user: what, ssh's own line, and what to do. */
+export interface ServerProblem {
+    message: string;
+    detail?: string;
+    fix?: string;
+}
+
+/** A host key this machine hasn't seen: shown, and saved only if the user says so (`servers.trust`). */
+export interface UnknownHost {
+    host: string;
+    fingerprints: string[];
+}
+
+export type ConnectResult =
+    /** Where a window reaches the server's Cavvy, and what signs it in there. */
+    | { status: "connected"; url: string; token: string }
+    | { status: "unknown-host"; unknown: UnknownHost }
+    /** The Cavvy there speaks another version of the protocol than this one: `servers.update` brings it level. */
+    | { status: "other-version" }
+    | { status: "failed"; problem: ServerProblem };
+
+export type AddResult =
+    | { status: "added"; name: string; note?: string; copy?: { what: string; left?: string } }
+    | { status: "unknown-host"; unknown: UnknownHost }
+    | { status: "failed"; problem: ServerProblem };
+
+export type UpdateResult =
+    | { status: "updated"; note?: string }
+    /** Sessions there are working or waiting: updating stops them, so it's asked (`force`). */
+    | { status: "busy"; working: number; waiting: number }
+    | { status: "unknown-host"; unknown: UnknownHost }
+    | { status: "failed"; problem: ServerProblem };
+
+/** What a server has for agents, and what it lacks, as a window shows it. */
+export interface ServerCheck {
+    running: boolean;
+    /** Runs the same build as this Cavvy. */
+    current: boolean;
+    clis: { id: string; product: string; installed: boolean; signedIn?: boolean; on?: boolean; install: string }[];
+    git: boolean;
+    gh: { installed: boolean; signedIn?: boolean };
+    browser: boolean;
+    /** Starts again by itself after the server restarts; when not, the command that makes it so. */
+    service: boolean;
+    lingerFix?: string;
+}
+
 
 export type ServerEvent =
     /** A step of what's being done to a server (servers.add, servers.update, servers.connect), for the window that asked. */
