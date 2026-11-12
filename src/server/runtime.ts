@@ -120,6 +120,7 @@ import type { Engine, Workspace } from "./engine";
 import { MCP_SERVER_NAME } from "../agent/delegation";
 import { numberedTitles, titlesByNumber } from "./title-queue";
 import { SecretStore, secretValueError } from "../agent/secrets";
+import { SESSION_VAR } from "../util/session-processes";
 
 /** How often streamed output goes out to the GUI. */
 const FLUSH_MS = 24;
@@ -3646,7 +3647,8 @@ export class Runtime {
                 cwd: this.toolState.cwd,
                 timeoutMs: 120_000,
                 signal: ac.signal,
-                env: childEnv(this.settings().env),
+                // Marked as the session's, like the commands its agent runs (util/session-processes.ts).
+                env: { ...childEnv(this.settings().env), [SESSION_VAR]: this.id },
                 // Line by line (the rest comes with the full output at the end).
                 onData: (chunk) => {
                     const ready = lines(chunk);
