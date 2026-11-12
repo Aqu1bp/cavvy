@@ -160,3 +160,9 @@
     outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
     outline-offset: -2px;
 }
+
+/* These rows have nothing to show in the mark's place on hover, as the sidebar's own have: the mark stays. */
+.others .slim:hover .t,
+.others .slim:focus-within .t {
+    visibility: visible;
+}

@@ -120,7 +120,7 @@ export class ServerLinks {
         for (const name of names) {
             if (this.watches.has(name) || this.stopped) continue;
             const w = new MachineWatch(name, {
-                reach: async (renew) => (this.apart.has(name) ? { status: "disconnected" } : this.connect(name, { retry: true, renew })),
+                reach: async (renew) => (this.apart.has(name) ? { status: "disconnected" } : this.connect(name, { retry: true, renew, quiet: true })),
                 changed: () => this.tell(name),
                 notice: (n) => this.o.onNotice?.(name, n),
                 retryMs: this.o.watchRetryMs,
@@ -293,20 +293,32 @@ export class ServerLinks {
      * that's coming back instead of making another, and leaves a server that was stopped on purpose stopped.
      * `renew`: the sign-in last handed out didn't open anything (it had run out, or was taken away): a new one.
      */
-    connect(name: string, o: { retry?: boolean; renew?: boolean } = {}): Promise<ConnectResult> {
+    connect(name: string, o: { retry?: boolean; renew?: boolean; quiet?: boolean } = {}): Promise<ConnectResult> {
         if (!o.retry) this.apart.delete(name);
         const going = this.starting.get(name);
         // One attempt at a time, shared. Not a retry's answer for the user's asking, though: a retry leaves a
         // stopped server stopped and waits on a connection that's coming back, where the user's asking doesn't.
         if (going && (o.retry || !going.retry)) return going.attempt;
-        const attempt = (going ? going.attempt.then((r) => (r.status === "connected" ? r : this.reach(name, o))) : this.reach(name, o)).finally(() => {
-            if (this.starting.get(name)?.attempt === attempt) this.starting.delete(name);
-        });
+        const attempt = (going ? going.attempt.then((r) => (r.status === "connected" ? r : this.reach(name, o))) : this.reach(name, o))
+            .then(async (r): Promise<ConnectResult> => {
+                if (r.status !== "connected") return r;
+                // Removed while it was being connected to: nothing of it is kept, and this machine is signed out again.
+                if (!getServer(name)) {
+                    await this.drop(name, true);
+                    return { status: "failed", problem: { message: `No server named ${name}.` } };
+                }
+                // The user's own doing (they opened it, started it, trusted its key): its sessions are listed at once.
+                if (!o.retry) this.watches.get(name)?.poke();
+                return r;
+            })
+            .finally(() => {
+                if (this.starting.get(name)?.attempt === attempt) this.starting.delete(name);
+            });
         this.starting.set(name, { attempt, retry: Boolean(o.retry) });
         return attempt;
     }
 
-    private async reach(name: string, o: { retry?: boolean; renew?: boolean }): Promise<ConnectResult> {
+    private async reach(name: string, o: { retry?: boolean; renew?: boolean; quiet?: boolean }): Promise<ConnectResult> {
         const had = this.links.get(name);
         const here = (l: Linked): ConnectResult => ({ status: "connected", url: `ws://127.0.0.1:${l.localPort}/ws`, token: l.token! });
         const up = (l: Linked) => l.link.state.state === "connected" && l.token !== undefined && l.localPort !== undefined;
@@ -324,7 +336,8 @@ export class ServerLinks {
         } else if (had && o.retry && had.link.state.state === "reconnecting") {
             // Coming back by itself: waited for, not replaced (the address and the sign-in then stay as they were).
             // Tried now rather than when its own wait is over: a window asks again when there's reason to.
-            if (Date.now() - (had.poked ?? 0) >= TRY_NOW_EVERY_MS) {
+            // Not for the watch of its sessions (`quiet`), which nobody is waiting on: the connection's own pace will do.
+            if (!o.quiet && Date.now() - (had.poked ?? 0) >= TRY_NOW_EVERY_MS) {
                 had.poked = Date.now();
                 had.link.tryNow();
             }

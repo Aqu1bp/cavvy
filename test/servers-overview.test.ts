@@ -3,7 +3,7 @@
 // listed and kept up to date, what one has to tell its user reaches one window, and nothing is started there.
 
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "fs";
+import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 import { fakeSsh } from "./helpers/fake-ssh";
@@ -186,12 +186,43 @@ test("a server that was stopped is said to be, and isn't started by being watche
     const w = await window();
     await w.call("servers.overview");
     await until("it to be connected", () => w.machine("box")?.state === "connected");
+    // With a session working there, which would otherwise go on being shown as working.
+    const remote = new Window(there.url, there.token);
+    await remote.opened.promise;
+    const busy = (await remote.call("session.create", { cwd: tempDir("cavvy-overview-proj-") })).state.id as string;
+    await remote.call("session.send", { id: busy, text: "hangforever please" });
+    await until("it to be shown working", () => w.machine("box")?.sessions.some((s) => s.id === busy && s.status === "running") ?? false);
     await w.call("servers.stop", { name: "box" });
     await until("it to be said stopped", () => w.machine("box")?.state === "stopped");
+    expect(w.machine("box")!.sessions).toEqual([]);
     await Bun.sleep(1000);
     expect(await remoteStatus({ name: "box", destination: "dev@box.example", addedAt: "" })).toBeUndefined();
+    // Started again by the user, from a window: its sessions are listed again at once, not when the next look is due.
+    expect(await w.call("servers.connect", { name: "box" })).toMatchObject({ status: "connected" });
+    await until("it to be listed again", () => w.machine("box")?.state === "connected", 10_000);
+    // Disconnected on the user's word: it stays apart, said so, until they open it again.
+    await w.call("servers.disconnect", { name: "box" });
+    await until("it to be said disconnected", () => w.machine("box")?.state === "disconnected");
+    await Bun.sleep(500);
+    expect((await w.call("servers.list")).servers).toEqual([{ name: "box", destination: "dev@box.example", connected: false }]);
+    expect(await w.call("servers.connect", { name: "box" })).toMatchObject({ status: "connected" });
+    await until("it to be listed once more", () => w.machine("box")?.state === "connected", 10_000);
     await w.call("servers.remove", { name: "box" });
     await until("it to be gone", () => w.machine("box")?.state === "removed");
     expect((await w.call("servers.overview")).machines).toEqual([]);
     w.ws.close();
+});
+
+test("a servers file that can't be read doesn't keep a window from starting", async () => {
+    const file = join(iso.home, "servers.json");
+    const was = readFileSync(file, "utf-8");
+    writeFileSync(file, '{"servers":[');
+    try {
+        const w = await window();
+        const hello = await w.call("hello", { client: "browser" });
+        expect([typeof hello.version, hello.servers]).toEqual(["string", undefined]);
+        w.ws.close();
+    } finally {
+        writeFileSync(file, was);
+    }
 });

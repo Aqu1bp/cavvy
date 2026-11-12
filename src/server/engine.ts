@@ -2250,7 +2250,12 @@ export class Engine {
                     user = process.env.USER ?? "";
                 }
                 // What a window needs to know to show other machines at all: none of that is loaded otherwise.
-                const servers = this.o.away ? 0 : await import("../servers/store").then((m) => m.listServers().length, () => 0);
+                // A servers file that can't be read says so where servers are managed, not here: this is every window's first call.
+                const servers = this.o.away
+                    ? 0
+                    : await import("../servers/store")
+                          .then((m) => m.listServers().length)
+                          .catch(() => 0);
                 return { version: APP_VERSION, protocol: PROTOCOL_VERSION, home: cavvyHome(), platform: process.platform, homeDir: homedir(), user, host: hostname().replace(/\.local$/, ""), startCwd, ...(servers ? { servers } : {}) } satisfies HelloResult;
             }
             case "keybindings.get":

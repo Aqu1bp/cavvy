@@ -1643,6 +1643,8 @@ export interface MachineOverview {
     /** disconnected: on the user's word, until they open it again. removed: it's no longer one of this Cavvy's servers. */
     state: "connecting" | "connected" | "unreachable" | "stopped" | "needs-you" | "disconnected" | "removed";
     sessions: SessionSummary[];
+    /** How many more are in play there than `sessions` holds. */
+    more?: number;
 }
 
 /** Why something on a server didn't happen, in words for the user: what, ssh's own line, and what to do. */
