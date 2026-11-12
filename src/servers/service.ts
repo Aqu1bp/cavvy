@@ -301,7 +301,7 @@ function readCheck(text: string | undefined): HostCheck | undefined {
         clis: c.clis.flatMap((v: unknown) => {
             const x = (v && typeof v === "object" ? v : {}) as Record<string, unknown>;
             if (typeof x.id !== "string" || !/^[a-z0-9-]{1,40}$/.test(x.id)) return [];
-            return [{ id: x.id, product: printable(String(x.product ?? x.id), 60), installed: x.installed === true, signedIn: flag(x.signedIn), install: printable(String(x.install ?? ""), 200), signIn: printable(String(x.signIn ?? ""), 120) }];
+            return [{ id: x.id, product: printable(String(x.product ?? x.id), 60), installed: x.installed === true, signedIn: flag(x.signedIn), on: flag(x.on), install: printable(String(x.install ?? ""), 200), signIn: printable(String(x.signIn ?? ""), 120) }];
         }),
         git: c.git === true,
         gh: { installed: gh.installed === true, signedIn: flag(gh.signedIn) },

@@ -644,12 +644,37 @@ describe("what the one-time copy carries", () => {
     });
 });
 
+describe("signing a CLI in where the browser is on another machine", () => {
+    test("a CLI whose sign-in waits for a browser on its own machine is given the one that doesn't", async () => {
+        const { loginCommand } = await import("../src/backends/account-login");
+        const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
+        const dir = tempDir();
+        for (const name of ["claude", "codex"]) {
+            writeFileSync(join(dir, name), "#!/bin/sh\n");
+            chmodSync(join(dir, name), 0o755);
+        }
+        saveAgentConfig("claude-code", { path: join(dir, "claude") });
+        saveAgentConfig("codex", { path: join(dir, "codex") });
+        try {
+            // Here, Codex's own sign-in opens the browser and waits for it on a port of this machine.
+            expect(loginCommand("codex").argv).toEqual([join(dir, "codex"), "login"]);
+            // On a server that port is the server's, which the person's browser can't reach: the kind that shows a code.
+            expect(loginCommand("codex", "default", { away: true }).argv).toEqual([join(dir, "codex"), "login", "--device-auth"]);
+            // Claude Code's already shows a link and takes a code.
+            expect(loginCommand("claude-code", "default", { away: true }).argv).toEqual([join(dir, "claude"), "auth", "login"]);
+        } finally {
+            removeAgentConfig("claude-code");
+            removeAgentConfig("codex");
+        }
+    });
+});
+
 describe("what the terminal says", () => {
     const all = { clis: [{ id: "claude-code", product: "Claude Code", installed: true, signedIn: true, install: "Install Claude Code (https://code.claude.com/docs/en/setup)", signIn: "claude auth login" }, { id: "codex", product: "Codex", installed: false, install: "Install the Codex CLI (npm install -g @openai/codex)", signIn: "codex login" }], git: true, gh: { installed: true, signedIn: true }, browser: true, memMb: 2000 };
 
     test("a server with everything says nothing; each thing missing is one line the user can act on", () => {
-        expect(checkLines(all, { service: true })).toEqual([]);
-        expect(checkLines({ ...all, clis: all.clis.map((c) => ({ ...c, installed: false })), gh: { installed: false }, browser: false, git: false }, { service: false, lingerFix: "sudo loginctl enable-linger dev" })).toEqual([
+        expect(checkLines("box", all, { service: true })).toEqual([]);
+        expect(checkLines("box", { ...all, clis: all.clis.map((c) => ({ ...c, installed: false })), gh: { installed: false }, browser: false, git: false }, { service: false, lingerFix: "sudo loginctl enable-linger dev" })).toEqual([
             "It won't start Cavvy again after a reboot. To fix that, run on it: sudo loginctl enable-linger dev",
             "No agent CLI is installed there (Claude Code, Codex). Models with an API key work without one.",
             "  Install Claude Code (https://code.claude.com/docs/en/setup)",
@@ -658,7 +683,19 @@ describe("what the terminal says", () => {
             "The GitHub CLI isn't installed there: pull requests need it.",
             "No Chrome there: the Browser tool needs one.",
         ]);
-        expect(checkLines({ ...all, clis: [{ ...all.clis[0]!, signedIn: false }], gh: { installed: true, signedIn: false } })).toEqual(["Claude Code isn't signed in there. On it: claude auth login", "The GitHub CLI isn't signed in there. On it: gh auth login"]);
+        expect(checkLines("box", { ...all, clis: [{ ...all.clis[0]!, signedIn: false }], gh: { installed: true, signedIn: false } })).toEqual(["Claude Code isn't signed in there: cavvy servers login box", "The GitHub CLI isn't signed in there. On it: gh auth login"]);
+    });
+
+    test("a CLI that's signed in on a server and not turned on in its Cavvy is said too, since its models aren't offered", () => {
+        const cli = all.clis[0]!;
+        expect(checkLines("box", { ...all, clis: [{ ...cli, on: false }] })).toEqual(["Claude Code isn't turned on there: cavvy servers login box"]);
+        expect(checkLines("box", { ...all, clis: [{ ...cli, on: true }] })).toEqual([]);
+        // A server from before it said which are on: nothing is made of what it didn't say.
+        expect(checkLines("box", { ...all, clis: [{ ...cli }] })).toEqual([]);
+        // Not signed in comes first: turning on is part of signing in.
+        expect(checkLines("box", { ...all, clis: [{ ...cli, signedIn: false, on: false }] })).toEqual(["Claude Code isn't signed in there: cavvy servers login box"]);
+        // One whose sign-in a server can't tell isn't guessed at.
+        expect(checkLines("box", { ...all, clis: [{ ...cli, signedIn: undefined, on: false }] })).toEqual([]);
     });
 
     test("a server's name may carry the folder to work in", () => {

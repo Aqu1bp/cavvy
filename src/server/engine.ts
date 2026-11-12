@@ -135,6 +135,8 @@ export interface EngineOptions {
     editorEnv?: () => DetectEnv;
     /** Starts an editor (tests record the argv instead). */
     launchEditor?: (argv: string[]) => Promise<void>;
+    /** This Cavvy is reached from other machines (it's a server's): a CLI's sign-in can't open the person's browser. */
+    away?: boolean;
 }
 
 /**
@@ -1735,8 +1737,11 @@ export class Engine {
         return { provider: id, masked: maskKey(value), warning, model: this.adoptDefaultModel(id) };
     }
 
-    /** `auth add claude-code|codex` for the GUI: the CLI says whether it's installed and signed in; nothing secret is saved. */
-    private async connectCli(providerId: string): Promise<{ description: string; warning?: string; model?: string }> {
+    /**
+     * `auth add claude-code|codex` for the GUI: the CLI says whether it's installed and signed in; nothing secret is saved.
+     * Also what `cavvy host login` asks of a server once the CLI's own sign-in is done there.
+     */
+    async connectCli(providerId: string): Promise<{ description: string; warning?: string; model?: string }> {
         const def = getProvider(providerId);
         if (def?.auth !== "cli") throw new RpcError(`${providerId} isn't used through a CLI`);
         const { status: st, limits } = await checkAgentPlan(def.id);
@@ -2046,7 +2051,7 @@ export class Engine {
                     // Seen by removals in other Cavvy processes too, until the login process exits.
                     const release = holdLogin(provider, accountId);
                     try {
-                        const command = loginCommand(provider, accountId);
+                        const command = loginCommand(provider, accountId, { away: this.o.away });
                         return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command, login: { provider, accountId, name: account(provider, accountId).name }, onExit: () => { release(); void this.accountsList(provider, true).then(() => this.refreshListings(true)).then(() => this.broadcast({ type: "models.changed" })).catch(() => undefined); } });
                     } catch (e) {
                         release();

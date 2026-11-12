@@ -51,6 +51,11 @@ export interface FakeServer {
     hold(): { only(): void; release(): void };
     /** Lets every waiting connection through, and no later one waits. */
     unhold(): void;
+    /**
+     * Puts a program on the pretend server's PATH, as a CLI installed there (`body` is a `sh` script), or takes it
+     * away again with no body.
+     */
+    install(name: string, body?: string): void;
     /** A build of Cavvy to "install": this checkout, run from source. `gui`: with a GUI page beside it. */
     bundle(id: string, o?: { gui?: boolean; broken?: boolean }): { id: string; target: "linux-x64"; bundle: string; bundleBytes: number; sha256: string; gui: boolean };
     cleanup(): void;
@@ -72,6 +77,8 @@ export function fakeSsh(o: { systemd?: boolean } = {}): FakeServer {
     const home = join(dir, "home");
     mkdirSync(home);
     mkdirSync(join(dir, "bin"));
+    // What's "installed" on the pretend server: on its Cavvy's PATH, and empty until a test puts something there.
+    mkdirSync(join(dir, "tools"));
     keygen(join(dir, "hostkey"));
     const shim = (name: string, body: string) => {
         writeFileSync(join(dir, "bin", name), `#!/bin/sh\n${body}\n`);
@@ -152,6 +159,12 @@ export function fakeSsh(o: { systemd?: boolean } = {}): FakeServer {
             delete behavior.holdUntil;
             save();
         },
+        install(name, body) {
+            const file = join(dir, "tools", name);
+            if (body === undefined) return rmSync(file, { force: true });
+            writeFileSync(file, `#!/bin/sh\n${body}\n`);
+            chmodSync(file, 0o755);
+        },
         dropSessions(afterMs) {
             behavior.dropSessionAfterMs = afterMs;
             save();
@@ -192,11 +205,11 @@ export function fakeSsh(o: { systemd?: boolean } = {}): FakeServer {
         },
         bundle(id, o = {}) {
             const stage = mkdtempSync(join(dir, "stage-"));
-            // The system's own tools and no more, with a login shell that adds nothing: the pretend server has no agent
-            // CLIs, whatever is installed on the machine the tests run on.
+            // The system's own tools and what a test installed (install()), with a login shell that adds nothing: the
+            // pretend server has no agent CLIs of its own, whatever is installed on the machine the tests run on.
             const program = o.broken
                 ? "#!/bin/sh\necho 'cannot execute binary file: Exec format error' >&2\nexit 126\n"
-                : `#!/bin/sh\nPATH=/usr/bin:/bin:/usr/sbin:/sbin; SHELL=${join(dir, "bin", "quiet-shell")}; CAVVY_BUILD=${id}; CAVVY_GUI_DIST="$(dirname "$0")/gui"; export PATH SHELL CAVVY_BUILD CAVVY_GUI_DIST\nexec ${JSON.stringify(process.execPath)} --no-env-file --config=${JSON.stringify(join(REPO, "bunfig.toml"))} ${JSON.stringify(join(REPO, "src", "index.ts"))} "$@"\n`;
+                : `#!/bin/sh\nPATH=${join(dir, "tools")}:/usr/bin:/bin:/usr/sbin:/sbin; SHELL=${join(dir, "bin", "quiet-shell")}; CAVVY_BUILD=${id}; CAVVY_GUI_DIST="$(dirname "$0")/gui"; export PATH SHELL CAVVY_BUILD CAVVY_GUI_DIST\nexec ${JSON.stringify(process.execPath)} --no-env-file --config=${JSON.stringify(join(REPO, "bunfig.toml"))} ${JSON.stringify(join(REPO, "src", "index.ts"))} "$@"\n`;
             writeFileSync(join(stage, "cavvy"), program);
             chmodSync(join(stage, "cavvy"), 0o755);
             if (o.gui) {

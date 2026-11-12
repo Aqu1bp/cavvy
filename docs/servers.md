@@ -15,7 +15,11 @@ A server needs Linux on x64 or arm64 with glibc (so not Alpine), about 400 MB of
 
 ## Adding a server
 
-`cavvy servers add` connects, checks the machine can run Cavvy, copies this machine's build of Cavvy to it, and starts it. Then it says what the server is missing for agents to use: an agent CLI (Claude Code, Codex), `git`, the GitHub CLI, a Chrome for the Browser tool. Install and sign in to those on the server as you would anywhere, for example from `cavvy --server box` or a plain `ssh`. API keys for the server are added there too (`cavvy --server box auth add`, or Settings in its GUI) and are kept in a file only your user there can read.
+`cavvy servers add` connects, checks the machine can run Cavvy, copies this machine's build of Cavvy to it, and starts it. Then it says what the server is missing for agents to use: an agent CLI (Claude Code, Codex), `git`, the GitHub CLI, a Chrome for the Browser tool. Install those on the server as you would anywhere, for example from `cavvy --server box` or a plain `ssh`.
+
+A CLI that's installed there and not signed in is offered at once: `Sign in to Claude Code on box?`. Its own sign-in then runs on the server, in your terminal: it shows a link to open in a browser on this machine, and Cavvy sees nothing of what you type to it. Once it's signed in, it's turned on in the Cavvy there, so its models are offered. To do it later, or again: `cavvy servers login box` (every CLI that needs it), or `cavvy servers login box codex`. Signing in on this machine doesn't sign a server in: each machine has its own.
+
+API keys for the server are added there too (`cavvy --server box auth add`, or Settings in its GUI) and are kept in a file only your user there can read.
 
 You're offered a one-time copy of this machine's settings, memory, skills and commands (`--copy` or `--no-copy` to answer ahead). Nothing already on the server is replaced, and Cavvy says what the server took.
 
@@ -50,6 +54,7 @@ Where the server has systemd, Cavvy runs as a user service: started at boot, res
 ```bash
 cavvy servers                 # the servers you've added
 cavvy servers check [name]    # is Cavvy running there, and what's missing
+cavvy servers login <name>    # sign Claude Code or Codex in there, and turn it on
 cavvy servers update <name>   # bring its Cavvy up to this machine's
 cavvy servers stop <name>     # stop Cavvy there
 cavvy servers remove <name>   # forget it here, and sign this machine out of it
