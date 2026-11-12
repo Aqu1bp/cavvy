@@ -899,7 +899,7 @@ describe("updating a server", () => {
         }
     });
 
-    test("a session that was working carries on after an update; after the server was stopped on purpose, it doesn't", async () => {
+    test("a session that was working carries on after a crash and after an update; after the server was stopped on purpose, it doesn't", async () => {
         const connect = async () => {
             const link = new ServerLink(entry);
             await link.start();
@@ -920,13 +920,27 @@ describe("updating a server", () => {
             await until("it to be on the list", () => listed().includes(id));
             await link.stop();
 
+            // Killed outright, as a crash would: nothing is said or saved on the way out, and the list is as it was.
+            process.kill((await remoteStatus(entry))!.pid, "SIGKILL");
+            await until("it to be gone", async () => !(await remoteStatus(entry)));
+            expect(listed()).toContain(id);
+            ({ link, c } = await connect());
+            await until("it to carry on after the crash", async () => (await turns(c, id)).length === 2 && (await turns(c, id))[1]![1] === "done", 30_000);
+            expect(await turns(c, id)).toEqual([
+                ["hangforever please", "aborted"],
+                [RESTARTED, "done"],
+            ]);
+            await c.call("session.send", { id, text: "hangforever once more" });
+            await until("it to be on the list again", () => listed().includes(id));
+            await link.stop();
+
             // Restarted by an update to another build (and, at the end, back to the one the tests after this expect).
             const was = (await remoteStatus(entry))!.build;
             await setUpServer(entry, { source: source(was === A ? B : A), confirmRestart: async () => true, confirmReplace: async () => true });
             ({ link, c } = await connect());
-            await until("it to carry on", async () => (await turns(c, id)).length === 2 && (await turns(c, id))[1]![1] === "done", 30_000);
-            expect(await turns(c, id)).toEqual([
-                ["hangforever please", "aborted"],
+            await until("it to carry on", async () => (await turns(c, id)).length === 4 && (await turns(c, id))[3]![1] === "done", 30_000);
+            expect((await turns(c, id)).slice(2)).toEqual([
+                ["hangforever once more", "aborted"],
                 [RESTARTED, "done"],
             ]);
             expect(listed()).not.toContain(id);
@@ -939,7 +953,7 @@ describe("updating a server", () => {
             expect(existsSync(list)).toBe(false);
             ({ link, c } = await connect());
             await Bun.sleep(2000);
-            expect((await turns(c, id)).map((t) => t[1])).toEqual(["aborted", "done", "aborted"]);
+            expect((await turns(c, id)).map((t) => t[1])).toEqual(["aborted", "done", "aborted", "done", "aborted"]);
             await link.stop();
             await setUpServer(entry, { source: source(was), confirmRestart: async () => true, confirmReplace: async () => true });
             expect(await remoteStatus(entry)).toMatchObject({ running: true, build: was, working: 0, waiting: 0 });
