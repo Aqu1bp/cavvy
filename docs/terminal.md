@@ -16,6 +16,8 @@
 
 Commands: `/help /model /login /logout /providers /effort /permissions /mode /plan /clear /compact /cost /context /status /resume /rewind /fork /rename /export /copy /init /review /memory /config /thinking /mcp /plugin /agents /hooks /todos /tasks /bashes /add-dir /doctor /exit`.
 
+`/tasks` lists what a session has running in the background (shells, monitors, sub-agents); `/tasks stop <id>` stops one and `/tasks stop all` stops them all (in the app: **Stop all** in Background). On Linux, stopping them all also ends processes the session's commands started that are no longer under Cavvy, such as a server started with `nohup`, and says how many. Esc stops only the current turn.
+
 Custom commands are markdown files in `~/.cavvy/commands/` or `.cavvy/commands/`. The body is the prompt; `$ARGUMENTS` and `$1`…`$9` are substituted; `commands/git/pr.md` becomes `/git:pr`.
 
 ## Status line
