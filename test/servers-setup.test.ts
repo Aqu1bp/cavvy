@@ -806,7 +806,8 @@ esac`;
                 expect(await t.done()).toBe(0);
                 const shown = t.shown();
                 expect(shown).toContain("Claude Code is ready on box3.");
-                expect(shown).not.toContain("isn't signed in there");
+                // Of Claude Code, that is: other things the server lacks are said in the same words.
+                expect(shown).not.toContain("Claude Code isn't");
                 expect(shown).toContain("Work there: cavvy --server box3");
                 expect(turnedOn()).toEqual(["claude-code"]);
             } finally {
