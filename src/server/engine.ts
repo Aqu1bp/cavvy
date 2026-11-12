@@ -31,7 +31,8 @@ import { loadCustomCommands, pluginCommandFor, type CustomCommand } from "../com
 import { loadSkills, sameSkills, type Skill } from "../agent/skills";
 import { McpManager, SignInReplaced } from "../mcp/manager";
 import { approvalMeaning, McpApprovalError, visible } from "../mcp/approval";
-import { PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
+import { defaultMode, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
+import { onServer } from "../servers/role";
 import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, type ProviderListing } from "../providers/models";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
 import { checkAgentPlan, vendorOf, type AgentCliStatus } from "../backends/index";
@@ -616,7 +617,8 @@ export class Engine {
     }
 
     bypassAllowed(cwd: string): boolean {
-        return Boolean(this.o.allowBypass) || Boolean(loadScope("user", cwd).permissions?.allowBypass);
+        // One of the user's servers runs without asking by default (servers/role.ts).
+        return Boolean(this.o.allowBypass) || onServer() || Boolean(loadScope("user", cwd).permissions?.allowBypass);
     }
 
     // -----------------------------------------------------------------------
@@ -898,10 +900,8 @@ export class Engine {
     }
 
     private defaultMode(ws: Workspace): PermissionMode {
-        const m = ws.settings.permissions?.defaultMode ?? "default";
-        // Bypass as a default only counts from the user's own settings file.
-        if (m === "bypassPermissions" && loadScope("user", ws.cwd).permissions?.defaultMode !== "bypassPermissions") return "default";
-        return m;
+        // Bypass as a default only counts from the user's own settings file, or on one of the user's servers.
+        return defaultMode(ws.settings, ws.cwd).mode;
     }
 
     async createSession(cwd: string, opts: { model?: string; mode?: PermissionModeId; accounts?: Record<string, string>; startedBy?: string } = {}): Promise<Runtime> {
@@ -1784,14 +1784,15 @@ export class Engine {
             reviewModel: s.reviewModel,
             effort: s.effort,
             fastMode: s.fastMode,
-            defaultMode: s.permissions?.defaultMode,
+            // On one of the user's servers: Bypass unless its settings say otherwise, and always there to choose.
+            defaultMode: s.permissions?.defaultMode ?? (onServer() ? "bypassPermissions" : undefined),
             showThinking: s.showThinking,
             autoCompact: s.autoCompact,
             idleCompaction: s.idleCompaction,
             webSearch: s.webSearch,
             browser: s.browser?.enabled,
             simulator: s.simulator?.enabled,
-            allowBypass: s.permissions?.allowBypass,
+            allowBypass: s.permissions?.allowBypass || onServer() || undefined,
             followUpBehavior: s.followUpBehavior,
             editor: s.editor,
         };

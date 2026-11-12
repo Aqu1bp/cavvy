@@ -1323,7 +1323,12 @@ export function finalSearch(cmd: string, env: Record<string, string | undefined>
     return { name, piped: first < last };
 }
 
-const DANGEROUS: [RegExp, string][] = [
+/**
+ * A third element marks what reaches beyond the machine it runs on: other people's history, a public registry, the
+ * person's saved secrets. Those are all that's asked about on one of the user's servers (servers/role.ts), which is
+ * there to run agents freely and can be rebuilt; the rest is this machine's own to lose.
+ */
+const DANGEROUS: [RegExp, string, beyond?: true][] = [
     [/\brm\s+(-[a-zA-Z]*[rR][a-zA-Z]*\s+|--recursive\s+)*(-[a-zA-Z]*f[a-zA-Z]*\s+)*(--no-preserve-root\s+)?(\/|\/\*|~|~\/|\$HOME|\$\{HOME\}|\/Users\/?|\/home\/?|\.\.?\/?)(\s|$|;|&|\|)/, "recursive delete of a root, home or parent directory"],
     [/:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/, "fork bomb"],
     [/\bmkfs(\.\w+)?\b/, "formats a filesystem"],
@@ -1339,11 +1344,11 @@ const DANGEROUS: [RegExp, string][] = [
     [/\b((ba|z|da|k)?sh|source|\.)\s+(-s\s+)?<\(\s*(curl|wget)\b/, "runs a downloaded script"],
     [/\b((ba|z|da|k)?sh\s+-c|eval)\s+["']?\$\(\s*(curl|wget)\b/, "runs a downloaded script"],
     [/\bsudo\b/, "runs with elevated privileges"],
-    [/\bsecurity\s+(find-generic-password|find-internet-password|dump-keychain|export)\b/, "reads secrets from the keychain"],
-    [/\bgit\s+push\b[^\n]*(\s--force\b|\s-f\b|\s--force-with-lease\b|\s\+\S)/, "force-pushes to a remote"],
+    [/\bsecurity\s+(find-generic-password|find-internet-password|dump-keychain|export)\b/, "reads secrets from the keychain", true],
+    [/\bgit\s+push\b[^\n]*(\s--force\b|\s-f\b|\s--force-with-lease\b|\s\+\S)/, "force-pushes to a remote", true],
     [/\bgit\s+(reset\s+--hard|clean\s+-[a-zA-Z]*f)/, "discards uncommitted work"],
     [/\b(crontab\s+-r|launchctl\s+(unload|remove|bootout))\b/, "removes scheduled jobs or system services"],
-    [/\b(npm|pnpm|yarn)\s+publish\b|\bcargo\s+publish\b|\btwine\s+upload\b|\bgem\s+push\b/, "publishes a package"],
+    [/\b(npm|pnpm|yarn)\s+publish\b|\bcargo\s+publish\b|\btwine\s+upload\b|\bgem\s+push\b/, "publishes a package", true],
     [/\bhistory\s+-c\b/, "clears shell history"],
 ];
 
@@ -1585,10 +1590,10 @@ function namesServerFolder(word: string): boolean {
     return false;
 }
 
-function dangerousArgv(argv0: string[], depth: number): string | undefined {
+function dangerousArgv(argv0: string[], depth: number, server: boolean): string | undefined {
     for (const { argv, at } of runLevels(argv0)) {
         // What env -S's string runs: checked as a command line of its own, so the patterns see it too.
-        if (at < 0) return depth < 4 ? dangerousReason(argv.map(shellWord).join(" "), depth + 1) : undefined;
+        if (at < 0) return depth < 4 ? dangerousReason(argv.map(shellWord).join(" "), depth + 1, false, server) : undefined;
         const prog = argv[0];
         const args = argv.slice(1);
         const dd = args.indexOf("--");
@@ -1608,22 +1613,22 @@ function dangerousArgv(argv0: string[], depth: number): string | undefined {
         // The server's own folder, in the words as the shell has unquoted them (`~/.cavvy/'server'/…`), and behind a
         // pattern that would match it (`~/.cavvy/serve?/…`).
         if (argv.some(namesServerFolder)) return "touches Cavvy credential store";
-        if (runs(prog, "rm") && opts.some((a) => /^-[a-zA-Z]*[rR]/.test(a) || a === "--recursive") && operands.some((o) => criticalTarget(o))) {
+        if (!server && runs(prog, "rm") && opts.some((a) => /^-[a-zA-Z]*[rR]/.test(a) || a === "--recursive") && operands.some((o) => criticalTarget(o))) {
             return "recursive delete of a root, home or parent directory";
         }
-        if (runs(prog, "find") && args.some((a) => a === "-delete" || a === "-exec" || a === "-execdir") && criticalTarget(args[0] ?? ".", true)) {
+        if (!server && runs(prog, "find") && args.some((a) => a === "-delete" || a === "-exec" || a === "-execdir") && criticalTarget(args[0] ?? ".", true)) {
             return "deletes or runs commands across a root or home directory";
         }
         // Look inside `sh -c '...'` and `eval ...`.
         if (runs(prog, ...SHELLS)) {
             const c = args.findIndex((a) => /^-[a-zA-Z]*c$/.test(a));
             if (c >= 0 && args[c + 1] !== undefined) {
-                const r = dangerousReason(args[c + 1]!);
+                const r = dangerousReason(args[c + 1]!, 0, false, server);
                 if (r) return r;
             }
         }
         if (runs(prog, "eval") && args.length) {
-            const r = dangerousReason(args.join(" "));
+            const r = dangerousReason(args.join(" "), 0, false, server);
             if (r) return r;
         }
     }
@@ -1700,25 +1705,27 @@ export function withoutHeredocData(cmd: string): string | undefined {
 /**
  * Returns a reason if the command matches a known-catastrophic pattern.
  * A here-document's data counts only when something may run it.
+ * `server`: on one of the user's servers, where only what reaches beyond the machine counts (DANGEROUS), with
+ * Cavvy's own credentials and who may connect to the server.
  */
-export function dangerousReason(cmd: string, depth = 0, dataBlanked = false): string | undefined {
+export function dangerousReason(cmd: string, depth = 0, dataBlanked = false, server = false): string | undefined {
     if (!dataBlanked) {
         const t = withoutHeredocData(cmd);
-        if (t !== undefined) return dangerousReason(t, depth, true);
+        if (t !== undefined) return dangerousReason(t, depth, true, server);
     }
     const said = withoutMessages(cmd);
-    for (const text of [said, ...programsSpelled(said)]) for (const [re, reason] of DANGEROUS) if (re.test(text)) return reason;
+    for (const text of [said, ...programsSpelled(said)]) for (const [re, reason, beyond] of DANGEROUS) if ((beyond || !server) && re.test(text)) return reason;
     const spelled = [said, ...spellings(said)];
     if (spelled.some((t) => CREDENTIAL_STORE.test(t))) return "touches Cavvy credential store";
-    if (spelled.some((t) => STARTUP_FILE.test(t))) return "overwrites a shell startup file";
+    if (!server && spelled.some((t) => STARTUP_FILE.test(t))) return "overwrites a shell startup file";
     if (depth > 4) return undefined;
     const a = analyzeCommand(cmd);
     for (const c of a.commands) {
-        const r = dangerousArgv(c.argv, depth);
+        const r = dangerousArgv(c.argv, depth, server);
         if (r) return r;
     }
     for (const body of substitutionBodies(cmd)) {
-        const r = dangerousReason(body, depth + 1);
+        const r = dangerousReason(body, depth + 1, false, server);
         if (r) return r;
     }
     return undefined;

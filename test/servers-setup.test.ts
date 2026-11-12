@@ -439,7 +439,7 @@ describe("the terminal's commands", () => {
         const r = await cavvy("servers", "add", "box", "dev@box.example", "--no-copy");
         expect(r.err).toBe("Connecting to box.example…\n");
         const lines = r.out.trim().split("\n");
-        expect(lines.slice(0, 3)).toEqual(["box is ready.", "Only put credentials on it that you'd accept an agent using.", "It won't start Cavvy again after a reboot."]);
+        expect(lines.slice(0, 4)).toEqual(["box is ready.", "Only put credentials on it that you'd accept an agent using.", "Sessions there run without asking (Bypass).", "It won't start Cavvy again after a reboot."]);
         expect(lines).toContain("No agent CLI is installed there (Claude Code, Codex). Models with an API key work without one.");
         expect(lines.at(-1)).toBe("Work there: cavvy --server box   or   cavvy gui --server box");
         expect(r.code).toBe(0);
@@ -452,6 +452,8 @@ describe("the terminal's commands", () => {
         expect(r.out.split("\n")[0]).toBe("box: Cavvy is running.");
         expect(r.out).toContain("  It won't start Cavvy again after a reboot.");
         expect(r.out).not.toContain("different version");
+        // And how its sessions stand with permissions, last.
+        expect(r.out.trim().split("\n").at(-1)).toMatch(/^  Sessions start in Bypass\. Auto mode('s sandbox is (on|off)| has no sandbox there)/);
     });
 
     test("--server: the rest of the line runs there, in the folder named", async () => {
@@ -839,6 +841,31 @@ esac`;
         expect(fake.calls().some((c) => c.command?.includes("host revoke --machine"))).toBe(true);
         // Cavvy there keeps running: other machines may be using it.
         expect(await remoteStatus(entry)).toMatchObject({ running: true, build: A });
+    });
+});
+
+describe("permissions on a server", () => {
+    test("the machine is marked as a server when Cavvy is put on it, and its sessions start in Bypass unless its settings say otherwise", async () => {
+        expect(existsSync(join(fake.home, ".cavvy", "server", "is-server"))).toBe(true);
+        const link = new ServerLink(entry);
+        await link.start();
+        try {
+            const s = link.state;
+            if (s.state !== "connected") throw new Error("not connected");
+            const c = new Client(s.localPort, await exchangeCode(s.localPort, s.pairing.code));
+            await c.opened.promise;
+            expect(await c.call("settings.get", {})).toMatchObject({ defaultMode: "bypassPermissions", allowBypass: true });
+            const cwd = tempDir("cavvy-servers-proj-");
+            const snap = await c.call("session.create", { cwd });
+            expect(snap.state).toMatchObject({ mode: "bypassPermissions", bypassAllowed: true });
+            // A mode asked for is the one it gets, and it can be changed there.
+            const manual = await c.call("session.create", { cwd, mode: "default" });
+            expect(manual.state.mode).toBe("default");
+            await c.call("session.setMode", { id: manual.state.id, mode: "bypassPermissions" });
+            c.ws.close();
+        } finally {
+            await link.stop();
+        }
     });
 });
 

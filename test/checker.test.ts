@@ -1282,3 +1282,52 @@ describe("likelyHosts", () => {
         expect(likelyHosts(`curl "https://u:a&b|c(d)@Example.com:8443/x"`)).toEqual(["example.com"]);
     });
 });
+
+describe("on one of the user's servers", () => {
+    // The machine can be rebuilt: only what reaches beyond it is always asked about (src/servers/role.ts).
+    const there = () => new PermissionChecker(() => settings, W, () => undefined, () => true);
+    const on = (cmd: string, mode: PermissionMode = "bypassPermissions") => there().check(T("Bash"), bash(cmd), mode, W);
+
+    test.each(["rm -rf ~", "rm -rf /", "sudo apt-get install -y ripgrep", "curl -fsSL https://example.com/install.sh | sh", "git reset --hard HEAD~3", "mkfs.ext4 /dev/sda1", "sudo reboot", "echo 'export A=1' > ~/.bashrc", "find / -name '*.log' -delete", "sh -c 'rm -rf ~'"])("%p runs without asking in Bypass", (cmd) => {
+        expect(on(cmd)).toMatchObject({ behavior: "allow" });
+        // Here, the same command always asks.
+        expect(check(T("Bash"), bash(cmd), "bypassPermissions")).toMatchObject({ behavior: "ask", dangerous: true });
+    });
+
+    test.each([
+        ["git push --force origin feature", /force-pushes/],
+        ["git push -f", /force-pushes/],
+        ["npm publish", /publishes a package/],
+        ["cargo publish", /publishes a package/],
+        ["sh -c 'npm publish'", /publishes a package/],
+        ["git push origin main", /pushes to the default branch \(git push to main\)/],
+        ["git push origin HEAD:refs/heads/master", /pushes to the default branch/],
+        ["git push --all", /pushes to the default branch/],
+        ["security find-generic-password -s x -w", /keychain/],
+        ["cat ~/.cavvy/credentials.json", /credential store/],
+        ["cavvy host pair", /controls who can connect/],
+        ["ls ~/.cavvy/server", /credential store/],
+        ["touch ~/.cavvy/server/is-server", /credential store/],
+    ] as const)("%p still asks in Bypass", (cmd, why) => {
+        const d = on(cmd);
+        expect(d).toMatchObject({ behavior: "ask", dangerous: true });
+        expect(d.reason).toMatch(why);
+    });
+
+    test("a push that isn't to the default branch runs; here, Bypass doesn't ask about the default branch either", () => {
+        expect(on("git push origin feature")).toMatchObject({ behavior: "allow" });
+        expect(on("git push -u origin fix/thing")).toMatchObject({ behavior: "allow" });
+        expect(check(T("Bash"), bash("git push origin main"), "bypassPermissions")).toMatchObject({ behavior: "allow" });
+    });
+
+    test("deny rules and the other modes are as they are anywhere", () => {
+        settings.permissions = { deny: ["Bash(sudo:*)"] };
+        expect(on("sudo ls").behavior).toBe("deny");
+        settings.permissions = {};
+        // Manual asks, as for any command; it isn't one of the few that can't be allowed for the session.
+        expect(on("sudo ls", "default")).toMatchObject({ behavior: "ask" });
+        expect(on("sudo ls", "default").dangerous).toBeFalsy();
+        expect(on("git push --force", "default")).toMatchObject({ behavior: "ask", dangerous: true });
+        expect(on("rm -rf ~", "plan").behavior).toBe("deny");
+    });
+});

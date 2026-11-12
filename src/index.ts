@@ -20,6 +20,7 @@ import { detectKeyProvider, validateKey } from "./auth/detect";
 import { EFFORT_LEVELS, loadScope, loadSettings, worktreeSettings, readJson, readJsonForUpdate, settingsPath, updateSettings, writeJson, type Effort, type McpServerConfig, type SettingsScope } from "./config/settings";
 import { isTrusted, projectConfigSummary, trustFolder, trustForSession } from "./config/trust";
 import { MODE_INFO, parseMode, startMode, type PermissionMode } from "./permissions/modes";
+import { onServer as thisIsAServer } from "./servers/role";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, removeVertexConfig, saveAgentConfig, saveVertexConfig, SEARCH_PROVIDERS, validGoogleAccount, validVertexLocation, validVertexProject } from "./providers/registry";
 import { checkAgentCli, vendorOf } from "./backends/index";
 import { agentCli } from "./backends/defs";
@@ -786,7 +787,7 @@ async function main() {
     let { mode, ignoredBypass } = startMode(f.mode, settings, cwd);
     if (ignoredBypass) notes.push("Ignored defaultMode bypassPermissions from project settings; only your user settings or --dangerously-skip-permissions can enable it.");
     if (f.skipPermissions) mode = "bypassPermissions";
-    const allowBypass = f.skipPermissions || f.mode === "bypassPermissions" || Boolean(loadScope("user", cwd).permissions?.allowBypass) || mode === "bypassPermissions";
+    const allowBypass = f.skipPermissions || f.mode === "bypassPermissions" || Boolean(loadScope("user", cwd).permissions?.allowBypass) || mode === "bypassPermissions" || thisIsAServer();
 
     // Session to resume
     let resumeFile: string | undefined;
@@ -832,7 +833,12 @@ async function main() {
         process.exit(code);
     }
 
-    if (mode === "bypassPermissions") notes.push(`${MODE_INFO.bypassPermissions.label} is on: tools run without asking (deny rules and catastrophic-command guards still apply).`);
+    if (mode === "bypassPermissions")
+        notes.push(
+            thisIsAServer()
+                ? `${MODE_INFO.bypassPermissions.label} is on: tools run without asking, except force-pushes, pushes to the default branch and publishing (deny rules still apply).`
+                : `${MODE_INFO.bypassPermissions.label} is on: tools run without asking (deny rules and catastrophic-command guards still apply).`,
+        );
     const { App } = await import("./ui/app");
     const app = new App({
         cwd,
