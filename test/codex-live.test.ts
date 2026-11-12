@@ -349,6 +349,36 @@ describe("Esc interrupts the turn, never the app-server or its background work",
             expect(calls("thread/resume")).toEqual([]);
         });
 
+    test("a command Codex leaves running when the turn is stopped, with no process id to stop it by, is ended", async () => {
+        process.env.FAKE_SCENARIO = "hang";
+        process.env.FAKE_HANG_PHASE = "tool";
+        process.env.FAKE_HANG_STRAY = "1";
+        process.env.FAKE_HELPER = "1";
+        try {
+            const a = await makeAgent();
+            const stop = new AbortController();
+            const running = a.run("go", stop.signal);
+            await until(() => logLines().some((l) => l.stray), "the command to be running");
+            const stray = logLines().find((l) => l.stray)!.stray as number;
+            const helper = logLines().find((l) => l.helper)!.helper as number;
+            // Longer than the second a process's start is known to.
+            await Bun.sleep(1200);
+            expect([alive(stray), alive(helper)]).toEqual([true, true]);
+            stop.abort();
+            expect(await running).toBe("aborted");
+            // Codex ended the turn and said nothing of the command: what it had started since is ended here.
+            await until(() => !alive(stray), "the command to be ended", 6000);
+            // What Codex was running before the command began is left alone, and so is Codex.
+            const [pid] = pids();
+            expect([alive(helper), alive(pid!)]).toEqual([true, true]);
+            expect(JSON.stringify(a.events)).toContain("Interrupted by user");
+        } finally {
+            delete process.env.FAKE_HANG_STRAY;
+            delete process.env.FAKE_HELPER;
+            process.env.FAKE_SCENARIO = "cmd";
+        }
+    });
+
     test("with a background command and a sub-agent working: the turn and the sub-agent's turn stop, the command goes on", async () => {
         process.env.FAKE_CODEX_SCENARIOS = "bg,bgagent";
         process.env.FAKE_BG_MS = "never";

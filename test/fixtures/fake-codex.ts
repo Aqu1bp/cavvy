@@ -128,6 +128,14 @@ import { callTool, connect, type McpServerRef } from "./mcp-call";
 const log = (o: unknown) => {
     if (process.env.FAKE_LOG) appendFileSync(process.env.FAKE_LOG, JSON.stringify(o) + "\n");
 };
+// FAKE_HELPER=1: a process the app-server starts for itself as it comes up (as it does an MCP server), which no turn
+// started and nothing should end.
+if (process.env.FAKE_HELPER === "1") {
+    const helper = Bun.spawn(["sleep", "31"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    helper.unref();
+    log({ helper: helper.pid });
+    process.on("exit", () => helper.kill());
+}
 const argv = process.argv.slice(2);
 const cwd = process.cwd();
 log({ argv, pid: process.pid, cwd, sawOpenAiKey: Boolean(process.env.OPENAI_API_KEY), sawApiKey: Boolean(process.env.ANTHROPIC_API_KEY), claudeConfigDir: process.env.CLAUDE_CONFIG_DIR, codexHome: process.env.CODEX_HOME, sawOauthToken: Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN) });
@@ -515,6 +523,15 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         const cmd = { type: "commandExecution", id: `hang-${turnId}`, command: "/bin/zsh -lc 'sleep 60'", cwd, status: "inProgress", commandActions: [{ type: "unknown", command: "sleep 60" }], aggregatedOutput: null, exitCode: null };
         if (!stream) notify("item/started", { threadId, turnId, item: cmd });
         else notify("item/started", { threadId, turnId, item: { type: "agentMessage", id: `stream-${turnId}`, text: "" } });
+        // FAKE_HANG_STRAY=1: as Codex 0.167 does on Linux, the command is a process of its own with no process id
+        // given for it, and an interrupt ends the turn and leaves it running, its item never completed.
+        // The command starts a moment into the turn, as it does once a model has answered.
+        if (!stream && process.env.FAKE_HANG_STRAY === "1") await Bun.sleep(300);
+        const stray = !stream && process.env.FAKE_HANG_STRAY === "1" ? Bun.spawn(["sleep", "30"], { stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: true }) : undefined;
+        if (stray) {
+            stray.unref();
+            log({ stray: stray.pid });
+        }
         const until = Date.now() + Number(process.env.FAKE_HANG_MS ?? 10000);
         let woken = false;
         const wake = new Promise<void>((r) => (t.wake = () => ((woken = true), r())));
@@ -528,7 +545,9 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
             }
         }
         log({ hangEnded: { turnId, interrupted: t.interrupted } });
-        if (!stream) notify("item/completed", { threadId, turnId, item: { ...cmd, status: t.interrupted ? "failed" : "completed", exitCode: t.interrupted ? -1 : 0, aggregatedOutput: "" } });
+        if (stray && t.interrupted) {
+            // nothing said of the command: the turn just ends
+        } else if (!stream) notify("item/completed", { threadId, turnId, item: { ...cmd, status: t.interrupted ? "failed" : "completed", exitCode: t.interrupted ? -1 : 0, aggregatedOutput: "" } });
         else notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `stream-${turnId}`, text: "more more" } });
         return finish(t.interrupted ? "interrupted" : "completed");
     }
