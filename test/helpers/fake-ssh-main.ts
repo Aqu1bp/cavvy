@@ -50,6 +50,8 @@ interface Behavior {
      * network going): ssh gives up here, and what was running at the other end runs on.
      */
     vanishSessionAfterMs?: number;
+    /** A connection that's slow to be made: having got as far as signing in, it waits until this file is there. */
+    holdUntil?: string;
 }
 const behavior: Behavior = existsSync(join(dir, "behavior.json")) ? JSON.parse(readFileSync(join(dir, "behavior.json"), "utf-8")) : {};
 appendFileSync(join(dir, "calls.jsonl"), JSON.stringify({ opts: Object.fromEntries(opts), flags: [...flags], port, forward, separated, dest, command }) + "\n");
@@ -111,6 +113,8 @@ if (!known.some((l) => l.split(" ").slice(1, 3).join(" ") === offered)) {
 }
 if (opts.get("BatchMode") !== "yes") fail("fake ssh: a connection that could stop to ask for a password");
 if (behavior.fail === "auth") fail(`${dest}: Permission denied (publickey).`);
+
+if (behavior.holdUntil) while (!existsSync(behavior.holdUntil)) await Bun.sleep(20);
 
 if (flags.has("-N")) {
     // -L 127.0.0.1:<local>:127.0.0.1:<remote>

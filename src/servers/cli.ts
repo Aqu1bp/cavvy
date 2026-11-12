@@ -218,7 +218,7 @@ async function offerCopy(e: ServerEntry, wanted: boolean | undefined) {
         const left = describeLeft(plan.left);
         const sayLeft = () => left && err(`Not copied, since they could hold a key or need this machine: ${left}.`);
         if (!what) return void sayLeft();
-        if (wanted === undefined && !(await ask(`Copy your ${what} to ${e.name}?`, ["Keys aren't copied."], "Copy", "Skip"))) return;
+        if (wanted === undefined && !(await ask(`Copy your ${what} to ${e.name}?`, ["Keys, and what reads like one, stay here."], "Copy", "Skip"))) return;
         // What the server took, which isn't always what was offered: it keeps what it has.
         const took = describeCopy(countCopied(await sendCopy(e, plan)));
         err(took ? `Copied your ${took}.` : `${e.name} already had them.`);
@@ -402,31 +402,52 @@ esac
 `;
 
 /**
- * Before a run: is build $1 there (exit ${NO_BUILD} if not), and the Cavvys
- * this machine ($2) left running there are ended. A connection that's lost
- * without a word (a laptop closing, a network going) isn't noticed by the
- * server for a long while, so the Cavvy it carried runs on, holding its
- * session: "continue with -c" would be refused. Each run is known by an id
- * ($3 lists the ones whose terminal here is still open); a process left by any
- * other run of this machine is hung up on, as its lost connection would have,
- * if it's still the process that wrote the file (its start time says).
+ * Before a run: the Cavvys this machine ($2) left running there are ended, and is build $1 there (exit ${NO_BUILD}
+ * if not). A connection that's lost without a word (a laptop closing, a network going) isn't noticed by the server
+ * for a long while, so the Cavvy it carried runs on, holding its session: "continue with -c" would be refused.
+ *
+ * Each run is known by an id. The script says which runs of this machine it has ("run <id>" lines, then "listed"),
+ * and only then reads which of them to end: the ones whose terminal isn't open here any more. Asked in that order,
+ * a run that started while this one was connecting is never taken for one that was left: it's written down here
+ * before anything of it is there (runOnServer), so by the time it's listed it's known as open.
+ *
+ * A run to end is asked to stop (TERM, which lets it close its session and its commands), all at once, and killed
+ * if it's still there after longer than a Cavvy takes to close. Only ever the process that wrote the file: its
+ * start time says so, looked at again before each signal.
  */
 const LEFTOVERS = `
 runs="${REMOTE_DIR}/runs/$2"
 ${STARTED}
 if [ -d "$runs" ]; then
-    for f in "$runs"/*; do
-        [ -f "$f" ] || continue
-        case " $3 " in *" $(basename "$f") "*) continue ;; esac
-        read -r pid start < "$f" || true
-        if [ -n "$pid" ] && [ -n "$start" ] && [ "$(started "$pid")" = "$start" ]; then
-            kill -HUP "$pid" 2>/dev/null
-            n=0
-            while kill -0 "$pid" 2>/dev/null && [ "$n" -lt 40 ]; do sleep 0.1; n=$((n + 1)); done
-            kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
-        fi
-        rm -f "$f"
+    for f in "$runs"/*; do [ -f "$f" ] && echo "run $(basename "$f")"; done
+fi
+echo listed
+read -r gone || gone=""
+same() {
+    pid=""; start=""
+    [ -f "$runs/$1" ] || return 1
+    read -r pid start < "$runs/$1" || true
+    case "$pid" in ""|*[!0-9]*) return 1 ;; esac
+    [ -n "$start" ] && [ "$(started "$pid")" = "$start" ]
+}
+ending=""
+for id in $gone; do
+    case "$id" in ""|*[!0-9a-f]*) continue ;; esac
+    [ -f "$runs/$id" ] || continue
+    if same "$id" && kill -TERM "$pid" 2>/dev/null; then ending="$ending $id"; else rm -f "$runs/$id"; fi
+done
+if [ -n "$ending" ]; then
+    echo ending
+    n=0
+    while [ "$n" -lt 70 ]; do
+        left=""
+        for id in $ending; do if same "$id"; then left="$left $id"; else rm -f "$runs/$id"; fi; done
+        ending=$left
+        [ -n "$ending" ] || break
+        sleep 0.1
+        n=$((n + 1))
     done
+    for id in $ending; do same "$id" && kill -KILL "$pid" 2>/dev/null; rm -f "$runs/$id"; done
 fi
 [ -x "${remoteBuildDir("$1")}/cavvy" ] || exit ${NO_BUILD}
 `;
@@ -458,6 +479,34 @@ function openRuns(): string[] {
     return open;
 }
 
+/** Runs LEFTOVERS: answers its list of this machine's runs with the ones that aren't open here, read only then. */
+function endLeftovers(e: ServerEntry, build: string, machine: string) {
+    let heard = "";
+    let said = false;
+    let listed!: (ids: string[]) => void;
+    const there = new Promise<string[]>((resolve) => (listed = resolve));
+    async function* answer() {
+        const ids = await there;
+        const open = new Set(openRuns());
+        yield new TextEncoder().encode(`${ids.filter((id) => !open.has(id)).join(" ")}\n`);
+    }
+    return ssh(e, remoteSh(LEFTOVERS, [build, machine]), {
+        timeoutMs: 45_000,
+        stdin: answer(),
+        onStdout(text, done) {
+            heard += text;
+            const lines = heard.split("\n");
+            const at = lines.indexOf("listed");
+            // With no more to come (it never connected, or ended early) it's answered with nothing to end.
+            if (at >= 0 || done) listed(lines.slice(0, Math.max(at, 0)).flatMap((l) => /^run ([0-9a-f]{16})$/.exec(l)?.[1] ?? []));
+            if (!said && lines.includes("ending")) {
+                said = true;
+                err(`Closing a session left open on ${e.name}…`);
+            }
+        },
+    });
+}
+
 /** What the terminal says about itself, which a remote Cavvy needs to draw as it would here. */
 const TERMINAL_ENV = ["COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "LC_TERMINAL", "LC_TERMINAL_VERSION"];
 
@@ -483,7 +532,7 @@ export async function runOnServer(spec: string, forwarded: string[]): Promise<nu
         const command = `env ${["CAVVY_NO_KEYCHAIN=1", ...env].join(" ")} ${remoteSh(RUN, [build, folder, machine, run, ...forwarded])}`;
         // Asked first without the terminal, so a server that can't be reached, or has no build yet, is said in plain
         // words; and what earlier runs from here left running there is ended, so their sessions can be continued.
-        const asked = await withTrust(e, (entry) => ssh(entry, remoteSh(LEFTOVERS, [build, machine, openRuns().join(" ")]), { timeoutMs: 45_000 }), { saved: true, onTrusted: (entry) => (e = entry) });
+        const asked = await withTrust(e, (entry) => endLeftovers(entry, build, machine), { saved: true, onTrusted: (entry) => (e = entry) });
         if (asked.value.code === NO_BUILD) {
             err(`Setting up Cavvy on ${e.name}…`);
             await ensureBuildThere(e, { progress: progress() });

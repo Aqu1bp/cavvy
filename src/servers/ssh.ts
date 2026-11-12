@@ -247,14 +247,28 @@ export interface SshRunOptions {
     signal?: AbortSignal;
     /** Bytes of `stdin` sent so far. */
     onSent?: (bytes: number) => void;
+    /**
+     * What the command has printed, as it arrives, and once more with `done` when there's no more to come (also
+     * when it never connected). For a command that's answered part way: `stdin` can wait on what this hears.
+     */
+    onStdout?: (text: string, done: boolean) => void;
 }
 
 const OUTPUT_CAP = 4 * 1024 * 1024;
 
-async function capped(stream: ReadableStream<Uint8Array>): Promise<string> {
+async function capped(stream: ReadableStream<Uint8Array>, heard?: (text: string, done: boolean) => void): Promise<string> {
     const d = new TextDecoder();
     let out = "";
-    for await (const chunk of stream) if (out.length < OUTPUT_CAP) out += d.decode(chunk, { stream: true });
+    try {
+        for await (const chunk of stream) {
+            if (out.length >= OUTPUT_CAP) continue;
+            const text = d.decode(chunk, { stream: true });
+            out += text;
+            heard?.(text, false);
+        }
+    } finally {
+        heard?.("", true);
+    }
     return out.slice(0, OUTPUT_CAP);
 }
 
@@ -303,7 +317,7 @@ export async function ssh(e: ServerEntry, command: string, o: SshRunOptions = {}
         }
     })();
     try {
-        const [stdout, stderr, code] = await Promise.all([capped(proc.stdout), capped(proc.stderr), proc.exited, feed]);
+        const [stdout, stderr, code] = await Promise.all([capped(proc.stdout, o.onStdout), capped(proc.stderr), proc.exited, feed]);
         if (o.signal?.aborted) throw new SshError("other", "Stopped.");
         if (timedOut) throw new SshError("unreachable", `${hostOf(e)} didn't answer in time.`);
         if (code === 255) throw sshFailure(stderr, e);

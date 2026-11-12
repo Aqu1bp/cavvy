@@ -136,6 +136,7 @@ afterEach(() => {
     fake.vanishSessions();
     fake.diskFree();
     fake.settings();
+    fake.unhold();
 });
 
 afterAll(async () => {
@@ -509,6 +510,67 @@ describe("the terminal's commands", () => {
         expect(await cavvy("--server", "box", "--version")).toMatchObject({ code: 0, out: "1.0.0\n" });
         await until("the one left behind to be gone", () => gone(left[0]!.pid), 10_000);
         expect(readdirSync(runs)).not.toContain(left[0]!.id);
+    });
+
+    /** This machine's runs on the pretend server whose process is alive. */
+    const liveRuns = () => {
+        const runs = join(serverDir, "runs", thisDesktop().id);
+        return (existsSync(runs) ? readdirSync(runs) : [])
+            .map((id) => ({ id, pid: Number(readFileSync(join(runs, id), "utf-8").split(/\s/)[0]) }))
+            .filter((r) => {
+                try {
+                    process.kill(r.pid, 0);
+                    return true;
+                } catch {
+                    return false;
+                }
+            });
+    };
+    /** Ends the runs still going on the pretend server, as their own Cavvy would on being asked to stop. */
+    const endRuns = async (...procs: (ReturnType<typeof spawnCavvy> | undefined)[]) => {
+        for (const r of liveRuns()) process.kill(r.pid, "SIGTERM");
+        await Promise.all(procs.map((p) => p?.exited));
+    };
+
+    test("--server: a run whose terminal is still open here is left alone by the next one, and so is another machine's", async () => {
+        const open = spawnCavvy(A, ["--server", "box", "-p", "hangforever please"]);
+        const theirs = join(serverDir, "runs", "f".repeat(32));
+        try {
+            await until("it to be running there", () => liveRuns().length === 1);
+            const [mine] = liveRuns();
+            // Another machine's run, naming the same live process: were that folder ever looked in, this one would be ended.
+            mkdirSync(theirs, { recursive: true });
+            writeFileSync(join(theirs, "0123456789abcdef"), readFileSync(join(serverDir, "runs", thisDesktop().id, mine!.id)));
+            expect(await cavvy("--server", "box", "--version")).toMatchObject({ code: 0, out: "1.0.0\n" });
+            expect(liveRuns()).toEqual([mine!]);
+            expect(readdirSync(theirs)).toEqual(["0123456789abcdef"]);
+        } finally {
+            await endRuns(open);
+            rmSync(theirs, { recursive: true, force: true });
+        }
+    });
+
+    test("--server: a run that starts while another is still connecting isn't taken by it for one that was left", async () => {
+        const before = fake.calls().length;
+        const held = fake.hold();
+        // Its first connection, the one that ends what was left there, is slow to be made.
+        const slow = spawnCavvy(A, ["--server", "box", "--version"]);
+        let open: ReturnType<typeof spawnCavvy> | undefined;
+        try {
+            await until("its connection to start", () => fake.calls().slice(before).some((c) => c.command?.includes("echo listed")));
+            held.only();
+            // Meanwhile another starts, connects at once, and is running there before the first has got through.
+            open = spawnCavvy(A, ["--server", "box", "-p", "hangforever please"]);
+            await until("the second to be running there", () => liveRuns().length === 1);
+            const [second] = liveRuns();
+            held.release();
+            const [out, code] = await Promise.all([new Response(slow.stdout).text(), slow.exited, new Response(slow.stderr).text()]);
+            expect({ code, out }).toEqual({ code: 0, out: "1.0.0\n" });
+            expect(liveRuns()).toEqual([second!]);
+        } finally {
+            held.release();
+            await endRuns(open);
+        }
     });
 
     test("--server after -- is the prompt's own words, and nothing goes to a server", async () => {

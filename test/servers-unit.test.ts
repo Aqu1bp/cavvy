@@ -12,11 +12,11 @@ const iso = isolate();
 // What ssh says about a server (`ssh -G`) decides some of this: the stand-in says it, not this machine's own config.
 const fake = fakeSsh();
 const { sshFailure, shQuote, remoteSh, sshCommandArgv, sshTunnelArgv, keyNeedsPassphrase, printable, offeredHostKey, trustHostKey, ownKnownHosts } = await import("../src/servers/ssh");
-const { draftServer, saveServer, listServers, removeServer, requireServer, thisDesktop, serversFile } = await import("../src/servers/store");
+const { draftServer, saveServer, listServers, removeServer, requireServer, thisDesktop, serversFile, desktopIdFile } = await import("../src/servers/store");
 const { compareBuilds, guiAvailable, guiChangedSince, serverBuild, SERVER_BUN, thisBuild } = await import("../src/servers/build");
 const { parseFacts, targetFor, checkRoom } = await import("../src/servers/remote");
 const { MachineSignIns } = await import("../src/servers/host");
-const { planCopy, portableMcpServer, portableRule, portableSettings, describeCopy, describeLeft, countCopied } = await import("../src/servers/copy");
+const { planCopy, portableMcpEntry, portableMcpServer, portableRule, portableSettings, describeCopy, describeLeft, countCopied } = await import("../src/servers/copy");
 const { checkLines, parseServerSpec } = await import("../src/servers/cli");
 const { UNIT } = await import("../src/servers/service");
 import type { ServerEntry } from "../src/servers/store";
@@ -247,7 +247,9 @@ describe("the saved servers", () => {
         const id = thisDesktop().id;
         expect(id).toMatch(/^[0-9a-f]{32}$/);
         expect(thisDesktop().id).toBe(id);
-        expect(Object.keys(JSON.parse(readFileSync(serversFile(), "utf-8"))).sort()).toEqual(["desktop", "servers"]);
+        expect(Object.keys(JSON.parse(readFileSync(serversFile(), "utf-8"))).sort()).toEqual(["servers"]);
+        expect(readFileSync(desktopIdFile(), "utf-8")).toBe(`${id}\n`);
+        expect(lstatSync(desktopIdFile()).mode & 0o777).toBe(0o600);
         expect(Object.keys(e).sort()).toEqual(["addedAt", "destination", "identityFile", "name", "port"]);
         const removed = removeServer("box");
         expect(listServers()).toEqual([]);
@@ -531,6 +533,60 @@ describe("what the one-time copy carries", () => {
         expect(describeLeft(left)).toBe("2 MCP servers and 2 permission rules");
         expect(describeLeft({ servers: ["x"], rules: 0 })).toBe("1 MCP server");
         expect(describeLeft({ servers: [], rules: 0 })).toBe("");
+    });
+
+    test("a token of letters and digits at random isn't taken for a name, in an address or in a rule; the names commands are made of are", () => {
+        // A fixed sequence, so every run measures the same tokens.
+        let seed = 0x9e3779b9;
+        const rnd = () => ((seed = (Math.imul(seed ^ (seed >>> 15), 0x2c1b3c6d) + 0x297a2d39) | 0), ((seed ^ (seed >>> 13)) >>> 0) / 2 ** 32);
+        const alphabets = {
+            base62: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+            base64url: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_",
+            base36: "abcdefghijklmnopqrstuvwxyz0123456789",
+            base32: "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567",
+            hex: "0123456789abcdef",
+            letters: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+            lower: "abcdefghijklmnopqrstuvwxyz",
+        };
+        const tries = 1500;
+        const copied: Record<string, number> = {};
+        for (const [name, alphabet] of Object.entries(alphabets)) {
+            for (const length of [16, 20, 24, 32, 40]) {
+                let n = 0;
+                for (let i = 0; i < tries; i++) {
+                    let token = "";
+                    for (let j = 0; j < length; j++) token += alphabet[Math.floor(rnd() * alphabet.length)];
+                    if (portableMcpServer({ url: `https://mcp.example.com/s/${token}/mcp` })) n++;
+                    if (portableRule(`Bash(curl hooks.example.com/services/${token}:*)`)) n++;
+                }
+                if (n) copied[`${name} ${length}`] = n;
+            }
+        }
+        // Of 3000 tries each: none, but for the shortest tokens of the one alphabet that has dashes in it, which now
+        // and then cut a token into pieces that each read as a name. (Measured: 41 and 13. Before, about 2000.)
+        expect(Object.keys(copied).sort()).toEqual(["base64url 16", "base64url 20"]);
+        expect(copied["base64url 16"]).toBeLessThan(60);
+        expect(copied["base64url 20"]).toBeLessThan(30);
+        // The ones a reviewer got through, and keys written in groups.
+        for (const token of ["QhVxKbTmWzRpLsNdYfGjCk7a", "QhVx-KbTm-WzRp-LsNd", "abc12-def34-ghi56-jkl78", "T0AB12CD3", "Zx81kq0TtR7vLm2Qp9aBcdEf"]) {
+            expect([token, portableMcpServer({ url: `https://mcp.example.com/s/${token}/mcp` }), portableRule(`Bash(curl hooks.example.com/services/${token}:*)`)]).toEqual([token, false, false]);
+        }
+
+        // What it mustn't cost: the names tools, files, versions and addresses really have.
+        const names = ["npm", "typecheck", "x86_64-linux-gnu-gcc", "python3.12", "k8s", "e2e", "i18n", "s3cmd", "md5sum", "sha256sum", "AppIcon1024.png", "MyApp", "iOS", "README.md", "release-2024", "node_modules", "eslint-plugin-react-hooks", "v1.2.3", "MyProject.xcodeproj", "gpt-4o", "oauth2", "x264", "JSONSchema", "getUserById", "HTTPServer", "assembleDebug", "next.config.js", "package-lock.json", "ubuntu-24.04", "arm64-v8a", "ES2022", "XMLHttpRequest", "iPhone15", "1.2.3-beta.4", "2024-01-31", "sha256-md5"];
+        expect(names.filter((name) => !portableRule(`Bash(tool ${name}:*)`))).toEqual([]);
+        const rules = ["Bash", "mcp__docs__search", "Bash(npm run lint:*)", "Bash(bun test ./test/foo.test.ts)", "Read(./secrets/**)", "Read(~/.zshrc)", "WebFetch(domain:docs.example.com)", "Edit(src/**/*.ts)", "Bash(python3 manage.py migrate:*)"];
+        expect(rules.filter((rule) => !portableRule(rule))).toEqual([]);
+        const addresses = ["https://mcp.example.com/mcp", "https://mcp.linear.app/sse", "https://api.githubcopilot.com/mcp/", "https://mcp.1password.com/v1", "https://docs.example.com", "wss://mcp.example.com/ws"];
+        expect(addresses.filter((url) => !portableMcpServer({ url }))).toEqual([]);
+    });
+
+    test("an address goes as it was judged, not as it was typed", () => {
+        // Written to come out as another path than the one that reads: what's copied is what it comes to.
+        expect(portableMcpEntry({ url: "https://mcp.example.com/a/../Zx81kq0TtR7vLm2Qp9aBcdEf/../mcp" })).toEqual({ url: "https://mcp.example.com/mcp" });
+        expect(portableMcpEntry({ url: "https://MCP.Example.com/mcp/" })).toEqual({ url: "https://mcp.example.com/mcp/" });
+        // A bare host stays bare.
+        expect(portableMcpEntry({ url: "https://docs.example.com" })).toEqual({ url: "https://docs.example.com" });
     });
 
     test("memory, skills and commands go; keys, and files that read like they hold one, stay", () => {

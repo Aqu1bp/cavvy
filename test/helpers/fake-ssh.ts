@@ -44,6 +44,13 @@ export interface FakeServer {
     calls(): { opts: Record<string, string>; flags: string[]; separated: boolean; dest: string; command?: string; forward?: string }[];
     /** Ends the tunnel that's up, as a dropped connection would. */
     dropTunnel(): boolean;
+    /**
+     * Connections started from now on are slow to be made: each waits, signed in and with nothing run yet, until
+     * `release()`. After `only()`, ones started later go straight through while those already waiting still wait.
+     */
+    hold(): { only(): void; release(): void };
+    /** Lets every waiting connection through, and no later one waits. */
+    unhold(): void;
     /** A build of Cavvy to "install": this checkout, run from source. `gui`: with a GUI page beside it. */
     bundle(id: string, o?: { gui?: boolean; broken?: boolean }): { id: string; target: "linux-x64"; bundle: string; bundleBytes: number; sha256: string; gui: boolean };
     cleanup(): void;
@@ -94,6 +101,7 @@ export function fakeSsh(o: { systemd?: boolean } = {}): FakeServer {
     const behaviorFile = join(dir, "behavior.json");
     const behavior: Record<string, unknown> = {};
     let rebuilt = 0;
+    const held: string[] = [];
     const save = () => writeFileSync(behaviorFile, JSON.stringify(behavior));
     const hostKey = () => readFileSync(join(dir, "hostkey.pub"), "utf-8").trim().split(" ").slice(0, 2).join(" ");
 
@@ -121,6 +129,28 @@ export function fakeSsh(o: { systemd?: boolean } = {}): FakeServer {
         diskFree(mb) {
             if (mb === undefined) rmSync(join(dir, "bin", "df"), { force: true });
             else shim("df", `echo "Filesystem 1024-blocks Used Available Capacity Mounted on"\necho "/dev/fake 100000000 1 ${mb * 1024} 1% /"`);
+        },
+        hold() {
+            const file = join(dir, `release-${++rebuilt}`);
+            held.push(file);
+            behavior.holdUntil = file;
+            save();
+            const only = () => {
+                if (behavior.holdUntil === file) delete behavior.holdUntil;
+                save();
+            };
+            return {
+                only,
+                release() {
+                    writeFileSync(file, "");
+                    only();
+                },
+            };
+        },
+        unhold() {
+            for (const file of held) writeFileSync(file, "");
+            delete behavior.holdUntil;
+            save();
         },
         dropSessions(afterMs) {
             behavior.dropSessionAfterMs = afterMs;

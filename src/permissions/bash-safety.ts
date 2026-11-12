@@ -1420,18 +1420,111 @@ export function shellWord(w: string): string {
 /** The argv checks of dangerousReason, for each program the command runs (through env, exec, nohup…), by any name it's found by. */
 const HOST_CONTROL = "controls who can connect to this server";
 
-/** What a word with one brace list stands for: `{host,}` is `host` and nothing; `a{b,c}d` is `abd` and `acd`. */
-function braceWords(word: string): string[] {
-    const m = /^([^{}]*)\{([^{}]*)\}([^{}]*)$/.exec(word);
-    return m ? m[2]!.split(",").map((alt) => m[1] + alt + m[3]) : [word];
+/** More words than this from one, and it isn't worked out (`{a..z}{a..z}{a..z}`). */
+const BRACE_WORDS_MAX = 256;
+
+/**
+ * What a word with brace lists stands for, as the shell writes it out: `{host,}` is `host` and nothing, `a{b,c}d`
+ * is `abd` and `acd`, `{r..t}x` is `rx`, `sx` and `tx`, and several lists multiply. Undefined when that's more
+ * words than can be gone through: the caller takes it for the worst it could be.
+ */
+function braceWords(word: string): string[] | undefined {
+    // The first list with nothing nested inside it, each time, until none is left.
+    let words = [word];
+    for (let pass = 0; pass < 32; pass++) {
+        let changed = false;
+        const next: string[] = [];
+        for (const w of words) {
+            const m = /\{([^{}]*)\}/.exec(w);
+            const body = m?.[1];
+            const range = body === undefined ? null : /^(-?\d+|[A-Za-z])\.\.(-?\d+|[A-Za-z])$/.exec(body);
+            let alts: string[] | undefined;
+            if (body !== undefined && body.includes(",")) alts = body.split(",");
+            else if (range) {
+                const [from, to] = [range[1]!, range[2]!];
+                const letters = /^[A-Za-z]$/.test(from) && /^[A-Za-z]$/.test(to);
+                const [a, b] = letters ? [from.charCodeAt(0), to.charCodeAt(0)] : [Number(from), Number(to)];
+                if (letters || (/\d/.test(from) && /\d/.test(to))) {
+                    if (Math.abs(b - a) >= BRACE_WORDS_MAX) return undefined;
+                    alts = [];
+                    for (let i = a; a <= b ? i <= b : i >= b; i += a <= b ? 1 : -1) alts.push(letters ? String.fromCharCode(i) : String(i));
+                }
+            }
+            if (!m || !alts) {
+                // Braces that list nothing are themselves; marked so they aren't looked at again.
+                next.push(m ? w.slice(0, m.index) + "\u0001" + body + "\u0002" + w.slice(m.index + m[0].length) : w);
+                changed ||= Boolean(m);
+                continue;
+            }
+            changed = true;
+            for (const alt of alts) next.push(w.slice(0, m.index) + alt + w.slice(m.index + m[0].length));
+            if (next.length > BRACE_WORDS_MAX) return undefined;
+        }
+        words = next;
+        if (!changed) break;
+    }
+    return words.map((w) => w.replace(/\u0001/g, "{").replace(/\u0002/g, "}"));
+}
+
+const POSIX_CLASSES: Record<string, string> = { alpha: "A-Za-z", lower: "a-z", upper: "A-Z", digit: "0-9", alnum: "A-Za-z0-9", xdigit: "0-9A-Fa-f", word: "\\w", punct: "!-\\/:-@\\[-`{-~", space: "\\s", blank: " \\t" };
+
+/**
+ * Could a path segment, as the shell matches patterns, be `name`? "maybe" for one that can't be read as a pattern
+ * (a list in parentheses, a class it doesn't know): the caller decides what that's worth.
+ */
+function segmentMatches(segment: string, name: string): "yes" | "no" | "maybe" {
+    if (segment === name) return "yes";
+    if (!/[*?[(|]/.test(segment)) return "no";
+    // A pattern doesn't match a leading dot unless it's written with one.
+    if (name.startsWith(".") && !segment.startsWith(".")) return "no";
+    let re = "";
+    for (let i = 0; i < segment.length; i++) {
+        const c = segment[i]!;
+        if (c === "*") re += ".*";
+        else if (c === "?") re += ".";
+        else if (c === "[") {
+            // Read as the shell does: an optional `!`, a `]` right after that is itself, then characters and
+            // `[:classes:]` up to the closing `]`.
+            let j = i + 1;
+            const not = segment[j] === "!" || segment[j] === "^";
+            if (not) j++;
+            let body = "";
+            if (segment[j] === "]") {
+                body += "\\]";
+                j++;
+            }
+            for (; j < segment.length && segment[j] !== "]"; j++) {
+                if (segment.startsWith("[:", j)) {
+                    const close = segment.indexOf(":]", j + 2);
+                    const cls = close < 0 ? undefined : POSIX_CLASSES[segment.slice(j + 2, close)];
+                    if (cls === undefined) return "maybe";
+                    body += cls;
+                    j = close + 1;
+                } else body += segment[j]!.replace(/[\\\]^[]/g, "\\$&");
+            }
+            if (j >= segment.length || !body) return "maybe";
+            re += `[${not ? "^" : ""}${body}]`;
+            i = j;
+        } else if ("()|".includes(c)) return "maybe";
+        // Braces still here list nothing (braceWords wrote the lists out): they're themselves.
+        else re += c.replace(/[.+^${}\\]/g, "\\$&");
+    }
+    try {
+        return new RegExp(`^${re}$`).test(name) ? "yes" : "no";
+    } catch {
+        return "maybe";
+    }
 }
 
 /**
  * Does a word name the folder a server keeps its sign-ins in (`.cavvy/server`)? However it's written: with a
- * doubled slash, a `./` or an `x/..` on the way, a brace list, or a pattern that matches it.
+ * doubled slash, a `./` or an `x/..` on the way, brace lists, or patterns that match either part of it.
  */
 function namesServerFolder(word: string): boolean {
-    for (const one of braceWords(word)) {
+    const words = braceWords(word);
+    // Too many to go through: guarded if it could be naming Cavvy's folder at all.
+    if (!words) return /cavvy|harness|[*?[]/.test(word);
+    for (const one of words) {
         // As the path it comes to: `a//b`, `a/./b` and `a/x/../b` are all `a/b`.
         const parts: string[] = [];
         for (const part of one.split("/")) {
@@ -1439,21 +1532,12 @@ function namesServerFolder(word: string): boolean {
             if (part === ".." && parts.length && parts.at(-1) !== "..") parts.pop();
             else parts.push(part);
         }
-        const at = parts.findIndex((p) => p === ".cavvy" || p === ".harness");
-        const segment = at < 0 ? undefined : parts[at + 1];
-        if (segment === undefined) continue;
-        if (segment === "server") return true;
-        if (!/[*?[]/.test(segment)) continue;
-        // The pattern as the shell would match it against "server".
-        const re = segment
-            .replace(/[.+^${}()|\\]/g, "\\$&")
-            .replace(/\*/g, ".*")
-            .replace(/\?/g, ".")
-            .replace(/\[!/g, "[^");
-        try {
-            if (new RegExp(`^${re}$`).test("server")) return true;
-        } catch {
-            return true;
+        for (let at = 0; at + 1 < parts.length; at++) {
+            const home = [segmentMatches(parts[at]!, ".cavvy"), segmentMatches(parts[at]!, ".harness")];
+            const folder = segmentMatches(parts[at + 1]!, "server");
+            // One part that can't be read counts when the other is plainly there: what's guarded is asked about,
+            // not let through. Two that can't be read name nothing in particular.
+            if (home.includes("yes") ? folder !== "no" : home.includes("maybe") && folder === "yes") return true;
         }
     }
     return false;
@@ -1475,7 +1559,7 @@ function dangerousArgv(argv0: string[], depth: number): string | undefined {
         // A program still to be worked out (`$c host pair`) counts as Cavvy when what follows is `host`; and `{host,}`
         // is `host` once the shell has expanded it.
         const first = args[0] ?? "";
-        const isHost = first === "host" || /[$`]/.test(first) || (/[{}]/.test(first) && braceWords(first).includes("host"));
+        const isHost = first === "host" || /[$`]/.test(first) || (/[{}]/.test(first) && (braceWords(first)?.includes("host") ?? true));
         if ((runs(prog, "cavvy", "harness") || (/[$`]/.test(prog ?? "") && first === "host")) && isHost && !["", "status", "check", "version", "-h", "--help"].includes(args[1] ?? "")) {
             return HOST_CONTROL;
         }

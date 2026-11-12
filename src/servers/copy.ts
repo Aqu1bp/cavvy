@@ -64,16 +64,56 @@ function localHost(host: string): boolean {
     return /^(0\.|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(h);
 }
 
-/** Letters and digits mixed as a key or a token is: more than three digits among letters. A number or a date isn't. */
-const tokenLike = (s: string) => /[A-Za-z]/.test(s) && (s.match(/\d/g)?.length ?? 0) > 3;
+// Telling a name from a key. A key or a token is long, or made of letters and digits at random; a name is short
+// parts that each read as a word or a number. What's judged is each run of letters and digits between the dots,
+// dashes and underscores. test/servers-unit.test.ts measures it: random tokens of 16 characters or more, in the
+// alphabets keys come in, against the names commands and addresses are made of.
+
+/** A number or a date. */
+const DIGITS = /^\d{1,8}$/;
+/** Small letters, with one group of digits at most: lint, python3, md5sum, sha256sum, k8s, i18n, 7zip. */
+const LOWER = /^(?:[a-z]+(?:\d{1,4}[a-z]*)?|\d{1,4}[a-z]+)$/;
+/** Capitals, with digits after: README, JSON, HTTP2. */
+const UPPER = /^[A-Z]+\d{0,4}$/;
+/** Words run together, each after the first starting with a capital: AppIcon, getUserById, JSONSchema, AppIcon1024. */
+const CAMEL = /^(?:[a-z]+|[A-Z]{1,5})?(?:[A-Z][a-z]+)+\d{0,4}$/;
+
+function nameLike(run: string): boolean {
+    if (DIGITS.test(run) || LOWER.test(run) || UPPER.test(run)) return true;
+    if (!CAMEL.test(run)) return false;
+    // Letters at random fall into capitalised "words" of a letter or two; a name's words are longer.
+    const letters = run.replace(/\d+$/, "");
+    const words = (letters.match(/[A-Z][a-z]+/g)?.length ?? 0) + (/^(?:[a-z]+|[A-Z]{2,5}(?=[A-Z][a-z]))/.test(letters) ? 1 : 0);
+    return letters.length / words >= 2.75;
+}
 
 /**
- * A word that's plainly a name: letters first, then letters, a few digits, and
- * dots, dashes or underscores between. Not something made up of letters and
- * digits at random, which is what a key or a token in an address looks like.
+ * Whether every run of letters and digits in it reads as part of a name. A run of more than 15 doesn't, whatever
+ * it's made of. One short run may be odd (MyApp, iOS); a token is odd all through. And a name has a run or two
+ * that mix letters with digits (x86_64, arm64-v8a), where a key written in groups has them in most.
+ */
+function plainRuns(s: string): boolean {
+    if ((s.match(/\d/g)?.length ?? 0) > 10) return false;
+    let odd = 0;
+    let mixed = 0;
+    for (const run of s.split(/[._-]+/)) {
+        if (!run) continue;
+        if (run.length > 15) return false;
+        if (/\d/.test(run) && /[A-Za-z]/.test(run) && ++mixed > 2) return false;
+        if (nameLike(run)) continue;
+        if (run.length > 8 || ++odd > 1) return false;
+    }
+    return true;
+}
+
+/**
+ * A word that's plainly a name: letters first, then letters, digits, and
+ * dots, dashes or underscores between, each part of it reading as a name
+ * does (plainRuns). Not something made up of letters and digits at random,
+ * which is what a key or a token in an address looks like.
  */
 function plainWord(s: string): boolean {
-    return s.length <= 40 && /^[A-Za-z][A-Za-z0-9]*([._-][A-Za-z0-9]+)*$/.test(s) && !tokenLike(s);
+    return s.length <= 40 && /^[A-Za-z][A-Za-z0-9]*([._-][A-Za-z0-9]+)*$/.test(s) && plainRuns(s);
 }
 
 /** A package as a runner takes it: `name`, `@scope/name`, either with `@version`. */
@@ -117,8 +157,11 @@ export function portableMcpEntry(c: McpServerConfig): McpServerConfig | undefine
             return undefined;
         }
         if (!/^(https?|wss?):$/.test(u.protocol) || u.username || u.password || u.search || u.hash || localHost(u.hostname)) return undefined;
-        if (!u.hostname.split(".").every((label) => label.length <= 40 && !tokenLike(label))) return undefined;
+        if (!u.hostname.split(".").every((label) => label.length <= 40 && plainRuns(label))) return undefined;
         if (!u.pathname.split("/").filter(Boolean).every(plainWord)) return undefined;
+        // The address as it was judged, not as it was typed: a path written to come out differently (`a/../b`) goes
+        // as what it comes to. (A bare host gains a slash that way, which is taken off again.)
+        const url = u.pathname === "/" && !c.url.endsWith("/") ? u.href.slice(0, -1) : u.href;
         // Which client to sign in as is a name, not a secret (the secret, when there is one, kept the server here).
         const o = c.oauth;
         const oauth = {
@@ -126,7 +169,7 @@ export function portableMcpEntry(c: McpServerConfig): McpServerConfig | undefine
             ...(typeof o?.callbackPort === "number" ? { callbackPort: o.callbackPort } : {}),
             ...(typeof o?.scopes === "string" || (Array.isArray(o?.scopes) && o.scopes.every((x) => typeof x === "string")) ? { scopes: o!.scopes } : {}),
         };
-        return { ...kept, url: c.url, ...(Object.keys(oauth).length ? { oauth } : {}) };
+        return { ...kept, url, ...(Object.keys(oauth).length ? { oauth } : {}) };
     }
     if (typeof c.command !== "string" || !Object.hasOwn(RUNNERS, c.command)) return undefined;
     if (!Array.isArray(c.args) || !c.args.every((a) => typeof a === "string")) return undefined;
@@ -154,8 +197,8 @@ export function portableRule(rule: string): boolean {
     if (body === undefined) return true;
     if (!/^[A-Za-z0-9 ._/*:~-]+$/.test(body) || body.includes("://")) return false;
     if (body.split(" ").some((w) => w.startsWith("-"))) return false;
-    // An address needs no scheme to carry a token in its path or its name: no piece of a word reads like one.
-    return !body.split(/[ /.:*]+/).some(tokenLike);
+    // An address needs no scheme to carry a token in its path or its name: every piece of every word reads as a name.
+    return body.split(/[ /.:*~]+/).every(plainRuns);
 }
 
 /** What a copy leaves on this machine because it could hold a key or needs this machine: said, so nothing is missed in silence. */

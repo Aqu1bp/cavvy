@@ -4,10 +4,10 @@
 // connection signs in again over SSH (src/servers/connect.ts).
 
 import { randomBytes } from "crypto";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, linkSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { hostname } from "os";
 import { isAbsolute, join, resolve } from "path";
-import { cavvyHome } from "../config/paths";
+import { cavvyHome, ensureDir } from "../config/paths";
 import { writeJson } from "../config/settings";
 
 export interface ServerEntry {
@@ -24,14 +24,14 @@ export interface ServerEntry {
 }
 
 interface StoreFile {
-    /** This machine, as servers know it: its sign-ins on a server are under this id. */
-    desktop?: string;
     servers?: ServerEntry[];
 }
 
 export class ServerError extends Error {}
 
 export const serversFile = () => join(cavvyHome(), "servers.json");
+/** This machine's id, as servers know it: its sign-ins and its runs on a server are under it. A file of its own, so making it never rewrites the list. */
+export const desktopIdFile = () => join(cavvyHome(), "servers-id");
 
 const NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
 /** `user@host` or a config Host: nothing ssh could take for an option, and nothing a shell or a URL would read into. */
@@ -54,7 +54,7 @@ function read(): StoreFile {
             return false;
         }
     });
-    return { desktop: typeof d.desktop === "string" && /^[0-9a-f]{32}$/.test(d.desktop) ? d.desktop : undefined, servers };
+    return { servers };
 }
 
 function write(data: StoreFile) {
@@ -132,14 +132,41 @@ export interface Desktop {
     label: string;
 }
 
+function savedDesktopId(): string | undefined {
+    try {
+        const id = readFileSync(desktopIdFile(), "utf-8").trim();
+        return /^[0-9a-f]{32}$/.test(id) ? id : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * This machine's id: made once, by whichever process asks first. Two that ask at the same moment end with the
+ * same one: each writes its own beside the file, and only the first gets to give it the file's name.
+ */
+function desktopId(): string {
+    const had = savedDesktopId();
+    if (had) return had;
+    const file = desktopIdFile();
+    ensureDir(cavvyHome());
+    const mine = `${file}.${process.pid}.${randomBytes(4).toString("hex")}`;
+    writeFileSync(mine, `${randomBytes(16).toString("hex")}\n`, { mode: 0o600 });
+    try {
+        linkSync(mine, file);
+    } catch {
+        // another process got there first, or the file is there and isn't an id (said below)
+    } finally {
+        rmSync(mine, { force: true });
+    }
+    const id = savedDesktopId();
+    if (!id) throw new ServerError(`${file} doesn't hold this machine's id. Delete it.`);
+    return id;
+}
+
 /** This machine as servers know it. The id is made once and kept. */
 export function thisDesktop(): Desktop {
-    const data = read();
-    let id = data.desktop;
-    if (!id) {
-        id = randomBytes(16).toString("hex");
-        write({ ...data, desktop: id });
-    }
+    const id = desktopId();
     return {
         id,
         label:
