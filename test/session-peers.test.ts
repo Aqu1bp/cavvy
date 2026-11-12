@@ -470,6 +470,33 @@ describe("in the app", () => {
         expect(listText(peers, { all: true, query: "login" }).text).toContain("looked through the newest 2,000 sessions");
     });
 
+    test("refusals: a session open in another Cavvy process, and one whose folder is gone", async () => {
+        const a = await engine.createSession(project, { mode: "bypassPermissions" });
+        const elsewhere = await engine.createSession(project, { mode: "bypassPermissions" });
+        const gone = realpathSync(createDemoProject(tempDir("peers-gone-"), { git: false }));
+        const lost = await engine.createSession(gone, { mode: "bypassPermissions" });
+        await Promise.all([a.ready, elsewhere.ready, lost.ready]);
+        await send(elsewhere, "hello");
+        await send(lost, "hello");
+        for (const rt of [elsewhere, lost]) {
+            (engine as any).unloadIfUnused(rt.id);
+            await until(() => !engine.runtimes.has(rt.id));
+        }
+        // Another running process holds it (this test's parent stands in for a terminal's Cavvy).
+        const lock = `${elsewhere.session.path}.lock`;
+        writeFileSync(lock, JSON.stringify({ pid: process.ppid }));
+        try {
+            expect((await sendToSession(a.toolState.peers, { id: elsewhere.id, message: "hi" })).text).toContain("open in another Cavvy process");
+        } finally {
+            rmSync(lock, { force: true });
+        }
+        rmSync(gone, { recursive: true, force: true });
+        const r = await sendToSession(a.toolState.peers, { id: lost.id, message: "hi" });
+        expect(r.isError).toBe(true);
+        expect(r.text).toContain("couldn't be opened");
+        expect(r.text).toContain("no longer exists");
+    });
+
     test("refusals: itself, unknown, a session that asks less, and a stopped one waits", async () => {
         const a = await engine.createSession(project, { mode: "default" });
         const b = await engine.createSession(project, { mode: "bypassPermissions" });
