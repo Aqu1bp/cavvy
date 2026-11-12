@@ -2633,6 +2633,9 @@ export class Engine {
                 return null;
             case "servers.remove":
                 return await (await this.servers(client)).remove(str(p.name, "name"));
+            case "servers.restore":
+                (await this.servers(client)).restore(str(p.name, "name"));
+                return null;
             case "providers.removeKey": {
                 const id = str(p.provider, "provider");
                 if (getProvider(id)?.auth === "cli") {

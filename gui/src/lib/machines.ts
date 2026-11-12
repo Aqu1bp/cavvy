@@ -6,6 +6,7 @@ import { createSignal } from "solid-js";
 import type { ServerProblem, UnknownHost } from "@shared/protocol";
 import { credentials, machine, MACHINE_KEY, windowKey } from "./platform";
 import { Rpc, type Credentials } from "./rpc";
+import { setConnNote } from "../state/app";
 
 /** Why the window isn't on its server yet, for the cover that says so (components/Servers.tsx). */
 export type MachineIssue =
@@ -16,7 +17,14 @@ export type MachineIssue =
     | { kind: "other-version" }
     | { kind: "failed"; problem: ServerProblem };
 
-export const [machineIssue, setMachineIssue] = createSignal<MachineIssue | undefined>(machine ? { kind: "connecting" } : undefined);
+const [issue, setIssue] = createSignal<MachineIssue | undefined>(machine ? { kind: "connecting" } : undefined);
+export const machineIssue = issue;
+/** Says where reaching the server stands. A failure is also said, in short, beside the window's "Reconnecting…". */
+export function setMachineIssue(i: MachineIssue | undefined) {
+    setIssue(i);
+    const why = i?.kind === "failed" ? i.problem.message.replace(/\s+/g, " ").trim() : undefined;
+    setConnNote(why && why.length > 70 ? `${why.slice(0, 69)}…` : why);
+}
 
 /** This computer's own Cavvy, for a window that's on a server; undefined for one that isn't (it's the window's own). */
 export const home: Rpc | undefined = machine ? new Rpc(credentials, windowKey) : undefined;

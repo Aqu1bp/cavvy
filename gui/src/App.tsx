@@ -2,7 +2,7 @@ import { RenderBoundary } from "./components/ui/ErrorBoundary";
 import { batch, createEffect, createMemo, createSignal, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
 import { PlugZap } from "lucide-solid";
 import { ErrorCards } from "./components/ErrorCards";
-import { activate, app, attentionCount, handleFor, restoreActiveSession, rpc, serversUi, type SessionHandle } from "./state/app";
+import { activate, app, attentionCount, connNote, handleFor, restoreActiveSession, rpc, serversUi, type SessionHandle } from "./state/app";
 import { cycleSession, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
 import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, reviewSplit, setAgentFocus, setDockHeight, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
@@ -290,7 +290,7 @@ function Reconnecting() {
         <>
             <Show when={app.conn !== "open"}>
                 <div class="banner" role="status">
-                    <Spinner size={12} /> Not connected · Reconnecting…
+                    <Spinner size={12} /> {connNote() ?? "Not connected"} · Reconnecting…
                     <button class="link-btn" onClick={() => rpc.reconnectNow()}>
                         Reconnect now
                     </button>

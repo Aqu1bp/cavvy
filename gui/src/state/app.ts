@@ -29,6 +29,8 @@ import { keyedTurn, placeBefore, type TurnKey } from "../lib/transcript-scroll";
 
 // On a server, the window talks to the Cavvy there; this computer's own Cavvy says where that is (lib/machines.ts).
 export const serversUi = () => import("../components/Servers");
+/** Why a window on a server isn't connected, in a few words, for the banner that says it's reconnecting. */
+export const [connNote, setConnNote] = createSignal<string>();
 export const rpc = new Rpc(machine ? async () => (await serversUi()).machineCredentials() : credentials, windowKey);
 rpc.retriesCredentials = isDesktop;
 

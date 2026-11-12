@@ -17,7 +17,7 @@ import { ServerBusy, setUpServer, type SetupProgress } from "./install";
 import { probeServer } from "./remote";
 import { NotSetUp, remoteCheck, remoteStatus, revokeOverSsh, serviceReport, stopRemote, StoppedThere } from "./service";
 import { hostOf, offeredHostKey, printable, SshError, trustHostKey, type OfferedHostKey } from "./ssh";
-import { draftServer, listServers, removeServer, requireServer, saveServer, ServerError, thisDesktop, type ServerEntry } from "./store";
+import { draftServer, getServer, listServers, removeServer, requireServer, saveServer, ServerError, thisDesktop, type ServerEntry } from "./store";
 
 export interface ServerProgress {
     name: string;
@@ -55,6 +55,8 @@ export class ServerLinks {
     private links = new Map<string, Linked>();
     /** Servers being connected to right now: every caller waits for the same attempt. */
     private starting = new Map<string, Promise<ConnectResult>>();
+    /** Removed since this Cavvy started, as they were: what `restore` puts back. */
+    private removed = new Map<string, ServerEntry>();
     /** The key each unknown host offered, by the server's name: what `trust` saves is what was shown. */
     private offered = new Map<string, { entry: ServerEntry; key: OfferedHostKey }>();
 
@@ -319,12 +321,22 @@ export class ServerLinks {
     async remove(name: string): Promise<{ signedOut: boolean }> {
         await this.drop(name, false);
         const entry = removeServer(name);
+        this.removed.set(name, entry);
         try {
             await revokeOverSsh(entry, thisDesktop().id);
             return { signedOut: true };
         } catch {
             return { signedOut: false };
         }
+    }
+
+    /** Undoes a removal made since this Cavvy started: the server is listed again as it was, and signs in when next opened. */
+    restore(name: string): void {
+        const entry = this.removed.get(name);
+        if (!entry) throw new ServerError(`${name} can't be put back. Add it again.`);
+        if (getServer(name)) throw new ServerError(`There's already a server named ${name}.`);
+        saveServer(entry);
+        this.removed.delete(name);
     }
 
     /** The engine is stopping: every connection is closed and signed out. */

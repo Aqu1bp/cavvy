@@ -181,6 +181,18 @@ describe("servers, from a window", () => {
         there = r;
     });
 
+    test("updating: level already, it says so and the window signs in again", async () => {
+        expect(await here.call("servers.update", { name: "box" })).toEqual({ status: "updated" });
+        expect((await here.call("servers.list")).servers[0].connected).toBe(false);
+        const r = await here.call("servers.connect", { name: "box" });
+        expect(r.status).toBe("connected");
+        const remote = new Window(r.url, r.token);
+        expect(await remote.opened.promise).toBe(true);
+        remote.ws.close();
+        there = r;
+        await expect(here.call("servers.update", { name: "nope" })).rejects.toThrow("No server named nope");
+    });
+
     test("disconnecting signs this Cavvy out there and leaves the Cavvy there running", async () => {
         await here.call("servers.disconnect", { name: "box" });
         expect((await here.call("servers.list")).servers[0].connected).toBe(false);
@@ -192,9 +204,20 @@ describe("servers, from a window", () => {
         expect(await old.opened.promise).toBe(false);
     });
 
-    test("removing: forgotten here, signed out there", async () => {
+    test("removing: forgotten here, signed out there; undone, it's listed again and opens with a new sign-in", async () => {
         expect(await here.call("servers.remove", { name: "box" })).toEqual({ signedOut: true });
         expect((await here.call("servers.list")).servers).toEqual([]);
         await expect(here.call("servers.check", { name: "box" })).rejects.toThrow("No server named box");
+
+        expect(await here.call("servers.restore", { name: "box" })).toBeNull();
+        expect((await here.call("servers.list")).servers).toEqual([{ name: "box", destination: "dev@box.example", connected: false }]);
+        // Once: there's nothing left to put back.
+        await expect(here.call("servers.restore", { name: "box" })).rejects.toThrow("box can't be put back. Add it again.");
+        const r = await here.call("servers.connect", { name: "box" });
+        expect(r.status).toBe("connected");
+        const remote = new Window(r.url, r.token);
+        expect(await remote.opened.promise).toBe(true);
+        remote.ws.close();
+        expect(await here.call("servers.remove", { name: "box" })).toEqual({ signedOut: true });
     });
 });

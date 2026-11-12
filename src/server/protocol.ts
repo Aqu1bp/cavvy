@@ -1803,6 +1803,8 @@ export interface Methods {
     "servers.disconnect": { params: { name: string }; result: null };
     "servers.stop": { params: { name: string }; result: null };
     "servers.remove": { params: { name: string }; result: { signedOut: boolean } };
+    /** Undoes a `servers.remove` made since this Cavvy started. */
+    "servers.restore": { params: { name: string }; result: null };
     "terminal.open": { params: { id: string; cwd: string; cols: number; rows: number; login?: { provider: string; accountId: string } }; result: { id: string; cwd: string } };
     "terminal.write": { params: { id: string; data: string }; result: null };
     /** The window has drawn this many characters of the terminal's output (flow control). */

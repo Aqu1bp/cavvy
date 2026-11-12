@@ -27,7 +27,7 @@
     flex-direction: column;
     gap: calc(4 * var(--sp));
     font-size: 0.86rem;
-    color: var(--text-2);
+    color: var(--fg-2);
 }
 
 .server-actions {
@@ -41,7 +41,7 @@
     display: flex;
     align-items: center;
     gap: calc(8 * var(--sp));
-    color: var(--text-2);
+    color: var(--fg-2);
 }
 
 .server-key {
@@ -67,11 +67,19 @@
     flex-direction: column;
     gap: calc(4 * var(--sp));
     font-size: 0.86rem;
-    color: var(--text-2);
+    color: var(--fg-2);
 }
 
 .server-cover {
     display: contents;
+}
+
+/* Over a window that had been on its server, when getting back needs the user. */
+.server-over {
+    position: fixed;
+    inset: 0;
+    z-index: 900;
+    background: var(--sheet);
 }
 
 .server-cover .server-actions {
@@ -85,11 +93,13 @@
 
 /* The machine this window is on, beside Settings: on a server the button carries the server's name. */
 .app[data-machine] .side-foot .machine {
+    display: inline-flex;
+    align-items: center;
     width: auto;
     max-width: calc(130 * var(--sp));
     padding: 0 calc(8 * var(--sp));
     gap: calc(6 * var(--sp));
-    color: var(--text);
+    color: var(--fg);
     font-size: 0.8rem;
     overflow: hidden;
     white-space: nowrap;

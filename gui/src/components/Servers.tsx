@@ -8,7 +8,7 @@ import { Check, Plus, Server, Trash2 } from "lucide-solid";
 import type { AddResult, ServerCheck, ServerProblem, UnknownHost } from "@shared/protocol";
 import { homeRpc, machineIssue, setMachineIssue, switchMachine, trustMachine } from "../lib/machines";
 import { machine, os } from "../lib/platform";
-import { reportError, rpc, toast } from "../state/app";
+import { app, reportError, rpc, toast } from "../state/app";
 import { Dialog } from "./ui/Dialog";
 import { Menu } from "./ui/Menu";
 import { Logo, Spinner } from "./ui/bits";
@@ -51,6 +51,30 @@ export function openMachines(anchor: HTMLElement) {
 /** Shows, in `el`, what a window on a server shows until it's connected (MachineCover). */
 export function mountCover(el: HTMLElement, reconnect: () => void) {
     render(() => <MachineCover reconnect={reconnect} />, el);
+}
+
+/**
+ * A window that was on its server and has lost it keeps what it shows, under the window's own "Reconnecting…" (which
+ * says why it can't be reached: lib/machines.ts). Only when getting back needs the user (the server's key is new, it
+ * runs another version) does this take the window over, with the question.
+ */
+const needsUser = () => {
+    const issue = machineIssue()?.kind;
+    return app.hello !== undefined && app.conn !== "open" && (issue === "unknown-host" || issue === "other-version");
+};
+if (machine) {
+    const host = document.createElement("div");
+    document.body.append(host);
+    render(
+        () => (
+            <Show when={needsUser()}>
+                <div class="splash server-over" role="alertdialog" aria-label={`Not connected to ${machine}`}>
+                    <MachineCover reconnect={() => rpc.reconnectNow()} />
+                </div>
+            </Show>
+        ),
+        host,
+    );
 }
 
 /** What this computer is called in the list of machines. */
@@ -104,13 +128,12 @@ function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
                 .catch(() => []),
     );
     const close = () => setServerMenu(false);
+    // It can be put back, so nothing is asked first.
     const remove = async (name: string) => {
         close();
-        if (!window.confirm(`Remove ${name}?`)) return;
         try {
             await servers().call("servers.remove", { name });
-            if (machine === name) switchMachine(undefined);
-            else toast(`Removed ${name}`);
+            toast(`Removed ${name}`, "info", { label: "Undo", run: () => servers().call("servers.restore", { name }).then(() => undefined) });
         } catch (e) {
             reportError(e);
         }
@@ -132,9 +155,12 @@ function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
                                 <Check size={14} />
                             </Show>
                         </button>
-                        <button class="hb" title={`Remove ${s.name}`} aria-label={`Remove ${s.name}`} onClick={() => void remove(s.name)}>
-                            <Trash2 size={13} />
-                        </button>
+                        {/* Not the one this window is on: it's removed from another. */}
+                        <Show when={machine !== s.name}>
+                            <button class="hb" title={`Remove ${s.name}`} aria-label={`Remove ${s.name}`} onClick={() => void remove(s.name)}>
+                                <Trash2 size={13} />
+                            </button>
+                        </Show>
                     </div>
                 )}
             </For>
@@ -337,6 +363,8 @@ function AddServerDialog() {
 /** What the window shows instead of its sessions while it isn't on its server yet, or has lost it. */
 function MachineCover(p: { reconnect: () => void }) {
     const [updating, setUpdating] = createSignal<string>();
+    /** Updating would stop work there: what's working, while the user is asked. */
+    const [busy, setBusy] = createSignal<string>();
     const retry = () => {
         setMachineIssue({ kind: "connecting" });
         p.reconnect();
@@ -348,16 +376,16 @@ function MachineCover(p: { reconnect: () => void }) {
             const r = await servers().call("servers.update", { name: machine, force });
             setUpdating(undefined);
             if (r.status === "updated") retry();
-            else if (r.status === "busy") {
-                if (window.confirm(`Stop work on ${machine} to update?`)) await update(true);
-            } else if (r.status === "unknown-host") setMachineIssue({ kind: "unknown-host", unknown: r.unknown });
+            else if (r.status === "busy") setBusy(r.working ? `${r.working} ${r.working === 1 ? "session is" : "sessions are"} working there.` : `${r.waiting} ${r.waiting === 1 ? "session is" : "sessions are"} waiting for you there.`);
+            else if (r.status === "unknown-host") setMachineIssue({ kind: "unknown-host", unknown: r.unknown });
             else setMachineIssue({ kind: "failed", problem: r.problem });
         } catch (e) {
             setUpdating(undefined);
             setMachineIssue({ kind: "failed", problem: { message: (e as Error).message } });
         }
     };
-    const back = (
+    // Made anew wherever it's shown: one element can't be in two of the states below.
+    const Back = () => (
         <button class="btn secondary" onClick={() => switchMachine(undefined)}>
             {HERE}
         </button>
@@ -370,7 +398,7 @@ function MachineCover(p: { reconnect: () => void }) {
                         <Logo size={44} />
                         <Spinner size={18} />
                         <div class="muted">{updating() ?? `Connecting to ${machine}…`}</div>
-                        {back}
+                        <Back />
                     </>
                 }
             >
@@ -378,6 +406,25 @@ function MachineCover(p: { reconnect: () => void }) {
                     <Logo size={44} />
                     <Spinner size={18} />
                     <div class="muted">{updating()}</div>
+                </Match>
+                <Match when={busy()}>
+                    <Server size={36} />
+                    <h2>Stop work on {machine} to update?</h2>
+                    <p class="muted">{busy()}</p>
+                    <div class="server-actions">
+                        <button class="btn secondary" onClick={() => setBusy(undefined)}>
+                            Cancel
+                        </button>
+                        <button
+                            class="btn danger"
+                            onClick={() => {
+                                setBusy(undefined);
+                                void update(true);
+                            }}
+                        >
+                            Stop and update
+                        </button>
+                    </div>
                 </Match>
                 <Match when={machineIssue()?.kind === "connecting" && (machineIssue() as Extract<ReturnType<typeof machineIssue>, { kind: "connecting" }>)}>
                     {(i) => (
@@ -388,7 +435,7 @@ function MachineCover(p: { reconnect: () => void }) {
                                 {i().text ?? `Connecting to ${machine}…`}
                                 <Show when={i().percent !== undefined}> {i().percent}%</Show>
                             </div>
-                            {back}
+                            <Back />
                         </>
                     )}
                 </Match>
@@ -399,7 +446,7 @@ function MachineCover(p: { reconnect: () => void }) {
                             <h2>Trust {i().unknown.host}?</h2>
                             <HostKey unknown={i().unknown} />
                             <div class="server-actions">
-                                {back}
+                                <Back />
                                 <button
                                     class="btn primary"
                                     onClick={() => {
@@ -417,7 +464,7 @@ function MachineCover(p: { reconnect: () => void }) {
                     <Server size={36} />
                     <h2>{machine} runs another version of Cavvy</h2>
                     <div class="server-actions">
-                        {back}
+                        <Back />
                         <button class="btn primary" onClick={() => void update()}>
                             Update {machine}
                         </button>
@@ -430,7 +477,7 @@ function MachineCover(p: { reconnect: () => void }) {
                             <h2>Can't connect to {machine}</h2>
                             <Problem problem={i().problem} />
                             <div class="server-actions">
-                                {back}
+                                <Back />
                                 <button class="btn primary" onClick={retry}>
                                     Try again
                                 </button>
