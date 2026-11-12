@@ -299,7 +299,13 @@ export class ServerLinks {
      * `renew`: the sign-in last handed out didn't open anything (it had run out, or was taken away): a new one.
      */
     connect(name: string, o: { retry?: boolean; renew?: boolean; quiet?: boolean } = {}): Promise<ConnectResult> {
-        if (!o.retry) this.apart.delete(name);
+        if (!o.retry) {
+            this.apart.delete(name);
+            // The user is waiting: a connection that's coming back by itself, which the watch of its sessions only
+            // waits on, is tried now.
+            const link = this.links.get(name)?.link;
+            if (link?.state.state === "reconnecting") link.tryNow();
+        }
         const going = this.starting.get(name);
         // One attempt at a time, shared. Not a retry's answer for the user's asking, though: a retry leaves a
         // stopped server stopped and waits on a connection that's coming back, where the user's asking doesn't.

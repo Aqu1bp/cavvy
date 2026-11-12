@@ -1707,7 +1707,8 @@ export type ServerEvent =
     | { type: "servers.overview"; machine: MachineOverview }
     /**
      * What a session on another machine has to tell its user, for one window to show: `name` is the server's, and
-     * left out when it's this computer's own session, told to a window that's on a server.
+     * left out when it's this computer's own session, told to a window that's on a server. No `sessionId` ("") when
+     * it's said for several at once (more of them ask than are passed on one by one).
      */
     | { type: "servers.notify"; name?: string; sessionId: string; kind: "done" | "permission" | "question" | "plan" | "error"; title: string; body: string }
     /**
