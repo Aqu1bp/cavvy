@@ -1633,6 +1633,18 @@ export interface ServerSummary {
     connected: boolean;
 }
 
+/**
+ * Another machine's sessions, as this computer's Cavvy sees them through a connection of its own there
+ * (src/servers/watch.ts): those in play, the ones waiting for the user first, then the working, then the most recent.
+ */
+export interface MachineOverview {
+    name: string;
+    /** needs-you: reaching it takes the user's word (its key isn't known, it runs another version). */
+    /** disconnected: on the user's word, until they open it again. removed: it's no longer one of this Cavvy's servers. */
+    state: "connecting" | "connected" | "unreachable" | "stopped" | "needs-you" | "disconnected" | "removed";
+    sessions: SessionSummary[];
+}
+
 /** Why something on a server didn't happen, in words for the user: what, ssh's own line, and what to do. */
 export interface ServerProblem {
     message: string;
@@ -1689,6 +1701,13 @@ export type ServerEvent =
     | { type: "servers.progress"; name: string; text: string; percent?: number }
     /** A server this Cavvy is connected to came back, is being reached again, or is gone (to every window). */
     | { type: "servers.link"; name: string; state: "connected" | "reconnecting" | "stopped"; problem?: ServerProblem }
+    /** A server's sessions as they stand now (servers.overview), to the windows that asked for them. */
+    | { type: "servers.overview"; machine: MachineOverview }
+    /**
+     * What a session on another machine has to tell its user, for one window to show: `name` is the server's, and
+     * left out when it's this computer's own session, told to a window that's on a server.
+     */
+    | { type: "servers.notify"; name?: string; sessionId: string; kind: "done" | "permission" | "question" | "plan" | "error"; title: string; body: string }
     /** A session's browser changed: its tabs, who drives them, or whether it runs (sent to the windows that have the session open). */
     | { type: "browser.state"; sessionId: string; state: BrowserState }
     /**
@@ -1791,6 +1810,8 @@ export interface HelloResult {
     host: string;
     /** The folder the server was started in, when it's a project. */
     startCwd?: string;
+    /** How many servers this Cavvy knows (src/servers), when it has any: a window then shows them beside its own sessions. */
+    servers?: number;
 }
 
 export interface Methods {
@@ -1798,6 +1819,11 @@ export interface Methods {
     // server's own Cavvy. A call that needs the user's word says so in its result; `trust` carries the answer to
     // an unknown host's key back: the fingerprints that were shown.
     "servers.list": { params: Record<string, never>; result: { servers: ServerSummary[] } };
+    /**
+     * Each server's sessions, kept up to date from then on (servers.overview events) for the window that asks, which
+     * is also told what sessions on machines no window is on have to say (servers.notify). Starts nothing on a server.
+     */
+    "servers.overview": { params: Record<string, never>; result: { machines: MachineOverview[] } };
     "servers.add": { params: { name: string; destination: string; port?: number; identityFile?: string; trust?: string[] }; result: AddResult };
     "servers.copy": { params: { name: string }; result: { took: string; left?: string } };
     "servers.check": { params: { name: string }; result: ServerCheck };
