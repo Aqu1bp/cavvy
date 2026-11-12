@@ -2474,7 +2474,7 @@ export class Engine {
                 return null;
             case "session.stopBackground": {
                 if (p.ids !== undefined && (!Array.isArray(p.ids) || p.ids.length > 500 || p.ids.some((x: unknown) => typeof x !== "string" || !x || x.length > 500))) throw new RpcError("ids must be a list of task ids", "invalid");
-                return { results: await this.runtime(p.id).stopBackground(p.ids as string[] | undefined) };
+                return { results: await this.runtime(p.id).stopBackground(p.ids as string[] | undefined, p.left === true || p.ids === undefined) };
             }
             case "session.clearBackground":
                 this.runtime(p.id).clearBackground();

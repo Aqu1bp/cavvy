@@ -198,10 +198,10 @@ export async function stopAgent(sessionId: string, agentId?: string) {
     }
 }
 
-/** Stop background tasks (the side panel, /tasks stop): these, or every one running. */
-export async function stopBackground(sessionId: string, ids?: string[]) {
+/** Stop background tasks (the side panel, /tasks stop): these, or every one running. `left`: and what its commands left running. */
+export async function stopBackground(sessionId: string, ids?: string[], left?: boolean) {
     try {
-        const results = await stopTasks(rpc.call.bind(rpc) as never, sessionId, handleFor(sessionId)?.view.state, ids);
+        const results = await stopTasks(rpc.call.bind(rpc) as never, sessionId, handleFor(sessionId)?.view.state, ids, left);
         const { message, level } = stopOutcome(results);
         toast(message, level);
     } catch (e) {

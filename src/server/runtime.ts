@@ -120,7 +120,7 @@ import type { Engine, Workspace } from "./engine";
 import { MCP_SERVER_NAME } from "../agent/delegation";
 import { numberedTitles, titlesByNumber } from "./title-queue";
 import { SecretStore, secretValueError } from "../agent/secrets";
-import { SESSION_VAR } from "../util/session-processes";
+import { endLeftRunning, leftNotice, SESSION_VAR } from "../util/session-processes";
 
 /** How often streamed output goes out to the GUI. */
 const FLUSH_MS = 24;
@@ -4157,10 +4157,10 @@ export class Runtime {
     }
 
     /** Stop background work from the panel or /tasks stop: these tasks, or every one running. How each went. */
-    async stopBackground(ids?: string[]): Promise<Record<string, BackgroundStop>> {
+    async stopBackground(ids?: string[], left = !ids): Promise<Record<string, BackgroundStop>> {
         const agent = this.agent;
         const stop = async () => {
-            if (agent) return agent.stopBackground(ids);
+            if (agent) return agent.stopBackground(ids, left);
             // No agent (no model yet): only its shells can be running.
             const results: Record<string, BackgroundStop> = {};
             for (const id of ids ?? [...this.toolState.shells.values()].filter((s) => s.exitCode === null).map((s) => s.id)) {
@@ -4168,6 +4168,9 @@ export class Runtime {
                 // One that already ended (or whose process is already gone) keeps its own outcome.
                 results[id] = !sh ? "unknown" : sh.exitCode !== null || (await sh.kill()) === "gone" ? "ended" : "stopped";
             }
+            // And what the user's own commands here left running.
+            const ended = left ? await endLeftRunning(this.id).catch(() => []) : [];
+            if (ended.length) this.notice(redact(leftNotice(ended)), "info");
             return results;
         };
         // The user's own stop: no notice when one it stopped ends (but one it couldn't stop ends as it ends).

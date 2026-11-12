@@ -109,7 +109,7 @@ import { canonical, expandPath, isInside } from "../util/files";
 import type { NoticeData, PlanLimits, StoppedTask } from "../server/protocol";
 import type { NativeGoal } from "./goal";
 import { cavvyCompactAt, outputReserve } from "../backends/compact-at";
-import { endLeftRunning } from "../util/session-processes";
+import { endLeftRunning, leftNotice } from "../util/session-processes";
 
 // ---------------------------------------------------------------------------
 // Host interface (implemented by the TUI and by headless mode)
@@ -1993,8 +1993,9 @@ export class Agent {
     /**
      * Stop background work: these tasks, or every one running. A delegated task and a shell of Cavvy's
      * own stop here; one an agent CLI runs is asked of its backend (none can while its CLI isn't running).
+     * `left`: also what the session's commands left running that no task shows (every one running: yes).
      */
-    async stopBackground(ids?: string[]): Promise<BackgroundStops> {
+    async stopBackground(ids?: string[], left = !ids): Promise<BackgroundStops> {
         // Every one: a background Task still being set up doesn't start either (#259). Not the delegations' generation:
         // a delegate the turn waits on, being set up or running, goes on.
         if (!ids) this.backgroundStops++;
@@ -2055,9 +2056,9 @@ export class Agent {
         }
         // Everything, the user said: also what the session's commands left running where no task shows it (a server
         // started with nohup, something that outlived the shell that started it).
-        if (!ids && this.state.session) {
-            const left = await endLeftRunning(this.state.session).catch(() => 0);
-            if (left) this.emit({ type: "notice", level: "info", message: `Also stopped ${left === 1 ? "a process" : `${left} processes`} this session had left running.` });
+        if (left && this.state.session) {
+            const ended = await endLeftRunning(this.state.session).catch(() => []);
+            if (ended.length) this.emit({ type: "notice", level: "info", message: redact(leftNotice(ended)) });
         }
         this.o.host.backgroundChanged?.();
         return out;
@@ -3857,6 +3858,8 @@ export class Agent {
                 fileState: worktree ? new Map() : new Map(this.state.fileState),
                 todos: [],
                 shells: trackShells(this.state.shells, shellsStarted),
+                // Its commands are the session's: marked as its own are (what they leave running is found by it).
+                session: this.state.session,
                 fileHistory: this.state.fileHistory,
                 // Its Bash sees the secrets the user gave this session (only the main agent can ask for one).
                 secrets: this.state.secrets,

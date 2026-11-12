@@ -177,7 +177,7 @@ async function setupWith(o: RunSetupOptions, settings: Settings, resumed: Sessio
         original = resumed;
     } else session = resumed ?? Session.create(o.cwd, { persist: o.persist ?? true });
     if (o.fastMode !== undefined) session.setFastMode(o.fastMode);
-    const toolState: ToolState = { cwd: o.cwd, projectRoot: o.cwd, fileState: new Map(), todos: [], shells: new Map() };
+    const toolState: ToolState = { cwd: o.cwd, projectRoot: o.cwd, session: session.meta.id, fileState: new Map(), todos: [], shells: new Map() };
     const checker = new PermissionChecker(() => settings, o.cwd);
     const mcp = new McpManager(o.cwd, () => settings, o.trusted);
     mcp.load();
