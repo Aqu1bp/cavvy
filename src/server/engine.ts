@@ -115,6 +115,7 @@ import { checkFiles, checkMedia, toWire } from "./attachments";
 import { BrowserError } from "../browser/page";
 import { SimulatorError } from "../simulator/simctl";
 import { TitleQueue } from "./title-queue";
+import { WorkingIndex } from "./working";
 
 export interface EngineOptions {
     /** --dangerously-skip-permissions: bypass mode may be chosen. */
@@ -137,6 +138,11 @@ export interface EngineOptions {
     launchEditor?: (argv: string[]) => Promise<void>;
     /** This Cavvy is reached from other machines (it's a server's): a CLI's sign-in can't open the person's browser. */
     away?: boolean;
+    /**
+     * Where to keep which sessions have a turn running (server/working.ts): given, sessions that were working when
+     * this Cavvy last stopped carry on by themselves once it starts. A server's Cavvy gives it (src/servers/host.ts).
+     */
+    working?: string;
 }
 
 /**
@@ -400,6 +406,7 @@ export class Engine {
         this.stopKeybindings = watchKeybindings((r) => this.broadcast({ type: "keybindings.changed", keybindings: { path: keybindingsPath(), ...r } }));
         this.updates.start();
         this.reopenScheduled();
+        void this.resumeWorking();
         purgeTrash();
         this.purgeTimer = setInterval(() => purgeTrash(), PURGE_EVERY_MS);
         this.purgeTimer.unref?.();
@@ -423,6 +430,45 @@ export class Engine {
                 if (gone) noteScheduleIndex(id, e.cwd, false);
                 this.log(`Schedules: couldn't reopen session ${id}: ${(err as Error).message}`);
             }
+        }
+    }
+
+    /** Which sessions have a turn running, when this Cavvy keeps that (EngineOptions.working). */
+    private working?: WorkingIndex;
+
+    /** A session's turn started or ended. Once stopping, the list is left as it is: what's cut off now is what carries on next time. */
+    turnRunning(rt: Runtime, running: boolean) {
+        if (!this.working || this.stopping) return;
+        if (running) this.working.started(rt.id, rt.ws.cwd);
+        else this.working.ended(rt.id);
+    }
+
+    /**
+     * The sessions that were working when the Cavvy before this one stopped (an update, a reboot, a crash) carry on:
+     * each is opened, which notes its turn as cut off, and given a turn to go on from there. One at a time, so a
+     * server with many doesn't start them all in the same moment. A session carried on too often within the hour is
+     * left as it is and says so: it may be what keeps bringing Cavvy down.
+     */
+    private async resumeWorking() {
+        if (!this.o.working) return;
+        this.working = new WorkingIndex(this.o.working);
+        for (const [id, e] of this.working.entries()) {
+            if (this.stopping) return;
+            try {
+                if (!isDir(e.cwd)) {
+                    this.working.ended(id);
+                    continue;
+                }
+                const goes = this.working.resume(id);
+                const rt = this.openSession(id);
+                await rt.ready;
+                if (goes) rt.resumeAfterRestart();
+                else rt.notRestarted();
+            } catch (err) {
+                this.working.ended(id);
+                this.log(`Couldn't carry session ${id} on after the restart: ${(err as Error).message}`);
+            }
+            await new Promise((r) => setTimeout(r, 250));
         }
     }
 

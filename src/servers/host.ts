@@ -356,7 +356,7 @@ export async function hostRun(args: string[], env: HostRunEnv): Promise<void> {
     // The GUI that came with this build. CAVVY_GUI_DIST, when set, is the only place looked in (tests name the build's own).
     const named = process.env.CAVVY_GUI_DIST;
     const staticDir = named === undefined ? defaultStatic() : existsSync(join(named, "index.html")) ? named : undefined;
-    const srv = await startServer({ host: "127.0.0.1", port, signIns, run, staticDir, startCwd: homedir(), fallbackModel: env.fallbackModel, log, away: true });
+    const srv = await startServer({ host: "127.0.0.1", port, signIns, run, staticDir, startCwd: homedir(), fallbackModel: env.fallbackModel, log, away: true, working: join(hostDir(), "working.json") });
     for (const n of env.notes) log(`note: ${n}`);
 
     let stopping = false;

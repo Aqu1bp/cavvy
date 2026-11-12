@@ -193,6 +193,8 @@ const STOP = `${LIB}
 [ -x "$bin" ] || exit 0
 stop
 : > "$d/stopped"
+# Stopped on purpose: what was working isn't carried on when it's next started (src/server/working.ts).
+rm -f "$d/working.json"
 if has_systemd && [ -f "$unit" ]; then systemctl --user disable cavvy.service >/dev/null 2>&1; fi
 exit 0
 `;

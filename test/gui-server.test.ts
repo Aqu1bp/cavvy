@@ -3,7 +3,8 @@
 // tools working in a temp project.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { FAKE, isolate, tempDir } from "./helpers/isolate";
 
@@ -3291,6 +3292,53 @@ describe("reopening a Claude Code session", () => {
             await expectCutOff(id, was);
         } finally {
             await own.stop().catch(() => undefined);
+            await cleanup();
+        }
+    }, 60_000);
+
+    test("a Cavvy that keeps the list carries on the sessions that were working when it stopped: not one the user had stopped, and each only once", async () => {
+        const list = join(mkdtempSync(join(tmpdir(), "cavvy-test-working-")), "working.json");
+        const kept = () => (existsSync(list) ? Object.keys(JSON.parse(readFileSync(list, "utf-8")).sessions) : []);
+        const first = await startServer({ token: TOKEN, working: list });
+        let second: Awaited<ReturnType<typeof startServer>> | undefined;
+        try {
+            const c = new Client(TOKEN, {}, first.port);
+            await c.opened();
+            const start = async () => {
+                const id = await c.open("session.create", { cwd: project() });
+                await c.call("session.setModel", { id, ref: "mock:mock-opus", persist: false });
+                await c.call("session.send", { id, text: "hangforever please" });
+                await c.until(id, (v) => v.state.busy);
+                return id;
+            };
+            const working = await start();
+            const stopped = await start();
+            expect(kept().sort()).toEqual([working, stopped].sort());
+            await c.call("session.interrupt", { id: stopped });
+            await c.until(stopped, (v) => !v.state.busy);
+            expect(kept()).toEqual([working]);
+            c.close();
+            await first.stop();
+            // Cut off by the stop, not ended: still on the list for the Cavvy that starts next.
+            expect(kept()).toEqual([working]);
+
+            second = await startServer({ token: TOKEN, working: list });
+            const d = new Client(TOKEN, {}, second.port);
+            await d.opened();
+            await d.open("session.open", { id: working });
+            await d.until(working, (v) => v.turns.length === 2 && v.turns[1]!.status === "done", 20_000);
+            expect(d.view(working).turns.map((t) => [t.prompt?.text, t.status])).toEqual([
+                ["hangforever please", "aborted"],
+                ["Cavvy restarted while you were working, which cut your last turn off. Continue where you left off.", "done"],
+            ]);
+            // Its turn ended: it's off the list, and a restart now starts nothing.
+            expect(kept()).toEqual([]);
+            await d.open("session.open", { id: stopped });
+            expect(d.view(stopped).turns.map((t) => t.status)).toEqual(["aborted"]);
+            d.close();
+        } finally {
+            await first.stop().catch(() => undefined);
+            await second?.stop().catch(() => undefined);
             await cleanup();
         }
     }, 60_000);

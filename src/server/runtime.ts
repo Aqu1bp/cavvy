@@ -120,6 +120,11 @@ import type { Engine, Workspace } from "./engine";
 import { MCP_SERVER_NAME } from "../agent/delegation";
 import { numberedTitles, titlesByNumber } from "./title-queue";
 import { SecretStore, secretValueError } from "../agent/secrets";
+import { MAX_RESTART_RESUMES } from "./working";
+
+/** What a session is told when it carries on after Cavvy restarted under it, and what its turn is called. */
+export const RESTART_PROMPT = "Cavvy restarted while you were working, which cut your last turn off. Continue where you left off.";
+export const RESTART_LABEL = "Continued after a restart";
 
 /** How often streamed output goes out to the GUI. */
 const FLUSH_MS = 24;
@@ -645,6 +650,35 @@ export class Runtime {
     /** session.schedule: one of the composer's schedule buttons. */
     scheduleAction(scheduleId: string, action: ScheduleAction): boolean {
         return Boolean(this.schedules.act(scheduleId, action));
+    }
+
+    /**
+     * Cavvy stopped while this session's turn was running, and has started again (Engine.resumeWorking, which knows
+     * from the list it keeps: a turn the user had stopped, or that had ended, isn't on it): the session goes on from
+     * where it was cut off, as it does after a usage limit resets. Like a scheduled prompt it waits for what's in its
+     * way; if the user gets there first (a message, a question to answer), it's theirs.
+     */
+    resumeAfterRestart(tries = 0) {
+        if (this.closed || this.busy || this.nextQueued()) return;
+        // Messages held back since the restart don't hold it up: they wait for the user, as they would have.
+        const ready = !this.pending.size && !this.switching && !this.committing && !this.goal.pending() && Boolean(this.agent) && !this.needsAccount();
+        if (!ready) {
+            if (tries < 60) setTimeout(() => this.resumeAfterRestart(tries + 1), 1000).unref?.();
+            return;
+        }
+        this.scheduledLabel = RESTART_LABEL;
+        this.scheduledResume = true;
+        void this.dispatch(RESTART_PROMPT)
+            .catch((e) => this.notice(redact((e as Error).message), "error"))
+            .finally(() => {
+                this.scheduledLabel = undefined;
+                this.scheduledResume = false;
+            });
+    }
+
+    /** It was cut off by a restart again and again: said, and left for the user. */
+    notRestarted() {
+        this.notice(`It didn't continue by itself: Cavvy restarted ${MAX_RESTART_RESUMES} times within an hour while it was working. Send a message to go on.`, "warn");
     }
 
     /**
@@ -2360,6 +2394,7 @@ export class Runtime {
         this.stepsLogged.delete(turnId);
         if (this.uiTurn) this.ui.write({ t: "turn", ...this.uiTurn, end, status });
         this.uiTurn = undefined;
+        this.engine.turnRunning(this, false);
         this.recordState();
         // The turn may have switched branches, here or in the worktree it works in.
         this.showWorkingIn(this.workingIn && this.worktreeAt(this.workingIn.path));
@@ -3189,6 +3224,7 @@ export class Runtime {
         this.responseTurn.clear();
         this.uiTurn = { seg: this.segment, index, at: this.turnStartedAt };
         this.ui.write({ t: "turn", ...this.uiTurn });
+        this.engine.turnRunning(this, true);
         // The mode and effort it's sent with, once the session is going to be on disk.
         if (this.ui.state.mode !== this.mode || this.ui.state.effort !== this.effort) this.recordState({ force: true });
         this.setState({ busy: true, status: "running", activity: { label: "Thinking", since: this.turnStartedAt } });
