@@ -429,6 +429,13 @@ describe("dangerousReason", () => {
         expect(dangerousReason(cmd)).toMatch(reason);
     });
 
+    test("a word made to be slow to match isn't: the server-folder check goes through a pattern a place at a time", () => {
+        // Each of these took a minute or more when the pattern was handed to a regular expression.
+        for (const word of ["a/" + "*".repeat(5000) + "x", "~/.cavvy/" + "*?".repeat(5000) + "x", "~/.cavvy/" + "*e".repeat(5000), "~/." + "*".repeat(3000) + "/" + "[a-z]*".repeat(1000)]) {
+            expect(typeof dangerousReason(`ls ${word}`)).not.toBe("number");
+        }
+    });
+
     test.each([
         "rm -rf build",
         "rm -rf ./dist",
@@ -449,6 +456,21 @@ describe("dangerousReason", () => {
         "cat ~/.cavvy/[!s]erver/x",
         "cat ~/.cavvy/[[:digit:]]erver/x",
         "cat ~/.cavvy/[[:upper:][:punct:]]erver/x",
+        // How commands say "not in hidden folders": a pattern in both places names nothing in particular.
+        "find . -type f -not -path '*/.*/*'",
+        "find src -type f -not -path '*/.*/*' -name '*.ts' | xargs wc -l",
+        "find . -path '*/.*/*' -prune -o -type f -print",
+        "rg --files -g '!**/.*/**'",
+        "fd -t f --exclude '**/.*/**'",
+        "npx prettier --check '**/*.{ts,tsx}' '!**/.*/**'",
+        "rsync -a --exclude '.*/*' src/ dst/",
+        "zip -r out.zip . -x '.*/*'",
+        "tar czf out.tgz --exclude '.*/*' .",
+        "git ls-files '*/.*/*'",
+        "du -sh .[!.]*/*",
+        "ls -d .*/*/",
+        "ls ~/.config/*/settings.json",
+        "cat .github/workflows/*.yml",
         "cat ~/.cavvy/logs/server.log",
         "ls ./server/.cavvy",
         "cat ~/.cavvy/{a..c}erver/x",

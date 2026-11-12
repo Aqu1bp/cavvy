@@ -1466,64 +1466,106 @@ function braceWords(word: string): string[] | undefined {
     return words.map((w) => w.replace(/\u0001/g, "{").replace(/\u0002/g, "}"));
 }
 
-const POSIX_CLASSES: Record<string, string> = { alpha: "A-Za-z", lower: "a-z", upper: "A-Z", digit: "0-9", alnum: "A-Za-z0-9", xdigit: "0-9A-Fa-f", word: "\\w", punct: "!-\\/:-@\\[-`{-~", space: "\\s", blank: " \\t" };
+const POSIX_CLASSES: Record<string, (c: string) => boolean> = {
+    alpha: (c) => /[A-Za-z]/.test(c),
+    lower: (c) => /[a-z]/.test(c),
+    upper: (c) => /[A-Z]/.test(c),
+    digit: (c) => /[0-9]/.test(c),
+    alnum: (c) => /[A-Za-z0-9]/.test(c),
+    xdigit: (c) => /[0-9A-Fa-f]/.test(c),
+    word: (c) => /\w/.test(c),
+    punct: (c) => /[!-/:-@[-`{-~]/.test(c),
+    space: (c) => /\s/.test(c),
+    blank: (c) => c === " " || c === "\t",
+};
+
+/** One place in a pattern: `*` (any run of characters), or a test of the one character there. */
+type PatternPart = "*" | ((c: string) => boolean);
 
 /**
- * Could a path segment, as the shell matches patterns, be `name`? "maybe" for one that can't be read as a pattern
- * (a list in parentheses, a class it doesn't know): the caller decides what that's worth.
+ * A path segment as the pattern the shell would match with it, or undefined for one that can't be read as a
+ * pattern (a list in parentheses, a class it doesn't know, a `[` that never closes).
  */
-function segmentMatches(segment: string, name: string): "yes" | "no" | "maybe" {
-    if (segment === name) return "yes";
-    if (!/[*?[(|]/.test(segment)) return "no";
-    // A pattern doesn't match a leading dot unless it's written with one.
-    if (name.startsWith(".") && !segment.startsWith(".")) return "no";
-    let re = "";
+function patternParts(segment: string): PatternPart[] | undefined {
+    const parts: PatternPart[] = [];
     for (let i = 0; i < segment.length; i++) {
         const c = segment[i]!;
-        if (c === "*") re += ".*";
-        else if (c === "?") re += ".";
+        if (c === "*") {
+            // Several in a row are one.
+            if (parts.at(-1) !== "*") parts.push("*");
+        } else if (c === "?") parts.push(() => true);
         else if (c === "[") {
-            // Read as the shell does: an optional `!`, a `]` right after that is itself, then characters and
-            // `[:classes:]` up to the closing `]`.
+            // Read as the shell does: an optional `!`, a `]` right after that is itself, then characters, ranges
+            // and `[:classes:]` up to the closing `]`.
             let j = i + 1;
             const not = segment[j] === "!" || segment[j] === "^";
             if (not) j++;
-            let body = "";
+            const tests: ((c: string) => boolean)[] = [];
             if (segment[j] === "]") {
-                body += "\\]";
+                tests.push((x) => x === "]");
                 j++;
             }
             for (; j < segment.length && segment[j] !== "]"; j++) {
                 if (segment.startsWith("[:", j)) {
                     const close = segment.indexOf(":]", j + 2);
                     const cls = close < 0 ? undefined : POSIX_CLASSES[segment.slice(j + 2, close)];
-                    if (cls === undefined) return "maybe";
-                    body += cls;
+                    if (!cls) return undefined;
+                    tests.push(cls);
                     j = close + 1;
-                } else body += segment[j]!.replace(/[\\\]^[]/g, "\\$&");
+                } else if (segment[j + 1] === "-" && j + 2 < segment.length && segment[j + 2] !== "]") {
+                    const [from, to] = [segment[j]!, segment[j + 2]!];
+                    tests.push((x) => x >= from && x <= to);
+                    j += 2;
+                } else {
+                    const one = segment[j]!;
+                    tests.push((x) => x === one);
+                }
             }
-            if (j >= segment.length || !body) return "maybe";
-            re += `[${not ? "^" : ""}${body}]`;
+            if (j >= segment.length || !tests.length) return undefined;
+            parts.push((x) => tests.some((t) => t(x)) !== not);
             i = j;
-        } else if ("()|".includes(c)) return "maybe";
-        // Braces still here list nothing (braceWords wrote the lists out): they're themselves.
-        else re += c.replace(/[.+^${}\\]/g, "\\$&");
+        } else if ("()|".includes(c)) return undefined;
+        // Braces still here list nothing (braceWords wrote the lists out): they're themselves, like any other character.
+        else parts.push((x) => x === c);
     }
-    try {
-        return new RegExp(`^${re}$`).test(name) ? "yes" : "no";
-    } catch {
-        return "maybe";
+    return parts;
+}
+
+/**
+ * Could a path segment be `name`? "is" when it's written out; "matches" when it's a pattern the shell would match
+ * `name` with; "maybe" for a pattern that can't be read. Matched a place at a time, so no word can make it slow.
+ */
+function segmentMatches(segment: string, name: string): "is" | "matches" | "maybe" | "no" {
+    if (segment === name) return "is";
+    if (!/[*?[(|]/.test(segment)) return "no";
+    // A pattern doesn't match a leading dot unless it's written with one.
+    if (name.startsWith(".") && !segment.startsWith(".")) return "no";
+    const parts = patternParts(segment);
+    if (!parts) return "maybe";
+    // The places in `name` the pattern so far can have got to.
+    let at = new Set([0]);
+    for (const part of parts) {
+        const next = new Set<number>();
+        for (const i of at) {
+            if (part === "*") for (let j = i; j <= name.length; j++) next.add(j);
+            else if (i < name.length && part(name[i]!)) next.add(i + 1);
+        }
+        at = next;
+        if (!at.size) return "no";
     }
+    return at.has(name.length) ? "matches" : "no";
 }
 
 /**
  * Does a word name the folder a server keeps its sign-ins in (`.cavvy/server`)? However it's written: with a
- * doubled slash, a `./` or an `x/..` on the way, brace lists, or patterns that match either part of it.
+ * doubled slash, a `./` or an `x/..` on the way, brace lists, or a pattern in place of one of its two parts. A
+ * pattern in both places isn't taken for it: a star, a dot-star and a star with slashes between is how commands
+ * say "not in hidden folders", and names nothing in particular.
  */
 function namesServerFolder(word: string): boolean {
     const words = braceWords(word);
     // Too many to go through: guarded if it could be naming Cavvy's folder at all.
-    if (!words) return /cavvy|harness|[*?[]/.test(word);
+    if (!words) return /cavvy|harness/.test(word);
     for (const one of words) {
         // As the path it comes to: `a//b`, `a/./b` and `a/x/../b` are all `a/b`.
         const parts: string[] = [];
@@ -1534,10 +1576,10 @@ function namesServerFolder(word: string): boolean {
         }
         for (let at = 0; at + 1 < parts.length; at++) {
             const home = [segmentMatches(parts[at]!, ".cavvy"), segmentMatches(parts[at]!, ".harness")];
+            if (home.every((h) => h === "no")) continue;
             const folder = segmentMatches(parts[at + 1]!, "server");
-            // One part that can't be read counts when the other is plainly there: what's guarded is asked about,
-            // not let through. Two that can't be read name nothing in particular.
-            if (home.includes("yes") ? folder !== "no" : home.includes("maybe") && folder === "yes") return true;
+            // One part behind a pattern (or one that can't be read) counts when the other is written out.
+            if (home.includes("is") ? folder !== "no" : folder === "is") return true;
         }
     }
     return false;
