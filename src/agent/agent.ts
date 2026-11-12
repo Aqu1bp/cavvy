@@ -56,7 +56,7 @@ import { childMode, createAgentWorktree, finishAgentWorktree, fromServers, keepL
 import { buildSystemPrompt, EXPLORE_APPEND, SUBAGENT_CORE } from "./system-prompt";
 import { FileHistory, promptNotes, resetToolState } from "./checkpoints";
 import { TurnSnapshots, type TurnCapture } from "./turn-snapshots";
-import { redact } from "../util/redact";
+import { redact, redactedLine } from "../util/redact";
 import type { Skill } from "./skills";
 import { limitNotice } from "../backends/limits";
 import { claudeAgents } from "../backends/claude-agents";
@@ -494,6 +494,17 @@ function withoutStateNotes(m: Message): Message {
     if (m.role !== "user") return m;
     const content = m.content.filter((p) => p.type !== "text" || !promptNotes({ ...m, content: [p] }).some((n) => stateKind(n)));
     return content.length === m.content.length ? m : { ...m, content };
+}
+
+/** Longest summary a permission prompt shows: it heads the prompt, so the rest of what's asked stays in view. */
+const MAX_PREVIEW_SUMMARY = 200;
+
+/**
+ * A preview's summary as the prompts show it: one plain line, redacted and bounded (redactedLine). Part of it can come
+ * from the model (a title, an element's name), which mustn't fake or hide what's asked.
+ */
+export function oneLineSummary(d: ToolDisplay | undefined): ToolDisplay | undefined {
+    return d?.summary ? { ...d, summary: redactedLine(d.summary, MAX_PREVIEW_SUMMARY) } : d;
 }
 
 export class Agent {
@@ -3190,6 +3201,7 @@ export class Agent {
                 // preview is optional
             }
         }
+        preview = oneLineSummary(preview);
         const ask = {
             // A call the backend gave only part of: nothing to allow for the session, or always.
             ...(req.incomplete ? { ...decision, grant: undefined } : this.o.checker.withGrant(tool, input, decision, cwd)),
@@ -3441,7 +3453,7 @@ export class Agent {
 
         let preview: ToolDisplay | undefined;
         try {
-            preview = await tool.preview?.(input, ctx);
+            preview = oneLineSummary(await tool.preview?.(input, ctx));
         } catch {
             // preview is optional
         }
