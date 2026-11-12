@@ -2,7 +2,7 @@ import { afterAll, expect, test } from "bun:test";
 import { isolate } from "./helpers/isolate";
 
 const iso = isolate();
-const { registerSecret, unregisterSecret, redact, redactPrefix, redactionVersion } = await import("../src/util/redact");
+const { registerSecret, unregisterSecret, redact, redactPrefix, redactedLine, redactionVersion } = await import("../src/util/redact");
 const { SecretStore } = await import("../src/agent/secrets");
 const { BashTool } = await import("../src/tools/bash");
 afterAll(() => iso.cleanup());
@@ -201,4 +201,26 @@ test("a long text redacted before is redacted again once the secrets change", ()
         unregisterSecret(value);
     }
     expect(redact(text)).toBe(text);
+});
+
+test("a model's text as one line to decide on: no line breaks, controls or bidi, redacted before it's cut, never through an emoji", () => {
+    // Line breaks of every kind, and characters that hide text or draw it reversed (U+202E), become spaces.
+    expect(redactedLine("Fix login\n\n\u2028\u0085done\u202e(fake)\u200b\u001b[8mx", 200)).toBe("Fix login done (fake) [8mx");
+    expect(redactedLine("short", 200)).toBe("short");
+    // Cut at the bound with "…".
+    expect(redactedLine("a".repeat(300), 200)).toBe(`${"a".repeat(199)}…`);
+    // A secret across the cut is redacted whole, not shown in part.
+    const secret = "Zq9TopSecretValue1234567890abcdef";
+    registerSecret(secret, "secret");
+    try {
+        const cut = redactedLine(`${"x".repeat(180)} ${secret} after`, 200);
+        expect(cut).not.toContain("Zq9");
+        expect(cut).toContain("[REDACTED secret]");
+    } finally {
+        unregisterSecret(secret);
+    }
+    // An emoji across the cut goes whole.
+    const emoji = redactedLine(`${"a".repeat(198)}😀😀`, 200);
+    expect(emoji.isWellFormed()).toBe(true);
+    expect(emoji).toBe(`${"a".repeat(198)}…`);
 });

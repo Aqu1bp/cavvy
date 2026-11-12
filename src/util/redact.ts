@@ -93,6 +93,19 @@ export function redactPrefix(text: string, sourceLimit: number): string {
     return redactThrough(text, Math.max(0, Math.min(text.length, Math.floor(sourceLimit))));
 }
 
+/**
+ * Text written by a model, as one line someone decides on: control, format and bidi characters (which can restyle a
+ * terminal, hide text or draw it reversed) and line breaks become spaces; redacted, then cut to `max` characters with
+ * "…", never through a secret (whose start would show) or an emoji.
+ */
+export function redactedLine(text: string, max: number): string {
+    const t = text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").replace(/\s+/g, " ").trim();
+    if (t.length <= max) return redact(t);
+    let end = max - 1;
+    if (/[\ud800-\udbff]/.test(t[end - 1] ?? "")) end--;
+    return `${redactPrefix(t, end).trimEnd()}…`;
+}
+
 function* exactSpans(text: string, secret: string, label: string, prefix?: Uint32Array): Generator<SecretSpan> {
     function* starts() {
         if (prefix) {

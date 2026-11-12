@@ -296,7 +296,8 @@ Returns the screen once it's still, as a new outline; it says when the user used
     },
     async preview(input) {
         const where = input.ref ? ` ${input.ref}` : typeof input.x === "number" ? ` at ${Math.round(input.x)},${Math.round(input.y ?? 0)}` : "";
-        const what = input.action === "type" ? ` ${JSON.stringify(short(input.text ?? "", 200))}` : input.action === "press" ? ` ${input.key}` : input.action === "button" ? ` ${input.button}` : input.direction ? ` ${input.direction}` : "";
+        // The typed text is cut here, inside its quotes, so the prompt's own bound (200 in all) never cuts its end off unmarked.
+        const what = input.action === "type" ? ` ${JSON.stringify(short(input.text ?? "", 150))}` : input.action === "press" ? ` ${input.key}` : input.action === "button" ? ` ${input.button}` : input.direction ? ` ${input.direction}` : "";
         return { summary: `Simulator: ${input.action.replace("_", " ")}${where}${what}` };
     },
     run: (input, ctx) =>

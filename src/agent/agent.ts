@@ -56,7 +56,7 @@ import { childMode, createAgentWorktree, finishAgentWorktree, fromServers, keepL
 import { buildSystemPrompt, EXPLORE_APPEND, SUBAGENT_CORE } from "./system-prompt";
 import { FileHistory, promptNotes, resetToolState } from "./checkpoints";
 import { TurnSnapshots, type TurnCapture } from "./turn-snapshots";
-import { redact } from "../util/redact";
+import { redact, redactedLine } from "../util/redact";
 import type { Skill } from "./skills";
 import { limitNotice } from "../backends/limits";
 import { claudeAgents } from "../backends/claude-agents";
@@ -500,13 +500,11 @@ function withoutStateNotes(m: Message): Message {
 const MAX_PREVIEW_SUMMARY = 200;
 
 /**
- * A preview's summary on one line and bounded, as the prompts show it. Part of it can come from the model (a title, an
- * element's name), which mustn't push what's asked out of sight with line breaks or length.
+ * A preview's summary as the prompts show it: one plain line, redacted and bounded (redactedLine). Part of it can come
+ * from the model (a title, an element's name), which mustn't fake or hide what's asked.
  */
 export function oneLineSummary(d: ToolDisplay | undefined): ToolDisplay | undefined {
-    if (!d?.summary) return d;
-    const t = d.summary.replace(/\s+/g, " ").trim();
-    return { ...d, summary: t.length > MAX_PREVIEW_SUMMARY ? `${t.slice(0, MAX_PREVIEW_SUMMARY - 1)}…` : t };
+    return d?.summary ? { ...d, summary: redactedLine(d.summary, MAX_PREVIEW_SUMMARY) } : d;
 }
 
 export class Agent {

@@ -7,6 +7,7 @@
 import type { ServerTool, ServerToolResult } from "../mcp/server";
 import { checkMessage, deliveryText, listText, PEER_LIMITS, PeerError, readText, type Delivery, type SessionPeers, type StartChoice } from "../agent/peers";
 import { EFFORT_LEVELS } from "../config/settings";
+import { redactedLine } from "../util/redact";
 import type { Tool, ToolContext, ToolResult } from "./types";
 
 const LIST_DESCRIPTION = `List the user's other Cavvy sessions: each one's id, title, whether it's working, waiting for the user or idle, when it was last active, and its model. Lists this project's (its repository, worktrees included) unless all is true. Use it to find the session the user means ("the one fixing the login bug") before reading it or sending it a message.`;
@@ -98,9 +99,9 @@ export async function sendToSession(peers: SessionPeers | undefined, input: Reco
     }
 }
 
-/** A started session's title: the one given, else the prompt's start, on one line. */
+/** A started session's title: the one given, else the prompt's start, as one plain line (redactedLine). */
 function sessionTitle(title: unknown, prompt: string): string {
-    return (str(title).trim() || prompt).replace(/\s+/g, " ").trim().slice(0, 80);
+    return redactedLine(str(title).trim() || prompt, 80);
 }
 
 /** The model and effort asked for, if any. */
@@ -160,7 +161,7 @@ const previewStart = async (input: { title?: unknown; prompt?: unknown; model?: 
     // The title the session gets, short enough that what it runs on stays in view after it.
     const title = str(input.title).trim() ? sessionTitle(input.title, "") : "";
     const { model, effort } = startChoice(input);
-    const on = [model?.replace(/\s+/g, " ").slice(0, 80), effort ? `${effort} effort` : ""].filter(Boolean).join(", ");
+    const on = [model && redactedLine(model, 80), effort ? `${effort} effort` : ""].filter(Boolean).join(", ");
     return { summary: `Start a session${title ? `: “${title}”` : ""}${on ? ` (${on})` : ""}`, body: str(input.prompt).trim() || undefined };
 };
 

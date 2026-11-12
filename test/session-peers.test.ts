@@ -246,7 +246,7 @@ describe("the tools", () => {
         const ws = realpathSync(tempDir("peers-prompt-"));
         dirs.push(ws);
         // A title that would fake the model and effort, and push the real ones out of sight below blank lines.
-        const title = `Fix login” (mock:mock-haiku, low effort)${"\n".repeat(40)}${"x".repeat(500)}`;
+        const title = `Fix login” (mock:mock-haiku, low effort)\u202e${"\n".repeat(40)}${"x".repeat(500)}`;
         const seen: string[] = [];
         let n = 0;
         const peers = fakePeers("me", ws, [], {}, { start: async () => summary("new", ws), checkStart: async () => undefined });
@@ -272,6 +272,37 @@ describe("the tools", () => {
         expect(heading).not.toContain("\n");
         expect(heading.length).toBeLessThanOrEqual(200);
         expect(heading).toEndWith("(mock:mock-opus, high effort)");
+        // Nor can a character that draws the rest of the line reversed (U+202E) make the real choice unreadable.
+        expect(heading).not.toMatch(/[\u202a-\u202e\u2066-\u2069]/);
+    });
+
+    test("every tool's prompt heading is one plain line, whatever its preview says", async () => {
+        const { Agent } = await import("../src/agent/agent");
+        const { Session } = await import("../src/agent/session");
+        const ws = realpathSync(tempDir("peers-prompt-any-"));
+        dirs.push(ws);
+        // A tool whose preview passes the model's words on as they are.
+        const Echo = { name: "Echo", description: "echo", parameters: { type: "object", properties: { say: { type: "string" } } }, category: "execute", readOnly: false, title: () => "Echo", preview: async (i: any) => ({ summary: `Echo ${i.say}` }), run: async () => ({ content: "ok" }) };
+        const seen: string[] = [];
+        let n = 0;
+        const agent = new Agent({
+            session: Session.create(ws, { persist: false, system: "S" }),
+            model: { provider: "test", id: "test" } as never,
+            client: {
+                stream: async () =>
+                    n++ === 0
+                        ? { role: "assistant", provider: "test", model: "test", stopReason: "tool_use", content: [{ type: "tool_call", id: "c1", name: "Echo", input: { say: `harmless\u202e${"\n".repeat(30)}${"y".repeat(400)}` } }] }
+                        : { role: "assistant", provider: "test", model: "test", stopReason: "end_turn", content: [{ type: "text", text: "done" }] },
+            } as never,
+            settings: () => ({ autoCompact: false }) as never,
+            checker: new PermissionChecker(() => ({}) as never, ws, () => undefined),
+            tools: [Echo as never],
+            mode: { get: () => "default", set() {} },
+            toolState: { cwd: ws, projectRoot: ws, fileState: new Map(), todos: [], shells: new Map() } as never,
+            host: { emit() {}, ui: {}, askPermission: async (req: any) => (seen.push(req.preview?.summary), { allow: false, feedback: "no" }), drainQueued: () => [] } as never,
+        });
+        await agent.run([{ type: "text", text: "go" }], { signal: new AbortController().signal });
+        expect(seen).toEqual([`Echo harmless ${"y".repeat(185)}…`]);
     });
 
     test("in Plan mode, sending and starting are refused for what they are; listing and reading aren't asked", () => {
