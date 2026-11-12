@@ -56,7 +56,7 @@ interface Linked {
 export class ServerLinks {
     private links = new Map<string, Linked>();
     /** Servers being connected to right now: every caller waits for the same attempt. */
-    private starting = new Map<string, Promise<ConnectResult>>();
+    private starting = new Map<string, { attempt: Promise<ConnectResult>; retry: boolean }>();
     /** Removed since this Cavvy started, as they were: what `restore` puts back. */
     private removed = new Map<string, ServerEntry>();
     /** This machine being signed out of a server that was just removed, by name: still on its way there. */
@@ -219,11 +219,13 @@ export class ServerLinks {
      */
     connect(name: string, o: { retry?: boolean; renew?: boolean } = {}): Promise<ConnectResult> {
         const going = this.starting.get(name);
-        if (going) return going;
-        const attempt = this.reach(name, o).finally(() => {
-            if (this.starting.get(name) === attempt) this.starting.delete(name);
+        // One attempt at a time, shared. Not a retry's answer for the user's asking, though: a retry leaves a
+        // stopped server stopped and waits on a connection that's coming back, where the user's asking doesn't.
+        if (going && (o.retry || !going.retry)) return going.attempt;
+        const attempt = (going ? going.attempt.then((r) => (r.status === "connected" ? r : this.reach(name, o))) : this.reach(name, o)).finally(() => {
+            if (this.starting.get(name)?.attempt === attempt) this.starting.delete(name);
         });
-        this.starting.set(name, attempt);
+        this.starting.set(name, { attempt, retry: Boolean(o.retry) });
         return attempt;
     }
 
@@ -243,6 +245,8 @@ export class ServerLinks {
             }
         } else if (had && o.retry && had.link.state.state === "reconnecting") {
             // Coming back by itself: waited for, not replaced (the address and the sign-in then stay as they were).
+            // Tried now rather than when its own wait is over: a window asks again when there's reason to.
+            had.link.tryNow();
             await this.changed(had, 20_000);
             if (this.links.get(name) === had) {
                 if (up(had)) return here(had);
@@ -354,6 +358,8 @@ export class ServerLinks {
         const l = this.links.get(name);
         if (!l) return;
         this.links.delete(name);
+        // Whoever waits on it hears now, not when their wait runs out: it says nothing more once it's out of the list.
+        for (const told of [...(l.waiting ?? [])]) told();
         await l.link.stop({ signOut }).catch(() => undefined);
     }
 

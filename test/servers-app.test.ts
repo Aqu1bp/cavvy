@@ -187,10 +187,11 @@ describe("servers, from a window", () => {
         fake.fail("timeout");
         expect(fake.dropTunnel()).toBe(true);
         await until("the connection to be lost", () => here.events.some((e) => e.type === "servers.link" && e.state === "reconnecting"));
-        const waiting = here.call("servers.connect", { name: "box", retry: true });
-        await Bun.sleep(300);
+        // Still out of reach: the window is told why, and the connection that's coming back is left to it.
+        expect(await here.call("servers.connect", { name: "box", retry: true })).toEqual({ status: "failed", problem: { message: "Can't reach box.example.", detail: "ssh: connect to host box.example port 22: Operation timed out" } });
         fake.fail();
-        expect(await waiting).toEqual(there);
+        // Asking again makes it try now, not when its own wait is over.
+        expect(await here.call("servers.connect", { name: "box", retry: true })).toEqual(there);
         const remote = new Window(there.url, there.token);
         expect(await remote.opened.promise).toBe(true);
         remote.ws.close();
@@ -207,6 +208,36 @@ describe("servers, from a window", () => {
         const remote = new Window(r.url, r.token);
         expect(await remote.opened.promise).toBe(true);
         remote.ws.close();
+        there = r;
+    });
+
+    test("the user's asking isn't given the answer of a retry already under way: the retry leaves it stopped, the asking starts it", async () => {
+        await stopRemote({ name: "box", destination: "dev@box.example", addedAt: "" } as ServerEntry);
+        await until("this Cavvy to see it's gone", async () => !(await here.call("servers.list")).servers[0].connected, 40_000);
+        const [retry, asking] = await Promise.all([here.call("servers.connect", { name: "box", retry: true }), here.call("servers.connect", { name: "box" })]);
+        expect(retry).toEqual({ status: "stopped" });
+        expect(asking.status).toBe("connected");
+        const remote = new Window(asking.url, asking.token);
+        expect(await remote.opened.promise).toBe(true);
+        remote.ws.close();
+        there = asking;
+    });
+
+    test("a retry waiting on a connection that's coming back hears at once when that connection is ended", async () => {
+        here.events.length = 0;
+        fake.fail("refused");
+        expect(fake.dropTunnel()).toBe(true);
+        await until("the connection to be lost", () => here.events.some((e) => e.type === "servers.link" && e.state === "reconnecting"));
+        const started = Date.now();
+        const waiting = here.call("servers.connect", { name: "box", retry: true });
+        await Bun.sleep(300);
+        await here.call("servers.disconnect", { name: "box" });
+        expect((await waiting).status).toBe("failed");
+        // Not the twenty seconds a wait runs for by itself.
+        expect(Date.now() - started).toBeLessThan(12_000);
+        fake.fail();
+        const r = await here.call("servers.connect", { name: "box" });
+        expect(r.status).toBe("connected");
         there = r;
     });
 

@@ -23,8 +23,11 @@ const [issue, setIssue] = createSignal<MachineIssue | undefined>(machine ? { kin
 export const machineIssue = issue;
 /** Says where reaching the server stands. A failure is also said, in short, beside the window's "Reconnecting…". */
 export function setMachineIssue(i: MachineIssue | undefined) {
-    // Connected: the sign-in it was given works.
-    if (!i) unproven = false;
+    // Connected: the sign-in it was given works, and what's tried from here on is the connection's own doing.
+    if (!i) {
+        proven = handed;
+        asked = false;
+    }
     setIssue(i);
     const why = i?.kind === "failed" ? i.problem.message.replace(/\s+/g, " ").trim() : undefined;
     setConnNote(why && why.length > 70 ? `${why.slice(0, 69)}…` : why);
@@ -62,38 +65,45 @@ export function trustMachine(fingerprints: string[]) {
  * trying again by itself, which must not start a server that was stopped on purpose.
  */
 let asked = true;
+/** Connections waiting for the user's answer to what the cover asks (machineCredentials). */
+let waiting: (() => void)[] = [];
 export function userAsked() {
     asked = true;
+    for (const go of waiting.splice(0)) go();
 }
 
-/** A sign-in was handed to the window and it hasn't connected with it yet: handed the same one again, it'd fail again. */
-let unproven = false;
+/** The sign-in last handed to the window, and the last one it connected with: handed one that didn't connect, it asks for another. */
+let handed: string | undefined;
+let proven: string | undefined;
 
 /**
- * Where the server's Cavvy is, and what signs this window in there. Asked again each time the connection is made:
- * after a drop it's the same address while the tunnel held, and a new sign-in when the Cavvy there restarted.
- * Throws for a failure that may pass (tried again by itself); undefined when it needs the user (said in machineIssue).
+ * Where the server's Cavvy is, and what signs this window in there. Asked again each time a connection is made (the
+ * window's own, and the one its Browser pane's pictures come over): after a drop it's the same address while the
+ * tunnel held, and a new sign-in when the Cavvy there restarted or the old one ran out.
+ * Throws for a failure that may pass (tried again by itself). When getting there needs the user (said in
+ * machineIssue, asked by the cover), it waits for their answer and goes on from there, so every connection that was
+ * waiting comes back with it.
  */
 export async function machineCredentials(): Promise<Credentials | undefined> {
     if (!home || !machine) return undefined;
-    await homeOpen();
-    const trust = trusted;
-    trusted = undefined;
-    const retry = !asked;
-    asked = false;
-    const r = await home.call("servers.connect", { name: machine, ...(trust ? { trust } : {}), ...(retry ? { retry } : {}), ...(unproven ? { renew: true } : {}) });
-    if (r.status === "connected") {
-        unproven = true;
-        return { url: r.url, token: r.token };
+    for (;;) {
+        await homeOpen();
+        const trust = trusted;
+        trusted = undefined;
+        const retry = !asked;
+        asked = false;
+        const r = await home.call("servers.connect", { name: machine, ...(trust ? { trust } : {}), ...(retry ? { retry } : {}), ...(handed !== undefined && handed !== proven ? { renew: true } : {}) });
+        if (r.status === "connected") {
+            handed = r.token;
+            return { url: r.url, token: r.token };
+        }
+        if (r.status === "failed") {
+            setMachineIssue({ kind: "failed", problem: r.problem });
+            throw new Error(r.problem.message);
+        }
+        setMachineIssue(r.status === "unknown-host" ? { kind: "unknown-host", unknown: r.unknown } : { kind: r.status });
+        await new Promise<void>((answered) => waiting.push(answered));
     }
-    if (r.status === "unknown-host") setMachineIssue({ kind: "unknown-host", unknown: r.unknown });
-    else if (r.status === "other-version") setMachineIssue({ kind: "other-version" });
-    else if (r.status === "stopped") setMachineIssue({ kind: "stopped" });
-    else {
-        setMachineIssue({ kind: "failed", problem: r.problem });
-        throw new Error(r.problem.message);
-    }
-    return undefined;
 }
 
 /** The Rpc that reaches this computer's own Cavvy: for the list of servers and what's done to them. */
