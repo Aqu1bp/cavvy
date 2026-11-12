@@ -113,6 +113,18 @@ export interface ServerBuild {
 
 const cacheDir = () => join(cavvyHome(), "cache", "server-builds");
 
+/** Whether what the GUI is built from, or the built GUI itself, is newer than `since`: outside the build's name, and what fixes a GUI that wouldn't build. */
+export function guiChangedSince(since: number, root = sourceRoot()): boolean {
+    if (!root) return false;
+    return ["node_modules", "bun.lock", "package.json", join("dist", "index.html")].some((f) => {
+        try {
+            return statSync(join(root, "gui", f)).mtimeMs > since;
+        } catch {
+            return false;
+        }
+    });
+}
+
 /** The GUI can go in a build made here: it's built, or its dependencies are there to build it with. */
 export function guiAvailable(root = sourceRoot()): boolean {
     return Boolean(root) && (existsSync(join(root!, "gui", "node_modules")) || existsSync(join(root!, "gui", "dist", "index.html")));
@@ -162,13 +174,16 @@ export async function serverBuild(target: LinuxTarget, o: { onStep?: (text: stri
     if (existsSync(meta) && existsSync(bundle)) {
         try {
             const m = JSON.parse(readFileSync(meta, "utf-8")) as { sha256?: unknown; gui?: unknown; guiFailed?: unknown };
-            // One made before the GUI was built here is made again with it. Not one whose GUI was tried and didn't
-            // build: this build's name covers the GUI's sources, so it would fail the same way again.
-            if (typeof m.sha256 === "string" && /^[0-9a-f]{64}$/.test(m.sha256) && (m.gui === true || m.guiFailed === true || !guiAvailable())) return { id, target, bundle, bundleBytes: statSync(bundle).size, sha256: m.sha256, gui: m.gui === true };
+            // One made before the GUI was built here is made again with it. One whose GUI was tried and didn't build
+            // is kept until something that could have put it right has changed since (its dependencies installed
+            // again, the GUI built by hand as the user is told to): until then it would only fail the same way.
+            const stillFails = m.guiFailed === true && !guiChangedSince(statSync(meta).mtimeMs);
+            if (typeof m.sha256 === "string" && /^[0-9a-f]{64}$/.test(m.sha256) && (m.gui === true || stillFails || !guiAvailable())) return { id, target, bundle, bundleBytes: statSync(bundle).size, sha256: m.sha256, gui: m.gui === true };
         } catch {
             // made again below
         }
     }
+    if (o.signal?.aborted) throw new ServerError("Stopped.");
     const root = sourceRoot();
     if (!root || id === UNKNOWN_BUILD) throw new ServerError("This copy of Cavvy can't make a server's build: it isn't running from a checkout.");
     // Bun itself when Cavvy runs on it; `bun` on PATH otherwise.

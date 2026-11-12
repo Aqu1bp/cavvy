@@ -56,10 +56,16 @@ const SETTINGS_KEYS = [
 /** A host only this machine, or its own network, can reach. */
 function localHost(host: string): boolean {
     const h = host.toLowerCase().replace(/^\[|\]$/g, "");
-    // An address written out in IPv6: its private and link-local ranges. (A name can start with these letters too.)
-    if (h.includes(":")) return h === "::" || h === "::1" || /^f[cde]/.test(h);
-    return h === "localhost" || h === "0.0.0.0" || h.endsWith(".local") || h.endsWith(".localhost") || !h.includes(".") || /^(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h);
+    // An address written out in IPv6: loopback, the private and link-local ranges, and any IPv4 address in IPv6
+    // clothes (`::ffff:…`), which could be a local one. (A name can start with these letters too, so only here.)
+    if (h.includes(":")) return h === "::" || h === "::1" || /^f[cde]/.test(h) || h.startsWith("::ffff:");
+    if (/\.(local|localhost|localdomain|internal|lan|home\.arpa)$/.test(h) || h === "localhost" || !h.includes(".")) return true;
+    // Loopback, private, link-local, and the range private networks between machines use (100.64/10).
+    return /^(0\.|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(h);
 }
+
+/** Letters and digits mixed as a key or a token is: more than three digits among letters. A number or a date isn't. */
+const tokenLike = (s: string) => /[A-Za-z]/.test(s) && (s.match(/\d/g)?.length ?? 0) > 3;
 
 /**
  * A word that's plainly a name: letters first, then letters, a few digits, and
@@ -67,7 +73,7 @@ function localHost(host: string): boolean {
  * digits at random, which is what a key or a token in an address looks like.
  */
 function plainWord(s: string): boolean {
-    return s.length <= 40 && /^[A-Za-z][A-Za-z0-9]*([._-][A-Za-z0-9]+)*$/.test(s) && (s.match(/\d/g)?.length ?? 0) <= 3;
+    return s.length <= 40 && /^[A-Za-z][A-Za-z0-9]*([._-][A-Za-z0-9]+)*$/.test(s) && !tokenLike(s);
 }
 
 /** A package as a runner takes it: `name`, `@scope/name`, either with `@version`. */
@@ -85,34 +91,54 @@ const RUNNERS: Record<string, string | undefined> = { npx: undefined, bunx: unde
 const RUNNER_FLAGS = new Set(["-y", "--yes", "-q", "--quiet", "--silent"]);
 
 /**
- * An MCP server whose settings can't be holding a key, and that would work
- * from another machine as written. Told by what it IS, not by looking for
- * keys in it (a key can sit anywhere: in an address's path, after a short
- * option, as a password in an address given as an argument):
- *   - an address that's only a public host and a path of plain words; or
+ * An MCP server as it can go to another machine: the entry made again from
+ * the parts that can't be holding a key, or undefined when it has to stay.
+ * Told by what it IS, not by looking for keys in it (a key can sit anywhere:
+ * in an address's path, after a short option, as a password in an address
+ * given as an argument, in a field of some other tool's):
+ *   - an address that's only a public host and a path, all in plain words; or
  *   - a package runner (`npx`, `uvx`, …), its own flags, and one package.
- * No environment, headers, folder or secret of its own either. Anything else
- * stays, and the user is told which (CopyPlan.left).
+ * Nothing else of the entry is carried: no environment, headers, folder or
+ * secret, and no field this doesn't know. The user is told which servers
+ * stayed (CopyPlan.left).
  */
-export function portableMcpServer(c: McpServerConfig): boolean {
-    if (c.plugin || c.env || c.headers || c.cwd || c.oauth?.clientSecret) return false;
-    if (matchesSecretPattern(JSON.stringify(c))) return false;
+export function portableMcpEntry(c: McpServerConfig): McpServerConfig | undefined {
+    if (c.plugin || c.env || c.headers || c.cwd || c.oauth?.clientSecret) return undefined;
+    if (matchesSecretPattern(JSON.stringify(c))) return undefined;
+    const kept: McpServerConfig = {};
+    if (typeof c.type === "string" && ["stdio", "http", "streamable-http", "sse", "ws"].includes(c.type)) kept.type = c.type;
+    if (c.disabled === true) kept.disabled = true;
     if (c.url) {
-        if (c.command || c.args?.length) return false;
+        if (c.command || c.args !== undefined || typeof c.url !== "string") return undefined;
         let u: URL;
         try {
             u = new URL(c.url);
         } catch {
-            return false;
+            return undefined;
         }
-        if (!/^(https?|wss?):$/.test(u.protocol) || u.username || u.password || u.search || u.hash || localHost(u.hostname)) return false;
-        return u.pathname.split("/").filter(Boolean).every(plainWord);
+        if (!/^(https?|wss?):$/.test(u.protocol) || u.username || u.password || u.search || u.hash || localHost(u.hostname)) return undefined;
+        if (!u.hostname.split(".").every((label) => label.length <= 40 && !tokenLike(label))) return undefined;
+        if (!u.pathname.split("/").filter(Boolean).every(plainWord)) return undefined;
+        // Which client to sign in as is a name, not a secret (the secret, when there is one, kept the server here).
+        const o = c.oauth;
+        const oauth = {
+            ...(typeof o?.clientId === "string" && o.clientId.length <= 200 ? { clientId: o.clientId } : {}),
+            ...(typeof o?.callbackPort === "number" ? { callbackPort: o.callbackPort } : {}),
+            ...(typeof o?.scopes === "string" || (Array.isArray(o?.scopes) && o.scopes.every((x) => typeof x === "string")) ? { scopes: o!.scopes } : {}),
+        };
+        return { ...kept, url: c.url, ...(Object.keys(oauth).length ? { oauth } : {}) };
     }
-    if (!c.command || !Object.hasOwn(RUNNERS, c.command)) return false;
+    if (typeof c.command !== "string" || !Object.hasOwn(RUNNERS, c.command)) return undefined;
+    if (!Array.isArray(c.args) || !c.args.every((a) => typeof a === "string")) return undefined;
     const first = RUNNERS[c.command];
-    const args = first === undefined ? (c.args ?? []) : c.args?.[0] === first ? c.args.slice(1) : undefined;
-    if (!args?.length) return false;
-    return args.slice(0, -1).every((a) => RUNNER_FLAGS.has(a)) && packageSpec(args.at(-1)!);
+    const args = first === undefined ? c.args : c.args[0] === first ? c.args.slice(1) : undefined;
+    if (!args?.length || !args.slice(0, -1).every((a) => RUNNER_FLAGS.has(a)) || !packageSpec(args.at(-1)!)) return undefined;
+    return { ...kept, command: c.command, args: [...c.args] };
+}
+
+/** Whether an MCP server can go as it is (portableMcpEntry). */
+export function portableMcpServer(c: McpServerConfig): boolean {
+    return portableMcpEntry(c) !== undefined;
 }
 
 /**
@@ -127,7 +153,9 @@ export function portableRule(rule: string): boolean {
     const body = m[2];
     if (body === undefined) return true;
     if (!/^[A-Za-z0-9 ._/*:~-]+$/.test(body) || body.includes("://")) return false;
-    return !body.split(" ").some((w) => w.startsWith("-"));
+    if (body.split(" ").some((w) => w.startsWith("-"))) return false;
+    // An address needs no scheme to carry a token in its path or its name: no piece of a word reads like one.
+    return !body.split(/[ /.:*]+/).some(tokenLike);
 }
 
 /** What a copy leaves on this machine because it could hold a key or needs this machine: said, so nothing is missed in silence. */
@@ -153,10 +181,14 @@ export function portableSettings(s: Settings, left: LeftBehind = { servers: [], 
         }
         if (Object.keys(rules).length) out.permissions = rules;
     }
-    const servers = Object.entries(s.mcpServers ?? {}).filter(([, c]) => c && typeof c === "object");
-    const kept = servers.filter(([, c]) => portableMcpServer(c));
-    left.servers.push(...servers.filter(([, c]) => !portableMcpServer(c)).map(([name]) => name));
-    if (kept.length) out.mcpServers = Object.fromEntries(kept);
+    const kept: Record<string, McpServerConfig> = {};
+    for (const [name, c] of Object.entries(s.mcpServers ?? {})) {
+        // Each as portableMcpEntry made it again, not as it was: what that didn't choose to carry doesn't go.
+        const entry = c && typeof c === "object" ? portableMcpEntry(c) : undefined;
+        if (entry) kept[name] = entry;
+        else left.servers.push(name);
+    }
+    if (Object.keys(kept).length) out.mcpServers = kept;
     // Whatever else reads like a key (a model name wouldn't): that setting stays here.
     for (const k of Object.keys(out)) if (matchesSecretPattern(JSON.stringify(out[k]))) delete out[k];
     return out as Settings;

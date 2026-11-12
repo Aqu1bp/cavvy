@@ -1426,20 +1426,37 @@ function braceWords(word: string): string[] {
     return m ? m[2]!.split(",").map((alt) => m[1] + alt + m[3]) : [word];
 }
 
-/** Does a word name the folder a server keeps its sign-ins in (`.cavvy/server`), written out or as a pattern that matches it? */
+/**
+ * Does a word name the folder a server keeps its sign-ins in (`.cavvy/server`)? However it's written: with a
+ * doubled slash, a `./` or an `x/..` on the way, a brace list, or a pattern that matches it.
+ */
 function namesServerFolder(word: string): boolean {
-    const m = /(?:^|\/)\.(?:cavvy|harness)\/([^/]+)(?:\/|$)/.exec(word);
-    if (!m) return false;
-    const segment = m[1]!;
-    if (segment === "server") return true;
-    if (!/[*?[]/.test(segment)) return false;
-    // The pattern as the shell would match it against "server".
-    const re = segment.replace(/[.+^${}()|\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
-    try {
-        return new RegExp(`^${re}$`).test("server");
-    } catch {
-        return true;
+    for (const one of braceWords(word)) {
+        // As the path it comes to: `a//b`, `a/./b` and `a/x/../b` are all `a/b`.
+        const parts: string[] = [];
+        for (const part of one.split("/")) {
+            if (part === "" || part === ".") continue;
+            if (part === ".." && parts.length && parts.at(-1) !== "..") parts.pop();
+            else parts.push(part);
+        }
+        const at = parts.findIndex((p) => p === ".cavvy" || p === ".harness");
+        const segment = at < 0 ? undefined : parts[at + 1];
+        if (segment === undefined) continue;
+        if (segment === "server") return true;
+        if (!/[*?[]/.test(segment)) continue;
+        // The pattern as the shell would match it against "server".
+        const re = segment
+            .replace(/[.+^${}()|\\]/g, "\\$&")
+            .replace(/\*/g, ".*")
+            .replace(/\?/g, ".")
+            .replace(/\[!/g, "[^");
+        try {
+            if (new RegExp(`^${re}$`).test("server")) return true;
+        } catch {
+            return true;
+        }
     }
+    return false;
 }
 
 function dangerousArgv(argv0: string[], depth: number): string | undefined {

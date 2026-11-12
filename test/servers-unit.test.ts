@@ -3,7 +3,7 @@
 // is signed in, and what a settings copy carries.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "fs";
 import { join } from "path";
 import { FAKE, isolate, tempDir } from "./helpers/isolate";
 import { fakeSsh } from "./helpers/fake-ssh";
@@ -13,7 +13,7 @@ const iso = isolate();
 const fake = fakeSsh();
 const { sshFailure, shQuote, remoteSh, sshCommandArgv, sshTunnelArgv, keyNeedsPassphrase, printable, offeredHostKey, trustHostKey, ownKnownHosts } = await import("../src/servers/ssh");
 const { draftServer, saveServer, listServers, removeServer, requireServer, thisDesktop, serversFile } = await import("../src/servers/store");
-const { compareBuilds, SERVER_BUN, thisBuild } = await import("../src/servers/build");
+const { compareBuilds, guiAvailable, guiChangedSince, serverBuild, SERVER_BUN, thisBuild } = await import("../src/servers/build");
 const { parseFacts, targetFor, checkRoom } = await import("../src/servers/remote");
 const { MachineSignIns } = await import("../src/servers/host");
 const { planCopy, portableMcpServer, portableRule, portableSettings, describeCopy, describeLeft, countCopied } = await import("../src/servers/copy");
@@ -287,6 +287,47 @@ describe("which build is newer", () => {
         expect(compareBuilds("unknown-build", second, repo)).toBe("different");
     });
 
+    test("a GUI that didn't build is tried again once something that could have fixed it is newer", async () => {
+        // What the build is made from, in a pretend checkout: the built GUI, its dependencies, its lockfile.
+        const root = tempDir("cavvy-servers-gui-");
+        mkdirSync(join(root, "gui", "dist"), { recursive: true });
+        mkdirSync(join(root, "gui", "node_modules"));
+        writeFileSync(join(root, "gui", "dist", "index.html"), "");
+        writeFileSync(join(root, "gui", "bun.lock"), "");
+        const old = new Date("2026-01-01T00:00:00Z");
+        for (const f of ["dist/index.html", "node_modules", "bun.lock"]) utimesSync(join(root, "gui", f), old, old);
+        expect(guiChangedSince(old.getTime() + 1000, root)).toBe(false);
+        // The user builds it by hand, as they're told to; or installs its dependencies again.
+        utimesSync(join(root, "gui", "dist", "index.html"), new Date("2026-02-01T00:00:00Z"), new Date("2026-02-01T00:00:00Z"));
+        expect(guiChangedSince(old.getTime() + 1000, root)).toBe(true);
+        utimesSync(join(root, "gui", "dist", "index.html"), old, old);
+        utimesSync(join(root, "gui", "node_modules"), new Date("2026-02-01T00:00:00Z"), new Date("2026-02-01T00:00:00Z"));
+        expect(guiChangedSince(old.getTime() + 1000, root)).toBe(true);
+        expect(guiChangedSince(Date.now(), join(root, "nowhere"))).toBe(false);
+
+        // And the kept build goes by that: used while nothing has changed, made again once something has.
+        const id = "eeeeeeeeeeee-5";
+        const dir = join(iso.home, "cache", "server-builds", id, "linux-x64");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "bundle.tar.gz"), "kept");
+        writeFileSync(join(dir, "bundle.json"), JSON.stringify({ sha256: "a".repeat(64), gui: false, guiFailed: true }));
+        const before = process.env.CAVVY_BUILD;
+        process.env.CAVVY_BUILD = id;
+        try {
+            const later = new Date(Date.now() + 86_400_000);
+            utimesSync(join(dir, "bundle.json"), later, later);
+            expect(await serverBuild("linux-x64")).toMatchObject({ id, gui: false, sha256: "a".repeat(64) });
+            utimesSync(join(dir, "bundle.json"), new Date("2020-01-01T00:00:00Z"), new Date("2020-01-01T00:00:00Z"));
+            // Stopped before it compiles anything: that it set about building again is the point.
+            const again = serverBuild("linux-x64", { signal: AbortSignal.abort() });
+            if (guiAvailable()) await expect(again).rejects.toThrow("Stopped.");
+            else expect(await again).toMatchObject({ id, gui: false });
+        } finally {
+            if (before === undefined) delete process.env.CAVVY_BUILD;
+            else process.env.CAVVY_BUILD = before;
+        }
+    });
+
     test("this build is named for its commit, and the server's Bun is the one the desktop app and CI use", () => {
         expect(thisBuild()).toMatch(/^[0-9a-f]{12}(-[0-9a-f]{8})?$/);
         const root = join(import.meta.dir, "..");
@@ -459,6 +500,29 @@ describe("what the one-time copy carries", () => {
         // A rule is copied for being plain words: no options, assignments, addresses or quotes, where a key would sit.
         for (const r of ['Bash(curl -H "Authorization: Bearer abc123def456ghi789jkl" https://api.example.com/v1:*)', "Bash(curl -u admin:hunter2 https://ci.example.com:*)", "Bash(PGPASSWORD=hunter2 psql -h db:*)", "Bash(mysql -pS3cret:*)", "Bash(ssh admin@host:*)", "WebFetch(https://user:pw@example.com)", "not a rule("]) expect(portableRule(r)).toBe(false);
         for (const r of ["Edit", "Bash(npm run lint:*)", "Bash(git push origin main:*)", "Read(./secrets/**)", "Read(~/notes/*.md)", "WebFetch(domain:example.com)", "mcp__docs__search"]) expect(portableRule(r)).toBe(true);
+
+        // An address needs no scheme to carry a token, in its path or in its name; nor does a rule need one.
+        for (const r of ["Bash(curl hooks.slack.com/services/T0AB12CD3/B0EF45GH6/Zx81kq0TtR7vLm2Qp9aBcdEf:*)", "WebFetch(domain:Zx81kq0TtR7vLm2Qp9aB.example.com)"]) expect(portableRule(r)).toBe(false);
+        expect(portableMcpServer({ url: "https://zx81kq0ttr7vlm2qp9ab.mcp.example.com/sse" })).toBe(false);
+        for (const r of ["Bash(bun test ./test/foo.test.ts:*)", "Bash(python3 -m)", "WebFetch(domain:docs.example.com)", "Bash(date +2026-01-15:*)"].filter((r) => !r.includes(" -") && !r.includes("+"))) expect(portableRule(r)).toBe(true);
+
+        // Reachable only from this machine or its network, however the address is written.
+        for (const url of ["http://[::ffff:127.0.0.1]/mcp", "http://[::1]:8080/mcp", "http://100.101.102.103/mcp", "https://db.internal/mcp", "https://nas.lan/mcp", "https://box.home.arpa/mcp"]) expect(portableMcpServer({ url })).toBe(false);
+        expect(portableMcpServer({ url: "https://100.example.com/mcp" })).toBe(true);
+
+        // Settings written some other way aren't portable, and don't stop the copy.
+        expect(portableMcpServer({ command: "npx", args: "-y some-mcp" } as any)).toBe(false);
+        expect(portableMcpServer({ url: 42 } as any)).toBe(false);
+
+        // What goes is the entry made again from what was checked, never the entry as it was: a field of some other
+        // tool's, with a key in it, has nowhere to ride.
+        const carried = portableSettings({
+            mcpServers: {
+                docs: { type: "http", url: "https://mcp.example.com/mcp", apiKey: "Zx81kq0TtR7vLm2Qp9aB", headersHelper: "/usr/local/bin/get-token", oauth: { clientId: "cavvy-desktop", scopes: ["read"], client_secret: "Zx81kq0TtR7vLm2Qp9aB" } },
+                mem: { command: "npx", args: ["-y", "@modelcontextprotocol/server-memory"], envFile: "/Users/me/.env", disabled: true },
+            },
+        } as any);
+        expect(carried).toEqual({ mcpServers: { docs: { type: "http", url: "https://mcp.example.com/mcp", oauth: { clientId: "cavvy-desktop", scopes: ["read"] } }, mem: { command: "npx", args: ["-y", "@modelcontextprotocol/server-memory"], disabled: true } } } as any);
 
         // What stays is counted, so the user is told.
         const left = { servers: [] as string[], rules: 0 };

@@ -6,7 +6,7 @@
 // systemd (the pretend server has none, so Cavvy runs detached there).
 
 import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "fs";
 import { connect as tcp } from "net";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
@@ -425,6 +425,21 @@ describe("the terminal's commands", () => {
             expect(await cavvy("--server", "box", "--version")).toEqual({ code: 1, out: "", err: "Can't reach box.example.\n  ssh: connect to host box.example port 22: Operation timed out\n" });
         } finally {
             fake.fail();
+        }
+    });
+
+    test("add --copy: with nothing that can go, it still says what stayed, and the server is added", async () => {
+        // Only an MCP server that runs a file here, and a rule with a password in it.
+        writeFileSync(join(iso.home, "settings.json"), JSON.stringify({ mcpServers: { local: { command: "node", args: ["server.js"] }, odd: { command: "npx", args: "-y some-mcp" } }, permissions: { allow: ["Bash(curl -u admin:hunter2 https://ci.example.com:*)"] } }));
+        try {
+            const r = await cavvy("servers", "add", "box2", "dev@box.example", "--copy");
+            expect(r.err).toBe("Connecting to box.example…\nNot copied, since they could hold a key or need this machine: 2 MCP servers and 1 permission rule.\n");
+            expect(r.out.split("\n")[0]).toBe("box2 is ready.");
+            expect(r.code).toBe(0);
+            expect(existsSync(join(fake.home, ".cavvy", "settings.json")) && readFileSync(join(fake.home, ".cavvy", "settings.json"), "utf-8")).not.toContain("hunter2");
+        } finally {
+            rmSync(join(iso.home, "settings.json"), { force: true });
+            await cavvy("servers", "remove", "box2");
         }
     });
 

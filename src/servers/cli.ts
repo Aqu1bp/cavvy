@@ -194,27 +194,40 @@ function parseAdd(args: string[]): { name?: string; destination?: string; flags:
 /** The one-time copy. It's an extra: failing, it's said and the server is still added. */
 async function offerCopy(e: ServerEntry, wanted: boolean | undefined) {
     if (wanted === false) return;
-    let settings;
+    let plan: ReturnType<typeof planCopy> | undefined;
+    // The copies made ready to send don't outlive this, however it ends.
+    const interrupted = () => {
+        plan?.cleanup();
+        process.exit(130);
+    };
+    process.on("SIGINT", interrupted);
+    process.on("SIGTERM", interrupted);
     try {
-        settings = loadScope("user", process.cwd());
-    } catch {
-        settings = undefined;
-    }
-    const plan = planCopy(settings);
-    try {
+        let settings;
+        try {
+            settings = loadScope("user", process.cwd());
+        } catch {
+            settings = undefined;
+        }
+        plan = planCopy(settings);
         const what = describeCopy(plan.counts);
-        if (!what) return;
+        // Not in silence: they're in the settings here, and the user would look for them there.
+        const left = describeLeft(plan.left);
+        const sayLeft = () => left && err(`Not copied, since they could hold a key or need this machine: ${left}.`);
+        if (!what) return void sayLeft();
         if (wanted === undefined && !(await ask(`Copy your ${what} to ${e.name}?`, ["Keys aren't copied."], "Copy", "Skip"))) return;
         // What the server took, which isn't always what was offered: it keeps what it has.
         const took = describeCopy(countCopied(await sendCopy(e, plan)));
         err(took ? `Copied your ${took}.` : `${e.name} already had them.`);
-        // Not in silence: they're in the settings here, and the user would look for them there.
-        const left = describeLeft(plan.left);
-        if (left) err(`Not copied, since they could hold a key or need this machine: ${left}.`);
+        sayLeft();
     } catch (x) {
-        if (!report(x)) throw x;
+        if (x instanceof ServerError) report(x);
+        // Settings this can't read as it expects (an MCP server written some other way): nothing was copied.
+        else err(`Couldn't copy your settings: ${printable((x as Error)?.message ?? String(x))}`);
     } finally {
-        plan.cleanup();
+        process.off("SIGINT", interrupted);
+        process.off("SIGTERM", interrupted);
+        plan?.cleanup();
     }
 }
 
