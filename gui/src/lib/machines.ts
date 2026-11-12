@@ -13,8 +13,8 @@ export type MachineIssue =
     | { kind: "connecting"; text?: string; percent?: number }
     /** Its key isn't one this computer has seen: shown, and trusted only on the user's word. */
     | { kind: "unknown-host"; unknown: UnknownHost }
-    /** The Cavvy there is another version than this one. */
-    | { kind: "other-version" }
+    /** The Cavvy there is another version than this one. `problem`: updating it was tried and didn't work. */
+    | { kind: "other-version"; problem?: ServerProblem }
     /** Cavvy there was stopped on purpose: started again only when the user says. */
     | { kind: "stopped" }
     | { kind: "failed"; problem: ServerProblem };
@@ -25,7 +25,7 @@ export const machineIssue = issue;
 export function setMachineIssue(i: MachineIssue | undefined) {
     // Connected: the sign-in it was given works, and what's tried from here on is the connection's own doing.
     if (!i) {
-        proven = handed;
+        unproven = false;
         asked = false;
     }
     setIssue(i);
@@ -72,9 +72,13 @@ export function userAsked() {
     for (const go of waiting.splice(0)) go();
 }
 
-/** The sign-in last handed to the window, and the last one it connected with: handed one that didn't connect, it asks for another. */
-let handed: string | undefined;
-let proven: string | undefined;
+/**
+ * The window's own connection was handed a sign-in and hasn't connected with it since: handed the same one again it
+ * would fail again (it was taken away, or ran out), so the next asking is for a new one. Counted for the window's
+ * own connection only: a pictures connection says nothing when it connects, and is given a sign-in that's kept
+ * fresh (src/servers/manager.ts).
+ */
+let unproven = false;
 
 /**
  * Where the server's Cavvy is, and what signs this window in there. Asked again each time a connection is made (the
@@ -84,7 +88,7 @@ let proven: string | undefined;
  * machineIssue, asked by the cover), it waits for their answer and goes on from there, so every connection that was
  * waiting comes back with it.
  */
-export async function machineCredentials(): Promise<Credentials | undefined> {
+export async function machineCredentials(stream = false): Promise<Credentials | undefined> {
     if (!home || !machine) return undefined;
     for (;;) {
         await homeOpen();
@@ -92,9 +96,9 @@ export async function machineCredentials(): Promise<Credentials | undefined> {
         trusted = undefined;
         const retry = !asked;
         asked = false;
-        const r = await home.call("servers.connect", { name: machine, ...(trust ? { trust } : {}), ...(retry ? { retry } : {}), ...(handed !== undefined && handed !== proven ? { renew: true } : {}) });
+        const r = await home.call("servers.connect", { name: machine, ...(trust ? { trust } : {}), ...(retry ? { retry } : {}), ...(unproven && !stream ? { renew: true } : {}) });
         if (r.status === "connected") {
-            handed = r.token;
+            if (!stream) unproven = true;
             return { url: r.url, token: r.token };
         }
         if (r.status === "failed") {

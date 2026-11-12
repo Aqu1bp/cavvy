@@ -225,20 +225,46 @@ describe("servers, from a window", () => {
 
     test("a retry waiting on a connection that's coming back hears at once when that connection is ended", async () => {
         here.events.length = 0;
-        fake.fail("refused");
+        // Slow to answer, so the connection's own next try is still under way while the retry waits on it.
+        const held = fake.hold();
         expect(fake.dropTunnel()).toBe(true);
         await until("the connection to be lost", () => here.events.some((e) => e.type === "servers.link" && e.state === "reconnecting"));
         const started = Date.now();
         const waiting = here.call("servers.connect", { name: "box", retry: true });
         await Bun.sleep(300);
-        await here.call("servers.disconnect", { name: "box" });
-        expect((await waiting).status).toBe("failed");
-        // Not the twenty seconds a wait runs for by itself.
-        expect(Date.now() - started).toBeLessThan(12_000);
-        fake.fail();
-        const r = await here.call("servers.connect", { name: "box" });
+        // Ended from another window; what the retry was waiting on will say nothing more.
+        const ended = here.call("servers.disconnect", { name: "box" });
+        await Bun.sleep(2000);
+        held.release();
+        await ended;
+        const r = await waiting;
+        // Not the twenty seconds a wait runs for by itself: it went on to connect anew.
+        expect(Date.now() - started).toBeLessThan(15_000);
         expect(r.status).toBe("connected");
         there = r;
+    });
+
+    test("a sign-in that's getting old is replaced before it's handed out again, so a window is never given one that has run out", async () => {
+        const { ServerLinks } = await import("../src/servers/manager");
+        const own = new ServerLinks({ source, renewAfterMs: 0 });
+        const kept = new ServerLinks({ source });
+        try {
+            const first = await own.connect("box");
+            const second = await own.connect("box");
+            if (first.status !== "connected" || second.status !== "connected") throw new Error("not connected");
+            expect(second.url).toBe(first.url);
+            expect(second.token).not.toBe(first.token);
+            const remote = new Window(second.url, second.token);
+            expect(await remote.opened.promise).toBe(true);
+            remote.ws.close();
+            // Not old yet: the same one, as before.
+            const a = await kept.connect("box");
+            expect(a.status).toBe("connected");
+            expect(await kept.connect("box")).toEqual(a);
+        } finally {
+            await own.stopAll();
+            await kept.stopAll();
+        }
     });
 
     test("stopped there, the windows are told; opening it starts it again, with a new sign-in", async () => {

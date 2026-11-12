@@ -387,10 +387,11 @@ function MachineCover(p: { reconnect: () => void }) {
             if (r.status === "updated") retry();
             else if (r.status === "busy") setBusy(r.working ? `${r.working} ${r.working === 1 ? "session is" : "sessions are"} working there.` : `${r.waiting} ${r.waiting === 1 ? "session is" : "sessions are"} waiting for you there.`);
             else if (r.status === "unknown-host") setMachineIssue({ kind: "unknown-host", unknown: r.unknown });
-            else setMachineIssue({ kind: "failed", problem: r.problem });
+            // Still the same question, with why it didn't work: the window's connection waits on the answer to it.
+            else setMachineIssue({ kind: "other-version", problem: r.problem });
         } catch (e) {
             setUpdating(undefined);
-            setMachineIssue({ kind: "failed", problem: { message: (e as Error).message } });
+            setMachineIssue({ kind: "other-version", problem: { message: (e as Error).message } });
         }
     };
     // Made anew wherever it's shown: one element can't be in two of the states below.
@@ -469,15 +470,20 @@ function MachineCover(p: { reconnect: () => void }) {
                         </>
                     )}
                 </Match>
-                <Match when={machineIssue()?.kind === "other-version"}>
-                    <Server size={36} />
-                    <h2>{machine} runs another version of Cavvy</h2>
-                    <div class="server-actions">
-                        <Back />
-                        <button class="btn primary" onClick={() => void update()}>
-                            Update {machine}
-                        </button>
-                    </div>
+                <Match when={machineIssue()?.kind === "other-version" && (machineIssue() as Extract<ReturnType<typeof machineIssue>, { kind: "other-version" }>)}>
+                    {(i) => (
+                        <>
+                            <Server size={36} />
+                            <h2>{machine} runs another version of Cavvy</h2>
+                            <Show when={i().problem}>{(p) => <Problem problem={p()} />}</Show>
+                            <div class="server-actions">
+                                <Back />
+                                <button class="btn primary" onClick={() => void update()}>
+                                    Update {machine}
+                                </button>
+                            </div>
+                        </>
+                    )}
                 </Match>
                 <Match when={machineIssue()?.kind === "stopped"}>
                     <Server size={36} />

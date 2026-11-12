@@ -47,11 +47,24 @@ interface Linked {
     run?: string;
     token?: string;
     localPort?: number;
+    /** When the sign-in was made: one that's getting old is replaced before it's handed out again (RENEW_AFTER_MS). */
+    signedAt?: number;
+    /** When a window's retry last made the link try at once (TRY_NOW_EVERY_MS). */
+    poked?: number;
     /** Being opened by `connect`, which signs in itself: what the link says meanwhile isn't acted on twice. */
     opening?: boolean;
     /** Callers waiting for it to say where it stands next (it's coming back by itself). */
     waiting?: Set<() => void>;
 }
+
+/**
+ * A server's sign-ins stop working twelve hours after they're made (src/servers/host.ts), however much they're used.
+ * One older than this is replaced when a window next asks, so a window is never handed one about to run out, or one
+ * that has: a window left open overnight comes back by itself.
+ */
+const RENEW_AFTER_MS = 6 * 3600_000;
+/** A window's own retries make a connection that's coming back try at once, but not more often than this. */
+const TRY_NOW_EVERY_MS = 10_000;
 
 export class ServerLinks {
     private links = new Map<string, Linked>();
@@ -65,7 +78,8 @@ export class ServerLinks {
     private offered = new Map<string, { entry: ServerEntry; key: OfferedHostKey }>();
 
     /** `source`: where builds for servers come from (tests bring their own; otherwise this checkout). */
-    constructor(private o: { onProgress?: (p: ServerProgress) => void; onLink?: (e: ServerLinkEvent) => void; source?: BuildSource } = {}) {}
+    /** `renewAfterMs`: for tests (RENEW_AFTER_MS). */
+    constructor(private o: { onProgress?: (p: ServerProgress) => void; onLink?: (e: ServerLinkEvent) => void; source?: BuildSource; renewAfterMs?: number } = {}) {}
 
     /** This Cavvy's own build, as a server would have it. */
     private build(): string {
@@ -234,11 +248,12 @@ export class ServerLinks {
         const here = (l: Linked): ConnectResult => ({ status: "connected", url: `ws://127.0.0.1:${l.localPort}/ws`, token: l.token! });
         const up = (l: Linked) => l.link.state.state === "connected" && l.token !== undefined && l.localPort !== undefined;
         if (had && up(had)) {
-            if (!o.renew) return here(had);
+            if (!o.renew && Date.now() - (had.signedAt ?? 0) < (this.o.renewAfterMs ?? RENEW_AFTER_MS)) return here(had);
             try {
                 const pairing = await had.link.pair();
                 had.token = await exchangeCode(had.localPort!, pairing.code);
                 had.run = pairing.run;
+                had.signedAt = Date.now();
                 return here(had);
             } catch {
                 // Not through this connection: made again below.
@@ -246,7 +261,10 @@ export class ServerLinks {
         } else if (had && o.retry && had.link.state.state === "reconnecting") {
             // Coming back by itself: waited for, not replaced (the address and the sign-in then stay as they were).
             // Tried now rather than when its own wait is over: a window asks again when there's reason to.
-            had.link.tryNow();
+            if (Date.now() - (had.poked ?? 0) >= TRY_NOW_EVERY_MS) {
+                had.poked = Date.now();
+                had.link.tryNow();
+            }
             await this.changed(had, 20_000);
             if (this.links.get(name) === had) {
                 if (up(had)) return here(had);
@@ -331,6 +349,7 @@ export class ServerLinks {
         if (linked.token && linked.run === s.pairing.run) return;
         linked.token = await exchangeCode(s.localPort, s.pairing.code);
         linked.run = s.pairing.run;
+        linked.signedAt = Date.now();
     }
 
     private async linkChanged(name: string, linked: Linked, s: LinkState) {
