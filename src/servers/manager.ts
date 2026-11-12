@@ -49,6 +49,8 @@ interface Linked {
     localPort?: number;
     /** Being opened by `connect`, which signs in itself: what the link says meanwhile isn't acted on twice. */
     opening?: boolean;
+    /** Callers waiting for it to say where it stands next (it's coming back by itself). */
+    waiting?: Set<() => void>;
 }
 
 export class ServerLinks {
@@ -57,6 +59,8 @@ export class ServerLinks {
     private starting = new Map<string, Promise<ConnectResult>>();
     /** Removed since this Cavvy started, as they were: what `restore` puts back. */
     private removed = new Map<string, ServerEntry>();
+    /** This machine being signed out of a server that was just removed, by name: still on its way there. */
+    private revoking = new Map<string, Promise<void>>();
     /** The key each unknown host offered, by the server's name: what `trust` saves is what was shown. */
     private offered = new Map<string, { entry: ServerEntry; key: OfferedHostKey }>();
 
@@ -128,7 +132,7 @@ export class ServerLinks {
     }
 
     /** What the one-time copy would carry, and what would stay, as the question is worded. */
-    private copyOffer(): { copy?: { what: string; left?: string } } {
+    private copyOffer(): { copy?: { what: string }; left?: string } {
         let plan;
         try {
             plan = planCopy(this.userSettings());
@@ -138,7 +142,7 @@ export class ServerLinks {
         try {
             const what = describeCopy(plan.counts);
             const left = describeLeft(plan.left);
-            return what ? { copy: { what, ...(left ? { left } : {}) } } : {};
+            return { ...(what ? { copy: { what } } : {}), ...(left ? { left } : {}) };
         } finally {
             plan.cleanup();
         }
@@ -209,20 +213,60 @@ export class ServerLinks {
     /**
      * Connects to a server's Cavvy and signs this one in there. Called again by a window that lost its connection,
      * it answers with where things stand now: the same address and sign-in while those still hold.
+     * `retry`: the window's connection trying again by itself, not the user asking. That waits for a connection
+     * that's coming back instead of making another, and leaves a server that was stopped on purpose stopped.
+     * `renew`: the sign-in last handed out didn't open anything (it had run out, or was taken away): a new one.
      */
-    connect(name: string): Promise<ConnectResult> {
+    connect(name: string, o: { retry?: boolean; renew?: boolean } = {}): Promise<ConnectResult> {
         const going = this.starting.get(name);
         if (going) return going;
-        const had = this.links.get(name);
-        if (had && had.link.state.state === "connected" && had.token && had.localPort) return Promise.resolve({ status: "connected", url: `ws://127.0.0.1:${had.localPort}/ws`, token: had.token });
-        const attempt = this.start(name).finally(() => {
+        const attempt = this.reach(name, o).finally(() => {
             if (this.starting.get(name) === attempt) this.starting.delete(name);
         });
         this.starting.set(name, attempt);
         return attempt;
     }
 
-    private async start(name: string): Promise<ConnectResult> {
+    private async reach(name: string, o: { retry?: boolean; renew?: boolean }): Promise<ConnectResult> {
+        const had = this.links.get(name);
+        const here = (l: Linked): ConnectResult => ({ status: "connected", url: `ws://127.0.0.1:${l.localPort}/ws`, token: l.token! });
+        const up = (l: Linked) => l.link.state.state === "connected" && l.token !== undefined && l.localPort !== undefined;
+        if (had && up(had)) {
+            if (!o.renew) return here(had);
+            try {
+                const pairing = await had.link.pair();
+                had.token = await exchangeCode(had.localPort!, pairing.code);
+                had.run = pairing.run;
+                return here(had);
+            } catch {
+                // Not through this connection: made again below.
+            }
+        } else if (had && o.retry && had.link.state.state === "reconnecting") {
+            // Coming back by itself: waited for, not replaced (the address and the sign-in then stay as they were).
+            await this.changed(had, 20_000);
+            if (this.links.get(name) === had) {
+                if (up(had)) return here(had);
+                const s = had.link.state;
+                if (s.state === "reconnecting") return { status: "failed", problem: problemOf(s.error) };
+            }
+        }
+        return this.start(name, Boolean(o.retry));
+    }
+
+    /** Settles when the link next says where it stands (linkChanged), or after `ms`. */
+    private changed(linked: Linked, ms: number): Promise<void> {
+        return new Promise((resolve) => {
+            const done = () => {
+                clearTimeout(timer);
+                linked.waiting?.delete(done);
+                resolve();
+            };
+            const timer = setTimeout(done, ms);
+            (linked.waiting ??= new Set()).add(done);
+        });
+    }
+
+    private async start(name: string, resume: boolean): Promise<ConnectResult> {
         let entry: ServerEntry;
         try {
             entry = requireServer(name);
@@ -231,42 +275,47 @@ export class ServerLinks {
         }
         // One that gave up, or was for the server as it used to be reached: made again.
         await this.drop(name, false);
-        const linked: Linked = {
-            entry,
-            link: new ServerLink(entry, { onState: (s) => void this.linkChanged(name, linked, s) }),
-        };
-        this.links.set(name, linked);
+        // A sign-out still on its way there (remove, then put back) would take this sign-in with it.
+        await this.revoking.get(name);
+        let linked!: Linked;
         const open = async (): Promise<ConnectResult> => {
-            linked.opening = true;
-            await linked.link.start();
-            const s = linked.link.state;
-            if (s.state !== "connected") return { status: "failed", problem: { message: `Couldn't connect to ${name}.` } };
+            const made: Linked = { entry, link: new ServerLink(entry, { onState: (s) => void this.linkChanged(name, made, s), resume }), opening: true };
+            linked = made;
+            this.links.set(name, made);
+            await made.link.start();
+            const s = made.link.state;
+            if (s.state !== "connected") throw new ServerError(`Couldn't connect to ${name}.`);
             if (s.pairing.protocol !== PROTOCOL_VERSION) {
                 await this.drop(name, true);
                 return { status: "other-version" };
             }
-            await this.signIn(linked, s);
-            linked.opening = false;
-            return { status: "connected", url: `ws://127.0.0.1:${linked.localPort}/ws`, token: linked.token! };
+            await this.signIn(made, s);
+            made.opening = false;
+            return { status: "connected", url: `ws://127.0.0.1:${made.localPort}/ws`, token: made.token! };
+        };
+        /** Nothing of a failed attempt is left running: its tunnel may be up though the sign-in failed. */
+        const end = async () => {
+            if (this.links.get(name) === linked) this.links.delete(name);
+            await linked.link.stop({ signOut: false }).catch(() => undefined);
         };
         try {
             return await open();
         } catch (first) {
+            await end();
             try {
                 const unknown = await this.unknown(name, entry, first);
-                if (unknown) {
-                    this.links.delete(name);
-                    return { status: "unknown-host", unknown };
-                }
-                // Stopped there on purpose, or never set up: opening it is asking for it, so it's started (or set up).
-                if (first instanceof NotSetUp || first instanceof StoppedThere) {
+                if (unknown) return { status: "unknown-host", unknown };
+                // Stopped there on purpose: only the user's asking starts it again.
+                if (first instanceof StoppedThere) return { status: "stopped" };
+                // Never set up, and the user is asking for it: set up, then connected to anew.
+                if (first instanceof NotSetUp && !resume) {
                     this.o.onProgress?.({ name, text: `Starting Cavvy on ${name}…` });
                     await setUpServer(entry, { progress: this.progress(name), source: this.o.source });
                     return await open();
                 }
                 throw first;
             } catch (e) {
-                this.links.delete(name);
+                await end();
                 return { status: "failed", problem: problemOf(e) };
             }
         }
@@ -288,6 +337,8 @@ export class ServerLinks {
                 await this.signIn(linked, s);
                 this.o.onLink?.({ name, state: "connected" });
             } catch (e) {
+                // Connected and not signed in is no use to a window: ended, so the next one to ask starts over.
+                await this.drop(name, false);
                 this.o.onLink?.({ name, state: "stopped", problem: problemOf(e) });
             }
         } else if (s.state === "reconnecting") {
@@ -296,6 +347,7 @@ export class ServerLinks {
             this.links.delete(name);
             this.o.onLink?.({ name, state: "stopped", ...(s.error ? { problem: problemOf(s.error) } : {}) });
         }
+        for (const told of [...(linked.waiting ?? [])]) told();
     }
 
     private async drop(name: string, signOut: boolean) {
@@ -317,17 +369,21 @@ export class ServerLinks {
         await stopRemote(entry);
     }
 
-    /** Forgets the server here and signs this machine out there. False when it couldn't be reached to sign out. */
-    async remove(name: string): Promise<{ signedOut: boolean }> {
+    /**
+     * Forgets a server: gone from the list at once. This machine is then signed out there, which isn't waited for
+     * (a server that doesn't answer takes ssh ten seconds or more to say so, and its sign-ins end by themselves).
+     */
+    async remove(name: string): Promise<null> {
         await this.drop(name, false);
         const entry = removeServer(name);
         this.removed.set(name, entry);
-        try {
-            await revokeOverSsh(entry, thisDesktop().id);
-            return { signedOut: true };
-        } catch {
-            return { signedOut: false };
-        }
+        const out = revokeOverSsh(entry, thisDesktop().id)
+            .catch(() => undefined)
+            .then(() => {
+                if (this.revoking.get(name) === out) this.revoking.delete(name);
+            });
+        this.revoking.set(name, out);
+        return null;
     }
 
     /** Undoes a removal made since this Cavvy started: the server is listed again as it was, and signs in when next opened. */

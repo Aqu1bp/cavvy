@@ -6,7 +6,7 @@ import { createEffect, createResource, createSignal, createUniqueId, For, Match,
 import { render } from "solid-js/web";
 import { Check, Plus, Server, Trash2 } from "lucide-solid";
 import type { AddResult, ServerCheck, ServerProblem, UnknownHost } from "@shared/protocol";
-import { homeRpc, machineIssue, setMachineIssue, switchMachine, trustMachine } from "../lib/machines";
+import { homeRpc, machineIssue, setMachineIssue, switchMachine, trustMachine, userAsked } from "../lib/machines";
 import { machine, os } from "../lib/platform";
 import { app, reportError, rpc, toast } from "../state/app";
 import { Dialog } from "./ui/Dialog";
@@ -56,11 +56,11 @@ export function mountCover(el: HTMLElement, reconnect: () => void) {
 /**
  * A window that was on its server and has lost it keeps what it shows, under the window's own "Reconnecting…" (which
  * says why it can't be reached: lib/machines.ts). Only when getting back needs the user (the server's key is new, it
- * runs another version) does this take the window over, with the question.
+ * runs another version, Cavvy there was stopped) does this take the window over, with the question.
  */
 const needsUser = () => {
     const issue = machineIssue()?.kind;
-    return app.hello !== undefined && app.conn !== "open" && (issue === "unknown-host" || issue === "other-version");
+    return app.hello !== undefined && app.conn !== "open" && (issue === "unknown-host" || issue === "other-version" || issue === "stopped");
 };
 if (machine) {
     const host = document.createElement("div");
@@ -157,7 +157,7 @@ function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
                         </button>
                         {/* Not the one this window is on: it's removed from another. */}
                         <Show when={machine !== s.name}>
-                            <button class="hb" title={`Remove ${s.name}`} aria-label={`Remove ${s.name}`} onClick={() => void remove(s.name)}>
+                            <button role="menuitem" class="hb" title={`Remove ${s.name}`} aria-label={`Remove ${s.name}`} onClick={() => void remove(s.name)}>
                                 <Trash2 size={13} />
                             </button>
                         </Show>
@@ -176,8 +176,8 @@ type AddStep =
     | { at: "form" }
     | { at: "working"; text: string; percent?: number }
     | { at: "trust"; unknown: UnknownHost }
-    | { at: "copy"; name: string; note?: string; what: string }
-    | { at: "done"; name: string; note?: string; copied?: string; lines?: string[] }
+    | { at: "copy"; name: string; note?: string; what: string; left?: string }
+    | { at: "done"; name: string; note?: string; copied?: string; left?: string; lines?: string[] }
     | { at: "failed"; problem: ServerProblem };
 
 /** Adding a server: its address, its key when it's new to this computer, the one-time copy, and what it lacks. */
@@ -188,8 +188,13 @@ function AddServerDialog() {
     const [identity, setIdentity] = createSignal("");
     const [step, setStep] = createSignal<AddStep>({ at: "form" });
     const close = () => {
+        // Not while it's being added: what comes next (its key to trust, what it lacks) would be asked of nobody.
+        if (step().at === "working") return;
         setAddServerOpen(false);
         setStep({ at: "form" });
+        setName("");
+        setDestination("");
+        setIdentity("");
     };
     const draft = () => ({ name: name().trim(), destination: destination().trim(), ...(identity().trim() ? { identityFile: identity().trim() } : {}) });
 
@@ -198,6 +203,8 @@ function AddServerDialog() {
         if (e.type === "servers.progress" && e.name === name().trim() && step().at === "working") setStep({ at: "working", text: e.text, percent: e.percent });
     });
 
+    /** What the copy leaves here, said so nobody looks for it there. */
+    const notCopied = (left?: string) => (left ? `Not copied, since they could hold a key: ${left}.` : undefined);
     const finish = async (r: Extract<AddResult, { status: "added" }>, copied?: string) => {
         let lines: string[] | undefined;
         try {
@@ -205,7 +212,7 @@ function AddServerDialog() {
         } catch {
             lines = undefined;
         }
-        setStep({ at: "done", name: r.name, note: r.note, copied, lines });
+        setStep({ at: "done", name: r.name, note: r.note, copied, left: notCopied(r.left), lines });
     };
     const add = async (trust?: string[]) => {
         setStep({ at: "working", text: `Connecting…` });
@@ -213,7 +220,7 @@ function AddServerDialog() {
             const r = await servers().call("servers.add", { ...draft(), ...(trust ? { trust } : {}) });
             if (r.status === "unknown-host") setStep({ at: "trust", unknown: r.unknown });
             else if (r.status === "failed") setStep({ at: "failed", problem: r.problem });
-            else if (r.copy) setStep({ at: "copy", name: r.name, note: r.note, what: r.copy.what });
+            else if (r.copy) setStep({ at: "copy", name: r.name, note: r.note, what: r.copy.what, left: r.left });
             else await finish(r);
         } catch (e) {
             setStep({ at: "failed", problem: { message: (e as Error).message } });
@@ -222,7 +229,7 @@ function AddServerDialog() {
     const copy = async (yes: boolean) => {
         const s = step();
         if (s.at !== "copy") return;
-        const added = { status: "added" as const, name: s.name, note: s.note };
+        const added = { status: "added" as const, name: s.name, note: s.note, left: s.left };
         if (!yes) return finish(added);
         setStep({ at: "working", text: "Copying…" });
         try {
@@ -322,6 +329,7 @@ function AddServerDialog() {
                                 <h2 id={titleId}>{s().name} is ready</h2>
                                 <Show when={s().note}>{(n) => <p class="muted">{n()}</p>}</Show>
                                 <Show when={s().copied}>{(c) => <p class="muted">{c()}</p>}</Show>
+                                <Show when={s().left}>{(l) => <p class="muted">{l()}</p>}</Show>
                                 <Show when={s().lines?.length}>
                                     <ul class="server-lacks">
                                         <For each={s().lines}>{(l) => <li>{l}</li>}</For>
@@ -366,6 +374,7 @@ function MachineCover(p: { reconnect: () => void }) {
     /** Updating would stop work there: what's working, while the user is asked. */
     const [busy, setBusy] = createSignal<string>();
     const retry = () => {
+        userAsked();
         setMachineIssue({ kind: "connecting" });
         p.reconnect();
     };
@@ -467,6 +476,17 @@ function MachineCover(p: { reconnect: () => void }) {
                         <Back />
                         <button class="btn primary" onClick={() => void update()}>
                             Update {machine}
+                        </button>
+                    </div>
+                </Match>
+                <Match when={machineIssue()?.kind === "stopped"}>
+                    <Server size={36} />
+                    <h2>Start Cavvy on {machine}?</h2>
+                    <p class="muted">It was stopped there.</p>
+                    <div class="server-actions">
+                        <Back />
+                        <button class="btn primary" onClick={retry}>
+                            Start
                         </button>
                     </div>
                 </Match>

@@ -1652,10 +1652,13 @@ export type ConnectResult =
     | { status: "unknown-host"; unknown: UnknownHost }
     /** The Cavvy there speaks another version of the protocol than this one: `servers.update` brings it level. */
     | { status: "other-version" }
+    /** Cavvy there was stopped on purpose, and this was a connection trying again by itself (`retry`): asked for by the user, it's started. */
+    | { status: "stopped" }
     | { status: "failed"; problem: ServerProblem };
 
 export type AddResult =
-    | { status: "added"; name: string; note?: string; copy?: { what: string; left?: string } }
+    /** `copy`: what the one-time copy would carry. `left`: what it won't ("2 MCP servers"), said even when there's nothing to copy. */
+    | { status: "added"; name: string; note?: string; copy?: { what: string }; left?: string }
     | { status: "unknown-host"; unknown: UnknownHost }
     | { status: "failed"; problem: ServerProblem };
 
@@ -1798,11 +1801,12 @@ export interface Methods {
     "servers.add": { params: { name: string; destination: string; port?: number; identityFile?: string; trust?: string[] }; result: AddResult };
     "servers.copy": { params: { name: string }; result: { took: string; left?: string } };
     "servers.check": { params: { name: string }; result: ServerCheck };
-    "servers.connect": { params: { name: string; trust?: string[] }; result: ConnectResult };
+    /** `retry`: the window's connection trying again by itself. `renew`: the sign-in it was last given opened nothing. */
+    "servers.connect": { params: { name: string; trust?: string[]; retry?: boolean; renew?: boolean }; result: ConnectResult };
     "servers.update": { params: { name: string; force?: boolean; trust?: string[] }; result: UpdateResult };
     "servers.disconnect": { params: { name: string }; result: null };
     "servers.stop": { params: { name: string }; result: null };
-    "servers.remove": { params: { name: string }; result: { signedOut: boolean } };
+    "servers.remove": { params: { name: string }; result: null };
     /** Undoes a `servers.remove` made since this Cavvy started. */
     "servers.restore": { params: { name: string }; result: null };
     "terminal.open": { params: { id: string; cwd: string; cols: number; rows: number; login?: { provider: string; accountId: string } }; result: { id: string; cwd: string } };

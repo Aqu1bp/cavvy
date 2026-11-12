@@ -2616,7 +2616,7 @@ export class Engine {
                 const servers = await this.servers(client, name);
                 const trust = fingerprints(p.trust);
                 if (trust) servers.trust(name, trust);
-                return await servers.connect(name);
+                return await servers.connect(name, { retry: p.retry === true, renew: p.renew === true });
             }
             case "servers.update": {
                 const name = str(p.name, "name");

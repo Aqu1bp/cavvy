@@ -17,7 +17,8 @@ const A = "aaaaaaaaaaaa-1";
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { startServer } = await import("../src/server/server");
 const { setUpServer } = await import("../src/servers/install");
-const { stopRemote } = await import("../src/servers/service");
+const { remoteStatus, revokeOverSsh, stopRemote } = await import("../src/servers/service");
+const { thisDesktop } = await import("../src/servers/store");
 import type { BuildSource } from "../src/servers/build";
 import type { ServerEntry } from "../src/servers/store";
 
@@ -165,6 +166,50 @@ describe("servers, from a window", () => {
         remote.ws.close();
     });
 
+    test("a sign-in the server no longer takes (it ran out, or was taken away) is replaced when the window says it opened nothing", async () => {
+        // As a sign-in that has run out: taken away there, while the connection stays up.
+        await revokeOverSsh({ name: "box", destination: "dev@box.example", addedAt: "" } as ServerEntry, thisDesktop().id);
+        const dead = new Window(there.url, there.token);
+        expect(await dead.opened.promise).toBe(false);
+        // Asked as before, it's the same one: nothing says yet that it's no good.
+        expect(await here.call("servers.connect", { name: "box", retry: true })).toEqual(there);
+        const r = await here.call("servers.connect", { name: "box", retry: true, renew: true });
+        expect(r).toMatchObject({ status: "connected", url: there.url });
+        expect(r.token).not.toBe(there.token);
+        const remote = new Window(r.url, r.token);
+        expect(await remote.opened.promise).toBe(true);
+        remote.ws.close();
+        there = r;
+    });
+
+    test("a window trying again while the connection is coming back waits for it: the same address and sign-in, not another connection", async () => {
+        here.events.length = 0;
+        fake.fail("timeout");
+        expect(fake.dropTunnel()).toBe(true);
+        await until("the connection to be lost", () => here.events.some((e) => e.type === "servers.link" && e.state === "reconnecting"));
+        const waiting = here.call("servers.connect", { name: "box", retry: true });
+        await Bun.sleep(300);
+        fake.fail();
+        expect(await waiting).toEqual(there);
+        const remote = new Window(there.url, there.token);
+        expect(await remote.opened.promise).toBe(true);
+        remote.ws.close();
+    });
+
+    test("stopped on purpose (from a terminal, or another machine): a window's own retries leave it stopped; the user's asking starts it", async () => {
+        await stopRemote({ name: "box", destination: "dev@box.example", addedAt: "" } as ServerEntry);
+        await until("this Cavvy to see it's gone", async () => !(await here.call("servers.list")).servers[0].connected, 40_000);
+        expect(await here.call("servers.connect", { name: "box", retry: true })).toEqual({ status: "stopped" });
+        expect(await here.call("servers.connect", { name: "box", retry: true, renew: true })).toEqual({ status: "stopped" });
+        expect(await remoteStatus({ name: "box", destination: "dev@box.example", addedAt: "" } as ServerEntry)).toBeUndefined();
+        const r = await here.call("servers.connect", { name: "box" });
+        expect(r.status).toBe("connected");
+        const remote = new Window(r.url, r.token);
+        expect(await remote.opened.promise).toBe(true);
+        remote.ws.close();
+        there = r;
+    });
+
     test("stopped there, the windows are told; opening it starts it again, with a new sign-in", async () => {
         here.events.length = 0;
         await here.call("servers.stop", { name: "box" });
@@ -205,8 +250,15 @@ describe("servers, from a window", () => {
     });
 
     test("removing: forgotten here, signed out there; undone, it's listed again and opens with a new sign-in", async () => {
-        expect(await here.call("servers.remove", { name: "box" })).toEqual({ signedOut: true });
+        // Gone at once, even from a server slow to answer: signing out there isn't waited for.
+        const held = fake.hold();
+        const before = fake.calls().length;
+        const started = Date.now();
+        expect(await here.call("servers.remove", { name: "box" })).toBeNull();
+        expect(Date.now() - started).toBeLessThan(3000);
         expect((await here.call("servers.list")).servers).toEqual([]);
+        held.release();
+        await until("this machine to be signed out there", () => fake.calls().slice(before).some((c) => c.command?.includes("host revoke --machine")));
         await expect(here.call("servers.check", { name: "box" })).rejects.toThrow("No server named box");
 
         expect(await here.call("servers.restore", { name: "box" })).toBeNull();
@@ -218,6 +270,6 @@ describe("servers, from a window", () => {
         const remote = new Window(r.url, r.token);
         expect(await remote.opened.promise).toBe(true);
         remote.ws.close();
-        expect(await here.call("servers.remove", { name: "box" })).toEqual({ signedOut: true });
+        expect(await here.call("servers.remove", { name: "box" })).toBeNull();
     });
 });

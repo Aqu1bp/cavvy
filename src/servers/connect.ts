@@ -226,7 +226,8 @@ export class ServerLink {
 
     constructor(
         readonly entry: ServerEntry,
-        private readonly o: { onState?: (s: LinkState) => void; backoffMs?: number[]; healthEveryMs?: number } = {},
+        /** `resume`: its first connection too is one coming back by itself, which leaves a server that was stopped on purpose stopped. */
+        private readonly o: { onState?: (s: LinkState) => void; backoffMs?: number[]; healthEveryMs?: number; resume?: boolean } = {},
     ) {}
 
     get state(): LinkState {
@@ -247,7 +248,7 @@ export class ServerLink {
     start(): Promise<void> {
         return (this.first ??= (async () => {
             try {
-                await this.open();
+                await this.open(this.o.resume);
             } catch (e) {
                 this.set({ state: "stopped", error: e as ServerError });
                 throw e;
