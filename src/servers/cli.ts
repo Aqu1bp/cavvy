@@ -262,23 +262,33 @@ exec "$b" host login "$1"
 async function signInThere(e: ServerEntry, cli: CheckedCli): Promise<boolean> {
     // The CLI talks of a browser that didn't open: it's on the server, and the browser is here.
     if (needsSignIn(cli)) err(`Open the link ${cli.product} shows in a browser on this machine.`);
-    const proc = Bun.spawn(sshCommandArgv(e, remoteSh(LOGIN, [cli.id]), { tty: interactive() }), { stdin: "inherit", stdout: "inherit", stderr: "inherit", env: childEnv() });
-    // Ctrl+C is typed to the CLI over there; this waits for what it left.
-    const ignore = () => {};
-    process.on("SIGINT", ignore);
+    const tty = interactive();
+    const proc = Bun.spawn(sshCommandArgv(e, remoteSh(LOGIN, [cli.id]), { tty }), { stdin: "inherit", stdout: "inherit", stderr: "inherit", env: childEnv() });
+    // With a terminal, Ctrl+C is typed to the other end. Without one it reaches this and ssh both, and ssh ends.
+    let interrupted = false;
+    const onInterrupt = () => {
+        interrupted = true;
+    };
+    process.on("SIGINT", onInterrupt);
     const code = await proc.exited;
-    process.off("SIGINT", ignore);
+    process.off("SIGINT", onInterrupt);
     if (code === 0) {
         out(`${cli.product} is ready on ${e.name}.`);
         return true;
     }
+    // Stopped with Ctrl+C: nothing was lost, and there's nothing to add.
+    if (code === LOGIN_EXIT.stopped || (interrupted && !tty)) return false;
     const again = `${APP_NAME} servers login ${e.name} ${cli.id}`;
     if (code === LOGIN_EXIT.notSignedIn) err(`${cli.product} isn't signed in on ${e.name}. To try again: ${again}`);
     else if (code === LOGIN_EXIT.notInstalled) err(`${cli.product} isn't installed on ${e.name}.`);
     else if (code === NOT_SET_UP) err(`Cavvy isn't set up on ${e.name}. Set it up: ${APP_NAME} servers update ${e.name}`);
     // What was wrong is on the lines above: the server's Cavvy said it.
     else if (code === LOGIN_EXIT.problem) err(`${cli.product} wasn't turned on on ${e.name}.`);
-    else if (code === 255 || proc.signalCode) err(`Connection to ${e.name} lost. To try again: ${again}`);
+    else if (code === 255 || proc.signalCode) {
+        // The CLI there couldn't put the terminal back as it found it.
+        if (tty) process.stdout.write((await import("../ui/screen")).TERMINAL_OFF + "\n");
+        err(`Connection to ${e.name} lost. To try again: ${again}`);
+    }
     // A Cavvy there from before it could do this answers with its usage.
     else err(`Couldn't sign ${cli.product} in on ${e.name}. If Cavvy there is older than this one: ${APP_NAME} servers update ${e.name}`);
     return false;
@@ -326,13 +336,15 @@ async function login(args: string[]): Promise<number> {
         for (const line of none.length ? none : [`Nothing to sign in on ${e.name}.`]) out(line);
         return 0;
     }
-    // One that's signed in there only needs turning on. A sign-in shows a link and may take a code: that needs a terminal.
-    if (!interactive() && todo.some((x) => x.signedIn !== true)) {
-        err("Signing in needs a terminal.");
-        return 1;
-    }
+    // One that's signed in there only needs turning on, which is done with a terminal or without. A sign-in shows a
+    // link and may take a code: without a terminal those are said, and left.
+    const now = interactive() ? todo : todo.filter((x) => x.signedIn === true);
     let failed = 0;
-    for (const cli of todo) if (!(await signInThere(e, cli))) failed++;
+    for (const cli of now) if (!(await signInThere(e, cli))) failed++;
+    if (now.length < todo.length) {
+        err("Signing in needs a terminal.");
+        failed++;
+    }
     return failed ? 1 : 0;
 }
 

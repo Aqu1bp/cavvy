@@ -517,9 +517,24 @@ async function hostLogin(id: string | undefined): Promise<number> {
     // Found where the server finds it: with what the login shell puts on PATH.
     await (await adoptLoginPath(paths.loginPath())).answered;
     const { checkAgentCli } = await import("../backends");
-    const status = () => checkAgentCli(def.id).catch(() => undefined);
+    // Ctrl+C while the CLI's own sign-in has the terminal is the CLI's to take (it ends, and what it left is looked
+    // at below). At any other moment it stops this, and says so by its exit code: not a connection that was lost.
+    let signingIn = false;
+    process.on("SIGINT", () => {
+        if (!signingIn) process.exit(LOGIN_EXIT.stopped);
+    });
+    // A check that fails says nothing about whether the CLI is there: its own words are passed on.
+    const status = async () => {
+        try {
+            return await checkAgentCli(def.id);
+        } catch (e) {
+            process.stderr.write(`${redact((e as Error)?.message ?? String(e))}\n`);
+            return undefined;
+        }
+    };
     let st = await status();
-    if (!st?.installed) return LOGIN_EXIT.notInstalled;
+    if (!st) return LOGIN_EXIT.problem;
+    if (!st.installed) return LOGIN_EXIT.notInstalled;
     if (st.problem) {
         process.stderr.write(`${redact(st.problem)}\n`);
         return LOGIN_EXIT.problem;
@@ -528,14 +543,13 @@ async function hostLogin(id: string | undefined): Promise<number> {
         // With no terminal there's nowhere for its link to show or its code to be typed.
         if (!process.stdin.isTTY) return LOGIN_EXIT.notSignedIn;
         const command = loginCommand(def.id, "default", { away: true });
+        signingIn = true;
         const proc = Bun.spawn(command.argv, { stdin: "inherit", stdout: "inherit", stderr: "inherit", env: command.env });
-        // Ctrl+C is the CLI's to take: it ends, and what it left is looked at below.
-        const ignore = () => {};
-        process.on("SIGINT", ignore);
         await proc.exited;
-        process.off("SIGINT", ignore);
+        signingIn = false;
         st = await status();
-        if (!st?.signedIn) return LOGIN_EXIT.notSignedIn;
+        if (!st) return LOGIN_EXIT.problem;
+        if (!st.signedIn) return LOGIN_EXIT.notSignedIn;
     }
     // The Cavvy running here turns it on itself, so its models are offered at once. With none running (or one from
     // before it could be asked), it's turned on for the next one to find.

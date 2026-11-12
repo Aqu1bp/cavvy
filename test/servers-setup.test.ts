@@ -119,6 +119,9 @@ function spawnCavvy(build: string, args: string[]) {
     });
 }
 
+/** The terminals opened by inTerminal: one a test left open (it failed part way) is closed after it. */
+const terminals: Bun.Subprocess[] = [];
+
 /** `cavvy …` on build `build`, in a terminal of its own as a person runs it: what it has shown, and typing into it. */
 function inTerminal(build: string, args: string[]) {
     let raw = "";
@@ -133,6 +136,7 @@ function inTerminal(build: string, args: string[]) {
             },
         },
     });
+    terminals.push(proc);
     // What a person reads: without the colours and the cursor's moves.
     const shown = () => raw.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Za-z0-9]|\x1b[=>]/g, "").replace(/\r/g, "");
     return {
@@ -165,6 +169,10 @@ afterEach(() => {
     fake.diskFree();
     fake.settings();
     fake.unhold();
+    for (const proc of terminals.splice(0)) {
+        if (proc.exitCode === null) proc.kill("SIGKILL");
+        proc.terminal?.close();
+    }
 });
 
 afterAll(async () => {
@@ -756,6 +764,34 @@ esac`;
             expect((await cavvy("servers", "check", "box")).out).toContain("  Claude Code isn't turned on there: cavvy servers login box\n");
             expect(await cavvy("servers", "login", "box")).toEqual({ code: 0, out: "Claude Code is ready on box.\n", err: "" });
             expect(turnedOn()).toEqual(["claude-code"]);
+        });
+
+        test("login: with no terminal, the one that only needs turning on is, and the one that needs signing in is said", async () => {
+            turnOff();
+            // A second CLI there, not signed in: nothing of it is run, since there's nowhere to show its link.
+            fake.install("codex", "echo 'run without a terminal' >&2; exit 9");
+            try {
+                expect((await cavvy("servers", "check", "box")).out).toContain("  Codex isn't signed in there: cavvy servers login box\n");
+                expect(await cavvy("servers", "login", "box")).toEqual({ code: 1, out: "Claude Code is ready on box.\n", err: "Signing in needs a terminal.\n" });
+                expect(turnedOn()).toEqual(["claude-code"]);
+            } finally {
+                fake.install("codex");
+            }
+        });
+
+        test("login: a CLI that can't say whether it's signed in is said in its own words, not as one that isn't installed", async () => {
+            turnOff();
+            fake.install("claude", `case "$1 $2" in "auth status") echo "cannot read its settings" >&2; exit 1 ;; esac`);
+            try {
+                const t = inTerminal(A, ["servers", "login", "box", "claude-code"]);
+                expect(await t.done()).toBe(1);
+                expect(t.shown()).toContain("cannot read its settings");
+                expect(t.shown()).toContain("Claude Code wasn't turned on on box.");
+                expect(t.shown()).not.toContain("isn't installed");
+                expect(turnedOn()).toEqual([]);
+            } finally {
+                fake.install("claude", CLAUDE);
+            }
         });
 
         test("add: in a terminal it's offered, and what's said afterwards is the server as that left it", async () => {
