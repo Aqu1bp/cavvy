@@ -7,6 +7,7 @@
 // Linux only: see leftRunning.
 
 import { readdir, readFile } from "fs/promises";
+import { redact } from "./redact";
 
 /** The environment variable a session's commands carry: the session's id. */
 export const SESSION_VAR = "CAVVY_SESSION";
@@ -78,10 +79,13 @@ export function strays(procs: Proc[], self: number): Proc[] {
     return procs.filter((p) => p.marked && !mine(p.pid));
 }
 
-/** What to call a process: its command line, on one line and cut short. */
+/**
+ * What to call a process: its command line, on one line and cut short. Secrets are taken out of the whole of it
+ * first: one that the cut went through would no longer be known for what it is.
+ */
 async function nameOf(pid: number, root: string): Promise<string> {
     const text = await readFile(`${root}/${pid}/cmdline`, "utf-8")
-        .then((c) => c.replace(/\0+$/, "").replace(/[\0\s]+/g, " "))
+        .then((c) => redact(c.replace(/\0+$/, "").replace(/\0/g, " ")).replace(/\s+/g, " "))
         .catch(() => "");
     const name = text || `process ${pid}`;
     return name.length > 60 ? `${name.slice(0, 59)}…` : name;

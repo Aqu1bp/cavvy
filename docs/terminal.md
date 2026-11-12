@@ -16,9 +16,9 @@
 
 Commands: `/help /model /login /logout /providers /effort /permissions /mode /plan /clear /compact /cost /context /status /resume /rewind /fork /rename /export /copy /init /review /memory /config /thinking /mcp /plugin /agents /hooks /todos /tasks /bashes /add-dir /doctor /exit`.
 
-`/tasks` lists what a session has running in the background (shells, monitors, sub-agents); `/tasks stop <id>` stops one and `/tasks stop all` stops them all (in the app: **Stop all** over the running commands in Background, or `/tasks stop all` when none is listed). Esc stops only the current turn.
+`/tasks` lists what a session has running in the background (shells, monitors, sub-agents); `/tasks stop <id>` stops one and `/tasks stop all` stops them all (in the app: **Stop all** over the running commands in Background when there's more than one, and `/tasks stop all` typed there at any time). Esc stops only the current turn.
 
-On Linux, stopping them all also ends what the session's commands started and left running outside Cavvy, such as a server started with `nohup`, and names what it ended. That covers the commands Cavvy runs itself: those of a model used through its API and its sub-agents, and your own `!` commands. It doesn't cover what an agent CLI such as Claude Code or Codex ran, nor a program that replaced its own environment. Anything later started from such a process goes with it: if a command started a tmux server, its windows are ended too, yours included.
+On Linux, stopping them all also ends what the session's commands started and left running outside Cavvy, such as a server started with `nohup`, and names what it ended. That covers the commands Cavvy runs itself: those of a model used through its API and its sub-agents, and your own `!` commands. It doesn't cover what an agent CLI such as Claude Code or Codex ran, nor a program that replaced its own environment. Nor anything where Cavvy itself is a container's first process: there, what a command leaves behind is handed to Cavvy and can't be told apart. Anything later started from such a process goes with it: if a command started a tmux server, its windows are ended too, yours included.
 
 Custom commands are markdown files in `~/.cavvy/commands/` or `.cavvy/commands/`. The body is the prompt; `$ARGUMENTS` and `$1`…`$9` are substituted; `commands/git/pr.md` becomes `/git:pr`.
 

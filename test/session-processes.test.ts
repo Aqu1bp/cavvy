@@ -8,6 +8,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { endLeftRunning, endThese, leftNotice, leftRunning, readProc, SESSION_VAR, strays } from "../src/util/session-processes";
 import { commandEnv } from "../src/tools/bash";
+import { registerSecret, unregisterSecret } from "../src/util/redact";
 
 const linux = process.platform === "linux";
 const dir = mkdtempSync(join(tmpdir(), "cavvy-procs-"));
@@ -100,6 +101,21 @@ test("read from /proc: each process's parent, start and whether it carries the m
         { pid: 201, start: "2010", name: "process 201" },
     ]);
     expect(await leftRunning("a b; rm", 100, root)).toEqual([]);
+});
+
+test("a secret in a left-behind command's line isn't shown, even where the name is cut", async () => {
+    const root = join(dir, "secret");
+    const token = "2abcdefghijklmnopqrstuvwxyz0123456789_ABCDEFGHIJ";
+    registerSecret(token);
+    try {
+        proc(root, 500, "ngrok", 1, [`${SESSION_VAR}=s`], { cmdline: ["ngrok", "http", "3000", "--authtoken", token, "--log", "stdout", "--region", "eu"] });
+        const [left] = (await leftRunning("s", 100, root))!;
+        expect(left!.name).toStartWith("ngrok http 3000 --authtoken [REDACTED");
+        expect(left!.name).not.toContain("2abc");
+        expect(left!.name.length).toBeLessThanOrEqual(60);
+    } finally {
+        unregisterSecret(token);
+    }
 });
 
 test("when Cavvy is the first process (a container), what it runs is still its own", () => {
