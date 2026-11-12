@@ -18,7 +18,7 @@ export interface PeerHost {
     get(id: string): Runtime | undefined;
     /** Open a session that isn't (throws when it can't be: its folder gone, untrusted). */
     open(id: string): Promise<Runtime>;
-    create(cwd: string, o: { mode: PermissionMode; accounts: Record<string, string> }): Promise<Runtime>;
+    create(cwd: string, o: { mode: PermissionMode; accounts: Record<string, string>; startedBy: string }): Promise<Runtime>;
     defaultMode(ws: Workspace): PermissionMode;
     /** Let it go once it has nothing to do, unless a window has it open. */
     release(id: string): void;
@@ -102,21 +102,24 @@ export function appPeers(host: PeerHost, self: Runtime): SessionPeers {
             return { summary: runtimeSummary(rt), delivery: deliver(rt, text) };
         },
         start: async ({ prompt, title, model }) => {
-            // No chains: a session another started can't start more (its first message, from its starter, says so after a
-            // restart too). And no more than so many an hour from one, counted before anything is awaited.
-            const first = self.session.messages[0];
-            if (host.starts.startedBy.has(self.id) || (first?.role === "user" && first.meta?.kind === "wake" && first.meta.from)) throw new PeerError("This session was started by another session, so it can't start sessions itself. Ask the user to start it, or send the request to the session that started this one.");
+            // No chains: a session another started can't start more (its own record says so, through compaction and restarts).
+            // And no more than so many an hour from one, counted before anything is awaited.
+            if (self.session.meta.startedBy || host.starts.startedBy.has(self.id)) throw new PeerError("This session was started by another session, so it can't start sessions itself. Ask the user to start it, or send the request to the session that started this one.");
             const now = Date.now();
             const times = (host.starts.times.get(self.id) ?? []).filter((t) => now - t < 3_600_000);
             if (times.length >= MAX_STARTS_PER_HOUR) throw new PeerError(`This session has started ${MAX_STARTS_PER_HOUR} sessions in the last hour, as many as it may. Ask the user before starting more.`);
             host.starts.times.set(self.id, [...times, now]);
-            /** A start that didn't happen doesn't count. */
-            const uncount = () => host.starts.times.set(self.id, (host.starts.times.get(self.id) ?? []).filter((t) => t !== now));
+            /** A start that didn't happen doesn't count: this one's reservation goes, not another's from the same moment. */
+            const uncount = () => {
+                const list = host.starts.times.get(self.id) ?? [];
+                const i = list.indexOf(now);
+                if (i >= 0) list.splice(i, 1);
+            };
             let rt: Runtime;
             try {
                 // On the starter's Claude Code and Codex accounts, as a plan taken to a worktree is.
                 const accounts = Object.fromEntries(ACCOUNT_PROVIDERS.map((p) => [p, self.session.accountId(p)]));
-                rt = await host.create(self.ws.cwd, { mode: narrowerMode(self.mode, host.defaultMode(self.ws)), accounts });
+                rt = await host.create(self.ws.cwd, { mode: narrowerMode(self.mode, host.defaultMode(self.ws)), accounts, startedBy: self.id });
             } catch (e) {
                 uncount();
                 throw new PeerError(`The session couldn't be started: ${redact((e as Error).message)}`);

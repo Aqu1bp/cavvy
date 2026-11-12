@@ -28,6 +28,8 @@ export interface SessionMeta {
     system?: string;
     /** Made by forking another session (src/agent/fork.ts). */
     forkOf?: ForkOrigin;
+    /** Started by another session's agent (src/agent/peers.ts StartSession): its id. Such a session can't start more. */
+    startedBy?: string;
 }
 
 export interface ForkOrigin {
@@ -875,7 +877,7 @@ export class Session {
             if (!raw.trim()) continue;
             try {
                 const l = JSON.parse(raw) as Line;
-                if (l.t === "meta") meta = { id: l.id, cwd: l.cwd, createdAt: l.createdAt, version: l.version, system: l.system, ...(l.forkOf ? { forkOf: l.forkOf } : {}) };
+                if (l.t === "meta") meta = { id: l.id, cwd: l.cwd, createdAt: l.createdAt, version: l.version, system: l.system, ...(l.forkOf ? { forkOf: l.forkOf } : {}), ...(typeof l.startedBy === "string" ? { startedBy: l.startedBy } : {}) };
                 else lines.push(l);
             } catch {
                 // a torn final line from a crash; ignore it

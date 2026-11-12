@@ -2,7 +2,7 @@
 // src/server/session-peers.ts): what it lists and reads, and what a message or a new session does in the app.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -419,10 +419,13 @@ describe("in the app", () => {
         expect((await startSession(a.toolState.peers, { prompt: "One more." })).text).toContain("started 5 sessions in the last hour");
         const child = engine.runtimes.get(ids[0]!)!;
         expect((await startSession(child.toolState.peers, { prompt: "A grandchild." })).text).toContain("was started by another session");
-        // After a restart (what's kept in memory gone), its first message, from its starter, still says so.
+        // After compaction and a restart (what's kept in memory gone), its own record still says so: in its file's first line.
+        await until(() => child.session.messages.length > 0 && !child.busy);
+        await send(child, "/compact");
+        expect(child.session.messages[0]?.meta?.kind).toBe("summary");
         (engine as any).sessionStarts.startedBy.clear();
-        await until(() => child.session.messages.length > 0);
         expect((await startSession(child.toolState.peers, { prompt: "A grandchild." })).text).toContain("was started by another session");
+        expect(JSON.parse(readFileSync(child.session.path, "utf-8").split("\n")[0]!).startedBy).toBe(a.id);
         for (const id of ids) await until(() => !engine.runtimes.get(id)?.busy);
         // Calls at once count as they're made: no more than 5 start, however many are asked for together.
         const c = await engine.createSession(project, { mode: "bypassPermissions" });

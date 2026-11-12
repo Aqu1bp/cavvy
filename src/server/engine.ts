@@ -888,11 +888,13 @@ export class Engine {
         return m;
     }
 
-    async createSession(cwd: string, opts: { model?: string; mode?: PermissionModeId; accounts?: Record<string, string> } = {}): Promise<Runtime> {
+    async createSession(cwd: string, opts: { model?: string; mode?: PermissionModeId; accounts?: Record<string, string>; startedBy?: string } = {}): Promise<Runtime> {
         const p = resolve(expandHome(cwd));
         if (!isDir(p)) throw new RpcError(`${p} isn't a folder`);
         const ws = this.workspaceFor(p);
         const session = Session.create(p);
+        // Kept in its first line, so it lasts through compaction and restarts (StartSession's bound on chains).
+        if (opts.startedBy) session.meta.startedBy = opts.startedBy;
         // Apply inherited selections before Runtime starts model setup; native threads stay fresh.
         for (const [provider, id] of Object.entries(opts.accounts ?? {})) session.setAccount(provider, id);
         const mode = opts.mode && PERMISSION_MODES.includes(opts.mode) ? opts.mode : this.defaultMode(ws);
@@ -931,7 +933,7 @@ export class Engine {
             },
             create: (cwd, o) => {
                 if (this.stopping) throw new RpcError("Cavvy server is stopping.", "stopping");
-                return this.createSession(cwd, { mode: o.mode, accounts: o.accounts });
+                return this.createSession(cwd, { mode: o.mode, accounts: o.accounts, startedBy: o.startedBy });
             },
             defaultMode: (ws) => this.defaultMode(ws),
             release: (id) => this.unloadLater(id),
