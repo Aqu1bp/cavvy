@@ -284,6 +284,7 @@ function readStatus(text: string | undefined): HostStatus | undefined {
         version: printable(String(s.version ?? ""), 40),
         protocol: count(s.protocol),
         build: s.build,
+        ...(typeof s.builtAt === "number" && Number.isSafeInteger(s.builtAt) && s.builtAt > 0 ? { builtAt: s.builtAt } : {}),
         sessions: count(s.sessions),
         working: count(s.working),
         waiting: count(s.waiting),
