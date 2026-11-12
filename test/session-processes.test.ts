@@ -3,7 +3,7 @@
 // tests with real processes run there (CI); how its /proc is read is tested everywhere, against a stand-in.
 
 import { afterAll, afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { endLeftRunning, endThese, leftNotice, leftRunning, readProc, SESSION_VAR, strays } from "../src/util/session-processes";
@@ -44,6 +44,8 @@ async function leaves(session: string, script: string): Promise<number> {
     const pid = Number((await new Response(p.stdout).text()).trim());
     await p.exited;
     started.push(pid);
+    // Until it is the program it was started to be (the shell's child becomes nohup, then that): its name is settled.
+    await until("it to be running", () => readFileSync(`/proc/${pid}/cmdline`, "utf-8").startsWith("sleep\0"));
     return pid;
 }
 
@@ -93,7 +95,7 @@ test("read from /proc: each process's parent, start and whether it carries the m
     expect(pids(999)).toEqual([101, 102, 200, 201]);
     expect(await readProc(mark, join(root, "nowhere"))).toBeUndefined();
     // By name, for the line that says what was ended: the command line, or the pid when there's none to read.
-    expect(await leftRunning("one", 100, root)).toEqual([
+    expect((await leftRunning("one", 100, root))!.sort((a, b) => a.pid - b.pid)).toEqual([
         { pid: 200, start: "2000", name: "node server.js --port 3000" },
         { pid: 201, start: "2010", name: "process 201" },
     ]);
