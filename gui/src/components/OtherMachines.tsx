@@ -24,6 +24,8 @@ interface Group {
     /** Why there's nothing to show of it, when it can't be reached as it is. */
     note?: string;
     sessions: SessionSummary[];
+    /** How many in play there aren't in `sessions`. */
+    more: number;
 }
 
 /** Rows shown per machine: the rest are a click away, on the machine itself. */
@@ -35,13 +37,13 @@ const servers = new Map<string, MachineOverview>();
 const own = new Map<string, SessionSummary>();
 let here = "This computer";
 
-const NOTES: Partial<Record<MachineOverview["state"], string>> = { unreachable: "Can't reach it", stopped: "Stopped", "needs-you": "Needs you", disconnected: "Disconnected" };
+const NOTES: Partial<Record<MachineOverview["state"], string>> = { unreachable: "Can't reach it", stopped: "Stopped", "needs-you": "Open to connect", disconnected: "Disconnected" };
 
 function show() {
     const list: Group[] = [];
-    if (machine) list.push({ key: "", label: here, sessions: inPlay(own.values()) });
+    if (machine) list.push({ key: "", label: here, sessions: inPlay(own.values()), more: 0 });
     // The machine this window is on is the sidebar's own list.
-    for (const m of servers.values()) if (m.name !== machine && m.state !== "removed") list.push({ key: `s:${m.name}`, name: m.name, label: m.name, note: NOTES[m.state], sessions: m.sessions });
+    for (const m of servers.values()) if (m.name !== machine && m.state !== "removed") list.push({ key: `s:${m.name}`, name: m.name, label: m.name, note: NOTES[m.state], sessions: m.sessions, more: m.more ?? 0 });
     setGroups("list", reconcile(list, { key: "key" }));
 }
 
@@ -67,7 +69,12 @@ function Others() {
                     <For each={g.sessions.slice(0, SHOWN)}>
                         {(s) => (
                             <div class="slim">
-                                <button class="slim-hit" title={`${s.title}\n${s.cwd}`} onClick={() => switchMachine(g.name, s.id)}>
+                                <button
+                                    class="slim-hit"
+                                    title={`${s.title}\n${s.cwd}`}
+                                    aria-label={`${s.title}, on ${g.label}${s.status === "waiting" ? ", waiting for you" : s.status === "running" ? ", working" : ""}`}
+                                    onClick={() => switchMachine(g.name, s.id)}
+                                >
                                     <span class="truncate">{s.title}</span>
                                 </button>
                                 <span class="slim-end">
@@ -78,9 +85,9 @@ function Others() {
                             </div>
                         )}
                     </For>
-                    <Show when={g.sessions.length > SHOWN}>
+                    <Show when={g.sessions.length + g.more > SHOWN}>
                         <button class="om-more" onClick={() => switchMachine(g.name)}>
-                            {g.sessions.length - SHOWN} more
+                            {g.sessions.length + g.more - SHOWN} more
                         </button>
                     </Show>
                 </div>
@@ -121,7 +128,8 @@ function tell(ev: Extract<ServerEvent, { type: "servers.notify" }>) {
     // A window on that machine hears it from there.
     if (ev.name === machine || !prefs.notifications) return;
     if (ev.kind === "done" && focused()) return;
-    void notify(`${ev.title} · ${ev.name ?? here}`, ev.body, () => switchMachine(ev.name, ev.sessionId));
+    // The machine first: the rest is the session's own words, and a long title is cut at its end.
+    void notify(`${ev.name ?? here}: ${ev.title}`, ev.body, () => switchMachine(ev.name, ev.sessionId), { tag: `machine:${ev.name ?? ""}:${ev.sessionId}` });
 }
 
 let started = false;
@@ -140,7 +148,7 @@ export function watchOthers(hereName: string) {
             show();
         }, reportError);
         if (!home) return;
-        void home.call("sessions.list", { limit: 30 }).then((list) => {
+        void home.call("sessions.list", { limit: 100 }).then((list) => {
             own.clear();
             for (const s of list) own.set(s.id, s);
             show();

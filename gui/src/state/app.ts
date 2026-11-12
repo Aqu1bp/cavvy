@@ -854,7 +854,7 @@ function onEvent(ev: ServerEvent) {
             if (focused() && app.activeId === ev.sessionId) return;
             if (ev.kind === "done" && focused()) return;
             // In a window on a server the machine is named, as it is for sessions on machines no window is on.
-            void notify(machine ? `${ev.title} · ${machine}` : ev.title, ev.body, () => void activate(ev.sessionId));
+            void notify(machine ? `${machine}: ${ev.title}` : ev.title, ev.body, () => void activate(ev.sessionId));
             return;
         }
     }

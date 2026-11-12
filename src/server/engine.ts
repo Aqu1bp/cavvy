@@ -170,6 +170,9 @@ const PURGE_EVERY_MS = 60 * 60 * 1000;
 /** How long opening a session waits for its model to be set up, so the snapshot has it (a slow provider's comes after). */
 const OPEN_MODEL_WAIT_MS = 2_000;
 
+/** Sessions of one server that may each have a session here they're lent tools through (Engine.lend), since this Cavvy started. */
+const MAX_GUESTS = 30;
+
 export interface EngineClient {
     send(ev: ServerEvent): void;
     /** Sessions this client has open. */
@@ -1808,6 +1811,8 @@ export class Engine {
         let rt = this.runtimes.get(this.guests.get(key) ?? "");
         if (!rt) {
             const known = this.guests.get(key);
+            // A session here for each session there, but not without end: a server gone wrong can't fill this machine's list.
+            if (!known && [...this.guests.keys()].filter((k) => k.startsWith(`${name}\0`)).length >= MAX_GUESTS) return { text: `Too many sessions on ${name} have used this machine's tools since it started. Restart Cavvy there to make room.`, isError: true };
             const folder = join(cavvyHome(), "guests", name);
             mkdirSync(folder, { recursive: true });
             rt = known && findSessionAnywhere(known) ? this.openSession(known) : await this.createSession(folder);
@@ -2324,7 +2329,12 @@ export class Engine {
                     user = process.env.USER ?? "";
                 }
                 // What a window needs to know to show other machines at all: none of that is loaded otherwise.
-                const servers = this.o.away ? 0 : await import("../servers/store").then((m) => m.listServers().length, () => 0);
+                // A servers file that can't be read says so where servers are managed, not here: this is every window's first call.
+                const servers = this.o.away
+                    ? 0
+                    : await import("../servers/store")
+                          .then((m) => m.listServers().length)
+                          .catch(() => 0);
                 return { version: APP_VERSION, protocol: PROTOCOL_VERSION, home: cavvyHome(), platform: process.platform, homeDir: homedir(), user, host: hostname().replace(/\.local$/, ""), startCwd, ...(servers ? { servers } : {}) } satisfies HelloResult;
             }
             case "keybindings.get":

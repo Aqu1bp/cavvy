@@ -34,6 +34,41 @@ const IDLE_RETRY_MS = 300_000;
 const KEPT = 20;
 /** What a reply is waited for. */
 const REPLY_MS = 20_000;
+/** A server's own words are its to choose: only so much of each is kept, and only so many sessions heard of. */
+const HEARD = 300;
+const MAX_MESSAGE = 4 * 1024 * 1024;
+/** What a server's sessions have to say is passed on at most this often: a server gone wrong can't bury the user in it. */
+const NOTICES_PER_MINUTE = 6;
+const KINDS = ["done", "permission", "question", "plan", "error"] as const;
+/** Calls of what this machine lends that one server may have running here at once. */
+const LENT_AT_ONCE = 4;
+
+const cut = (v: unknown, max: number): string => (typeof v === "string" ? (v.length > max ? `${v.slice(0, max - 1)}…` : v) : "");
+const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+
+/**
+ * A session as a server described it, taken apart and put together again: only what the list shows, in the shapes
+ * and sizes it expects. Undefined for what isn't one. What a server sends is never passed on as it came.
+ */
+export function heardSession(v: unknown): SessionSummary | undefined {
+    const s = (v && typeof v === "object" ? v : {}) as Record<string, unknown>;
+    if (typeof s.id !== "string" || !/^[\w.-]{1,120}$/.test(s.id)) return undefined;
+    const status = s.status === "running" || s.status === "waiting" || s.status === "error" ? s.status : "idle";
+    return {
+        id: s.id,
+        cwd: cut(s.cwd, 400),
+        projectName: cut(s.projectName, 100),
+        title: cut(s.title, 200),
+        createdAt: num(s.createdAt),
+        updatedAt: num(s.updatedAt),
+        messages: num(s.messages),
+        status,
+        pinned: false,
+        archived: s.archived === true,
+        settled: s.settled === true,
+        live: s.live === true,
+    };
+}
 
 export class MachineWatch {
     private ws?: WebSocket;
@@ -49,6 +84,7 @@ export class MachineWatch {
         readonly name: string,
         private o: {
             /** Where the server's Cavvy is and the sign-in for it, without starting anything there. `renew`: the last sign-in opened nothing. */
+            /** It only ever waits for a connection that's coming back by itself: it doesn't hurry it. */
             reach: (renew: boolean) => Promise<ConnectResult | { status: "disconnected" }>;
             changed: () => void;
             notice: (n: MachineNotice) => void;
@@ -67,18 +103,19 @@ export class MachineWatch {
 
     /** Something changed for this server (a window connected to it, it came back): tried now, not when the wait is over. */
     poke() {
-        if (this.stopped || this.state === "connected") return;
+        // Connected, or a connection is being opened: that one stands.
+        if (this.stopped || this.ws) return;
         this.tries = 0;
         void this.attempt(false);
     }
 
     overview(): MachineOverview {
         const rank = (s: SessionSummary) => (s.status === "waiting" ? 0 : s.status === "running" ? 1 : 2);
-        const sessions = [...this.sessions.values()]
-            .filter((s) => !s.archived && !s.settled)
-            .sort((a, b) => rank(a) - rank(b) || b.updatedAt - a.updatedAt)
-            .slice(0, KEPT);
-        return { name: this.name, state: this.state, sessions };
+        // Only while it's heard from (or was a moment ago): what a server that's stopped or out of reach last said of
+        // its sessions, a ring on the ones working, would be shown for news that isn't coming.
+        const heard = this.state === "connected" || this.state === "connecting" ? [...this.sessions.values()] : [];
+        const inPlay = heard.filter((s) => !s.archived && !s.settled).sort((a, b) => rank(a) - rank(b) || b.updatedAt - a.updatedAt);
+        return { name: this.name, state: this.state, sessions: inPlay.slice(0, KEPT), more: Math.max(0, inPlay.length - KEPT) };
     }
 
     stop() {
@@ -108,8 +145,9 @@ export class MachineWatch {
         clearTimeout(this.timer);
         try {
             const at = await this.o.reach(renew).catch((): ConnectResult => ({ status: "failed", problem: { message: "" } }));
-            if (at.status === "disconnected") return this.set("disconnected");
             if (this.stopped) return;
+            // Until the user opens it again, which pokes this.
+            if (at.status === "disconnected") return this.set("disconnected");
             if (at.status !== "connected") {
                 // Stopped on purpose, or waiting for the user's word (its key, its version): theirs to change, from a
                 // window. Until then it's asked about again only now and then, in case it changed some other way.
@@ -123,10 +161,18 @@ export class MachineWatch {
         }
     }
 
+    /** When the last few notices were passed on (NOTICES_PER_MINUTE). */
+    private said: number[] = [];
+
     private listen(url: string, token: string, renewed: boolean) {
+        // One connection at a time: an earlier one that's still there is let go, and isn't listened to any more.
+        const before = this.ws;
+        this.ws = undefined;
+        before?.close();
         const ws = new WebSocket(url, ["cavvy.v1", `auth.${token}`]);
         this.ws = ws;
         let listed = false;
+        let tooMuch = false;
         const waiting = new Map<number, (result: unknown) => void>();
         /** Calls of tools this machine lends that are running here, by the server's id for each. */
         const lending = new Map<string, AbortController>();
@@ -138,7 +184,10 @@ export class MachineWatch {
                 listed = true;
                 this.tries = 0;
                 this.sessions.clear();
-                for (const s of Array.isArray(result) ? (result as SessionSummary[]) : []) if (s && typeof s.id === "string") this.sessions.set(s.id, s);
+                for (const v of Array.isArray(result) ? result.slice(0, HEARD) : []) {
+                    const s = heardSession(v);
+                    if (s) this.sessions.set(s.id, s);
+                }
                 this.state = "connected";
                 this.o.changed();
                 const kinds = this.o.lends?.() ?? [];
@@ -147,9 +196,15 @@ export class MachineWatch {
             ws.send(JSON.stringify({ id: 1, method: "sessions.list", params: { limit: 100 } }));
         };
         ws.onmessage = (m) => {
+            if (this.ws !== ws) return;
             let msg: { id?: number; result?: unknown; event?: ServerEvent };
+            // More than a list of sessions ever is: not read, and this server isn't listened to for a while.
+            if (typeof m.data !== "string" || m.data.length > MAX_MESSAGE) {
+                tooMuch = true;
+                return ws.close();
+            }
             try {
-                msg = JSON.parse(String(m.data));
+                msg = JSON.parse(m.data);
             } catch {
                 return;
             }
@@ -160,34 +215,48 @@ export class MachineWatch {
             }
             const ev = msg.event;
             if (!ev || !listed) return;
-            if (ev.type === "sessions.upsert" && ev.session && typeof ev.session.id === "string") {
-                this.sessions.delete(ev.session.id);
-                this.sessions.set(ev.session.id, ev.session);
+            if (ev.type === "sessions.upsert") {
+                const s = heardSession(ev.session);
+                if (!s) return;
+                this.sessions.delete(s.id);
+                this.sessions.set(s.id, s);
                 // Bounded, whatever the server sends: the oldest heard of go first.
                 for (const id of this.sessions.keys()) {
-                    if (this.sessions.size <= 500) break;
+                    if (this.sessions.size <= HEARD) break;
                     this.sessions.delete(id);
                 }
                 this.o.changed();
             } else if (ev.type === "sessions.remove") {
-                if (this.sessions.delete(ev.id)) this.o.changed();
-            } else if (ev.type === "notify" && ev.kind !== "background") {
-                this.o.notice({ sessionId: ev.sessionId, kind: ev.kind, title: ev.title, body: ev.body });
-            } else if (ev.type === "offers.call" && this.o.lend && typeof ev.callId === "string" && !lending.has(ev.callId)) {
+                if (typeof ev.id === "string" && this.sessions.delete(ev.id)) this.o.changed();
+            } else if (ev.type === "notify") {
+                const kind = KINDS.find((k) => k === ev.kind);
+                if (!kind || typeof ev.sessionId !== "string" || !/^[\w.-]{1,120}$/.test(ev.sessionId)) return;
+                const now = Date.now();
+                this.said = this.said.filter((t) => now - t < 60_000);
+                if (this.said.length >= NOTICES_PER_MINUTE) return;
+                this.said.push(now);
+                this.o.notice({ sessionId: ev.sessionId, kind, title: cut(ev.title, 120), body: cut(ev.body, 200) });
+            } else if (ev.type === "offers.call") {
+                // What this machine lends is asked for by a session there. Only so many at once, and only by a
+                // session that can be told apart: a server gone wrong can't open sessions here without end.
+                if (!this.o.lend || typeof ev.callId !== "string" || ev.callId.length > 100 || lending.has(ev.callId) || lending.size >= LENT_AT_ONCE) return;
+                const session = ev.session && typeof ev.session === "object" ? ev.session : ({} as { id?: unknown; title?: unknown });
+                if (typeof ev.tool !== "string" || typeof session.id !== "string" || !/^[\w.-]{1,120}$/.test(session.id)) return;
                 const stop = new AbortController();
                 lending.set(ev.callId, stop);
-                const call: LentCall = { tool: String(ev.tool), input: ev.input && typeof ev.input === "object" ? ev.input : {}, session: { id: String(ev.session?.id ?? ""), title: String(ev.session?.title ?? "") } };
+                const call: LentCall = { tool: ev.tool.slice(0, 100), input: ev.input && typeof ev.input === "object" && !Array.isArray(ev.input) ? ev.input : {}, session: { id: session.id, title: cut(session.title, 80) } };
+                const callId = ev.callId;
                 void this.o
                     .lend(call, stop.signal)
                     .catch((e): LentResult => ({ text: `It couldn't be run: ${(e as Error).message}`, isError: true }))
                     .then((r) => {
-                        lending.delete(ev.callId);
+                        lending.delete(callId);
                         // Given up there meanwhile, or the connection is another one now: nobody waits for it.
                         if (stop.signal.aborted || ws.readyState !== WebSocket.OPEN) return;
-                        ws.send(JSON.stringify({ id: next++, method: "offers.result", params: { callId: ev.callId, ...r } }));
+                        ws.send(JSON.stringify({ id: next++, method: "offers.result", params: { callId, ...r } }));
                     });
             } else if (ev.type === "offers.cancel") {
-                lending.get(ev.callId)?.abort();
+                if (typeof ev.callId === "string") lending.get(ev.callId)?.abort();
             }
         };
         ws.onclose = () => {
@@ -198,9 +267,10 @@ export class MachineWatch {
             if (this.ws !== ws) return;
             this.ws = undefined;
             if (this.stopped) return;
-            this.set("connecting");
+            this.set(tooMuch ? "unreachable" : "connecting");
             // Closed before it answered once: the sign-in may be one the server has forgotten. A new one, once.
-            if (!listed && !renewed) void this.attempt(true);
+            if (tooMuch) this.later(this.o.idleRetryMs ?? IDLE_RETRY_MS);
+            else if (!listed && !renewed) void this.attempt(true);
             else this.later();
         };
     }
