@@ -2933,12 +2933,15 @@ export class Agent {
     }
 
     /** The CLI auto-approves our MCP tools, so their explicit rules (mcp__cavvy__*, mcp__cavvy__browser_act) must be enforced here. */
-    private async authorizeServedTool(name: string, title: string | undefined, input: Record<string, unknown>, signal: AbortSignal): Promise<ServerToolResult | undefined> {
+    private async authorizeServedTool(name: string, title: string | undefined, input: Record<string, unknown>, signal: AbortSignal, refusal?: () => Promise<string | undefined>): Promise<ServerToolResult | undefined> {
         const refuse = (text: string): ServerToolResult => ({ text, isError: true });
         const tool = backendTool(`mcp__${MCP_SERVER_NAME}__${name}`, title);
         // Like the command check below, explicit asks still apply in bypass mode.
         const decision = this.o.checker.check(tool, input, "default", this.state.cwd);
         if (decision.behavior === "deny") return refuse(decision.reason ?? "Denied by a permission rule.");
+        // A denied call is refused as denied, whatever its input; one that can't run isn't asked about.
+        const invalid = await refusal?.();
+        if (invalid) return refuse(invalid);
         if (signal.aborted) return refuse("Interrupted by user");
         if (decision.behavior !== "ask" || !decision.rule) return undefined;
         if (!this.o.host.askPermission) return refuse(`Permission to use ${tool.name} was not granted (non-interactive session).`);
@@ -3000,12 +3003,6 @@ export class Agent {
     /** Ends the backend's running turn: a served call's checks said stop. */
     private stopServedTurn?: () => void;
 
-    /**
-     * One of Cavvy's own tools, called by a backend through Cavvy MCP server (Monitor for Codex). The CLI
-     * approves Cavvy's tools without asking, so it goes through the same checks as the tool's call from a model
-     * Cavvy runs: validation, read-only agents, PreToolUse hooks, rules and mode, the reviewer, the user, the
-     * sandbox, PostToolUse hooks. The backend's own event for the call is what the transcript shows.
-     */
     /** Why a call's input can't run (its schema, then the tool's own check), before anything asks about it. */
     private async inputRefusal(tool: Tool<any>, input: any, ctx: ToolContext): Promise<string | undefined> {
         const schemaErr = validateInput(tool, input);
@@ -3017,6 +3014,12 @@ export class Agent {
         }
     }
 
+    /**
+     * One of Cavvy's own tools, called by a backend through Cavvy MCP server (Monitor for Codex). The CLI
+     * approves Cavvy's tools without asking, so it goes through the same checks as the tool's call from a model
+     * Cavvy runs: validation, read-only agents, PreToolUse hooks, rules and mode, the reviewer, the user, the
+     * sandbox, PostToolUse hooks. The backend's own event for the call is what the transcript shows.
+     */
     private async runServed(tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal, callId?: string): Promise<ServerToolResult> {
         // Only the main agent can be woken, so a sub-agent gets no Monitor (Cavvy's sub-agents don't either). Nor can its stop end the main turn.
         if (tool.name === "Monitor" && callId && (await this.fromBackendSubagent(callId))) return { text: "Monitor isn't available to sub-agents: only the main agent can be woken by one.", isError: true };
@@ -3030,10 +3033,9 @@ export class Agent {
         // The CLI approves Cavvy's tools without asking: a rule naming the tool as served is enforced here, before the checks its own name gets.
         const served = servedBrowserName(tool.name) ?? servedSimulatorName(tool.name) ?? servedWorktreeFor(tool.name) ?? servedSessionName(tool.name);
         if (served) {
-            // A call that can't run is refused before a rule asks the user about it (prepare checks it again, cheaply).
-            const invalid = await this.inputRefusal(tool, coerceInput(tool, input), this.toolContext(callId ?? "", signal));
-            if (invalid) return { text: invalid, isError: true };
-            const refused = await this.authorizeServedTool(served, tool.title(input), input, signal);
+            // A rule's deny first; then a call that can't run is refused before a rule asks the user about it (prepare
+            // checks it again, cheaply).
+            const refused = await this.authorizeServedTool(served, tool.title(input), input, signal, () => this.inputRefusal(tool, coerceInput(tool, input), this.toolContext(callId ?? "", signal)));
             if (refused) return refused;
         }
         const call: ToolCallPart = { type: "tool_call", id: callId ?? `served_${++this.servedCalls}`, name: tool.name, input };

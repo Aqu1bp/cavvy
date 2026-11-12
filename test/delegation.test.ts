@@ -1745,6 +1745,16 @@ describe("Browser tools for Codex and Claude Code", () => {
         expect(asked.map((r) => r.tool.name)).toEqual(["mcp__cavvy__browser_navigate"]);
     });
 
+    test("a deny rule for the served name refuses a call as denied, whatever its input", async () => {
+        process.env.FAKE_SCENARIO = "mcp";
+        calls([{ tool: "browser_navigate", args: { action: "goto" } }, { tool: "browser_navigate", args: { url: "https://example.com" } }]);
+        const { run, asked } = await codex({ settings: { permissions: { deny: ["mcp__cavvy__browser_navigate"] } } });
+        await run("open it");
+        for (const r of mcpResults()) expect(r.text).toContain("Denied by permission rule mcp__cavvy__browser_navigate");
+        expect(mcpResults()).toHaveLength(2);
+        expect(asked).toEqual([]);
+    });
+
     test("the rules that cover the tool by its own name hold on this path too: a host, a file, plan mode", async () => {
         process.env.FAKE_SCENARIO = "mcp";
         mkdirSync(join(cwd, "private"), { recursive: true });
