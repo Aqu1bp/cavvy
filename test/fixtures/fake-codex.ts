@@ -529,11 +529,18 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
             }
             // It starts a moment after the answer.
             for (const starts = Date.now() + Number(process.env.FAKE_HANG_START_MS ?? 30); Date.now() < starts && !t.interrupted; ) await Bun.sleep(10);
-            // Stopped before it started: nothing runs, and nothing is said of the command.
-            if (t.interrupted) return finish("interrupted");
-            const processId = String(++processSeq);
-            terminals.set(processId, { threadId, turnId, item: { ...cmd, processId, source: "unifiedExecStartup" } });
-            log({ terminalStarted: { processId, itemId: cmd.id } });
+            const start = () => {
+                const processId = String(++processSeq);
+                terminals.set(processId, { threadId, turnId, item: { ...cmd, processId, source: "unifiedExecStartup" } });
+                log({ terminalStarted: { processId, itemId: cmd.id } });
+            };
+            // Stopped before it started: nothing runs, and nothing is said of the command. FAKE_HANG_LATE=<ms>: it
+            // starts all the same, that long after the turn is over (seen when the stop lands as it's being started).
+            if (t.interrupted) {
+                if (process.env.FAKE_HANG_LATE) setTimeout(start, Number(process.env.FAKE_HANG_LATE));
+                return finish("interrupted");
+            }
+            start();
         }
         const until = Date.now() + Number(process.env.FAKE_HANG_MS ?? 10000);
         let woken = false;
