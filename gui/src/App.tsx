@@ -13,6 +13,7 @@ import { canStop } from "./lib/session-status";
 import { actionOf, setEnterSends } from "./state/keybindings";
 import { clampInspectorWidth, closesOnShrink, columnSteps, docksInPlace, heldSizes, requestCloses, tracks, COLUMN_NARROW, COLUMN_SHORT, INSPECTOR_DEFAULT, INSPECTOR_MOVES, windowLayout } from "./lib/layout";
 import { warmUp } from "./lib/highlight";
+import { waitingLabel } from "./lib/request-age";
 import { warmMarkdown } from "./lib/markdown";
 import { frameDrag } from "./lib/drag";
 import { skipCovered } from "./lib/cover";
@@ -283,6 +284,16 @@ function LayoutKeeper(p: { panel: boolean; review: boolean }) {
     return null;
 }
 
+/** Its tooltip names what it waits on, and for how long, as of when the pointer came over it. */
+function SlowNotice() {
+    const [waiting, setWaiting] = createSignal("");
+    return (
+        <div class="banner" role="status" title={waiting()} onPointerEnter={() => setWaiting(waitingLabel(rpc.waiting()))}>
+            The server is taking a while…
+        </div>
+    );
+}
+
 function Reconnecting() {
     return (
         <>
@@ -295,9 +306,7 @@ function Reconnecting() {
                 </div>
             </Show>
             <Show when={app.conn === "open" && app.slowRequest}>
-                <div class="banner" role="status">
-                    The server is taking a while…
-                </div>
+                <SlowNotice />
             </Show>
         </>
     );

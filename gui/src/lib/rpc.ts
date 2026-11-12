@@ -95,6 +95,11 @@ export class Rpc {
         for (const fn of this.stateListeners) fn(s, this.attempt);
     }
 
+    /** The requests the "taking a while" notice is waiting on, as of now. */
+    waiting(): { method: Method; ms: number }[] {
+        return this.ages.waiting(performance.now());
+    }
+
     onSlow(fn: (slow: boolean) => void): () => void {
         this.slowListeners.add(fn);
         return () => this.slowListeners.delete(fn);

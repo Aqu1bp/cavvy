@@ -21,6 +21,7 @@ import { redact, registerSecret } from "../util/redact";
 import { encodeBrowserFrame, encodeSimulatorFrame } from "./browser-wire";
 import { attachDesktopHost, detachDesktopHost, type DesktopHost } from "../browser/host";
 import { wireReplacer } from "./timeline";
+import { RequestWatch, type RequestWatchOptions } from "./request-watch";
 
 export interface ServeOptions extends EngineOptions {
     host?: string;
@@ -32,6 +33,8 @@ export interface ServeOptions extends EngineOptions {
     /** Extra origins allowed to connect (a Vite dev server). */
     origins?: string[];
     log?: (msg: string) => void;
+    /** Where requests left unanswered a while are noted (tests); ~/.cavvy/logs/requests.log by default. */
+    requestWatch?: RequestWatchOptions;
 }
 
 export interface RunningServer {
@@ -88,6 +91,7 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
     const log = o.log ?? (() => {});
     const engine = new Engine(o);
     await engine.start();
+    const requests = new RequestWatch(o.requestWatch);
     const staticDir = o.staticDir && existsSync(join(o.staticDir, "index.html")) ? resolve(o.staticDir) : undefined;
 
     let port = 0;
@@ -268,6 +272,7 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                         });
                     }
                 }
+                const done = notification ? undefined : requests.start(ws.data, msg.id as number, msg.method, msg.params);
                 let reply: ServerMessage;
                 try {
                     const result = await engine.handle(ws.data.client, msg.method as Method, msg.params);
@@ -277,7 +282,16 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                     if (!(e instanceof RpcError)) log(`error in ${msg.method}: ${redact(err?.stack ?? String(e))}`);
                     reply = { id: msg.id, error: { message: redact(err?.message ?? String(e)), code: e instanceof RpcError ? e.code : undefined, folder: e instanceof RpcError ? e.folder : undefined } };
                 }
-                if (!notification && ws.readyState === 1) ws.send(JSON.stringify(reply, wireReplacer));
+                if (notification || ws.readyState !== 1) return done?.("error" in reply ? "failed" : "answered");
+                let sent: number;
+                try {
+                    sent = ws.send(JSON.stringify(reply, wireReplacer));
+                } catch (e) {
+                    log(`couldn't send the reply to ${msg.method}: ${redact((e as Error)?.message ?? String(e))}`);
+                    sent = -1;
+                }
+                // -1: Bun dropped it (the socket is backed up past its limit); 0 is queued, and still goes.
+                done?.(sent === -1 ? "unsent" : "error" in reply ? "failed" : "answered");
             },
             close(ws: ServerWebSocket<Conn>) {
                 if (ws.data.desktop) {
@@ -287,6 +301,7 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                 // A connection can disappear while a key/button is down. Release only its held inputs.
                 for (const held of ws.data.held.values()) void engine.handle(ws.data.client, "browser.input", held).catch(() => undefined);
                 ws.data.held.clear();
+                requests.drop(ws.data);
                 engine.dropClient(ws.data.client);
             },
         },
@@ -307,6 +322,7 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
             return `${url}/#code=${code}`;
         },
         async stop() {
+            requests.close();
             await engine.stop();
             server.stop(true);
         },
