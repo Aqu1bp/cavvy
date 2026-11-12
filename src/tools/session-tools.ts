@@ -5,7 +5,8 @@
 // sessions another process has open.
 
 import type { ServerTool, ServerToolResult } from "../mcp/server";
-import { checkMessage, deliveryText, listText, PEER_LIMITS, PeerError, readText, type Delivery, type SessionPeers } from "../agent/peers";
+import { checkMessage, deliveryText, listText, PEER_LIMITS, PeerError, readText, type Delivery, type SessionPeers, type StartChoice } from "../agent/peers";
+import { EFFORT_LEVELS } from "../config/settings";
 import type { Tool, ToolContext, ToolResult } from "./types";
 
 const LIST_DESCRIPTION = `List the user's other Cavvy sessions: each one's id, title, whether it's working, waiting for the user or idle, when it was last active, and its model. Lists this project's (its repository, worktrees included) unless all is true. Use it to find the session the user means ("the one fixing the login bug") before reading it or sending it a message.`;
@@ -14,7 +15,7 @@ const READ_DESCRIPTION = `Read what was said in another Cavvy session: its promp
 
 const SEND_DESCRIPTION = `Send a message to the agent in another Cavvy session. If it's idle, it starts working on it; if it's working, it reads it at its next step. It's shown there as from this session, and that agent is told it came from another session's agent, not the user. An answer, if it sends one, arrives here later as a message: don't wait or poll for it, and end your turn if there's nothing else to do. Use it when the user asks you to hand work to, coordinate with or tell something to another session.`;
 
-const START_DESCRIPTION = `Start a new Cavvy session in this session's folder, with prompt as its first message (from this session). It works on its own, beside this one, and shows in the user's session list. Use it when the user asks for a new session, or for work to run in a session of its own. It runs in this session's permission mode or the folder's default, whichever asks the user more, and on this session's model unless model (provider:model) is given. Returns its id, for ReadSession and SendToSession.`;
+const START_DESCRIPTION = `Start a new Cavvy session in this session's folder, with prompt as its first message (from this session). It works on its own, beside this one, and shows in the user's session list. Use it when the user asks for a new session, or for work to run in a session of its own. It runs in this session's permission mode or the folder's default, whichever asks the user more, and on this session's model and effort unless model (provider:model) or effort is given; a model or effort that isn't available is refused with the models there are, before anything starts. Returns its id, for ReadSession and SendToSession.`;
 
 const LIST_SCHEMA = {
     type: "object",
@@ -48,7 +49,8 @@ const START_SCHEMA = {
     properties: {
         prompt: { type: "string", description: "Its first message: the task, self-contained (it hasn't seen this conversation)." },
         title: { type: "string", description: "A short title for the session list (a few words). Default: the prompt's start." },
-        model: { type: "string", description: "provider:model to run on. Default: this session's model." },
+        model: { type: "string", description: "provider:model to run on, e.g. as ListSessions shows sessions'. Default: this session's model." },
+        effort: { type: "string", enum: EFFORT_LEVELS, description: "Reasoning effort, one the model takes. Default: this session's, where the model takes it." },
     },
     required: ["prompt"],
 };
@@ -96,14 +98,22 @@ export async function sendToSession(peers: SessionPeers | undefined, input: Reco
     }
 }
 
+/** The model and effort asked for, if any. */
+function startChoice(input: Record<string, unknown>): StartChoice {
+    const model = str(input.model).trim();
+    const effort = str(input.effort).trim();
+    return { ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
+}
+
 export async function startSession(peers: SessionPeers | undefined, input: Record<string, unknown>): Promise<R> {
     if (!peers) return unreachable();
     if (!peers.start) return cannotDrive();
     try {
         const prompt = checkMessage(input.prompt, "prompt");
         const title = (str(input.title).trim() || prompt).replace(/\s+/g, " ").slice(0, 80);
-        const s = await peers.start({ prompt, title, model: str(input.model).trim() || undefined });
-        return { text: `Started session ${s.id} (“${s.title}”) in ${s.cwd}${s.model ? `, on ${s.model}` : ""}. It's working on the prompt now; it shows in the user's session list. An answer, if it sends one, arrives here as a message.`, summary: `Started “${s.title}”` };
+        const s = await peers.start({ prompt, title, ...startChoice(input) });
+        const on = [s.model, s.effort ? `${s.effort} effort` : ""].filter(Boolean).join(" at ");
+        return { text: `Started session ${s.id} (“${s.title}”) in ${s.cwd}${on ? `, on ${on}` : ""}. It's working on the prompt now; it shows in the user's session list. An answer, if it sends one, arrives here as a message.`, summary: `Started “${s.title}”` };
     } catch (e) {
         if (e instanceof PeerError) return fail(e.message);
         throw e;
@@ -141,9 +151,11 @@ const previewSend = async (input: { id?: unknown; message?: unknown }, ctx: Tool
     return { summary: title ? `Send a message to “${title}”` : "Send a message to another session", body: str(input.message).trim() || undefined };
 };
 
-const previewStart = async (input: { title?: unknown; prompt?: unknown }) => {
+const previewStart = async (input: { title?: unknown; prompt?: unknown; model?: unknown; effort?: unknown }) => {
     const title = str(input.title).trim();
-    return { summary: title ? `Start a session: “${title}”` : "Start a session", body: str(input.prompt).trim() || undefined };
+    const { model, effort } = startChoice(input);
+    const on = [model, effort ? `${effort} effort` : ""].filter(Boolean).join(", ");
+    return { summary: `Start a session${title ? `: “${title}”` : ""}${on ? ` (${on})` : ""}`, body: str(input.prompt).trim() || undefined };
 };
 
 export const SendToSessionTool: Tool<{ id: string; message: string }> = {
@@ -157,7 +169,7 @@ export const SendToSessionTool: Tool<{ id: string; message: string }> = {
     run: async (input, ctx) => asResult(await sendToSession(ctx.state.peers, input)),
 };
 
-export const StartSessionTool: Tool<{ prompt: string; title?: string; model?: string }> = {
+export const StartSessionTool: Tool<{ prompt: string; title?: string; model?: string; effort?: string }> = {
     name: "StartSession",
     description: START_DESCRIPTION,
     parameters: START_SCHEMA,
@@ -165,6 +177,8 @@ export const StartSessionTool: Tool<{ prompt: string; title?: string; model?: st
     readOnly: false,
     title: (i) => `StartSession(${typeof i.title === "string" && i.title.trim() ? i.title.trim().slice(0, 60) : str(i.prompt).replace(/\s+/g, " ").slice(0, 60)})`,
     preview: previewStart,
+    // A model or effort it can't start on is refused before the user is asked to allow it.
+    validate: (input, ctx) => ctx.state.peers?.checkStart?.(startChoice(input)),
     run: async (input, ctx) => asResult(await startSession(ctx.state.peers, input)),
 };
 

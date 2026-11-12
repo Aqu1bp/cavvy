@@ -133,6 +133,29 @@ for (const live of [true, false])
             );
         }, 40_000);
 
+test("Claude Code: start_session on a model there isn't is refused with the models there are, without asking the user", async () => {
+    await kit.withApp(
+        "claude-code",
+        true,
+        async (h) => {
+            // Manual mode: a start that got as far as the user would wait for them, and this turn wouldn't end.
+            h.rt.setMode("default");
+            const { getProvider } = await import("../src/providers/registry");
+            h.engine.listings = [{ provider: getProvider("claude-code")!, status: "ok", models: [{ provider: "claude-code", id: "opus", name: "Opus", effortLevels: ["low", "medium", "high", "xhigh", "max"] }] }] as never;
+            process.env.FAKE_MCP_CALLS = JSON.stringify([{ server: "cavvy", tool: "start_session", args: { prompt: "Review the auth module.", model: "claude-code:fable-5.2", effort: "high" } }]);
+            const open = h.engine.runtimes.size;
+            await h.send("start a session on Fable 5.2");
+            const result = h.lines().find((l: any) => l.mcpResult)?.mcpResult;
+            expect(result?.isError).toBe(true);
+            expect(result?.text).toContain('Claude Code has no model "fable-5.2"');
+            expect(result?.text).toContain("claude-code:opus (Opus; effort low, medium, high, xhigh, max)");
+            expect(h.rt.status).not.toBe("waiting");
+            expect(h.engine.runtimes.size).toBe(open);
+        },
+        { env: { FAKE_SCENARIO: "mcp" } },
+    );
+}, 40_000);
+
 test("Claude Code: two send_to_session calls said in one response both go, though it sends no call ids", async () => {
     await kit.withApp(
         "claude-code",

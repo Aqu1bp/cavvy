@@ -448,6 +448,83 @@ describe("in the app", () => {
         await until(() => turns(engine.runtimes.get(id)!).length > 0 && engine.runtimes.get(id)!.idle);
     });
 
+    describe("a model and effort to start on", () => {
+        const { getProvider } = require("../src/providers/registry");
+        const { StartSessionTool } = require("../src/tools/session-tools");
+        const { Runtime } = require("../src/server/runtime");
+        const listing = () => [{ provider: getProvider("mock"), status: "ok", models: [
+            { provider: "mock", id: "mock-opus", name: "Mock Opus", effortLevels: ["low", "medium", "high"] },
+            { provider: "mock", id: "mock-haiku", name: "Mock Haiku" },
+        ] }];
+        const listed = <T>(f: () => Promise<T>) => async () => {
+            const before = engine.listings;
+            engine.listings = listing() as never;
+            try {
+                return await f();
+            } finally {
+                engine.listings = before;
+            }
+        };
+        const startedId = (text: string) => /Started session (\S+)/.exec(text)![1]!;
+
+        test("one the agent names, as asked; the starter's effort where the model takes it", listed(async () => {
+            const a = await engine.createSession(project, { mode: "bypassPermissions" });
+            await a.ready;
+            const s = await startSession(a.toolState.peers, { prompt: "Review the auth module.", model: "mock:mock-opus", effort: "high" });
+            expect(s.isError).toBeFalsy();
+            expect(s.text).toContain("on mock:mock-opus at high effort");
+            const n = engine.runtimes.get(startedId(s.text))!;
+            expect(n.model?.id).toBe("mock-opus");
+            expect(n.settings().effort).toBe("high");
+            // Not given: this session's model, and its effort.
+            a.setEffort("low");
+            const d = engine.runtimes.get(startedId((await startSession(a.toolState.peers, { prompt: "Write the changelog." })).text))!;
+            expect(d.settings().effort).toBe("low");
+            for (const rt of [n, d]) await until(() => turns(rt).length > 0 && rt.idle && turns(rt).at(-1)!.status !== "running");
+        }), 30_000);
+
+        test("one it can't start on is refused before the user is asked, with the models there are, and nothing starts", listed(async () => {
+            const a = await engine.createSession(project, { mode: "default" });
+            await a.ready;
+            const open = engine.runtimes.size;
+            const refusal = (input: Record<string, unknown>) => StartSessionTool.validate({ prompt: "Review it.", ...input }, { state: a.toolState });
+            expect(await refusal({ model: "Mock Opus 5.2" })).toContain("isn't a model here");
+            expect(await refusal({ model: "mock:mock-opus-9" })).toContain('Mock has no model "mock-opus-9"');
+            expect(await refusal({ model: "mock:" })).toContain("Say which of Mock's models");
+            const all = (await refusal({ model: "elsewhere:x" }))!;
+            expect(all).toContain("mock:mock-opus (Mock Opus; effort low, medium, high)");
+            expect(all).toContain("mock:mock-haiku (Mock Haiku)");
+            expect(await refusal({ model: "mock:mock-opus", effort: "max" })).toContain('mock:mock-opus doesn\'t take "max" effort. It takes: low, medium, high.');
+            expect(await refusal({ model: "mock:mock-opus", effort: "high" })).toBeUndefined();
+            expect(await refusal({})).toBeUndefined();
+            // Run anyway (the provider went between the check and the start): refused the same, not counted.
+            const r = await startSession(a.toolState.peers, { prompt: "Review it.", model: "mock:nope" });
+            expect(r.isError).toBe(true);
+            expect(r.text).toContain('Mock has no model "nope"');
+            expect(engine.runtimes.size).toBe(open);
+            expect(engine.sessionStarts.times.get(a.id) ?? []).toEqual([]);
+            // The preview the user approves says what it starts on.
+            expect((await StartSessionTool.preview!({ prompt: "x", title: "Review", model: "mock:mock-opus", effort: "high" }, {} as never))?.summary).toBe("Start a session: “Review” (mock:mock-opus, high effort)");
+        }));
+
+        test("a model the new session can't take stops the start: it never runs on another", listed(async () => {
+            const a = await engine.createSession(project, { mode: "bypassPermissions" });
+            await a.ready;
+            const setModel = Runtime.prototype.setModel;
+            Runtime.prototype.setModel = async function (this: any, ref: string, o?: any) {
+                return this.id === a.id ? setModel.call(this, ref, o) : false;
+            };
+            try {
+                const r = await startSession(a.toolState.peers, { prompt: "Review it.", model: "mock:mock-haiku" });
+                expect(r.isError).toBe(true);
+                expect(r.text).toContain("couldn't be started on mock:mock-haiku");
+                expect(engine.sessionStarts.times.get(a.id) ?? []).toEqual([]);
+            } finally {
+                Runtime.prototype.setModel = setModel;
+            }
+        }));
+    });
+
     test("a filtered listing reads session files newest first, only until it has enough, and never too many", async () => {
         // Sessions of its own on disk, whatever else ran before it.
         for (const text of ["one", "two", "three", "four"]) {
