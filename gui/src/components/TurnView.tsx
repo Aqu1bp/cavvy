@@ -675,13 +675,16 @@ function TurnViewContent(p: TurnViewProps) {
             </Show>
         </Show>
     );
+    // Who started it, for screen readers: read once (a turn's prompt never changes sender), as a live read here would
+    // rebuild the turn's work each time the turn is replaced.
+    const said = untrack(() => p.turn.prompt?.from) ? "Another session said" : "You said";
     // How many of its first rows are notices from before its first step (lib/notices.ts).
     const lead = createMemo(() => (hasWork() ? leadingNotices(segs()) : 0));
 
     return (
         <article class={`turn ${p.turn.archived ? "archived" : ""} ${p.turn.imported ? "imported" : ""} ${p.held ? "chained" : ""} ${foldable() ? "done" : ""}`} data-turn={p.turn.id} aria-busy={running()} ref={(el) => (article = el, p.onElement?.(el, p.turn.id))}>
             <Show when={p.turn.prompt}>
-                <h2 class="sr-only" data-find-skip>{p.turn.prompt?.from ? "Another session said" : "You said"}</h2>
+                <h2 class="sr-only" data-find-skip>{said}</h2>
                 <UserPrompt turn={p.turn} sessionId={p.state.id} onRewind={p.onRewind} />
             </Show>
             <Show when={hasOutput()}>
