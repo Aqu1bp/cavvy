@@ -436,7 +436,7 @@ export class Runtime {
         const effort = opts.resumed ? this.ui.state.effort : undefined;
         if (effort && EFFORT_LEVELS.includes(effort)) this.effort = effort;
         // Secrets live as long as the session is loaded: unloading it (closed, or idle with no window on it) drops them.
-        this.toolState = { cwd: ws.cwd, projectRoot: ws.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore(), wakes: new WakeQueue(), watchers: new WatcherMap(), background: new SessionBackground(session) };
+        this.toolState = { cwd: ws.cwd, projectRoot: ws.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore(), wakes: new WakeQueue({ memory: engine.wakeMemory(session.meta.id) }), watchers: new WatcherMap(), background: new SessionBackground(session) };
         // The worktree the agent moved to, if it's still one.
         this.workingIn = session.workdir ? this.worktreeAt(session.workdir) : undefined;
         this.placeAgent(parseModelRef(session.model ?? "")?.provider);
@@ -2542,10 +2542,9 @@ export class Runtime {
             if (req.preview?.summary) it.description = redact(req.preview.summary);
             if (suggestions.length) it.options.push({ id: "always", label: `Always allow in ${projectName}`, short: "Always allow" });
         } else if (tool.name === "SendToSession" || tool.name === "StartSession") {
-            // To which session ("Send a message to “Fix login”"), and what it's told.
+            // To which session ("Send a message to “Fix login”"), and all it's told, scrolling as a command does.
             it.heading = req.preview?.summary ? redact(req.preview.summary) : tool.name === "StartSession" ? "Start a session" : "Send a message to another session";
-            const body = req.preview?.body ? redact(req.preview.body) : "";
-            if (body) it.description = body.length > 1200 ? `${body.slice(0, 1200)}…` : body;
+            if (req.preview?.body) it.command = redact(req.preview.body);
             if (suggestions.length) it.options.push({ id: "always", label: `Always allow in ${projectName}`, short: "Always allow" });
         } else if (tool.category === "mcp") {
             // Its own name in words ("Create issue"), and the server it's from.
@@ -4186,6 +4185,12 @@ export class Runtime {
 
     private async hook(event: HookEvent, payload: Record<string, unknown>, signal?: AbortSignal, settings = sessionHookSettings(this.settings(), this.agent?.model.provider)): Promise<void> {
         await fireHooks(settings, event, { session_id: this.id, ...payload }, this.toolState.cwd, (msg, level = "warn") => this.notice(msg, level), signal);
+    }
+
+    /** What a wake would wait for, idle as it is (wake()): the user's messages queued first, or an account to run on. */
+    get wakeWaitsFor(): "queue" | "account" | undefined {
+        if (this.needsAccount()) return "account";
+        return this.queued.length ? "queue" : undefined;
     }
 
     /** Nothing running, waiting for the user, or still to be delivered to the model: closing it loses nothing. */

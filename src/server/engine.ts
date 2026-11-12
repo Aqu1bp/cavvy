@@ -55,6 +55,7 @@ import { maskKey, redact } from "../util/redact";
 import { searchResources } from "../mcp/mentions";
 import { cleanTitle, modelSummary, promptTitle, Runtime } from "./runtime";
 import type { PeerHost } from "./session-peers";
+import type { WakeMemory } from "../agent/wakes";
 import { forkUiLog } from "./history";
 import { CLI_SOURCES, findCliSession, listCliSessions, readCliTranscript, validCliId, type CliSource } from "./cli-sessions";
 import { cavvyLinks, importModel, linkKey, writeImportedSession, type CavvyLinks } from "./cli-import";
@@ -903,6 +904,15 @@ export class Engine {
         return rt;
     }
 
+    /** Each session's wake memory (wakes.ts WakeMemory), kept while the server runs: closing a session doesn't lift Esc or the hourly limit. */
+    private wakeMemories = new Map<string, WakeMemory>();
+
+    wakeMemory(id: string): WakeMemory {
+        let m = this.wakeMemories.get(id);
+        if (!m) this.wakeMemories.set(id, (m = { started: [], paused: false }));
+        return m;
+    }
+
     /** What a session's agent reaching the others (session-peers.ts) does through the engine. */
     peerHost(): PeerHost {
         return {
@@ -918,7 +928,7 @@ export class Engine {
             },
             create: (cwd, o) => {
                 if (this.stopping) throw new RpcError("Cavvy server is stopping.", "stopping");
-                return this.createSession(cwd, { mode: o.mode });
+                return this.createSession(cwd, { mode: o.mode, accounts: o.accounts });
             },
             defaultMode: (ws) => this.defaultMode(ws),
             release: (id) => this.unloadLater(id),

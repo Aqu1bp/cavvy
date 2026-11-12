@@ -74,7 +74,7 @@ import { MONITOR_INSTRUCTIONS, monitorServerTools, nativeMonitorCall, stoppedMon
 import { BROWSER_INSTRUCTIONS, BrowserNavigateTool, browserServerTools, nativeBrowserCall, servedBrowserName } from "../tools/browser-tools";
 import { SIMULATOR_INSTRUCTIONS, SimulatorControlTool, nativeSimulatorCall, servedSimulatorName, simulatorServerTools } from "../tools/simulator-tools";
 import { nativeWorktreeCall, servedWorktreeFor, WORKTREE_INSTRUCTIONS, worktreeServerTools } from "../tools/worktree-tools";
-import { nativeSessionCall, servedSessionName, SESSION_TOOL_NAMES, sessionInstructions, sessionServerTools } from "../tools/session-tools";
+import { nativeSessionCall, servedSessionName, servedSessionTool, SESSION_TOOL_NAMES, sessionInstructions, sessionServerTools } from "../tools/session-tools";
 import { offered } from "../tools/index";
 import { lostNote, SessionBackground, type BackgroundTaskInfo } from "./background";
 import { SECRET_INSTRUCTIONS, secretTools, secretToolTitle } from "./secret-tools";
@@ -2898,7 +2898,8 @@ export class Agent {
 
     private noteServedCall(e: AgentEvent, into: Set<string>): void {
         if (e.type === "subagent") return this.noteServedCall(e.event, this.servedSub);
-        if ((e.type !== "tool_start" && e.type !== "tool_end") || !e.call.name.startsWith(`mcp__${MCP_SERVER_NAME}__monitor`)) return;
+        if (e.type !== "tool_start" && e.type !== "tool_end") return;
+        if (!e.call.name.startsWith(`mcp__${MCP_SERVER_NAME}__monitor`) && !servedSessionTool(MCP_SERVER_NAME, e.call.name)) return;
         if (e.type === "tool_start") into.add(e.call.id);
         else into.delete(e.call.id);
     }
@@ -2924,6 +2925,8 @@ export class Agent {
     private async runServed(tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal, callId?: string): Promise<ServerToolResult> {
         // Only the main agent can be woken, so a sub-agent gets no Monitor (Cavvy's sub-agents don't either). Nor can its stop end the main turn.
         if (tool.name === "Monitor" && callId && (await this.fromBackendSubagent(callId))) return { text: "Monitor isn't available to sub-agents: only the main agent can be woken by one.", isError: true };
+        // Nor the user's other sessions: a message is from this session, and an answer to it wakes the main agent.
+        if (SESSION_TOOL_NAMES.includes(tool.name) && callId && (await this.fromBackendSubagent(callId))) return { text: "Other sessions can't be reached from a sub-agent: only the main agent can reach them.", isError: true };
         // The CLI approves Cavvy's tools without asking: a rule naming the tool as served is enforced here, before the checks its own name gets.
         const served = servedBrowserName(tool.name) ?? servedSimulatorName(tool.name) ?? servedWorktreeFor(tool.name) ?? servedSessionName(tool.name);
         if (served) {

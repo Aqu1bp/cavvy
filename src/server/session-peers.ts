@@ -6,6 +6,7 @@
 
 import { diskPeers, freerMode, narrowerMode, PeerError, peerWake, readFromDisk, type Delivery, type PeerStatus, type PeerSummary, type SessionPeers } from "../agent/peers";
 import { findSessionAnywhere, sessionHolder } from "../agent/session";
+import { ACCOUNT_PROVIDERS } from "../providers/accounts";
 import { MODE_INFO, type PermissionMode } from "../permissions/modes";
 import { redact } from "../util/redact";
 import type { Runtime } from "./runtime";
@@ -17,7 +18,7 @@ export interface PeerHost {
     get(id: string): Runtime | undefined;
     /** Open a session that isn't (throws when it can't be: its folder gone, untrusted). */
     open(id: string): Promise<Runtime>;
-    create(cwd: string, o: { mode: PermissionMode }): Promise<Runtime>;
+    create(cwd: string, o: { mode: PermissionMode; accounts: Record<string, string> }): Promise<Runtime>;
     defaultMode(ws: Workspace): PermissionMode;
     /** Let it go once it has nothing to do, unless a window has it open. */
     release(id: string): void;
@@ -57,7 +58,10 @@ export function appPeers(host: PeerHost, self: Runtime): SessionPeers {
     const deliver = (rt: Runtime, text: string): Delivery => {
         const wakes = rt.toolState.wakes;
         if (!wakes) throw new PeerError(`Session ${rt.id} can't take messages.`);
-        const delivery: Delivery = wakes.isPaused ? "waiting" : rt.status === "waiting" ? "held" : rt.busy ? "joined" : wakes.full() ? "limited" : "started";
+        const waits = rt.wakeWaitsFor;
+        // As wake() will take it: not into a running turn (it waits for one of its own), not past the user's queued
+        // messages, a missing account, Esc or the hourly limit.
+        const delivery: Delivery = wakes.isPaused ? "waiting" : rt.status === "waiting" || waits === "account" ? "held" : rt.busy || waits === "queue" ? "queued" : wakes.full() ? "limited" : "started";
         wakes.push(peerWake({ id: self.id, title: titleOf(self) }, text));
         host.release(rt.id);
         return delivery;
@@ -88,7 +92,9 @@ export function appPeers(host: PeerHost, self: Runtime): SessionPeers {
         start: async ({ prompt, title, model }) => {
             let rt: Runtime;
             try {
-                rt = await host.create(self.ws.cwd, { mode: narrowerMode(self.mode, host.defaultMode(self.ws)) });
+                // On the starter's Claude Code and Codex accounts, as a plan taken to a worktree is.
+                const accounts = Object.fromEntries(ACCOUNT_PROVIDERS.map((p) => [p, self.session.accountId(p)]));
+                rt = await host.create(self.ws.cwd, { mode: narrowerMode(self.mode, host.defaultMode(self.ws)), accounts });
             } catch (e) {
                 throw new PeerError(`The session couldn't be started: ${redact((e as Error).message)}`);
             }

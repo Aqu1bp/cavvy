@@ -2,12 +2,13 @@
 // was said in one, sending one a message and starting a new one. The host
 // says what it can do: the terminal reads sessions from disk; the app also
 // reaches the ones it has open, and can send to and start them. A message
-// from another session arrives as a wake (src/agent/wakes.ts): it joins a
-// running turn at its next step or starts one, it's paused when the user
-// stops that session, and wakes start at most so many turns an hour, which
-// bounds two agents answering each other.
+// from another session arrives as a wake (src/agent/wakes.ts) of a turn of
+// its own, so the user sees it whole and from whom: it waits for a running
+// turn to end, it's held when the user stops that session, and wakes start
+// at most so many turns an hour, which bounds two agents answering each
+// other. The app remembers both per session while it runs (WakeMemory).
 
-import { readFileSync, statSync } from "fs";
+import { readFileSync, realpathSync, statSync } from "fs";
 import { dirname, join, resolve, sep } from "path";
 import type { Message, UserMessage } from "../providers/types";
 import type { PermissionMode } from "../permissions/modes";
@@ -30,10 +31,11 @@ export interface PeerSummary {
 }
 
 /**
- * What a send did: it started a turn, joins the running one, waits for the user to answer that session, waits for the
- * user to send it something (they stopped it), or waits for the hour's limit on turns wakes start.
+ * What a send did: it started a turn, waits for the one running (or the user's messages queued) to end, waits for the
+ * user (to answer that session, or to pick an account for it), waits for them to send it something (they stopped it),
+ * or waits for the hour's limit on turns wakes start.
  */
-export type Delivery = "started" | "joined" | "held" | "waiting" | "limited";
+export type Delivery = "started" | "queued" | "held" | "waiting" | "limited";
 
 export interface SessionPeers {
     /** This session's id: it's left out of listings, and can't be sent to. */
@@ -63,17 +65,28 @@ export const PEER_LIMITS = {
     maxReadTurns: 50,
     /** What a read returns at most. */
     maxReadChars: 40_000,
+    /** Sessions looked through for a search or for this project's, before the newest are listed. */
+    scan: 10_000,
 };
 
 // ---------------------------------------------------------------------------
 // Projects: a repository's main checkout and its worktrees are one project.
+
+function real(path: string): string {
+    try {
+        return realpathSync(path);
+    } catch {
+        return path;
+    }
+}
 
 /**
  * The folder that names a session's project: its repository's main checkout (a worktree's `.git` file points into
  * it), or the folder itself outside one. Read from the files, so no git runs.
  */
 export function projectOf(cwd: string, cache?: Map<string, string>): string {
-    const key = resolve(cwd);
+    // Real paths: git writes them in a worktree's .git file, and a folder opened through a link (macOS's /tmp) has another.
+    const key = real(resolve(cwd));
     const hit = cache?.get(key);
     if (hit) return hit;
     let found = key;
@@ -94,7 +107,7 @@ export function projectOf(cwd: string, cache?: Map<string, string>): string {
             try {
                 const gitdir = readFileSync(dotGit, "utf-8").match(/^gitdir:\s*(.+)$/m)?.[1]?.trim();
                 const at = gitdir ? resolve(dir, gitdir).lastIndexOf(`${sep}.git${sep}worktrees${sep}`) : -1;
-                if (gitdir && at >= 0) found = resolve(dir, gitdir).slice(0, at);
+                if (gitdir && at >= 0) found = real(resolve(dir, gitdir).slice(0, at));
             } catch {
                 // unreadable: the folder it's in
             }
@@ -176,9 +189,9 @@ export function listText(peers: SessionPeers, o: { all?: boolean; query?: string
     const cache = new Map<string, string>();
     const here = projectOf(peers.cwd, cache);
     const q = o.query?.trim().toLowerCase();
-    // Read past the limit: this project's are among all of them, and some are left out below.
+    // Filtered before the newest are kept: a search, or this project's, looks through more than the newest few.
     const rows = peers
-        .list({ limit: o.all ? limit + 1 : Math.max(200, limit * 4) })
+        .list({ limit: o.all && !q ? limit + 1 : PEER_LIMITS.scan })
         .filter((s) => s.id !== peers.self)
         .filter((s) => o.all || projectOf(s.cwd, cache) === here)
         .filter((s) => !q || s.title.toLowerCase().includes(q) || s.id.toLowerCase().includes(q))
@@ -186,7 +199,7 @@ export function listText(peers: SessionPeers, o: { all?: boolean; query?: string
     const scope = o.all ? "in any project" : `in this project (${here})`;
     if (!rows.length) return { text: `No other sessions ${scope}${q ? ` matching "${o.query}"` : ""}.${o.all ? "" : " Pass all: true to list every project's."}`, count: 0 };
     const lines = rows.map((s) => {
-        const where = s.cwd === here ? "" : `  folder: ${s.cwd}`;
+        const where = real(s.cwd) === here ? "" : `  folder: ${s.cwd}`;
         return `${s.id}  “${redact(oneLine(s.title, 100))}”  ${STATUS_WORDS[s.status]}, ${ago(s.updatedAt, now)}${s.model ? `, ${s.model}` : ""}${where}`;
     });
     return { text: `Sessions ${scope}, newest first (this one left out):\n${lines.join("\n")}`, count: rows.length };
@@ -294,8 +307,8 @@ export function checkMessage(text: unknown, what = "message"): string {
 export function deliveryText(s: PeerSummary, d: Delivery): string {
     const to = `Sent to session ${s.id} (“${oneLine(s.title, 80)}”).`;
     if (d === "started") return `${to} It was idle: it's working on it now. Its answer, if it sends one, arrives as a message here.`;
-    if (d === "joined") return `${to} It's working: it reads this at its next step.`;
-    if (d === "held") return `${to} It's waiting for the user to answer it: it reads this once they have.`;
+    if (d === "queued") return `${to} It's busy: it reads this as soon as it's done.`;
+    if (d === "held") return `${to} It's waiting for the user: it reads this once they've answered it.`;
     if (d === "limited") return `${to} It has started as many turns for messages and events as it may this hour, so it reads this later.`;
     return `${to} The user stopped that session, so it reads this when they next send it something.`;
 }

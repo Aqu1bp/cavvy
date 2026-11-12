@@ -969,7 +969,7 @@ export class App {
         prev.release();
         this.bindBackground();
         stopWatchers(this.toolState);
-        this.toolState.wakes?.drainRunning();
+        this.toolState.wakes?.clear();
         this.toolState.fileState.clear();
         this.toolState.todos = [];
         this.toolState.secrets?.clear();
@@ -999,7 +999,7 @@ export class App {
         prev?.release();
         this.bindBackground();
         stopWatchers(this.toolState);
-        this.toolState.wakes?.drainRunning();
+        this.toolState.wakes?.clear();
         resetToolState(this.toolState, this.session.messages);
         this.toolState.secrets?.clear();
         this.leaveBrowser();
@@ -1329,7 +1329,8 @@ export class App {
                 noticesUpTo(from + i);
                 if (m.role === "user") {
                     const kind = m.meta?.kind ?? "prompt";
-                    if (kind === "wake") out.push("", ...wrapLine(theme.muted("↻ ") + theme.subtle(truncate(m.meta?.display ?? "", cols * 2)), cols - 2));
+                    // A message from another session: who sent it, then what it said.
+                    if (kind === "wake") out.push("", ...wrapLine(theme.muted("↻ ") + theme.subtle(truncate(`${m.meta?.from ? `Message from “${m.meta.from.title}”: ` : ""}${m.meta?.display ?? ""}`, cols * 2)), cols - 2));
                     else if (kind === "prompt" || kind === "summary") {
                         const t = (m.meta?.display ?? textOf(m)).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
                         if (t) out.push("", ...wrapLine(theme.muted("> ") + truncate(t, cols * 3), cols - 2));

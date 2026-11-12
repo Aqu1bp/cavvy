@@ -2,7 +2,7 @@
 // src/server/session-peers.ts): what it lists and reads, and what a message or a new session does in the app.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -11,6 +11,7 @@ const { projectOf, listText, readText, peerWake, freerMode, narrowerMode, PeerEr
 const { formatWakes, wakesFrom, WakeQueue } = await import("../src/agent/wakes");
 const { listSessions, readSession, sendToSession, startSession, sessionServerTools, SESSION_TOOLS, SESSION_READ_TOOLS } = await import("../src/tools/session-tools");
 const { Engine } = await import("../src/server/engine");
+const { PermissionChecker } = await import("../src/permissions/checker");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
 import type { PeerSummary, SessionPeers } from "../src/agent/peers";
@@ -53,6 +54,10 @@ describe("projects", () => {
         expect(projectOf(join(main, "src"))).toBe(main);
         expect(projectOf(join(wt, "src"))).toBe(main);
         expect(projectOf(plain)).toBe(plain);
+        // Opened through a link (macOS's /tmp is one): git writes the worktree's real path; still one project.
+        const link = join(root, "link");
+        symlinkSync(root, link);
+        expect(projectOf(join(link, "app", "src"))).toBe(projectOf(join(wt, "src")));
     });
 });
 
@@ -71,6 +76,17 @@ describe("what the agent reads", () => {
         expect(listText(peers, { all: true }).text).toContain(`folder: ${there}`);
         expect(listText(peers, { query: "LOGIN" }).text).toContain("Fix login");
         expect(listText(fakePeers("me", here, []), {}).text).toContain("No other sessions in this project");
+    });
+
+    test("a search looks past the newest few, in every project and in this one", () => {
+        const here = realpathSync(tempDir("peers-many-"));
+        const there = realpathSync(tempDir("peers-many-there-"));
+        dirs.push(here, there);
+        // Newest first; the session searched for is the 30th, and this project's only one is behind 250 others'.
+        const rows = Array.from({ length: 300 }, (_, i) => summary(`s${i}`, i === 260 ? here : there, { title: i === 29 ? "Fix login" : `Other ${i}`, updatedAt: Date.now() - i * 1000 }));
+        const peers = fakePeers("me", here, rows);
+        expect(listText(peers, { all: true, query: "login" }).text).toContain("“Fix login”");
+        expect(listText(peers, {}).text).toContain("s260 ");
     });
 
     test("a read has its turns, tools as one line, and who sent a message; the newest kept when too long", () => {
@@ -118,6 +134,33 @@ describe("what the agent reads", () => {
         expect(narrowerMode("plan", "bypassPermissions")).toBe("plan");
     });
 
+    test("a running turn takes events, not messages; a turn takes one sender's messages", () => {
+        const q = new WakeQueue({ coalesceMs: 0 });
+        const from = (id: string) => peerWake({ id, title: id }, `hi from ${id}`);
+        q.push(from("a"));
+        q.push({ source: "pull-request", label: "PR", text: "ci" });
+        q.push(from("b"));
+        q.push(from("a"));
+        expect(q.drainRunning().map((w) => w.label)).toEqual(["PR"]);
+        expect(q.takeForTurn().map((w) => w.from?.id)).toEqual(["a", "a"]);
+        expect(q.takeForTurn().map((w) => w.from?.id)).toEqual(["b"]);
+        q.dispose();
+    });
+
+    test("a queue sharing a session's memory keeps Esc and the hourly limit", () => {
+        const memory = { started: [] as number[], paused: false };
+        const first = new WakeQueue({ memory, maxPerHour: 1, coalesceMs: 0 });
+        first.push({ source: "x", label: "a", text: "a" });
+        expect(first.takeForTurn()).toHaveLength(1);
+        first.pause();
+        first.dispose();
+        const again = new WakeQueue({ memory, maxPerHour: 1, coalesceMs: 0 });
+        expect(again.isPaused).toBe(true);
+        again.resume();
+        expect(again.full()).toBe(true);
+        again.dispose();
+    });
+
     test("the hourly limit on wake turns shows before a wake is pushed", () => {
         const q = new WakeQueue({ maxPerHour: 1, coalesceMs: 0 });
         q.push({ source: "x", label: "a", text: "a" });
@@ -145,7 +188,7 @@ describe("the tools", () => {
             send: async (id, text) => {
                 if (id === "busy") throw new PeerError("refused for a reason");
                 sent.push(text);
-                return { summary: summary(id, here), delivery: "joined" };
+                return { summary: summary(id, here), delivery: "queued" };
             },
             start: async () => summary("new", here),
         });
@@ -154,7 +197,7 @@ describe("the tools", () => {
         expect((await sendToSession(peers, { id: "a", message: "x".repeat(20_001) })).text).toContain("at most");
         expect((await sendToSession(peers, { id: "busy", message: "hi" })).text).toBe("refused for a reason");
         const ok = await sendToSession(peers, { id: "a", message: " run the tests " });
-        expect(ok.text).toContain("It's working: it reads this at its next step.");
+        expect(ok.text).toContain("It's busy: it reads this as soon as it's done.");
         expect(sent).toEqual(["run the tests"]);
     });
 
@@ -166,6 +209,14 @@ describe("the tools", () => {
         expect(sessionServerTools(run, false).map((t) => t.name)).toEqual(["list_sessions", "read_session"]);
         expect(SESSION_READ_TOOLS.map((t) => t.name)).toEqual(["ListSessions", "ReadSession"]);
         expect(SESSION_TOOLS.find((t) => t.name === "SendToSession")!.category).toBe("execute");
+    });
+
+    test("in Plan mode, sending and starting are refused for what they are; listing and reading aren't asked", () => {
+        const checker = new PermissionChecker(() => ({}), "/p");
+        const send = SESSION_TOOLS.find((t) => t.name === "SendToSession")!;
+        expect(checker.check(send, { id: "a", message: "hi" }, "plan", "/p")).toMatchObject({ behavior: "deny", reason: expect.stringContaining("not sent to or started") });
+        expect(checker.check(send, { id: "a", message: "hi" }, "default", "/p").behavior).toBe("ask");
+        for (const mode of ["plan", "default"] as const) expect(checker.check(SESSION_TOOLS.find((t) => t.name === "ReadSession")!, { id: "a" }, mode, "/p").behavior).toBe("allow");
     });
 
     test("served calls answer with the served names", async () => {
@@ -234,6 +285,52 @@ describe("in the app", () => {
         expect(turns(n)[0]!.prompt?.from?.id).toBe(a.id);
         // Nothing has it open: it's let go once it's done, as a session no window shows is.
         await until(() => !engine.runtimes.has(id));
+    });
+
+    test("a message to a busy session waits for its turn to end, then shows whole, from its sender", async () => {
+        const a = await engine.createSession(project, { mode: "bypassPermissions" });
+        const b = await engine.createSession(project, { mode: "bypassPermissions" });
+        await Promise.all([a.ready, b.ready]);
+        (client as any).subs.add(a.id).add(b.id);
+        // "pause": the mock answers after a moment, time to send meanwhile.
+        await b.send("pause please");
+        await until(() => b.busy);
+        const r = await sendToSession(a.toolState.peers, { id: b.id, message: "Check the migration too." });
+        expect(r.text).toContain("It's busy: it reads this as soon as it's done.");
+        await until(() => turns(b).length === 2 && b.idle && turns(b).at(-1)!.status !== "running");
+        // Not folded into the running turn: a turn of its own, shown whole and from A.
+        expect(textOf(turns(b)[0])).not.toContain("Message from");
+        expect(turns(b)[1]!.prompt?.from?.id).toBe(a.id);
+        expect(turns(b)[1]!.prompt?.text).toBe("Check the migration too.");
+    });
+
+    test("Esc and the hourly limit hold after the session is closed and opened again", async () => {
+        const a = await engine.createSession(project, { mode: "bypassPermissions" });
+        const b = await engine.createSession(project, { mode: "bypassPermissions" });
+        await Promise.all([a.ready, b.ready]);
+        await send(b, "hello");
+        b.toolState.wakes!.pause();
+        // No window has it: it's closed, as when the last window lets go of it.
+        (engine as any).unloadIfUnused(b.id);
+        await until(() => !engine.runtimes.has(b.id));
+        const r = await sendToSession(a.toolState.peers, { id: b.id, message: "go on" });
+        expect(r.text).toContain("The user stopped that session");
+        const reopened = engine.runtimes.get(b.id)!;
+        expect(reopened).not.toBe(b);
+        await Bun.sleep(300);
+        expect(turns(reopened).filter((t) => t.prompt?.from)).toHaveLength(0);
+        reopened.toolState.wakes!.resume();
+        await until(() => turns(reopened).some((t) => t.prompt?.from?.id === a.id) && reopened.idle);
+    }, 20_000);
+
+    test("a session started by another runs on its Claude Code and Codex accounts", async () => {
+        const a = await engine.createSession(project, { mode: "bypassPermissions" });
+        await a.ready;
+        a.session.setAccount("codex", "work");
+        const s = await startSession(a.toolState.peers, { prompt: "Write the changelog.", title: "Changelog" });
+        const id = /Started session (\S+)/.exec(s.text)![1]!;
+        expect(engine.runtimes.get(id)!.session.accountId("codex")).toBe("work");
+        await until(() => turns(engine.runtimes.get(id)!).length > 0 && engine.runtimes.get(id)!.idle);
     });
 
     test("refusals: itself, unknown, a session that asks less, and a stopped one waits", async () => {

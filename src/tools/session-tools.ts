@@ -12,7 +12,7 @@ const LIST_DESCRIPTION = `List the user's other Cavvy sessions: each one's id, t
 
 const READ_DESCRIPTION = `Read what was said in another Cavvy session: its prompts and the assistant's replies, with the tools used as one line, from its last ${PEER_LIMITS.readTurns} turns unless turns says otherwise. Read a session before you answer about it or send it a message.`;
 
-const SEND_DESCRIPTION = `Send a message to the agent in another Cavvy session. If it's idle, it starts working on it; if it's working, it reads it at its next step. It's shown there as from this session, and that agent is told it came from another session's agent, not the user. An answer, if it sends one, arrives here later as a message: don't wait or poll for it, and end your turn if there's nothing else to do. Use it when the user asks you to hand work to, coordinate with or tell something to another session.`;
+const SEND_DESCRIPTION = `Send a message to the agent in another Cavvy session. If it's idle, it starts working on it; if it's busy, it reads it as soon as it's done. It's shown there as from this session, and that agent is told it came from another session's agent, not the user. An answer, if it sends one, arrives here later as a message: don't wait or poll for it, and end your turn if there's nothing else to do. Use it when the user asks you to hand work to, coordinate with or tell something to another session.`;
 
 const START_DESCRIPTION = `Start a new Cavvy session in this session's folder, with prompt as its first message (from this session). It works on its own, beside this one, and shows in the user's session list. Use it when the user asks for a new session, or for work to run in a session of its own. It runs in this session's permission mode or the folder's default, whichever asks the user more, and on this session's model unless model (provider:model) is given. Returns its id, for ReadSession and SendToSession.`;
 
@@ -78,7 +78,7 @@ export function readSession(peers: SessionPeers | undefined, input: Record<strin
     return { text: r.text, summary: `Read ${r.turns} turn${r.turns === 1 ? "" : "s"} of “${found.summary.title}”` };
 }
 
-const SENT: Record<Delivery, string> = { started: "Sent; it started working", joined: "Sent; it reads it next step", held: "Sent; it reads it after the user", waiting: "Sent; waits for the user", limited: "Sent; it reads it later" };
+const SENT: Record<Delivery, string> = { started: "Sent; it started working", queued: "Sent; it reads it when done", held: "Sent; waits for the user", waiting: "Sent; waits for the user", limited: "Sent; it reads it later" };
 
 export async function sendToSession(peers: SessionPeers | undefined, input: Record<string, unknown>): Promise<R> {
     if (!peers) return unreachable();
