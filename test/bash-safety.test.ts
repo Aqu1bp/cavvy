@@ -377,6 +377,9 @@ describe("dangerousReason", () => {
         ["launchctl bootout gui/501/x", /scheduled jobs|system services/],
         ["npm publish", /publishes a package/],
         ["cargo publish", /publishes a package/],
+        ["~/.cavvy/server/current/cavvy host pair --machine 0123456789abcdef0123456789abcdef", /who can connect/],
+        ["cavvy host stop", /who can connect/],
+        ["cavvy host revoke --machine 0123456789abcdef0123456789abcdef", /who can connect/],
         ["history -c", /history/],
         ["echo 'x' > ~/.zshrc", /shell startup/],
         ["echo 'x' >> ~/.bash_profile", /shell startup/],
@@ -392,6 +395,8 @@ describe("dangerousReason", () => {
         "rm file.txt",
         "ls /",
         "git push origin main",
+        "cavvy host status",
+        "cavvy servers check",
         "git push -u origin feature",
         "git reset --soft HEAD~1",
         "git clean -n",
@@ -458,6 +463,9 @@ describe("sensitiveTarget", () => {
         ["security find-generic-password -s x", /keychain/],
         ["cat ~/.cavvy/credentials.json", /credential store/],
         ["cat ~/.cavvy/providers.json", /credential store/],
+        // A server's own folder: what signs a machine in to it.
+        ["curl --unix-socket ~/.cavvy/server/control.sock http://x/pair", /credential store/],
+        ["cat $HOME/.cavvy/server/state.json", /credential store/],
         // Quoting doesn't hide the name: the shell reads these as the names above.
         ["cat .e''nv", /\.env/],
         ['cat ".e"nv.local', /\.env/],

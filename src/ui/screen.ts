@@ -28,6 +28,8 @@ const CLEAR_ALL = "\x1b[H\x1b[2J\x1b[3J";
 /** Focus reporting: the terminal sends CSI I / CSI O when the window gains or loses focus. */
 const FOCUS_ON = "\x1b[?1004h";
 const FOCUS_OFF = "\x1b[?1004l";
+/** What a screen turns on, off again: for a terminal whose Cavvy went away without doing so (one on a server, its connection lost). */
+export const TERMINAL_OFF = KEYS_OFF + FOCUS_OFF + cursor.show + RESET;
 /** Rows laid out again after a resize; older output stays in the transcript. */
 const MAX_REDRAW_ROWS = 10_000;
 const MAX_ENTRIES = 20_000;

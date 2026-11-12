@@ -1344,6 +1344,8 @@ const DANGEROUS: [RegExp, string][] = [
     [/\bgit\s+(reset\s+--hard|clean\s+-[a-zA-Z]*f)/, "discards uncommitted work"],
     [/\b(crontab\s+-r|launchctl\s+(unload|remove|bootout))\b/, "removes scheduled jobs or system services"],
     [/\b(npm|pnpm|yarn)\s+publish\b|\bcargo\s+publish\b|\btwine\s+upload\b|\bgem\s+push\b/, "publishes a package"],
+    // On a server: an agent that could sign a machine in could connect as one and answer its own prompts (src/servers/host.ts).
+    [/\b(cavvy|harness)\s+host\s+(run|pair|revoke|stop)\b/, "controls who can connect to this server"],
     [/\bhistory\s+-c\b/, "clears shell history"],
 ];
 
@@ -1779,7 +1781,7 @@ const SENSITIVE = ([
     [/Library\/Keychains|\bsecurity\s+(find|dump|export)-/, "the system keychain"],
     [/\.(cavvy|harness)\/(credentials|providers)\.json/, "Cavvy credential store"],
     [/\.codex\/auth\.json|\.claude\/\.credentials\.json|\.config\/gh\/hosts\.yml/, "a CLI's sign-in file"],
-    [/(^|[\s'"=:])(~|\$HOME|\$\{HOME\})\/\.(cavvy|harness)\/accounts(?=$|[/\s'";|&)])/, "Cavvy credential store"],
+    [/(^|[\s'"=:])(~|\$HOME|\$\{HOME\})\/\.(cavvy|harness)\/(accounts|server)(?=$|[/\s'";|&)])/, "Cavvy credential store"],
     [/\b(grep|egrep|fgrep|rg|ag|ack)\b[^|;&\n]*\s(~|\$HOME|\$\{HOME\}|\/Users\/[^\s/]+|\/home\/[^\s/]+|\/)\/?(?=$|[\s;|&)])/, "your whole home directory"],
     [/\bkubectl\s+get\s+secrets?\b|\bkubectl\s+config\s+view\b[^|;&\n]*--raw/, "cluster secrets"],
     [/\bgcloud\b[^|;&\n]*\b(print-(access|identity|refresh)-token|config-helper)\b/, "a Google Cloud access token"],
@@ -1794,7 +1796,7 @@ function credentialStore(cavvyHome: string): { files: string[]; folders: string[
     const homes = [cavvyHome, ...homeAliases(cavvyHome)];
     return {
         files: [...homes.flatMap((h) => [join(h, "credentials.json"), join(h, "providers.json")]), ...accountCredentialFiles()],
-        folders: [...homes.map((h) => join(h, "accounts")), ...accountFolders()],
+        folders: [...homes.flatMap((h) => [join(h, "accounts"), join(h, "server")]), ...accountFolders()],
     };
 }
 

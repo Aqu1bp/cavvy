@@ -499,6 +499,20 @@ export class Engine {
         this.broadcast({ type: "notify", sessionId: rt.id, kind: "background", title: this.notifyTitle(rt), body: endedText(task), tag: `background:${rt.id}:${task.id}:${task.startedAt}:${outcome}`, task: { id: task.id, outcome } });
     }
 
+    /**
+     * What a restart would cost: the sessions it would cut off part way (`working`), and the ones holding a
+     * question for the user that it would drop (`waiting`). For a server asked to update (src/servers/host.ts).
+     */
+    activity(): { sessions: number; working: number; waiting: number } {
+        let working = 0;
+        let waiting = 0;
+        for (const rt of this.runtimes.values()) {
+            if (rt.status === "waiting") waiting++;
+            else if (!rt.idle) working++;
+        }
+        return { sessions: this.runtimes.size, working, waiting };
+    }
+
     notify(rt: Runtime, kind: "done" | "permission" | "question" | "plan" | "error", body: string) {
         const title = this.notifyTitle(rt);
         this.broadcast({ type: "notify", sessionId: rt.id, kind, title, body });

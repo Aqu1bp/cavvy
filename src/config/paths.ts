@@ -50,6 +50,8 @@ export const paths = {
     projectsDir: () => join(cavvyHome(), "projects"),
     logs: () => join(cavvyHome(), "logs"),
     plugins: () => join(cavvyHome(), "plugins"),
+    /** There once this machine has run as a server for others (src/servers/host.ts): its keys stay in the credentials file. */
+    hostMarker: () => join(cavvyHome(), "server", "is-server"),
 
     /** Each in the project's .cavvy/, or in .harness/ when only that one has it (legacy.ts). */
     projectSettings: (cwd: string) => inProjectDir(cwd, "settings.json"),

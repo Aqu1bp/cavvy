@@ -786,9 +786,12 @@ function storeFiles(settings = false): string[] {
     return homes().flatMap((h) => names.map((n) => join(h, n)));
 }
 
-/** Cavvy's own accounts folder, in each of homes(): private whether or not any account is registered. */
+/**
+ * Cavvy's own private folders, in each of homes(): accounts/ (private whether or not any account is registered), and
+ * server/, through which a machine signs in to the Cavvy this one runs for others (src/servers/host.ts).
+ */
 function cavvyAccounts(): string[] {
-    return homes().map((h) => join(h, "accounts"));
+    return homes().flatMap((h) => [join(h, "accounts"), join(h, "server")]);
 }
 
 /** An approval as the reviewer hears it: the exact action and what it granted, nothing model-written. */
