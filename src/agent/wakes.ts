@@ -81,6 +81,11 @@ export class WakeQueue {
         return this.memory.paused;
     }
 
+    /** Whether a message from another session is waiting. */
+    hasMessage(): boolean {
+        return this.items.some((w) => w.from);
+    }
+
     /** The wakes waiting, oldest first (a copy). */
     pending(): Wake[] {
         return [...this.items];
@@ -126,8 +131,11 @@ export class WakeQueue {
      * hourly limit is reached: they wait, and the listeners are called again
      * when it frees up).
      */
-    takeForTurn(): Wake[] {
+    takeForTurn(o: { messages?: boolean } = {}): Wake[] {
         if (this.memory.paused || !this.items.length) return [];
+        // `messages`: only a message from another session will do (a goal is between its turns).
+        const first = o.messages ? this.items.find((w) => w.from) : this.items[0];
+        if (!first) return [];
         const now = this.now();
         const started = (this.memory.started = this.memory.started.filter((t) => now - t < HOUR));
         if (started.length >= this.maxPerHour) {
@@ -136,7 +144,7 @@ export class WakeQueue {
         }
         started.push(now);
         // One sender's messages, or the events, together: a turn shows who its messages are from. The rest go next.
-        const sender = this.items[0]!.from?.id;
+        const sender = first.from?.id;
         const taken = this.items.filter((w) => w.from?.id === sender);
         this.items = this.items.filter((w) => w.from?.id !== sender);
         if (this.items.length) this.schedule(this.coalesceMs);

@@ -11,6 +11,7 @@ const { projectOf, listText, readText, peerWake, freerMode, narrowerMode, PeerEr
 const { formatWakes, wakesFrom, WakeQueue } = await import("../src/agent/wakes");
 const { listSessions, readSession, sendToSession, startSession, sessionServerTools, SESSION_TOOLS, SESSION_READ_TOOLS } = await import("../src/tools/session-tools");
 const { Engine } = await import("../src/server/engine");
+const { listAllSessions } = await import("../src/agent/session");
 const { PermissionChecker } = await import("../src/permissions/checker");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
@@ -36,7 +37,7 @@ async function until(pred: () => boolean, ms = 15_000) {
 const summary = (id: string, cwd: string, o: Partial<PeerSummary> = {}): PeerSummary => ({ id, title: `Session ${id}`, cwd, status: "idle", updatedAt: Date.now() - 60_000, ...o });
 
 function fakePeers(self: string, cwd: string, rows: PeerSummary[], messages: Record<string, Message[]> = {}, o: Partial<SessionPeers> = {}): SessionPeers {
-    return { self, cwd, list: ({ limit }) => rows.slice(0, limit), read: (id) => (rows.find((r) => r.id === id) ? { summary: rows.find((r) => r.id === id)!, messages: messages[id] ?? [] } : undefined), ...o };
+    return { self, cwd, list: ({ limit, match }) => rows.filter((r) => !match || match(r)).slice(0, limit), read: (id) => (rows.find((r) => r.id === id) ? { summary: rows.find((r) => r.id === id)!, messages: messages[id] ?? [] } : undefined), ...o };
 }
 
 describe("projects", () => {
@@ -132,6 +133,18 @@ describe("what the agent reads", () => {
         expect(freerMode("plan", "plan")).toBe(false);
         expect(narrowerMode("auto", "acceptEdits")).toBe("acceptEdits");
         expect(narrowerMode("plan", "bypassPermissions")).toBe("plan");
+    });
+
+    test("between a goal's turns, only a message is taken", () => {
+        const q = new WakeQueue({ coalesceMs: 0 });
+        q.push({ source: "pull-request", label: "PR", text: "ci" });
+        expect(q.hasMessage()).toBe(false);
+        expect(q.takeForTurn({ messages: true })).toHaveLength(0);
+        q.push(peerWake({ id: "a", title: "a" }, "hi"));
+        expect(q.hasMessage()).toBe(true);
+        expect(q.takeForTurn({ messages: true }).map((w) => w.from?.id)).toEqual(["a"]);
+        expect(q.pending().map((w) => w.label)).toEqual(["PR"]);
+        q.dispose();
     });
 
     test("a running turn takes events, not messages; a turn takes one sender's messages", () => {
@@ -304,6 +317,23 @@ describe("in the app", () => {
         expect(turns(b)[1]!.prompt?.text).toBe("Check the migration too.");
     });
 
+    test("a message to a session working on a goal goes in between the goal's turns, not after the goal", async () => {
+        const a = await engine.createSession(project, { mode: "bypassPermissions" });
+        const b = await engine.createSession(project, { mode: "bypassPermissions" });
+        await Promise.all([a.ready, b.ready]);
+        (client as any).subs.add(a.id).add(b.id);
+        // goaldemo: its check says "not met" once, so the goal takes a second turn.
+        await b.send("/goal goaldemo the auth tests pass");
+        await until(() => b.busy);
+        const r = await sendToSession(a.toolState.peers, { id: b.id, message: "Leave the migration alone." });
+        expect(r.text).toMatch(/It's busy|working on it now/);
+        await until(() => b.idle && !b.busy && turns(b).some((t) => t.prompt?.from) && turns(b).length >= 3, 15_000);
+        const message = turns(b).findIndex((t) => t.prompt?.from?.id === a.id);
+        // Right after the turn it arrived in, before the goal's next.
+        expect(message).toBe(1);
+        expect(turns(b).length).toBeGreaterThan(2);
+    }, 20_000);
+
     test("Esc and the hourly limit hold after the session is closed and opened again", async () => {
         const a = await engine.createSession(project, { mode: "bypassPermissions" });
         const b = await engine.createSession(project, { mode: "bypassPermissions" });
@@ -331,6 +361,17 @@ describe("in the app", () => {
         const id = /Started session (\S+)/.exec(s.text)![1]!;
         expect(engine.runtimes.get(id)!.session.accountId("codex")).toBe("work");
         await until(() => turns(engine.runtimes.get(id)!).length > 0 && engine.runtimes.get(id)!.idle);
+    });
+
+    test("a filtered listing reads session files newest first, only until it has enough, and never too many", async () => {
+        const all = listAllSessions(500);
+        expect(all.length).toBeGreaterThan(3);
+        // Filtered as read: the oldest one, found though it's last.
+        const oldest = all.at(-1)!;
+        expect(listAllSessions(1, { match: (s) => s.id === oldest.id }).map((s) => s.id)).toEqual([oldest.id]);
+        // Capped: two files read, at most two listed, whatever the limit.
+        expect(listAllSessions(500, { maxRead: 2 }).length).toBeLessThanOrEqual(2);
+        expect(listAllSessions(500, { maxRead: 2, match: (s) => s.id === oldest.id })).toHaveLength(0);
     });
 
     test("refusals: itself, unknown, a session that asks less, and a stopped one waits", async () => {

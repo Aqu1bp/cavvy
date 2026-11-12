@@ -42,8 +42,8 @@ export interface SessionPeers {
     readonly self: string;
     /** This session's folder: "this project" is its repository's. */
     readonly cwd: string;
-    /** Newest first. */
-    list(o: { limit: number }): PeerSummary[];
+    /** Newest first: the newest `limit` that `match` accepts (all, without one). */
+    list(o: { limit: number; match?: (s: PeerSummary) => boolean }): PeerSummary[];
     /** Its summary and messages, or undefined when there's no such session. */
     read(id: string): { summary: PeerSummary; messages: Message[] } | undefined;
     /** Missing where sessions can't be driven from here (the terminal). Throws PeerError. */
@@ -65,8 +65,8 @@ export const PEER_LIMITS = {
     maxReadTurns: 50,
     /** What a read returns at most. */
     maxReadChars: 40_000,
-    /** Sessions looked through for a search or for this project's, before the newest are listed. */
-    scan: 10_000,
+    /** Session files read at most for one listing (newest first): under the session-head cache's size, so it isn't thrashed. */
+    scan: 2_000,
 };
 
 // ---------------------------------------------------------------------------
@@ -133,7 +133,9 @@ export function diskPeers(self: () => string, cwd: () => string): SessionPeers {
         get cwd() {
             return cwd();
         },
-        list: ({ limit }) => listAllSessions(limit + 1).map((s) => ({ id: s.id, title: s.title, cwd: s.cwd, status: sessionHolder(s.file) === undefined ? "idle" : "elsewhere", model: s.model, updatedAt: s.updatedAt })),
+        // Whether another process has it open is read only for the sessions listed.
+        list: ({ limit, match }) =>
+            listAllSessions(limit, { match: match && ((s) => match({ ...s, status: "idle" })), maxRead: PEER_LIMITS.scan }).map((s) => ({ id: s.id, title: s.title, cwd: s.cwd, status: sessionHolder(s.file) === undefined ? "idle" : "elsewhere", model: s.model, updatedAt: s.updatedAt })),
         read: (id) => readFromDisk(id),
     };
 }
@@ -189,13 +191,9 @@ export function listText(peers: SessionPeers, o: { all?: boolean; query?: string
     const cache = new Map<string, string>();
     const here = projectOf(peers.cwd, cache);
     const q = o.query?.trim().toLowerCase();
-    // Filtered before the newest are kept: a search, or this project's, looks through more than the newest few.
-    const rows = peers
-        .list({ limit: o.all && !q ? limit + 1 : PEER_LIMITS.scan })
-        .filter((s) => s.id !== peers.self)
-        .filter((s) => o.all || projectOf(s.cwd, cache) === here)
-        .filter((s) => !q || s.title.toLowerCase().includes(q) || s.id.toLowerCase().includes(q))
-        .slice(0, limit);
+    // Filtered as they're read, newest first: a search, or this project's, reads only until it has enough.
+    const match = (s: PeerSummary) => s.id !== peers.self && (o.all || projectOf(s.cwd, cache) === here) && (!q || s.title.toLowerCase().includes(q) || s.id.toLowerCase().includes(q));
+    const rows = peers.list({ limit, match }).filter(match).slice(0, limit);
     const scope = o.all ? "in any project" : `in this project (${here})`;
     if (!rows.length) return { text: `No other sessions ${scope}${q ? ` matching "${o.query}"` : ""}.${o.all ? "" : " Pass all: true to list every project's."}`, count: 0 };
     const lines = rows.map((s) => {
@@ -308,7 +306,7 @@ export function deliveryText(s: PeerSummary, d: Delivery): string {
     const to = `Sent to session ${s.id} (“${oneLine(s.title, 80)}”).`;
     if (d === "started") return `${to} It was idle: it's working on it now. Its answer, if it sends one, arrives as a message here.`;
     if (d === "queued") return `${to} It's busy: it reads this as soon as it's done.`;
-    if (d === "held") return `${to} It's waiting for the user: it reads this once they've answered it.`;
+    if (d === "held") return `${to} It's waiting for the user: it reads this once they've acted on it.`;
     if (d === "limited") return `${to} It has started as many turns for messages and events as it may this hour, so it reads this later.`;
     return `${to} The user stopped that session, so it reads this when they next send it something.`;
 }

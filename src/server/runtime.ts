@@ -3438,9 +3438,12 @@ export class Runtime {
         if (this.closed || this.busy || (this.adopts.length ? this.nextQueued() : this.queued.length)) return;
         // The session's CLI account was removed (#410): nothing runs until the user picks another (releaseForAccount looks again).
         if (this.needsAccount()) return;
+        // Between a goal's turns, a message from another session goes first, as the user's own would: the goal's next
+        // turn waits for the session to be free. Other wakes join the goal's turns instead.
+        const message = this.goal.pending() && this.toolState.wakes!.hasMessage();
         // A model switch, a commit, the agent still starting, a goal between its turns (it goes first, as with
         // scheduled prompts): look again in a moment.
-        if (this.switching || this.commitDone || !this.agent || this.goal.pending()) {
+        if (this.switching || this.commitDone || !this.agent || (this.goal.pending() && !message)) {
             const t = setTimeout(again, 1000);
             t.unref?.();
             return;
@@ -3453,7 +3456,7 @@ export class Runtime {
             void this.startTurn(label, { display: label, kind: adopt.prompt ? "prompt" : "wake", adopt }).catch((e) => this.notice(redact((e as Error).message), "error"));
             return;
         }
-        const wakes = this.toolState.wakes!.takeForTurn();
+        const wakes = this.toolState.wakes!.takeForTurn({ messages: message });
         if (!wakes.length) return;
         // Messages from one other session: shown as it wrote them, as from it.
         const from = wakesFrom(wakes);
@@ -4187,10 +4190,14 @@ export class Runtime {
         await fireHooks(settings, event, { session_id: this.id, ...payload }, this.toolState.cwd, (msg, level = "warn") => this.notice(msg, level), signal);
     }
 
-    /** What a wake would wait for, idle as it is (wake()): the user's messages queued first, or an account to run on. */
-    get wakeWaitsFor(): "queue" | "account" | undefined {
-        if (this.needsAccount()) return "account";
-        return this.queued.length ? "queue" : undefined;
+    /**
+     * What a wake would wait for, idle as it is (wake()): the user's messages queued first ("queue"), or the user
+     * ("user": an account to run on, or messages held since a stop or a restart until they send or remove them).
+     */
+    get wakeWaitsFor(): "queue" | "user" | undefined {
+        if (this.needsAccount()) return "user";
+        if (!this.queued.length) return undefined;
+        return this.nextQueued() ? "queue" : "user";
     }
 
     /** Nothing running, waiting for the user, or still to be delivered to the model: closing it loses nothing. */

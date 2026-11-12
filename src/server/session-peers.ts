@@ -61,7 +61,7 @@ export function appPeers(host: PeerHost, self: Runtime): SessionPeers {
         const waits = rt.wakeWaitsFor;
         // As wake() will take it: not into a running turn (it waits for one of its own), not past the user's queued
         // messages, a missing account, Esc or the hourly limit.
-        const delivery: Delivery = wakes.isPaused ? "waiting" : rt.status === "waiting" || waits === "account" ? "held" : rt.busy || waits === "queue" ? "queued" : wakes.full() ? "limited" : "started";
+        const delivery: Delivery = wakes.isPaused ? "waiting" : wakes.full() ? "limited" : rt.status === "waiting" || waits === "user" ? "held" : rt.busy || waits === "queue" ? "queued" : "started";
         wakes.push(peerWake({ id: self.id, title: titleOf(self) }, text));
         host.release(rt.id);
         return delivery;
@@ -72,11 +72,17 @@ export function appPeers(host: PeerHost, self: Runtime): SessionPeers {
         get cwd() {
             return self.ws.cwd;
         },
-        list: ({ limit }) => {
+        list: ({ limit, match }) => {
             const out = new Map<string, PeerSummary>();
-            for (const s of disk.list({ limit })) out.set(s.id, s);
+            for (const s of disk.list({ limit, match })) out.set(s.id, s);
             // Open here: as they are now (a session with nothing said yet isn't listed).
-            for (const rt of host.live()) if (rt.session.messages.length || rt.busy) out.set(rt.id, runtimeSummary(rt));
+            for (const rt of host.live()) {
+                if (!rt.session.messages.length && !rt.busy) continue;
+                const s = runtimeSummary(rt);
+                if (!match || match(s)) out.set(rt.id, s);
+                // On disk it matched, as it is now it doesn't (renamed since): not listed.
+                else out.delete(rt.id);
+            }
             return [...out.values()].sort((a, b) => b.updatedAt - a.updatedAt);
         },
         read: (id) => {
