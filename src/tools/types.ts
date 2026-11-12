@@ -72,6 +72,8 @@ export interface BackgroundShell {
 export interface ToolState {
     cwd: string;
     readonly projectRoot: string;
+    /** The session's id, which its commands are started with in their environment (util/session-processes.ts): what it left running can be found by it. */
+    session?: string;
     fileState: Map<string, FileState>;
     todos: TodoItem[];
     shells: Map<string, BackgroundShell>;

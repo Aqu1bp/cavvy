@@ -109,6 +109,7 @@ import { canonical, expandPath, isInside } from "../util/files";
 import type { NoticeData, PlanLimits, StoppedTask } from "../server/protocol";
 import type { NativeGoal } from "./goal";
 import { cavvyCompactAt, outputReserve } from "../backends/compact-at";
+import { endLeftRunning } from "../util/session-processes";
 
 // ---------------------------------------------------------------------------
 // Host interface (implemented by the TUI and by headless mode)
@@ -2051,6 +2052,12 @@ export class Agent {
                 this.state.background!.report({ ...t, status: "stopped", endedAt: Date.now(), withProcess: true });
                 out[id] = "stopped";
             }
+        }
+        // Everything, the user said: also what the session's commands left running where no task shows it (a server
+        // started with nohup, something that outlived the shell that started it).
+        if (!ids && this.state.session) {
+            const left = await endLeftRunning(this.state.session).catch(() => 0);
+            if (left) this.emit({ type: "notice", level: "info", message: `Also stopped ${left === 1 ? "a process" : `${left} processes`} this session had left running.` });
         }
         this.o.host.backgroundChanged?.();
         return out;

@@ -437,7 +437,7 @@ export class Runtime {
         const effort = opts.resumed ? this.ui.state.effort : undefined;
         if (effort && EFFORT_LEVELS.includes(effort)) this.effort = effort;
         // Secrets live as long as the session is loaded: unloading it (closed, or idle with no window on it) drops them.
-        this.toolState = { cwd: ws.cwd, projectRoot: ws.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore(), wakes: new WakeQueue({ memory: engine.wakeMemory(session.meta.id) }), watchers: new WatcherMap(), background: new SessionBackground(session) };
+        this.toolState = { cwd: ws.cwd, projectRoot: ws.cwd, session: session.meta.id, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore(), wakes: new WakeQueue({ memory: engine.wakeMemory(session.meta.id) }), watchers: new WatcherMap(), background: new SessionBackground(session) };
         // The worktree the agent moved to, if it's still one.
         this.workingIn = session.workdir ? this.worktreeAt(session.workdir) : undefined;
         this.placeAgent(parseModelRef(session.model ?? "")?.provider);
