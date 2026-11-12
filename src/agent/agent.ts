@@ -3006,6 +3006,17 @@ export class Agent {
      * Cavvy runs: validation, read-only agents, PreToolUse hooks, rules and mode, the reviewer, the user, the
      * sandbox, PostToolUse hooks. The backend's own event for the call is what the transcript shows.
      */
+    /** Why a call's input can't run (its schema, then the tool's own check), before anything asks about it. */
+    private async inputRefusal(tool: Tool<any>, input: any, ctx: ToolContext): Promise<string | undefined> {
+        const schemaErr = validateInput(tool, input);
+        if (schemaErr) return `Invalid input for ${tool.name}: ${schemaErr}`;
+        try {
+            return (await tool.validate?.(input, ctx)) || undefined;
+        } catch (e) {
+            return `Validation failed: ${(e as Error).message}`;
+        }
+    }
+
     private async runServed(tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal, callId?: string): Promise<ServerToolResult> {
         // Only the main agent can be woken, so a sub-agent gets no Monitor (Cavvy's sub-agents don't either). Nor can its stop end the main turn.
         if (tool.name === "Monitor" && callId && (await this.fromBackendSubagent(callId))) return { text: "Monitor isn't available to sub-agents: only the main agent can be woken by one.", isError: true };
@@ -3019,6 +3030,9 @@ export class Agent {
         // The CLI approves Cavvy's tools without asking: a rule naming the tool as served is enforced here, before the checks its own name gets.
         const served = servedBrowserName(tool.name) ?? servedSimulatorName(tool.name) ?? servedWorktreeFor(tool.name) ?? servedSessionName(tool.name);
         if (served) {
+            // A call that can't run is refused before a rule asks the user about it (prepare checks it again, cheaply).
+            const invalid = await this.inputRefusal(tool, coerceInput(tool, input), this.toolContext(callId ?? "", signal));
+            if (invalid) return { text: invalid, isError: true };
             const refused = await this.authorizeServedTool(served, tool.title(input), input, signal);
             if (refused) return refused;
         }
@@ -3355,15 +3369,9 @@ export class Agent {
         }
         if (!quiet) this.emit({ type: "tool_start", call, title, tool });
 
-        const schemaErr = validateInput(tool, input);
-        if (schemaErr) return { result: this.errorResult(call, `Invalid input for ${tool.name}: ${schemaErr}`, undefined, quiet) };
         const ctx = this.toolContext(call.id, signal);
-        try {
-            const err = await tool.validate?.(input, ctx);
-            if (err) return { result: this.errorResult(call, err, undefined, quiet) };
-        } catch (e) {
-            return { result: this.errorResult(call, `Validation failed: ${(e as Error).message}`, undefined, quiet) };
-        }
+        const invalid = await this.inputRefusal(tool, input, ctx);
+        if (invalid) return { result: this.errorResult(call, invalid, undefined, quiet) };
 
         // Read-only agents (explore) never change anything, whatever a hook later rewrites the call into.
         const writes = (input: any) => this.o.readOnly && (tool.category === "edit" || (isShellTool(tool.name) && !isReadOnlyCommand(String(input.command ?? ""))) || (tool.category === "mcp" && !isReadOnly(tool, input)));
