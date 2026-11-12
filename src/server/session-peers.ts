@@ -4,9 +4,13 @@
 // the session first when it isn't open (and letting it go again once it's
 // done, as one no window shows is).
 
-import { diskPeers, freerMode, narrowerMode, PeerError, peerWake, readFromDisk, type Delivery, type PeerStatus, type PeerSummary, type SessionPeers } from "../agent/peers";
+import { diskPeers, freerMode, modelChoices, modelEfforts, narrowerMode, PeerError, peerWake, readFromDisk, type Delivery, type PeerStatus, type PeerSummary, type SessionPeers, type StartChoice } from "../agent/peers";
 import { findSessionAnywhere, sessionHolder } from "../agent/session";
+import type { Effort } from "../config/settings";
 import { ACCOUNT_PROVIDERS } from "../providers/accounts";
+import { clientFor, resolveModelInfo, type ProviderListing } from "../providers/models";
+import { getProvider } from "../providers/registry";
+import { modelRef, parseModelRef } from "../providers/types";
 import { MODE_INFO, type PermissionMode } from "../permissions/modes";
 import { redact } from "../util/redact";
 import type { Runtime } from "./runtime";
@@ -20,6 +24,8 @@ export interface PeerHost {
     open(id: string): Promise<Runtime>;
     create(cwd: string, o: { mode: PermissionMode; accounts: Record<string, string>; startedBy: string }): Promise<Runtime>;
     defaultMode(ws: Workspace): PermissionMode;
+    /** The models the providers set up here list. */
+    listings(): ProviderListing[];
     /** Let it go once it has nothing to do, unless a window has it open. */
     release(id: string): void;
     /** Sessions started by another, and when each session started others: kept while the server runs. */
@@ -72,6 +78,40 @@ export function appPeers(host: PeerHost, self: Runtime): SessionPeers {
         return delivery;
     };
 
+    /**
+     * The model and effort to start a session on: as asked (a model a provider set up here has, an effort it takes), else
+     * this session's (its effort where the model takes it). Throws PeerError, with the models there are.
+     */
+    const choose = async ({ model, effort }: StartChoice): Promise<{ ref: string; efforts: Effort[]; effort?: Effort; asked: boolean }> => {
+        const listings = host.listings();
+        const shown = (t: string) => `"${redact(t).slice(0, 120)}"`;
+        const refuse = (why: string, provider?: string, match?: string): never => {
+            throw new PeerError(`${why}\n\n${modelChoices(listings, provider, match)}`);
+        };
+        const ref = model ?? (self.model ? modelRef(self.model) : self.session.model);
+        if (!ref) return refuse("This session has no model to start one on: say which.");
+        const p = parseModelRef(ref);
+        const def = p && getProvider(p.provider);
+        if (!p || !def) return refuse(`${shown(ref)} isn't a model here.`, getProvider(ref.split(":")[0]!.trim())?.id);
+        try {
+            await clientFor(def.id);
+        } catch {
+            return refuse(`${def.name} isn't set up here, so ${shown(ref)} can't run.`);
+        }
+        if (!p.id) return refuse(`Say which of ${def.name}'s models.`, def.id);
+        const listed = listings.find((l) => l.provider.id === def.id)?.models ?? [];
+        // This session's own model is what it runs on, listed or not; one asked for has to be listed (where its provider lists any).
+        const info = !model && self.model ? self.model : (listed.find((m) => m.id === p.id) ?? (listed.length ? undefined : resolveModelInfo(ref)));
+        if (!info) return refuse(`${def.name} has no model ${shown(p.id)}.`, def.id, p.id);
+        const efforts = modelEfforts(info);
+        if (effort === undefined) {
+            const mine = self.settings().effort;
+            return { ref, efforts, effort: mine && efforts.includes(mine) ? mine : undefined, asked: false };
+        }
+        if (!efforts.includes(effort as Effort)) throw new PeerError(`${ref} doesn't take ${shown(effort)} effort. It takes: ${efforts.join(", ") || "none"}.`);
+        return { ref, efforts, effort: effort as Effort, asked: true };
+    };
+
     return {
         self: self.id,
         get cwd() {
@@ -101,7 +141,15 @@ export function appPeers(host: PeerHost, self: Runtime): SessionPeers {
             if (freerMode(rt.mode, self.mode)) throw new PeerError(`Session ${id} runs in ${mode(rt.mode)} mode, which asks the user less than this session's ${mode(self.mode)} mode, so it can't be sent work from here. Ask the user to send it themselves.`);
             return { summary: runtimeSummary(rt), delivery: deliver(rt, text) };
         },
-        start: async ({ prompt, title, model }) => {
+        checkStart: async (o) => {
+            try {
+                await choose(o);
+            } catch (e) {
+                if (e instanceof PeerError) return e.message;
+                throw e;
+            }
+        },
+        start: async ({ prompt, title, model, effort }) => {
             // No chains: a session another started can't start more (its own record says so, through compaction and restarts).
             // And no more than so many an hour from one, counted before anything is awaited.
             if (self.session.meta.startedBy || host.starts.startedBy.has(self.id)) throw new PeerError("This session was started by another session, so it can't start sessions itself. Ask the user to start it, or send the request to the session that started this one.");
@@ -115,6 +163,14 @@ export function appPeers(host: PeerHost, self: Runtime): SessionPeers {
                 const i = list.indexOf(now);
                 if (i >= 0) list.splice(i, 1);
             };
+            // Checked again: the user may have changed providers since the call was.
+            let chosen: Awaited<ReturnType<typeof choose>>;
+            try {
+                chosen = await choose({ model, effort });
+            } catch (e) {
+                uncount();
+                throw e;
+            }
             let rt: Runtime;
             try {
                 // On the starter's Claude Code and Codex accounts, as a plan taken to a worktree is.
@@ -124,18 +180,27 @@ export function appPeers(host: PeerHost, self: Runtime): SessionPeers {
                 uncount();
                 throw new PeerError(`The session couldn't be started: ${redact((e as Error).message)}`);
             }
-            const ref = model ?? self.session.model;
+            // Never on a model nobody asked for: one it can't take stops the start.
+            let set = false;
+            let why = "";
             try {
-                if (ref) await rt.setModel(ref);
+                set = await rt.setModel(chosen.ref, { quiet: true });
             } catch (e) {
+                why = redact((e as Error).message);
+            }
+            if (!set) {
                 uncount();
                 host.release(rt.id);
-                throw new PeerError(`The session couldn't be started on ${ref}: ${redact((e as Error).message)}`);
+                throw new PeerError(`The session couldn't be started on ${chosen.ref}${why ? `: ${why}` : "."}`);
             }
+            // One asked for is the session's own, whatever the folder's default becomes; the starter's only where it differs.
+            if (chosen.effort && (chosen.asked || chosen.effort !== rt.settings().effort)) rt.setEffort(chosen.effort);
             host.starts.startedBy.set(rt.id, self.id);
             rt.rename(title);
             deliver(rt, prompt);
-            return runtimeSummary(rt);
+            // The effort it runs at, said only where the model takes it (a provider puts another at the nearest it takes).
+            const runs = rt.settings().effort;
+            return { ...runtimeSummary(rt), effort: runs && chosen.efforts.includes(runs) ? runs : undefined };
         },
     };
 }

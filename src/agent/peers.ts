@@ -10,7 +10,10 @@
 
 import { readFileSync, realpathSync, statSync } from "fs";
 import { dirname, join, resolve, sep } from "path";
-import type { Message, UserMessage } from "../providers/types";
+import type { ProviderListing } from "../providers/models";
+import type { Message, ModelInfo, UserMessage } from "../providers/types";
+import { modelRef } from "../providers/types";
+import { EFFORT_LEVELS, type Effort } from "../config/settings";
 import type { PermissionMode } from "../permissions/modes";
 import { redact } from "../util/redact";
 import { findSessionAnywhere, listAllSessions, Session, sessionHolder } from "./session";
@@ -49,11 +52,51 @@ export interface SessionPeers {
     /** Missing where sessions can't be driven from here (the terminal). Throws PeerError. */
     send?(id: string, text: string): Promise<{ summary: PeerSummary; delivery: Delivery }>;
     /** A new session in this one's folder, given `prompt` as a message from this one. Throws PeerError. */
-    start?(o: { prompt: string; title: string; model?: string }): Promise<PeerSummary>;
+    start?(o: { prompt: string; title: string } & StartChoice): Promise<PeerSummary & { effort?: Effort }>;
+    /** Why a session couldn't be started on that model and effort (with the models there are), before the user is asked. */
+    checkStart?(o: StartChoice): Promise<string | undefined>;
+}
+
+/** The model (provider:model) and effort a session is started on; this session's when left out. */
+export interface StartChoice {
+    model?: string;
+    effort?: string;
 }
 
 /** A refusal the model is told as it is. */
 export class PeerError extends Error {}
+
+const SHOWN_PER_PROVIDER = 12;
+const SHOWN_OF_ONE = 200;
+
+/** The efforts a model takes, as Cavvy names them (a listing may name others: Codex's "ultra"); every one when it doesn't say. */
+export function modelEfforts(m: Pick<ModelInfo, "effortLevels">): Effort[] {
+    return m.effortLevels ? m.effortLevels.filter((e) => EFFORT_LEVELS.includes(e)) : EFFORT_LEVELS;
+}
+
+/**
+ * The models a session can be started on, with the efforts each takes: a few of each provider's set up here, or
+ * `provider`'s, those whose id or name has `match` in it first (all of them when none does).
+ */
+export function modelChoices(listings: ProviderListing[], provider?: string, match?: string): string {
+    const out: string[] = [];
+    const q = match?.trim().toLowerCase();
+    for (const l of listings) {
+        if (provider && l.provider.id !== provider) continue;
+        let models = l.models;
+        const found = q ? models.filter((m) => m.id.toLowerCase().includes(q) || (m.name ?? "").toLowerCase().includes(q)) : [];
+        if (found.length) models = found;
+        if (!models.length) continue;
+        const shown = models.slice(0, provider ? SHOWN_OF_ONE : SHOWN_PER_PROVIDER);
+        for (const m of shown) {
+            const efforts = m.effortLevels ? modelEfforts(m) : [];
+            const bits = [m.name && m.name !== m.id ? m.name : "", efforts.length ? `effort ${efforts.join(", ")}` : ""].filter(Boolean);
+            out.push(`  ${modelRef(m)}${bits.length ? ` (${bits.join("; ")})` : ""}`);
+        }
+        if (models.length > shown.length) out.push(`  … and ${models.length - shown.length} more of ${l.provider.name}'s: model "${l.provider.id}:<part of an id or name>" lists those that have it`);
+    }
+    return out.length ? `Models (provider:model):\n${out.join("\n")}` : "No models are listed here.";
+}
 
 export const PEER_LIMITS = {
     /** Longest message or first prompt. */

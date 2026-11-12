@@ -936,6 +936,7 @@ export class Engine {
                 return this.createSession(cwd, { mode: o.mode, accounts: o.accounts, startedBy: o.startedBy });
             },
             defaultMode: (ws) => this.defaultMode(ws),
+            listings: () => this.listings,
             release: (id) => this.unloadLater(id),
             starts: this.sessionStarts,
         };
