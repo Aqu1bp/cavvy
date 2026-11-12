@@ -129,7 +129,7 @@ function tell(ev: Extract<ServerEvent, { type: "servers.notify" }>) {
     if (ev.name === machine || !prefs.notifications) return;
     if (ev.kind === "done" && focused()) return;
     // The machine first: the rest is the session's own words, and a long title is cut at its end.
-    void notify(`${ev.name ?? here}: ${ev.title}`, ev.body, () => switchMachine(ev.name, ev.sessionId), { tag: `machine:${ev.name ?? ""}:${ev.sessionId}` });
+    void notify(`${ev.name ?? here}: ${ev.title}`, ev.body, () => switchMachine(ev.name, ev.sessionId || undefined), { tag: `machine:${ev.name ?? ""}:${ev.sessionId}` });
 }
 
 let started = false;

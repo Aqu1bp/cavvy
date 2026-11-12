@@ -7,6 +7,7 @@
 // is and said to be so.
 
 import type { ConnectResult, MachineOverview, ServerEvent, SessionSummary } from "../server/protocol";
+import { openBoundedSocket, type BoundedSocket } from "./bounded-socket";
 
 /** What a session on another machine has to tell its user. */
 export type MachineNotice = Pick<Extract<ServerEvent, { type: "servers.notify" }>, "sessionId" | "kind" | "title" | "body">;
@@ -22,8 +23,12 @@ const REPLY_MS = 20_000;
 /** A server's own words are its to choose: only so much of each is kept, and only so many sessions heard of. */
 const HEARD = 300;
 const MAX_MESSAGE = 4 * 1024 * 1024;
-/** What a server's sessions have to say is passed on at most this often: a server gone wrong can't bury the user in it. */
-const NOTICES_PER_MINUTE = 6;
+/**
+ * What a server's sessions have to say is passed on at most this often, turns ending and sessions asking counted
+ * apart: a server gone wrong can't bury the user in it, and a busy one can't have its asking go unsaid.
+ */
+const DONE_PER_MINUTE = 6;
+const ASKS_PER_MINUTE = 12;
 const KINDS = ["done", "permission", "question", "plan", "error"] as const;
 
 const cut = (v: unknown, max: number): string => (typeof v === "string" ? (v.length > max ? `${v.slice(0, max - 1)}…` : v) : "");
@@ -54,7 +59,7 @@ export function heardSession(v: unknown): SessionSummary | undefined {
 }
 
 export class MachineWatch {
-    private ws?: WebSocket;
+    private ws?: BoundedSocket;
     private sessions = new Map<string, SessionSummary>();
     private state: MachineOverview["state"] = "connecting";
     private stopped = false;
@@ -140,55 +145,53 @@ export class MachineWatch {
         }
     }
 
-    /** When the last few notices were passed on (NOTICES_PER_MINUTE). */
-    private said: number[] = [];
+    /** When the last few notices of each sort were passed on (DONE_PER_MINUTE, ASKS_PER_MINUTE). */
+    private said = { done: [] as number[], asks: [] as number[] };
+    /** Asks were dropped since one was last passed on: said once, in one notice for them all. */
+    private unsaid = false;
+
+    /** Whether one more notice of this sort may be passed on now; counted when it may. */
+    private maySay(sort: "done" | "asks"): boolean {
+        const now = Date.now();
+        const times = (this.said[sort] = this.said[sort].filter((t) => now - t < 60_000));
+        if (times.length >= (sort === "done" ? DONE_PER_MINUTE : ASKS_PER_MINUTE)) return false;
+        times.push(now);
+        return true;
+    }
 
     private listen(url: string, token: string, renewed: boolean) {
         // One connection at a time: an earlier one that's still there is let go, and isn't listened to any more.
         const before = this.ws;
         this.ws = undefined;
         before?.close();
-        const ws = new WebSocket(url, ["cavvy.v1", `auth.${token}`]);
-        this.ws = ws;
         let listed = false;
-        let tooMuch = false;
-        const waiting = new Map<number, (result: unknown) => void>();
         const timeout = setTimeout(() => ws.close(), REPLY_MS);
-        ws.onopen = () => {
-            waiting.set(1, (result) => {
+        const heard = (text: string) => {
+            if (this.ws !== ws) return;
+            let msg: { id?: unknown; result?: unknown; event?: ServerEvent } | null;
+            try {
+                msg = JSON.parse(text);
+            } catch {
+                return;
+            }
+            // Whatever it is, it's a server's to choose: anything that isn't what's expected is passed over.
+            if (!msg || typeof msg !== "object") return;
+            if (msg.id === 1) {
+                if (listed) return;
                 clearTimeout(timeout);
                 listed = true;
                 this.tries = 0;
                 this.sessions.clear();
-                for (const v of Array.isArray(result) ? result.slice(0, HEARD) : []) {
+                for (const v of Array.isArray(msg.result) ? msg.result.slice(0, HEARD) : []) {
                     const s = heardSession(v);
                     if (s) this.sessions.set(s.id, s);
                 }
                 this.state = "connected";
                 this.o.changed();
-            });
-            ws.send(JSON.stringify({ id: 1, method: "sessions.list", params: { limit: 100 } }));
-        };
-        ws.onmessage = (m) => {
-            if (this.ws !== ws) return;
-            let msg: { id?: number; result?: unknown; event?: ServerEvent };
-            // More than a list of sessions ever is: not read, and this server isn't listened to for a while.
-            if (typeof m.data !== "string" || m.data.length > MAX_MESSAGE) {
-                tooMuch = true;
-                return ws.close();
-            }
-            try {
-                msg = JSON.parse(m.data);
-            } catch {
-                return;
-            }
-            if (typeof msg.id === "number") {
-                waiting.get(msg.id)?.(msg.result);
-                waiting.delete(msg.id);
                 return;
             }
             const ev = msg.event;
-            if (!ev || !listed) return;
+            if (!ev || typeof ev !== "object" || !listed) return;
             if (ev.type === "sessions.upsert") {
                 const s = heardSession(ev.session);
                 if (!s) return;
@@ -205,23 +208,45 @@ export class MachineWatch {
             } else if (ev.type === "notify") {
                 const kind = KINDS.find((k) => k === ev.kind);
                 if (!kind || typeof ev.sessionId !== "string" || !/^[\w.-]{1,120}$/.test(ev.sessionId)) return;
-                const now = Date.now();
-                this.said = this.said.filter((t) => now - t < 60_000);
-                if (this.said.length >= NOTICES_PER_MINUTE) return;
-                this.said.push(now);
-                this.o.notice({ sessionId: ev.sessionId, kind, title: cut(ev.title, 120), body: cut(ev.body, 200) });
+                // Turns ending and sessions asking are counted apart: a run of the first can't use up the second,
+                // which the user is waited on for.
+                const asks = kind === "permission" || kind === "question" || kind === "plan";
+                if (this.maySay(asks ? "asks" : "done")) {
+                    this.o.notice({ sessionId: ev.sessionId, kind, title: cut(ev.title, 120), body: cut(ev.body, 200) });
+                    if (asks) this.unsaid = false;
+                } else if (asks && !this.unsaid) {
+                    // Past what's passed on one by one: said once that there are more, so none waits unseen.
+                    this.unsaid = true;
+                    this.o.notice({ sessionId: "", kind: "question", title: "More sessions need you", body: "" });
+                }
             }
         };
-        ws.onclose = () => {
-            clearTimeout(timeout);
-            if (this.ws !== ws) return;
-            this.ws = undefined;
-            if (this.stopped) return;
-            this.set(tooMuch ? "unreachable" : "connecting");
-            // Closed before it answered once: the sign-in may be one the server has forgotten. A new one, once.
-            if (tooMuch) this.later(this.o.idleRetryMs ?? IDLE_RETRY_MS);
-            else if (!listed && !renewed) void this.attempt(true);
-            else this.later();
-        };
+        const ws = openBoundedSocket({
+            port: Number(new URL(url).port),
+            path: "/ws",
+            protocols: ["cavvy.v1", `auth.${token}`],
+            maxMessage: MAX_MESSAGE,
+            onOpen: () => ws.send(JSON.stringify({ id: 1, method: "sessions.list", params: { limit: 100 } })),
+            onMessage: (text) => {
+                try {
+                    heard(text);
+                } catch {
+                    // Nothing a server sends may bring this machine's Cavvy down.
+                }
+            },
+            onClose: (why) => {
+                clearTimeout(timeout);
+                if (this.ws !== ws) return;
+                this.ws = undefined;
+                if (this.stopped) return;
+                // More than a list of sessions ever is: not read, and this server isn't listened to for a while.
+                this.set(why === "too-much" ? "unreachable" : "connecting");
+                // Closed before it answered once: the sign-in may be one the server has forgotten. A new one, once.
+                if (why === "too-much") this.later(this.o.idleRetryMs ?? IDLE_RETRY_MS);
+                else if (!listed && !renewed) void this.attempt(true);
+                else this.later();
+            },
+        });
+        this.ws = ws;
     }
 }
