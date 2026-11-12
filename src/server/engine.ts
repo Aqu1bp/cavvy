@@ -1177,7 +1177,8 @@ export class Engine {
      */
     private unloadIfUnused(id: string) {
         const rt = this.runtimes.get(id);
-        if (!rt || this.stopping || [...this.clients].some((c) => c.subs.has(id))) return;
+        // One that lends this machine's tools to a session elsewhere stays: closed, it couldn't be opened again (Engine.lend).
+        if (!rt || rt.guest || this.stopping || [...this.clients].some((c) => c.subs.has(id))) return;
         // A watch (a pull request) goes on with no window open: it wakes the session when there's news.
         if (!rt.idle || rt.scheduled || rt.watching) return this.unloadLater(id);
         void this.unload(rt);
@@ -1810,18 +1811,17 @@ export class Engine {
         const key = `${name}\0${call.session.id}`;
         let rt = this.runtimes.get(this.guests.get(key) ?? "");
         if (!rt) {
-            const known = this.guests.get(key);
             // A session here for each session there, but not without end: a server gone wrong can't fill this machine's list.
-            if (!known && [...this.guests.keys()].filter((k) => k.startsWith(`${name}\0`)).length >= MAX_GUESTS) return { text: `Too many sessions on ${name} have used this machine's tools since it started. Restart Cavvy there to make room.`, isError: true };
+            if (!this.guests.has(key) && [...this.guests.keys()].filter((k) => k.startsWith(`${name}\0`)).length >= MAX_GUESTS) return { text: `Too many sessions on ${name} have used this machine's tools since it started. Restart Cavvy there to make room.`, isError: true };
             const folder = join(cavvyHome(), "guests", name);
             mkdirSync(folder, { recursive: true });
-            rt = known && findSessionAnywhere(known) ? this.openSession(known) : await this.createSession(folder);
+            rt = await this.createSession(folder);
             this.guests.set(key, rt.id);
-            // Listed though nothing was ever said in it: it's where the user answers, and sees what was done.
+            // Listed, and kept open while this Cavvy runs, though nothing was ever said in it (a session with no
+            // message leaves no file to open again): it's where the user answers, and sees what was done.
             rt.guest = true;
             // Named for where it's from, in words that are this machine's own: the server's title is its to choose.
-            if (!known) rt.rename(cleanTitle(`${name}: ${(await import("../servers/ssh")).printable(call.session.title, 80) || "a session"}`));
-            this.unloadLater(rt.id);
+            rt.rename(cleanTitle(`${name}: ${(await import("../servers/ssh")).printable(call.session.title, 80) || "a session"}`));
         }
         return rt.lend(tool, call.input, signal);
     }

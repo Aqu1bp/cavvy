@@ -91,7 +91,8 @@ async function until(what: string, ok: () => boolean | Promise<boolean>, ms = 12
     throw new Error(`timed out waiting for ${what}`);
 }
 
-const mine = await startServer({ token: "mine", serverBuilds: source });
+// Sessions no window is on are closed after a third of a second here (half a minute in the app).
+const mine = await startServer({ token: "mine", serverBuilds: source, unloadAfterMs: 300 });
 const window = async () => {
     const w = new Window(`ws://127.0.0.1:${mine.port}/ws`, "mine");
     expect(await w.opened.promise).toBe(true);
@@ -183,6 +184,16 @@ test("a call from a session there runs here, after this machine's own asking, in
     // And it's noted here, in the session it ran in.
     const mine = (await here.call("session.open", { id: mineId })) as SessionSnapshot;
     expect(JSON.stringify(mine.turns)).toContain("SimulatorControl(boot)");
+    // Long after, with no window on it here: the same session there is still lent through the same session here.
+    await here.call("session.close", { id: mineId }).catch(() => undefined);
+    await Bun.sleep(1500);
+    const before = ran.filter((a) => a[2] === "bootstatus").length;
+    await remote.call("session.send", { id, text: "simulator once again" });
+    await until("the second turn there to end", async () => (await remote.call("session.open", { id })).turns.length === 2 && (await lastTurn(remote, id)).status === "done");
+    // It ran here again (allowed for this session the first time, on both machines, as the tool is anywhere),
+    // and no second session was made here for it.
+    expect(ran.filter((a) => a[2] === "bootstatus").length).toBe(before + 1);
+    expect(guest()).toBeUndefined();
 });
 
 test("the user's no here is what the session there is told; this machine going away ends a call that waits", async () => {
