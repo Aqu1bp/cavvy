@@ -56,7 +56,7 @@ import { childMode, createAgentWorktree, finishAgentWorktree, fromServers, keepL
 import { buildSystemPrompt, EXPLORE_APPEND, SUBAGENT_CORE } from "./system-prompt";
 import { FileHistory, promptNotes, resetToolState } from "./checkpoints";
 import { TurnSnapshots, type TurnCapture } from "./turn-snapshots";
-import { redact } from "../util/redact";
+import { redact, redactedLine } from "../util/redact";
 import type { Skill } from "./skills";
 import { limitNotice } from "../backends/limits";
 import { claudeAgents } from "../backends/claude-agents";
@@ -494,6 +494,17 @@ function withoutStateNotes(m: Message): Message {
     if (m.role !== "user") return m;
     const content = m.content.filter((p) => p.type !== "text" || !promptNotes({ ...m, content: [p] }).some((n) => stateKind(n)));
     return content.length === m.content.length ? m : { ...m, content };
+}
+
+/** Longest summary a permission prompt shows: it heads the prompt, so the rest of what's asked stays in view. */
+const MAX_PREVIEW_SUMMARY = 200;
+
+/**
+ * A preview's summary as the prompts show it: one plain line, redacted and bounded (redactedLine). Part of it can come
+ * from the model (a title, an element's name), which mustn't fake or hide what's asked.
+ */
+export function oneLineSummary(d: ToolDisplay | undefined): ToolDisplay | undefined {
+    return d?.summary ? { ...d, summary: redactedLine(d.summary, MAX_PREVIEW_SUMMARY) } : d;
 }
 
 export class Agent {
@@ -2922,12 +2933,15 @@ export class Agent {
     }
 
     /** The CLI auto-approves our MCP tools, so their explicit rules (mcp__cavvy__*, mcp__cavvy__browser_act) must be enforced here. */
-    private async authorizeServedTool(name: string, title: string | undefined, input: Record<string, unknown>, signal: AbortSignal): Promise<ServerToolResult | undefined> {
+    private async authorizeServedTool(name: string, title: string | undefined, input: Record<string, unknown>, signal: AbortSignal, refusal?: () => Promise<string | undefined>): Promise<ServerToolResult | undefined> {
         const refuse = (text: string): ServerToolResult => ({ text, isError: true });
         const tool = backendTool(`mcp__${MCP_SERVER_NAME}__${name}`, title);
         // Like the command check below, explicit asks still apply in bypass mode.
         const decision = this.o.checker.check(tool, input, "default", this.state.cwd);
         if (decision.behavior === "deny") return refuse(decision.reason ?? "Denied by a permission rule.");
+        // A denied call is refused as denied, whatever its input; one that can't run isn't asked about.
+        const invalid = await refusal?.();
+        if (invalid) return refuse(invalid);
         if (signal.aborted) return refuse("Interrupted by user");
         if (decision.behavior !== "ask" || !decision.rule) return undefined;
         if (!this.o.host.askPermission) return refuse(`Permission to use ${tool.name} was not granted (non-interactive session).`);
@@ -2989,6 +3003,17 @@ export class Agent {
     /** Ends the backend's running turn: a served call's checks said stop. */
     private stopServedTurn?: () => void;
 
+    /** Why a call's input can't run (its schema, then the tool's own check), before anything asks about it. */
+    private async inputRefusal(tool: Tool<any>, input: any, ctx: ToolContext): Promise<string | undefined> {
+        const schemaErr = validateInput(tool, input);
+        if (schemaErr) return `Invalid input for ${tool.name}: ${schemaErr}`;
+        try {
+            return (await tool.validate?.(input, ctx)) || undefined;
+        } catch (e) {
+            return `Validation failed: ${(e as Error).message}`;
+        }
+    }
+
     /**
      * One of Cavvy's own tools, called by a backend through Cavvy MCP server (Monitor for Codex). The CLI
      * approves Cavvy's tools without asking, so it goes through the same checks as the tool's call from a model
@@ -3008,7 +3033,9 @@ export class Agent {
         // The CLI approves Cavvy's tools without asking: a rule naming the tool as served is enforced here, before the checks its own name gets.
         const served = servedBrowserName(tool.name) ?? servedSimulatorName(tool.name) ?? servedWorktreeFor(tool.name) ?? servedSessionName(tool.name);
         if (served) {
-            const refused = await this.authorizeServedTool(served, tool.title(input), input, signal);
+            // A rule's deny first; then a call that can't run is refused before a rule asks the user about it (prepare
+            // checks it again, cheaply).
+            const refused = await this.authorizeServedTool(served, tool.title(input), input, signal, () => this.inputRefusal(tool, coerceInput(tool, input), this.toolContext(callId ?? "", signal)));
             if (refused) return refused;
         }
         const call: ToolCallPart = { type: "tool_call", id: callId ?? `served_${++this.servedCalls}`, name: tool.name, input };
@@ -3190,6 +3217,7 @@ export class Agent {
                 // preview is optional
             }
         }
+        preview = oneLineSummary(preview);
         const ask = {
             // A call the backend gave only part of: nothing to allow for the session, or always.
             ...(req.incomplete ? { ...decision, grant: undefined } : this.o.checker.withGrant(tool, input, decision, cwd)),
@@ -3343,15 +3371,9 @@ export class Agent {
         }
         if (!quiet) this.emit({ type: "tool_start", call, title, tool });
 
-        const schemaErr = validateInput(tool, input);
-        if (schemaErr) return { result: this.errorResult(call, `Invalid input for ${tool.name}: ${schemaErr}`, undefined, quiet) };
         const ctx = this.toolContext(call.id, signal);
-        try {
-            const err = await tool.validate?.(input, ctx);
-            if (err) return { result: this.errorResult(call, err, undefined, quiet) };
-        } catch (e) {
-            return { result: this.errorResult(call, `Validation failed: ${(e as Error).message}`, undefined, quiet) };
-        }
+        const invalid = await this.inputRefusal(tool, input, ctx);
+        if (invalid) return { result: this.errorResult(call, invalid, undefined, quiet) };
 
         // Read-only agents (explore) never change anything, whatever a hook later rewrites the call into.
         const writes = (input: any) => this.o.readOnly && (tool.category === "edit" || (isShellTool(tool.name) && !isReadOnlyCommand(String(input.command ?? ""))) || (tool.category === "mcp" && !isReadOnly(tool, input)));
@@ -3441,7 +3463,7 @@ export class Agent {
 
         let preview: ToolDisplay | undefined;
         try {
-            preview = await tool.preview?.(input, ctx);
+            preview = oneLineSummary(await tool.preview?.(input, ctx));
         } catch {
             // preview is optional
         }

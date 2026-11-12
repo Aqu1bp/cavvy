@@ -93,6 +93,35 @@ export function redactPrefix(text: string, sourceLimit: number): string {
     return redactThrough(text, Math.max(0, Math.min(text.length, Math.floor(sourceLimit))));
 }
 
+/**
+ * Characters that restyle a terminal, hide text or draw it reversed: controls (C0, C1), line and paragraph
+ * separators, bidi marks, embeddings, overrides and isolates, and invisible separators. Joiners, soft hyphens and
+ * emoji tags stay: words and emoji are made of them.
+ */
+const UNSAFE_IN_A_LINE = /[\p{Cc}\p{Zl}\p{Zp}\u061c\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/gu;
+
+/**
+ * Text written by a model, as one line someone decides on: what could restyle it, hide part of it or draw it reversed
+ * becomes a space; redacted, then at most `max` characters (redacted as it is shown), cut with "…" never through a
+ * secret (whose start would show) or an emoji.
+ */
+export function redactedLine(text: string, max: number): string {
+    const t = text.replace(UNSAFE_IN_A_LINE, " ").replace(/\s+/g, " ").trim();
+    const whole = redact(t);
+    if (whole.length <= max) return whole;
+    // The longest start of it that, redacted and with "…", fits (a redaction can be longer than what it replaces).
+    const cut = (end: number) => `${redactPrefix(t, end).trimEnd()}…`;
+    let lo = 0;
+    let hi = Math.min(t.length, max - 1);
+    while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        if (cut(mid).length <= max) lo = mid;
+        else hi = mid - 1;
+    }
+    if (/[\ud800-\udbff]/.test(t[lo - 1] ?? "")) lo--;
+    return cut(lo);
+}
+
 function* exactSpans(text: string, secret: string, label: string, prefix?: Uint32Array): Generator<SecretSpan> {
     function* starts() {
         if (prefix) {

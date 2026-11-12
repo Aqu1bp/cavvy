@@ -1465,3 +1465,18 @@ test("any settings file can turn the simulator off; none can turn it back on", (
     expect(load({}, { simulator: { enabled: false } })).toBe(false);
     expect(load({ simulator: { enabled: false } }, { simulator: { enabled: true } })).toBe(false);
 });
+
+test("typed text shows whole in its prompt when it fits, and is cut inside its quotes when it doesn't", async () => {
+    const { oneLineSummary } = await import("../src/agent/agent");
+    const heading = async (text: string) => oneLineSummary(await SimulatorActTool.preview!({ action: "type", ref: "e12", text } as never, {} as never))!.summary!;
+    // As long as fits in the prompt's 200 is shown whole.
+    const fits = `${"a".repeat(170)}END`;
+    expect(await heading(fits)).toBe(`Simulator: type e12 "${fits}"`);
+    // Longer: cut inside the quotes, marked, and the quote closed; never cut again by the prompt's bound.
+    for (const text of ["b".repeat(400), "\n".repeat(150), `${"c".repeat(160)}😀😀😀😀😀😀😀😀😀😀`]) {
+        const h = await heading(text);
+        expect(h.length).toBeLessThanOrEqual(200);
+        expect(h).toEndWith('…"');
+        expect(h.isWellFormed()).toBe(true);
+    }
+});

@@ -76,6 +76,23 @@ const short = (text: string, n = 60) => {
     return s.length > n ? `${s.slice(0, n)}…` : s;
 };
 
+/** Longest heading a permission prompt shows (oneLineSummary in src/agent/agent.ts). */
+const PROMPT_HEADING_MAX = 200;
+
+/**
+ * Text to type, quoted, in at most `room` characters: the prompt shows it nowhere else, so it's cut here, inside its
+ * quotes and marked, as late as fits, rather than at the prompt's bound.
+ */
+function typedText(text: string, room: number): string {
+    let quoted = JSON.stringify(redact(text));
+    if (quoted.length <= room) return quoted;
+    for (let n = Math.max(0, room - 3); n > 0; n -= Math.max(1, quoted.length - room)) {
+        quoted = JSON.stringify(short(text, n));
+        if (quoted.length <= room) return quoted;
+    }
+    return JSON.stringify("…");
+}
+
 /** A path the agent gave, from the session's folder. */
 function pathOf(p: string, ctx: ToolContext): string {
     return isAbsolute(p) ? p : resolve(ctx.state.cwd, p);
@@ -296,8 +313,10 @@ Returns the screen once it's still, as a new outline; it says when the user used
     },
     async preview(input) {
         const where = input.ref ? ` ${input.ref}` : typeof input.x === "number" ? ` at ${Math.round(input.x)},${Math.round(input.y ?? 0)}` : "";
-        const what = input.action === "type" ? ` ${JSON.stringify(short(input.text ?? "", 200))}` : input.action === "press" ? ` ${input.key}` : input.action === "button" ? ` ${input.button}` : input.direction ? ` ${input.direction}` : "";
-        return { summary: `Simulator: ${input.action.replace("_", " ")}${where}${what}` };
+        const head = `Simulator: ${input.action.replace("_", " ")}${where}`;
+        if (input.action === "type") return { summary: `${head} ${typedText(input.text ?? "", PROMPT_HEADING_MAX - head.length - 1)}` };
+        const what = input.action === "press" ? ` ${input.key}` : input.action === "button" ? ` ${input.button}` : input.direction ? ` ${input.direction}` : "";
+        return { summary: `${head}${what}` };
     },
     run: (input, ctx) =>
         guarded(ctx, async (s) => {
