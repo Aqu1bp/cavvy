@@ -82,7 +82,7 @@ class Window {
     }
 }
 
-async function until(what: string, ok: () => boolean | Promise<boolean>, ms = 30_000) {
+async function until(what: string, ok: () => boolean | Promise<boolean>, ms = 12_000) {
     const end = Date.now() + ms;
     while (Date.now() < end) {
         if (await ok()) return;
@@ -174,9 +174,12 @@ test("a call from a session there runs here, after this machine's own asking, in
     const asked = await answer(here, mineId, "yes");
     expect(JSON.stringify(asked)).toContain("SimulatorControl(boot)");
     await until("the turn there to end", async () => (await lastTurn(remote, id)).status === "done");
-    // It ran here: this machine's simctl started this machine's device, and the server's model read what it said.
-    expect(ran.some((a) => a.join(" ") === "xcrun simctl boot AAAA")).toBe(true);
-    expect(textOf(await lastTurn(remote, id))).toContain("I couldn't find Settings on the screen: Started iPhone 17");
+    // It ran here: this machine's simctl was asked about this machine's device, which the server knows nothing of,
+    // and the server's model read what this machine said.
+    expect(ran.some((a) => a.join(" ") === "xcrun simctl bootstatus AAAA -b")).toBe(true);
+    const turn = await lastTurn(remote, id);
+    expect(turn.blocks.find((b) => b.t === "tool")).toMatchObject({ name: "SimulatorControl", output: expect.stringContaining("AAAA") });
+    expect(textOf(turn)).toContain("I couldn't find Settings on the screen: ");
     // And it's noted here, in the session it ran in.
     const mine = (await here.call("session.open", { id: mineId })) as SessionSnapshot;
     expect(JSON.stringify(mine.turns)).toContain("SimulatorControl(boot)");
@@ -195,9 +198,10 @@ test("the user's no here is what the session there is told; this machine going a
     await remote.call("session.send", { id: second, text: "simulator once more" });
     await answer(remote, second, "yes");
     const waits = (await nextGuest()).id;
-    // While this machine's question waits, its connection there is closed on the user's word.
+    // While this machine's question waits, its Cavvy stops listening to the server (as when it quits): only that
+    // connection goes, so what the session there is told can still be read through the window's own.
     await until("the question here", async () => ((await here.call("session.open", { id: waits })) as SessionSnapshot).state.interactions.length > 0);
-    await here.call("servers.disconnect", { name: "box" });
+    (mine.engine as any).serverLinks.watches.get("box").stop();
     await until("the turn there to end", async () => (await lastTurn(remote, second)).status === "done");
     expect(JSON.stringify(await lastTurn(remote, second))).toContain("went away before it answered");
     // And the question here is withdrawn: nobody waits for its answer.
