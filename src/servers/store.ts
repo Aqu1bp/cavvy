@@ -151,15 +151,30 @@ function desktopId(): string {
     const file = desktopIdFile();
     ensureDir(cavvyHome());
     const mine = `${file}.${process.pid}.${randomBytes(4).toString("hex")}`;
-    writeFileSync(mine, `${randomBytes(16).toString("hex")}\n`, { mode: 0o600 });
+    const made = `${randomBytes(16).toString("hex")}\n`;
+    writeFileSync(mine, made, { mode: 0o600 });
     try {
         linkSync(mine, file);
-    } catch {
-        // another process got there first, or the file is there and isn't an id (said below)
+    } catch (e) {
+        // EEXIST: another process got there first, or the file is there and isn't an id (said below). Anything else:
+        // a disk that has no links (FAT, some network shares), where the file is made in one step instead, which
+        // still lets only the first one make it.
+        if ((e as NodeJS.ErrnoException).code !== "EEXIST") {
+            try {
+                writeFileSync(file, made, { mode: 0o600, flag: "wx" });
+            } catch {
+                // there already
+            }
+        }
     } finally {
         rmSync(mine, { force: true });
     }
-    const id = savedDesktopId();
+    // Made in one step, it can be seen for a moment before it's written.
+    let id = savedDesktopId();
+    for (let i = 0; !id && i < 5; i++) {
+        Bun.sleepSync(20);
+        id = savedDesktopId();
+    }
     if (!id) throw new ServerError(`${file} doesn't hold this machine's id. Delete it.`);
     return id;
 }
