@@ -56,11 +56,14 @@ cavvy servers                 # the servers you've added
 cavvy servers check [name]    # is Cavvy running there, and what's missing
 cavvy servers login <name>    # sign Claude Code or Codex in there, and turn it on
 cavvy servers update <name>   # bring its Cavvy up to this machine's
+cavvy servers rollback <name> # put it back on the version before its last update
 cavvy servers stop <name>     # stop Cavvy there
 cavvy servers remove <name>   # forget it here, and sign this machine out of it
 ```
 
 A server runs the build of Cavvy that the machine setting it up runs, made from the checkout that machine's Cavvy came from. `update` restarts Cavvy there, which ends turns in flight and drops questions waiting for an answer, so it asks first when sessions are working (`Stop work on <name> to update?`). The new build is tried before the old one is given up: if it doesn't start, the build before it is put back and started. A server on a newer build than this machine's is left alone, so two machines that share a server don't each put their own version back; `--force` replaces it anyway.
+
+An update that starts and then turns out not to work can be undone: `rollback` puts the server back on the build it ran before (kept there for this), asking first when sessions are working. `update` brings it level again.
 
 `stop` waits until Cavvy there has closed its sessions and gone, and it stays stopped: a connection that was open says `Cavvy on <name> was stopped.` and doesn't start it again by reconnecting. Connecting again (`cavvy gui --server`, `cavvy servers update`) starts it.
 

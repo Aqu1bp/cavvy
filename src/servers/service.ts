@@ -151,7 +151,12 @@ stop
 rm -f "$d/stopped"
 point_at "$new"
 start
-if wait_up "$new"; then echo "status=$(status)"; exit 0; fi
+if wait_up "$new"; then
+    # What it ran before, for going back to (PREVIOUS): kept by the pruning that follows an update.
+    if [ -n "$prev" ] && [ "$prev" != "$new" ]; then echo "$prev" > "$d/previous"; fi
+    echo "status=$(status)"
+    exit 0
+fi
 echo "the new build didn't start" >&2
 stop
 if [ -n "$prev" ] && [ "$prev" != "$new" ] && [ -x "$d/builds/$prev/cavvy" ]; then
@@ -220,7 +225,7 @@ cur=$(current || true)
 for b in "$d"/builds/*/; do
     [ -d "$b" ] || continue
     n=$(basename "$b")
-    case "$n" in "$cur"|"$1"|"$2") continue ;; esac
+    case "$n" in "$cur"|"$1"|"$2"|"$(cat "$d/previous" 2>/dev/null)") continue ;; esac
     [ -n "$(find "$b" -maxdepth 0 -mmin +60 2>/dev/null)" ] || continue
     rm -rf "$b"
 done
@@ -349,6 +354,24 @@ export async function applyBuild(e: ServerEntry, build: string, signal?: AbortSi
     if (r.code === 44) throw new UpdateFailed(`Cavvy didn't start on ${hostOf(e)}, so it's back on the version before.`, status);
     const why = said(r.stderr);
     throw new UpdateFailed(`Cavvy didn't start on ${hostOf(e)}${why ? `: ${why}` : "."}`);
+}
+
+/** The build the server ran before the one it runs now, if it's still there: prints `previous=`. */
+const PREVIOUS = `${LIB}
+[ -x "$bin" ] || exit 46
+p=$(cat "$d/previous" 2>/dev/null) || exit 49
+case "$p" in ""|*[!0-9a-z-]*) exit 49 ;; esac
+[ -x "$d/builds/$p/cavvy" ] || exit 49
+[ "$p" != "$(current || true)" ] || exit 49
+echo "previous=$p"
+`;
+
+/** The build a server can be put back on: the one it ran before its last update. Undefined when there's none to go back to. */
+export async function previousBuild(e: ServerEntry, signal?: AbortSignal): Promise<string | undefined> {
+    const r = await ssh(e, remoteSh(timed(PREVIOUS), []), { timeoutMs: 30_000, signal });
+    if (r.code === 46) throw new NotSetUp(`Cavvy isn't set up on ${hostOf(e)}.`);
+    const p = value(r.stdout, "previous");
+    return r.code === 0 && p && BUILD_ID.test(p) ? p : undefined;
 }
 
 export interface Pairing {

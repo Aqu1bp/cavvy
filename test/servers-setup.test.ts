@@ -23,7 +23,7 @@ const { setUpServer, ServerBusy } = await import("../src/servers/install");
 const { probeServer } = await import("../src/servers/remote");
 const { offeredHostKey, trustHostKey, SshError } = await import("../src/servers/ssh");
 const { ServerLink, exchangeCode } = await import("../src/servers/connect");
-const { remoteStatus, revokeOverSsh, setUpService, stopRemote, serviceTiming, StoppedThere, UpdateFailed } = await import("../src/servers/service");
+const { previousBuild, remoteStatus, revokeOverSsh, setUpService, stopRemote, serviceTiming, StoppedThere, UpdateFailed } = await import("../src/servers/service");
 const { thisDesktop } = await import("../src/servers/store");
 import type { BuildSource } from "../src/servers/build";
 import type { LinkState } from "../src/servers/connect";
@@ -830,6 +830,29 @@ esac`;
                 await cavvy("servers", "remove", "box3");
             }
         });
+    });
+
+    test("rollback: the server goes back on the build it ran before its last update; with none to go back to, that's said", async () => {
+        // From before any update: nothing is recorded there.
+        rmSync(join(serverDir, "previous"), { force: true });
+        expect(await cavvy("servers", "rollback", "box")).toEqual({ code: 1, out: "", err: "box has no earlier version to go back to.\n" });
+        expect(await cavvy("servers", "rollback")).toMatchObject({ code: 1, err: "Usage: cavvy servers rollback <name> [--force]\n" });
+        await setUpServer(entry, { source: source(B), confirmRestart: async () => true });
+        expect(await remoteStatus(entry)).toMatchObject({ running: true, build: B });
+        expect(await previousBuild(entry)).toBe(A);
+        // This machine's own version is the one it lands on (the terminal's Cavvy here is build A): nothing more to say.
+        expect(await cavvy("servers", "rollback", "box")).toEqual({ code: 0, out: "box is back on the version it ran before.\n", err: "" });
+        expect(await remoteStatus(entry)).toMatchObject({ running: true, build: A });
+        // Once more goes forward again, to a version that isn't this machine's: said, with how to bring it level.
+        expect(await cavvy("servers", "rollback", "box")).toEqual({ code: 0, out: "box is back on the version it ran before.\nThat isn't this machine's version. To bring it level: cavvy servers update box\n", err: "" });
+        expect(await remoteStatus(entry)).toMatchObject({ running: true, build: B });
+        expect((await cavvy("servers", "rollback", "box")).code).toBe(0);
+        expect(await remoteStatus(entry)).toMatchObject({ running: true, build: A });
+        // What it left is now the one before: going back again would return to it.
+        expect(await previousBuild(entry)).toBe(B);
+        // A build that's no longer there isn't offered.
+        rmSync(join(serverDir, "builds", B), { recursive: true, force: true });
+        expect(await previousBuild(entry)).toBeUndefined();
     });
 
     test("remove: it's forgotten here, this machine is signed out there, and the line to put it back is given", async () => {
