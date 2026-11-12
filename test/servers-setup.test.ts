@@ -5,7 +5,7 @@
 // "SSH", the tunnel, and the server's own code. What isn't: the network, and
 // systemd (the pretend server has none, so Cavvy runs detached there).
 
-import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "fs";
 import { connect as tcp } from "net";
 import { join } from "path";
@@ -127,6 +127,15 @@ async function until(what: string, ok: () => boolean | Promise<boolean>, ms = 20
     }
     throw new Error(`timed out waiting for ${what}`);
 }
+
+// Whatever a test made the pretend server do, the next one starts with it as it was: also when the test before
+// timed out, and so never reached its own putting-back.
+afterEach(() => {
+    fake.fail();
+    fake.dropSessions();
+    fake.diskFree();
+    fake.settings();
+});
 
 afterAll(async () => {
     await stopRemote(entry).catch(() => undefined);

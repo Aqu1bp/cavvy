@@ -8,6 +8,7 @@
 // known_hosts. It reads nothing of the real ~/.ssh and opens no connection.
 
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "fs";
+import { spawn } from "child_process";
 import { connect, createServer } from "net";
 import { join } from "path";
 
@@ -137,12 +138,19 @@ for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !["CAVV
 env.HOME = join(dir, "home");
 env.PATH = `${join(dir, "bin")}:${process.env.PATH ?? ""}`;
 env.FAKE_REAL_PATH = process.env.PATH ?? "";
-const proc = Bun.spawn(["sh", "-c", command!], { stdin: "inherit", stdout: "inherit", stderr: "inherit", env, cwd: env.HOME });
+// In a process group of its own, so that a lost connection can take everything it started with it, as a server
+// does when a session's connection goes: where `sh` doesn't replace itself with the command (dash), killing `sh`
+// alone would leave the command running, still holding this test's pipes open.
+const child = spawn("sh", ["-c", command!], { stdio: "inherit", env, cwd: env.HOME, detached: true });
+const exited = new Promise<number>((resolve) => child.on("exit", (code, signal) => resolve(code ?? (signal ? 128 : 1))));
 if (behavior.dropSessionAfterMs !== undefined) {
-    // The connection goes, and with it what was running at the other end.
     setTimeout(() => {
-        proc.kill("SIGKILL");
+        try {
+            process.kill(-child.pid!, "SIGKILL");
+        } catch {
+            // already gone
+        }
         fail("client_loop: send disconnect: Broken pipe");
     }, behavior.dropSessionAfterMs);
 }
-process.exit(await proc.exited);
+process.exit(await exited);
