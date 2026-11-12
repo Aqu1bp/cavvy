@@ -18,7 +18,7 @@ const { setUpServer, ServerBusy } = await import("../src/servers/install");
 const { probeServer } = await import("../src/servers/remote");
 const { offeredHostKey, trustHostKey, SshError } = await import("../src/servers/ssh");
 const { ServerLink, exchangeCode } = await import("../src/servers/connect");
-const { remoteStatus, revokeOverSsh, stopRemote, serviceTiming, UpdateFailed } = await import("../src/servers/service");
+const { remoteStatus, revokeOverSsh, stopRemote, serviceTiming, StoppedThere, UpdateFailed } = await import("../src/servers/service");
 const { thisDesktop } = await import("../src/servers/store");
 import type { BuildSource } from "../src/servers/build";
 import type { LinkState } from "../src/servers/connect";
@@ -487,10 +487,34 @@ describe("updating a server", () => {
 
     test("stopping it waits until it's gone, and leaves nothing that says it's running", async () => {
         const before = await remoteStatus(entry);
-        await stopRemote(entry);
-        expect(() => process.kill(before!.pid, 0)).toThrow();
-        expect(await remoteStatus(entry)).toBeUndefined();
-        expect(existsSync(join(serverDir, "state.json"))).toBe(false);
-        expect(existsSync(join(serverDir, "control.sock"))).toBe(false);
+        const link = new ServerLink(entry, { backoffMs: [50], healthEveryMs: 100 });
+        await link.start();
+        try {
+            await stopRemote(entry);
+            expect(() => process.kill(before!.pid, 0)).toThrow();
+            expect(await remoteStatus(entry)).toBeUndefined();
+            expect(existsSync(join(serverDir, "state.json"))).toBe(false);
+            expect(existsSync(join(serverDir, "control.sock"))).toBe(false);
+
+            // A connection that was open doesn't start it again by coming back: it was stopped on purpose.
+            await until("the link to give up", () => link.state.state === "stopped");
+            const s = link.state;
+            expect(s.state === "stopped" && s.error).toBeInstanceOf(StoppedThere);
+            expect(s.state === "stopped" && s.error?.message).toBe("Cavvy on box was stopped.");
+            expect(await remoteStatus(entry)).toBeUndefined();
+        } finally {
+            await link.stop();
+        }
+    });
+
+    test("asking to connect starts it again", async () => {
+        const link = new ServerLink(entry);
+        await link.start();
+        try {
+            expect(link.state.state).toBe("connected");
+            expect(await remoteStatus(entry)).toMatchObject({ running: true, build: B });
+        } finally {
+            await link.stop();
+        }
     });
 });

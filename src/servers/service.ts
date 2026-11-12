@@ -70,6 +70,8 @@ point_at() {
 start() {
     if as_service; then
         systemctl --user reset-failed cavvy.service >/dev/null 2>&1
+        # Started on purpose, so started at boot again too (a stop turns that off).
+        systemctl --user enable cavvy.service >/dev/null 2>&1
         systemctl --user start cavvy.service
     else
         if [ -f "$d/server.log" ] && [ "$(wc -c < "$d/server.log")" -gt 5000000 ]; then mv -f "$d/server.log" "$d/server.log.1"; fi
@@ -125,6 +127,7 @@ new="$1"
 [ -x "$d/builds/$new/cavvy" ] || { echo "no build $new there" >&2; exit 43; }
 prev=$(current || true)
 stop
+rm -f "$d/stopped"
 point_at "$new"
 start
 if wait_up "$new"; then echo "status=$(status)"; exit 0; fi
@@ -138,10 +141,16 @@ fi
 exit 45
 `;
 
-/** Starts it if it isn't running, and signs machine $1 (called $2) in: prints `pair=` with the code. */
+/**
+ * Starts it if it isn't running, and signs machine $1 (called $2) in: prints `pair=` with the code. $3 is
+ * `resume` for a connection coming back by itself, which doesn't start a server that was stopped on purpose
+ * (exit 47): only someone asking to connect does.
+ */
 const CONNECT = `${LIB}
 [ -x "$bin" ] || exit 46
 if ! status >/dev/null; then
+    if [ "$3" = "resume" ] && [ -f "$d/stopped" ]; then exit 47; fi
+    rm -f "$d/stopped"
     start
     wait_up "" || exit 45
 fi
@@ -160,6 +169,7 @@ exit $code
 const STOP = `${LIB}
 [ -x "$bin" ] || exit 0
 stop
+: > "$d/stopped"
 if has_systemd && [ -f "$unit" ]; then systemctl --user disable cavvy.service >/dev/null 2>&1; fi
 exit 0
 `;
@@ -257,10 +267,17 @@ export interface Pairing {
 /** Thrown when there's no Cavvy on the server to connect to: it needs setting up. */
 export class NotSetUp extends ServerError {}
 
-/** Starts the server's Cavvy if it isn't running and makes a code that signs this machine in. */
-export async function pairOverSsh(e: ServerEntry, machine: { id: string; label: string }, signal?: AbortSignal): Promise<Pairing> {
-    const r = await ssh(e, remoteSh(timed(CONNECT), [machine.id, machine.label]), { timeoutMs: (serviceTiming.startWaitSeconds + 30) * 1000, signal });
+/** Thrown to a connection coming back by itself when Cavvy there was stopped on purpose. */
+export class StoppedThere extends ServerError {}
+
+/**
+ * Starts the server's Cavvy if it isn't running and makes a code that signs this machine in. `resume`: for a
+ * connection coming back by itself, which leaves a server that was stopped on purpose stopped.
+ */
+export async function pairOverSsh(e: ServerEntry, machine: { id: string; label: string }, o: { signal?: AbortSignal; resume?: boolean } = {}): Promise<Pairing> {
+    const r = await ssh(e, remoteSh(timed(CONNECT), [machine.id, machine.label, o.resume ? "resume" : "start"]), { timeoutMs: (serviceTiming.startWaitSeconds + 30) * 1000, signal: o.signal });
     if (r.code === 46) throw new NotSetUp(`Cavvy isn't set up on ${hostOf(e)}.`);
+    if (r.code === 47) throw new StoppedThere(`Cavvy on ${e.name} was stopped.`);
     const p = json<Pairing>(value(r.stdout, "pair"));
     if (r.code !== 0 || !p || typeof p.code !== "string" || typeof p.port !== "number" || typeof p.run !== "string") throw new ServerError(`Cavvy didn't start on ${hostOf(e)}${r.stderr.trim() ? `: ${r.stderr.trim().split("\n").at(-1)}` : "."}`);
     return p;

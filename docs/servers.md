@@ -53,6 +53,8 @@ cavvy servers remove <name>   # forget it here, and sign this machine out of it
 
 A server runs the build of Cavvy that the machine setting it up runs, made from the checkout that machine's Cavvy came from. `update` restarts Cavvy there, which ends turns in flight and drops questions waiting for an answer, so it asks first when sessions are working (`Stop work on <name> to update?`). The new build is tried before the old one is given up: if it doesn't start, the build before it is put back and started. A server on a newer build than this machine's is left alone, so two machines that share a server don't each put their own version back; `--force` replaces it anyway.
 
+`stop` waits until Cavvy there has closed its sessions and gone, and it stays stopped: a connection that was open says `Cavvy on <name> was stopped.` and doesn't start it again by reconnecting. Connecting again (`cavvy gui --server`, `cavvy servers update`) starts it.
+
 `remove` doesn't stop Cavvy on the server or delete anything there. The line it prints puts the server back.
 
 ## How a machine signs in

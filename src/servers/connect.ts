@@ -10,7 +10,7 @@
 
 import { createServer } from "net";
 import { childEnv } from "../util/env";
-import { NotSetUp, pairOverSsh, type Pairing } from "./service";
+import { NotSetUp, pairOverSsh, StoppedThere, type Pairing } from "./service";
 import { hostOf, sshFailure, SshError, sshTunnelArgv } from "./ssh";
 import { ServerError, thisDesktop, type ServerEntry } from "./store";
 
@@ -177,9 +177,9 @@ export class ServerLink {
         })());
     }
 
-    private async open(): Promise<void> {
+    private async open(resume = false): Promise<void> {
         const signal = this.stopping.signal;
-        const pairing = await pairOverSsh(this.entry, thisDesktop(), signal);
+        const pairing = await pairOverSsh(this.entry, thisDesktop(), { signal, resume });
         this.tunnel = await Tunnel.open(this.entry, pairing.port, { localPort: this.port, signal });
         this.port = this.tunnel.localPort;
         this.set({ state: "connected", localPort: this.port, pairing });
@@ -213,7 +213,7 @@ export class ServerLink {
             await tunnel.stop();
             let error: SshError | ServerError = lost;
             for (let attempt = 1; ; attempt++) {
-                const permanent = error instanceof SshError ? error.permanent : error instanceof NotSetUp;
+                const permanent = error instanceof SshError ? error.permanent : error instanceof NotSetUp || error instanceof StoppedThere;
                 // Not ssh's "can't reach it": something with no name, which may never get better.
                 unknown = !(error instanceof SshError) || error.kind === "other" ? unknown + 1 : 0;
                 if (permanent || unknown > UNKNOWN_TRIES) return this.set({ state: "stopped", error });
@@ -222,7 +222,7 @@ export class ServerLink {
                 await Promise.race([Bun.sleep(backoff[Math.min(attempt - 1, backoff.length - 1)]!), new Promise((r) => this.stopping.signal.addEventListener("abort", r, { once: true }))]);
                 if (this.stopping.signal.aborted) return;
                 try {
-                    await this.open();
+                    await this.open(true);
                     unknown = 0;
                     break;
                 } catch (e) {
@@ -235,7 +235,7 @@ export class ServerLink {
 
     /** A new sign-in for one more client (a browser tab, a window), through the tunnel that's up. */
     async pair(): Promise<Pairing> {
-        return pairOverSsh(this.entry, thisDesktop(), this.stopping.signal);
+        return pairOverSsh(this.entry, thisDesktop(), { signal: this.stopping.signal, resume: true });
     }
 
     async stop(): Promise<void> {
