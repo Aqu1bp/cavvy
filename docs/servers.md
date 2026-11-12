@@ -55,7 +55,9 @@ A server is there to run agents freely, and it can be rebuilt. So on a machine C
 - What still asks, in every mode, is what reaches beyond the machine: a force-push, a push to the default branch (`main`, `master`, `trunk`), publishing a package, reading saved secrets, and anything that touches Cavvy's own credentials or who may connect to the server. What only the server itself would lose (`rm -rf ~`, `sudo`, a script piped into a shell) doesn't. Your own computer keeps its full list ([permissions](permissions.md)).
 - Deny rules apply as anywhere.
 
-Claude Code and Codex apply their own sandboxes and rules to what they run. Cavvy's sandbox is for models used with an API key, in Auto mode: on Linux it's bubblewrap, off until `"sandbox": true` in the server's settings. `cavvy servers check` says which mode sessions start in and how the sandbox stands.
+This goes for every session on that machine, however it's started. A computer you also work at yourself is better given a user of its own for this than added as it is.
+
+Claude Code and Codex apply their own sandboxes and rules to what they run: in Bypass they run under their own, and what they ask Cavvy about is theirs to decide, so the list above is what Cavvy checks when it's asked. Cavvy's sandbox is for models used with an API key, in Auto mode: on Linux it's bubblewrap, off until `"sandbox": true` in the server's settings. `cavvy servers check` says which mode sessions start in and how the sandbox stands.
 
 ## Keeping it running, and updating
 
