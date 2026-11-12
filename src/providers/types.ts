@@ -82,6 +82,8 @@ export interface UserMessage {
         resends?: string[];
         /** A wake that is a message from the agent in another session (src/agent/peers.ts): who sent it. */
         from?: { id: string; title: string };
+        /** Messages from other sessions' agents that joined the turn here (a reminder, or tool results): who, and what they said. */
+        peers?: { from: { id: string; title: string }; text: string }[];
     };
 }
 

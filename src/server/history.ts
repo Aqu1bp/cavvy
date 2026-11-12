@@ -499,6 +499,8 @@ function keptBlock(b: Block, output?: number): Block {
  * cut to INLINE_OUTPUT.
  */
 export function shownStep(b: Block): Block | undefined {
+    // A message from another session that joined the turn: kept as it was shown (and dropped if it was taken back).
+    if (b.t === "peer") return b;
     return b.t === "text" || b.t === "thinking" || b.t === "tool" ? keptBlock(b) : undefined;
 }
 
@@ -597,7 +599,14 @@ export function replay(o: ReplayInput): Turn[] {
             if (index === moved && m.role === "user") return;
             if (m.role === "user") {
                 const kind = m.meta?.kind ?? "prompt";
-                if (kind === "summary" || kind === "reminder" || kind === "continuation") return;
+                // Messages from other sessions that joined the turn here, as they were shown (a backend's turn has them
+                // among its logged steps already).
+                const peers = () => {
+                    const t = m.meta?.peers?.length ? ensure(index) : undefined;
+                    if (t && !shown.has(t)) for (const p of m.meta!.peers!) t.blocks.push({ t: "peer", id: o.newId(), from: p.from, text: p.text });
+                };
+                if (kind === "reminder") return peers();
+                if (kind === "summary" || kind === "continuation") return;
                 if (kind === "interrupt") {
                     const t = ensure(index);
                     t.status = "aborted";
@@ -621,6 +630,8 @@ export function replay(o: ReplayInput): Turn[] {
                             if (rec?.status && rec.status !== "running") t.status = rec.status;
                         }
                     }
+                    // After the steps whose results these are.
+                    peers();
                     return;
                 }
                 // Its record from where it was sent, if the log has none here (written before it was moved).

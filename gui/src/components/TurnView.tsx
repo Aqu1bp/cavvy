@@ -1,7 +1,7 @@
 import { RenderBoundary } from "./ui/ErrorBoundary";
 import { createComputed, createEffect, createMemo, createResource, createSignal, For, Index, Match, on, Show, Switch, untrack } from "solid-js";
 import { AlertCircle, AlertTriangle, BellRing, Check, CircleStop, ChevronRight, Clock, CornerDownRight, FileDiff, FileText, Folder, FolderGit2, GitFork, Info, MessageSquareText, RotateCcw, SquareArrowOutUpRight, SquareTerminal, X } from "lucide-solid";
-import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn, TurnPlace } from "@shared/protocol";
+import type { AgentRun, Block, CompactBlock, FileDiff as Diff, ImportedBlock, NoticeBlock, PeerBlock, SessionState, ShellBlock, TextBlock, ThinkingBlock, Turn, TurnPlace } from "@shared/protocol";
 import { basename, firstChangedLine, plural, promptTime, shortPrompt, stripAnsi, tildify } from "../lib/format";
 import { cardShape, incompleteLine, PLACES_SHOWN, placeRows, placesTotal, WHO_NAMED, workers, type OwnPlace } from "../lib/turn-places";
 import { agentProvider } from "../lib/agent-marks";
@@ -58,6 +58,32 @@ function PromptImages(p: { sessionId?: string; turn: Turn; count: number }) {
     );
 }
 
+/**
+ * A message from the agent in another session, started a turn or joined one: quoted in the reply's column, not the
+ * user's bubble. Which session is on hover (and read out); a click opens it. A long one opens and closes.
+ */
+function PeerQuote(p: { from: { id: string; title: string }; text: string; find?: string; reveal?: boolean }) {
+    const [open, setOpen] = createSignal(false);
+    const long = () => p.text.split("\n").length > 14 || p.text.length > 1400;
+    createEffect(() => p.reveal && setOpen(true));
+    return (
+        <div class="peer-card">
+            <button class="peer-head" title={`From “${p.from.title}”`} aria-label={`Message from “${p.from.title}”`} onClick={() => activate(p.from.id)}>
+                <MessageSquareText size={14} aria-hidden="true" />
+                Message from another session
+            </button>
+            <div class={`peer-body ${long() && !open() ? "clamped" : ""}`} data-find={p.find}>
+                {p.text}
+            </div>
+            <Show when={long()}>
+                <button class="link-btn more" aria-expanded={open()} onClick={() => setOpen(!open())}>
+                    {open() ? "Show less" : "Show more"}
+                </button>
+            </Show>
+        </div>
+    );
+}
+
 export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (index: number) => void }) {
     const [expanded, setExpanded] = createSignal(false);
     const raw = () => p.turn.prompt?.text ?? "";
@@ -76,22 +102,9 @@ export function UserPrompt(p: { turn: Turn; sessionId?: string; onRewind?: (inde
             </button>
         </Show>
     );
-    // A message from the agent in another session: quoted in the reply's column, not the user's bubble. Which session is on hover; a click opens it.
+    // A message from the agent in another session that started this turn.
     const from = p.turn.prompt?.from;
-    if (from) {
-        return (
-            <div class="peer-card">
-                <button class="peer-head" title={`From “${from.title}”`} onClick={() => activate(from.id)}>
-                    <MessageSquareText size={14} aria-hidden="true" />
-                    Message from another session
-                </button>
-                <div class={`peer-body ${clamped()}`} data-find="prompt">
-                    {text()}
-                </div>
-                {more()}
-            </div>
-        );
-    }
+    if (from) return <PeerQuote from={from} text={text()} find="prompt" reveal={expanded()} />;
     // Started by an event the agent asked to be woken for (a watched pull request), not by the user.
     if (p.turn.prompt?.wake) {
         return (
@@ -638,6 +651,7 @@ function TurnViewContent(p: TurnViewProps) {
                         <Match when={b().t === "notice" && (b() as NoticeBlock)}>{(n) => <Notice block={n()} state={p.state} />}</Match>
                         <Match when={b().t === "compact" && (b() as CompactBlock)}>{(c) => <Compacted block={c()} />}</Match>
                         <Match when={b().t === "imported" && (b() as ImportedBlock)}>{(c) => <Imported block={c()} />}</Match>
+                        <Match when={b().t === "peer" && (b() as PeerBlock)}>{(m) => <PeerQuote from={m().from} text={m().text} />}</Match>
                         <Match when={b().t === "shell" && (b() as ShellBlock)}>{(s) => <Shell block={s()} />}</Match>
                     </Switch>
                 )}

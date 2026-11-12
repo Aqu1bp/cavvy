@@ -2,11 +2,11 @@
 // was said in one, sending one a message and starting a new one. The host
 // says what it can do: the terminal reads sessions from disk; the app also
 // reaches the ones it has open, and can send to and start them. A message
-// from another session arrives as a wake (src/agent/wakes.ts) of a turn of
-// its own, so the user sees it whole and from whom: it waits for a running
-// turn to end, it's held when the user stops that session, and wakes start
-// at most so many turns an hour, which bounds two agents answering each
-// other. The app remembers both per session while it runs (WakeMemory).
+// from another session arrives as a wake (src/agent/wakes.ts): it joins a
+// running turn at its next step, or starts one, and is shown there whole,
+// from whom. It's held when the user stops that session, and messages start
+// or join at most so many turns an hour, which bounds two agents answering
+// each other. The app remembers both per session while it runs (WakeMemory).
 
 import { readFileSync, realpathSync, statSync } from "fs";
 import { dirname, join, resolve, sep } from "path";
@@ -31,19 +31,19 @@ export interface PeerSummary {
 }
 
 /**
- * What a send did: it started a turn, waits for the one running (or the user's messages queued) to end, waits for the
- * user (to answer that session, or to pick an account for it), waits for them to send it something (they stopped it),
- * or waits for the hour's limit on turns wakes start.
+ * What a send did: it started a turn, joins the running one (or the one coming) at its next step, waits for the user
+ * (to answer that session, or to pick an account for it), waits for them to send it something (they stopped it), or
+ * waits for the hour's limit on what wakes start and join.
  */
-export type Delivery = "started" | "queued" | "held" | "waiting" | "limited";
+export type Delivery = "started" | "joined" | "held" | "waiting" | "limited";
 
 export interface SessionPeers {
     /** This session's id: it's left out of listings, and can't be sent to. */
     readonly self: string;
     /** This session's folder: "this project" is its repository's. */
     readonly cwd: string;
-    /** Newest first: the newest `limit` that `match` accepts (all, without one). */
-    list(o: { limit: number; match?: (s: PeerSummary) => boolean }): PeerSummary[];
+    /** Newest first: the newest `limit` that `match` accepts (all, without one); `capped` when it stopped looking before finding them. */
+    list(o: { limit: number; match?: (s: PeerSummary) => boolean }): { rows: PeerSummary[]; capped?: boolean };
     /** Its summary and messages, or undefined when there's no such session. */
     read(id: string): { summary: PeerSummary; messages: Message[] } | undefined;
     /** Missing where sessions can't be driven from here (the terminal). Throws PeerError. */
@@ -134,8 +134,11 @@ export function diskPeers(self: () => string, cwd: () => string): SessionPeers {
             return cwd();
         },
         // Whether another process has it open is read only for the sessions listed.
-        list: ({ limit, match }) =>
-            listAllSessions(limit, { match: match && ((s) => match({ ...s, status: "idle" })), maxRead: PEER_LIMITS.scan }).map((s) => ({ id: s.id, title: s.title, cwd: s.cwd, status: sessionHolder(s.file) === undefined ? "idle" : "elsewhere", model: s.model, updatedAt: s.updatedAt })),
+        list: ({ limit, match }) => {
+            let capped = false;
+            const found = listAllSessions(limit, { match: match && ((s) => match({ ...s, status: "idle" })), maxRead: PEER_LIMITS.scan, capped: () => (capped = true) });
+            return { rows: found.map((s) => ({ id: s.id, title: s.title, cwd: s.cwd, status: sessionHolder(s.file) === undefined ? "idle" : "elsewhere", model: s.model, updatedAt: s.updatedAt })), capped };
+        },
         read: (id) => readFromDisk(id),
     };
 }
@@ -193,14 +196,17 @@ export function listText(peers: SessionPeers, o: { all?: boolean; query?: string
     const q = o.query?.trim().toLowerCase();
     // Filtered as they're read, newest first: a search, or this project's, reads only until it has enough.
     const match = (s: PeerSummary) => s.id !== peers.self && (o.all || projectOf(s.cwd, cache) === here) && (!q || s.title.toLowerCase().includes(q) || s.id.toLowerCase().includes(q));
-    const rows = peers.list({ limit, match }).filter(match).slice(0, limit);
+    const listed = peers.list({ limit, match });
+    const rows = listed.rows.filter(match).slice(0, limit);
+    // It stopped looking before it had enough: say so, not that there are no more.
+    const looked = listed.capped ? ` (looked through the newest ${PEER_LIMITS.scan.toLocaleString("en-US")} sessions)` : "";
     const scope = o.all ? "in any project" : `in this project (${here})`;
-    if (!rows.length) return { text: `No other sessions ${scope}${q ? ` matching "${o.query}"` : ""}.${o.all ? "" : " Pass all: true to list every project's."}`, count: 0 };
+    if (!rows.length) return { text: `No other sessions ${scope}${q ? ` matching "${o.query}"` : ""}${looked}.${o.all ? "" : " Pass all: true to list every project's."}`, count: 0 };
     const lines = rows.map((s) => {
         const where = real(s.cwd) === here ? "" : `  folder: ${s.cwd}`;
         return `${s.id}  “${redact(oneLine(s.title, 100))}”  ${STATUS_WORDS[s.status]}, ${ago(s.updatedAt, now)}${s.model ? `, ${s.model}` : ""}${where}`;
     });
-    return { text: `Sessions ${scope}, newest first (this one left out):\n${lines.join("\n")}`, count: rows.length };
+    return { text: `Sessions ${scope}, newest first (this one left out)${looked}:\n${lines.join("\n")}`, count: rows.length };
 }
 
 const isTurnStart = (m: Message): boolean => m.role === "user" && [undefined, "prompt", "command", "wake", "summary"].includes(m.meta?.kind);
@@ -225,8 +231,17 @@ function turnText(msgs: Message[]): string {
         said.push(`[used ${[...tools].map(([n, c]) => (c > 1 ? `${n} ×${c}` : n)).join(", ")}]`);
         tools.clear();
     };
+    const flushSaid = () => {
+        flushTools();
+        if (said.length) out.push(`## Assistant\n${said.splice(0).join("\n\n")}`);
+    };
     for (const m of msgs.slice(1)) {
-        if (m.role !== "assistant") continue;
+        // A message from another session that joined the turn, where it joined.
+        if (m.role === "user") {
+            if (m.meta?.peers?.length) flushSaid();
+            for (const p of m.meta?.peers ?? []) out.push(`## Message from session ${p.from.id} (“${oneLine(p.from.title, 80)}”)\n${p.text}`);
+            continue;
+        }
         for (const p of m.content) {
             if (p.type === "tool_call") tools.set(p.name, (tools.get(p.name) ?? 0) + 1);
             else if (p.type === "text" && p.text.trim()) {
@@ -235,8 +250,7 @@ function turnText(msgs: Message[]): string {
             }
         }
     }
-    flushTools();
-    if (said.length) out.push(`## Assistant\n${said.join("\n\n")}`);
+    flushSaid();
     return out.join("\n\n");
 }
 
@@ -305,7 +319,7 @@ export function checkMessage(text: unknown, what = "message"): string {
 export function deliveryText(s: PeerSummary, d: Delivery): string {
     const to = `Sent to session ${s.id} (“${oneLine(s.title, 80)}”).`;
     if (d === "started") return `${to} It was idle: it's working on it now. Its answer, if it sends one, arrives as a message here.`;
-    if (d === "queued") return `${to} It's busy: it reads this as soon as it's done.`;
+    if (d === "joined") return `${to} It's working: it reads this at its next step.`;
     if (d === "held") return `${to} It's waiting for the user: it reads this once they've acted on it.`;
     if (d === "limited") return `${to} It has started as many turns for messages and events as it may this hour, so it reads this later.`;
     return `${to} The user stopped that session, so it reads this when they next send it something.`;

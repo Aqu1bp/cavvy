@@ -1669,7 +1669,7 @@ export function heldSessionFolders(): string[] {
  * `match`: only sessions it accepts are listed, and their files are read newest first until `limit` match (or
  * `maxRead` files are read): a search reads no more than it needs.
  */
-export function listAllSessions(limit = 200, o: { match?: (s: SessionSummary) => boolean; maxRead?: number } = {}): SessionSummary[] {
+export function listAllSessions(limit = 200, o: { match?: (s: SessionSummary) => boolean; maxRead?: number; capped?: () => void } = {}): SessionSummary[] {
     const root = paths.projectsDir();
     if (!existsSync(root)) return [];
     const files: { f: string; file: string; mtimeMs: number; createdAt: number }[] = [];
@@ -1712,7 +1712,7 @@ export function listAllSessions(limit = 200, o: { match?: (s: SessionSummary) =>
             model: head.model,
         };
         return !o.match || o.match(s) ? s : undefined;
-    }, o.maxRead);
+    }, o.maxRead, o.capped);
     saveSessionHeads();
     return out;
 }
@@ -1726,14 +1726,17 @@ function workTime(head: SessionHead, mtimeMs: number): number {
  * The `limit` sessions that worked last, newest first. A file is never older than its last worked line, so files are
  * read newest first, and only until the rest can't be among them: as few as are listed when nothing but work wrote.
  */
-function newestByWork<F extends { mtimeMs: number }>(files: F[], limit: number, summary: (f: F) => SessionSummary | undefined, maxRead = Infinity): SessionSummary[] {
+function newestByWork<F extends { mtimeMs: number }>(files: F[], limit: number, summary: (f: F) => SessionSummary | undefined, maxRead = Infinity, capped?: () => void): SessionSummary[] {
     files.sort((a, b) => b.mtimeMs - a.mtimeMs);
     const out: SessionSummary[] = [];
     const byWork = (a: SessionSummary, b: SessionSummary) => b.updatedAt - a.updatedAt;
     let read = 0;
     for (const f of files) {
         // A filtered listing that finds few: it stops after reading so many, newest first.
-        if (++read > maxRead) break;
+        if (++read > maxRead) {
+            if (out.length < limit) capped?.();
+            break;
+        }
         if (out.length >= limit) {
             out.sort(byWork).length = limit;
             if (limit === 0 || f.mtimeMs < out[limit - 1]!.updatedAt) break;

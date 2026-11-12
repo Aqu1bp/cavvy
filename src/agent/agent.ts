@@ -37,7 +37,7 @@ import { AutoClassifier, needsSummary, summaryFits, type ReviewContext } from ".
 import { sandboxKind, sandboxPolicy, type Sandbox } from "../permissions/sandbox";
 import { APP_TITLE, cavvyHome } from "../config/paths";
 import type { Sampler, Tool, ToolContext, ToolDisplay, ToolResult, ToolState, UiBridge } from "../tools/types";
-import { formatWakes, wakeDisplay } from "./wakes";
+import { formatWakes, wakeDisplay, type Wake } from "./wakes";
 import { isReadOnly, isShellTool } from "../tools/types";
 import { coerceInput, validateInput, EXPLORE_TOOLS, toSchema } from "../tools/index";
 import { isReadOnlyCommand, notReadOnly } from "../permissions/bash-safety";
@@ -145,6 +145,9 @@ export type AgentEvent =
      * a worktree (EnterWorktree, ExitWorktree), Cavvy's own after a cd or its own EnterWorktree. Not a sub-agent's.
      */
     | { type: "cwd"; cwd: string }
+    /** A message from another session's agent joined the running turn (`key` names it); withdrawn if it never got to the model. */
+    | { type: "peer_message"; key: string; from: { id: string; title: string }; text: string }
+    | { type: "peer_withdrawn"; key: string }
     | { type: "turn_end"; reason: TurnEndReason };
 
 export type TurnEndReason = "done" | "aborted" | "error" | "denied" | "max_turns" | "blocked";
@@ -441,6 +444,14 @@ const GOAL_COMMAND = /^\s*\/goal(\s|$)/i;
 /** A prompt's words as hooks and checkpoints read them: its text parts, then pasted texts. */
 function promptTextOf(content: readonly UserContent[]): string {
     return [...content.filter((p): p is TextPart => p.type === "text").map((p) => p.text), ...pastedTexts(content)].join("\n");
+}
+
+/** A message from another session that joined a turn, as kept with it (meta.peers). */
+type PeerNote = { from: { id: string; title: string }; text: string };
+
+/** Names one message from another session in the turn's events (peer_message, peer_withdrawn). */
+function peerKey(w: Wake): string {
+    return `${w.from?.id ?? ""}:${w.at}`;
 }
 
 function reminder(text: string): TextPart {
@@ -978,7 +989,7 @@ export class Agent {
                 // Events (a watched PR, a monitor) that came in during the last request: answer them in this turn.
                 const woke = this.takeWakes();
                 if (woke) {
-                    this.session.push({ role: "user", content: [reminder(woke)], meta: { kind: "reminder" } });
+                    this.session.push({ role: "user", content: [reminder(woke.text)], meta: { kind: "reminder", ...(woke.peers ? { peers: woke.peers } : {}) } });
                     continue;
                 }
 
@@ -1015,8 +1026,10 @@ export class Agent {
             const late = this.lateDiagnostics();
             if (late) extra.push(late);
             let recorded = false;
+            /** Messages from other sessions that joined with these results: kept with them, so the transcript shows them again. */
+            let joined: PeerNote[] | undefined;
             const record = (checkpoint?: number) => {
-                this.session.push({ role: "user", content: [...results, ...extra], meta: { kind: "tool_results", ...(checkpoint !== undefined ? { checkpoint } : {}) } });
+                this.session.push({ role: "user", content: [...results, ...extra], meta: { kind: "tool_results", ...(checkpoint !== undefined ? { checkpoint } : {}), ...(joined ? { peers: joined } : {}) } });
                 recorded = true;
             };
             if (!signal.aborted) {
@@ -1025,7 +1038,10 @@ export class Agent {
                 // Not into a round the user denied: that ends the turn, and the wake would go unanswered.
                 const woke = denied ? undefined : this.takeWakes();
                 if (queued.length) extra.push({ type: "text", text: `${STEERING}${joinSteered(queued, "\n\n")}` }, ...steer.attachments, ...steer.context.map(reminder));
-                if (woke) extra.push(reminder(woke));
+                if (woke) {
+                    extra.push(reminder(woke.text));
+                    joined = woke.peers;
+                }
                 // Steering's checkpoint records the results: everything to go with them is in by then.
                 if (queued.length) await this.checkpoint(joinSteered(queued, "\n"), true, record);
             }
@@ -1064,13 +1080,19 @@ export class Agent {
         return assistantText(this.session.messages);
     }
 
-    /** Wakes that may join the running turn, as one reminder; noted in the transcript. */
-    private takeWakes(): string | undefined {
+    /**
+     * Wakes that may join the running turn, as one reminder. Events are noted in the transcript; a message from another
+     * session is shown there whole, from whom (peer_message), and kept with what's stored (meta.peers, joinedPeers).
+     */
+    private takeWakes(): { text: string; wakes: Wake[]; peers?: PeerNote[] } | undefined {
         if (this.o.isSubagent) return undefined;
         const wakes = this.state.wakes?.drainRunning() ?? [];
         if (!wakes.length) return undefined;
-        this.emit({ type: "notice", level: "info", message: `↻ ${wakeDisplay(wakes)}` });
-        return formatWakes(wakes);
+        const events = wakes.filter((w) => !w.from);
+        if (events.length) this.emit({ type: "notice", level: "info", message: `↻ ${wakeDisplay(events)}` });
+        const peers = wakes.filter((w) => w.from).map((w) => ({ from: w.from!, text: w.message ?? w.text }));
+        for (const w of wakes) if (w.from) this.emit({ type: "peer_message", key: peerKey(w), from: w.from, text: w.message ?? w.text });
+        return { text: formatWakes(wakes), wakes, ...(peers.length ? { peers } : {}) };
     }
 
     /** A new file checkpoint for a user prompt; a sub-agent's edits belong to its parent's. */
@@ -2305,6 +2327,8 @@ export class Agent {
         let declined = false;
         /** What drainQueued handed over that came from wakes, not the user. */
         const wakeTexts = new Set<string>();
+        /** The wakes in each (by its text): messages from other sessions the backend never read go back in the queue. */
+        const wokeBy = new Map<string, Wake[]>();
         /** What drainQueued handed over from the user, to the words they typed (what hooks added follows). */
         const typed = new Map<string, string>();
         /** The user's messages as stored, by their SteerMessage.id (two with the same words are two), with what the host handed over for each. */
@@ -2389,7 +2413,20 @@ export class Agent {
                 const back = mine.length ? this.unsteer(mine.map((m) => stored.get(m.id!)!)) : new Set<number>();
                 for (const id of back) stored.delete(id);
                 messages = messages.filter((m) => m.id === undefined || !back.has(m.id));
-                const news = messages.filter((m) => wakeTexts.has(m.text)).map((m) => m.text);
+                // Messages from other sessions it never read: shown as joined no longer, and first in line again, for a turn of
+                // their own (or the next that runs). The events with them go in the note, as before.
+                const unread = messages.filter((m) => wakeTexts.has(m.text)).flatMap((m) => wokeBy.get(m.text) ?? []);
+                const unreadPeers = unread.filter((w) => w.from);
+                for (const w of unreadPeers) this.emit({ type: "peer_withdrawn", key: peerKey(w) });
+                if (unreadPeers.length) this.state.wakes?.putBack(unreadPeers);
+                const news = messages
+                    .filter((m) => wakeTexts.has(m.text))
+                    .flatMap((m) => {
+                        const wakes = wokeBy.get(m.text);
+                        if (!wakes?.some((w) => w.from)) return [m.text];
+                        const events = wakes.filter((w) => !w.from);
+                        return events.length ? [reminder(formatWakes(events)).text] : [];
+                    });
                 const said = messages.filter((m) => !wakeTexts.has(m.text) && m.text).map((m) => m.text);
                 // With the words they were stored with: a catch-up that has those leaves the note out (missedPrompt).
                 // Their images and PDFs too (a prompt's, kept by the backend): the note has them, and the prompt that carries it sends them.
@@ -2452,9 +2489,10 @@ export class Agent {
                 if (woke) {
                     // Not a prompt: no checkpoint, and the auto-mode reviewer doesn't read it as the user's request.
                     if (t) record();
-                    const m = this.session.push({ role: "user", content: [reminder(woke)], meta: { kind: "reminder" } });
+                    const m = this.session.push({ role: "user", content: [reminder(woke.text)], meta: { kind: "reminder", ...(woke.peers ? { peers: woke.peers } : {}) } });
                     const text = textOf(m);
                     wakeTexts.add(text);
+                    wokeBy.set(text, woke.wakes);
                     out.push({ text, images: [], documents: [] });
                 }
                 if (this.cutOff) {

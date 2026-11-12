@@ -59,9 +59,9 @@ export function appPeers(host: PeerHost, self: Runtime): SessionPeers {
         const wakes = rt.toolState.wakes;
         if (!wakes) throw new PeerError(`Session ${rt.id} can't take messages.`);
         const waits = rt.wakeWaitsFor;
-        // As wake() will take it: not into a running turn (it waits for one of its own), not past the user's queued
-        // messages, a missing account, Esc or the hourly limit.
-        const delivery: Delivery = wakes.isPaused ? "waiting" : wakes.full() ? "limited" : rt.status === "waiting" || waits === "user" ? "held" : rt.busy || waits === "queue" ? "queued" : "started";
+        // As it will be taken: into the running turn (or the one coming: a goal's next, the user's queued message), a turn of
+        // its own when idle; held by Esc, the hourly limit, the user's answer or a missing account.
+        const delivery: Delivery = wakes.isPaused ? "waiting" : wakes.full() ? "limited" : rt.status === "waiting" || waits === "user" ? "held" : rt.busy || waits === "turn" ? "joined" : "started";
         wakes.push(peerWake({ id: self.id, title: titleOf(self) }, text));
         host.release(rt.id);
         return delivery;
@@ -74,7 +74,8 @@ export function appPeers(host: PeerHost, self: Runtime): SessionPeers {
         },
         list: ({ limit, match }) => {
             const out = new Map<string, PeerSummary>();
-            for (const s of disk.list({ limit, match })) out.set(s.id, s);
+            const listed = disk.list({ limit, match });
+            for (const s of listed.rows) out.set(s.id, s);
             // Open here: as they are now (a session with nothing said yet isn't listed).
             for (const rt of host.live()) {
                 if (!rt.session.messages.length && !rt.busy) continue;
@@ -83,7 +84,7 @@ export function appPeers(host: PeerHost, self: Runtime): SessionPeers {
                 // On disk it matched, as it is now it doesn't (renamed since): not listed.
                 else out.delete(rt.id);
             }
-            return [...out.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+            return { rows: [...out.values()].sort((a, b) => b.updatedAt - a.updatedAt), capped: listed.capped };
         },
         read: (id) => {
             const rt = host.get(id);

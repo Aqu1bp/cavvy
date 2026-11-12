@@ -373,7 +373,15 @@ export interface ShellBlock {
     running: boolean;
 }
 
-export type Block = TextBlock | ThinkingBlock | ToolBlock | NoticeBlock | CompactBlock | ImportedBlock | ShellBlock;
+export type Block = TextBlock | ThinkingBlock | ToolBlock | NoticeBlock | CompactBlock | ImportedBlock | ShellBlock | PeerBlock;
+
+/** A message from the agent in another session that joined this turn: who sent it, and what it said. */
+export interface PeerBlock {
+    t: "peer";
+    id: string;
+    from: { id: string; title: string };
+    text: string;
+}
 
 export type TurnStatus = "running" | "done" | "aborted" | "error" | "denied" | "max_turns" | "blocked";
 

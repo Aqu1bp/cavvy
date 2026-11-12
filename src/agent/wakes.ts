@@ -81,11 +81,6 @@ export class WakeQueue {
         return this.memory.paused;
     }
 
-    /** Whether a message from another session is waiting. */
-    hasMessage(): boolean {
-        return this.items.some((w) => w.from);
-    }
-
     /** The wakes waiting, oldest first (a copy). */
     pending(): Wake[] {
         return [...this.items];
@@ -117,13 +112,34 @@ export class WakeQueue {
     }
 
     /**
-     * For a running turn: the events waiting, to join it. Messages from other sessions wait for a turn of their own,
-     * where the user sees them whole and from whom (takeForTurn).
+     * For a running turn: the wakes waiting, to join it. Messages from other sessions count against the hourly limit
+     * as a turn would (two agents answering each other mid-turn would otherwise never stop): at the limit they wait.
      */
     drainRunning(): Wake[] {
-        const events = this.items.filter((w) => !w.from);
-        this.items = this.items.filter((w) => w.from);
-        return events;
+        if (!this.items.some((w) => w.from)) return this.items.splice(0);
+        if (this.full() || this.memory.paused) {
+            const events = this.items.filter((w) => !w.from);
+            this.items = this.items.filter((w) => w.from);
+            if (this.items.length && !this.memory.paused) this.retryAtLimit();
+            return events;
+        }
+        this.memory.started.push(this.now());
+        return this.items.splice(0);
+    }
+
+    /** Messages that were taken but never reached the model (its turn ended first): first in line again, not counted. */
+    putBack(wakes: Wake[]) {
+        if (this.disposed || !wakes.length) return;
+        this.items.unshift(...wakes);
+        this.memory.started.pop();
+        this.schedule(this.coalesceMs);
+    }
+
+    /** Call the listeners again once the hourly limit frees up. */
+    private retryAtLimit() {
+        const now = this.now();
+        const started = (this.memory.started = this.memory.started.filter((t) => now - t < HOUR));
+        if (started.length) this.schedule(started[0]! + HOUR - now);
     }
 
     /**
@@ -131,11 +147,9 @@ export class WakeQueue {
      * hourly limit is reached: they wait, and the listeners are called again
      * when it frees up).
      */
-    takeForTurn(o: { messages?: boolean } = {}): Wake[] {
+    takeForTurn(): Wake[] {
         if (this.memory.paused || !this.items.length) return [];
-        // `messages`: only a message from another session will do (a goal is between its turns).
-        const first = o.messages ? this.items.find((w) => w.from) : this.items[0];
-        if (!first) return [];
+        const first = this.items[0]!;
         const now = this.now();
         const started = (this.memory.started = this.memory.started.filter((t) => now - t < HOUR));
         if (started.length >= this.maxPerHour) {

@@ -37,7 +37,7 @@ async function until(pred: () => boolean, ms = 15_000) {
 const summary = (id: string, cwd: string, o: Partial<PeerSummary> = {}): PeerSummary => ({ id, title: `Session ${id}`, cwd, status: "idle", updatedAt: Date.now() - 60_000, ...o });
 
 function fakePeers(self: string, cwd: string, rows: PeerSummary[], messages: Record<string, Message[]> = {}, o: Partial<SessionPeers> = {}): SessionPeers {
-    return { self, cwd, list: ({ limit, match }) => rows.filter((r) => !match || match(r)).slice(0, limit), read: (id) => (rows.find((r) => r.id === id) ? { summary: rows.find((r) => r.id === id)!, messages: messages[id] ?? [] } : undefined), ...o };
+    return { self, cwd, list: ({ limit, match }) => ({ rows: rows.filter((r) => !match || match(r)).slice(0, limit) }), read: (id) => (rows.find((r) => r.id === id) ? { summary: rows.find((r) => r.id === id)!, messages: messages[id] ?? [] } : undefined), ...o };
 }
 
 describe("projects", () => {
@@ -135,27 +135,39 @@ describe("what the agent reads", () => {
         expect(narrowerMode("plan", "bypassPermissions")).toBe("plan");
     });
 
-    test("between a goal's turns, only a message is taken", () => {
-        const q = new WakeQueue({ coalesceMs: 0 });
+    test("a running turn takes messages too, counted against the hourly limit; one never read goes back first", () => {
+        const q = new WakeQueue({ coalesceMs: 0, maxPerHour: 1 });
+        const from = (id: string) => peerWake({ id, title: id }, `hi from ${id}`);
         q.push({ source: "pull-request", label: "PR", text: "ci" });
-        expect(q.hasMessage()).toBe(false);
-        expect(q.takeForTurn({ messages: true })).toHaveLength(0);
-        q.push(peerWake({ id: "a", title: "a" }, "hi"));
-        expect(q.hasMessage()).toBe(true);
-        expect(q.takeForTurn({ messages: true }).map((w) => w.from?.id)).toEqual(["a"]);
-        expect(q.pending().map((w) => w.label)).toEqual(["PR"]);
+        // Events alone don't count.
+        expect(q.drainRunning().map((w) => w.label)).toEqual(["PR"]);
+        expect(q.full()).toBe(false);
+        q.push(from("a"));
+        q.push({ source: "pull-request", label: "PR2", text: "ci" });
+        const taken = q.drainRunning();
+        expect(taken.map((w) => w.from?.id ?? w.label)).toEqual(["a", "PR2"]);
+        expect(q.full()).toBe(true);
+        // At the limit: the event joins, the message waits.
+        q.push(from("b"));
+        q.push({ source: "pull-request", label: "PR3", text: "ci" });
+        expect(q.drainRunning().map((w) => w.label)).toEqual(["PR3"]);
+        expect(q.pending().map((w) => w.from?.id)).toEqual(["b"]);
+        // a's never reached the model: back first, and not counted.
+        q.putBack(taken.filter((w) => w.from));
+        expect(q.pending().map((w) => w.from?.id)).toEqual(["a", "b"]);
+        expect(q.full()).toBe(false);
         q.dispose();
     });
 
-    test("a running turn takes events, not messages; a turn takes one sender's messages", () => {
+    test("an idle session's turn takes one sender's messages, or the events", () => {
         const q = new WakeQueue({ coalesceMs: 0 });
         const from = (id: string) => peerWake({ id, title: id }, `hi from ${id}`);
         q.push(from("a"));
         q.push({ source: "pull-request", label: "PR", text: "ci" });
         q.push(from("b"));
         q.push(from("a"));
-        expect(q.drainRunning().map((w) => w.label)).toEqual(["PR"]);
         expect(q.takeForTurn().map((w) => w.from?.id)).toEqual(["a", "a"]);
+        expect(q.takeForTurn().map((w) => w.label)).toEqual(["PR"]);
         expect(q.takeForTurn().map((w) => w.from?.id)).toEqual(["b"]);
         q.dispose();
     });
@@ -201,7 +213,7 @@ describe("the tools", () => {
             send: async (id, text) => {
                 if (id === "busy") throw new PeerError("refused for a reason");
                 sent.push(text);
-                return { summary: summary(id, here), delivery: "queued" };
+                return { summary: summary(id, here), delivery: "joined" };
             },
             start: async () => summary("new", here),
         });
@@ -210,7 +222,7 @@ describe("the tools", () => {
         expect((await sendToSession(peers, { id: "a", message: "x".repeat(20_001) })).text).toContain("at most");
         expect((await sendToSession(peers, { id: "busy", message: "hi" })).text).toBe("refused for a reason");
         const ok = await sendToSession(peers, { id: "a", message: " run the tests " });
-        expect(ok.text).toContain("It's busy: it reads this as soon as it's done.");
+        expect(ok.text).toContain("It's working: it reads this at its next step.");
         expect(sent).toEqual(["run the tests"]);
     });
 
@@ -300,7 +312,9 @@ describe("in the app", () => {
         await until(() => !engine.runtimes.has(id));
     });
 
-    test("a message to a busy session waits for its turn to end, then shows whole, from its sender", async () => {
+    const peerBlocks = (rt: Rt) => turns(rt).flatMap((t, i) => t.blocks.filter((b: any) => b.t === "peer").map((b: any) => ({ turn: i, from: b.from.id, text: b.text })));
+
+    test("a message to a working session joins its turn, shown there whole and from whom, and after a reopen too", async () => {
         const a = await engine.createSession(project, { mode: "bypassPermissions" });
         const b = await engine.createSession(project, { mode: "bypassPermissions" });
         await Promise.all([a.ready, b.ready]);
@@ -309,29 +323,59 @@ describe("in the app", () => {
         await b.send("pause please");
         await until(() => b.busy);
         const r = await sendToSession(a.toolState.peers, { id: b.id, message: "Check the migration too." });
-        expect(r.text).toContain("It's busy: it reads this as soon as it's done.");
-        await until(() => turns(b).length === 2 && b.idle && turns(b).at(-1)!.status !== "running");
-        // Not folded into the running turn: a turn of its own, shown whole and from A.
-        expect(textOf(turns(b)[0])).not.toContain("Message from");
-        expect(turns(b)[1]!.prompt?.from?.id).toBe(a.id);
-        expect(turns(b)[1]!.prompt?.text).toBe("Check the migration too.");
-    });
+        expect(r.text).toContain("It's working: it reads this at its next step.");
+        await until(() => b.idle && !b.busy && peerBlocks(b).length > 0);
+        // In the turn it joined: no turn of its own.
+        expect(turns(b)).toHaveLength(1);
+        expect(peerBlocks(b)).toEqual([{ turn: 0, from: a.id, text: "Check the migration too." }]);
+        // The model was sent it, marked as another session's, before the turn ended.
+        const reminder = b.session.messages.find((m) => m.role === "user" && m.meta?.peers?.length);
+        expect(reminder?.role === "user" && JSON.stringify(reminder.content)).toContain("isn't the user");
+        // ReadSession shows where it joined.
+        expect(readSession(a.toolState.peers, { id: b.id }).text).toContain(`## Message from session ${a.id}`);
+        // Reopened, it's there still.
+        (client as any).subs.delete(b.id);
+        (engine as any).unloadIfUnused(b.id);
+        await until(() => !engine.runtimes.has(b.id));
+        const again = engine.openSession(b.id);
+        await again.ready;
+        expect(peerBlocks(again)).toEqual([{ turn: 0, from: a.id, text: "Check the migration too." }]);
+    }, 20_000);
 
-    test("a message to a session working on a goal goes in between the goal's turns, not after the goal", async () => {
+    test("a message to a session working on a goal joins the goal's turn, and the goal goes on with one check a turn", async () => {
         const a = await engine.createSession(project, { mode: "bypassPermissions" });
         const b = await engine.createSession(project, { mode: "bypassPermissions" });
         await Promise.all([a.ready, b.ready]);
         (client as any).subs.add(a.id).add(b.id);
+        const checks = () => mock.requests.filter((r) => /reached a goal/.test(r.body)).length;
+        const before = checks();
         // goaldemo: its check says "not met" once, so the goal takes a second turn.
         await b.send("/goal goaldemo the auth tests pass");
         await until(() => b.busy);
-        const r = await sendToSession(a.toolState.peers, { id: b.id, message: "Leave the migration alone." });
-        expect(r.text).toMatch(/It's busy|working on it now/);
-        await until(() => b.idle && !b.busy && turns(b).some((t) => t.prompt?.from) && turns(b).length >= 3, 15_000);
-        const message = turns(b).findIndex((t) => t.prompt?.from?.id === a.id);
-        // Right after the turn it arrived in, before the goal's next.
-        expect(message).toBe(1);
-        expect(turns(b).length).toBeGreaterThan(2);
+        await sendToSession(a.toolState.peers, { id: b.id, message: "Leave the migration alone." });
+        await until(() => b.idle && !b.busy && turns(b).some((t) => t.prompt?.text === "/goal · keep going") && !b.goal.pending(), 15_000);
+        await Bun.sleep(200);
+        // Joined a goal turn; no turn of its own; the goal took its second turn; one check per goal turn.
+        expect(peerBlocks(b).map((p) => p.text)).toEqual(["Leave the migration alone."]);
+        expect(turns(b).some((t) => t.prompt?.from)).toBe(false);
+        const goalTurns = turns(b).filter((t) => t.prompt?.text?.startsWith("/goal")).length;
+        expect(goalTurns).toBe(2);
+        expect(checks() - before).toBe(goalTurns);
+    }, 20_000);
+
+    test("a message to a session running scheduled prompts joins the scheduled turn", async () => {
+        const a = await engine.createSession(project, { mode: "bypassPermissions" });
+        const b = await engine.createSession(project, { mode: "bypassPermissions" });
+        await Promise.all([a.ready, b.ready]);
+        (client as any).subs.add(a.id).add(b.id);
+        // A /loop's first run starts at once; "pause" keeps it busy for a moment.
+        await b.send("/loop 1m pause please");
+        await until(() => b.busy);
+        await sendToSession(a.toolState.peers, { id: b.id, message: "Ping." });
+        await until(() => b.idle && !b.busy && peerBlocks(b).length > 0);
+        expect(turns(b).some((t) => t.prompt?.from)).toBe(false);
+        expect(turns(b)[peerBlocks(b)[0]!.turn]!.prompt?.scheduled).toBeTruthy();
+        for (const j of b.schedules.scheduler.list()) b.schedules.scheduler.remove(j.id);
     }, 20_000);
 
     test("Esc and the hourly limit hold after the session is closed and opened again", async () => {
@@ -371,7 +415,12 @@ describe("in the app", () => {
         expect(listAllSessions(1, { match: (s) => s.id === oldest.id }).map((s) => s.id)).toEqual([oldest.id]);
         // Capped: two files read, at most two listed, whatever the limit.
         expect(listAllSessions(500, { maxRead: 2 }).length).toBeLessThanOrEqual(2);
-        expect(listAllSessions(500, { maxRead: 2, match: (s) => s.id === oldest.id })).toHaveLength(0);
+        let capped = false;
+        expect(listAllSessions(500, { maxRead: 2, match: (s) => s.id === oldest.id, capped: () => (capped = true) })).toHaveLength(0);
+        expect(capped).toBe(true);
+        // The agent is told it stopped looking, not that there are none.
+        const peers: SessionPeers = { self: "me", cwd: project, list: () => ({ rows: [], capped: true }), read: () => undefined };
+        expect(listText(peers, { all: true, query: "login" }).text).toContain("looked through the newest 2,000 sessions");
     });
 
     test("refusals: itself, unknown, a session that asks less, and a stopped one waits", async () => {

@@ -113,6 +113,7 @@ import type {
     NoticeData,
     StoppedTask,
 } from "./protocol";
+import type { PeerBlock } from "./protocol";
 import { applyOp, coalesce, findBlock, findTurn, type SessionView } from "./timeline";
 import { planTitle } from "./plans";
 import type { Engine, Workspace } from "./engine";
@@ -1904,6 +1905,21 @@ export class Runtime {
             case "notice":
                 this.notice(e.message, e.level, e.data);
                 break;
+            case "peer_message": {
+                // Shown where it joined the turn, whole and from whom; taken back if it never reached the model.
+                const turn = this.currentTurn();
+                this.closeOpen();
+                const block: PeerBlock = { t: "peer", id: this.newId(), from: { id: e.from.id, title: redact(e.from.title) }, text: redact(e.text) };
+                this.peerBlocks.set(e.key, { turnId: turn.id, blockId: block.id });
+                this.op({ op: "block", turnId: turn.id, block });
+                break;
+            }
+            case "peer_withdrawn": {
+                const at = this.peerBlocks.get(e.key);
+                this.peerBlocks.delete(e.key);
+                if (at) this.op({ op: "block.remove", turnId: at.turnId, blockId: at.blockId });
+                break;
+            }
             case "retry": {
                 // The partial response is thrown away and asked for again.
                 const turnId = this.turnId;
@@ -3438,12 +3454,9 @@ export class Runtime {
         if (this.closed || this.busy || (this.adopts.length ? this.nextQueued() : this.queued.length)) return;
         // The session's CLI account was removed (#410): nothing runs until the user picks another (releaseForAccount looks again).
         if (this.needsAccount()) return;
-        // Between a goal's turns, a message from another session goes first, as the user's own would: the goal's next
-        // turn waits for the session to be free. Other wakes join the goal's turns instead.
-        const message = this.goal.pending() && this.toolState.wakes!.hasMessage();
         // A model switch, a commit, the agent still starting, a goal between its turns (it goes first, as with
-        // scheduled prompts): look again in a moment.
-        if (this.switching || this.commitDone || !this.agent || (this.goal.pending() && !message)) {
+        // scheduled prompts; wakes join its turns): look again in a moment.
+        if (this.switching || this.commitDone || !this.agent || this.goal.pending()) {
             const t = setTimeout(again, 1000);
             t.unref?.();
             return;
@@ -3456,7 +3469,7 @@ export class Runtime {
             void this.startTurn(label, { display: label, kind: adopt.prompt ? "prompt" : "wake", adopt }).catch((e) => this.notice(redact((e as Error).message), "error"));
             return;
         }
-        const wakes = this.toolState.wakes!.takeForTurn({ messages: message });
+        const wakes = this.toolState.wakes!.takeForTurn();
         if (!wakes.length) return;
         // Messages from one other session: shown as it wrote them, as from it.
         const from = wakesFrom(wakes);
@@ -3466,6 +3479,9 @@ export class Runtime {
 
     /** Turns agent CLIs started by themselves, waiting for the session to be free to adopt them (wake). */
     private adopts: BackendWake[] = [];
+
+    /** Where each message from another session that joined a turn is shown (by its key), so it can be taken back. */
+    private peerBlocks = new Map<string, { turnId: string; blockId: string }>();
 
     /** Agent CLIs whose process for this session an account change is letting go of (setAccount), with how many such releases are under way. */
     private releasing = new Map<string, number>();
@@ -4191,13 +4207,14 @@ export class Runtime {
     }
 
     /**
-     * What a wake would wait for, idle as it is (wake()): the user's messages queued first ("queue"), or the user
-     * ("user": an account to run on, or messages held since a stop or a restart until they send or remove them).
+     * What a wake would wait for, idle as it is (wake()): a turn coming that it joins ("turn": the user's messages
+     * queued, a goal between its turns), or the user ("user": an account to run on, or messages held since a stop or a
+     * restart until they send or remove them).
      */
-    get wakeWaitsFor(): "queue" | "user" | undefined {
+    get wakeWaitsFor(): "turn" | "user" | undefined {
         if (this.needsAccount()) return "user";
-        if (!this.queued.length) return undefined;
-        return this.nextQueued() ? "queue" : "user";
+        if (this.queued.length && !this.nextQueued()) return "user";
+        return this.queued.length || this.goal.pending() ? "turn" : undefined;
     }
 
     /** Nothing running, waiting for the user, or still to be delivered to the model: closing it loses nothing. */
