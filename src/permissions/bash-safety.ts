@@ -1593,13 +1593,16 @@ function namesServerFolder(word: string): boolean {
 
 /** Programs that publish a package when `publish` is what they're told to do, whatever options come before it. */
 const PUBLISHERS = ["npm", "pnpm", "yarn", "bun", "cargo", "uv", "poetry", "pdm", "hatch", "flit", "deno", "lerna", "changeset", "vsce", "jsr", "gradle", "gradlew"];
-/** What those are told to do when a later `publish` is only a name: a package, a test, a script's argument. */
-const NOT_PUBLISHING = new Set(["install", "i", "add", "remove", "rm", "uninstall", "un", "view", "info", "show", "help", "test", "t", "search", "why", "ls", "list", "outdated", "update", "up", "upgrade", "link", "create", "init", "doc", "docs", "bench", "check", "clippy", "fmt", "tree"]);
+/** Maven's options that take the next word as their value (a profile or a module may be named `deploy`). */
+const MVN_VALUED = new Set(["-P", "--activate-profiles", "-pl", "--projects", "-f", "--file", "-s", "--settings", "-gs", "--global-settings", "-T", "--threads", "-rf", "--resume-from", "-l", "--log-file"]);
 
 /**
  * A command that changes what others have, read from its words as the shell would run them: a `git push` that
  * forces (`--force`, `--force-with-lease`, a short option with `f` in it, a `+` refspec), wherever git's own
  * options put the `push`; or a package manager publishing. Asked about on every machine.
+ *
+ * Publishing is what the program is told to do, not a word among its arguments: `pnpm -r publish` and
+ * `yarn workspace web publish` publish; `pnpm --filter web test publish` runs tests named for it.
  */
 function reachesBeyond(argv: string[]): string | undefined {
     const prog = argv[0];
@@ -1619,13 +1622,37 @@ function reachesBeyond(argv: string[]): string | undefined {
         return undefined;
     }
     const args = argv.slice(1);
-    // Up to a `--`: what follows is handed on to something else (`npm test -- publish`).
-    const own = args.includes("--") ? args.slice(0, args.indexOf("--")) : args;
-    const told = own.find((a) => !a.startsWith("-"));
-    if (runs(prog, ...PUBLISHERS) && own.includes("publish") && !(told !== undefined && NOT_PUBLISHING.has(told))) return "publishes a package";
+    const cut = args.indexOf("--");
+    // Its own words: what follows a `--` is handed on to something else (`npm test -- publish`).
+    const own = cut < 0 ? args : args.slice(0, cut);
+    // The words that aren't options (cargo's `+toolchain` is one), each with whether it may be the value of the
+    // option before it (`--filter web`).
+    const words = own.flatMap((a, i) => (a.startsWith("-") || a.startsWith("+") ? [] : [{ a, at: i, value: i > 0 && own[i - 1]!.startsWith("-") && !own[i - 1]!.includes("=") }]));
+    if (runs(prog, ...PUBLISHERS)) {
+        // What it's told to do: the first word that isn't an option's value. `publish` is never taken for a value.
+        const told = words.find((w) => !w.value || w.a === "publish");
+        if (!told) return undefined;
+        if (told.a === "publish") return "publishes a package";
+        const after = words.filter((w) => w.at > told.at);
+        // In a workspace, or in each: publishing if that's what follows (`yarn workspace web publish`,
+        // `yarn workspaces foreach npm publish`).
+        if (["workspace", "workspaces", "foreach"].includes(told.a) && after.some((w) => w.a === "publish")) return "publishes a package";
+        // A script named for it.
+        if (told.a === "run" && after[0]?.a === "publish") return "publishes a package";
+        // What it's asked to run, judged as itself (`npm exec -- lerna publish`, `pnpm dlx changeset publish`).
+        if (["exec", "x", "dlx"].includes(told.a)) {
+            const rest = args.slice(told.at + 1).filter((a, i) => !(i === 0 && a === "--"));
+            const at = rest.findIndex((a) => !a.startsWith("-"));
+            return at >= 0 ? reachesBeyond([rest[at]!.replace(/(?<=.)@[^/]*$/, ""), ...rest.slice(at + 1)]) : undefined;
+        }
+        // Gradle's task of that name, in the root project or one of its own (`:lib:publish`).
+        if (runs(prog, "gradle", "gradlew") && words.some((w) => !w.value && /(^|:)publish$/.test(w.a))) return "publishes a package";
+        return undefined;
+    }
+    const told = words.find((w) => !w.value)?.a;
     if (runs(prog, "twine") && told === "upload") return "publishes a package";
     if (runs(prog, "gem") && told === "push") return "publishes a package";
-    if (runs(prog, "mvn", "mvnw") && own.includes("deploy")) return "publishes a package";
+    if (runs(prog, "mvn", "mvnw") && own.some((a, i) => a === "deploy" && !(i > 0 && MVN_VALUED.has(own[i - 1]!)))) return "publishes a package";
     if (runs(prog, "dotnet") && told === "nuget" && own.includes("push")) return "publishes a package";
     return undefined;
 }
@@ -2513,7 +2540,7 @@ export function pushesDefaultBranch(cmd: string, cwd?: string): string | undefin
     const commands = commandsWithDirs(cmd, cwd);
     // The branch an earlier command on the line moved to (`git checkout main && git merge x && git push`): what a
     // later push from the same folder sends when it names no branch, whatever is checked out as this is read.
-    let moved: { to: string; dir: string | null | undefined } | undefined;
+    let moved: { to: string; dir: string | null | undefined; made: boolean } | undefined;
     for (const { programs, dir } of commands) {
         for (const argv of programs) {
             if (!runs(argv[0], "git")) continue;
@@ -2528,7 +2555,8 @@ export function pushesDefaultBranch(cmd: string, cwd?: string): string | undefin
                 let to: string | undefined;
                 if (made >= 0) to = rest[made + 1];
                 else if (words.length === 1) to = rest.some((a) => a === "-t" || a === "--track") ? words[0]!.replace(/^[^/]+\//, "") : words[0];
-                if (to) moved = { to, dir };
+                // Made with the flags that only ever name a branch: that's what a push now sends, whatever it's called.
+                if (to) moved = { to, dir, made: made >= 0 };
                 continue;
             }
             if (argv[i] !== "push") continue;
@@ -2541,9 +2569,10 @@ export function pushesDefaultBranch(cmd: string, cwd?: string): string | undefin
             }
             // positional[0] is the remote; the rest are refspecs ([+]src[:dst]).
             const specs = positional.slice(1);
-            // Only ever a reason more to ask: a single word may be a file brought back, not a branch, so one that
-            // isn't the default branch's name leaves the branch to what's checked out now.
-            const here = moved && !dirs.length && moved.dir === dir && DEFAULT_BRANCH.test(moved.to) ? moved.to : undefined;
+            // A single word may be a file brought back, not a branch: one that isn't the default branch's name
+            // leaves the branch to what's checked out now, so it only ever adds a reason to ask. A branch that was
+            // made on the line is the branch.
+            const here = moved && !dirs.length && moved.dir === dir && (moved.made || DEFAULT_BRANCH.test(moved.to)) ? moved.to : undefined;
             const branch = here ?? (typeof dir === "string" ? headBranch(resolve(dir, ...dirs)) : undefined);
             // Without a refspec git pushes the current branch (push.default "simple").
             if (!specs.length && branch && DEFAULT_BRANCH.test(branch)) return `git push from ${branch}`;

@@ -1343,6 +1343,12 @@ describe("on one of the user's servers", () => {
         ["yarn workspace pkg publish", /publishes a package/],
         ["yarn workspaces foreach npm publish", /publishes a package/],
         ["bun run publish", /publishes a package/],
+        ["npm exec -- changeset publish", /publishes a package/],
+        ["pnpm dlx changeset publish", /publishes a package/],
+        ["npm -w docs publish", /publishes a package/],
+        ["pnpm --filter test publish", /publishes a package/],
+        ["./gradlew :lib:publish", /publishes a package/],
+        ["cargo +nightly publish", /publishes a package/],
     ] as const)("%p asks in Bypass, there", (cmd, why) => {
         const d = on(cmd);
         expect(d).toMatchObject({ behavior: "ask", dangerous: true });
@@ -1380,6 +1386,17 @@ describe("on one of the user's servers", () => {
         "npm help publish",
         "mvn package",
         "dotnet build",
+        // `publish` as a word among the arguments, not what the program is told to do.
+        "pnpm --filter web test publish",
+        "yarn --cwd pkg test publish",
+        "cargo +nightly test publish",
+        "npm run test publish",
+        "yarn jest publish",
+        "mvn -P deploy package",
+        "mvn -pl deploy -am test",
+        "cargo build -p publish",
+        "lerna run build --scope publish",
+        "npm pkg get publish",
         `git "pu"sh origin feat`,
     ])("%p runs in Bypass, there", (cmd) => {
         expect(on(cmd)).toMatchObject({ behavior: "allow" });
@@ -1398,6 +1415,9 @@ describe("on one of the user's servers", () => {
             }
             // A branch moved to that isn't known to be one is no reason to stop asking either: what's checked out is main.
             expect(at("git checkout feat && git push")).toMatchObject({ behavior: "ask", dangerous: true });
+            // One made on the line is the branch a push then sends, whatever is checked out as this is read.
+            for (const cmd of ["git checkout -b fix && git commit -am x && git push -u origin HEAD", "git switch -c fix && git push -u origin HEAD", "git checkout -b fix && git push"]) expect([cmd, at(cmd).behavior]).toEqual([cmd, "allow"]);
+            expect(at("git checkout -b main && git push")).toMatchObject({ behavior: "ask", dangerous: true });
             expect(at("git push origin feat")).toMatchObject({ behavior: "allow" });
         } finally {
             rmSync(repo, { recursive: true, force: true });
