@@ -49,13 +49,13 @@ Sessions on a server are its own: its folders, its `~/.cavvy`, its settings and 
 
 ## Permissions on a server
 
-A server is there to run agents freely, and it can be rebuilt. So on a machine Cavvy was put on with `cavvy servers add`:
+A server is there to run agents freely, and it can be rebuilt. So in the Cavvy that `cavvy servers add` puts on a machine:
 
 - Sessions start in **Bypass**: tools run without asking. `cavvy servers add` says so. To start them in another mode, set it in the server's own settings (Settings in its GUI, `/config` in its terminal app, or `permissions.defaultMode`); a mode asked for (`--permission-mode`, the mode picker) is always the one a session gets.
-- What still asks, in every mode, is what reaches beyond the machine: a force-push, a push to the default branch (`main`, `master`, `trunk`), publishing a package, reading saved secrets, and anything that touches Cavvy's own credentials or who may connect to the server. What only the server itself would lose (`rm -rf ~`, `sudo`, a script piped into a shell) doesn't. Your own computer keeps its full list ([permissions](permissions.md)).
+- What still asks, in every mode, is what reaches beyond the machine: a force-push, a push to the default branch (`main`, `master`, `trunk`), publishing a package, and commands that name Cavvy's own credentials or the server's folder (who may connect to it). What only the server itself would lose (`rm -rf ~`, `sudo`, a script piped into a shell) doesn't. Reading a key or a token kept on the server doesn't ask either, in Bypass, there as anywhere: put only credentials on a server that you'd accept an agent using. Your own computer keeps its full list ([permissions](permissions.md)).
 - Deny rules apply as anywhere.
 
-This goes for every session on that machine, however it's started. A computer you also work at yourself is better given a user of its own for this than added as it is.
+This goes for every session of that Cavvy, whether you reach it from another machine or start it on the server yourself (`~/.cavvy/server/current/cavvy`). Another copy of Cavvy installed on the same machine keeps the rules of a computer of your own.
 
 Claude Code and Codex apply their own sandboxes and rules to what they run: in Bypass they run under their own, and what they ask Cavvy about is theirs to decide, so the list above is what Cavvy checks when it's asked. Cavvy's sandbox is for models used with an API key, in Auto mode: on Linux it's bubblewrap, off until `"sandbox": true` in the server's settings. `cavvy servers check` says which mode sessions start in and how the sandbox stands.
 

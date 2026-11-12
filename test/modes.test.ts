@@ -101,20 +101,35 @@ describe("the mode sessions start in", () => {
         expect(startMode(undefined, {}, CAVVY_HOME, false, false).mode).toBe("default");
     });
 
-    test("a machine is a server once Cavvy was put on it from another: the mark in its own folder", async () => {
-        const { onServer, forgetServerRole, SERVER_MARK } = await import("../src/servers/role");
-        const { mkdirSync, writeFileSync } = await import("fs");
+    test("a Cavvy is a server's when the program that runs is the one in the server's own install, however it's reached", async () => {
+        const { inServerInstall } = await import("../src/servers/role");
+        const { mkdirSync, realpathSync, symlinkSync, writeFileSync } = await import("fs");
+        const home = realpathSync(CAVVY_HOME);
+        const server = join(home, ".cavvy", "server");
+        mkdirSync(join(server, "builds", "0123456789ab"), { recursive: true });
+        const program = join(server, "builds", "0123456789ab", "cavvy");
+        writeFileSync(program, "");
+        symlinkSync(join("builds", "0123456789ab"), join(server, "current"));
+        expect(inServerInstall(program, home)).toBe(true);
+        // As the service starts it, and through a link of the user's own.
+        expect(inServerInstall(join(server, "current", "cavvy"), home)).toBe(true);
+        symlinkSync(program, join(home, "cavvy-link"));
+        expect(inServerInstall(join(home, "cavvy-link"), home)).toBe(true);
+        // Anything else isn't: a program elsewhere, a file beside the builds, one that isn't there, a link out of them.
+        writeFileSync(join(home, "cavvy"), "");
+        expect(inServerInstall(join(home, "cavvy"), home)).toBe(false);
+        writeFileSync(join(server, "is-server"), "");
+        expect(inServerInstall(join(server, "is-server"), home)).toBe(false);
+        expect(inServerInstall(join(server, "builds", "nope", "cavvy"), home)).toBe(false);
+        symlinkSync(join(home, "cavvy"), join(server, "builds", "0123456789ab", "out"));
+        expect(inServerInstall(join(server, "builds", "0123456789ab", "out"), home)).toBe(false);
+        // No install at all, as on the user's own computer.
+        expect(inServerInstall(program, join(home, "elsewhere"))).toBe(false);
+        // This test runs from source with nothing standing in for a server's program: not a server.
+        const { onServer, forgetServerRole } = await import("../src/servers/role");
         forgetServerRole();
         expect(onServer()).toBe(false);
         expect(defaultMode({}, CAVVY_HOME).mode).toBe("default");
-        mkdirSync(join(CAVVY_HOME, "server"), { recursive: true });
-        writeFileSync(join(CAVVY_HOME, "server", SERVER_MARK), "");
-        // Looked at once: a running Cavvy doesn't change what it is.
-        expect(onServer()).toBe(false);
-        forgetServerRole();
-        expect(onServer()).toBe(true);
-        expect(defaultMode({}, CAVVY_HOME).mode).toBe("bypassPermissions");
-        rmSync(join(CAVVY_HOME, "server"), { recursive: true, force: true });
-        forgetServerRole();
+        rmSync(join(home, ".cavvy"), { recursive: true, force: true });
     });
 });

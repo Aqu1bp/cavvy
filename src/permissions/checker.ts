@@ -449,14 +449,19 @@ export class PermissionChecker {
         }
 
         let dangerous: string | undefined;
+        // On a server, a push whose branch can't be worked out: asked about in Bypass too, as what it may be.
+        let unknownPush = false;
         if (isShellTool(tool.name)) {
             const server = this.server();
             dangerous = dangerousReason(t.command ?? "", 0, false, server);
             // A server runs without asking, and a push there is an agent's own doing: one to the default branch is
-            // asked about in every mode, as Auto asks here.
-            const push = server && !dangerous ? pushesDefaultBranch(judged, cwd) : undefined;
+            // asked about in every mode, as Auto asks here. Looked for only where the word is: it reads the command again.
+            const push = server && !dangerous && /\bpush\b/.test(judged) ? pushesDefaultBranch(judged, cwd) : undefined;
             // Not a command too long to read through: that says nothing of a push, and would ask for every such command.
-            if (push && push !== ANALYSIS_LIMIT) dangerous = `pushes to the default branch (${push})`;
+            if (push && push !== ANALYSIS_LIMIT) {
+                if (push.endsWith("(branch unknown)")) unknownPush = true;
+                else dangerous = `pushes to the default branch (${push})`;
+            }
         }
 
         // Plan mode: research only.
@@ -492,6 +497,8 @@ export class PermissionChecker {
         if (dangerous) {
             return { behavior: "ask", dangerous: true, reason: `This command ${dangerous}.` };
         }
+        // Not flagged as dangerous: it may be an ordinary push, and can be allowed for the session.
+        if (unknownPush && mode === "bypassPermissions") return { behavior: "ask", reason: "This command may push to the default branch: the branch it pushes couldn't be worked out." };
 
         const askRule = findMatch(ask, t, this.root, "deny") ?? (resolved && findMatch(ask, resolved, this.root, "deny")) ?? (opened && (findMatch(ask, opened, this.root, "deny") ?? findMatch(ask, { ...opened, path: canonical(opened.path!) }, this.root, "deny")));
         if (askRule && mode !== "bypassPermissions") return { behavior: "ask", rule: askRule, reason: `Rule ${askRule} requires confirmation` };

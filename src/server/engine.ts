@@ -1793,6 +1793,7 @@ export class Engine {
             browser: s.browser?.enabled,
             simulator: s.simulator?.enabled,
             allowBypass: s.permissions?.allowBypass || onServer() || undefined,
+            bypassAlways: onServer() || undefined,
             followUpBehavior: s.followUpBehavior,
             editor: s.editor,
         };

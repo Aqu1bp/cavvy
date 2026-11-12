@@ -10,7 +10,6 @@ import { createReadStream } from "fs";
 import { localSource, type BuildSource, type ServerBuild } from "./build";
 import type { HostStatus } from "./host";
 import { checkRoom, probeServer, REMOTE_DIR, targetFor, type ServerFacts } from "./remote";
-import { SERVER_MARK } from "./role";
 import { applyBuild, pruneBuilds, remoteStatus, NotSetUp, setUpService, type ServiceReport } from "./service";
 import { hostOf, printable, remoteSh, ssh } from "./ssh";
 import { ServerError, type ServerEntry } from "./store";
@@ -26,8 +25,6 @@ b="${REMOTE_DIR}/builds"
 id="$1"
 mkdir -p "$b"
 chmod 700 "${REMOTE_DIR}"
-# This machine is one of the user's servers from now on (role.ts).
-: > "${REMOTE_DIR}/${SERVER_MARK}"
 in="$b/.incoming-$id-$$"
 # What copies that were cut off left behind. Not one still arriving from another machine: only what's sat for half an hour.
 find "$b" -maxdepth 1 -name '.incoming-*' -mmin +30 -exec rm -rf {} + 2>/dev/null || true

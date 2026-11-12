@@ -1400,7 +1400,8 @@ async function configCommand(app: App) {
             { label: "Notifications", value: "notifications", detail: notificationMode(s), description: `auto · terminal · bell · system · off (prompts, turns over ${notifyAfterMs(s) / 1000}s)` },
             { label: "Messages sent while working", value: "followUpBehavior", detail: s.followUpBehavior === "queue" ? "queue" : "steer", description: "steer joins the turn at its next step · queue waits for it to end (tab does the other)" },
             { label: "Default permission mode", value: "defaultMode", detail: MODE_INFO[s.permissions?.defaultMode ?? (onServer() ? "bypassPermissions" : "default")].label, description: "mode at startup" },
-            { label: "Bypass in shift+tab cycle", value: "allowBypass", detail: onOff(s.permissions?.allowBypass), description: "lets shift+tab reach bypass permissions" },
+            // On one of the user's servers it always is, and there's nothing to turn.
+            ...(onServer() ? [] : [{ label: "Bypass in shift+tab cycle", value: "allowBypass" as const, detail: onOff(s.permissions?.allowBypass), description: "lets shift+tab reach bypass permissions" }]),
             { label: "Small model", value: "smallModel", detail: s.smallModel ?? "auto", description: "for session titles and summaries" },
             { label: "Auto-mode reviewer", value: "reviewModel", detail: s.reviewModel ?? "auto", description: "checks actions in auto mode (auto: Sonnet 5.5 with an Anthropic key)" },
             { label: "Verbose output", value: "verbose", detail: onOff(app.verbose), description: "this session only (ctrl+o)" },

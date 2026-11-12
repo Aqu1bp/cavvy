@@ -1314,6 +1314,61 @@ describe("on one of the user's servers", () => {
         expect(d.reason).toMatch(why);
     });
 
+    // However they're spelled: these are all that's left to ask about there.
+    test.each([
+        ["git -C repo push --force origin feat", /force-pushes/],
+        ["git -c core.askpass=x push -f origin feat", /force-pushes/],
+        [`git push "--force" origin feat`, /force-pushes/],
+        ["git push -uf origin feat", /force-pushes/],
+        ["git push --force-with-lease=feat origin feat", /force-pushes/],
+        ["git push origin +feat", /force-pushes/],
+        ["pnpm -r publish", /publishes a package/],
+        ["pnpm --filter ./pkg publish", /publishes a package/],
+        ["npm --workspace pkg publish", /publishes a package/],
+        ["bun publish", /publishes a package/],
+        ["uv publish", /publishes a package/],
+        ["poetry publish --build", /publishes a package/],
+        ["git checkout main && git merge feat && git push", /pushes to the default branch \(git push from main\)/],
+        ["git switch main && git pull && git push origin HEAD", /pushes to the default branch \(git push to main\)/],
+        ["git checkout -B master origin/master && git push", /pushes to the default branch/],
+    ] as const)("%p asks in Bypass, there", (cmd, why) => {
+        const d = on(cmd);
+        expect(d).toMatchObject({ behavior: "ask", dangerous: true });
+        expect(d.reason).toMatch(why);
+    });
+
+    test("a force-push or a publish asks here too, however it's spelled", () => {
+        for (const cmd of ["git -C repo push --force origin feat", `git push "--force" origin feat`, "git push -uf origin feat", "pnpm -r publish", "bun publish", "sh -c 'uv publish'"]) {
+            expect([cmd, check(T("Bash"), bash(cmd), "bypassPermissions")]).toEqual([cmd, expect.objectContaining({ behavior: "ask", dangerous: true })]);
+        }
+    });
+
+    test.each([
+        "git push origin feat",
+        "git push -u origin feat",
+        "git push --follow-tags origin feat",
+        "git push -o ci.skip origin feat",
+        "git push --push-option=f origin feat",
+        "git checkout feat && git push",
+        "git checkout -b main-2 && git push -u origin main-2",
+        "git checkout main -- README.md && git push origin feat",
+        "git log --oneline -f",
+        "npm run build",
+        "npm install",
+        "bun run publish-docs",
+        "cargo build --release",
+        "echo publish",
+    ])("%p runs in Bypass, there", (cmd) => {
+        expect(on(cmd)).toMatchObject({ behavior: "allow" });
+    });
+
+    test("a push whose branch can't be worked out is asked about as what it may be, and isn't one of the few that can't be allowed for the session", () => {
+        const d = on(`cd "$REPO" && git push`);
+        expect(d).toEqual({ behavior: "ask", reason: "This command may push to the default branch: the branch it pushes couldn't be worked out." });
+        // Here, as before: Bypass runs it.
+        expect(check(T("Bash"), bash(`cd "$REPO" && git push`), "bypassPermissions")).toMatchObject({ behavior: "allow" });
+    });
+
     test("a push that isn't to the default branch runs; here, Bypass doesn't ask about the default branch either", () => {
         expect(on("git push origin feature")).toMatchObject({ behavior: "allow" });
         expect(on("git push -u origin fix/thing")).toMatchObject({ behavior: "allow" });

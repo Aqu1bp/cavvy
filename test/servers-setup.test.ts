@@ -845,8 +845,7 @@ esac`;
 });
 
 describe("permissions on a server", () => {
-    test("the machine is marked as a server when Cavvy is put on it, and its sessions start in Bypass unless its settings say otherwise", async () => {
-        expect(existsSync(join(fake.home, ".cavvy", "server", "is-server"))).toBe(true);
+    test("the Cavvy another machine put there is a server's: its sessions start in Bypass unless its settings say otherwise", async () => {
         const link = new ServerLink(entry);
         await link.start();
         try {
