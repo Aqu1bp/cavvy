@@ -348,6 +348,34 @@ describe.skipIf(!chromePath)("browser regressions with Chrome", () => {
         } finally { void site.stop(true); }
     }, 60_000);
 
+    test("what a person did while a page hung isn't given to the page that comes after it", async () => {
+        // The page hangs in its mousedown and goes to another site, which is slow to come: the clicks and the key
+        // meant for the hung page aren't that site's.
+        const A = `<body style="margin:20px"><button style="width:200px;height:60px" onmousedown="location.href=location.href.replace('localhost','127.0.0.1').replace('/a','/b');while(true);">hang</button></body>`;
+        const B = `<body style="margin:20px"><button style="width:200px;height:60px">b</button><script>window.heard=[];for(const k of ['mousedown','mouseup','click','keydown'])addEventListener(k,()=>heard.push(k),true)</script></body>`;
+        const site = Bun.serve({ port: 0, fetch: async (r) => (new URL(r.url).pathname === "/b" && (await Bun.sleep(1500)), new Response(new URL(r.url).pathname === "/b" ? B : A, { headers: { "content-type": "text/html" } })) });
+        const b = session();
+        try {
+            const p = await b.page();
+            await p.goto(`http://localhost:${site.port}/a`);
+            const sent: Promise<unknown>[] = [];
+            for (let i = 0; i < 3; i++) {
+                sent.push(b.input({ kind: "mouse", type: "down", x: 120, y: 50, button: "left", buttons: 1, clickCount: 1 }));
+                sent.push(b.input({ kind: "mouse", type: "up", x: 120, y: 50, button: "left", buttons: 0, clickCount: 1 }));
+                await Bun.sleep(150);
+            }
+            sent.push(b.input({ kind: "key", type: "down", key: "a", code: "KeyA" }));
+            await Promise.race([Promise.all(sent), Bun.sleep(20_000)]);
+            for (let t = 0; t < 80 && !p.url.includes("/b"); t++) await Bun.sleep(100);
+            await Bun.sleep(500);
+            // No press, click or key of theirs is the new page's. (The release of the press the first page did get can
+            // still land there, as it always could: by itself it presses nothing.)
+            const heard = JSON.parse(await p.evaluate("window.heard")) as string[];
+            expect([p.url.endsWith("/b"), heard.filter((k) => k !== "mouseup")]).toEqual([true, []]);
+            expect(heard.length).toBeLessThanOrEqual(1);
+        } finally { void site.stop(true); }
+    }, 60_000);
+
     test("the demo form submits in Chrome and renders the search text", async () => {
         const demo = startDemoSite();
         const b = session();

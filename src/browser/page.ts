@@ -208,6 +208,10 @@ export class Page {
     private navigations = 0;
     /** Of those, the ones to a new document (not a same-document change: an anchor, history.pushState). */
     private documents = 0;
+    /** Which document the tab shows, counted: a new one for every page loaded in it. */
+    get loaded(): number {
+        return this.documents;
+    }
     /** Approved navigations under way (gotoApproved). */
     private approving = 0;
     private waiters = new Set<() => void>();
