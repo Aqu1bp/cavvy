@@ -443,7 +443,7 @@ export class Runtime {
         this.placeAgent(parseModelRef(session.model ?? "")?.provider);
         this.toolState.background!.onChange(() => this.syncBackground());
         // The browser exists from the start, so the window hears of the first page the agent opens (it makes no process until then).
-        this.toolState.browser = new BrowserSession({ root: ws.cwd, settings: () => this.settings(), refuse: (url, approved) => this.checker.urlRefusal(url, approved) });
+        this.toolState.browser = new BrowserSession({ root: ws.cwd, settings: () => this.settings(), refuse: (url, approved) => this.checker.urlRefusal(url, approved), far: engine.away });
         this.toolState.browser.onChange(() => this.engine.sendBrowser(this.id, this.browser.state()));
         // So does the simulator, so the window hears when the agent starts or uses one (it starts nothing until then).
         this.toolState.simulator = new SimulatorSession({ settings: () => this.settings() });
