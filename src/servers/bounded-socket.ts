@@ -20,6 +20,14 @@ export interface BoundedSocket {
 export type Closed = "closed" | "too-much" | "failed";
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+/**
+ * What each piece of a message counts for beside its bytes: a message sent as endless empty pieces would otherwise
+ * never reach the limit, and each piece costs this end memory of its own (measured before this: 65 MB of two-byte
+ * frames grew the process by 3 GB).
+ */
+const PIECE_COST = 64;
+/** What may wait to go out when the other end is slow to take it, unless told otherwise: this end says little. */
+const MAX_UNSENT = 64 * 1024;
 /** The answer to the handshake is a few hundred bytes. */
 const MAX_HEAD = 16 * 1024;
 
@@ -29,6 +37,8 @@ export function openBoundedSocket(o: {
     protocols: string[];
     /** The most one message may hold, in bytes. */
     maxMessage: number;
+    /** The most that may wait to go out to an end that isn't reading (MAX_UNSENT): past it the connection ends. */
+    maxUnsent?: number;
     onOpen(): void;
     onMessage(text: string): void;
     /** Once, however it ends: by either side ("closed"), for a message over the limit ("too-much"), or never opened or broken ("failed"). */
@@ -41,8 +51,9 @@ export function openBoundedSocket(o: {
     /** A message that came in pieces: the pieces so far. */
     let parts: Buffer[] = [];
     let partsSize = 0;
-    /** What hasn't gone out yet: the other end was slow to take it. */
-    let unsent: Buffer | undefined;
+    /** What hasn't gone out yet, in order: the other end was slow to take it. Only so much (maxUnsent). */
+    let unsent: Buffer[] = [];
+    let unsentBytes = 0;
     const key = randomBytes(16).toString("base64");
 
     const end = (why: Closed) => {
@@ -50,6 +61,8 @@ export function openBoundedSocket(o: {
         state = "closed";
         buffered = Buffer.alloc(0);
         parts = [];
+        unsent = [];
+        unsentBytes = 0;
         try {
             socket?.terminate();
         } catch {
@@ -58,15 +71,19 @@ export function openBoundedSocket(o: {
         o.onClose(why);
     };
 
+    const hold = (data: Buffer) => {
+        unsent.push(data);
+        unsentBytes += data.length;
+        // An end that takes nothing in while this one keeps answering it isn't one to stay connected to.
+        if (unsentBytes > (o.maxUnsent ?? MAX_UNSENT)) end("failed");
+    };
+
     const write = (data: Buffer) => {
         if (!socket || state === "closed") return;
-        if (unsent) {
-            unsent = Buffer.concat([unsent, data]);
-            return;
-        }
+        if (unsent.length) return hold(data);
         const n = socket.write(data);
         if (n < 0) return end("failed");
-        if (n < data.length) unsent = data.subarray(n);
+        if (n < data.length) hold(data.subarray(n));
     };
 
     /** One frame from this end: masked, as a client's must be. */
@@ -132,12 +149,15 @@ export function openBoundedSocket(o: {
                 frame(0x8, Buffer.alloc(0));
                 return (end("closed"), false);
             }
-            if (opcode === 0x9) frame(0xa, Buffer.from(payload));
+            // A ping is answered unless what was said before hasn't gone out yet: answers don't pile up for an end that isn't reading.
+            if (opcode === 0x9) {
+                if (!unsent.length) frame(0xa, Buffer.from(payload));
+            }
             else if (opcode === 0x1 || opcode === 0x0) {
                 // A piece with nothing before it, or a new message inside another: not how messages are sent.
                 if ((opcode === 0x0) !== parts.length > 0) return (end("failed"), false);
                 parts.push(Buffer.from(payload));
-                partsSize += length;
+                partsSize += length + (first & 0x80 && parts.length === 1 ? 0 : PIECE_COST);
                 if (first & 0x80) {
                     const text = (parts.length === 1 ? parts[0]! : Buffer.concat(parts)).toString("utf-8");
                     parts = [];
@@ -166,10 +186,17 @@ export function openBoundedSocket(o: {
                 frames();
             },
             drain(s) {
-                if (!unsent || state === "closed") return;
-                const n = s.write(unsent);
-                if (n < 0) return end("failed");
-                unsent = n < unsent.length ? unsent.subarray(n) : undefined;
+                while (unsent.length && state !== "closed") {
+                    const next = unsent[0]!;
+                    const n = s.write(next);
+                    if (n < 0) return end("failed");
+                    unsentBytes -= n;
+                    if (n < next.length) {
+                        unsent[0] = next.subarray(n);
+                        return;
+                    }
+                    unsent.shift();
+                }
             },
             close() {
                 end(state === "open" ? "closed" : "failed");

@@ -3,6 +3,7 @@
 // is kept and passed on, in the shapes the list expects.
 
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "crypto";
 import { openBoundedSocket } from "../src/servers/bounded-socket";
 import { heardSession, MachineWatch, type MachineNotice } from "../src/servers/watch";
 
@@ -170,4 +171,52 @@ test("an ordinary exchange over it: messages both ways, in pieces and whole, and
     const none = Promise.withResolvers<string>();
     openBoundedSocket({ port: 1, path: "/ws", protocols: [], maxMessage: 1024, onOpen: () => {}, onMessage: () => {}, onClose: (why) => none.resolve(why) });
     expect(await none.promise).toBe("failed");
+});
+
+/** A server that speaks the handshake and then sends the bytes it's given, as a hostile one could: raw frames. */
+function rawServer(frames: (write: (bytes: Uint8Array) => void) => void) {
+    const srv = Bun.listen({
+        hostname: "127.0.0.1",
+        port: 0,
+        socket: {
+            data(socket, chunk) {
+                const key = /sec-websocket-key:\s*(\S+)/i.exec(Buffer.from(chunk).toString("latin1"))?.[1];
+                if (!key) return;
+                const accept = createHash("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+                socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+                frames((bytes) => void socket.write(bytes));
+            },
+        },
+    });
+    stops.push(() => srv.stop(true));
+    return srv.port;
+}
+
+test("a message sent as endless empty pieces reaches the limit all the same", async () => {
+    // The start of a text message, then pieces of nothing, two bytes each, for as long as it's listened to.
+    const port = rawServer((write) => {
+        write(Uint8Array.from([0x01, 0x00]));
+        const empty = new Uint8Array(64 * 1024);
+        for (let i = 0; i < 40; i++) write(empty);
+    });
+    const closed = Promise.withResolvers<string>();
+    const s = openBoundedSocket({ port, path: "/ws", protocols: [], maxMessage: 64 * 1024, onOpen: () => {}, onMessage: () => {}, onClose: (why) => closed.resolve(why) });
+    expect(await closed.promise).toBe("too-much");
+    // Each piece counts for something: it hangs up about a thousand pieces in (two kilobytes, and whatever came with
+    // them in the same read), not after the million that were sent.
+    expect(s.bytesIn).toBeLessThan(1024 * 1024);
+});
+
+test("what waits to go out to an end that isn't taking it is only so much; told it may be more, a big message goes whole", async () => {
+    let got = 0;
+    const srv = Bun.serve({ port: 0, fetch: (req, s) => (s.upgrade(req) ? undefined : new Response("no")), websocket: { maxPayloadLength: 64 * 1024 * 1024, message: (_ws, m) => void (got = String(m).length) } });
+    stops.push(() => void srv.stop(true));
+    const big = "x".repeat(24 * 1024 * 1024);
+    const closed = Promise.withResolvers<string>();
+    // More than the other end takes at once, with little allowed to wait: the connection ends rather than hold it.
+    const small = openBoundedSocket({ port: srv.port!, path: "/ws", protocols: [], maxMessage: 1024, maxUnsent: 1024, onOpen: () => small.send(big), onMessage: () => {}, onClose: (why) => closed.resolve(why) });
+    expect(await closed.promise).toBe("failed");
+    const roomy = openBoundedSocket({ port: srv.port!, path: "/ws", protocols: [], maxMessage: 1024, maxUnsent: 64 * 1024 * 1024, onOpen: () => roomy.send(big), onMessage: () => {}, onClose: () => {} });
+    await until("the whole message to arrive", () => got === big.length);
+    roomy.close();
 });
