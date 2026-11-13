@@ -93,3 +93,12 @@ test("it's part of the servers code: the window's own code only leaves room for 
     expect(composer.split("<InteractionTab ").length).toBe(3);
     expect(composer).toContain("when={far.asks?.(p.sessionId ?? \"\")}\n                fallback={");
 });
+
+test("Esc doesn't stop the turn of a session this computer asks something for: the card is what it answers", () => {
+    // The window's Esc stops a working session unless it asks something. What this computer asks for a session on a
+    // server isn't among that session's own asks, so it's counted beside them.
+    const app = readFileSync(new URL("../gui/src/App.tsx", import.meta.url), "utf8");
+    const stop = app.split("\n").find((l) => l.includes('action === "app:interrupt"'))!;
+    expect(stop).toContain("!active()?.view.state.interactions.length");
+    expect(stop).toContain("!(app.activeId && far.asks?.(app.activeId))");
+});
