@@ -227,8 +227,16 @@ export class Rpc {
         else p.resolve(msg.result);
     }
 
+    /**
+     * Where a call goes when it isn't this connection's to answer: one about a session on another machine, in a
+     * window that lists every machine's (lib/all-machines.ts). Undefined: here.
+     */
+    route?: (method: string, params: unknown) => Promise<unknown> | undefined;
+
     /** Never wait for reconnect: an offline action must not run later without the user. */
     async call<M extends Method>(method: M, params: ParamsOf<M>): Promise<ResultOf<M>> {
+        const elsewhere = this.route?.(method, params);
+        if (elsewhere) return elsewhere as Promise<ResultOf<M>>;
         if (this.closed || this.state !== "open") throw new RpcError("Not connected", "disconnected");
         const ws = this.ws;
         if (!ws || ws.readyState !== WebSocket.OPEN) throw new RpcError("Not connected", "disconnected");

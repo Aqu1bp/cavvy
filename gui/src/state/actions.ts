@@ -7,9 +7,9 @@ import { sessionCount, sessionNames } from "../lib/rail-select";
 import type { ArchiveResult, CliSessionInfo, EditorInfo, EffortLevel, FollowUpMode, GitCommitHead, Interaction, InteractionResponse, PermissionModeId, ProviderInfo } from "@shared/protocol";
 import { RpcError, type Rpc } from "../lib/rpc";
 import { UNDO_DELETE_MS } from "../lib/toasts";
-import { copyText, pickFolder } from "../lib/platform";
+import { copyText, machine, pickFolder } from "../lib/platform";
 import { toWire, type Attachment } from "../lib/attachments";
-import { activate, app, createSession, revealBackground, dropHandle, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, setApp, toast } from "./app";
+import { activate, app, createSession, revealBackground, dropHandle, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, serversUi, setApp, toast } from "./app";
 import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { keepSentImages } from "./images";
@@ -23,7 +23,9 @@ export { forkAnchor } from "../lib/fork";
 export type { Attachment } from "../lib/attachments";
 
 /** Back to the home screen to start a new session (optionally in another project). */
-export function newSession(cwd?: string) {
+/** `at`: the machine the folder is on (a server's name; none: this computer), when it isn't the window's. */
+export function newSession(cwd?: string, at = machine) {
+    if (at !== machine) return void serversUi().then((m) => m.switchMachine(at, undefined, cwd), reportError);
     if (cwd) setApp("homeCwd", cwd);
     setApp("activeId", undefined);
     requestComposerFocus();

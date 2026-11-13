@@ -5,7 +5,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "crypto";
 import { openBoundedSocket } from "../src/servers/bounded-socket";
-import { heardSession, MachineWatch, type MachineNotice } from "../src/servers/watch";
+import { heardSession, MachineWatch, type MachineNotice, type SessionChange } from "../src/servers/watch";
 
 type Sent = (send: (v: unknown) => void, raw: (text: string) => void) => void;
 const stops: (() => void)[] = [];
@@ -13,15 +13,21 @@ afterEach(() => {
     for (const stop of stops.splice(0)) stop();
 });
 
-/** A stand-in for a server's Cavvy: answers the list with `list`, then does `then`. */
-function serverSaying(list: unknown, then: Sent = () => {}) {
+/** A stand-in for a server's Cavvy: answers the list with `list` (and the archived with `archived`), then does `then`. `asked`: what else it was asked. */
+function serverSaying(list: unknown, then: Sent = () => {}, archived: unknown = [], answer: (m: { id: number; method: string; params: any }) => object | undefined = () => undefined) {
+    const asked: { method: string; params: any }[] = [];
     const srv = Bun.serve({
         port: 0,
         fetch: (req, s) => (s.upgrade(req) ? undefined : new Response("no")),
         websocket: {
             message(ws, raw) {
                 const m = JSON.parse(String(raw));
-                if (m.method !== "sessions.list") return;
+                if (m.method !== "sessions.list") {
+                    asked.push({ method: m.method, params: m.params });
+                    const a = answer(m);
+                    return void (a && ws.send(JSON.stringify({ id: m.id, ...a })));
+                }
+                if (m.params?.archived) return void ws.send(JSON.stringify({ id: m.id, result: archived }));
                 ws.send(JSON.stringify({ id: m.id, result: list }));
                 then((v) => ws.send(JSON.stringify(v)), (text) => ws.send(text));
             },
@@ -29,13 +35,14 @@ function serverSaying(list: unknown, then: Sent = () => {}) {
     });
     const notices: MachineNotice[] = [];
     let changes = 0;
-    const watch = new MachineWatch("box", { reach: async () => ({ status: "connected", url: `ws://127.0.0.1:${srv.port}/ws`, token: "t" }), changed: () => changes++, notice: (n) => notices.push(n), retryMs: [50], idleRetryMs: 60_000 });
+    const each: SessionChange[] = [];
+    const watch = new MachineWatch("box", { reach: async () => ({ status: "connected", url: `ws://127.0.0.1:${srv.port}/ws`, token: "t" }), changed: () => changes++, session: (c) => each.push(c), notice: (n) => notices.push(n), retryMs: [50], idleRetryMs: 60_000 });
     stops.push(() => {
         watch.stop();
         void srv.stop(true);
     });
     watch.start();
-    return { watch, notices, changes: () => changes };
+    return { watch, notices, changes: () => changes, each, asked };
 }
 
 async function until(what: string, ok: () => boolean, ms = 10_000) {
@@ -56,9 +63,13 @@ test("a session a server describes is taken apart and put together again: its ow
         archived: false,
         settled: false,
         live: true,
-        // This machine's own marks aren't a server's to set.
-        pinned: false,
+        pinned: true,
+        model: "x:y",
+        waitingKind: undefined,
     });
+    // What it waits for, only when it waits, and only a kind there is.
+    expect(heardSession({ id: "s1", status: "waiting", waitingKind: "plan" })!.waitingKind).toBe("plan");
+    expect([heardSession({ id: "s1", status: "running", waitingKind: "plan" })!.waitingKind, heardSession({ id: "s1", status: "waiting", waitingKind: "x".repeat(999) })!.waitingKind]).toEqual([undefined, undefined]);
     const odd = heardSession({ id: "s1", title: "x".repeat(5000), cwd: 7, status: "made-up", updatedAt: "now" })!;
     expect([odd.title.length, odd.cwd, odd.status, odd.updatedAt]).toEqual([200, "", "idle", 0]);
     for (const not of [null, "s1", {}, { id: 5 }, { id: "../x" }, { id: "a b" }, { id: "x".repeat(121) }]) expect(heardSession(not)).toBeUndefined();
@@ -66,20 +77,56 @@ test("a session a server describes is taken apart and put together again: its ow
 
 test("however many sessions a server lists or sends later, and however long their words, only so much is kept and shown", async () => {
     const big = "x".repeat(100_000);
-    const { watch } = serverSaying(
+    const { watch, each } = serverSaying(
         // Fifty times what was asked for, in one answer that's still small enough to be read.
         Array.from({ length: 5000 }, (_, i) => ({ id: `s${i}`, title: "x".repeat(300), status: "idle", updatedAt: i })),
         (send) => {
             for (let i = 0; i < 40; i++) send({ event: { type: "sessions.upsert", session: { id: `late${i}`, title: big, cwd: big, status: "waiting", updatedAt: 10_000 + i } } });
+            for (let i = 0; i < 400; i++) send({ event: { type: "sessions.upsert", session: { id: `later${i}`, title: "t", status: "idle", updatedAt: 20_000 + i } } });
             send({ event: { type: "sessions.upsert", session: { id: "last", title: "The last one", status: "waiting", updatedAt: 99_999 } } });
         },
+        // And as many archived as it likes.
+        Array.from({ length: 5000 }, (_, i) => ({ id: `a${i}`, title: "old", status: "idle", archived: true, updatedAt: i })),
     );
     await until("the last one to be heard", () => watch.overview().sessions[0]?.id === "last");
+    await until("the archived to be listed", () => watch.overview().sessions.some((s) => s.archived));
     const o = watch.overview();
-    expect(o.sessions.length).toBe(20);
-    // Those not shown are counted, up to what's kept: never more than a few hundred sessions in all.
-    expect(o.sessions.length + o.more!).toBe(300);
-    expect(JSON.stringify(o).length).toBeLessThan(20_000);
+    // What a window lists of its own machine, at most: three hundred in play and as many archived, the oldest heard of gone first.
+    expect(o.sessions.length).toBe(600);
+    expect(o.sessions.some((s) => s.id === "s0")).toBe(false);
+    expect(Math.max(...o.sessions.map((s) => s.title.length + s.cwd.length))).toBeLessThanOrEqual(600);
+    // Each change after the list was told by itself, the ones that made room for it too.
+    expect(each.filter((c) => "session" in c).length).toBe(441);
+    expect(each.some((c) => "remove" in c && c.remove === "s0")).toBe(true);
+});
+
+test("what a session's row offers is asked of the server for a window that isn't on it: answered, refused in its words, or given up", async () => {
+    const { watch, asked } = serverSaying([{ id: "s1", title: "one", status: "idle", updatedAt: 1 }], undefined, [], (m) =>
+        m.method === "session.pin" ? { result: null } : m.method === "session.delete" ? { error: { message: `${"Still working. ".repeat(100)}`, code: "busy" } } : m.method === "session.archiveOffer" ? { result: { big: "x".repeat(200_000) } } : undefined,
+    );
+    // Not before it's heard from.
+    await expect(watch.call("session.pin", { id: "s1", pinned: true })).rejects.toThrow("box isn't connected.");
+    await until("it to be connected", () => watch.overview().state === "connected");
+    expect(await watch.call("session.pin", { id: "s1", pinned: true })).toBeNull();
+    expect(asked).toEqual([{ method: "session.pin", params: { id: "s1", pinned: true } }]);
+    const refused = await watch.call("session.delete", { id: "s1" }).catch((e) => e as Error & { code?: string });
+    expect([(refused as Error).message.length, (refused as { code?: string }).code]).toEqual([300, "busy"]);
+    // More than such an answer ever is isn't passed on.
+    await expect(watch.call("session.archiveOffer", { id: "s1" })).rejects.toThrow("box answered with more than was asked for.");
+    // One it never answers ends when the connection does.
+    const waits = watch.call("session.rename", { id: "s1", title: "x" });
+    watch.stop();
+    await expect(waits).rejects.toThrow("box went away before it answered.");
+});
+
+test("a session there that this machine asks its user something for shows as waiting, until it no longer does", async () => {
+    const { watch, each } = serverSaying([{ id: "s1", title: "one", status: "running", updatedAt: 1 }]);
+    await until("it to be listed", () => watch.overview().sessions.length === 1);
+    watch.setAsking("s1", true);
+    expect([watch.overview().sessions[0]!.status, watch.overview().sessions[0]!.waitingKind]).toEqual(["waiting", "permission"]);
+    watch.setAsking("s1", false);
+    expect(watch.overview().sessions[0]!.status).toBe("running");
+    expect(each.map((c) => "session" in c && c.session.status)).toEqual(["waiting", "running"]);
 });
 
 test("what a server's sessions have to say is passed on a few times a minute at most, and only when it's a notice", async () => {
@@ -125,13 +172,13 @@ test("nothing a server sends brings this machine's Cavvy down: what isn't a mess
 });
 
 test("a message bigger than a list of sessions ever is ends the connection before it's taken in, and it isn't made again for a while", async () => {
-    const { watch, changes } = serverSaying([{ id: "s1", title: "one", status: "idle", updatedAt: 1 }], (_send, raw) => raw(JSON.stringify({ event: { type: "sessions.upsert", session: { id: "s2", title: "x".repeat(60 * 1024 * 1024) } } })));
+    const { watch, changes } = serverSaying([{ id: "s1", title: "one", status: "running", live: true, updatedAt: 1 }], (_send, raw) => raw(JSON.stringify({ event: { type: "sessions.upsert", session: { id: "s2", title: "x".repeat(60 * 1024 * 1024) } } })));
     await until("it to be given up", () => watch.overview().state === "unreachable");
     const n = changes();
     await Bun.sleep(300);
-    // Not at once again, as after a connection that just dropped (50 ms here). And nothing is shown of a server that
-    // isn't heard from: what it last said of its sessions may no longer be so.
-    expect([watch.overview().state, changes(), watch.overview().sessions]).toEqual(["unreachable", n, []]);
+    // Not at once again, as after a connection that just dropped (50 ms here). And its sessions stay listed, but
+    // none as at work: what it last said of them may no longer be so.
+    expect([watch.overview().state, changes(), watch.overview().sessions.map((s) => [s.id, s.status, s.live])]).toEqual(["unreachable", n, [["s1", "idle", false]]]);
 });
 
 test("the size of a message is read from its first bytes: one over the limit is never taken in", async () => {

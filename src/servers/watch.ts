@@ -6,7 +6,7 @@
 // It never starts or sets up anything there: a server that's stopped, or that needs the user's word, is left as it
 // is and said to be so.
 
-import type { ConnectResult, MachineOverview, ServerEvent, SessionSummary } from "../server/protocol";
+import type { ConnectResult, MachineOverview, RELAYED_SESSION_METHODS, ServerEvent, SessionSummary } from "../server/protocol";
 import { openBoundedSocket, type BoundedSocket } from "./bounded-socket";
 
 /** A call of a tool this machine lends, as the server sent it. */
@@ -31,12 +31,16 @@ export type MachineNotice = Pick<Extract<ServerEvent, { type: "servers.notify" }
 const RETRY_MS = [5000, 15_000, 30_000, 60_000];
 /** A server that's stopped, or waits for the user's word, is asked about again this often, in case that changed elsewhere. */
 const IDLE_RETRY_MS = 300_000;
-/** Sessions kept per server: those in play, the most recent first. */
-const KEPT = 20;
 /** What a reply is waited for. */
 const REPLY_MS = 20_000;
-/** A server's own words are its to choose: only so much of each is kept, and only so many sessions heard of. */
+/**
+ * A server's own words are its to choose: only so much of each is kept, and only so many sessions heard of (this
+ * many in play, as many archived: what a window lists of its own machine).
+ */
 const HEARD = 300;
+/** What a window asked of a session there: only so many at once, and an answer no bigger than this. */
+const MAX_CALLS = 16;
+const MAX_ANSWER = 64 * 1024;
 const MAX_MESSAGE = 4 * 1024 * 1024;
 /** And all it sends within a minute: a list and its changes are kilobytes. Past this it isn't listened to for a while. */
 const MAX_PER_MINUTE = 32 * 1024 * 1024;
@@ -74,12 +78,19 @@ export function heardSession(v: unknown): SessionSummary | undefined {
         updatedAt: num(s.updatedAt),
         messages: num(s.messages),
         status,
-        pinned: false,
+        pinned: s.pinned === true,
         archived: s.archived === true,
         settled: s.settled === true,
         live: s.live === true,
+        ...(typeof s.model === "string" && s.model ? { model: cut(s.model, 100) } : {}),
+        ...(status === "waiting" && (s.waitingKind === "permission" || s.waitingKind === "question" || s.waitingKind === "plan" || s.waitingKind === "secret") ? { waitingKind: s.waitingKind } : {}),
+        ...(typeof s.turnStartedAt === "number" && Number.isFinite(s.turnStartedAt) ? { turnStartedAt: s.turnStartedAt } : {}),
     };
 }
+
+/** One change to a server's sessions: a session as it is now, or the id of one that's gone. */
+export type SessionChange = { session: SessionSummary } | { remove: string };
+
 
 export class MachineWatch {
     private ws?: BoundedSocket;
@@ -97,7 +108,10 @@ export class MachineWatch {
             /** Where the server's Cavvy is and the sign-in for it, without starting anything there. `renew`: the last sign-in opened nothing. */
             /** It only ever waits for a connection that's coming back by itself: it doesn't hurry it. */
             reach: (renew: boolean) => Promise<ConnectResult | { status: "disconnected" }>;
+            /** How it's reached changed, or its sessions were listed anew. */
             changed: () => void;
+            /** One of its sessions changed, or went. */
+            session?: (change: SessionChange) => void;
             notice: (n: MachineNotice) => void;
             /** What this machine lends the server's sessions (src/tools/lent.ts), said once the connection is up. */
             lends?: () => string[];
@@ -120,13 +134,63 @@ export class MachineWatch {
         void this.attempt(false);
     }
 
+    /** Its sessions as last heard, archived ones among them, the most recent first. */
     overview(): MachineOverview {
-        const rank = (s: SessionSummary) => (s.status === "waiting" ? 0 : s.status === "running" ? 1 : 2);
-        // Only while it's heard from (or was a moment ago): what a server that's stopped or out of reach last said of
-        // its sessions, a ring on the ones working, would be shown for news that isn't coming.
-        const heard = this.state === "connected" || this.state === "connecting" ? [...this.sessions.values()] : [];
-        const inPlay = heard.filter((s) => !s.archived && !s.settled).sort((a, b) => rank(a) - rank(b) || b.updatedAt - a.updatedAt);
-        return { name: this.name, state: this.state, sessions: inPlay.slice(0, KEPT), more: Math.max(0, inPlay.length - KEPT) };
+        return { name: this.name, state: this.state, sessions: [...this.sessions.values()].map((s) => this.shown(s)).sort((a, b) => b.updatedAt - a.updatedAt) };
+    }
+
+    /** The sessions there that wait for the user's answer on this machine (it lends them a tool, and asks first). */
+    private asking = new Set<string>();
+
+    /** A session as the list shows it now. */
+    private shown(s: SessionSummary): SessionSummary {
+        // While it isn't heard from, what it last said of a session at work would be a ring for news that isn't coming.
+        if (this.state !== "connected" && this.state !== "connecting") return s.status === "idle" && !s.live ? s : { ...s, status: "idle", live: false, waitingKind: undefined, turnStartedAt: undefined };
+        // Waiting, though the server doesn't know it: it's this machine that asks.
+        return this.asking.has(s.id) && s.status !== "waiting" ? { ...s, status: "waiting", waitingKind: "permission" } : s;
+    }
+
+    /** This machine asks its user something for a session there (or no longer does): its row says it waits. */
+    setAsking(id: string, on: boolean) {
+        if (this.asking.has(id) === on) return;
+        if (on) this.asking.add(id);
+        else this.asking.delete(id);
+        const s = this.sessions.get(id);
+        if (s) this.o.session?.({ session: this.shown(s) });
+    }
+
+    /** Calls waiting for the server's answer (call), by the id they were sent with. */
+    private calls = new Map<number, { done: (r: { result?: unknown; error?: unknown }) => void; timer: ReturnType<typeof setTimeout> }>();
+    private nextId = 10;
+
+    /**
+     * Asks the server's Cavvy for one of the things a session's row offers (RELAYED_SESSION_METHODS), for a window that isn't on
+     * that server. Its answer is passed on only if it's small; what went wrong, in a few of its words.
+     */
+    call(method: (typeof RELAYED_SESSION_METHODS)[number], params: Record<string, unknown>): Promise<unknown> {
+        const ws = this.ws;
+        if (!ws?.open || this.state !== "connected") return Promise.reject(new Error(`${this.name} isn't connected.`));
+        if (this.calls.size >= MAX_CALLS) return Promise.reject(new Error(`${this.name} is still busy with what was asked before.`));
+        const id = this.nextId++;
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                this.calls.delete(id);
+                reject(new Error(`${this.name} didn't answer.`));
+            }, REPLY_MS);
+            (timer as { unref?: () => void }).unref?.();
+            this.calls.set(id, {
+                timer,
+                done: (r) => {
+                    const error = r.error && typeof r.error === "object" ? (r.error as { message?: unknown; code?: unknown }) : undefined;
+                    // Why, in a few of its words, and its kind when it names one (a window treats some apart).
+                    if (error) return reject(Object.assign(new Error(cut(error.message, 300) || "It didn't work."), typeof error.code === "string" && /^[a-z_]{1,40}$/.test(error.code) ? { code: error.code } : {}));
+                    const result = r.result ?? null;
+                    if (JSON.stringify(result).length > MAX_ANSWER) return reject(new Error(`${this.name} answered with more than was asked for.`));
+                    resolve(result);
+                },
+            });
+            ws.send(JSON.stringify({ id, method, params }));
+        });
     }
 
     stop() {
@@ -194,7 +258,19 @@ export class MachineWatch {
         let listed = false;
         /** Calls of tools this machine lends that are running here, by the server's id for each. */
         const lending = new Map<string, AbortController>();
-        let next = 3;
+        /** The lists asked for when the connection opens: those in play, then the archived. */
+        let archivedListed = false;
+        const list = (rows: unknown, archived: boolean) => {
+            for (const v of Array.isArray(rows) ? rows.slice(0, HEARD) : []) {
+                const s = heardSession(v);
+                if (s && s.archived === archived) this.sessions.set(s.id, s);
+            }
+            // Bounded, whatever the server lists: the oldest heard of go first.
+            for (const id of this.sessions.keys()) {
+                if (this.sessions.size <= 2 * HEARD) break;
+                this.sessions.delete(id);
+            }
+        };
         const timeout = setTimeout(() => ws.close(), REPLY_MS);
         const heard = (text: string) => {
             if (this.ws !== ws) return;
@@ -212,15 +288,27 @@ export class MachineWatch {
                 listed = true;
                 this.tries = 0;
                 this.sessions.clear();
-                for (const v of Array.isArray(msg.result) ? msg.result.slice(0, HEARD) : []) {
-                    const s = heardSession(v);
-                    if (s) this.sessions.set(s.id, s);
-                }
+                list(msg.result, false);
                 this.state = "connected";
                 this.o.changed();
+                ws.send(JSON.stringify({ id: 2, method: "sessions.list", params: { limit: HEARD, archived: true } }));
                 const kinds = this.o.lends?.() ?? [];
-                if (kinds.length && this.o.lend) ws.send(JSON.stringify({ id: 2, method: "offers.set", params: { kinds } }));
+                if (kinds.length && this.o.lend) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds } }));
                 return;
+            }
+            if (msg.id === 2) {
+                if (!listed || archivedListed) return;
+                archivedListed = true;
+                list(msg.result, true);
+                this.o.changed();
+                return;
+            }
+            if (typeof msg.id === "number") {
+                const call = this.calls.get(msg.id);
+                if (!call) return;
+                this.calls.delete(msg.id);
+                clearTimeout(call.timer);
+                return call.done(msg as { result?: unknown; error?: unknown });
             }
             const ev = msg.event;
             if (!ev || typeof ev !== "object" || !listed) return;
@@ -229,14 +317,15 @@ export class MachineWatch {
                 if (!s) return;
                 this.sessions.delete(s.id);
                 this.sessions.set(s.id, s);
+                this.o.session?.({ session: this.shown(s) });
                 // Bounded, whatever the server sends: the oldest heard of go first.
                 for (const id of this.sessions.keys()) {
-                    if (this.sessions.size <= HEARD) break;
+                    if (this.sessions.size <= 2 * HEARD) break;
                     this.sessions.delete(id);
+                    this.o.session?.({ remove: id });
                 }
-                this.o.changed();
             } else if (ev.type === "sessions.remove") {
-                if (typeof ev.id === "string" && this.sessions.delete(ev.id)) this.o.changed();
+                if (typeof ev.id === "string" && this.sessions.delete(ev.id)) this.o.session?.({ remove: ev.id });
             } else if (ev.type === "notify") {
                 const kind = KINDS.find((k) => k === ev.kind);
                 if (!kind || typeof ev.sessionId !== "string" || !/^[\w.-]{1,120}$/.test(ev.sessionId)) return;
@@ -256,7 +345,7 @@ export class MachineWatch {
                 // answered: nothing there waits on a call that was only dropped here.
                 if (!this.o.lend || typeof ev.callId !== "string" || ev.callId.length > 100 || lending.has(ev.callId)) return;
                 const callId = ev.callId;
-                const answer = (r: LentResult) => void (ws.open && ws.send(JSON.stringify({ id: next++, method: "offers.result", params: { callId, ...r } })));
+                const answer = (r: LentResult) => void (ws.open && ws.send(JSON.stringify({ id: this.nextId++, method: "offers.result", params: { callId, ...r } })));
                 const session = ev.session && typeof ev.session === "object" ? ev.session : ({} as { id?: unknown; title?: unknown });
                 if (typeof ev.tool !== "string" || typeof session.id !== "string" || !/^[\w.-]{1,120}$/.test(session.id)) return answer({ text: "That call isn't one your Mac takes.", isError: true });
                 const input = ev.input && typeof ev.input === "object" && !Array.isArray(ev.input) ? ev.input : {};
@@ -269,7 +358,7 @@ export class MachineWatch {
                 if (!kinds.length) {
                     // The answer first: saying nothing is lent ends every call this machine still has there.
                     answer({ text: "Your Mac's Simulator isn't available now: it's turned off in Cavvy's settings there, or Xcode isn't set up.", isError: true });
-                    return void ws.send(JSON.stringify({ id: next++, method: "offers.set", params: { kinds } }));
+                    return void ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds } }));
                 }
                 const stop = new AbortController();
                 lending.set(callId, stop);
@@ -295,7 +384,7 @@ export class MachineWatch {
             // What this machine lends is answered with what was asked for, a picture of a screen among it: that may
             // wait to go out, where otherwise this end says next to nothing.
             ...(this.o.lend ? { maxUnsent: LENT_UNSENT } : {}),
-            onOpen: () => ws.send(JSON.stringify({ id: 1, method: "sessions.list", params: { limit: 100 } })),
+            onOpen: () => ws.send(JSON.stringify({ id: 1, method: "sessions.list", params: { limit: HEARD } })),
             onMessage: (text) => {
                 try {
                     heard(text);
@@ -309,6 +398,12 @@ export class MachineWatch {
                 for (const stop of lending.values()) stop.abort();
                 lending.clear();
                 if (this.ws !== ws) return;
+                // Nor can what a window asked of a session there be answered.
+                for (const [id, call] of this.calls) {
+                    this.calls.delete(id);
+                    clearTimeout(call.timer);
+                    call.done({ error: { message: `${this.name} went away before it answered.` } });
+                }
                 this.ws = undefined;
                 if (this.stopped) return;
                 // More than a list of sessions ever is: not read, and this server isn't listened to for a while.

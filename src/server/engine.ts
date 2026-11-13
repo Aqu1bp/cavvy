@@ -1932,6 +1932,8 @@ export class Engine {
         if (name === undefined || !at) return;
         const lent = this.lentSession(gone ? undefined : rt);
         for (const c of this.clients) if (c.machine === name) c.send({ type: "offers.session", name, sessionId: at.id, lent });
+        // And its row in the list, in any window, says it waits for the user.
+        this.serverLinks?.asking(name, at.id, lent.asks.length > 0);
     }
 
     /**
@@ -2001,6 +2003,9 @@ export class Engine {
                 onLink: (e) => this.broadcast({ type: "servers.link", ...e }),
                 onOverview: (machine) => {
                     for (const c of this.clients) if (c.watching) c.send({ type: "servers.overview", machine });
+                },
+                onSession: (name, change) => {
+                    for (const c of this.clients) if (c.watching) c.send({ type: "servers.session", name, ...change });
                 },
                 lends: () => (simulatorsToLend(loadSettings(homedir(), { trusted: false })) ? ["simulator"] : []),
                 lend: (name, call, signal) => this.lend(name, call, signal),
@@ -2902,6 +2907,15 @@ export class Engine {
             }
             case "servers.list":
                 return { servers: (await this.servers(client)).list() };
+            case "servers.relay": {
+                const servers = await this.servers(client);
+                const params = p.params && typeof p.params === "object" && !Array.isArray(p.params) ? (p.params as Record<string, unknown>) : {};
+                try {
+                    return await servers.relay(str(p.name, "name"), str(p.method, "method"), params);
+                } catch (e) {
+                    throw new RpcError((e as Error).message, (e as { code?: string }).code ?? "failed");
+                }
+            }
             case "servers.overview": {
                 const servers = await this.servers(client);
                 client.watching = true;

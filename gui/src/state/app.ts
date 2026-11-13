@@ -295,6 +295,14 @@ export function markSeen(id: string, at = Date.now()) {
     saveSeen();
 }
 
+/** Sessions new to this window (another machine's, just heard of): seen as they are, so none starts unread. */
+export function markSeenAll(list: SessionSummary[]) {
+    batch(() => {
+        for (const s of list) setApp("seen", s.id, s.updatedAt);
+    });
+    saveSeen();
+}
+
 export function isUnread(s: SessionSummary): boolean {
     if (s.id === app.activeId || s.status === "running") return false;
     const seen = app.seen[s.id];
@@ -536,6 +544,9 @@ export async function forkSession(id: string, at: { index: number; text: string;
 
 /** Show a session in the main view. Select immediately; only the newest request may finish navigation. */
 export async function activate(id: string | undefined, cwd?: string) {
+    // One on another machine: the window goes there, and opens it.
+    const at = id ? [...app.sessions, ...app.archived].find((s) => s.id === id) : undefined;
+    if (at && at.machine !== machine) return void serversUi().then((m) => m.switchMachine(at.machine, id), reportError);
     if (jumpTarget() && jumpTarget()!.sessionId !== id) setJumpTarget(undefined);
     if (id !== app.activeId) setFindOpen(false);
     pending.cancel();
@@ -625,10 +636,17 @@ export function requestTrust(path: string, then: () => void, purpose?: "mcp-appr
 // Lists
 
 /**
- * What the servers code has to say of the window's sessions (lib/lent.ts, in a window on a server): `shown`, a
- * session as its row shows it, when more is known of it than the machine it's on says.
+ * The sessions on the user's other machines, where this Cavvy has servers: listed with this machine's own, each
+ * with the machine it's on (`list`: components/OtherMachines.tsx keeps them, and adds and removes one as it
+ * changes). And `shown`: one of the window's own as its row shows it, when more is known of it than the machine
+ * it's on says (lib/lent.ts, in a window on a server).
  */
-export const others: { shown?: (s: SessionSummary) => SessionSummary } = {};
+export const others: { list?: () => SessionSummary[]; shown?: (s: SessionSummary) => SessionSummary } = {};
+/** A session of the window's own machine, as the list holds it: with that machine, when it's a server. */
+const own = (s: SessionSummary): SessionSummary => {
+    const row = machine ? { ...s, machine } : s;
+    return others.shown?.(row) ?? row;
+};
 
 export async function refreshSessions() {
     const markers = new Map(deleted);
@@ -638,7 +656,9 @@ export async function refreshSessions() {
     });
     // A list confirms a missed restore, but cannot undo a deletion that happened
     // while either request was in flight (including a second deletion after Undo).
-    const [list, archived] = lists.map((rows) => rows.filter((s) => !deleted.has(s.id) || deleted.get(s.id) === markers.get(s.id)).map((s) => others.shown?.(s) ?? s)) as typeof lists;
+    const [list, archived] = lists.map((rows) => rows.filter((s) => !deleted.has(s.id) || deleted.get(s.id) === markers.get(s.id)).map(own)) as typeof lists;
+    // The other machines' sessions go on being listed: none in the place of one of this machine's own.
+    for (const s of others.list?.() ?? []) if (![...list, ...archived].some((x) => x.id === s.id)) (s.archived ? archived : list).push(s);
     // The open search result can be older than the server's list window.
     const active = [...app.sessions, ...app.archived].find((s) => s.id === app.activeId);
     if (active && !deleted.has(active.id) && ![...list, ...archived].some((s) => s.id === active.id)) {
@@ -757,7 +777,7 @@ function sessionPresent(id: string) {
 const seenBeforeDelete = new Map<string, number>();
 
 /** A session deleted (here, in another window, or while this one was away): out of the lists, its handle and draft dropped, and off the screen. */
-function forgetSession(id: string) {
+export function forgetSession(id: string) {
     deleted.set(id, Symbol());
     setSessionPresenceVersion((v) => v + 1);
     if (jumpTarget()?.sessionId === id) setJumpTarget(undefined);
@@ -825,7 +845,7 @@ function onEvent(ev: ServerEvent) {
             return;
         }
         case "sessions.upsert":
-            upsertSession(others.shown?.(ev.session) ?? ev.session);
+            upsertSession(own(ev.session));
             return;
         case "sessions.remove":
             forgetSession(ev.id);

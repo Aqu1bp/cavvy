@@ -4,7 +4,7 @@
 
 import { createEffect, createResource, createSignal, createUniqueId, For, Match, Show, Switch } from "solid-js";
 import { render } from "solid-js/web";
-import { Check, Plus, Server, Trash2 } from "lucide-solid";
+import { Check, ChevronDown, Plus, Server, Trash2 } from "lucide-solid";
 import type { AddResult, ServerCheck, ServerProblem, UnknownHost } from "@shared/protocol";
 import { homeRpc, machineIssue, setMachineIssue, switchMachine, trustMachine, userAsked } from "../lib/machines";
 import { machine, os } from "../lib/platform";
@@ -17,11 +17,13 @@ import "../lib/lent";
 import "../styles/servers.css";
 
 // What the window's connection needs of a server (state/app.ts), from the one place this is all loaded from.
-export { machineCredentials, setMachineIssue } from "../lib/machines";
+export { machineCredentials, setMachineIssue, switchMachine } from "../lib/machines";
 
 /** The sidebar's list of machines is open, under the button that opened it. */
 const [serverMenu, setServerMenu] = createSignal(false);
 const [menuAnchor, setMenuAnchor] = createSignal<HTMLElement>();
+/** Which edge of what opened it the list lines up with. */
+const [menuAlign, setMenuAlign] = createSignal<"start" | "end">("end");
 /** The dialog that adds a server is open. */
 const [addServerOpen, setAddServerOpen] = createSignal(false);
 
@@ -30,7 +32,8 @@ let mounted = false;
  * Opens the list of machines under `anchor` (the sidebar's button), or closes it. The list and the dialog it leads
  * to are put on the page the first time: none of this is loaded before the button is pressed.
  */
-export function openMachines(anchor: HTMLElement) {
+export function openMachines(anchor: HTMLElement, align: "start" | "end" = "end") {
+    setMenuAlign(align);
     if (!mounted) {
         mounted = true;
         const host = document.createElement("div");
@@ -57,6 +60,23 @@ export function openMachines(anchor: HTMLElement) {
 export function connected() {
     if (machine) setMachineIssue(undefined);
     watchOthers(HERE);
+}
+
+/**
+ * Puts, in `el` (the new session's strip, before its project), where the session will run: this computer or a
+ * server, and the way to another.
+ */
+export function mountWhere(el: HTMLElement) {
+    render(
+        () => (
+            <button class="strip-ctl" title="Where the session runs" aria-haspopup="menu" onClick={(e) => openMachines(e.currentTarget, "start")}>
+                <Server size={14} class="ic" />
+                <span class="truncate">{machine ?? HERE}</span>
+                <ChevronDown size={12} stroke-width={2} class="chv" />
+            </button>
+        ),
+        el,
+    );
 }
 
 /** Shows, in `el`, what a window on a server shows until it's connected (MachineCover). */
@@ -150,7 +170,7 @@ function ServerMenu(p: { anchor: () => HTMLElement | undefined }) {
         }
     };
     return (
-        <Menu label="Machines" open={serverMenu()} anchor={p.anchor} onClose={close} align="end" width={240}>
+        <Menu label="Machines" open={serverMenu()} anchor={p.anchor} onClose={close} align={menuAlign()} width={240}>
             <button role="menuitemradio" aria-checked={!machine} class="menu-item compact" onClick={() => (close(), machine && switchMachine(undefined))}>
                 <span class="grow">{HERE}</span>
                 <Show when={!machine}>

@@ -801,6 +801,11 @@ export interface SessionSummary {
     live: boolean;
     /** Started with other models from one prompt (runs.start). */
     run?: RunMember;
+    /**
+     * The server it runs on; none: the user's own computer. Never sent: a window that lists every machine's sessions
+     * sets it, from where it heard of each (gui/src/lib/all-machines.ts).
+     */
+    machine?: string;
 }
 
 export type RunOutcome = "working" | "done" | "stopped";
@@ -1640,6 +1645,12 @@ export interface LentSession {
     state?: SimulatorState;
 }
 
+/**
+ * What a session's row in the list offers, which a window may ask of a session on another machine without being on
+ * it (servers.relay). Anything else is done in a window that's on that machine.
+ */
+export const RELAYED_SESSION_METHODS = ["session.rename", "session.pin", "session.settle", "session.archiveOffer", "session.archive", "session.delete", "session.restore"] as const;
+
 /** A server as a window lists it. */
 export interface ServerSummary {
     name: string;
@@ -1650,16 +1661,15 @@ export interface ServerSummary {
 
 /**
  * Another machine's sessions, as this computer's Cavvy sees them through a connection of its own there
- * (src/servers/watch.ts): those in play, the ones waiting for the user first, then the working, then the most recent.
+ * (src/servers/watch.ts), for the one list a window shows of every machine's sessions.
  */
 export interface MachineOverview {
     name: string;
     /** needs-you: reaching it takes the user's word (its key isn't known, it runs another version). */
     /** disconnected: on the user's word, until they open it again. removed: it's no longer one of this Cavvy's servers. */
     state: "connecting" | "connected" | "unreachable" | "stopped" | "needs-you" | "disconnected" | "removed";
+    /** Its sessions as last heard, the archived among them. While it isn't heard from, none of them is shown at work. */
     sessions: SessionSummary[];
-    /** How many more are in play there than `sessions` holds. */
-    more?: number;
 }
 
 /** Why something on a server didn't happen, in words for the user: what, ssh's own line, and what to do. */
@@ -1718,8 +1728,10 @@ export type ServerEvent =
     | { type: "servers.progress"; name: string; text: string; percent?: number }
     /** A server this Cavvy is connected to came back, is being reached again, or is gone (to every window). */
     | { type: "servers.link"; name: string; state: "connected" | "reconnecting" | "stopped"; problem?: ServerProblem }
-    /** A server's sessions as they stand now (servers.overview), to the windows that asked for them. */
+    /** How a server is reached changed, or its sessions were listed anew (servers.overview), to the windows that asked for them. */
     | { type: "servers.overview"; machine: MachineOverview }
+    /** One session on a server changed (`session`), or went (`remove`: its id), to the same windows. */
+    | { type: "servers.session"; name: string; session?: SessionSummary; remove?: string }
     /**
      * What a session on another machine has to tell its user, for one window to show: `name` is the server's, and
      * left out when it's this computer's own session, told to a window that's on a server. No `sessionId` ("") when
@@ -1865,6 +1877,11 @@ export interface Methods {
      * is also told what sessions on machines no window is on have to say (servers.notify). Starts nothing on a server.
      */
     "servers.overview": { params: Record<string, never>; result: { machines: MachineOverview[] } };
+    /**
+     * Something a session's row offers (rename, pin, settle, archive, delete, restore: src/servers/watch.ts RELAYED),
+     * asked of a session on a server by a window that isn't on it. `params`: that call's own, with the session's id.
+     */
+    "servers.relay": { params: { name: string; method: string; params: Record<string, unknown> }; result: unknown };
     "servers.add": { params: { name: string; destination: string; port?: number; identityFile?: string; trust?: string[] }; result: AddResult };
     "servers.copy": { params: { name: string }; result: { took: string; left?: string } };
     "servers.check": { params: { name: string }; result: ServerCheck };
