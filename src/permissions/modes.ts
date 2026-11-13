@@ -1,5 +1,6 @@
 import { theme } from "../ui/ansi";
 import { loadScope, type Settings } from "../config/settings";
+import { onServer } from "../servers/role";
 
 export type PermissionMode = "default" | "acceptEdits" | "plan" | "auto" | "bypassPermissions";
 
@@ -75,13 +76,19 @@ export function nextMode(current: PermissionMode, allowBypass: boolean): Permiss
 }
 
 /**
- * The mode a run starts in: the one asked for, else settings' defaultMode.
- * bypassPermissions from settings counts only from the user's own file (or
- * `bypassAllowed`, settings the caller gave): a project can't turn it on.
+ * The mode sessions start in when nothing asks for one: settings' defaultMode; without one, Manual, or Bypass on
+ * one of the user's servers (servers/role.ts). bypassPermissions from settings counts only from the user's own
+ * file (or `bypassAllowed`, settings the caller gave): a project can't turn it on. On a server it's the default
+ * anyway. `ignoredBypass`: a project asked for it and didn't get it.
  */
-export function startMode(asked: PermissionMode | undefined, settings: Settings, cwd: string, bypassAllowed = false): { mode: PermissionMode; ignoredBypass: boolean } {
-    if (asked) return { mode: asked, ignoredBypass: false };
-    const mode = settings.permissions?.defaultMode ?? "default";
-    if (mode === "bypassPermissions" && !bypassAllowed && loadScope("user", cwd).permissions?.defaultMode !== "bypassPermissions") return { mode: "default", ignoredBypass: true };
+export function defaultMode(settings: Settings, cwd: string, bypassAllowed = false, server = onServer()): { mode: PermissionMode; ignoredBypass: boolean } {
+    const mode = settings.permissions?.defaultMode ?? (server ? "bypassPermissions" : "default");
+    if (mode === "bypassPermissions" && !server && !bypassAllowed && loadScope("user", cwd).permissions?.defaultMode !== "bypassPermissions") return { mode: "default", ignoredBypass: true };
     return { mode, ignoredBypass: false };
+}
+
+/** The mode a run starts in: the one asked for, else the default (defaultMode). */
+export function startMode(asked: PermissionMode | undefined, settings: Settings, cwd: string, bypassAllowed = false, server = onServer()): { mode: PermissionMode; ignoredBypass: boolean } {
+    if (asked) return { mode: asked, ignoredBypass: false };
+    return defaultMode(settings, cwd, bypassAllowed, server);
 }

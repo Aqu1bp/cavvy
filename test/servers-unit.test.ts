@@ -17,7 +17,7 @@ const { compareBuilds, guiAvailable, guiChangedSince, serverBuild, SERVER_BUN, t
 const { parseFacts, targetFor, checkRoom } = await import("../src/servers/remote");
 const { MachineSignIns } = await import("../src/servers/host");
 const { planCopy, portableMcpEntry, portableMcpServer, portableRule, portableSettings, describeCopy, describeLeft, countCopied } = await import("../src/servers/copy");
-const { checkLines, parseServerSpec } = await import("../src/servers/cli");
+const { checkLines, parseServerSpec, permissionLines } = await import("../src/servers/cli");
 const { UNIT, readCheck } = await import("../src/servers/service");
 import type { ServerEntry } from "../src/servers/store";
 
@@ -335,6 +335,8 @@ describe("which build is newer", () => {
         const root = join(import.meta.dir, "..");
         expect(readFileSync(join(root, "desktop-electron", "pack.ts"), "utf-8")).toContain(`const SERVER_BUN = "${SERVER_BUN}";`);
         expect(readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf-8")).toContain(`BUN_VERSION: ${SERVER_BUN}`);
+        // And the one a release's builds are made with.
+        expect(readFileSync(join(root, ".github", "workflows", "release.yml"), "utf-8")).toContain(`BUN_VERSION: ${SERVER_BUN}`);
     });
 });
 
@@ -719,6 +721,19 @@ describe("what the terminal says", () => {
             { id: "claude-code", product: "Claude Code", installed: true, signedIn: true, on: undefined, install: "Install Claude Code (https://code.claude.com/docs/en/setup)", signIn: "claude auth login" },
         ]);
         expect(checkLines("box", check)).toEqual(["Codex isn't signed in there: cavvy servers login box"]);
+    });
+
+    test("how sessions there stand with permissions: the mode they start in and Auto's sandbox; nothing made of what a server didn't say", () => {
+        expect(permissionLines({ ...all, mode: "bypassPermissions", sandbox: "bwrap", sandboxOn: false })).toEqual([`Sessions start in Bypass. Auto mode's sandbox is off: "sandbox": true in its settings turns it on (bubblewrap, experimental).`]);
+        expect(permissionLines({ ...all, mode: "default", sandbox: "seatbelt", sandboxOn: true })).toEqual(["Sessions start in Manual. Auto mode's sandbox is on (Seatbelt)."]);
+        expect(permissionLines({ ...all, mode: "auto", sandbox: "bwrap", sandboxOn: true })).toEqual(["Sessions start in Auto. Auto mode's sandbox is on (bubblewrap)."]);
+        expect(permissionLines({ ...all, mode: "auto" })).toEqual(["Sessions start in Auto. Auto mode has no sandbox there."]);
+        // A server from before it said.
+        expect(permissionLines(all)).toEqual([]);
+        const said = (more: object) => readCheck(JSON.stringify({ clis: [], git: true, gh: {}, browser: true, memMb: 1, ...more }))!;
+        expect(said({ mode: "bypassPermissions", sandbox: "bwrap", sandboxOn: false })).toMatchObject({ mode: "bypassPermissions", sandbox: "bwrap", sandboxOn: false });
+        // Only a mode this Cavvy knows, and a yes or no.
+        expect(said({ mode: "anything goes", sandboxOn: "yes" })).toMatchObject({ mode: undefined, sandboxOn: undefined });
     });
 
     test("a server's name may carry the folder to work in", () => {

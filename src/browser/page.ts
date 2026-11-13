@@ -13,6 +13,7 @@ import { TabControl, type Owner } from "./control";
 import { ConsoleLog, NetworkLog, type ConsoleLevel } from "./logs";
 import { RefTable } from "./refs";
 import { allowedPage, checkUrl, displayUrl, hostOf, type BrowserApproval } from "./url-policy";
+import { FarStream } from "./far-stream";
 import { frameSize, pictureSize } from "./frame-size";
 
 /** A failure the agent can act on: its message says what to do. */
@@ -59,6 +60,13 @@ const QUIET_MS = 300;
 const SETTLE_MAX_MS = 3000;
 /** The pane's stream: its JPEG quality, and how long without a frame counts as the page having stopped changing. */
 const STREAM_QUALITY = 90;
+/**
+ * The stream's quality for a pane that's watched over a network (a session on a server): its pictures are under
+ * half the bytes while the page moves, and the still that follows when it stops is as sharp as ever
+ * (far-stream.ts). At a screen's double density the two look the same. Measured to a two-core server 35 ms away,
+ * a page scrolling in a 549 by 642 pane at scale 2: 25 pictures a second of 146 KB, where it had been 13 of 334 KB.
+ */
+const FAR_QUALITY = 45;
 const SETTLE_MS = 200;
 /** How long after a still a frame may still be the repaint that taking it caused. */
 const STILL_ECHO_MS = 60;
@@ -429,7 +437,10 @@ export class Page {
             this.fullFrames++;
             // The frame's CSS dimensions: its own label, right for a frame already in flight during a resize, unless its
             // picture is the current stream's size, which Chrome sometimes mislabels (frame-size.ts).
-            this.o.hooks.frame(this, { data: p.data, ...frameSize(p.metadata, this.viewport, () => pictureSize(p.data)) });
+            const frame = { data: p.data, ...frameSize(p.metadata, this.viewport, () => pictureSize(p.data)) };
+            // Watched over a network: which frames are shown, and when the still is, is another matter (far-stream.ts).
+            if (this.far) return this.far.frame(frame, Bun.hash(p.data));
+            this.o.hooks.frame(this, frame);
             this.paced(Date.now());
         });
     }
@@ -707,19 +718,38 @@ export class Page {
     // -----------------------------------------------------------------------
     // Streaming
 
-    /** Frames of the page go to the hooks, at most `width` by `height` device pixels. */
-    async startScreencast(width: number, height: number) {
+    /** The pace of the pictures of a pane that's watched over a network, while it is. */
+    private far?: FarStream<{ data: string; width: number; height: number }>;
+
+    /**
+     * Frames of the page go to the hooks, at the page's size and scale. `far`: its pane is watched over a network,
+     * so they're lighter while the page moves (FAR_QUALITY), and the still when it stops is the sharp one.
+     */
+    async startScreencast(far = false) {
+        const [width, height] = [this.viewport.width * this.viewport.scale, this.viewport.height * this.viewport.scale];
         this.streaming = true;
         this.streamEpoch++;
         this.fullFrames = 0;
+        this.far?.stop();
+        this.far = far
+            ? new FarStream({
+                  show: (frame) => this.streaming && !this.closed && this.o.hooks.frame(this, frame),
+                  still: async () => {
+                      if (!this.streaming || this.closed) return undefined;
+                      const { data } = await this.send<{ data: string }>("Page.captureScreenshot", { format: "jpeg", quality: STREAM_QUALITY, captureBeyondViewport: false });
+                      return { frame: { data, width: this.viewport.width, height: this.viewport.height }, key: Bun.hash(data) };
+                  },
+              })
+            : undefined;
         // Started before the page has drawn at the size it was just given, its first frame is the old picture labelled with
         // the new size: it starts once the page has drawn twice, or a moment has passed (a page stuck in a dialog draws nothing).
         await this.send("Runtime.evaluate", { expression: "new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))", awaitPromise: true }, 1000).catch(() => undefined);
         // One size and quality throughout: a stream that changed them while scrolling (restarting it each time) saved a
         // few milliseconds and cost a blur, a stall and a pop on every gesture.
-        await this.send("Page.startScreencast", { format: "jpeg", quality: STREAM_QUALITY, maxWidth: Math.round(width), maxHeight: Math.round(height), everyNthFrame: 1 });
+        await this.send("Page.startScreencast", { format: "jpeg", quality: far ? FAR_QUALITY : STREAM_QUALITY, maxWidth: Math.round(width), maxHeight: Math.round(height), everyNthFrame: 1 });
         // An idle page doesn't repaint for a new stream: it starts from a still unless a frame beats it.
-        this.settleLater();
+        if (this.far) this.far.start();
+        else this.settleLater();
     }
 
     /** A frame arrived: once frames stop, the page has settled. */
@@ -760,6 +790,7 @@ export class Page {
         this.streaming = false;
         this.streamEpoch++;
         clearTimeout(this.settleTimer);
+        this.far?.stop();
         await this.send("Page.stopScreencast").catch(() => undefined);
     }
 
@@ -774,6 +805,7 @@ export class Page {
         this.streaming = false;
         this.streamEpoch++;
         clearTimeout(this.settleTimer);
+        this.far?.stop();
         for (const off of this.unlisten) off();
         this.unlisten = [];
         this.wake();
