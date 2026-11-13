@@ -337,6 +337,7 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         if (url?.trim()) command("goto", { url, tab: tab()?.id });
         keyboard?.focus({ preventScroll: true });
     };
+    const choose = (index?: number) => void stream.call("browser.choose", { id: id(), index, tab: tab()?.id }).catch(reportError);
     const answer = (accept: boolean) => {
         const text = dialogText();
         setDialogText("");
@@ -468,6 +469,17 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                             </div>
                         </Show>
                     </div>
+                </Show>
+                {/* A dropdown's options: the list the page would open takes no click from here (src/browser/interact.ts). */}
+                <Show when={tab()?.choice}>
+                    {(c) => (
+                        <div class="br-note br-dialog" role="listbox" aria-label={c().label || "Options"} style="max-height:60%;overflow:auto;flex-direction:column;align-items:stretch;flex-wrap:nowrap">
+                            <For each={c().options}>{(o, i) => <button class={`btn ${i() === c().selected ? "primary" : "ghost"} sm`} role="option" aria-selected={i() === c().selected} disabled={o.disabled} onClick={() => choose(i())}>{o.label}</button>}</For>
+                            <button class="btn ghost sm" onClick={() => choose()}>
+                                Cancel
+                            </button>
+                        </div>
+                    )}
                 </Show>
                 {/* Over the page, which it blocks anyway: the page keeps its size. */}
                 <Show when={tab()?.dialog}>

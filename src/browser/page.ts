@@ -52,6 +52,17 @@ export interface PendingDialog {
     defaultPrompt?: string;
 }
 
+/**
+ * A dropdown (a <select> that opens a list) the person clicked in the pane: its options, for the pane to show. The
+ * list Chrome opens for it is a window of its own, which takes no click sent to the page (and on macOS isn't in the
+ * page's picture at all), so it's never opened: the pane lists the options and the choice is made in the page.
+ */
+export interface PendingChoice {
+    label: string;
+    options: { label: string; disabled?: boolean }[];
+    selected: number;
+}
+
 /** The time a page gets to finish loading before a call goes on without it. */
 export const LOAD_TIMEOUT_MS = 30_000;
 /** How long without a request in flight counts as the page having settled, and the most a call waits for it. */
@@ -122,6 +133,18 @@ function navigationFailure(url: string, error: string): string {
     return `Couldn't load ${where}: ${error}`;
 }
 
+/** The objects kept in a page for the dropdown the pane shows: let go when the list closes. */
+export const CHOICE_OBJECTS = "cavvy-choice";
+/** Picks an option as a person does: the page hears `input` and `change`, unless it's the one already chosen. */
+const PICK_OPTION = `function (i) {
+    const o = this.options[i];
+    if (!this.isConnected || this.disabled || !o || o.disabled) return;
+    if (this.selectedIndex === i) return;
+    this.selectedIndex = i;
+    this.dispatchEvent(new Event("input", { bubbles: true }));
+    this.dispatchEvent(new Event("change", { bubbles: true }));
+}`;
+
 export interface PageOptions {
     /** The project: file: URLs must be inside it. */
     root: string;
@@ -151,6 +174,10 @@ export class Page {
     loading = false;
     crashed = false;
     dialog?: PendingDialog;
+    choice?: PendingChoice;
+    /** The dropdown `choice` is about, held in the page; and the press that opened it, whose release isn't the page's either. */
+    private choiceOf?: string;
+    choicePress = false;
     canGoBack = false;
     canGoForward = false;
     viewport: Viewport;
@@ -344,6 +371,8 @@ export class Page {
             if (!mainFrame(p)) return;
             this.navigations++;
             this.url = p.url;
+            // Its dropdown went with the page it was on.
+            this.setChoice(undefined);
             this.changed();
             void this.refreshHistory();
         });
@@ -695,6 +724,27 @@ export class Page {
         } finally {
             finished = true;
             void release();
+        }
+    }
+
+    /** The dropdown whose options the pane shows (`object`: it, in the page), or none any more. */
+    setChoice(choice: PendingChoice | undefined, object?: string) {
+        if (!choice && !this.choice) return;
+        this.choice = choice;
+        this.choiceOf = choice ? object : undefined;
+        if (!choice) void this.send("Runtime.releaseObjectGroup", { objectGroup: CHOICE_OBJECTS }).catch(() => undefined);
+        this.changed();
+    }
+
+    /** The person picked an option of the dropdown the pane shows (by its place in the list), or closed the list. */
+    async choose(index?: number) {
+        const object = this.choiceOf;
+        const choice = this.choice;
+        if (!choice || !object) throw new BrowserError("No list is open in this tab.");
+        try {
+            if (index !== undefined && Number.isInteger(index) && choice.options[index] && !choice.options[index]!.disabled) await this.send("Runtime.callFunctionOn", { objectId: object, functionDeclaration: PICK_OPTION, arguments: [{ value: index }] });
+        } finally {
+            if (this.choiceOf === object) this.setChoice(undefined);
         }
     }
 

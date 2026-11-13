@@ -223,6 +223,45 @@ describe.skipIf(!chromePath)("browser regressions with Chrome", () => {
         }
     }, 120_000);
 
+    test("a dropdown clicked in the pane lists its options there, and the one picked is chosen in the page", async () => {
+        const html = `<body style="margin:20px"><label>Fruit <select id=s><option>apple</option><optgroup label="Stone"><option>cherry</option><option disabled>plum</option></optgroup><option>date</option></select></label>
+            <br><br><textarea id=t rows=6 cols=40></textarea><select id=box size=3><option>one</option><option>two</option></select>
+            <script>window.heard=[];addEventListener('mousedown',e=>heard.push('down:'+(e.target.id||e.target.tagName)),true);for(const k of ['input','change'])s.addEventListener(k,()=>heard.push(k+':'+s.value))</script></body>`;
+        const site = Bun.serve({ port: 0, fetch: () => new Response(html, { headers: { "content-type": "text/html" } }) });
+        const b = session();
+        try {
+            const p = await b.page();
+            await p.goto(`http://localhost:${site.port}/`);
+            const at = async (id: string) => JSON.parse(await p.evaluate(`(()=>{const r=document.getElementById('${id}').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`)) as { x: number; y: number };
+            const click = async (o: { x: number; y: number }) => {
+                await b.input({ kind: "mouse", type: "down", ...o, button: "left", buttons: 1, clickCount: 1 });
+                await b.input({ kind: "mouse", type: "up", ...o, button: "left", buttons: 0, clickCount: 1 });
+            };
+            const heard = async () => JSON.parse(await p.evaluate("window.heard")) as string[];
+            // The press isn't the page's: Chrome's own list (which takes no click sent to the page) never opens.
+            await click(await at("s"));
+            expect(b.state().tabs[0]!.choice).toEqual({ label: "Fruit", options: [{ label: "apple" }, { label: "Stone: cherry" }, { label: "Stone: plum", disabled: true }, { label: "date" }], selected: 0 });
+            expect(await heard()).toEqual([]);
+            // Picked there: the page hears it as from a person. One that's disabled isn't picked, and the list closes.
+            await b.choose(3);
+            expect([await p.evaluate("document.getElementById('s').value"), await heard(), b.state().tabs[0]!.choice]).toEqual(['"date"', ["input:date", "change:date"], undefined]);
+            await click(await at("s"));
+            await b.choose(2);
+            expect([await p.evaluate("document.getElementById('s').value"), b.state().tabs[0]!.choice]).toEqual(['"date"', undefined]);
+            // Closed without a pick, by Cancel or by a press elsewhere, which is the page's as ever.
+            await click(await at("s"));
+            await b.choose();
+            await click(await at("s"));
+            expect(b.state().tabs[0]!.choice?.selected).toBe(3);
+            await click(await at("t"));
+            expect([b.state().tabs[0]!.choice, (await heard()).at(-1)]).toEqual([undefined, "down:t"]);
+            await expect(b.choose(0)).rejects.toThrow("No list is open in this tab.");
+            // A list box is drawn in the page and takes its clicks there.
+            await click(await at("box"));
+            expect([b.state().tabs[0]!.choice, (await heard()).at(-1)]).toEqual([undefined, "down:OPTION"]);
+        } finally { void site.stop(true); }
+    }, 30_000);
+
     test("the demo form submits in Chrome and renders the search text", async () => {
         const demo = startDemoSite();
         const b = session();

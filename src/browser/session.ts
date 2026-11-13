@@ -89,6 +89,7 @@ export class BrowserSession implements PoolClient {
             crashed: p.crashed,
             targetId: p.targetId,
             ...(p.dialog ? { dialog: p.dialog } : {}),
+            ...(p.choice ? { choice: p.choice } : {}),
         }));
     }
 
@@ -432,6 +433,13 @@ export class BrowserSession implements PoolClient {
         const page = this.tab(tab);
         this.touched(page);
         await page.answerDialog(accept, promptText);
+    }
+
+    /** The person picked an option of the dropdown the pane lists, or closed the list. */
+    async choose(index?: number, tab?: number) {
+        const page = this.tab(tab);
+        this.touched(page);
+        await page.choose(index);
     }
 
     // -----------------------------------------------------------------------

@@ -5,7 +5,7 @@
 import type { BrowserInput } from "../server/protocol";
 import { CdpError } from "./cdp";
 import { MODIFIER_BITS, fromKeyboardEvent, parseKey, type KeyPress } from "./keys";
-import { BrowserError, raceAbort, type Page } from "./page";
+import { BrowserError, CHOICE_OBJECTS, raceAbort, type Page, type PendingChoice } from "./page";
 import type { RefEntry } from "./refs";
 
 export interface Point {
@@ -408,6 +408,52 @@ export function parseInput(raw: unknown): BrowserInput | undefined {
 /** Whether an input is the person using the tab (the agent is told): moving the pointer over the pane isn't. */
 export const usesTab = (e: BrowserInput) => e.kind === "mouse" ? e.type === "down" || (e.type === "move" && !!e.buttons) : e.kind === "key" ? e.type === "down" : true;
 
+/** The most options of a dropdown that are listed, and how long the page has to say what's under a press. */
+const MAX_OPTIONS = 500;
+const DROPDOWN_MS = 300;
+
+/** The dropdown under a point, if any: a <select> that opens a list of its own (not a list box, not disabled). */
+const DROPDOWN_AT = `(x, y) => {
+    let el = document.elementFromPoint(x, y);
+    while (el && el.shadowRoot) {
+        const inner = el.shadowRoot.elementFromPoint(x, y);
+        if (!inner || inner === el) break;
+        el = inner;
+    }
+    const s = el && el.closest ? el.closest("select") : null;
+    return s && !s.disabled && !s.multiple && s.size <= 1 ? s : null;
+}`;
+/** What the pane lists for it: its name and its options, each in a line. It takes the keyboard, as a clicked one does. */
+const DROPDOWN = `function () {
+    const line = (v) => String(v ?? "").replace(/\\s+/g, " ").trim().slice(0, 200);
+    this.focus();
+    const group = (o) => o.parentElement && o.parentElement.tagName === "OPTGROUP" ? o.parentElement : null;
+    return {
+        // Its label's own words (a label around it holds its options' too).
+        label: line(this.getAttribute("aria-label") || (this.labels && this.labels[0] && [...this.labels[0].childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join(" ")) || this.name),
+        options: [...this.options].slice(0, ${MAX_OPTIONS}).map((o) => ({ label: line((group(o) && group(o).label ? group(o).label + ": " : "") + (o.label || o.text)), ...(o.disabled || (group(o) && group(o).disabled) ? { disabled: true } : {}) })),
+        selected: this.selectedIndex,
+    };
+}`;
+
+/**
+ * A left press on a dropdown isn't sent to the page: the list Chrome would open takes no click that's sent to the
+ * page. Its options go to the pane instead (Page.choice). Resolves true when the press was taken this way. A page
+ * too busy to say what's under the press in time gets the press as it is.
+ */
+async function dropdown(page: Page, x: number, y: number): Promise<boolean> {
+    type Found = { result: { objectId?: string; subtype?: string } };
+    const asked = page.send<Found>("Runtime.evaluate", { expression: `(${DROPDOWN_AT})(${Number(x)}, ${Number(y)})`, objectGroup: CHOICE_OBJECTS }).catch(() => undefined);
+    const found = await Promise.race([asked, new Promise<undefined>((r) => setTimeout(r, DROPDOWN_MS))]);
+    const object = found?.result.subtype === "node" ? found.result.objectId : undefined;
+    if (!object) return false;
+    const r = await page.send<{ result: { value?: PendingChoice } }>("Runtime.callFunctionOn", { objectId: object, functionDeclaration: DROPDOWN, returnByValue: true }).catch(() => undefined);
+    const choice = r?.result.value;
+    if (!choice || !Array.isArray(choice.options) || !choice.options.length) return false;
+    page.setChoice(choice, object);
+    return true;
+}
+
 /** Forwards what a person did in the pane to the page. */
 export async function forward(page: Page, e: BrowserInput): Promise<void> {
     page.ready();
@@ -415,6 +461,16 @@ export async function forward(page: Page, e: BrowserInput): Promise<void> {
         case "mouse": {
             const type = e.type === "move" ? "mouseMoved" : e.type === "down" ? "mousePressed" : "mouseReleased";
             const button = e.button ?? "left";
+            if (e.type === "down") {
+                // A press anywhere closes the list the pane shows; one on a dropdown shows that one's.
+                page.setChoice(undefined);
+                page.choicePress = button === "left" && (await dropdown(page, e.x, e.y));
+                if (page.choicePress) return;
+            } else if (e.type === "up" && page.choicePress) {
+                // The release of the press that opened the list: the page didn't get the press.
+                page.choicePress = false;
+                return;
+            }
             await mouse(page, type, { x: e.x, y: e.y }, { button: e.type === "move" ? (e.buttons ? button : "none") : button, buttons: e.buttons ?? 0, clickCount: e.type === "move" ? 0 : (e.clickCount ?? 1), modifiers: e.modifiers ?? 0 });
             return;
         }
