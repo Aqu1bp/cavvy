@@ -9,6 +9,8 @@ export const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in
 export interface ElectronBridge {
     sidecarInfo(): Promise<{ port: number; token: string }>;
     windowReady(): void;
+    /** Loads the window again with its picture kept on screen until the new page is ready (going to another machine). */
+    reloadHeld?(): void;
     /** Shows and focuses the window (a notification clicked). */
     focusWindow(): void;
     pickFolder(o: { defaultPath?: string; title: string }): Promise<string | null>;

@@ -350,11 +350,28 @@ function testWindowCommands() {
 // ---------------------------------------------------------------------------
 // The GUI's bridge (preload.ts). Only the main window's page may use it.
 
+/** The window's picture from just before it loaded again, and how long it's worth showing. */
+let held: { picture: string; at: number } | undefined;
+const HELD_MS = 5000;
+
 const fromGui = (e: IpcMainEvent | IpcMainInvokeEvent) => win !== undefined && e.sender === win.webContents && e.senderFrame?.url.startsWith(`${PAGE_ORIGIN}/`) === true;
 
 function bridge() {
     ipcMain.handle("sidecar_info", (e) => (fromGui(e) ? sidecarInfo() : Promise.reject(new Error("refused"))));
     ipcMain.on("window_ready", (e) => fromGui(e) && showWindow());
+    // The window is about to load again to show another machine (preload.ts reloadHeld): its picture as it is, for
+    // the page that comes to keep on screen until its own is ready. Kept a few seconds, given once.
+    ipcMain.handle("hold_frame", async (e) => {
+        if (!fromGui(e) || !win) return;
+        const shot = await win.webContents.capturePage();
+        held = shot.isEmpty() ? undefined : { picture: shot.toDataURL(), at: Date.now() };
+    });
+    // Asked by the preload of the page that's loading, before it has a frame to its name (fromGui can't tell yet):
+    // the picture never leaves the preload, and only the main window has one.
+    ipcMain.on("held_frame", (e) => {
+        e.returnValue = win !== undefined && e.sender === win.webContents && held && Date.now() - held.at < HELD_MS ? held.picture : null;
+        held = undefined;
+    });
     ipcMain.on("focus_window", (e) => fromGui(e) && raiseWindow());
     ipcMain.handle("pick_folder", async (e, o: { defaultPath?: string; title?: string }) => {
         if (!fromGui(e) || !win) return null;
