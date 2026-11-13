@@ -958,8 +958,10 @@ export function start() {
             try {
                 setApp("hello", await rpc.call("hello", { client: isDesktop ? "desktop" : "browser" }));
                 openAhead();
-                await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders(), refreshKeybindings().catch(() => undefined)]);
+                // Asked for with the lists (the composer names its model from them, and offers its efforts), but
+                // not waited for: listing can mean asking each CLI.
                 void refreshModels().catch(() => undefined);
+                await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders(), refreshKeybindings().catch(() => undefined)]);
                 void refreshLimits().catch(() => undefined);
                 // A server from before app.update.get has nothing to say: no update state, no button.
                 void refreshUpdate().then(recheckUpdate, () => undefined);
