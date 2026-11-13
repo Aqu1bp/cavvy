@@ -2115,7 +2115,7 @@ export class Engine {
                 return rt.browser.state();
             }
             case "browser.choose":
-                await browserCall(() => this.runtime(p.id).browser.choose(typeof p.index === "number" ? p.index : undefined, typeof p.tab === "number" ? p.tab : undefined));
+                await browserCall(() => this.runtime(p.id).browser.choose(typeof p.index === "number" ? p.index : undefined, typeof p.tab === "number" ? p.tab : undefined, typeof p.list === "number" ? p.list : undefined));
                 return null;
             case "browser.dialog":
                 if (typeof p.accept !== "boolean") throw new RpcError("accept must be a boolean");

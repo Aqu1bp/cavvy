@@ -337,7 +337,8 @@ export function BrowserPane(p: { handle: SessionHandle }) {
         if (url?.trim()) command("goto", { url, tab: tab()?.id });
         keyboard?.focus({ preventScroll: true });
     };
-    const choose = (index?: number) => void stream.call("browser.choose", { id: id(), index, tab: tab()?.id }).catch(reportError);
+    // `list`: the list the person picked in, as this pane had it (another may have been opened since, from elsewhere).
+    const choose = (list: number, index?: number) => void stream.call("browser.choose", { id: id(), index, tab: tab()?.id, list }).catch(reportError);
     const answer = (accept: boolean) => {
         const text = dialogText();
         setDialogText("");
@@ -474,8 +475,8 @@ export function BrowserPane(p: { handle: SessionHandle }) {
                 <Show when={tab()?.choice}>
                     {(c) => (
                         <div class="br-note br-dialog" role="listbox" aria-label={c().label || "Options"} style="max-height:60%;overflow:auto;flex-direction:column;align-items:stretch;flex-wrap:nowrap">
-                            <For each={c().options}>{(o, i) => <button class={`btn ${i() === c().selected ? "primary" : "ghost"} sm`} role="option" aria-selected={i() === c().selected} disabled={o.disabled} onClick={() => choose(i())}>{o.label}</button>}</For>
-                            <button class="btn ghost sm" onClick={() => choose()}>
+                            <For each={c().options}>{(o, i) => <button class={`btn ${i() === c().selected ? "primary" : "ghost"} sm`} role="option" aria-selected={i() === c().selected} disabled={o.disabled} onClick={() => choose(c().id, i())}>{o.label}</button>}</For>
+                            <button class="btn ghost sm" onClick={() => choose(c().id)}>
                                 Cancel
                             </button>
                         </div>

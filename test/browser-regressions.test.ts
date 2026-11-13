@@ -240,7 +240,7 @@ describe.skipIf(!chromePath)("browser regressions with Chrome", () => {
             const heard = async () => JSON.parse(await p.evaluate("window.heard")) as string[];
             // The press isn't the page's: Chrome's own list (which takes no click sent to the page) never opens.
             await click(await at("s"));
-            expect(b.state().tabs[0]!.choice).toEqual({ label: "Fruit", options: [{ label: "apple" }, { label: "Stone: cherry" }, { label: "Stone: plum", disabled: true }, { label: "date" }], selected: 0 });
+            expect(b.state().tabs[0]!.choice).toEqual({ id: 1, label: "Fruit", options: [{ label: "apple" }, { label: "Stone: cherry" }, { label: "Stone: plum", disabled: true }, { label: "date" }], selected: 0 });
             expect(await heard()).toEqual([]);
             // Picked there: the page hears it as from a person. One that's disabled isn't picked, and the list closes.
             await b.choose(3);
@@ -253,6 +253,11 @@ describe.skipIf(!chromePath)("browser regressions with Chrome", () => {
             await b.choose();
             await click(await at("s"));
             expect(b.state().tabs[0]!.choice?.selected).toBe(3);
+            // A pick made in a list that's been replaced since (the pane hadn't heard yet) picks nothing: this one stays.
+            const open = b.state().tabs[0]!.choice!.id;
+            await b.choose(0, undefined, open - 1);
+            await b.choose(undefined, undefined, open - 1);
+            expect([await p.evaluate("document.getElementById('s').value"), b.state().tabs[0]!.choice?.id]).toEqual(['"date"', open]);
             await click(await at("t"));
             expect([b.state().tabs[0]!.choice, (await heard()).at(-1)]).toEqual([undefined, "down:t"]);
             await expect(b.choose(0)).rejects.toThrow("No list is open in this tab.");

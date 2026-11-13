@@ -1557,7 +1557,7 @@ export interface BrowserTabInfo {
     /** A confirm or prompt waiting for an answer. */
     dialog?: { type: string; message: string; defaultPrompt?: string };
     /** A dropdown the person clicked in the pane: its options, which the pane lists (browser.choose picks one). */
-    choice?: { label: string; options: { label: string; disabled?: boolean }[]; selected: number };
+    choice?: { id: number; label: string; options: { label: string; disabled?: boolean }[]; selected: number };
 }
 
 /**
@@ -1753,8 +1753,11 @@ export interface Methods {
     "browser.command": { params: { id: string; command: BrowserCommand; url?: string; tab?: number }; result: BrowserState };
     /** The person answers a confirm or prompt the page is showing. */
     "browser.dialog": { params: { id: string; accept: boolean; text?: string; tab?: number }; result: null };
-    /** Picks the option at `index` of the dropdown the pane lists (BrowserTabInfo.choice); without one, closes the list. */
-    "browser.choose": { params: { id: string; index?: number; tab?: number }; result: null };
+    /**
+     * Picks the option at `index` of the dropdown the pane lists (BrowserTabInfo.choice); without one, closes the list.
+     * `list` is that list's id: a pick made in a list that's been replaced since picks nothing.
+     */
+    "browser.choose": { params: { id: string; index?: number; tab?: number; list?: number }; result: null };
     /** The session's simulator: its device, whether it runs, and the devices there are (looked up again). */
     "simulator.state": { params: { id: string }; result: SimulatorState };
     /**

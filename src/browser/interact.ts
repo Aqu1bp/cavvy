@@ -485,7 +485,7 @@ async function dropdown(page: Page, x: number, y: number, meant: number): Promis
         drop(object);
         return false;
     }
-    const choice: PendingChoice = { label: String(said.label ?? "").slice(0, MAX_LABEL), options, selected: Number.isInteger(said.selected) ? (said.selected as number) : -1 };
+    const choice: Omit<PendingChoice, "id"> = { label: String(said.label ?? "").slice(0, MAX_LABEL), options, selected: Number.isInteger(said.selected) ? (said.selected as number) : -1 };
     page.setChoice(choice, object);
     return true;
 }

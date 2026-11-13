@@ -58,6 +58,8 @@ export interface PendingDialog {
  * page's picture at all), so it's never opened: the pane lists the options and the choice is made in the page.
  */
 export interface PendingChoice {
+    /** Which list this is, of those the tab has shown: a pick says which one it was made in (Page.choose). */
+    id: number;
     label: string;
     options: { label: string; disabled?: boolean }[];
     selected: number;
@@ -186,6 +188,7 @@ export class Page {
     choice?: PendingChoice;
     /** The dropdown `choice` is about, held in the page; and the press that opened it, whose release isn't the page's either. */
     private choiceOf?: string;
+    private choices = 0;
     choicePress = false;
     /** A press on its way to the page (it's finding out what's under it first): what follows it waits for it. */
     pressing?: Promise<unknown>;
@@ -760,18 +763,23 @@ export class Page {
     }
 
     /** The dropdown whose options the pane shows (`object`: it, in the page), or none any more. */
-    setChoice(choice: PendingChoice | undefined, object?: string) {
+    setChoice(choice: Omit<PendingChoice, "id"> | undefined, object?: string) {
         if (!choice && !this.choice) return;
-        this.choice = choice;
+        this.choice = choice && { ...choice, id: ++this.choices };
         this.choiceOf = choice ? object : undefined;
         if (!choice) void this.send("Runtime.releaseObjectGroup", { objectGroup: CHOICE_OBJECTS }).catch(() => undefined);
         this.changed();
     }
 
-    /** The person picked an option of the dropdown the pane shows (by its place in the list), or closed the list. */
-    async choose(index?: number) {
+    /**
+     * The person picked an option of the dropdown the pane shows (by its place in the list), or closed the list.
+     * `list` is the list they did it in (PendingChoice.id): when that's no longer the one that's open (another was
+     * opened since their pane last heard), nothing is picked and the open one stays.
+     */
+    async choose(index?: number, list?: number) {
         const object = this.choiceOf;
         const choice = this.choice;
+        if (list !== undefined && choice && choice.id !== list) return;
         if (!choice || !object) throw new BrowserError("No list is open in this tab.");
         try {
             const option = index !== undefined && Number.isInteger(index) ? choice.options[index] : undefined;

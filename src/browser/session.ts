@@ -435,11 +435,11 @@ export class BrowserSession implements PoolClient {
         await page.answerDialog(accept, promptText);
     }
 
-    /** The person picked an option of the dropdown the pane lists, or closed the list. */
-    async choose(index?: number, tab?: number) {
+    /** The person picked an option of the dropdown the pane lists (`list`: which list, as their pane had it), or closed the list. */
+    async choose(index?: number, tab?: number, list?: number) {
         const page = this.tab(tab);
         this.touched(page);
-        await page.choose(index);
+        await page.choose(index, list);
     }
 
     // -----------------------------------------------------------------------
