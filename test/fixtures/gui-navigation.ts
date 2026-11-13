@@ -51,7 +51,7 @@ class ServerSocket extends Socket {
         } else if (method === "settings.get" && mode === "failed" && opens === 2) queueMicrotask(() => this.message({ id, error: { code: "internal", message: "no settings" } }));
         else if (method === "settings.get") reply({});
         else if (method === "projects.recent") reply([{ path: "/recent" }]);
-        else if (method === "sessions.list" && (mode === "ahead" || mode === "stale") && opens && !reconnected) lists.push(() => reply([]));
+        else if (method === "sessions.list" && (mode === "ahead" || mode === "stale" || mode === "let-go") && opens && !reconnected) lists.push(() => reply([]));
         else if (["sessions.list", "providers.list", "models.list", "limits.get"].includes(method)) reply([]);
         else throw Error(`Unexpected RPC: ${method}`);
     }
@@ -138,6 +138,19 @@ try {
         Socket.instances.at(-1)!.open();
         for (let i = 0; i < 10; i++) await settle();
         assert.equal(second.app.activeId, "saved");
+        assert.equal(second.handleFor("saved"), undefined);
+        assert.deepEqual(JSON.parse(JSON.stringify(second.app.opening)), { id: "saved", visible: true, error: "in_use" });
+        assert.ok(text(root).includes("Couldn't open this session"));
+    } else if (mode === "let-go") {
+        // The session came ahead; then the server has it opened again and refuses that, so the window lets it go;
+        // then the lists come. What's shown is that refusal, not a session that's no longer held.
+        assert.ok(second.handleFor("saved")?.ready());
+        failure = "in_use";
+        Socket.instances.at(-1)!.message({ event: { type: "session.reload", sessionId: "saved" } });
+        for (let i = 0; i < 4; i++) await settle();
+        assert.equal(second.handleFor("saved"), undefined);
+        for (const answer of lists.splice(0)) answer();
+        for (let i = 0; i < 10; i++) await settle();
         assert.equal(second.handleFor("saved"), undefined);
         assert.deepEqual(JSON.parse(JSON.stringify(second.app.opening)), { id: "saved", visible: true, error: "in_use" });
         assert.ok(text(root).includes("Couldn't open this session"));
