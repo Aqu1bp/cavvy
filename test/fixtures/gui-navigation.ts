@@ -30,8 +30,10 @@ let failure: string | undefined;
 let hold = false;
 let release: (() => void) | undefined;
 let opens = 0;
-// "ahead": the lists are slow, and the session the window loads on is asked for meanwhile.
+// "ahead" and "stale": the lists are slow, and the session the window loads on is asked for meanwhile.
+// "failed": the start fails (the settings can't be had) after that session was asked for.
 const lists: (() => void)[] = [];
+let reconnected = false;
 class ServerSocket extends Socket {
     send(raw: string) {
         super.send(raw);
@@ -46,9 +48,10 @@ class ServerSocket extends Socket {
                 ? queueMicrotask(() => this.message({ id, error: { code: failure, message: failure } }))
                 : reply(snapshot(params.id));
             if (hold) release = answer; else answer();
-        } else if (method === "settings.get") reply({});
+        } else if (method === "settings.get" && mode === "failed" && opens === 2) queueMicrotask(() => this.message({ id, error: { code: "internal", message: "no settings" } }));
+        else if (method === "settings.get") reply({});
         else if (method === "projects.recent") reply([{ path: "/recent" }]);
-        else if (method === "sessions.list" && mode === "ahead" && opens) lists.push(() => reply([]));
+        else if (method === "sessions.list" && (mode === "ahead" || mode === "stale") && opens && !reconnected) lists.push(() => reply([]));
         else if (["sessions.list", "providers.list", "models.list", "limits.get"].includes(method)) reply([]);
         else throw Error(`Unexpected RPC: ${method}`);
     }
@@ -71,7 +74,7 @@ if (mode === "home") {
 }
 if (mode === "corrupt") values.set(key, JSON.stringify({ activeId: {}, homeCwd: 12 }));
 if (mode === "missing") failure = "not_found";
-if (mode === "transient" || mode === "retry") failure = "in_use";
+if (mode === "transient" || mode === "retry" || mode === "failed") failure = "in_use";
 if (mode === "trust") failure = "needs_trust";
 if (mode === "navigate") hold = true;
 // A fresh app module models reload, retaining only this tab's storage.
@@ -108,6 +111,9 @@ try {
         assert.deepEqual([opens, lists.length], [2, 2], "the session is asked for, and answered, before the lists have answered");
         assert.equal(second.app.sessionsLoaded, false);
         assert.ok(second.handleFor("saved")?.ready());
+        // Its conversation is in the window from then on, where the window used to wait for the lists.
+        assert.ok(all(root).some((n) => n.tag === "SessionView"));
+        assert.equal(text(root).includes("Waiting to reopen"), false);
         Socket.instances.at(-1)!.message({ event: { type: "session.ops", sessionId: "saved", seq: 1, ops: [{ op: "state", patch: { title: "streamed meanwhile" } }] } });
         await settle();
         for (const answer of lists.splice(0)) answer();
@@ -119,6 +125,31 @@ try {
         for (let t = 0; t < 50 && second.handleFor("saved")?.view.state.title === undefined; t++) await new Promise((r) => setTimeout(r, 20));
         assert.equal(second.handleFor("saved")?.view.state.title, "streamed meanwhile");
         assert.equal(opens, 2, "asked for once");
+    } else if (mode === "stale") {
+        // The session came ahead, and the connection dropped before the lists did. The next connection can't open
+        // it: that's what the window says, from an answer of this connection's (not the one from before).
+        assert.ok(second.handleFor("saved")?.ready());
+        Socket.instances.at(-1)!.close();
+        await settle();
+        reconnected = true;
+        failure = "in_use";
+        second.rpc.reconnectNow();
+        await settle();
+        Socket.instances.at(-1)!.open();
+        for (let i = 0; i < 10; i++) await settle();
+        assert.equal(second.app.activeId, "saved");
+        assert.equal(second.handleFor("saved"), undefined);
+        assert.deepEqual(JSON.parse(JSON.stringify(second.app.opening)), { id: "saved", visible: true, error: "in_use" });
+        assert.ok(text(root).includes("Couldn't open this session"));
+    } else if (mode === "failed") {
+        // The start failed after the session was asked for (and refused). A retry asks again, and it opens.
+        for (let i = 0; i < 6; i++) await settle();
+        assert.equal(opens, 2);
+        failure = undefined;
+        await second.activate("saved");
+        await settle();
+        assert.equal(opens, 3, "the retry asks the server, and doesn't reuse the answer from the start that failed");
+        assert.ok(second.handleFor("saved")?.ready());
     } else if (mode === "navigate") {
         assert.ok(release);
         assert.equal(onHome(), false, "pending restoration does not flash Home");
