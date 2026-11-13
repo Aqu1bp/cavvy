@@ -4,8 +4,8 @@ import { batch, createSignal } from "solid-js";
 import { adjacentSession, sidebarEntries, sidebarIds, SESSION_PAGE } from "../lib/session-order";
 import { sidebarOrder, unselect } from "./sidebar";
 import { sessionCount, sessionNames } from "../lib/rail-select";
-import type { ArchiveResult, CliSessionInfo, EditorInfo, EffortLevel, FollowUpMode, GitCommitHead, InteractionResponse, PermissionModeId, ProviderInfo } from "@shared/protocol";
-import { RpcError } from "../lib/rpc";
+import type { ArchiveResult, CliSessionInfo, EditorInfo, EffortLevel, FollowUpMode, GitCommitHead, Interaction, InteractionResponse, PermissionModeId, ProviderInfo } from "@shared/protocol";
+import { RpcError, type Rpc } from "../lib/rpc";
 import { UNDO_DELETE_MS } from "../lib/toasts";
 import { copyText, pickFolder } from "../lib/platform";
 import { toWire, type Attachment } from "../lib/attachments";
@@ -311,9 +311,15 @@ export function interrupt(id = app.activeId) {
     if (id) void rpc.call("session.interrupt", { id }).catch(reportError);
 }
 
+/**
+ * In a window on a server (lib/lent.ts, there before the window connects): what this computer asks before it does
+ * something for a session there (`asks`, with the id of its own session for it), and where that's answered (`rpc`).
+ */
+export const far: { rpc?: (id: string) => Rpc | undefined; asks?: (session: string) => { id: string; items: Interaction[] } | undefined } = {};
+
 /** Whether the answer was taken. */
 export function respond(id: string, interactionId: string, response: InteractionResponse): Promise<boolean> {
-    return rpc.call("session.respond", { id, interactionId, response }).then(
+    return (far.rpc?.(id) ?? rpc).call("session.respond", { id, interactionId, response }).then(
         () => true,
         (e) => {
             reportError(e);

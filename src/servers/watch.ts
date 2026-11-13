@@ -9,6 +9,21 @@
 import type { ConnectResult, MachineOverview, ServerEvent, SessionSummary } from "../server/protocol";
 import { openBoundedSocket, type BoundedSocket } from "./bounded-socket";
 
+/** A call of a tool this machine lends, as the server sent it. */
+export interface LentCall {
+    tool: string;
+    input: Record<string, unknown>;
+    /** The session on the server that asked. */
+    session: { id: string; title: string };
+}
+
+/** What this machine answers one with. */
+export interface LentResult {
+    text: string;
+    isError?: boolean;
+    images?: { type: "image"; mediaType: string; data: string }[];
+}
+
 /** What a session on another machine has to tell its user. */
 export type MachineNotice = Pick<Extract<ServerEvent, { type: "servers.notify" }>, "sessionId" | "kind" | "title" | "body">;
 
@@ -32,6 +47,14 @@ const MAX_PER_MINUTE = 32 * 1024 * 1024;
 const DONE_PER_MINUTE = 6;
 const ASKS_PER_MINUTE = 12;
 const KINDS = ["done", "permission", "question", "plan", "error"] as const;
+/** What a call is answered when this machine lends nothing (now). */
+const NOT_LENT: LentResult = { text: "Your Mac's Simulator isn't available now: it's turned off in Cavvy's settings there, or Xcode isn't set up.", isError: true };
+/** Calls of what this machine lends that one server may have running here at once. */
+const LENT_AT_ONCE = 4;
+/** What one call's input may hold, as text: a device's name, a tap, a few lines to type. */
+const LENT_INPUT = 16 * 1024;
+/** Answers to those that may wait to go out to a server that's slow to take them: a few screenshots' worth. */
+const LENT_UNSENT = 32 * 1024 * 1024;
 
 const cut = (v: unknown, max: number): string => (typeof v === "string" ? (v.length > max ? `${v.slice(0, max - 1)}…` : v) : "");
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
@@ -78,6 +101,10 @@ export class MachineWatch {
             reach: (renew: boolean) => Promise<ConnectResult | { status: "disconnected" }>;
             changed: () => void;
             notice: (n: MachineNotice) => void;
+            /** What this machine lends the server's sessions (src/tools/lent.ts), said once the connection is up. */
+            lends?: () => string[];
+            /** Runs a call of one of those, through this machine's own checks. */
+            lend?: (call: LentCall, signal: AbortSignal) => Promise<LentResult>;
             retryMs?: number[];
             idleRetryMs?: number;
         },
@@ -103,6 +130,12 @@ export class MachineWatch {
         const inPlay = heard.filter((s) => !s.archived && !s.settled).sort((a, b) => rank(a) - rank(b) || b.updatedAt - a.updatedAt);
         return { name: this.name, state: this.state, sessions: inPlay.slice(0, KEPT), more: Math.max(0, inPlay.length - KEPT) };
     }
+
+    /** What this machine lends changed: said to the server on the connection there is, if any. */
+    relend() {
+        if (this.ws?.open) this.relendNow?.();
+    }
+    private relendNow?: () => void;
 
     stop() {
         this.stopped = true;
@@ -167,6 +200,25 @@ export class MachineWatch {
         this.ws = undefined;
         before?.close();
         let listed = false;
+        /** Calls of tools this machine lends that are running here, by the server's id for each. */
+        const lending = new Map<string, AbortController>();
+        let next = 3;
+        const answerTo = (callId: string, r: LentResult) => void (ws.open && ws.send(JSON.stringify({ id: next++, method: "offers.result", params: { callId, ...r } })));
+        // What this machine lends changed while connected (the Simulator turned off or on in its settings): the server
+        // is told now. Turned off, the calls still waiting here (for the user's answer, say) are answered and given up:
+        // nothing is left asking for what can't run.
+        this.relendNow = () => {
+            if (!listed || !this.o.lend) return;
+            const kinds = this.o.lends?.() ?? [];
+            if (!kinds.length) {
+                for (const [callId, stop] of lending) {
+                    answerTo(callId, NOT_LENT);
+                    stop.abort();
+                }
+                lending.clear();
+            }
+            if (ws.open) ws.send(JSON.stringify({ id: next++, method: "offers.set", params: { kinds } }));
+        };
         const timeout = setTimeout(() => ws.close(), REPLY_MS);
         const heard = (text: string) => {
             if (this.ws !== ws) return;
@@ -190,6 +242,8 @@ export class MachineWatch {
                 }
                 this.state = "connected";
                 this.o.changed();
+                const kinds = this.o.lends?.() ?? [];
+                if (kinds.length && this.o.lend) ws.send(JSON.stringify({ id: 2, method: "offers.set", params: { kinds } }));
                 return;
             }
             const ev = msg.event;
@@ -221,6 +275,39 @@ export class MachineWatch {
                     this.unsaid = true;
                     this.o.notice({ sessionId: "", kind: "question", title: "More sessions need you", body: "" });
                 }
+            } else if (ev.type === "offers.call") {
+                // What this machine lends is asked for by a session there. Whatever is wrong with a call, it's
+                // answered: nothing there waits on a call that was only dropped here.
+                if (!this.o.lend || typeof ev.callId !== "string" || ev.callId.length > 100 || lending.has(ev.callId)) return;
+                const callId = ev.callId;
+                const answer = (r: LentResult) => answerTo(callId, r);
+                const session = ev.session && typeof ev.session === "object" ? ev.session : ({} as { id?: unknown; title?: unknown });
+                if (typeof ev.tool !== "string" || typeof session.id !== "string" || !/^[\w.-]{1,120}$/.test(session.id)) return answer({ text: "That call isn't one your Mac takes.", isError: true });
+                const input = ev.input && typeof ev.input === "object" && !Array.isArray(ev.input) ? ev.input : {};
+                if (JSON.stringify(input).length > LENT_INPUT) return answer({ text: "That call's input is too long for your Mac to take.", isError: true });
+                // Only so many at once: a server gone wrong can't have calls here without end.
+                if (lending.size >= LENT_AT_ONCE) return answer({ text: `Your Mac is still on ${LENT_AT_ONCE} other calls from this machine (it may be waiting for the user's answer there). Wait for them, then try again.`, isError: true });
+                // What's lent may have changed since the connection was made (the Simulator turned off there): said, so
+                // sessions there stop being offered what can't run.
+                const kinds = this.o.lends?.() ?? [];
+                if (!kinds.length) {
+                    // The answer first: saying nothing is lent ends every call this machine still has there.
+                    answer(NOT_LENT);
+                    return void ws.send(JSON.stringify({ id: next++, method: "offers.set", params: { kinds } }));
+                }
+                const stop = new AbortController();
+                lending.set(callId, stop);
+                const call: LentCall = { tool: ev.tool.slice(0, 100), input, session: { id: session.id, title: cut(session.title, 80) } };
+                void this.o
+                    .lend(call, stop.signal)
+                    .catch((e): LentResult => ({ text: `It couldn't be run on your Mac: ${cut((e as Error).message, 300)}`, isError: true }))
+                    .then((r) => {
+                        lending.delete(callId);
+                        // Given up there meanwhile, or the connection is another one now: nobody waits for it.
+                        if (!stop.signal.aborted) answer(r);
+                    });
+            } else if (ev.type === "offers.cancel") {
+                if (typeof ev.callId === "string") lending.get(ev.callId)?.abort();
             }
         };
         const ws = openBoundedSocket({
@@ -229,6 +316,9 @@ export class MachineWatch {
             protocols: ["cavvy.v1", `auth.${token}`],
             maxMessage: MAX_MESSAGE,
             maxPerMinute: MAX_PER_MINUTE,
+            // What this machine lends is answered with what was asked for, a picture of a screen among it: that may
+            // wait to go out, where otherwise this end says next to nothing.
+            ...(this.o.lend ? { maxUnsent: LENT_UNSENT } : {}),
             onOpen: () => ws.send(JSON.stringify({ id: 1, method: "sessions.list", params: { limit: 100 } })),
             onMessage: (text) => {
                 try {
@@ -239,6 +329,9 @@ export class MachineWatch {
             },
             onClose: (why) => {
                 clearTimeout(timeout);
+                // Whoever asked can't be answered any more.
+                for (const stop of lending.values()) stop.abort();
+                lending.clear();
                 if (this.ws !== ws) return;
                 this.ws = undefined;
                 if (this.stopped) return;

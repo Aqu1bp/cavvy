@@ -54,7 +54,7 @@ import { agentCli, steersMidTurn, type AttachmentKind } from "../backends/defs";
 import { claudeCompactAt, cliCompactSetting, cavvyCompactAt, modelKeys } from "../backends/compact-at";
 import { account, accountSwitch, removedAccount, removedAccountNote, switchHow } from "../providers/accounts";
 import { attachmentsNote, readsPdf } from "../providers/files";
-import { continuationGroups, modelRef, parseModelRef, textOf, toolCallsOf, assistantText, type AttachedPart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart, type UserContent } from "../providers/types";
+import { continuationGroups, modelRef, parseModelRef, textOf, toolCallsOf, assistantText, type AttachedPart, type ImagePart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart, type UserContent } from "../providers/types";
 import { expandMentions } from "../ui/mentions";
 import { expandMcpMentions, findMcpMentions } from "../mcp/mentions";
 import type { McpAsker } from "../mcp/elicitation";
@@ -453,6 +453,9 @@ export class Runtime {
         this.toolState.browser.onChange(() => this.engine.sendBrowser(this.id, this.browser.state()));
         // So does the simulator, so the window hears when the agent starts or uses one (it starts nothing until then).
         this.toolState.simulator = new SimulatorSession({ settings: () => this.settings() });
+        // On a server: tools it hasn't got and another of the user's machines lends it (its Mac's simulators). Kept for
+        // as long as the session, so a call made after the Mac has left is told that, not that there are no simulators.
+        if (engine.away) this.toolState.lends = { call: (tool, input, signal) => engine.borrow(this, tool, input, signal) };
         this.toolState.simulator.onChange(() => this.engine.sendSimulator(this.id, this.simulator.state()));
         this.toolState.secrets!.onChange(() => this.setState({ secrets: this.toolState.secrets!.names() }));
         this.schedules = new SessionSchedules({
@@ -537,6 +540,11 @@ export class Runtime {
 
     get status(): SessionState["status"] {
         return this.view.state.status;
+    }
+
+    /** What it waits for the user to answer. */
+    get asks(): Interaction[] {
+        return this.view.state.interactions;
     }
 
     get waitingKind(): Interaction["kind"] | undefined {
@@ -4299,7 +4307,45 @@ export class Runtime {
     /** Schedules run only while it's loaded: one that will run keeps it open with no window on it (it isn't busy, though). */
     get scheduled(): boolean {
         const s = this.schedules.scheduler;
-        return this.carryingOn || s.active > 0 || s.list().some((j) => j.due);
+        return this.carryingOn || this.lending > 0 || s.active > 0 || s.list().some((j) => j.due);
+    }
+
+    /** Calls of this machine's tools that another machine asked for and that are running here (lend): it isn't closed meanwhile. */
+    private lending = 0;
+    /** When a call was last lent through this session (Engine.guestLater). */
+    lastLent = 0;
+    /** The server whose session is lent this machine's tools through this one (Engine.lend); undefined for any other session. */
+    private lentTo?: string;
+    get guestOf(): string | undefined {
+        return this.lentTo;
+    }
+    set guestOf(name: string | undefined) {
+        this.lentTo = name;
+        // Its tools know they run for another machine: what they'd keep or say for a session here isn't for it.
+        this.toolState.forAnother = name !== undefined;
+    }
+    get guest(): boolean {
+        return this.lentTo !== undefined;
+    }
+    /** The session there this one lends to: its id, and its name in this machine's own words (Engine.guestFor). */
+    guestSession?: { id: string; title: string };
+
+    /**
+     * Runs a tool of this machine's for a session on another of the user's machines (Engine.lend). What's asked of
+     * the user is asked by this session, under this machine's mode and rules, and shown in the session there.
+     */
+    async lend(tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal): Promise<{ text: string; isError?: boolean; images?: ImagePart[] }> {
+        await this.ready.catch(() => undefined);
+        const agent = this.agent;
+        if (!agent) return { text: "Cavvy on your Mac has no model set up yet, which it needs before it lends its Simulator. Ask the user to set one up there.", isError: true };
+        this.lending++;
+        this.lastLent = Date.now();
+        try {
+            return await agent.runLent(tool, input, signal);
+        } finally {
+            this.lending--;
+            this.lastLent = Date.now();
+        }
     }
 
     /** SessionEnd hooks and background shells, when the server stops or the session is closed. */

@@ -1627,6 +1627,21 @@ export type SimulatorCommand = "select" | "boot" | "shutdown" | "take_control";
 
 // Servers: what the calls below hand back (src/servers/manager.ts makes them).
 
+/**
+ * What the user's own machine has for a session on a server that's lent its tools (src/tools/lent.ts). Its windows
+ * show it in that session: the simulator there, and what's asked of the user here.
+ */
+export interface LentSession {
+    /** There's something to lend it: this machine has simulators, and lends them. */
+    offered: boolean;
+    /** The session here its calls run in, once there is one: what simulator.* is asked of, and session.respond answers. */
+    id?: string;
+    /** What it waits for the user to allow here. */
+    asks: Interaction[];
+    /** Where its simulator would stand, while there's no session here for it: what the pane shows until the user or the agent uses one. */
+    state?: SimulatorState;
+}
+
 /** A server as a window lists it. */
 export interface ServerSummary {
     name: string;
@@ -1710,9 +1725,18 @@ export type ServerEvent =
     /**
      * What a session on another machine has to tell its user, for one window to show: `name` is the server's, and
      * left out when it's this computer's own session, told to a window that's on a server. No `sessionId` ("") when
-     * it's said for several at once (more of them ask than are passed on one by one).
+     * it's said for several at once (more of them ask than are passed on one by one). `lent`: it's this computer
+     * that asks, for a session there that uses a tool it lends: the server itself says nothing of it.
      */
-    | { type: "servers.notify"; name?: string; sessionId: string; kind: "done" | "permission" | "question" | "plan" | "error"; title: string; body: string }
+    | { type: "servers.notify"; name?: string; sessionId: string; kind: "done" | "permission" | "question" | "plan" | "error"; title: string; body: string; lent?: true }
+    /** What this machine has for a server's session that's lent its tools changed (offers.session), to its windows that are on that server. */
+    | { type: "offers.session"; name: string; sessionId: string; lent: LentSession }
+    /**
+     * A session here calls a tool the connected machine lends (offers.set): that machine runs it, through its own
+     * checks, and answers with offers.result. offers.cancel: the call was given up here.
+     */
+    | { type: "offers.call"; callId: string; tool: string; input: Record<string, unknown>; session: { id: string; title: string } }
+    | { type: "offers.cancel"; callId: string }
     /** A session's browser changed: its tabs, who drives them, or whether it runs (sent to the windows that have the session open). */
     | { type: "browser.state"; sessionId: string; state: BrowserState }
     /**
@@ -1823,6 +1847,20 @@ export interface Methods {
     // Servers: other machines this Cavvy runs on, reached over SSH (src/servers/manager.ts). Not offered by a
     // server's own Cavvy. A call that needs the user's word says so in its result; `trust` carries the answer to
     // an unknown host's key back: the fingerprints that were shown.
+    /**
+     * Only a server's own Cavvy takes these, from one of the user's machines connected to it: what that machine
+     * lends the server's sessions (kinds: src/tools/lent.ts; none: nothing any more), and the result of a call the
+     * server sent it (offers.call).
+     */
+    "offers.set": { params: { kinds: string[] }; result: null };
+    "offers.result": { params: { callId: string; text: string; isError?: boolean; images?: { type: "image"; mediaType: string; data: string }[] }; result: null };
+    /**
+     * Only the user's own machine takes this, from its windows: what it has for a session on one of its servers
+     * that's lent its tools. `open`: the user started or chose a device in that session's Simulator pane, so there's one from now on.
+     */
+    "offers.session": { params: { name: string; sessionId: string; title?: string; open?: boolean }; result: LentSession };
+    /** The same machine, to the same windows: the sessions on that server it asks its user something for right now. */
+    "offers.asking": { params: { name: string }; result: { sessionId: string; lent: LentSession }[] };
     "servers.list": { params: Record<string, never>; result: { servers: ServerSummary[] } };
     /**
      * Each server's sessions, kept up to date from then on (servers.overview events) for the window that asks, which

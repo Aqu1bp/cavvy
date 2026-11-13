@@ -14,7 +14,7 @@ import { inPlay } from "../lib/in-play";
 import { home, switchMachine } from "../lib/machines";
 import { focused, machine, notify } from "../lib/platform";
 import { prefs } from "../state/prefs";
-import { reportError, rpc } from "../state/app";
+import { activate, app, reportError, rpc } from "../state/app";
 
 /** A machine as the sidebar lists it. `name` undefined: this computer. */
 interface Group {
@@ -125,11 +125,14 @@ function attach(tries = 0) {
 
 /** What a session on another machine has to tell its user: a notification that names the machine. */
 function tell(ev: Extract<ServerEvent, { type: "servers.notify" }>) {
-    // A window on that machine hears it from there.
-    if (ev.name === machine || !prefs.notifications) return;
-    if (ev.kind === "done" && focused()) return;
+    // A window on that machine hears it from there, unless it's this computer that asks for a session there.
+    const onIt = ev.name === machine;
+    if ((onIt && !ev.lent) || !prefs.notifications) return;
+    // On screen already, in the session that's open (lib/lent.ts).
+    if (focused() && (ev.kind === "done" || (onIt && app.activeId === ev.sessionId))) return;
+    const open = () => (onIt ? void activate(ev.sessionId || undefined) : switchMachine(ev.name, ev.sessionId || undefined));
     // The machine first: the rest is the session's own words, and a long title is cut at its end.
-    void notify(`${ev.name ?? here}: ${ev.title}`, ev.body, () => switchMachine(ev.name, ev.sessionId || undefined), { tag: `machine:${ev.name ?? ""}:${ev.sessionId}` });
+    void notify(`${ev.name ?? here}: ${ev.title}`, ev.body, open, { tag: `machine:${ev.name ?? ""}:${ev.sessionId}` });
 }
 
 let started = false;
