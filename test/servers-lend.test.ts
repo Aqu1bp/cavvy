@@ -160,6 +160,12 @@ async function answerLent(session: string, choice: "yes" | "no", seen = new Set<
 
 let there: { url: string; token: string };
 let remote: Window;
+/** A session on the server, in Manual whatever a server's sessions start in: its own asking comes first, then this machine's. */
+async function sessionThere(): Promise<string> {
+    const id = (await remote.call("session.create", { cwd: tempDir("cavvy-lend-proj-") })).state.id as string;
+    await remote.call("session.setMode", { id, mode: "default" });
+    return id;
+}
 
 test("a server with no simulators is lent this machine's: its sessions have the tools once this machine is connected", async () => {
     fake.trust("box.example");
@@ -174,7 +180,7 @@ test("a server with no simulators is lent this machine's: its sessions have the 
 });
 
 test("a call from a session there runs here, after this machine's own asking, shown and told as that session's; the result goes back", async () => {
-    const id = (await remote.call("session.create", { cwd: tempDir("cavvy-lend-proj-") })).state.id as string;
+    const id = await sessionThere();
     await remote.call("session.send", { id, text: "simulator please" });
     // The server's own asking first (it starts in Manual here), then this machine's.
     expect((await answer(remote, id, "yes")).kind).toBe("permission");
@@ -215,14 +221,14 @@ test("a call from a session there runs here, after this machine's own asking, sh
 
 test("the user's no here is what the session there is told; this machine going away ends a call that waits", async () => {
     const seen = new Set<string>();
-    const id = (await remote.call("session.create", { cwd: tempDir("cavvy-lend-proj-") })).state.id as string;
+    const id = await sessionThere();
     await remote.call("session.send", { id, text: "simulator again" });
     await answer(remote, id, "yes");
     await answerLent(id, "no", seen);
     await until("the turn there to end", async () => (await lastTurn(remote, id)).status === "done");
     expect(JSON.stringify(await lastTurn(remote, id))).toContain("declined");
 
-    const second = (await remote.call("session.create", { cwd: tempDir("cavvy-lend-proj-") })).state.id as string;
+    const second = await sessionThere();
     await remote.call("session.send", { id: second, text: "simulator once more" });
     await answer(remote, second, "yes");
     // While this machine's question waits, its Cavvy stops listening to the server (as when it quits): only that
