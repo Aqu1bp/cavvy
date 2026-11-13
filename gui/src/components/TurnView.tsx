@@ -554,6 +554,19 @@ const END_TEXT: Partial<Record<Turn["status"], string>> = {
     blocked: "Blocked by a hook",
 };
 
+/**
+ * How a stopped turn's line reads. A command it started can outlast it (Codex leaves one running; any CLI's
+ * background command does): then "nothing after this point ran" isn't so, and the line says what is.
+ */
+function stoppedText(turn: Turn, state: SessionState): string {
+    const calls = new Set(turn.blocks.flatMap((b) => (b.t === "tool" ? [b.id] : [])));
+    const left = (state.backgroundTasks ?? []).filter((t) => t.kind === "shell" && (t.turnId === turn.id || (t.toolUseId !== undefined && calls.has(t.toolUseId))));
+    if (left.some((t) => t.status === "running")) return "Stopped. A command it started is still running.";
+    // Ended by itself after the stop (not by the user's Stop, nor before it).
+    if (left.some((t) => (t.status === "done" || t.status === "failed") && turn.endedAt !== undefined && (t.endedAt ?? 0) > turn.endedAt)) return "Stopped. A command it started ran on to its end.";
+    return END_TEXT.aborted!;
+}
+
 type TurnViewProps = {
     turn: Turn;
     state: SessionState;
@@ -711,7 +724,7 @@ function TurnViewContent(p: TurnViewProps) {
                         <Show when={END_TEXT[p.turn.status] && !(p.turn.status === "error" && hasErrorCard(p.turn.blocks))}>
                             <div class={`notice end-note end-${p.turn.status}`} data-find-skip>
                                 {p.turn.status === "aborted" ? <CircleStop size={14} /> : p.turn.status === "error" || p.turn.status === "blocked" ? <AlertCircle size={14} /> : <AlertTriangle size={14} />}
-                                <span>{END_TEXT[p.turn.status]}</span>
+                                <span>{p.turn.status === "aborted" ? stoppedText(p.turn, p.state) : END_TEXT[p.turn.status]}</span>
                             </div>
                         </Show>
                         <div class="turn-foot">

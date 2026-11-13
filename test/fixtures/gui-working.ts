@@ -172,4 +172,21 @@ try {
     assert.equal(ends.length, 1, "a stopped turn with no output shows the stop line");
     assert.ok(text(ends[0]!).includes("Stopped. Nothing after this point ran."));
     disposeStopped();
+    // A command it started that outlasts it: the line doesn't say nothing ran.
+    const ran = (task: Record<string, unknown>) => {
+        const root = node("root");
+        const done = renderer.render(() => TurnView({
+            turn: { id: "left", status: "aborted", archived: true, startedAt: 1000, endedAt: 1200, prompt: { text: "sleep" }, blocks: [{ t: "tool", id: "call-1", name: "Bash", title: "Bash", status: "done", input: {} }] },
+            state: { ...state(), busy: false, backgroundTasks: [{ id: "p1", provider: "codex", kind: "shell", label: "sleep 40", startedAt: 1100, stoppable: true, ...task }] }, last: true,
+        } as never), root);
+        const said = text(all(root).filter((n) => hasClass(n, "end-note"))[0]!);
+        done();
+        return said;
+    };
+    assert.ok(ran({ toolUseId: "call-1", status: "running" }).includes("Stopped. A command it started is still running."));
+    assert.ok(ran({ turnId: "left", status: "done", endedAt: 5000 }).includes("Stopped. A command it started ran on to its end."));
+    // Stopped by the user, ended before the turn did, or another turn's: as before.
+    for (const task of [{ toolUseId: "call-1", status: "stopped", endedAt: 5000 }, { toolUseId: "call-1", status: "done", endedAt: 1150 }, { toolUseId: "other", turnId: "another", status: "running" }]) {
+        assert.ok(ran(task).includes("Stopped. Nothing after this point ran."), JSON.stringify(task));
+    }
 } finally { dispose(); }
