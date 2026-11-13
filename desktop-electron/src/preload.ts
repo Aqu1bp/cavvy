@@ -10,24 +10,23 @@ import { contextBridge, ipcRenderer } from "electron";
  */
 const HELD = "cavvy.held";
 /**
- * What the new page shows when it's ready: the conversation of the session it was sent to (or that it couldn't be
- * opened), else the new-session screen once the machine has said what it has (its sessions, projects and models);
- * or that the machine can't be reached, or has a question first (gui/src/components/Servers.tsx MachineCover). (It
- * shows other things on its way there: the screen for a new session before the session opens or the machine has
- * answered, a cover while it connects. Those aren't it.)
+ * The new page is ready when it says its first screen is drawn (windowReady: the session it was sent to is open, or
+ * couldn't be, or the new-session screen has what the machine has). Before that, only a machine that can't be
+ * reached, or has a question first, ends the wait (gui/src/components/Servers.tsx MachineCover): the page shows
+ * other things on its way (a cover while it connects, the new-session screen before the session opens), and those
+ * aren't it.
  */
-const READY = { session: '.turn, .session-opening [role="alert"], .server-asks', home: ".home:not([aria-busy]), .server-asks" };
-/** How long the picture stays when nothing of those comes. */
+const ASKS = ".server-asks";
+/** How long the picture stays when neither comes. */
 const HELD_MS = 1500;
+/** The page said its first screen is drawn (a picture is up meanwhile). */
+let shown: (() => void) | undefined;
 
 function showHeld() {
     let picture: string | null = null;
-    let ready = READY.home;
     try {
         if (!sessionStorage.getItem(HELD)) return;
         sessionStorage.removeItem(HELD);
-        // Where the window was sent (gui/src/lib/machines.ts switchMachine).
-        if (/"activeId"/.test(sessionStorage.getItem("cavvy.navigation") ?? "")) ready = READY.session;
         picture = ipcRenderer.sendSync("held_frame");
     } catch {
         return;
@@ -44,21 +43,27 @@ function showHeld() {
     const end = () => {
         if (over) return;
         over = true;
+        shown = undefined;
         watch.disconnect();
         clearTimeout(timer);
         hide(false);
         img.remove();
     };
+    // Two frames on: what was just put in the page is laid out and drawn under the picture first.
+    const soon = () => requestAnimationFrame(() => requestAnimationFrame(end));
+    shown = soon;
     const watch = new MutationObserver(() => {
         if (!img.isConnected && document.documentElement) document.documentElement.appendChild(img);
         hide(true);
-        // Two frames on: what was just put in the page is laid out and drawn under the picture first.
-        if (document.querySelector(ready)) requestAnimationFrame(() => requestAnimationFrame(end));
+        if (document.querySelector(ASKS)) soon();
     });
-    watch.observe(document, { childList: true, subtree: true, attributeFilter: ["aria-busy"] });
+    watch.observe(document, { childList: true, subtree: true });
     const timer = setTimeout(end, HELD_MS);
 }
 showHeld();
+
+/** Counts the switches asked for: the last one is the one that loads the window. */
+let leaving = 0;
 
 contextBridge.exposeInMainWorld("cavvyDesktop", {
     /** Loads the window again, keeping its picture on screen until the new page is ready (showHeld). */
@@ -66,11 +71,14 @@ contextBridge.exposeInMainWorld("cavvyDesktop", {
         // Where the window opens there, as it's written now: the page goes on living while the picture is taken, and
         // what it does meanwhile (another session opened) isn't where the window was sent.
         const NAVIGATION = "cavvy.navigation";
+        const mine = ++leaving;
         let sent: string | null | undefined;
         try {
             sent = sessionStorage.getItem(NAVIGATION);
         } catch {}
         const go = () => {
+            // Another switch was asked for meanwhile: that one loads the window, to where it was sent.
+            if (mine !== leaving) return;
             try {
                 sessionStorage.setItem(HELD, "1");
                 if (sent === null) sessionStorage.removeItem(NAVIGATION);
@@ -82,7 +90,10 @@ contextBridge.exposeInMainWorld("cavvyDesktop", {
         void Promise.race([ipcRenderer.invoke("hold_frame"), new Promise((r) => setTimeout(r, 250))]).then(go, go);
     },
     sidecarInfo: () => ipcRenderer.invoke("sidecar_info"),
-    windowReady: () => ipcRenderer.send("window_ready"),
+    windowReady: () => {
+        ipcRenderer.send("window_ready");
+        shown?.();
+    },
     focusWindow: () => ipcRenderer.send("focus_window"),
     pickFolder: (o: { defaultPath?: string; title: string }) => ipcRenderer.invoke("pick_folder", o),
     openExternal: (url: string) => ipcRenderer.invoke("open_external", url),

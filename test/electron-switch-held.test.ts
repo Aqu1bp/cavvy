@@ -35,20 +35,17 @@ test("the picture is taken before the window loads again, given once to the page
 test("a page that wasn't loaded for a switch asks for nothing, and the picture goes when what it was sent for is there, or after a moment", () => {
     // Only a load marked by the switch looks for a picture: an ordinary start costs nothing.
     expect(preload).toMatch(/if \(!sessionStorage\.getItem\(HELD\)\) return;\s+sessionStorage\.removeItem\(HELD\);/);
-    // Sent to a session: its conversation, or that it couldn't be opened. Otherwise the new-session screen. Either
-    // way, a machine that can't be reached or has a question ends the wait.
-    expect(preload).toContain(`const READY = { session: '.turn, .session-opening [role="alert"], .server-asks', home: ".home:not([aria-busy]), .server-asks" };`);
-    // The new-session screen waits for what the machine has (it's drawn before that, with no project or model yet).
-    expect(read("gui/src/components/Home.tsx")).toContain('<div class="home" aria-busy={!app.sessionsLoaded || undefined} ');
-    expect(preload).toContain('watch.observe(document, { childList: true, subtree: true, attributeFilter: ["aria-busy"] });');
-    expect(machines).toContain('sessionStorage.setItem("cavvy.navigation", JSON.stringify(session ? { activeId: session } : { homeCwd: folder }));');
-    expect(preload).toContain('if (/"activeId"/.test(sessionStorage.getItem("cavvy.navigation") ?? "")) ready = READY.session;');
+    // It goes when the page says its first screen is drawn (as it tells the desktop app on any load), or before that
+    // when the machine can't be reached or has a question; or after a moment.
+    expect(preload).toMatch(/windowReady: \(\) => \{\s+ipcRenderer\.send\("window_ready"\);\s+shown\?\.\(\);\s+\},/);
+    expect(preload).toMatch(/const soon = \(\) => requestAnimationFrame\(\(\) => requestAnimationFrame\(end\)\);\s+shown = soon;/);
+    expect(preload).toContain('const ASKS = ".server-asks";');
+    expect(preload).toContain("if (document.querySelector(ASKS)) soon();");
     expect(preload).toContain("const timer = setTimeout(end, HELD_MS);");
-    // The classes it waits for are the ones the window draws.
-    expect(read("gui/src/components/Home.tsx")).toContain('<div class="home"');
-    expect(read("gui/src/components/TurnView.tsx")).toMatch(/class=\{?[`"]turn[ "`]/);
-    expect(read("gui/src/App.tsx")).toMatch(/<div class="session-opening"[^]*?<p role="alert"/);
     expect(read("gui/src/components/Servers.tsx")).toContain('<div class="server-cover" classList={{ "server-asks": asks() }}>');
+    // The page says so once what it was sent for is there: its sessions, projects and settings, and the session open.
+    expect(read("gui/src/lib/platform.ts")).toMatch(/export function showWindow\(\) \{\s+if \(windowShown\) return;\s+windowShown = true;\s+if \(electron\) return electron\.windowReady\(\);/);
+    expect(read("gui/src/state/app.ts")).toMatch(/await restoreActiveSession\(\);[^]*?\/\/ The first screen is drawn, with what it shows: the window comes up on it\.\s+showWindow\(\);/);
     // The page under the picture isn't drawn, but is there: the message box takes the keyboard as on any load
     // (hidden, it couldn't, and nothing gives it the keyboard later).
     expect(preload).toContain('style.setProperty("opacity", on ? "0" : "")');
@@ -57,4 +54,6 @@ test("a page that wasn't loaded for a switch asks for nothing, and the picture g
     // meanwhile is put back.
     expect(preload).toMatch(/sent = sessionStorage\.getItem\(NAVIGATION\);[^]*?const go = \(\) => \{[^]*?if \(sent === null\) sessionStorage\.removeItem\(NAVIGATION\);\s+else if \(sent !== undefined\) sessionStorage\.setItem\(NAVIGATION, sent\);[^]*?location\.reload\(\);/);
     expect(read("gui/src/state/app.ts")).toContain('const NAVIGATION_KEY = "cavvy.navigation"');
+    // Of two switches asked for one after the other, the last loads the window.
+    expect(preload).toMatch(/const mine = \+\+leaving;[^]*?const go = \(\) => \{[^]*?if \(mine !== leaving\) return;/);
 });
