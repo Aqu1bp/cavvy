@@ -1487,6 +1487,8 @@ export interface GuiSettings {
     /** The Simulator tools and pane (false turns them off; true, the default, is stored as unset). */
     simulator?: boolean;
     allowBypass?: boolean;
+    /** Bypass can always be chosen here (one of the user's servers): the switch that allows it has nothing to do. */
+    bypassAlways?: boolean;
     /** A message sent while a turn runs: steer it (default) or wait for it to end. */
     followUpBehavior?: FollowUpMode;
     /** "Open files with": an id from the server's editor list (src/server/editors.ts). */

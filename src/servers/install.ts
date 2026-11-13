@@ -7,7 +7,8 @@
 // of machine, a checksum that doesn't match) is said once and not tried again.
 
 import { createReadStream } from "fs";
-import { localSource, type BuildSource, type ServerBuild } from "./build";
+import { type BuildSource, type ServerBuild } from "./build";
+import { buildSource } from "./sources";
 import type { HostStatus } from "./host";
 import { checkRoom, probeServer, REMOTE_DIR, targetFor, type ServerFacts } from "./remote";
 import { applyBuild, pruneBuilds, remoteStatus, NotSetUp, setUpService, type ServiceReport } from "./service";
@@ -122,7 +123,7 @@ export class ServerBusy extends ServerError {
 export async function setUpServer(e: ServerEntry, o: SetupOptions = {}): Promise<SetupResult> {
     const facts = await probeServer(e, o.signal);
     const target = targetFor(facts, e);
-    const source = o.source ?? localSource();
+    const source = o.source ?? buildSource();
     const id = source.id;
     let running: HostStatus | undefined;
     try {
@@ -131,7 +132,8 @@ export async function setUpServer(e: ServerEntry, o: SetupOptions = {}): Promise
         if (!(err instanceof NotSetUp)) throw err;
     }
     const theirs = running?.build ?? facts.current;
-    const relation = theirs ? source.compare(theirs) : undefined;
+    // The time comes with the build it's of: only from a server that's running, which says both.
+    const relation = theirs ? source.compare(theirs, running?.build === theirs ? running.builtAt : undefined) : undefined;
     if (theirs && (relation === "newer" || relation === "different") && !(await o.confirmReplace?.(relation))) {
         if (running) return { facts, status: running, kept: relation };
         o.progress?.step(`Starting Cavvy on ${e.name}…`);
@@ -168,7 +170,7 @@ export async function setUpServer(e: ServerEntry, o: SetupOptions = {}): Promise
 export async function ensureBuildThere(e: ServerEntry, o: { progress?: SetupProgress; signal?: AbortSignal; source?: BuildSource } = {}): Promise<void> {
     const facts = await probeServer(e, o.signal);
     const target = targetFor(facts, e);
-    const source = o.source ?? localSource();
+    const source = o.source ?? buildSource();
     if (facts.builds.includes(source.id)) return;
     checkRoom(facts, e);
     await sendBuild(e, await source.build(target, { onStep: o.progress?.step, signal: o.signal }), facts, o);
