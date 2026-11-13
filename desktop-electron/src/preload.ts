@@ -10,15 +10,18 @@ import { contextBridge, ipcRenderer } from "electron";
  */
 const HELD = "cavvy.held";
 /**
- * The new page is ready when it says its first screen is drawn (windowReady: the session it was sent to is open, or
- * couldn't be, or the new-session screen has what the machine has). Before that, only a machine that can't be
- * reached, or has a question first, ends the wait (gui/src/components/Servers.tsx MachineCover): the page shows
+ * The new page is ready when it says its first screen is drawn (windowReady: the machine's sessions, projects and
+ * settings are in, and the session it was sent to is open, or couldn't be). Before that, only a machine that can't
+ * be reached, or has a question first, ends the wait (gui/src/components/Servers.tsx MachineCover): the page shows
  * other things on its way (a cover while it connects, the new-session screen before the session opens), and those
  * aren't it.
  */
 const ASKS = ".server-asks";
-/** How long the picture stays when neither comes. */
-const HELD_MS = 1500;
+/**
+ * How long the picture stays when neither comes. (The page says it's ready after a second whatever it has, so that
+ * a window always comes up: gui/src/state/app.ts SHOW_WINDOW_MS. This is that second, counted from here.)
+ */
+const HELD_MS = 1000;
 /** The page said its first screen is drawn (a picture is up meanwhile). */
 let shown: (() => void) | undefined;
 

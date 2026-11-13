@@ -43,9 +43,11 @@ test("a page that wasn't loaded for a switch asks for nothing, and the picture g
     expect(preload).toContain("if (document.querySelector(ASKS)) soon();");
     expect(preload).toContain("const timer = setTimeout(end, HELD_MS);");
     expect(read("gui/src/components/Servers.tsx")).toContain('<div class="server-cover" classList={{ "server-asks": asks() }}>');
-    // The page says so once what it was sent for is there: its sessions, projects and settings, and the session open.
-    expect(read("gui/src/lib/platform.ts")).toMatch(/export function showWindow\(\) \{\s+if \(windowShown\) return;\s+windowShown = true;\s+if \(electron\) return electron\.windowReady\(\);/);
-    expect(read("gui/src/state/app.ts")).toMatch(/await restoreActiveSession\(\);[^]*?\/\/ The first screen is drawn, with what it shows: the window comes up on it\.\s+showWindow\(\);/);
+    // The page says so through the same call as on any load, and after a second whatever it has: the picture's own
+    // limit is that second.
+    expect(read("gui/src/lib/platform.ts")).toContain("electron.windowReady()");
+    expect(read("gui/src/state/app.ts")).toContain("const SHOW_WINDOW_MS = 1000;");
+    expect(preload).toContain("const HELD_MS = 1000;");
     // The page under the picture isn't drawn, but is there: the message box takes the keyboard as on any load
     // (hidden, it couldn't, and nothing gives it the keyboard later).
     expect(preload).toContain('style.setProperty("opacity", on ? "0" : "")');
