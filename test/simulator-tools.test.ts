@@ -92,6 +92,25 @@ describe("permissions", () => {
         expect(check(SimulatorActTool, { action: "tap", ref: "e1" }, "bypassPermissions").behavior).toBe("allow");
     });
 
+    test("a yes to a tap or a key covers that call: the same one on the next screen asks again", () => {
+        const c = new PermissionChecker(() => ({}), W);
+        for (const input of [{ action: "tap", ref: "e1" }, { action: "tap", x: 100, y: 200 }, { action: "button", name: "home" }, { action: "type", text: "hello" }]) {
+            expect(c.check(SimulatorActTool, input, "default", W).behavior, input.action).toBe("ask");
+            c.approve(SimulatorActTool, input, W);
+            expect(c.check(SimulatorActTool, input, "default", W), input.action).toMatchObject({ behavior: "ask" });
+        }
+        expect(c.recentApprovals()).toEqual([]);
+        // Starting the same device is the same thing every time: a yes to it is remembered for the session.
+        c.approve(SimulatorControlTool, { action: "boot", udid: "AAAA" }, W);
+        expect(c.check(SimulatorControlTool, { action: "boot", udid: "AAAA" }, "default", W)).toMatchObject({ behavior: "allow", remembered: true });
+        // Not what acts on whatever runs there by then: the app ended, the link opened, the device shut down or taken back.
+        for (const input of [{ action: "shutdown" }, { action: "terminate", bundleId: "com.example.app" }, { action: "open_url", url: "example://pay" }, { action: "take_control" }, { action: "launch", bundleId: "com.example.app", args: ["-reset"] }]) {
+            expect(c.check(SimulatorControlTool, input, "default", W).behavior, input.action).toBe("ask");
+            c.approve(SimulatorControlTool, input, W);
+            expect(c.check(SimulatorControlTool, input, "default", W), input.action).toMatchObject({ behavior: "ask" });
+        }
+    });
+
     test("allowing launches doesn't allow shutting the device down", () => {
         const allowing = new PermissionChecker(() => ({ permissions: { allow: ["SimulatorControl(launch)"] } }), W);
         expect(allowing.check(SimulatorControlTool, { action: "launch", bundleId: "com.example.app" }, "default", W).behavior).toBe("allow");
