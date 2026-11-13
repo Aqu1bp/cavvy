@@ -970,11 +970,13 @@ export function start() {
             try {
                 setApp("hello", await rpc.call("hello", { client: isDesktop ? "desktop" : "browser" }));
                 openAhead();
-                // The models are asked for with the lists (the composer names its model from them, and offers its
-                // efforts), but not waited for: listing can mean asking each CLI.
                 const providers = refreshProviders();
+                const lists = Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), providers, refreshKeybindings().catch(() => undefined)]);
+                // The models are asked for with the lists (the composer names its model from them, and offers its
+                // efforts), but after them, and not waited for: the machine answers in the order it's asked, and the
+                // first screen waits for the lists (asked for first, the models put 60 ms on a switch to a server).
                 void refreshModels(false, providers).catch(() => undefined);
-                await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), providers, refreshKeybindings().catch(() => undefined)]);
+                await lists;
                 void refreshLimits().catch(() => undefined);
                 // A server from before app.update.get has nothing to say: no update state, no button.
                 void refreshUpdate().then(recheckUpdate, () => undefined);
