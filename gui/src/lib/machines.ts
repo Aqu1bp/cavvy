@@ -4,7 +4,7 @@
 
 import { createSignal } from "solid-js";
 import type { ServerProblem, UnknownHost } from "@shared/protocol";
-import { credentials, machine, MACHINE_KEY, windowKey } from "./platform";
+import { credentials, electron, machine, MACHINE_KEY, windowKey } from "./platform";
 import { Rpc, type Credentials } from "./rpc";
 import { setConnNote } from "../state/app";
 import { inspectorPane, PANE_KEY } from "../state/ui";
@@ -132,5 +132,7 @@ export function switchMachine(name: string | undefined, session?: string, folder
     } catch {
         return;
     }
-    location.reload();
+    // The desktop app keeps the window's picture up meanwhile, so it changes once (desktop-electron/src/preload.ts).
+    if (electron?.reloadHeld) electron.reloadHeld();
+    else location.reload();
 }

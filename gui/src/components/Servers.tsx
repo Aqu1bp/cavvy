@@ -435,8 +435,14 @@ function MachineCover(p: { reconnect: () => void }) {
             {HERE}
         </button>
     );
+    // More than "Connecting…": something to read or answer. (The desktop app keeps the last machine's view up until
+    // then: desktop-electron/src/preload.ts ASKS.)
+    const asks = () => {
+        const i = machineIssue();
+        return Boolean(updating() || busy()) || (i !== undefined && (i.kind !== "connecting" || i.percent !== undefined));
+    };
     return (
-        <div class="server-cover">
+        <div class="server-cover" classList={{ "server-asks": asks() }}>
             <Switch
                 fallback={
                     <>
