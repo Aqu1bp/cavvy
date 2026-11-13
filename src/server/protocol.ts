@@ -1636,6 +1636,8 @@ export interface LentSession {
     id?: string;
     /** What it waits for the user to allow here. */
     asks: Interaction[];
+    /** Where its simulator would stand, while there's no session here for it: what the pane shows until the user or the agent uses one. */
+    state?: SimulatorState;
 }
 
 /** A server as a window lists it. */
@@ -1852,9 +1854,11 @@ export interface Methods {
     "offers.result": { params: { callId: string; text: string; isError?: boolean; images?: { type: "image"; mediaType: string; data: string }[] }; result: null };
     /**
      * Only the user's own machine takes this, from its windows: what it has for a session on one of its servers
-     * that's lent its tools. `open`: the user opened that session's Simulator, so there's one from now on.
+     * that's lent its tools. `open`: the user started or chose a device in that session's Simulator pane, so there's one from now on.
      */
     "offers.session": { params: { name: string; sessionId: string; title?: string; open?: boolean }; result: LentSession };
+    /** The same machine, to the same windows: the sessions on that server it asks its user something for right now. */
+    "offers.asking": { params: { name: string }; result: { sessionId: string; lent: LentSession }[] };
     "servers.list": { params: Record<string, never>; result: { servers: ServerSummary[] } };
     /**
      * Each server's sessions, kept up to date from then on (servers.overview events) for the window that asks, which

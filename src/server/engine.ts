@@ -120,6 +120,7 @@ import { modelRef, type AttachedPart, type ImagePart } from "../providers/types"
 import { checkFiles, checkMedia, toWire } from "./attachments";
 import { BrowserError } from "../browser/page";
 import { SimulatorError } from "../simulator/simctl";
+import { simulatorOutlook } from "../simulator/session";
 import { TitleQueue } from "./title-queue";
 
 export interface EngineOptions {
@@ -949,7 +950,8 @@ export class Engine {
         return m;
     }
 
-    async createSession(cwd: string, opts: { model?: string; mode?: PermissionModeId; accounts?: Record<string, string>; startedBy?: string } = {}): Promise<Runtime> {
+    /** `unlisted`: its folder isn't one of the user's projects (a session that lends to one on a server: guestFor). */
+    async createSession(cwd: string, opts: { model?: string; mode?: PermissionModeId; accounts?: Record<string, string>; startedBy?: string; unlisted?: boolean } = {}): Promise<Runtime> {
         const p = resolve(expandHome(cwd));
         if (!isDir(p)) throw new RpcError(`${p} isn't a folder`);
         const ws = this.workspaceFor(p);
@@ -961,7 +963,7 @@ export class Engine {
         const mode = opts.mode && PERMISSION_MODES.includes(opts.mode) ? opts.mode : this.defaultMode(ws);
         const rt = new Runtime(this, ws, session, { mode, resumed: false });
         this.runtimes.set(rt.id, rt);
-        this.remember(p);
+        if (!opts.unlisted) this.remember(p);
         await rt.ready.catch(() => undefined);
         if (opts.model) await rt.setModel(opts.model);
         return rt;
@@ -1308,6 +1310,8 @@ export class Engine {
                     this.runtimes.delete(id);
                     clearTimeout(this.unloadTimers.get(id));
                     this.unloadTimers.delete(id);
+                    // One a server's session is lent tools through: the session there gets a new one for its next call.
+                    if (rt.guest) this.guestGone(rt);
                     await rt.close().catch(() => undefined);
                 }
                 trashSession(id, flags);
@@ -1894,7 +1898,7 @@ export class Engine {
             const folder = join(cavvyHome(), "guests", name);
             mkdirSync(folder, { recursive: true });
             const title = await lentTitle(session.title);
-            const rt = await this.createSession(folder);
+            const rt = await this.createSession(folder, { unlisted: true });
             rt.guestOf = name;
             rt.guestSession = { id: session.id, title };
             rt.lastLent = Date.now();
@@ -1913,7 +1917,8 @@ export class Engine {
             offered: simulatorsToLend(loadSettings(homedir(), { trusted: false })),
             ...(rt ? { id: rt.id } : {}),
             // Said to be this machine's: they show in a session that runs on another.
-            asks: (rt?.asks ?? []).map((i) => (i.kind === "permission" && !i.where ? { ...i, where: "On this Mac" } : i)),
+            // Only what's asked before a call runs (nothing else is asked through such a session).
+            asks: (rt?.asks ?? []).flatMap((i) => (i.kind === "permission" ? [i.where ? i : { ...i, where: "On this Mac" }] : [])),
         };
     }
 
@@ -2872,12 +2877,21 @@ export class Engine {
                 if (!/^[\w.-]{1,120}$/.test(sessionId)) throw new RpcError("That isn't a session's id.", "invalid");
                 if (!(await this.servers(client)).list().some((s) => s.name === name)) throw new RpcError(`No server is called ${name}.`, "invalid");
                 let opening = this.guests.get(`${name}\0${sessionId}`);
-                // The user opened the session's Simulator themselves: there's one to show from then on.
-                if (!opening && p.open === true && simulatorsToLend(loadSettings(homedir(), { trusted: false }))) {
+                const settings = loadSettings(homedir(), { trusted: false });
+                // The user started or chose a device in the session's Simulator pane: there's one to show from then on.
+                if (!opening && p.open === true && simulatorsToLend(settings)) {
                     opening = this.guestFor(name, { id: sessionId, title: optStr(p.title) ?? "" });
                     if (!opening) throw new RpcError(`This Mac's Simulator is already in use by ${MAX_GUESTS} sessions on ${name}.`, "busy");
                 }
-                return this.lentSession(await opening?.catch(() => undefined));
+                const rt = await opening?.catch(() => undefined);
+                const lent = this.lentSession(rt);
+                // Only looked at: nothing is made here for it, and the pane shows what could be started.
+                return rt || !lent.offered ? lent : { ...lent, state: await simulatorOutlook(settings) };
+            }
+            case "offers.asking": {
+                if (this.o.away) throw new RpcError("This machine lends nothing.", "unsupported");
+                const name = str(p.name, "name");
+                return [...this.runtimes.values()].flatMap((rt) => (rt.guestOf === name && rt.guestSession && rt.asks.length ? [{ sessionId: rt.guestSession.id, lent: this.lentSession(rt) }] : []));
             }
             case "offers.result": {
                 const call = this.lentCalls.get(str(p.callId, "callId"));

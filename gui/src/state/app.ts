@@ -624,6 +624,12 @@ export function requestTrust(path: string, then: () => void, purpose?: "mcp-appr
 // ---------------------------------------------------------------------------
 // Lists
 
+/**
+ * What the servers code has to say of the window's sessions (lib/lent.ts, in a window on a server): `shown`, a
+ * session as its row shows it, when more is known of it than the machine it's on says.
+ */
+export const others: { shown?: (s: SessionSummary) => SessionSummary } = {};
+
 export async function refreshSessions() {
     const markers = new Map(deleted);
     const lists = await Promise.all([rpc.call("sessions.list", { limit: 300 }), rpc.call("sessions.list", { limit: 300, archived: true })]).catch((e) => {
@@ -632,7 +638,7 @@ export async function refreshSessions() {
     });
     // A list confirms a missed restore, but cannot undo a deletion that happened
     // while either request was in flight (including a second deletion after Undo).
-    const [list, archived] = lists.map((rows) => rows.filter((s) => !deleted.has(s.id) || deleted.get(s.id) === markers.get(s.id))) as typeof lists;
+    const [list, archived] = lists.map((rows) => rows.filter((s) => !deleted.has(s.id) || deleted.get(s.id) === markers.get(s.id)).map((s) => others.shown?.(s) ?? s)) as typeof lists;
     // The open search result can be older than the server's list window.
     const active = [...app.sessions, ...app.archived].find((s) => s.id === app.activeId);
     if (active && !deleted.has(active.id) && ![...list, ...archived].some((s) => s.id === active.id)) {
@@ -781,7 +787,7 @@ function reopenFailed(id: string, e: unknown) {
     }
 }
 
-function upsertSession(s: SessionSummary) {
+export function upsertSession(s: SessionSummary) {
     sessionPresent(s.id);
     const seen = seenBeforeDelete.get(s.id);
     if (seen !== undefined) {
@@ -819,7 +825,7 @@ function onEvent(ev: ServerEvent) {
             return;
         }
         case "sessions.upsert":
-            upsertSession(ev.session);
+            upsertSession(others.shown?.(ev.session) ?? ev.session);
             return;
         case "sessions.remove":
             forgetSession(ev.id);

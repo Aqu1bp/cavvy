@@ -31,6 +31,7 @@ function setup(o: { guest?: string; open?: () => Promise<string | undefined> } =
                 guest = await (o.open ?? (async () => "here"))();
                 return guest;
             },
+            outlook: async () => ({ status: "off", devices: [], device: { udid: "AAAA", name: "iPhone 17", runtime: "iOS 27.0", state: "booted", kind: "iphone" } }),
             none: (session, state) => void none.push([session, state.error]),
         },
     );
@@ -54,25 +55,28 @@ test("what the pane asks of the session it shows is asked of this computer's ses
     expect(got.map((f) => [f.sessionId, f.frameId])).toEqual([["there", "f1"]]);
 });
 
-test("a pane opened before the session's agent used the simulator has this computer make one, once it asks for something; leaving asks for nothing", async () => {
+test("a session that's only looked at has nothing made for it on this computer: the pane shows what could be started, and there's one once the user starts or chooses a device", async () => {
     const { stream, sent, opened } = setup();
-    // Input with nothing to send it to goes nowhere, and a pane that goes away makes nothing.
+    // Input with nothing to send it to goes nowhere, a pane that goes away asks for nothing, and one that shows
+    // (it watches as soon as it's on screen, in every session the user passes through) is told what could be started.
     stream.notify("simulator.ack", { id: "there", frameId: "f" });
     expect(await stream.call("simulator.unwatch", { id: "there" })).toBeNull();
+    expect((await stream.call("simulator.watch", { id: "there", side: 800 })).device?.name).toBe("iPhone 17");
     expect([sent.length, opened()]).toEqual([0, 0]);
-    await stream.call("simulator.watch", { id: "there" });
-    await stream.call("simulator.command", { id: "there", command: "boot", udid: "AAAA" });
+    // The user's own doing: there's one from here on, and what's asked next is asked of it.
+    await stream.call("simulator.command", { id: "there", command: "select", udid: "AAAA" });
+    await stream.call("simulator.watch", { id: "there", side: 800 });
     expect(opened()).toBe(1);
-    expect(sent.map((x) => [x[1], (x[2] as { id: string }).id])).toEqual([["simulator.watch", "here"], ["simulator.command", "here"]]);
+    expect(sent.map((x) => [x[1], (x[2] as { id: string }).id])).toEqual([["simulator.command", "here"], ["simulator.watch", "here"]]);
 });
 
 test("when this computer has none to lend, the pane is told so, not left waiting", async () => {
     const off = setup({ open: async () => undefined });
-    expect(await off.stream.call("simulator.watch", { id: "there" })).toEqual({ status: "unavailable", error: "This Mac's Simulator is turned off.", devices: [] });
-    expect(off.none).toEqual([["there", "This Mac's Simulator is turned off."]]);
+    expect(await off.stream.call("simulator.command", { id: "there", command: "boot" })).toEqual({ status: "unavailable", error: "This Mac's Simulator isn't available now.", devices: [] });
+    expect(off.none).toEqual([["there", "This Mac's Simulator isn't available now."]]);
     expect(off.sent).toEqual([]);
     const full = setup({ open: async () => Promise.reject(new Error("This Mac's Simulator is already in use by 30 sessions on box.")) });
-    await expect(full.stream.call("simulator.watch", { id: "there" })).rejects.toThrow("already in use");
+    await expect(full.stream.call("simulator.command", { id: "there", command: "boot" })).rejects.toThrow("already in use");
     expect(full.none).toEqual([["there", "This Mac's Simulator is already in use by 30 sessions on box."]]);
 });
 
@@ -84,4 +88,8 @@ test("it's part of the servers code: the window's own code only leaves room for 
     // where the window's sessions are.
     expect(read("state/actions.ts")).toContain('(far.rpc?.(id) ?? rpc).call("session.respond"');
     expect(read("lib/lent.ts")).toContain("far.rpc = (id) => (sessionOf.has(id) ? h : undefined);");
+    // One card at a time: each takes the number keys and Esc, so two showing would both be answered by one press.
+    const composer = read("components/Composer.tsx");
+    expect(composer.split("<InteractionTab ").length).toBe(3);
+    expect(composer).toContain("when={far.asks?.(p.sessionId ?? \"\")}\n                fallback={");
 });

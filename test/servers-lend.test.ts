@@ -228,6 +228,8 @@ test("the user's no here is what the session there is told; this machine going a
     // While this machine's question waits, its Cavvy stops listening to the server (as when it quits): only that
     // connection goes, so what the session there is told can still be read through the window's own.
     await until("the question here", async () => (await lentTo(second)).asks.length > 0);
+    // A window that comes late (reloaded, say) learns of it too, whichever session it shows.
+    expect(((await here.call("offers.asking", { name: "box" })) as { sessionId: string }[]).map((a) => a.sessionId)).toEqual([second]);
     (mine.engine as any).serverLinks.watches.get("box").stop();
     await until("the turn there to end", async () => (await lastTurn(remote, second)).status === "done");
     expect(JSON.stringify(await lastTurn(remote, second))).toContain("went away before it answered");
@@ -285,20 +287,32 @@ test("the session here that a session there is lent through goes by itself once 
     // Unused for a while (four seconds here): gone, and the windows on the server are told there's none.
     await until("it to be closed", () => told("one")!.id === undefined, 15_000);
     expect(mine.engine.runtimes.has(first)).toBe(false);
-    expect(await lentTo("one")).toEqual({ offered: true, asks: [] });
+    expect((await lentTo("one")).id).toBeUndefined();
     // The session there goes on being lent to, through a new one here.
     await call("one");
     await until("another session here", () => Boolean(told("one")?.id));
     expect(told("one")!.id).not.toBe(first);
 });
 
-test("the user opens a session's Simulator in a window before its agent used it: this machine has one for it from then on, and shows it", async () => {
+test("a session that's only looked at has nothing made for it here; once the user starts a device in its pane there's one, shown in the windows on that server", async () => {
     (mine.engine as any).lentAt.clear();
-    // Nothing is made for a session that's only looked at.
-    expect(await lentTo("by-hand")).toEqual({ offered: true, asks: [] });
+    const sessions = mine.engine.runtimes.size;
+    // Looked at, however often: what could be started is said, and nothing is made.
+    for (let i = 0; i < 3; i++) {
+        const looked = await lentTo("by-hand");
+        expect([looked.offered, looked.id, looked.asks, looked.state?.status, looked.state?.devices.map((d) => d.udid)]).toEqual([true, undefined, [], "off", ["AAAA"]]);
+    }
+    expect(mine.engine.runtimes.size).toBe(sessions);
     const opened = (await here.call("offers.session", { name: "box", sessionId: "by-hand", title: "By hand", open: true })) as LentSession;
     expect(typeof opened.id).toBe("string");
     expect((await lentTo("by-hand")).id).toBe(opened.id);
+    // Its folder isn't one of the user's projects, and it's in no list of sessions.
+    expect(JSON.stringify(await here.call("projects.recent"))).not.toContain("guests");
+    expect(((await here.call("sessions.list", { limit: 200 })) as { id: string }[]).some((x) => x.id === opened.id)).toBe(false);
+    // What its simulator does is told to this machine's windows that are on that server, though none has it open.
+    here.events.length = 0;
+    await here.call("simulator.command", { id: opened.id, command: "select", udid: "AAAA" });
+    await until("its simulator to be told of", () => here.events.some((e) => e.type === "simulator.state" && e.sessionId === opened.id));
     // The pane asks this machine about it by that id, as it would about a session here.
     const state = await here.call("simulator.state", { id: opened.id });
     expect([state.status, state.devices.map((d: { udid: string }) => d.udid)]).toEqual(["off", ["AAAA"]]);
@@ -452,6 +466,9 @@ test("asks from one server ring the user a few times a minute, then once more to
     await Bun.sleep(200);
     // Each told as the session there.
     expect(new Set(here.events.filter((e) => e.type === "servers.notify").map((e) => [e.name, e.sessionId, e.title, e.lent].join())).size).toBe(1);
+    // A window that comes late (reloaded, say) learns which sessions there this machine asks for: none now, since
+    // these were only told of, not asked.
+    expect(await here.call("offers.asking", { name: "box" })).toEqual([]);
     expect(here.events.find((e) => e.type === "servers.notify")).toMatchObject({ name: "box", sessionId: "20261113-000000-bbbbbb", title: "limits", lent: true });
     const rang = () => here.events.filter((e) => e.type === "servers.notify").map((e) => e.body);
     expect(rang()).toEqual(["Wants to tap 0", "Wants to tap 1", "Wants to tap 2", "Wants to tap 3", "Wants to tap 4", "Wants to tap 5", "More from box is waiting for you."]);

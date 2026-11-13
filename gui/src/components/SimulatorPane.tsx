@@ -492,8 +492,8 @@ export function SimulatorPane(p: { handle: SessionHandle }) {
                                     <span class="selectable">{n().detail}</span>
                                 </Show>
                                 <Show when={n().start}>
-                                    <button class="btn primary sm sim-start" disabled={busy()} onClick={() => command("boot")}>
-                                        Start
+                                    <button class="btn primary sm sim-start" disabled={busy()} onClick={() => command(n().show ? "select" : "boot", n().show ? device()?.udid : undefined)}>
+                                        {n().show ? "Show" : "Start"}
                                     </button>
                                 </Show>
                                 <Show when={n().retry}>

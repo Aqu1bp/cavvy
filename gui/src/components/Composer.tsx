@@ -653,7 +653,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     }));
     const interactions = () => st()?.interactions ?? [];
     /** A turn runs, and no request card is up: what it's doing is the turn's live line (LiveLine.tsx), not a row here. */
-    const working = () => Boolean(p.sessionId && busy() && !interactions().length);
+    const working = () => Boolean(p.sessionId && busy() && !interactions().length && !far.asks?.(p.sessionId));
 
     return (
         <div
@@ -682,9 +682,16 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 if (e.dataTransfer?.files) void addFiles(e.dataTransfer.files);
             }}
         >
-            <Show when={far.asks?.(p.sessionId ?? "")}>{(a) => <InteractionTab sessionId={a().id} items={a().items} />}</Show>
-            <Show when={p.sessionId && interactions().length}>
-                <InteractionTab sessionId={p.sessionId!} items={interactions()} />
+            {/* One at a time (each card takes the number keys and Esc): what this computer asks for a session on a server comes first. */}
+            <Show
+                when={far.asks?.(p.sessionId ?? "")}
+                fallback={
+                    <Show when={p.sessionId && interactions().length}>
+                        <InteractionTab sessionId={p.sessionId!} items={interactions()} />
+                    </Show>
+                }
+            >
+                {(a) => <InteractionTab sessionId={a().id} items={a().items} />}
             </Show>
             <Show when={menuOpen()}>
                 <div class={`composer-menu ${menu().some((m) => m.kind !== "command") ? "files" : ""}`} ref={menuList} id={menuId} role="listbox" aria-label="Composer suggestions" aria-busy={menuStatus() === "loading"}>
