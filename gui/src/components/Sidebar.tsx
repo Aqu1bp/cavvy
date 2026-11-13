@@ -402,15 +402,17 @@ function NeedsRow(p: { s: SessionSummary; hold: (id: string, held: boolean) => v
     onCleanup(() => p.hold(id, false));
     let el: HTMLDivElement | undefined;
     const title = () => (p.s.run ? `${p.s.run.modelName} · ${p.s.title}` : p.s.title);
+    // What it waits for; one on a server says which first, as its row in the list does.
+    const line = () => (p.s.machine ? `${p.s.machine} · ` : "") + needsRowLine(p.s);
     const waiting = () => p.s.status === "waiting";
     const current = () => app.activeId === p.s.id;
     const unread = () => isUnread(p.s) && !current();
     return (
         <div ref={el} data-needs-id={p.s.id} class={`needs-row card ${waiting() ? "waiting" : ""} ${current() ? "cur" : ""} ${menu() ? "menu-open" : ""} ${r.editing() ? "renaming" : ""}`} onContextMenu={contextMenu} onKeyDown={contextKey}>
-            <button class="card-hit needs-hit" onClick={() => p.pick.open(p.s.id)} aria-current={current() ? "page" : undefined} aria-label={`${title()}, ${needsRowLine(p.s)}`} title={`${p.s.title}: ${needsRowLine(p.s)}`}>
+            <button class="card-hit needs-hit" onClick={() => p.pick.open(p.s.id)} aria-current={current() ? "page" : undefined} aria-label={`${title()}, ${line()}`} title={`${p.s.title}: ${line()}`}>
                 <span class="t"><Show when={!r.editing()}>{title()}</Show></span>
                 <span class="end"><RowEnd s={p.s} unread={unread()} /></span>
-                <span class="m"><span class="truncate">{needsRowLine(p.s)}</span></span>
+                <span class="m"><span class="truncate">{line()}</span></span>
             </button>
             <Show when={r.editing()}>
                 <div class="card-rename">{r.input()}</div>

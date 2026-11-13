@@ -39,8 +39,20 @@ export const [modePickerOpen, setModePickerOpen] = createSignal(false);
 export const [contextCardOpen, setContextCardOpen] = createSignal(false);
 /** Setup must be visible; an overlay opened during checkout leaves it for a manual run. */
 export const setupObscured = () => Boolean(settingsTab() || paletteOpen() || rewindOpen() || commitRequest() || folderPickerOpen() || mcpOpen() || modelPickerOpen() || modePickerOpen() || contextCardOpen());
-/** The side panel's tab; kept while the app runs, like the reader's layout. */
-export const [inspectorPane, setInspectorPane] = createSignal<InspectorPane>("changes");
+/** Where a window that's about to load again on another machine leaves its side panel's tab (lib/machines.ts). */
+export const PANE_KEY = "cavvy.pane";
+/** The tab the window was on before it went to another machine, once. */
+function carriedPane(): InspectorPane {
+    try {
+        const was = sessionStorage.getItem(PANE_KEY);
+        sessionStorage.removeItem(PANE_KEY);
+        return was === "agents" || was === "commands" || was === "browser" || was === "simulator" ? was : "changes";
+    } catch {
+        return "changes";
+    }
+}
+/** The side panel's tab; kept while the app runs, like the reader's layout, and when the window goes to another machine. */
+export const [inspectorPane, setInspectorPane] = createSignal<InspectorPane>(carriedPane());
 /** The sub-agent the main view shows (an AgentRun id); none for the session itself. */
 export const [agentFocus, setAgentFocus] = createSignal<string | undefined>();
 /** The review pane docked on the right, and the file (and view) it opens on. */

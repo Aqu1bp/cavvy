@@ -220,7 +220,8 @@ export function sshFailure(stderr: string, e: ServerEntry): SshError {
     if (/^ssh: connect to host /m.test(stderr) || /Could not resolve hostname|Name or service not known|nodename nor servname|Temporary failure in name resolution|timed out|Connection refused|No route to host|Network is (unreachable|down)|Connection closed by|closed by remote host|Connection reset|Connection abort|kex_exchange_identification|Broken pipe|Host is down|Timeout, server .* not responding/i.test(stderr)) {
         return new SshError("unreachable", `Can't reach ${host}.`, detail);
     }
-    if (/Killed by signal \d+/.test(stderr)) return new SshError("other", `The connection to ${host} was cut off.`);
+    // By the name the user gave it, not its address: this is said of a server they already use.
+    if (/Killed by signal \d+/.test(stderr)) return new SshError("other", `The connection to ${e.name || host} was cut off.`);
     return new SshError("other", `Couldn't connect to ${host}.`, detail);
 }
 
@@ -322,7 +323,7 @@ export async function ssh(e: ServerEntry, command: string, o: SshRunOptions = {}
         if (timedOut) throw new SshError("unreachable", `${hostOf(e)} didn't answer in time.`);
         if (code === 255) throw sshFailure(stderr, e);
         // ssh itself was killed (not by us): whatever it was doing didn't finish.
-        if (proc.signalCode) throw new SshError("other", `The connection to ${hostOf(e)} was cut off.`);
+        if (proc.signalCode) throw new SshError("other", `The connection to ${e.name || hostOf(e)} was cut off.`);
         return { code, stdout, stderr };
     } finally {
         clearTimeout(timer);

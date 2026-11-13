@@ -7,7 +7,7 @@
 // This computer's own Cavvy hears each server (servers.overview: src/servers/watch.ts). Part of the servers code,
 // loaded only when there are servers. A server that can't be reached as it is says so above the sidebar's foot.
 
-import { batch, For } from "solid-js";
+import { batch, createEffect, createRoot, For, on } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import { render } from "solid-js/web";
 import type { MachineOverview, ServerEvent, SessionSummary } from "@shared/protocol";
@@ -44,8 +44,14 @@ function seen(list: SessionSummary[], unlisted: string[] = []) {
     if (fresh.length || stale.length) markSeenAll(fresh, stale);
 }
 
-/** The list made again from the window's own sessions and every other machine's as they stand. */
+/**
+ * The list made again from the window's own sessions and every other machine's as they stand. Not before the
+ * window's own are in: the sidebar holds its rows still under the pointer (and the pointer is on it, right after a
+ * click that brought the window to this machine), so a first list of only the other machines' would stay all there
+ * is. Its own list takes these in when it comes (others.list).
+ */
 function relist() {
+    if (!app.sessionsLoaded) return;
     const ownOf = (list: SessionSummary[]) => list.filter((s) => s.machine === machine);
     const add = listable([...ownOf(app.sessions), ...ownOf(app.archived)], rows());
     const before = [...far.keys()];
@@ -61,7 +67,7 @@ function relist() {
 
 /** One session of another machine changed. */
 function put(s: SessionSummary) {
-    if (!mayTake(listed(s.id), machine, s.machine)) return;
+    if (!app.sessionsLoaded || !mayTake(listed(s.id), machine, s.machine)) return;
     far.set(s.id, s.machine);
     seen([s]);
     upsertSession(s);
@@ -93,8 +99,10 @@ function drop(id: string, at: string | undefined) {
     if (now && now.machine !== machine) forgetSession(id);
 }
 
-// What the list holds of the other machines when the window's own are asked for again (state/app.ts).
+// What the list holds of the other machines when the window's own are asked for again (state/app.ts), and once
+// they're in for the first time: which of the rows are another machine's is worked out then.
 others.list = rows;
+createRoot(() => createEffect(on(() => app.sessionsLoaded, (loaded) => loaded && relist())));
 
 /**
  * What a session's row offers, for one on another machine: sent there. Through this computer's Cavvy, which is

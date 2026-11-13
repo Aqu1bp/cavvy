@@ -7,6 +7,7 @@ import type { ServerProblem, UnknownHost } from "@shared/protocol";
 import { credentials, machine, MACHINE_KEY, windowKey } from "./platform";
 import { Rpc, type Credentials } from "./rpc";
 import { setConnNote } from "../state/app";
+import { inspectorPane, PANE_KEY } from "../state/ui";
 
 /** Why the window isn't on its server yet, for the cover that says so (components/Servers.tsx). */
 export type MachineIssue =
@@ -126,6 +127,8 @@ export function switchMachine(name: string | undefined, session?: string, folder
         // Where the window was (its session, its project) is the other machine's: here it would name nothing, or the wrong thing.
         if (session || folder) sessionStorage.setItem("cavvy.navigation", JSON.stringify(session ? { activeId: session } : { homeCwd: folder }));
         else sessionStorage.removeItem("cavvy.navigation");
+        // The side panel stays on the tab it was on: it's the same window to the user.
+        sessionStorage.setItem(PANE_KEY, inspectorPane());
     } catch {
         return;
     }
