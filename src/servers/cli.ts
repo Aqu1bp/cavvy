@@ -17,6 +17,7 @@ import { LOGIN_EXIT, probeServer, REMOTE_CURRENT, REMOTE_DIR, remoteBuildDir } f
 import { applyBuild, NotSetUp, previousBuild, remoteCheck, remoteStatus, revokeOverSsh, serviceReport, stopRemote, UpdateFailed, type ServiceReport } from "./service";
 import { hostOf, offeredHostKey, printable, remoteSh, shQuote, ssh, sshCommandArgv, SshError, trustHostKey } from "./ssh";
 import { draftServer, listServers, removeServer, requireServer, saveServer, ServerError, thisDesktop, type ServerEntry } from "./store";
+import type { PermissionMode } from "../permissions/modes";
 
 const out = (line = "") => process.stdout.write(line + "\n");
 const err = (line: string) => process.stderr.write(line + "\n");
@@ -165,6 +166,19 @@ export function checkLines(name: string, c: HostCheck, service?: ServiceReport):
     else if (c.gh.signedIn === false) lines.push("The GitHub CLI isn't signed in there. On it: gh auth login");
     if (!c.browser) lines.push("No Chrome there: the Browser tool needs one.");
     return lines;
+}
+
+const MODE_NAMES: Record<PermissionMode, string> = { default: "Manual", acceptEdits: "Accept edits", plan: "Plan", auto: "Auto", bypassPermissions: "Bypass" };
+
+/** How sessions on a server stand with permissions: the mode they start in, and the sandbox Auto mode would use. Nothing for a server that doesn't say. */
+export function permissionLines(c: HostCheck): string[] {
+    if (!c.mode) return [];
+    const sandbox = !c.sandbox
+        ? "Auto mode has no sandbox there."
+        : c.sandboxOn
+          ? `Auto mode's sandbox is on (${c.sandbox === "bwrap" ? "bubblewrap" : "Seatbelt"}).`
+          : `Auto mode's sandbox is off: "sandbox": true in its settings turns it on (bubblewrap, experimental).`;
+    return [`Sessions start in ${MODE_NAMES[c.mode]}. ${sandbox}`];
 }
 
 async function check(e: ServerEntry): Promise<HostCheck | undefined> {
@@ -372,6 +386,7 @@ async function add(args: string[]): Promise<number> {
     out(setup.kept === "newer" ? `${e.name} is ready. It runs a newer Cavvy than this machine.` : `${e.name} is ready.`);
     out("Only put credentials on it that you'd accept an agent using.");
     let c = await check(e);
+    if (c?.mode === "bypassPermissions") out("Sessions there run without asking (Bypass).");
     // Asked about one at a time; what's said afterwards is the server as that left it.
     if (c && (await offerSignIns(e, c))) c = await check(e);
     for (const line of c ? checkLines(e.name, c, setup.service) : serviceLines(setup.service)) out(line);
@@ -396,6 +411,7 @@ async function checkCommand(names: string[]): Promise<number> {
             const lines = c ? checkLines(e.name, c, serviceReport(facts)) : [];
             for (const line of lines) out(`  ${line}`);
             if (c && !lines.length) out("  Nothing missing.");
+            for (const line of c ? permissionLines(c) : []) out(`  ${line}`);
         } catch (x) {
             if (x instanceof NotSetUp) out(`${e.name}: Cavvy isn't set up there. Set it up: ${APP_NAME} servers update ${e.name}`);
             else if (!report(x)) throw x;
