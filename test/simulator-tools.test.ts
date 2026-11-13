@@ -92,6 +92,19 @@ describe("permissions", () => {
         expect(check(SimulatorActTool, { action: "tap", ref: "e1" }, "bypassPermissions").behavior).toBe("allow");
     });
 
+    test("a yes to a tap or a key covers that call: the same one on the next screen asks again", () => {
+        const c = new PermissionChecker(() => ({}), W);
+        for (const input of [{ action: "tap", ref: "e1" }, { action: "tap", x: 100, y: 200 }, { action: "button", name: "home" }, { action: "type", text: "hello" }]) {
+            expect(c.check(SimulatorActTool, input, "default", W).behavior, input.action).toBe("ask");
+            c.approve(SimulatorActTool, input, W);
+            expect(c.check(SimulatorActTool, input, "default", W), input.action).toMatchObject({ behavior: "ask" });
+        }
+        expect(c.recentApprovals()).toEqual([]);
+        // Starting the same device is the same thing every time: a yes to it is remembered for the session.
+        c.approve(SimulatorControlTool, { action: "boot", udid: "AAAA" }, W);
+        expect(c.check(SimulatorControlTool, { action: "boot", udid: "AAAA" }, "default", W)).toMatchObject({ behavior: "allow", remembered: true });
+    });
+
     test("allowing launches doesn't allow shutting the device down", () => {
         const allowing = new PermissionChecker(() => ({ permissions: { allow: ["SimulatorControl(launch)"] } }), W);
         expect(allowing.check(SimulatorControlTool, { action: "launch", bundleId: "com.example.app" }, "default", W).behavior).toBe("allow");

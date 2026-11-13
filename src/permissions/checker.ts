@@ -117,7 +117,7 @@ function isLink(p: string): boolean {
 
 /** What isCavvyConfig looks for in a path. */
 /** Tools whose yes covers only the call it answered (see approve). */
-const ONE_CALL_APPROVAL = new Set(["GitCommit", "GitPush", "CreatePullRequest", "BrowserAct", "BrowserEval"]);
+const ONE_CALL_APPROVAL = new Set(["GitCommit", "GitPush", "CreatePullRequest", "BrowserAct", "BrowserEval", "SimulatorAct"]);
 const CONFIG_NAMES = new Set([".cavvy", LEGACY.dir, ".claude", ".codex", ".opencode", ".grok", ".agents", ".git", ".mcp.json", "opencode.json", "opencode.jsonc"]);
 
 /**
@@ -251,7 +251,8 @@ export class PermissionChecker {
     approve(tool: Tool<any>, input: any, cwd: string, opts: { sandbox?: boolean; grant?: SessionGrant } = {}) {
         // The git tools act on whatever the repo holds when they run, so the same input can mean another
         // branch, commit or set of files; a browser action, on whatever page is open, so the same click or
-        // script can do something else on the next one: a yes covers the call it answered. "Don't ask again" is the rule.
+        // script can do something else on the next one; a tap or a key on a simulator, on whatever screen is up:
+        // a yes covers the call it answered. "Don't ask again" is the rule.
         // Nor does the reviewer hear of it: it would read close variations (a push from Bash) as approved too.
         if (ONE_CALL_APPROVAL.has(tool.name)) return;
         this.approved.add(this.actionKey(tool, input, cwd, opts.sandbox));
