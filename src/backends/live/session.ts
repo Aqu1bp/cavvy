@@ -17,6 +17,7 @@ import type { Usage } from "../../providers/types";
 import { JsonLinesProcess, cliMessage, stopTiming } from "../cli";
 import { BackgroundTasks, type StopResult } from "./tasks";
 import type { AgentCliAdapter, CliConnection, CliEvent, LiveClock, LiveSettings, SessionHost, SpawnConfig, SpawnSpec, TurnInput, TurnSink } from "./types";
+import { SESSION_VAR } from "../../util/session-processes";
 
 /** After the process exits, how long its output may stay quiet before it's no longer read (a child of it may hold it open). */
 export const EXIT_DRAIN_MS = 2000;
@@ -425,7 +426,7 @@ export class LiveCliSession {
             const proc = this.proc;
             const conn = this.conn;
             if (!proc || !conn) {
-                await this.start(spec, settings, { resumeId: c.resumeId, fork: c.forkSession }, signal, c.accountId);
+                await this.start(spec, settings, { resumeId: c.resumeId, fork: c.forkSession }, signal, c.accountId, c.processMark);
                 return undefined;
             }
             const gen = this.generation;
@@ -478,10 +479,13 @@ export class LiveCliSession {
         }
     }
 
-    private async start(spec: SpawnSpec, settings: LiveSettings, resume: { resumeId?: string; fork?: boolean }, signal: AbortSignal, account: string | undefined): Promise<void> {
+    private async start(spec: SpawnSpec, settings: LiveSettings, resume: { resumeId?: string; fork?: boolean }, signal: AbortSignal, account: string | undefined, mark?: string): Promise<void> {
         let proc: JsonLinesProcess;
         try {
-            proc = new JsonLinesProcess(spec.bin, spec.args, { cwd: spec.cwd, env: spec.env });
+            // Marked as the session's: what a command of the CLI's leaves running carries it too (measured with Claude
+            // Code on Linux: a process it left behind had its CLI's whole environment). Not part of what makes a
+            // process another one (the fingerprint): the session it serves doesn't change.
+            proc = new JsonLinesProcess(spec.bin, spec.args, { cwd: spec.cwd, env: mark ? { ...spec.env, [SESSION_VAR]: mark } : spec.env });
         } catch (e) {
             // Not even spawned (no such binary or folder): still no process.
             throw new StartError(`${this.adapter.def.name} couldn't start: ${e instanceof Error ? e.message : String(e)}`);

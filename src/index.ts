@@ -9,6 +9,8 @@
 //   cavvy mcp list|add|remove  manage MCP servers
 //   cavvy plugin …             install and manage plugins and marketplaces
 //   cavvy gui | serve          the desktop/browser GUI (see src/server/)
+//   cavvy servers …            servers Cavvy runs on, reached over SSH (see src/servers/)
+//   cavvy host …               what such a server runs (started by `servers`, not by hand)
 
 import { basename, dirname, join, resolve } from "path";
 import { existsSync, readFileSync } from "fs";
@@ -18,6 +20,7 @@ import { detectKeyProvider, validateKey } from "./auth/detect";
 import { EFFORT_LEVELS, loadScope, loadSettings, worktreeSettings, readJson, readJsonForUpdate, settingsPath, updateSettings, writeJson, type Effort, type McpServerConfig, type SettingsScope } from "./config/settings";
 import { isTrusted, projectConfigSummary, trustFolder, trustForSession } from "./config/trust";
 import { MODE_INFO, parseMode, startMode, type PermissionMode } from "./permissions/modes";
+import { onServer as thisIsAServer } from "./servers/role";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, removeVertexConfig, saveAgentConfig, saveVertexConfig, SEARCH_PROVIDERS, validGoogleAccount, validVertexLocation, validVertexProject } from "./providers/registry";
 import { checkAgentCli, vendorOf } from "./backends/index";
 import { agentCli } from "./backends/defs";
@@ -56,6 +59,9 @@ ${bold("Usage")}
   ${APP_NAME} plugin marketplace add <owner/repo | git URL | folder>
   ${APP_NAME} gui                          open the GUI in your browser (${APP_NAME} gui --help)
   ${APP_NAME} serve                        run the GUI server without opening a browser
+  ${APP_NAME} servers add <name> <user@host>   set Cavvy up on a server you reach with ssh (${APP_NAME} servers --help)
+  ${APP_NAME} --server <name>[:<folder>]   the terminal app, running on that server
+  ${APP_NAME} gui --server <name>          that server's GUI in your browser
 
 ${bold("Options")}
   -p, --print                    non-interactive: print the response and exit
@@ -684,16 +690,40 @@ async function main() {
     // Only Cavvy's own env files (never the project's .env; Bun's auto-load is off).
     const installDir = dirname(import.meta.dir);
     const env = loadCavvyEnv([join(cavvyHome(), ".env"), join(installDir, ".env")]);
+    const sub = argv[0];
+    // What a server runs for others keeps its keys in the 0600 file: a keyring there is only reachable while someone
+    // is signed in to the machine, and this runs when nobody is. Decided before the first key is looked up.
+    if (sub === "host") process.env.CAVVY_NO_KEYCHAIN ??= "1";
     await preloadKeys();
 
-    const sub = argv[0];
     if (sub === "auth") process.exit(await authCommand(argv.slice(1)));
     if (sub === "models") process.exit(await modelsCommand(argv.slice(1)));
     if (sub === "mcp") process.exit(await mcpCli(argv.slice(1), cwd));
     if (sub === "plugin" || sub === "plugins") process.exit(await pluginCli(argv.slice(1), cwd));
+    if (sub === "servers") {
+        const { serversCommand } = await import("./servers/cli");
+        process.exit(await serversCommand(argv.slice(1)));
+    }
+    // On a server: `gui --server <name>` is its GUI in a browser here, and `--server <name>[:<folder>]` the terminal
+    // app running there, with the rest of the line passed to it as typed.
+    // Before a `--`, after which everything is the prompt.
+    const options = argv.indexOf("--");
+    const onServer = argv.slice(0, options < 0 ? argv.length : options).indexOf("--server");
+    if (onServer >= 0 && sub !== "serve" && sub !== "host") {
+        const spec = argv[onServer + 1];
+        if (!spec || spec.startsWith("-")) die("--server needs a server's name (see `cavvy servers`).");
+        const rest = [...argv.slice(0, onServer), ...argv.slice(onServer + 2)];
+        const { guiOnServer, runOnServer } = await import("./servers/cli");
+        if (sub === "gui") process.exit(await guiOnServer(spec, { open: !rest.includes("--no-open") }));
+        process.exit(await runOnServer(spec, rest));
+    }
     if (sub === "gui" || sub === "serve") {
         const { serveCommand } = await import("./server/cli");
         return serveCommand(sub, argv.slice(1), { fallbackModel: env.legacyModel, notes: env.notes });
+    }
+    if (sub === "host") {
+        const { hostCommand } = await import("./servers/host");
+        process.exit(await hostCommand(argv.slice(1), { fallbackModel: env.legacyModel, notes: env.notes }));
     }
 
     const f = parseFlags(argv);
@@ -757,7 +787,7 @@ async function main() {
     let { mode, ignoredBypass } = startMode(f.mode, settings, cwd);
     if (ignoredBypass) notes.push("Ignored defaultMode bypassPermissions from project settings; only your user settings or --dangerously-skip-permissions can enable it.");
     if (f.skipPermissions) mode = "bypassPermissions";
-    const allowBypass = f.skipPermissions || f.mode === "bypassPermissions" || Boolean(loadScope("user", cwd).permissions?.allowBypass) || mode === "bypassPermissions";
+    const allowBypass = f.skipPermissions || f.mode === "bypassPermissions" || Boolean(loadScope("user", cwd).permissions?.allowBypass) || mode === "bypassPermissions" || thisIsAServer();
 
     // Session to resume
     let resumeFile: string | undefined;
@@ -803,7 +833,12 @@ async function main() {
         process.exit(code);
     }
 
-    if (mode === "bypassPermissions") notes.push(`${MODE_INFO.bypassPermissions.label} is on: tools run without asking (deny rules and catastrophic-command guards still apply).`);
+    if (mode === "bypassPermissions")
+        notes.push(
+            thisIsAServer()
+                ? `${MODE_INFO.bypassPermissions.label} is on: tools run without asking (deny rules still apply).`
+                : `${MODE_INFO.bypassPermissions.label} is on: tools run without asking (deny rules and catastrophic-command guards still apply).`,
+        );
     const { App } = await import("./ui/app");
     const app = new App({
         cwd,

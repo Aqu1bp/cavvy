@@ -19,6 +19,11 @@ export interface CliInfo {
     product: string;
     install: string;
     signIn: string;
+    /**
+     * Its sign-in where the browser is on another machine than the CLI (a server reached over SSH), when `signIn`
+     * needs a browser on its own. Left out: `signIn` works there as it is.
+     */
+    signInAway?: string;
 }
 
 export const CLAUDE_CLI: CliInfo = cliOf("claude-code");

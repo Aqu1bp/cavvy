@@ -102,7 +102,7 @@ export function cornerRadius(kind: SimulatorDevice["kind"] | undefined, width: n
 }
 
 /** What the pane shows in place of the screen, by the session's simulator state; undefined when the screen shows. */
-export function paneNote(state: SimulatorState | undefined): { title: string; detail?: string; busy?: boolean; start?: boolean; retry?: boolean } | undefined {
+export function paneNote(state: SimulatorState | undefined): { title: string; detail?: string; busy?: boolean; start?: boolean; show?: boolean; retry?: boolean } | undefined {
     if (!state) return { title: "", busy: true };
     const d = state.device;
     switch (state.status) {
@@ -111,6 +111,8 @@ export function paneNote(state: SimulatorState | undefined): { title: string; de
         case "off":
             if (!d) return { title: "No simulators", detail: "Add one in Xcode." };
             if (d.state === "shutting_down") return { title: `Shutting down ${d.name}…`, busy: true };
+            // Running, and not this session's yet (a session on a server, whose simulator is this computer's: lib/lent.ts).
+            if (d.state === "booted") return { title: `${d.name} is running`, start: true, show: true };
             return { title: `${d.name} is off`, start: true };
         case "booting":
             return { title: `Starting ${d?.name ?? "the simulator"}…`, busy: true };

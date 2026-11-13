@@ -107,7 +107,7 @@ export function WorkList(p: { handle: SessionHandle; tab: WorkTab; rows: WorkRow
     const what = () => (p.tab === "agents" ? "agent" : "command");
     const stopAll = async () => {
         const { tasks, agents } = stopAllOf(sec().running.map((x) => x.row));
-        await Promise.all([...(tasks.length ? [stopBackground(p.handle.id, tasks)] : []), ...agents.map((id) => stopAgent(p.handle.id, id))]);
+        await Promise.all([...(tasks.length ? [stopBackground(p.handle.id, tasks, p.tab === "commands")] : []), ...agents.map((id) => stopAgent(p.handle.id, id))]);
     };
     const clear = () => {
         const id = p.handle.id;

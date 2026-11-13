@@ -11,6 +11,7 @@ import { simulatorsLikely } from "../simulator/simctl";
 import { sentence, SimulatorError, SimulatorSession } from "../simulator/session";
 import { redact } from "../util/redact";
 import { imageMarkdown, saveScreenshot } from "./browser-tools";
+import { lent } from "./lent";
 import type { Tool, ToolContext, ToolResult } from "./types";
 
 /** The names these tools have when Cavvy serves them to Claude Code and Codex (mcp__cavvy__simulator_act). */
@@ -79,6 +80,9 @@ const short = (text: string, n = 60) => {
 /** Longest heading a permission prompt shows (oneLineSummary in src/agent/agent.ts). */
 const PROMPT_HEADING_MAX = 200;
 
+/** What a tap, a key and the rest are called where the user is asked about one. */
+const ACT_VERBS: Record<string, string> = { tap: "Tap", double_tap: "Double-tap", long_press: "Long-press", swipe: "Swipe", press: "Press", button: "Press", wait: "Wait" };
+
 /**
  * Text to type, quoted, in at most `room` characters: the prompt shows it nowhere else, so it's cut here, inside its
  * quotes and marked, as late as fits, rather than at the prompt's bound.
@@ -142,10 +146,14 @@ To build an app for it: xcodebuild -scheme <scheme> -destination 'platform=iOS S
             if (typeof input.app !== "string" || !input.app.trim()) return "install needs app, the path to a .app";
             const p = pathOf(input.app, ctx);
             if (!/\.app\/?$/.test(p)) return "app must be a .app folder";
-            if (!existsSync(p) || !statSync(p).isDirectory()) return `There's no app at ${p}`;
+            // For a session on another machine, what's on this one isn't described: only that it isn't there.
+            if (!existsSync(p) || !statSync(p).isDirectory()) return ctx.state.forAnother ? "There's no app at that path on your Mac. It has to be built there first." : `There's no app at ${p}`;
         }
         if ((input.action === "launch" || input.action === "terminate") && (typeof input.bundleId !== "string" || !input.bundleId.trim())) return `${input.action} needs a bundleId`;
         if (input.action === "open_url" && (typeof input.url !== "string" || !/^[a-z][a-z0-9+.-]*:/i.test(input.url))) return "open_url needs a url";
+        // A file: address is a file of this machine's (measured: the simulator offers /etc/hosts when asked to open
+        // it): not something a session on another machine may have opened here.
+        if (input.action === "open_url" && ctx.state.forAnother && /^file:/i.test(input.url!.trim())) return "open_url can't open a file: address on your Mac.";
         return undefined;
     },
     async preview(input) {
@@ -158,7 +166,7 @@ To build an app for it: xcodebuild -scheme <scheme> -destination 'platform=iOS S
             open_url: `Open ${short(input.url ?? "", 80)} on the simulator`,
             take_control: "Take the simulator's input back (closes its apps)",
         };
-        return { summary: what[input.action] ?? `Simulator: ${input.action}` };
+        return { summary: what[input.action] ?? "List the simulators" };
     },
     run: (input, ctx) =>
         guarded(ctx, async (s) => {
@@ -312,11 +320,18 @@ Returns the screen once it's still, as a new outline; it says when the user used
         }
     },
     async preview(input) {
-        const where = input.ref ? ` ${input.ref}` : typeof input.x === "number" ? ` at ${Math.round(input.x)},${Math.round(input.y ?? 0)}` : "";
-        const head = `Simulator: ${input.action.replace("_", " ")}${where}`;
-        if (input.action === "type") return { summary: `${head} ${typedText(input.text ?? "", PROMPT_HEADING_MAX - head.length - 1)}` };
-        const what = input.action === "press" ? ` ${input.key}` : input.action === "button" ? ` ${input.button}` : input.direction ? ` ${input.direction}` : "";
-        return { summary: `${head}${what}` };
+        // What it does, as one would say it ("Tap e12 on the simulator"): it heads the prompt, and a notification
+        // puts "Wants to" before it.
+        const on = " on the simulator";
+        if (input.action === "type") {
+            // Nothing to type: it empties the field.
+            if (!input.text && input.clear) return { summary: `Clear ${input.ref ?? "the field"}${on}` };
+            const into = input.ref ? ` into ${input.ref}` : "";
+            return { summary: `Type ${typedText(input.text ?? "", PROMPT_HEADING_MAX - 5 - into.length - on.length)}${into}${on}` };
+        }
+        const where = input.ref ? ` ${input.action === "swipe" ? "from " : ""}${input.ref}` : typeof input.x === "number" ? ` at ${Math.round(input.x)},${Math.round(input.y ?? 0)}` : "";
+        const what = input.action === "press" ? ` ${input.key}` : input.action === "button" ? ` the ${input.button} button` : input.direction ? ` ${input.direction}` : "";
+        return { summary: `${ACT_VERBS[input.action] ?? input.action}${what}${where}${on}` };
     },
     run: (input, ctx) =>
         guarded(ctx, async (s) => {
@@ -362,7 +377,8 @@ export const SimulatorScreenshotTool: Tool<Record<string, never>> = {
             const shot = await s.screenshot();
             const image = { type: "image" as const, mediaType: "image/png", data: Buffer.from(shot.png).toString("base64") };
             // At the screen's size in points: drawn as it is.
-            const file = await saveScreenshot({ ...image, width: shot.width });
+            // Taken for a session on another machine: it's kept there (keptHere), not here as well.
+            const file = ctx.state.forAnother ? undefined : await saveScreenshot({ ...image, width: shot.width });
             const show = file ? ` Saved as ${file}: to show it to the user, put ${imageMarkdown(file)} in your last message.` : "";
             return {
                 content: `Screenshot of the simulator, ${shot.width}×${shot.height}: a pixel in it is a point, as SimulatorAct's x and y are.${show}`,
@@ -378,10 +394,46 @@ export const SIMULATOR_TOOL_HEADINGS: Record<string, string> = {
     SimulatorAct: "Act on the simulator",
 };
 
-export const SIMULATOR_TOOLS: Tool<any>[] = [SimulatorControlTool, SimulatorSnapshotTool, SimulatorActTool, SimulatorScreenshotTool];
+/**
+ * On a machine with no simulators of its own that is lent another's (the user's Mac's: src/tools/lent.ts), a call
+ * goes there. What it names (an app's path) is the other machine's, so it's checked there, not here.
+ */
+function lendable(tool: Tool<any>): Tool<any> {
+    // A session has `lends` only on a server (Runtime): a Mac whose own Xcode turns out not to be usable has none, and
+    // says what's wrong with it, as before.
+    const far = (ctx: Pick<ToolContext, "state">) => (simulatorsLikely() ? undefined : ctx.state.lends);
+    const { run, validate } = tool;
+    return {
+        ...tool,
+        ...(validate ? { validate: (input: any, ctx: ToolContext) => (far(ctx) ? undefined : validate.call(tool, input, ctx)) } : {}),
+        run: (input, ctx) => far(ctx)?.call(tool.name, input as Record<string, unknown>, ctx.signal).then(keptHere) ?? run.call(tool, input, ctx),
+    };
+}
+
+/**
+ * A picture taken on the machine that lends comes with where that machine saved it, which is no file here. It's
+ * saved here instead, and the result says so, so the chat on this machine can show it.
+ */
+export async function keptHere(r: ToolResult): Promise<ToolResult> {
+    const image = r.images?.[0];
+    if (!image) return r;
+    const said = r.content.replace(/ Saved as [^\n]*? in your last message\./, "");
+    const file = await saveScreenshot({ ...image, width: Number(/(\d+)×\d+/.exec(said)?.[1]) || 0 }).catch(() => undefined);
+    return { ...r, content: file ? `${said} Saved as ${file}: to show it to the user, put ${imageMarkdown(file)} in your last message.` : said };
+}
+
+export const SIMULATOR_TOOLS: Tool<any>[] = [SimulatorControlTool, SimulatorSnapshotTool, SimulatorActTool, SimulatorScreenshotTool].map(lendable);
+
+/** The simulator tools as they run where the simulators are: what a machine that lends them runs (Engine.lend). */
+export const OWN_SIMULATOR_TOOLS: Tool<any>[] = [SimulatorControlTool, SimulatorSnapshotTool, SimulatorActTool, SimulatorScreenshotTool];
 
 /** Whether the tools are offered: the setting is on, and this Mac has Xcode's simulators. */
 export function simulatorAvailable(settings: Settings): boolean {
+    return simulatorEnabled(settings) && (simulatorsLikely() || lent("simulator"));
+}
+
+/** This machine has simulators of its own that it may lend. */
+export function simulatorsToLend(settings: Settings): boolean {
     return simulatorEnabled(settings) && simulatorsLikely();
 }
 

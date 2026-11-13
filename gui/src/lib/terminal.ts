@@ -1,4 +1,5 @@
 import type { TerminalInfo, TerminalLogin } from "@shared/protocol";
+import { machine } from "./platform";
 import type { Rpc } from "./rpc";
 
 /** RPC-sized pieces without splitting a Unicode surrogate pair during UTF-8 encoding. */
@@ -64,12 +65,17 @@ export interface SavedTabs {
 }
 
 const TABS_KEY = "cavvy.terminals";
+/**
+ * Where a window's tabs are kept. Shells are a machine's own: a window that goes to a server and comes back finds
+ * the tabs it had on each (kept under one name, the other machine's list would drop them as unknown).
+ */
+export const tabsKey = (at: string | undefined = machine) => (at ? `${TABS_KEY}.${at}` : TABS_KEY);
 const EMPTY: SavedTabs = { tabs: [], next: 1, open: false };
 
 /** sessionStorage: this window's own, kept across a reload (localStorage, like the GUI's prefs, is every window's). */
 export function loadTabs(): SavedTabs {
     try {
-        return parseTabs(sessionStorage.getItem(TABS_KEY));
+        return parseTabs(sessionStorage.getItem(tabsKey()));
     } catch {
         return EMPTY;
     }
@@ -77,7 +83,7 @@ export function loadTabs(): SavedTabs {
 
 export function saveTabs(saved: SavedTabs) {
     try {
-        sessionStorage.setItem(TABS_KEY, JSON.stringify(saved));
+        sessionStorage.setItem(tabsKey(), JSON.stringify(saved));
     } catch {}
 }
 

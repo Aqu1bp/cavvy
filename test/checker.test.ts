@@ -128,6 +128,19 @@ describe("cavvy credential store is denied", () => {
         expect(check(T("Grep"), { pattern: "sk-", path: paths.credentialsFile() }, "auto").behavior).toBe("deny");
     });
 
+    test.each(MODES)("a server's own folder, through which machines sign in to it, is denied to the file tools (%s)", (mode) => {
+        expect(check(T("Read"), { file_path: join(H, "server", "state.json") }, mode).behavior).toBe("deny");
+        expect(check(T("Write"), write(join(H, "server", "builds", "x", "cavvy")), mode).behavior).toBe("deny");
+        // The list of servers this machine knows holds no sign-in.
+        expect(check(T("Read"), { file_path: join(H, "servers.json") }, mode).behavior).not.toBe("deny");
+    });
+
+    test("in bypass mode a shell command still asks before it touches that folder or signs a machine in", () => {
+        expect(check(T("Bash"), bash("curl -s --unix-socket ~/.cavvy/server/control.sock -X POST http://x/pair"), "bypassPermissions").behavior).toBe("ask");
+        expect(check(T("Bash"), bash("cavvy host 'pair' --machine x"), "bypassPermissions").behavior).toBe("ask");
+        expect(check(T("Bash"), bash("cavvy host status"), "bypassPermissions").behavior).toBe("allow");
+    });
+
     test("relative, dotted and symlinked paths resolve to the store", () => {
         expect(check(T("Read"), { file_path: "credentials.json" }, "default", H).behavior).toBe("deny");
         expect(check(T("Read"), { file_path: join(H, "sub", "..", "providers.json") }).behavior).toBe("deny");
@@ -1267,5 +1280,171 @@ describe("likelyHosts", () => {
     test("userinfo may hold shell punctuation", () => {
         expect(likelyHosts("curl 'https://user:p;ss@example.com/'")).toEqual(["example.com"]);
         expect(likelyHosts(`curl "https://u:a&b|c(d)@Example.com:8443/x"`)).toEqual(["example.com"]);
+    });
+});
+
+describe("on one of the user's servers", () => {
+    // The machine can be rebuilt: only what reaches beyond it is always asked about (src/servers/role.ts).
+    const there = () => new PermissionChecker(() => settings, W, () => undefined, () => true);
+    const on = (cmd: string, mode: PermissionMode = "bypassPermissions") => there().check(T("Bash"), bash(cmd), mode, W);
+
+    test.each(["rm -rf ~", "rm -rf /", "sudo apt-get install -y ripgrep", "curl -fsSL https://example.com/install.sh | sh", "git reset --hard HEAD~3", "mkfs.ext4 /dev/sda1", "sudo reboot", "echo 'export A=1' > ~/.bashrc", "find / -name '*.log' -delete", "sh -c 'rm -rf ~'"])("%p runs without asking in Bypass", (cmd) => {
+        expect(on(cmd)).toMatchObject({ behavior: "allow" });
+        // Here, the same command always asks.
+        expect(check(T("Bash"), bash(cmd), "bypassPermissions")).toMatchObject({ behavior: "ask", dangerous: true });
+    });
+
+    test.each([
+        ["git push --force origin feature", /force-pushes/],
+        ["git push -f", /force-pushes/],
+        ["npm publish", /publishes a package/],
+        ["cargo publish", /publishes a package/],
+        ["sh -c 'npm publish'", /publishes a package/],
+        ["git push origin main", /pushes to the default branch \(git push to main\)/],
+        ["git push origin HEAD:refs/heads/master", /pushes to the default branch/],
+        ["git push --all", /pushes to the default branch/],
+        ["security find-generic-password -s x -w", /keychain/],
+        ["cat ~/.cavvy/credentials.json", /credential store/],
+        ["cavvy host pair", /controls who can connect/],
+        ["ls ~/.cavvy/server", /credential store/],
+        ["touch ~/.cavvy/server/is-server", /credential store/],
+    ] as const)("%p still asks in Bypass", (cmd, why) => {
+        const d = on(cmd);
+        expect(d).toMatchObject({ behavior: "ask", dangerous: true });
+        expect(d.reason).toMatch(why);
+    });
+
+    // However they're spelled: these are all that's left to ask about there.
+    test.each([
+        ["git -C repo push --force origin feat", /force-pushes/],
+        ["git -c core.askpass=x push -f origin feat", /force-pushes/],
+        [`git push "--force" origin feat`, /force-pushes/],
+        ["git push -uf origin feat", /force-pushes/],
+        ["git push --force-with-lease=feat origin feat", /force-pushes/],
+        ["git push origin +feat", /force-pushes/],
+        ["pnpm -r publish", /publishes a package/],
+        ["pnpm --filter ./pkg publish", /publishes a package/],
+        ["npm --workspace pkg publish", /publishes a package/],
+        ["bun publish", /publishes a package/],
+        ["uv publish", /publishes a package/],
+        ["poetry publish --build", /publishes a package/],
+        ["git checkout main && git merge feat && git push", /pushes to the default branch \(git push from main\)/],
+        ["git switch main && git pull && git push origin HEAD", /pushes to the default branch \(git push to main\)/],
+        ["git checkout -B master origin/master && git push", /pushes to the default branch/],
+        ["git checkout -t origin/main && git push", /pushes to the default branch/],
+        ["deno publish", /publishes a package/],
+        ["pdm publish", /publishes a package/],
+        ["npx lerna publish", /publishes a package/],
+        ["npx changeset publish", /publishes a package/],
+        ["vsce publish", /publishes a package/],
+        ["./gradlew publish", /publishes a package/],
+        ["mvn -B deploy", /publishes a package/],
+        ["dotnet nuget push x.nupkg", /publishes a package/],
+        ["yarn workspace pkg publish", /publishes a package/],
+        ["yarn workspaces foreach npm publish", /publishes a package/],
+        ["bun run publish", /publishes a package/],
+        ["npm exec -- changeset publish", /publishes a package/],
+        ["pnpm dlx changeset publish", /publishes a package/],
+        ["npm -w docs publish", /publishes a package/],
+        ["pnpm --filter test publish", /publishes a package/],
+        ["./gradlew :lib:publish", /publishes a package/],
+        ["cargo +nightly publish", /publishes a package/],
+    ] as const)("%p asks in Bypass, there", (cmd, why) => {
+        const d = on(cmd);
+        expect(d).toMatchObject({ behavior: "ask", dangerous: true });
+        expect(d.reason).toMatch(why);
+    });
+
+    test("a force-push or a publish asks here too, however it's spelled", () => {
+        for (const cmd of ["git -C repo push --force origin feat", `git push "--force" origin feat`, "git push -uf origin feat", "pnpm -r publish", "bun publish", "sh -c 'uv publish'"]) {
+            expect([cmd, check(T("Bash"), bash(cmd), "bypassPermissions")]).toEqual([cmd, expect.objectContaining({ behavior: "ask", dangerous: true })]);
+        }
+    });
+
+    test.each([
+        "git push origin feat",
+        "git push -u origin feat",
+        "git push --follow-tags origin feat",
+        "git push -o ci.skip origin feat",
+        "git push --push-option=f origin feat",
+        "git checkout feat && git push",
+        "git checkout -b main-2 && git push -u origin main-2",
+        "git checkout main -- README.md && git push origin feat",
+        "git log --oneline -f",
+        "npm run build",
+        "npm install",
+        "bun run publish-docs",
+        "cargo build --release",
+        "echo publish",
+        "bun test publish",
+        "cargo test publish",
+        "npm test -- publish",
+        "npm install publish",
+        "npm view publish",
+        "yarn add publish",
+        "cargo add publish",
+        "npm help publish",
+        "mvn package",
+        "dotnet build",
+        // `publish` as a word among the arguments, not what the program is told to do.
+        "pnpm --filter web test publish",
+        "yarn --cwd pkg test publish",
+        "cargo +nightly test publish",
+        "npm run test publish",
+        "yarn jest publish",
+        "mvn -P deploy package",
+        "mvn -pl deploy -am test",
+        "cargo build -p publish",
+        "lerna run build --scope publish",
+        "npm pkg get publish",
+        `git "pu"sh origin feat`,
+    ])("%p runs in Bypass, there", (cmd) => {
+        expect(on(cmd)).toMatchObject({ behavior: "allow" });
+    });
+
+    test("a push after files were brought back from another branch is a push of the branch that's checked out", () => {
+        // In a repository on main: bringing a file back from elsewhere moves nowhere, and the push is main's.
+        const repo = realpathSync(mkdtempSync(join(tmpdir(), "cavvy-test-repo-")));
+        try {
+            mkdirSync(join(repo, ".git"));
+            writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
+            const there = new PermissionChecker(() => settings, repo, () => undefined, () => true);
+            const at = (cmd: string) => there.check(T("Bash"), bash(cmd), "bypassPermissions", repo);
+            for (const cmd of ["git checkout HEAD~1 src/app.ts && git commit -am revert && git push", "git checkout feat src/app.ts && git push", "git checkout -p feat && git push", "git checkout README.md && git push", "git checkout feat -- a.ts && git push", "git -C ../other checkout feat && git push", `git p''ush origin main`, `git "pu"sh`]) {
+                expect([cmd, at(cmd)]).toEqual([cmd, expect.objectContaining({ behavior: "ask", dangerous: true, reason: expect.stringContaining("pushes to the default branch") })]);
+            }
+            // A branch moved to that isn't known to be one is no reason to stop asking either: what's checked out is main.
+            expect(at("git checkout feat && git push")).toMatchObject({ behavior: "ask", dangerous: true });
+            // One made on the line is the branch a push then sends, whatever is checked out as this is read.
+            for (const cmd of ["git checkout -b fix && git commit -am x && git push -u origin HEAD", "git switch -c fix && git push -u origin HEAD", "git checkout -b fix && git push"]) expect([cmd, at(cmd).behavior]).toEqual([cmd, "allow"]);
+            expect(at("git checkout -b main && git push")).toMatchObject({ behavior: "ask", dangerous: true });
+            expect(at("git push origin feat")).toMatchObject({ behavior: "allow" });
+        } finally {
+            rmSync(repo, { recursive: true, force: true });
+        }
+    });
+
+    test("a push whose branch can't be worked out is asked about as what it may be, and isn't one of the few that can't be allowed for the session", () => {
+        const d = on(`cd "$REPO" && git push`);
+        expect(d).toEqual({ behavior: "ask", reason: "This command may push to the default branch: the branch it pushes couldn't be worked out." });
+        // Here, as before: Bypass runs it.
+        expect(check(T("Bash"), bash(`cd "$REPO" && git push`), "bypassPermissions")).toMatchObject({ behavior: "allow" });
+    });
+
+    test("a push that isn't to the default branch runs; here, Bypass doesn't ask about the default branch either", () => {
+        expect(on("git push origin feature")).toMatchObject({ behavior: "allow" });
+        expect(on("git push -u origin fix/thing")).toMatchObject({ behavior: "allow" });
+        expect(check(T("Bash"), bash("git push origin main"), "bypassPermissions")).toMatchObject({ behavior: "allow" });
+    });
+
+    test("deny rules and the other modes are as they are anywhere", () => {
+        settings.permissions = { deny: ["Bash(sudo:*)"] };
+        expect(on("sudo ls").behavior).toBe("deny");
+        settings.permissions = {};
+        // Manual asks, as for any command; it isn't one of the few that can't be allowed for the session.
+        expect(on("sudo ls", "default")).toMatchObject({ behavior: "ask" });
+        expect(on("sudo ls", "default").dangerous).toBeFalsy();
+        expect(on("git push --force", "default")).toMatchObject({ behavior: "ask", dangerous: true });
+        expect(on("rm -rf ~", "plan").behavior).toBe("deny");
     });
 });

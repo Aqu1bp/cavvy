@@ -1,0 +1,140 @@
+/* Servers (components/Servers.tsx): the list of machines, adding one, and the cover while a window reaches its server. */
+.server-row {
+    display: flex;
+    align-items: center;
+    gap: calc(2 * var(--sp));
+}
+
+.server-dialog {
+    display: flex;
+    flex-direction: column;
+    gap: calc(12 * var(--sp));
+    padding: calc(20 * var(--sp));
+}
+
+.server-dialog h2 {
+    font-size: 1.05rem;
+}
+
+.server-dialog form {
+    display: flex;
+    flex-direction: column;
+    gap: calc(10 * var(--sp));
+}
+
+.server-dialog label {
+    display: flex;
+    flex-direction: column;
+    gap: calc(4 * var(--sp));
+    font-size: 0.86rem;
+    color: var(--fg-2);
+}
+
+.server-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: calc(8 * var(--sp));
+    margin-top: calc(4 * var(--sp));
+}
+
+.server-working {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    color: var(--fg-2);
+}
+
+.server-key {
+    padding: calc(8 * var(--sp)) calc(10 * var(--sp));
+    border: 0.5px solid var(--line);
+    border-radius: calc(8 * var(--sp));
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+
+.server-problem {
+    display: flex;
+    flex-direction: column;
+    gap: calc(4 * var(--sp));
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+
+.server-lacks {
+    margin: 0;
+    padding-left: calc(18 * var(--sp));
+    display: flex;
+    flex-direction: column;
+    gap: calc(4 * var(--sp));
+    font-size: 0.86rem;
+    color: var(--fg-2);
+}
+
+.server-cover {
+    display: contents;
+}
+
+/* Over a window that had been on its server, when getting back needs the user. */
+.server-over {
+    position: fixed;
+    inset: 0;
+    z-index: 900;
+    background: var(--sheet);
+}
+
+.server-cover .server-actions {
+    justify-content: center;
+}
+
+.server-cover .server-key,
+.server-cover .server-problem {
+    max-width: calc(520 * var(--sp));
+}
+
+/* The servers that can't be reached as they are, between the sidebar's list and its foot (components/OtherMachines.tsx). */
+.sidebar .others {
+    flex: none;
+    padding: 0 calc(8 * var(--sp)) calc(4 * var(--sp));
+}
+
+.sidebar .others:empty {
+    display: none;
+}
+
+.others .om-h {
+    display: flex;
+    align-items: baseline;
+    gap: calc(8 * var(--sp));
+    width: 100%;
+    padding: calc(4 * var(--sp)) calc(8 * var(--sp));
+    border: 0;
+    border-radius: calc(6 * var(--sp));
+    background: none;
+    color: var(--rail-fg-2);
+    font: inherit;
+    font-size: 0.786rem;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+}
+
+.others .om-h:hover {
+    color: var(--rail-fg);
+}
+
+.others .om-n {
+    flex: none;
+    font-weight: 400;
+}
+
+.others .om-h:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+    outline-offset: -2px;
+}
+
+/* The server a set-aside or archived session is on, after its title (the sidebar's rows: components/Sidebar.tsx). */
+.slim-at {
+    flex: none;
+    font-size: 0.786rem;
+    color: color-mix(in srgb, var(--rail-fg-2) 72%, transparent);
+}
