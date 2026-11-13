@@ -589,7 +589,7 @@ export async function archive(id: string, archived: boolean) {
             const row = [...app.sessions, ...app.archived].find((s) => s.id === id);
             // On another machine: removing a worktree asks about folders there, which a window on that machine does.
             // From here it's kept, and said to be.
-            if (row && row.machine !== machine) return setArchived(id, archived, `Archived. Its worktree stays on ${row.machine ?? "this Mac"}.`);
+            if (row && row.machine !== machine) return setArchived(id, archived, `Archived. Its worktree stays on ${row.machine ?? "this computer"}.`);
             const title = row?.title ?? handleFor(id)?.view.state.title ?? "this session";
             setArchiveRequest({ id, title, offer });
             return;
