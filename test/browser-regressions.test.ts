@@ -262,6 +262,61 @@ describe.skipIf(!chromePath)("browser regressions with Chrome", () => {
         } finally { void site.stop(true); }
     }, 30_000);
 
+    test("a dropdown's list is only what was asked of the page, whatever the page redefines; a pick is only of what was listed", async () => {
+        const page = (script: string) => `<body style="margin:20px"><select id=s style="width:200px;height:40px"><option>a</option><option>b</option></select><script>${script}</script></body>`;
+        const pages: Record<string, string> = {
+            // More options than are ever listed.
+            "/many": page("const f=document.createDocumentFragment();for(let i=0;i<20000;i++){const o=document.createElement('option');o.text='opt '+i;f.append(o)}s.append(f)"),
+            // A page that makes cutting a list or a text short do nothing, and every option's name long.
+            "/big": page("Array.prototype.slice=function(){return Array.from({length:200000},()=>this[0])};String.prototype.slice=function(){return String(this)};Object.defineProperty(HTMLOptionElement.prototype,'label',{get(){return 'x'.repeat(2000)}})"),
+            // One that answers with things that aren't a list's.
+            "/odd": page("Array.prototype.map=function(){return [{label:{evil:1},disabled:'no'}]};Object.defineProperty(HTMLSelectElement.prototype,'selectedIndex',{get(){return 'boo'}})"),
+            "/moves": page("window.heard=[];s.addEventListener('change',()=>heard.push(s.value))"),
+        };
+        const site = Bun.serve({ port: 0, fetch: (req) => new Response(pages[new URL(req.url).pathname] ?? "", { headers: { "content-type": "text/html" } }) });
+        const b = session();
+        try {
+            const p = await b.page();
+            const open = async (path: string) => {
+                await p.goto(`http://localhost:${site.port}${path}`);
+                await b.input({ kind: "mouse", type: "down", x: 100, y: 40, button: "left", buttons: 1, clickCount: 1 });
+                await b.input({ kind: "mouse", type: "up", x: 100, y: 40, button: "left", buttons: 0, clickCount: 1 });
+                return b.state().tabs[0]!.choice!;
+            };
+            const many = await open("/many");
+            expect([many.options.length, many.options[2]]).toEqual([500, { label: "opt 0" }]);
+            for (const path of ["/big", "/odd"]) {
+                const c = await open(path);
+                expect({ path, options: c.options.length, labels: c.options.every((o) => typeof o.label === "string" && o.label.length <= 200), selected: c.selected, bytes: JSON.stringify(b.state()).length < 200_000 }).toEqual({ path, options: 2, labels: true, selected: 0, bytes: true });
+            }
+            // The page puts another option where "b" was listed: picking "b" picks nothing.
+            await open("/moves");
+            await p.evaluate("s.options[1].text = 'c'");
+            await b.choose(1);
+            expect([await p.evaluate("s.value"), await p.evaluate("window.heard")]).toEqual(['"a"', "[]"]);
+        } finally { void site.stop(true); }
+    }, 60_000);
+
+    test("a press reaches a busy page before its release, though it's the press that asks what's under it first", async () => {
+        const html = `<body style="margin:20px"><button style="width:200px;height:60px">go</button><script>window.heard=[];for(const k of ['mousedown','mouseup','click'])addEventListener(k,()=>heard.push(k),true);setInterval(()=>{const t=performance.now();while(performance.now()-t<600);},610)</script></body>`;
+        const site = Bun.serve({ port: 0, fetch: () => new Response(html, { headers: { "content-type": "text/html" } }) });
+        const b = session();
+        try {
+            const p = await b.page();
+            await p.goto(`http://localhost:${site.port}/`);
+            for (let i = 0; i < 3; i++) {
+                await p.evaluate("window.heard=[]");
+                // As the server takes them: each message by itself, the release not waiting for the press.
+                const down = b.input({ kind: "mouse", type: "down", x: 120, y: 50, button: "left", buttons: 1, clickCount: 1 });
+                await Bun.sleep(80);
+                const up = b.input({ kind: "mouse", type: "up", x: 120, y: 50, button: "left", buttons: 0, clickCount: 1 });
+                await Promise.all([down, up]);
+                for (let t = 0; t < 50 && (await p.evaluate("window.heard.length")) !== "3"; t++) await Bun.sleep(100);
+                expect(await p.evaluate("window.heard.join()")).toBe('"mousedown,mouseup,click"');
+            }
+        } finally { void site.stop(true); }
+    }, 60_000);
+
     test("the demo form submits in Chrome and renders the search text", async () => {
         const demo = startDemoSite();
         const b = session();

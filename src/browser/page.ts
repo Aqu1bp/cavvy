@@ -135,16 +135,25 @@ function navigationFailure(url: string, error: string): string {
 
 /** The objects kept in a page for the dropdown the pane shows: let go when the list closes. */
 export const CHOICE_OBJECTS = "cavvy-choice";
-/** Picks an option as a person does: the page hears `input` and `change`, unless it's the one already chosen. */
-const PICK_OPTION = `function (i) {
+/** The longest a dropdown's name or an option of it is, as listed. */
+export const MAX_LABEL = 200;
+/** An option as the pane lists it (run in the page): its group's name before its own, in a line. */
+export const OPTION_LINE = `(o) => {
+    const group = o.parentElement && o.parentElement.tagName === "OPTGROUP" ? o.parentElement : null;
+    return String((group && group.label ? group.label + ": " : "") + (o.label || o.text)).replace(/\\s+/g, " ").trim().slice(0, ${MAX_LABEL});
+}`;
+/**
+ * Picks an option as a person does: the page hears `input` and `change`, unless it's the one already chosen. Only
+ * the option that was listed there: a page that changed its options meanwhile gets no pick.
+ */
+const PICK_OPTION = `function (i, label) {
     const o = this.options[i];
-    if (!this.isConnected || this.disabled || !o || o.disabled) return;
+    if (!this.isConnected || this.disabled || !o || o.disabled || (${OPTION_LINE})(o) !== label) return;
     if (this.selectedIndex === i) return;
     this.selectedIndex = i;
     this.dispatchEvent(new Event("input", { bubbles: true }));
     this.dispatchEvent(new Event("change", { bubbles: true }));
 }`;
-
 export interface PageOptions {
     /** The project: file: URLs must be inside it. */
     root: string;
@@ -178,6 +187,10 @@ export class Page {
     /** The dropdown `choice` is about, held in the page; and the press that opened it, whose release isn't the page's either. */
     private choiceOf?: string;
     choicePress = false;
+    /** A press on its way to the page (it's finding out what's under it first): what follows it waits for it. */
+    pressing?: Promise<unknown>;
+    /** The world of its own in the page where a dropdown is looked at (src/browser/interact.ts); a new page has none yet. */
+    choiceWorld?: number;
     canGoBack = false;
     canGoForward = false;
     viewport: Viewport;
@@ -373,6 +386,7 @@ export class Page {
             this.url = p.url;
             // Its dropdown went with the page it was on.
             this.setChoice(undefined);
+            this.choiceWorld = undefined;
             this.changed();
             void this.refreshHistory();
         });
@@ -742,7 +756,8 @@ export class Page {
         const choice = this.choice;
         if (!choice || !object) throw new BrowserError("No list is open in this tab.");
         try {
-            if (index !== undefined && Number.isInteger(index) && choice.options[index] && !choice.options[index]!.disabled) await this.send("Runtime.callFunctionOn", { objectId: object, functionDeclaration: PICK_OPTION, arguments: [{ value: index }] });
+            const option = index !== undefined && Number.isInteger(index) ? choice.options[index] : undefined;
+            if (option && !option.disabled) await this.send("Runtime.callFunctionOn", { objectId: object, functionDeclaration: PICK_OPTION, arguments: [{ value: index }, { value: option.label }] });
         } finally {
             if (this.choiceOf === object) this.setChoice(undefined);
         }

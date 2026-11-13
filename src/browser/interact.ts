@@ -5,7 +5,7 @@
 import type { BrowserInput } from "../server/protocol";
 import { CdpError } from "./cdp";
 import { MODIFIER_BITS, fromKeyboardEvent, parseKey, type KeyPress } from "./keys";
-import { BrowserError, CHOICE_OBJECTS, raceAbort, type Page, type PendingChoice } from "./page";
+import { BrowserError, CHOICE_OBJECTS, MAX_LABEL, OPTION_LINE, raceAbort, type Page, type PendingChoice } from "./page";
 import type { RefEntry } from "./refs";
 
 export interface Point {
@@ -423,33 +423,50 @@ const DROPDOWN_AT = `(x, y) => {
     const s = el && el.closest ? el.closest("select") : null;
     return s && !s.disabled && !s.multiple && s.size <= 1 ? s : null;
 }`;
-/** What the pane lists for it: its name and its options, each in a line. It takes the keyboard, as a clicked one does. */
+/** What the pane lists for it: its name and its options. It takes the keyboard, as a clicked one does. */
 const DROPDOWN = `function () {
-    const line = (v) => String(v ?? "").replace(/\\s+/g, " ").trim().slice(0, 200);
+    const line = ${OPTION_LINE};
+    const off = (o) => o.disabled || (o.parentElement && o.parentElement.tagName === "OPTGROUP" && o.parentElement.disabled);
     this.focus();
-    const group = (o) => o.parentElement && o.parentElement.tagName === "OPTGROUP" ? o.parentElement : null;
+    // Its label's own words (a label around it holds its options' too).
+    const name = this.getAttribute("aria-label") || (this.labels && this.labels[0] && [...this.labels[0].childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join(" ")) || this.name;
     return {
-        // Its label's own words (a label around it holds its options' too).
-        label: line(this.getAttribute("aria-label") || (this.labels && this.labels[0] && [...this.labels[0].childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join(" ")) || this.name),
-        options: [...this.options].slice(0, ${MAX_OPTIONS}).map((o) => ({ label: line((group(o) && group(o).label ? group(o).label + ": " : "") + (o.label || o.text)), ...(o.disabled || (group(o) && group(o).disabled) ? { disabled: true } : {}) })),
+        label: String(name ?? "").replace(/\\s+/g, " ").trim().slice(0, ${MAX_LABEL}),
+        options: [...this.options].slice(0, ${MAX_OPTIONS}).map((o) => ({ label: line(o), ...(off(o) ? { disabled: true } : {}) })),
         selected: this.selectedIndex,
     };
 }`;
-
 /**
  * A left press on a dropdown isn't sent to the page: the list Chrome would open takes no click that's sent to the
  * page. Its options go to the pane instead (Page.choice). Resolves true when the press was taken this way. A page
  * too busy to say what's under the press in time gets the press as it is.
+ *
+ * The page is asked in a world of its own, where nothing the page has redefined is in the way: what comes back is
+ * as big as these functions make it, and no bigger. It's checked again here all the same.
  */
 async function dropdown(page: Page, x: number, y: number): Promise<boolean> {
     type Found = { result: { objectId?: string; subtype?: string } };
-    const asked = page.send<Found>("Runtime.evaluate", { expression: `(${DROPDOWN_AT})(${Number(x)}, ${Number(y)})`, objectGroup: CHOICE_OBJECTS }).catch(() => undefined);
-    const found = await Promise.race([asked, new Promise<undefined>((r) => setTimeout(r, DROPDOWN_MS))]);
+    const ask = async () => {
+        page.choiceWorld ??= (await page.send<{ executionContextId: number }>("Page.createIsolatedWorld", { frameId: page.targetId, worldName: CHOICE_OBJECTS })).executionContextId;
+        return page.send<Found>("Runtime.evaluate", { expression: `(${DROPDOWN_AT})(${Number(x)}, ${Number(y)})`, contextId: page.choiceWorld, objectGroup: CHOICE_OBJECTS });
+    };
+    // A world from before the page was loaded again is gone: once more, in a new one.
+    const asked = ask()
+        .catch(() => ((page.choiceWorld = undefined), ask()))
+        .catch(() => undefined);
+    let late = false;
+    const found = await Promise.race([asked, new Promise<undefined>((r) => setTimeout(() => ((late = true), r(undefined)), DROPDOWN_MS))]);
     const object = found?.result.subtype === "node" ? found.result.objectId : undefined;
-    if (!object) return false;
-    const r = await page.send<{ result: { value?: PendingChoice } }>("Runtime.callFunctionOn", { objectId: object, functionDeclaration: DROPDOWN, returnByValue: true }).catch(() => undefined);
-    const choice = r?.result.value;
-    if (!choice || !Array.isArray(choice.options) || !choice.options.length) return false;
+    if (!object) {
+        // Answered after the press went on without it: what it found isn't kept.
+        if (late) void asked.then((r) => r?.result.objectId && page.send("Runtime.releaseObject", { objectId: r.result.objectId }).catch(() => undefined));
+        return false;
+    }
+    const r = await page.send<{ result: { value?: unknown } }>("Runtime.callFunctionOn", { objectId: object, functionDeclaration: DROPDOWN, returnByValue: true }).catch(() => undefined);
+    const said = (r?.result.value ?? {}) as { label?: unknown; options?: unknown; selected?: unknown };
+    const options = (Array.isArray(said.options) ? said.options.slice(0, MAX_OPTIONS) : []).map((o: { label?: unknown; disabled?: unknown }) => ({ label: String(o?.label ?? "").slice(0, MAX_LABEL), ...(o?.disabled === true ? { disabled: true } : {}) }));
+    if (!options.length) return false;
+    const choice: PendingChoice = { label: String(said.label ?? "").slice(0, MAX_LABEL), options, selected: Number.isInteger(said.selected) ? (said.selected as number) : -1 };
     page.setChoice(choice, object);
     return true;
 }
@@ -461,17 +478,26 @@ export async function forward(page: Page, e: BrowserInput): Promise<void> {
         case "mouse": {
             const type = e.type === "move" ? "mouseMoved" : e.type === "down" ? "mousePressed" : "mouseReleased";
             const button = e.button ?? "left";
+            const send = () => mouse(page, type, { x: e.x, y: e.y }, { button: e.type === "move" ? (e.buttons ? button : "none") : button, buttons: e.buttons ?? 0, clickCount: e.type === "move" ? 0 : (e.clickCount ?? 1), modifiers: e.modifiers ?? 0 });
             if (e.type === "down") {
                 // A press anywhere closes the list the pane shows; one on a dropdown shows that one's.
-                page.setChoice(undefined);
-                page.choicePress = button === "left" && (await dropdown(page, e.x, e.y));
-                if (page.choicePress) return;
-            } else if (e.type === "up" && page.choicePress) {
+                const press = (async () => {
+                    page.setChoice(undefined);
+                    page.choicePress = button === "left" && (await dropdown(page, e.x, e.y));
+                    if (!page.choicePress) await send();
+                })();
+                // What follows a press reaches the page after it: the press may still be finding out what's under it.
+                const pressing = press.catch(() => undefined).finally(() => page.pressing === pressing && (page.pressing = undefined));
+                page.pressing = pressing;
+                return press;
+            }
+            if (page.pressing) await page.pressing;
+            if (e.type === "up" && page.choicePress) {
                 // The release of the press that opened the list: the page didn't get the press.
                 page.choicePress = false;
                 return;
             }
-            await mouse(page, type, { x: e.x, y: e.y }, { button: e.type === "move" ? (e.buttons ? button : "none") : button, buttons: e.buttons ?? 0, clickCount: e.type === "move" ? 0 : (e.clickCount ?? 1), modifiers: e.modifiers ?? 0 });
+            await send();
             return;
         }
         case "wheel":
