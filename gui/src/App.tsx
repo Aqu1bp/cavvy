@@ -3,7 +3,7 @@ import { batch, createEffect, createMemo, createSignal, Match, on, onCleanup, on
 import { PlugZap } from "lucide-solid";
 import { ErrorCards } from "./components/ErrorCards";
 import { activate, app, attentionCount, connNote, handleFor, restoreActiveSession, rpc, serversUi, type SessionHandle } from "./state/app";
-import { cycleSession, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
+import { cycleSession, far, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
 import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, reviewSplit, setAgentFocus, setDockHeight, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
 import { isDesktop, isElectron, isTauri, machine, os, windowCommand } from "./lib/platform";
@@ -409,7 +409,9 @@ export function App() {
                 if (review()) return e.preventDefault(), setReview(undefined);
             }
             // And otherwise interrupts a working session.
-            if (action === "app:interrupt" && canStop(active()?.view.state) && !active()?.view.state.interactions.length) {
+            // Not while it asks something, its own or what this computer asks for it (a session on a server: lib/lent.ts):
+            // Esc is the card's then.
+            if (action === "app:interrupt" && canStop(active()?.view.state) && !active()?.view.state.interactions.length && !(app.activeId && far.asks?.(app.activeId))) {
                 e.preventDefault();
                 interrupt();
             }
