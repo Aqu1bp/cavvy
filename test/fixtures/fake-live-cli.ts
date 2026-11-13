@@ -31,7 +31,8 @@ function handle(m: Record<string, any>) {
                 process.exit(3);
             }
             out({ type: "started", id: m.id });
-            out({ type: "text", id: m.id, text: `echo ${text} (pid ${process.pid})` });
+            // "mark": what its environment says of the Cavvy session it runs for (src/util/session-processes.ts).
+            out({ type: "text", id: m.id, text: text === "mark" ? `mark ${process.env.CAVVY_SESSION ?? "none"} (pid ${process.pid})` : `echo ${text} (pid ${process.pid})` });
             if (text.startsWith("bg ")) {
                 const task = text.slice(3);
                 tasks.add(task);

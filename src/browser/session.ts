@@ -31,16 +31,24 @@ export interface SessionOptions {
     settings: () => Settings;
     /** Why the permission rules (deny rules) keep a page from being at this address, if they do. */
     refuse?: (url: string, approved?: BrowserApproval) => string | undefined;
+    /** Its pane is watched over a network (a session on a server): the pictures are lighter while a page moves (Page.startScreencast). */
+    far?: boolean;
     /** Tests: shorter idle and startup times. */
     pool?: Pick<PoolOptions, "idleMs" | "startupMs">;
 }
+
+/**
+ * Pictures on their way at once to a pane that's watched over a network: with one, each waited out a round trip for
+ * the last one's acknowledgement (measured to a server 35 ms away: 17 a second with one, 25 with two).
+ */
+const FAR_AT_ONCE = 2;
 
 export class BrowserSession implements PoolClient {
     private pool?: BrowserPool;
     private tabs = new Map<number, Page>();
     private ids = new WeakMap<Page, number>();
     private seq = 0;
-    private feed = new FrameFeed<TabFrame>();
+    private feed: FrameFeed<TabFrame>;
     private listeners = new Set<() => void>();
     private announcing?: ReturnType<typeof setTimeout>;
     /** The pane's size while a window watches: tabs follow it. */
@@ -57,7 +65,9 @@ export class BrowserSession implements PoolClient {
     /** The current tab. */
     active?: number;
 
-    constructor(private o: SessionOptions) {}
+    constructor(private o: SessionOptions) {
+        this.feed = new FrameFeed(o.far ? FAR_AT_ONCE : 1);
+    }
 
     get root(): string {
         return this.o.root;
@@ -89,6 +99,7 @@ export class BrowserSession implements PoolClient {
             crashed: p.crashed,
             targetId: p.targetId,
             ...(p.dialog ? { dialog: p.dialog } : {}),
+            ...(p.choice ? { choice: p.choice } : {}),
         }));
     }
 
@@ -170,7 +181,7 @@ export class BrowserSession implements PoolClient {
                     // Asked again with other limits it goes on with the old ones: it is started over.
                     await want.stopScreencast();
                     await want.setViewport(v);
-                    await want.startScreencast(v.width * v.scale, v.height * v.scale);
+                    await want.startScreencast(this.o.far);
                 }
             } catch {
                 // the tab closed meanwhile
@@ -432,6 +443,13 @@ export class BrowserSession implements PoolClient {
         const page = this.tab(tab);
         this.touched(page);
         await page.answerDialog(accept, promptText);
+    }
+
+    /** The person picked an option of the dropdown the pane lists (`list`: which list, as their pane had it), or closed the list. */
+    async choose(index?: number, tab?: number, list?: number) {
+        const page = this.tab(tab);
+        this.touched(page);
+        await page.choose(index, list);
     }
 
     // -----------------------------------------------------------------------

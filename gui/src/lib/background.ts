@@ -24,7 +24,7 @@ export function backgroundOf(state: Pick<SessionState, "backgroundTasks" | "shel
 
 /** The server calls a stop needs: the RPCs it uses, as Rpc.call has them (a test passes its own). */
 type StopCall = {
-    (method: "session.stopBackground", params: { id: string; ids?: string[] }): Promise<{ results: Record<string, BackgroundStopResult> }>;
+    (method: "session.stopBackground", params: { id: string; ids?: string[]; left?: boolean }): Promise<{ results: Record<string, BackgroundStopResult> }>;
     (method: "session.killShell", params: { id: string; shellId: string }): Promise<null>;
 };
 
@@ -32,8 +32,8 @@ type StopCall = {
  * Stop these tasks, or every running one, and how each went. A server without SessionState.backgroundTasks
  * has no session.stopBackground: its rows are its shells, stopped one by one with session.killShell.
  */
-export async function stopTasks(call: StopCall, sessionId: string, state: Pick<SessionState, "backgroundTasks" | "shells"> | undefined, ids?: string[]): Promise<Record<string, BackgroundStopResult>> {
-    if (state?.backgroundTasks || !state) return (await call("session.stopBackground", { id: sessionId, ids })).results;
+export async function stopTasks(call: StopCall, sessionId: string, state: Pick<SessionState, "backgroundTasks" | "shells"> | undefined, ids?: string[], left?: boolean): Promise<Record<string, BackgroundStopResult>> {
+    if (state?.backgroundTasks || !state) return (await call("session.stopBackground", { id: sessionId, ids, ...(left ? { left } : {}) })).results;
     const shellIds = ids ?? backgroundOf(state).filter((t) => t.status === "running").map((t) => t.id);
     const out: Record<string, BackgroundStopResult> = {};
     await Promise.all(

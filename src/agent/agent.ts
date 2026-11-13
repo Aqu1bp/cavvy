@@ -109,6 +109,7 @@ import { canonical, expandPath, isInside } from "../util/files";
 import type { NoticeData, PlanLimits, StoppedTask } from "../server/protocol";
 import type { NativeGoal } from "./goal";
 import { cavvyCompactAt, outputReserve } from "../backends/compact-at";
+import { endLeftRunning, leftNotice } from "../util/session-processes";
 
 // ---------------------------------------------------------------------------
 // Host interface (implemented by the TUI and by headless mode)
@@ -1674,6 +1675,7 @@ export class Agent {
             agents: this.nativeAgents(trusted),
             signal,
             sessionKey: this.session.meta.id,
+            processMark: this.state.session,
             session,
             sink,
         };
@@ -1992,8 +1994,9 @@ export class Agent {
     /**
      * Stop background work: these tasks, or every one running. A delegated task and a shell of Cavvy's
      * own stop here; one an agent CLI runs is asked of its backend (none can while its CLI isn't running).
+     * `left`: also what the session's commands left running that no task shows (every one running: yes).
      */
-    async stopBackground(ids?: string[]): Promise<BackgroundStops> {
+    async stopBackground(ids?: string[], left = !ids): Promise<BackgroundStops> {
         // Every one: a background Task still being set up doesn't start either (#259). Not the delegations' generation:
         // a delegate the turn waits on, being set up or running, goes on.
         if (!ids) this.backgroundStops++;
@@ -2051,6 +2054,12 @@ export class Agent {
                 this.state.background!.report({ ...t, status: "stopped", endedAt: Date.now(), withProcess: true });
                 out[id] = "stopped";
             }
+        }
+        // Everything, the user said: also what the session's commands left running where no task shows it (a server
+        // started with nohup, something that outlived the shell that started it).
+        if (left && this.state.session) {
+            const ended = await endLeftRunning(this.state.session).catch(() => []);
+            if (ended.length) this.emit({ type: "notice", level: "info", message: redact(leftNotice(ended)) });
         }
         this.o.host.backgroundChanged?.();
         return out;
@@ -3020,6 +3029,15 @@ export class Agent {
      * Cavvy runs: validation, read-only agents, PreToolUse hooks, rules and mode, the reviewer, the user, the
      * sandbox, PostToolUse hooks. The backend's own event for the call is what the transcript shows.
      */
+    /**
+     * A call of one of this machine's tools that another of the user's machines asked for (Engine.lend): through the
+     * same checks as a call a CLI makes of a tool Cavvy serves, which are this machine's own (its rules, its mode,
+     * its user).
+     */
+    runLent(tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal): Promise<ServerToolResult> {
+        return this.runServed(tool, input, signal);
+    }
+
     private async runServed(tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal, callId?: string): Promise<ServerToolResult> {
         // Only the main agent can be woken, so a sub-agent gets no Monitor (Cavvy's sub-agents don't either). Nor can its stop end the main turn.
         if (tool.name === "Monitor" && callId && (await this.fromBackendSubagent(callId))) return { text: "Monitor isn't available to sub-agents: only the main agent can be woken by one.", isError: true };
@@ -3850,6 +3868,8 @@ export class Agent {
                 fileState: worktree ? new Map() : new Map(this.state.fileState),
                 todos: [],
                 shells: trackShells(this.state.shells, shellsStarted),
+                // Its commands are the session's: marked as its own are (what they leave running is found by it).
+                session: this.state.session,
                 fileHistory: this.state.fileHistory,
                 // Its Bash sees the secrets the user gave this session (only the main agent can ask for one).
                 secrets: this.state.secrets,
@@ -3859,6 +3879,7 @@ export class Agent {
                 browser: this.state.browser,
                 // And its device, the session's.
                 simulator: this.state.simulator,
+                lends: this.state.lends,
             },
             host: {
                 emit: (e) => {

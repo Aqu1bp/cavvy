@@ -86,10 +86,29 @@ describe("permissions", () => {
         expect(check(SimulatorActTool, { action: "wait" }).behavior).toBe("allow");
         const boot = check(SimulatorControlTool, { action: "boot" });
         expect(boot).toMatchObject({ behavior: "ask", suggestions: ["SimulatorControl(boot)"] });
-        expect(checker.withGrant(SimulatorControlTool, { action: "boot" }, boot, W).grant).toEqual({ label: "SimulatorControl(boot)", rules: ["SimulatorControl(boot)"] });
+        expect(checker.withGrant(SimulatorControlTool, { action: "boot" }, boot, W).grant).toEqual({ label: "starting simulators", rules: ["SimulatorControl(boot)"] });
         expect(check(SimulatorActTool, { action: "tap", ref: "e1" })).toMatchObject({ behavior: "ask", suggestions: ["SimulatorAct"] });
         expect(check(SimulatorActTool, { action: "tap", ref: "e1" }, "auto")).toMatchObject({ behavior: "ask", needsClassifier: true });
         expect(check(SimulatorActTool, { action: "tap", ref: "e1" }, "bypassPermissions").behavior).toBe("allow");
+    });
+
+    test("a yes to a tap or a key covers that call: the same one on the next screen asks again", () => {
+        const c = new PermissionChecker(() => ({}), W);
+        for (const input of [{ action: "tap", ref: "e1" }, { action: "tap", x: 100, y: 200 }, { action: "button", name: "home" }, { action: "type", text: "hello" }]) {
+            expect(c.check(SimulatorActTool, input, "default", W).behavior, input.action).toBe("ask");
+            c.approve(SimulatorActTool, input, W);
+            expect(c.check(SimulatorActTool, input, "default", W), input.action).toMatchObject({ behavior: "ask" });
+        }
+        expect(c.recentApprovals()).toEqual([]);
+        // Starting the same device is the same thing every time: a yes to it is remembered for the session.
+        c.approve(SimulatorControlTool, { action: "boot", udid: "AAAA" }, W);
+        expect(c.check(SimulatorControlTool, { action: "boot", udid: "AAAA" }, "default", W)).toMatchObject({ behavior: "allow", remembered: true });
+        // Not what acts on whatever runs there by then: the app ended, the link opened, the device shut down or taken back.
+        for (const input of [{ action: "shutdown" }, { action: "terminate", bundleId: "com.example.app" }, { action: "open_url", url: "example://pay" }, { action: "take_control" }, { action: "launch", bundleId: "com.example.app", args: ["-reset"] }]) {
+            expect(c.check(SimulatorControlTool, input, "default", W).behavior, input.action).toBe("ask");
+            c.approve(SimulatorControlTool, input, W);
+            expect(c.check(SimulatorControlTool, input, "default", W), input.action).toMatchObject({ behavior: "ask" });
+        }
     });
 
     test("allowing launches doesn't allow shutting the device down", () => {
@@ -1470,13 +1489,28 @@ test("typed text shows whole in its prompt when it fits, and is cut inside its q
     const { oneLineSummary } = await import("../src/agent/agent");
     const heading = async (text: string) => oneLineSummary(await SimulatorActTool.preview!({ action: "type", ref: "e12", text } as never, {} as never))!.summary!;
     // As long as fits in the prompt's 200 is shown whole.
-    const fits = `${"a".repeat(170)}END`;
-    expect(await heading(fits)).toBe(`Simulator: type e12 "${fits}"`);
+    const fits = `${"a".repeat(164)}END`;
+    expect(await heading(fits)).toBe(`Type "${fits}" into e12 on the simulator`);
+    expect((await heading(fits)).length).toBe(200);
     // Longer: cut inside the quotes, marked, and the quote closed; never cut again by the prompt's bound.
     for (const text of ["b".repeat(400), "\n".repeat(150), `${"c".repeat(160)}😀😀😀😀😀😀😀😀😀😀`]) {
         const h = await heading(text);
         expect(h.length).toBeLessThanOrEqual(200);
-        expect(h).toEndWith('…"');
+        expect(h).toEndWith('…" into e12 on the simulator');
         expect(h.isWellFormed()).toBe(true);
     }
+});
+
+test("what a tap, a key or a button asks is said as one would say it, so a notification's \"Wants to …\" reads", async () => {
+    const said = async (input: Record<string, unknown>) => (await SimulatorActTool.preview!(input as never, {} as never))!.summary;
+    expect(await said({ action: "tap", ref: "e4" })).toBe("Tap e4 on the simulator");
+    expect(await said({ action: "double_tap", x: 100.4, y: 200 })).toBe("Double-tap at 100,200 on the simulator");
+    expect(await said({ action: "long_press", ref: "e4" })).toBe("Long-press e4 on the simulator");
+    expect(await said({ action: "swipe", direction: "up", ref: "e9" })).toBe("Swipe up from e9 on the simulator");
+    expect(await said({ action: "swipe", direction: "down" })).toBe("Swipe down on the simulator");
+    expect(await said({ action: "press", key: "Enter" })).toBe("Press Enter on the simulator");
+    expect(await said({ action: "button", button: "home" })).toBe("Press the home button on the simulator");
+    expect(await said({ action: "type", text: "hi" })).toBe('Type "hi" on the simulator');
+    expect(await said({ action: "type", ref: "e3", clear: true })).toBe("Clear e3 on the simulator");
+    expect(await said({ action: "type", clear: true })).toBe("Clear the field on the simulator");
 });
