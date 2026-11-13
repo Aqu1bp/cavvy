@@ -12,17 +12,14 @@ import { openAgents, respond } from "../state/actions";
 import { handleFor, rpc } from "../state/app";
 import { agentProvider } from "../lib/agent-marks";
 import { approvalChoices } from "../lib/approval";
+import { cardsKey, typingIn } from "../lib/card-keys";
 import { AgentMark } from "./ui/AgentMark";
 import { columnHeight, setPlanDialog, settingsTab } from "../state/ui";
 import { cardArrived } from "../lib/terminal-keys";
 import { DiffView } from "./blocks/DiffView";
 import { Markdown } from "./blocks/Markdown";
 
-function typing(): boolean {
-    const el = document.activeElement as HTMLElement | null;
-    // The find bar's buttons too: its Esc closes it, and it has no use for the number keys. And the browser's page, which takes every key.
-    return Boolean(el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.isContentEditable || el.closest(".find-bar, .br-canvas")));
-}
+const typing = () => typingIn(document.activeElement as HTMLElement | null);
 
 /** A card arriving takes focus only when it's in sight and nothing is typed elsewhere (Settings covers it, kept mounted). */
 const mayFocus = () => !typing() && !settingsTab();
@@ -35,7 +32,7 @@ function useKeys(handler: (key: string) => boolean) {
     onMount(() => {
         const shown = performance.now();
         const onKey = (e: KeyboardEvent) => {
-            if (e.metaKey || e.ctrlKey || e.altKey || typing() || document.querySelector(".dialog-backdrop, .popover")) return;
+            if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing || !cardsKey(e.key, document.activeElement as HTMLElement | null) || document.querySelector(".dialog-backdrop, .popover")) return;
             if (performance.now() - shown < SETTLE_MS) return;
             // Not while the card is out of sight: Settings over it (lib/cover.ts), or the terminal maximized
             // over the conversation (which hides it with visibility, seen by checkVisibility only when asked).
