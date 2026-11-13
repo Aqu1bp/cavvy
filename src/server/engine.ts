@@ -17,7 +17,7 @@ import { checkGrant, SetupTickets, setupTrusted } from "./setup";
 import { RpcError } from "./rpc-error";
 export { RpcError };
 import { randomUUID } from "crypto";
-import { mkdirSync, readdirSync, realpathSync, statSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { homedir, hostname, userInfo } from "os";
 import { APP_VERSION, cavvyHome, paths } from "../config/paths";
@@ -1275,6 +1275,9 @@ export class Engine {
         if (timer) clearTimeout(timer);
         this.unloadTimers.delete(id);
         this.runtimes.delete(id);
+        // Nothing of it was ever saved (only a ! command ran in it, say): there's no file to open it from again,
+        // so the windows that list it are told it's gone, not left with a row that opens nothing.
+        if (!existsSync(rt.session.path)) this.broadcast({ type: "sessions.remove", id });
         const done: Promise<void> = rt
             .close()
             .catch(() => undefined)
