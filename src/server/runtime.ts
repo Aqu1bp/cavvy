@@ -2425,8 +2425,11 @@ export class Runtime {
             const kind = interaction.kind;
             // A sub-agent's request says whose it is: the session's own agent didn't ask.
             const asker = kind === "permission" && interaction.agentLabel ? `Sub-agent "${interaction.agentLabel}" wants` : "Wants";
-            // The heading's first letter only: a name, a key or what's typed in it stays as it's written.
-            this.engine.notify(this, kind, kind === "permission" ? `${asker} to ${interaction.heading.charAt(0).toLowerCase()}${interaction.heading.slice(1)}` : kind === "question" ? interaction.question : "Plan ready for your review");
+            // The heading's first letter only, and not a word in capitals (an MCP tool's "SQL query"): a name, a
+            // key or what's typed in it stays as it's written.
+            const h = interaction.kind === "permission" ? interaction.heading : "";
+            const wants = /^\p{Lu}(?!\p{Lu})/u.test(h) ? h.charAt(0).toLowerCase() + h.slice(1) : h;
+            this.engine.notify(this, kind, kind === "permission" ? `${asker} to ${wants}` : kind === "question" ? interaction.question : "Plan ready for your review");
         });
     }
 
