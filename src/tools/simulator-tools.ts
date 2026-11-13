@@ -319,6 +319,8 @@ Returns the screen once it's still, as a new outline; it says when the user used
         // puts "Wants to" before it.
         const on = " on the simulator";
         if (input.action === "type") {
+            // Nothing to type: it empties the field.
+            if (!input.text && input.clear) return { summary: `Clear ${input.ref ?? "the field"}${on}` };
             const into = input.ref ? ` into ${input.ref}` : "";
             return { summary: `Type ${typedText(input.text ?? "", PROMPT_HEADING_MAX - 5 - into.length - on.length)}${into}${on}` };
         }

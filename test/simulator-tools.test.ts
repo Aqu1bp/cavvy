@@ -1492,4 +1492,6 @@ test("what a tap, a key or a button asks is said as one would say it, so a notif
     expect(await said({ action: "press", key: "Enter" })).toBe("Press Enter on the simulator");
     expect(await said({ action: "button", button: "home" })).toBe("Press the home button on the simulator");
     expect(await said({ action: "type", text: "hi" })).toBe('Type "hi" on the simulator');
+    expect(await said({ action: "type", ref: "e3", clear: true })).toBe("Clear e3 on the simulator");
+    expect(await said({ action: "type", clear: true })).toBe("Clear the field on the simulator");
 });

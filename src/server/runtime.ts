@@ -2425,7 +2425,8 @@ export class Runtime {
             const kind = interaction.kind;
             // A sub-agent's request says whose it is: the session's own agent didn't ask.
             const asker = kind === "permission" && interaction.agentLabel ? `Sub-agent "${interaction.agentLabel}" wants` : "Wants";
-            this.engine.notify(this, kind, kind === "permission" ? `${asker} to ${interaction.heading.toLowerCase()}` : kind === "question" ? interaction.question : "Plan ready for your review");
+            // The heading's first letter only: a name, a key or what's typed in it stays as it's written.
+            this.engine.notify(this, kind, kind === "permission" ? `${asker} to ${interaction.heading.charAt(0).toLowerCase()}${interaction.heading.slice(1)}` : kind === "question" ? interaction.question : "Plan ready for your review");
         });
     }
 
