@@ -213,8 +213,8 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
     let opened = false;
     /** The keyboard, when this terminal comes into view: not from a card that waits unless the user asked for the terminal. */
     const takeKeys = () => { if (p.visible && terminalTakesKeys(container)) term.focus(); };
-    /** Typed or clicked in, or left (seen before the emulator, which keeps some keys to itself). */
-    const used = { handleEvent: () => terminalUsed(container), capture: true };
+    /** Typed, clicked or scrolled in, or left (seen before the emulator, which keeps some keys to itself). */
+    const used = { handleEvent: () => terminalUsed(container), capture: true, passive: true };
     let id = p.tab.terminal;
     // Typed by the first shell only: a restart, a reconnect or a reload never runs it again.
     let script = p.tab.attach ? undefined : p.tab.script;
@@ -483,7 +483,7 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
     // Settings → Appearance → Text size: the cells follow it, and the shell gets the new size.
     createEffect(on(() => prefs.fontSize, (size) => { if (term && !disposed) { term.options.fontSize = terminalFontSize(size); fitNow(true); } }, { defer: true }));
     return <div class="terminal-screen" style={{ display: p.visible ? "flex" : "none" }}>
-        <div class="terminal-emulator" ref={container} on:keydown={used} on:pointerdown={used} on:focusout={used} />
+        <div class="terminal-emulator" ref={container} on:keydown={used} on:pointerdown={used} on:wheel={used} on:focusout={used} />
         <Show when={loginOutputLost()}><div class="terminal-message">
             <span>Login output isn't kept. Restart login for a new sign-in prompt.</span>
             <Show when={!away() && !ended()}><button class="btn secondary sm" disabled={app.conn !== "open" || restarting()} onClick={restart}><RotateCw size={12} /> Restart login</button></Show>

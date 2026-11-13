@@ -4,15 +4,18 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { cardArrived, terminalAsked, terminalTakesKeys, terminalUsed } from "../gui/src/lib/terminal-keys";
 
-/** As much of an element as the rule looks at. */
+/** As much of a terminal's element as the rule looks at. */
 function screen() {
-    const attrs = new Set<string>();
+    const attrs = new Map<string, string>();
     const el = {
         blurred: 0,
+        /** The panel is maximized over the conversation. */
+        max: false,
         contains: (other: unknown) => other === el,
-        toggleAttribute: (name: string, on: boolean) => void (on ? attrs.add(name) : attrs.delete(name)),
+        setAttribute: (name: string, value: string) => void attrs.set(name, value),
+        getAttribute: (name: string) => attrs.get(name) ?? null,
         removeAttribute: (name: string) => void attrs.delete(name),
-        closest: (selector: string) => (attrs.has(selector.slice(1, -1)) ? el : null),
+        closest: (selector: string) => (selector === ".terminal-panel.max" ? (el.max ? {} : null) : attrs.has(selector.slice(1, -1)) ? el : null),
         blur: () => {
             el.blurred++;
             page.activeElement = null;
@@ -20,7 +23,13 @@ function screen() {
     };
     return el;
 }
-const page: { activeElement: unknown; card: boolean; querySelector: (s: string) => unknown } = { activeElement: null, card: false, querySelector: (s) => (s === ".itab" && page.card ? {} : null) };
+/** The window: what has the keyboard, and the card there is (if any), which may be out of sight. */
+const page: { activeElement: unknown; card: boolean; seen: boolean; querySelector: (s: string) => unknown } = {
+    activeElement: null,
+    card: false,
+    seen: true,
+    querySelector: (s) => (s === ".itab" && page.card ? { closest: () => null, checkVisibility: () => page.seen } : null),
+};
 /** The terminal focuses itself where the rule lets it, as components/TerminalPanel.tsx does. */
 const comesIntoView = (el: ReturnType<typeof screen>) => {
     const took = terminalTakesKeys(el as unknown as HTMLElement);
@@ -35,6 +44,7 @@ beforeEach(() => {
     performance.now = () => now;
     page.activeElement = null;
     page.card = false;
+    page.seen = true;
     now += 100_000;
 });
 afterEach(() => {
@@ -47,6 +57,9 @@ test("a terminal that comes into view by itself leaves the keyboard to a card th
     page.card = true;
     expect(comesIntoView(el)).toBe(false);
     expect(page.activeElement).toBe(null);
+    // Not to one that can't be seen (the terminal maximized over it, Settings over it): its keys are off.
+    page.seen = false;
+    expect(comesIntoView(el)).toBe(true);
 });
 
 test("opened by the user, it takes the keyboard even from a waiting card, and keeps it when another card arrives", () => {
@@ -59,19 +72,41 @@ test("opened by the user, it takes the keyboard even from a waiting card, and ke
     expect(el.blurred).toBe(0);
 });
 
-test("with no card it takes the keyboard as before; a card arriving before it's used gets the keyboard back", () => {
+test("with no card it takes the keyboard as before; a card arriving in the moment after gets the keyboard back", () => {
     const el = screen();
     expect(comesIntoView(el)).toBe(true);
+    now += 800; // the session's card, a little after its terminal
     page.card = true;
     cardArrived();
     expect(el.blurred).toBe(1);
 });
 
-test("once typed or clicked in, it's the user's: a card arriving doesn't take the keyboard from it", () => {
+test("past that moment the terminal is the user's, used or not: a card arriving while they read doesn't take the keys", () => {
+    const el = screen();
+    expect(comesIntoView(el)).toBe(true);
+    now += 20 * 60_000;
+    page.card = true;
+    cardArrived();
+    expect(el.blurred).toBe(0);
+    // Nor a later one.
+    cardArrived();
+    expect(el.blurred).toBe(0);
+});
+
+test("once typed, clicked or scrolled in, it's the user's: a card arriving at once doesn't take the keyboard from it", () => {
     const el = screen();
     expect(comesIntoView(el)).toBe(true);
     terminalUsed(el as unknown as HTMLElement);
     // Its shell attaching after that asks again: nothing changes for a terminal that has the keyboard.
+    expect(comesIntoView(el)).toBe(true);
+    page.card = true;
+    cardArrived();
+    expect(el.blurred).toBe(0);
+});
+
+test("a terminal maximized over the conversation keeps the keyboard from a card it covers", () => {
+    const el = screen();
+    el.max = true;
     expect(comesIntoView(el)).toBe(true);
     page.card = true;
     cardArrived();
