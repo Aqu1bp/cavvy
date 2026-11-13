@@ -456,7 +456,9 @@ export async function openSession(id: string): Promise<SessionHandle> {
     const early = aheadFor(id);
     if (early) {
         ahead = undefined;
-        return early;
+        const taken = await early;
+        // Let go since (the server had it opened again, and that was refused): it's asked for anew.
+        if (handles.get(id) === taken) return taken;
     }
     const snap = await rpc.call("session.open", { id, last: turnsToOpen(id) });
     return adopt(snap);
