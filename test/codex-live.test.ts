@@ -181,7 +181,7 @@ describe("background terminals", () => {
 
     // Codex 0.167 gives a command it asked about first no process id, and runs it on past its turn (measured with the
     // real CLI on macOS and Linux): only its list of what it's running names it.
-    test("a command Codex asked about first, its turn stopped at once: named from Codex's list, it's a background task and can be stopped", async () => {
+    test("a command Codex asked about first, its turn stopped at once: named from Codex's list, and ended with the turn", async () => {
         Object.assign(process.env, { FAKE_SCENARIO: "hang", FAKE_HANG_ASK: "1", FAKE_HANG_MS: "20000" });
         const a = await makeAgent({ mode: "default", ask: async () => ({ allow: true }) as any });
         const stop = new AbortController();
@@ -191,13 +191,42 @@ describe("background terminals", () => {
         stop.abort();
         expect(await running).toBe("aborted");
         expect(calls("thread/backgroundTerminals/list")[0]).toEqual({ threadId: "thr-new" });
-        expect(a.task("hang-turn-1")).toMatchObject({ provider: "codex", kind: "shell", status: "running", stoppable: true, label: "sleep 60" });
-        expect(JSON.stringify(a.events)).toContain("Still running in the background (process 40001)");
-        expect(JSON.stringify(a.events)).not.toContain("Interrupted by user");
-        expect(await a.agent.stopBackground(["hang-turn-1"])).toEqual({ "hang-turn-1": "stopped" });
+        // The user's stop ends what the turn was running: nothing of it is left going, or listed.
+        await until(() => calls("thread/backgroundTerminals/terminate").length > 0, "the command to be ended");
         expect(calls("thread/backgroundTerminals/terminate")).toEqual([{ threadId: "thr-new", processId: "40001" }]);
+        expect(logLines().some((l) => l.terminated === "40001")).toBe(true);
+        expect(JSON.stringify(a.events)).toContain("Interrupted by user");
+        expect(JSON.stringify(a.events)).not.toContain("Still running in the background");
+        // And nothing starts a turn for its end.
+        await Bun.sleep(300);
+        expect([a.task("hang-turn-1"), a.wakes]).toEqual([undefined, []]);
+    });
+
+    test("a stopped turn's command that Codex won't end is a background task after all: listed, stoppable, and its end is no news", async () => {
+        Object.assign(process.env, { FAKE_SCENARIO: "hang", FAKE_HANG_ASK: "1", FAKE_HANG_MS: "20000", FAKE_TERMINATE_LATE: "refuse-once" });
+        const a = await makeAgent({ mode: "default", ask: async () => ({ allow: true }) as any });
+        const stop = new AbortController();
+        const running = a.run("go", stop.signal);
+        await until(() => logLines().some((l) => l.terminalStarted), "the command to start");
+        stop.abort();
+        expect(await running).toBe("aborted");
+        await until(() => a.task("hang-turn-1") !== undefined, "it to be listed");
+        expect(a.task("hang-turn-1")).toMatchObject({ provider: "codex", kind: "shell", status: "running", stoppable: true, label: "sleep 60" });
+        expect(await a.agent.stopBackground(["hang-turn-1"])).toEqual({ "hang-turn-1": "stopped" });
         expect(a.task("hang-turn-1")?.status).toBe("stopped");
-        // Stopped by the user: nothing starts a turn for it.
+        await Bun.sleep(300);
+        expect(a.wakes).toEqual([]);
+    });
+
+    test("a stopped turn's command that Codex won't end and that then finishes by itself starts nothing: the user had stopped", async () => {
+        Object.assign(process.env, { FAKE_SCENARIO: "hang", FAKE_HANG_ASK: "1", FAKE_HANG_MS: "20000", FAKE_TERMINATE_LATE: "refuse-then-ends" });
+        const a = await makeAgent({ mode: "default", ask: async () => ({ allow: true }) as any });
+        const stop = new AbortController();
+        const running = a.run("go", stop.signal);
+        await until(() => logLines().some((l) => l.terminalStarted), "the command to start");
+        stop.abort();
+        expect(await running).toBe("aborted");
+        await until(() => a.task("hang-turn-1")?.status === "done", "its own end");
         await Bun.sleep(300);
         expect(a.wakes).toEqual([]);
     });

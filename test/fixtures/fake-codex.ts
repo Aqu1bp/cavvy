@@ -84,6 +84,8 @@
 // FAKE_FAIL_TURN_START_AT=n  the nth turn/start fails (no turn starts)
 // FAKE_TERMINATE_LATE  1: a terminated command had finished by itself (terminated: false); fail: failed by itself;
 //                     after: not terminated, gone from the list, and its own end (a failure) comes after the answer
+//                     refuse-once: the first terminate isn't done (terminated: false) and the command goes on;
+//                     refuse-then-ends: the same, and it finishes by itself 400 ms later
 // FAKE_WHOLE_TURN_AT=n  the nth turn/start's turn runs to its end before turn/start answers
 // FAKE_CHILD_REPORT   a bgagent sub-agent's last answer, said as it ends
 // FAKE_STARTED_FIRST=1  a turn's turn/started goes out before turn/start's answer
@@ -138,6 +140,7 @@ if (argv[0] !== "app-server") {
     console.error("fake codex: only app-server");
     process.exit(2);
 }
+let refusedOnce = false;
 if (process.env.FAKE_HANG_INIT === "1") process.on("SIGTERM", () => log({ ignored: "SIGTERM" }));
 
 /** The project's own config, if it trusts the project (and wasn't told not to). */
@@ -1031,6 +1034,14 @@ async function handle(m: any) {
             if (!experimental) return fail(`${m.method} requires experimentalApi capability`);
             const pid = String(p.processId);
             if (!terminals.has(pid)) return reply({ terminated: false });
+            // =refuse (the first time only: FAKE_TERMINATE_LATE=refuse-once): it won't end it, and it goes on.
+            if ((process.env.FAKE_TERMINATE_LATE === "refuse-once" || process.env.FAKE_TERMINATE_LATE === "refuse-then-ends") && !refusedOnce) {
+                refusedOnce = true;
+                log({ refusedToTerminate: pid });
+                // =refuse-then-ends: and it finishes by itself a little later.
+                if (process.env.FAKE_TERMINATE_LATE === "refuse-then-ends") setTimeout(() => endTerminal(pid, "completed", 0, "ran on\n"), 400);
+                return reply({ terminated: false });
+            }
             log({ terminated: pid });
             // It had just finished by itself (=fail: failed by itself, exit code 1).
             if (process.env.FAKE_TERMINATE_LATE === "1" || process.env.FAKE_TERMINATE_LATE === "fail") {
