@@ -45,7 +45,31 @@ What can go wrong, and what you see:
 
 A `LocalForward` in your SSH config for that host is opened along with Cavvy's own tunnel; if its port is taken, the connection fails.
 
+### In the desktop app
+
+The button beside Settings, at the foot of the sidebar, lists your machines: this one and each server. **Add server…** asks for a name, an address (`user@host`) and, if ssh wouldn't find it by itself, a key file; it then does what `cavvy servers add` does: shows the server's key when this machine hasn't seen it, puts Cavvy there, offers the one-time copy, and says what the server lacks.
+
+Picking a server puts that window on it: its sessions, folders, models and settings are the server's, and the button carries the server's name. Other windows stay where they are. Picking this machine brings the window back. A window opens on this machine when the app starts.
+
+What a window on a server doesn't have: the desktop app's own browser pane and the Finder (choosing a folder uses Cavvy's own list of the server's folders; Reveal isn't offered). The Browser tool there needs a Chrome on the server.
+
+If the connection drops, the window keeps what it shows and says why beside `Reconnecting…`; it comes back by itself. A message you send while it's down stays in the box. When getting back needs you, the window asks: the server's key is one this machine hasn't seen (**Trust**), the Cavvy there is another version (**Update**, which asks first if that would stop work there), or Cavvy there was stopped on purpose (**Start**: a window never starts it again by itself).
+
+Removing a server (the bin beside it, from a window that isn't on it) forgets it here at once and then signs this machine out there; Cavvy and the sessions on the server stay. **Undo** puts it back.
+
 Sessions on a server are its own: its folders, its `~/.cavvy`, its settings and memory. The GUI's server there is the same one the desktop app runs locally, so sub-agents, other sessions, schedules, pull request watching and worktrees work as they do here, with the server's tools and sign-ins.
+
+## Permissions on a server
+
+A server is there to run agents freely, and it can be rebuilt. So in the Cavvy that `cavvy servers add` puts on a machine:
+
+- Sessions start in **Bypass**: tools run without asking. `cavvy servers add` says so. To start them in another mode, set it in the server's own settings (Settings in its GUI, `/config` in its terminal app, or `permissions.defaultMode`); a mode asked for (`--permission-mode`, the mode picker) is always the one a session gets.
+- What still asks, in every mode, is what reaches beyond the machine: a force-push, a push to the default branch (`main`, `master`, `trunk`), publishing a package, and commands that name Cavvy's own credentials or the server's folder (who may connect to it). What only the server itself would lose (`rm -rf ~`, `sudo`, a script piped into a shell) doesn't. Reading a key or a token kept on the server doesn't ask either, in Bypass, there as anywhere: put only credentials on a server that you'd accept an agent using. Your own computer keeps its full list ([permissions](permissions.md)).
+- Deny rules apply as anywhere.
+
+This goes for every session of that Cavvy, whether you reach it from another machine or start it on the server yourself (`~/.cavvy/server/current/cavvy`). Another copy of Cavvy installed on the same machine keeps the rules of a computer of your own.
+
+Claude Code and Codex apply their own sandboxes and rules to what they run: in Bypass they run under their own, and what they ask Cavvy about is theirs to decide, so the list above is what Cavvy checks when it's asked. Cavvy's sandbox is for models used with an API key, in Auto mode: on Linux it's bubblewrap, off until `"sandbox": true` in the server's settings. `cavvy servers check` says which mode sessions start in and how the sandbox stands.
 
 ## Keeping it running, and updating
 
@@ -56,11 +80,14 @@ cavvy servers                 # the servers you've added
 cavvy servers check [name]    # is Cavvy running there, and what's missing
 cavvy servers login <name>    # sign Claude Code or Codex in there, and turn it on
 cavvy servers update <name>   # bring its Cavvy up to this machine's
+cavvy servers rollback <name> # put it back on the version before its last update
 cavvy servers stop <name>     # stop Cavvy there
 cavvy servers remove <name>   # forget it here, and sign this machine out of it
 ```
 
-A server runs the build of Cavvy that the machine setting it up runs, made from the checkout that machine's Cavvy came from. `update` restarts Cavvy there, which cuts off turns in flight and drops questions waiting for an answer, so it asks first when sessions are working (`Stop work on <name> to update?`). What was cut off isn't lost: see [after a restart](#after-a-restart). The new build is tried before the old one is given up: if it doesn't start, the build before it is put back and started. A server on a newer build than this machine's is left alone, so two machines that share a server don't each put their own version back; `--force` replaces it anyway.
+A server runs the build of Cavvy that the machine setting it up runs. Where that build comes from depends on the Cavvy doing the setting up: run from a checkout, it makes the build from that checkout; the installed desktop app carries the builds for Linux servers it was installed with (about 110 MB of the app); any other copy can't set a server up yet: it will download the build Cavvy published for it, and use it only if Cavvy's release key signed it, once builds are published ([publishing builds](releasing.md)). `update` restarts Cavvy there, which cuts off turns in flight and drops questions waiting for an answer, so it asks first when sessions are working (`Stop work on <name> to update?`). What was cut off isn't lost: see [after a restart](#after-a-restart). The new build is tried before the old one is given up: if it doesn't start, the build before it is put back and started. A server on a newer build than this machine's is left alone, so two machines that share a server don't each put their own version back; `--force` replaces it anyway.
+
+An update that starts and then turns out not to work can be undone: `rollback` puts the server back on the build it ran before (kept there for this), asking first when sessions are working. `update` brings it level again.
 
 `stop` waits until Cavvy there has closed its sessions and gone, and it stays stopped: a connection that was open says `Cavvy on <name> was stopped.` and doesn't start it again by reconnecting. Connecting again (`cavvy gui --server`, `cavvy servers update`) starts it.
 

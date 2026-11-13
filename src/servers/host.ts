@@ -31,14 +31,15 @@ import { AGENT_CLIS, agentCli } from "../backends/defs";
 import { findCli } from "../backends/cli";
 import { cachedChrome } from "../browser/chrome";
 import { APP_NAME, APP_VERSION, cavvyHome, ensureDir, paths } from "../config/paths";
-import { loadSettings, writeJson } from "../config/settings";
-import { sandboxKind } from "../permissions/sandbox";
+import { loadSettings, writeJson, type Settings } from "../config/settings";
+import { sandboxEnabled, sandboxKind } from "../permissions/sandbox";
+import { defaultMode, type PermissionMode } from "../permissions/modes";
 import { readAgentConfig, saveAgentConfig } from "../providers/registry";
 import { PROTOCOL_VERSION } from "../server/protocol";
 import type { SignIns } from "../server/server";
 import { childEnv } from "../util/env";
 import { redact, registerSecret, unregisterSecret } from "../util/redact";
-import { thisBuild } from "./build";
+import { thisBuild, thisBuildTime } from "./build";
 import { LOGIN_EXIT } from "./remote";
 
 export const hostDir = () => join(cavvyHome(), "server");
@@ -52,9 +53,14 @@ export interface HostVersion {
     version: string;
     protocol: number;
     build: string;
+    /** When the build's commit was made (seconds): what orders two builds for a machine with no checkout. Left out by a build that doesn't know. */
+    builtAt?: number;
 }
 
-export const hostVersion = (): HostVersion => ({ version: APP_VERSION, protocol: PROTOCOL_VERSION, build: thisBuild() });
+export const hostVersion = (): HostVersion => {
+    const builtAt = thisBuildTime();
+    return { version: APP_VERSION, protocol: PROTOCOL_VERSION, build: thisBuild(), ...(builtAt === undefined ? {} : { builtAt }) };
+};
 
 export interface HostState extends HostVersion {
     pid: number;
@@ -352,6 +358,8 @@ export async function hostRun(args: string[], env: HostRunEnv): Promise<void> {
     }
     const { startServer } = await import("../server/server");
     const { defaultStatic } = await import("../server/cli");
+    // What a CLI that isn't signed in is told to do says it's to be done here.
+    (await import("../backends/account-login")).signInsOnServer();
     const signIns = new MachineSignIns();
     // The GUI that came with this build. CAVVY_GUI_DIST, when set, is the only place looked in (tests name the build's own).
     const named = process.env.CAVVY_GUI_DIST;
@@ -446,6 +454,10 @@ export interface HostCheck {
     browser: boolean;
     /** The sandbox Cavvy's own models' commands can run in, if this machine has one that works. */
     sandbox?: string;
+    /** That sandbox is in use (Linux's is off until its settings turn it on). Left out by a server from before it was said. */
+    sandboxOn?: boolean;
+    /** The permission mode sessions start in there. Left out by a server from before it was said. */
+    mode?: PermissionMode;
     memMb: number;
 }
 
@@ -484,9 +496,16 @@ export async function hostCheck(): Promise<HostCheck> {
         }),
     );
     const gh = which("gh");
+    // This user's own settings: no project is open here.
+    let settings: Settings = {};
+    try {
+        settings = loadSettings(homedir(), { trusted: false });
+    } catch {
+        // unreadable: as none
+    }
     let browser = false;
     try {
-        browser = cachedChrome(loadSettings(homedir(), { trusted: false }).browser?.executable).ok;
+        browser = cachedChrome(settings.browser?.executable).ok;
     } catch {
         browser = false;
     }
@@ -496,6 +515,8 @@ export async function hostCheck(): Promise<HostCheck> {
         gh: { installed: Boolean(gh), signedIn: gh ? await runs([gh, "auth", "status", "--hostname", "github.com"]) : undefined },
         browser,
         sandbox: sandboxKind(),
+        sandboxOn: sandboxEnabled(settings.sandbox),
+        mode: defaultMode(settings, homedir()).mode,
         memMb: Math.round(totalmem() / 1024 / 1024),
     };
 }

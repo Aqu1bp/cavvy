@@ -1323,7 +1323,13 @@ export function finalSearch(cmd: string, env: Record<string, string | undefined>
     return { name, piped: first < last };
 }
 
-const DANGEROUS: [RegExp, string][] = [
+/**
+ * A third element marks what reaches beyond the machine it runs on: other people's history, a public registry, the
+ * macOS keychain. Those are all that's asked about on one of the user's servers (servers/role.ts), which is there
+ * to run agents freely and can be rebuilt; the rest is this machine's own to lose. (Reading other saved secrets,
+ * a key file or a token, isn't on this list on any machine.)
+ */
+const DANGEROUS: [RegExp, string, beyond?: true][] = [
     [/\brm\s+(-[a-zA-Z]*[rR][a-zA-Z]*\s+|--recursive\s+)*(-[a-zA-Z]*f[a-zA-Z]*\s+)*(--no-preserve-root\s+)?(\/|\/\*|~|~\/|\$HOME|\$\{HOME\}|\/Users\/?|\/home\/?|\.\.?\/?)(\s|$|;|&|\|)/, "recursive delete of a root, home or parent directory"],
     [/:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/, "fork bomb"],
     [/\bmkfs(\.\w+)?\b/, "formats a filesystem"],
@@ -1339,11 +1345,11 @@ const DANGEROUS: [RegExp, string][] = [
     [/\b((ba|z|da|k)?sh|source|\.)\s+(-s\s+)?<\(\s*(curl|wget)\b/, "runs a downloaded script"],
     [/\b((ba|z|da|k)?sh\s+-c|eval)\s+["']?\$\(\s*(curl|wget)\b/, "runs a downloaded script"],
     [/\bsudo\b/, "runs with elevated privileges"],
-    [/\bsecurity\s+(find-generic-password|find-internet-password|dump-keychain|export)\b/, "reads secrets from the keychain"],
-    [/\bgit\s+push\b[^\n]*(\s--force\b|\s-f\b|\s--force-with-lease\b|\s\+\S)/, "force-pushes to a remote"],
+    [/\bsecurity\s+(find-generic-password|find-internet-password|dump-keychain|export)\b/, "reads secrets from the keychain", true],
+    [/\bgit\s+push\b[^\n]*(\s--force\b|\s-f\b|\s--force-with-lease\b|\s\+\S)/, "force-pushes to a remote", true],
     [/\bgit\s+(reset\s+--hard|clean\s+-[a-zA-Z]*f)/, "discards uncommitted work"],
     [/\b(crontab\s+-r|launchctl\s+(unload|remove|bootout))\b/, "removes scheduled jobs or system services"],
-    [/\b(npm|pnpm|yarn)\s+publish\b|\bcargo\s+publish\b|\btwine\s+upload\b|\bgem\s+push\b/, "publishes a package"],
+    [/\b(npm|pnpm|yarn)\s+publish\b|\bcargo\s+publish\b|\btwine\s+upload\b|\bgem\s+push\b/, "publishes a package", true],
     [/\bhistory\s+-c\b/, "clears shell history"],
 ];
 
@@ -1585,10 +1591,76 @@ function namesServerFolder(word: string): boolean {
     return false;
 }
 
-function dangerousArgv(argv0: string[], depth: number): string | undefined {
+/** Programs that publish a package when `publish` is what they're told to do, whatever options come before it. */
+const PUBLISHERS = ["npm", "pnpm", "yarn", "bun", "cargo", "uv", "poetry", "pdm", "hatch", "flit", "deno", "lerna", "changeset", "vsce", "jsr", "gradle", "gradlew"];
+/** Maven's options that take the next word as their value (a profile or a module may be named `deploy`). */
+const MVN_VALUED = new Set(["-P", "--activate-profiles", "-pl", "--projects", "-f", "--file", "-s", "--settings", "-gs", "--global-settings", "-T", "--threads", "-rf", "--resume-from", "-l", "--log-file"]);
+
+/**
+ * A command that changes what others have, read from its words as the shell would run them: a `git push` that
+ * forces (`--force`, `--force-with-lease`, a short option with `f` in it, a `+` refspec), wherever git's own
+ * options put the `push`; or a package manager publishing. Asked about on every machine.
+ *
+ * Publishing is what the program is told to do, not a word among its arguments: `pnpm -r publish` and
+ * `yarn workspace web publish` publish; `pnpm --filter web test publish` runs tests named for it.
+ */
+function reachesBeyond(argv: string[]): string | undefined {
+    const prog = argv[0];
+    // What a package runner runs (`npx lerna publish`, `bunx changeset@2 publish`): judged as itself.
+    if (runs(prog, "npx", "bunx", "pnpx")) {
+        const at = argv.findIndex((a, i) => i > 0 && !a.startsWith("-"));
+        return at > 0 ? reachesBeyond([argv[at]!.replace(/(?<=.)@[^/]*$/, ""), ...argv.slice(at + 1)]) : undefined;
+    }
+    if (runs(prog, "git")) {
+        const { index } = gitSubcommand(argv);
+        if (argv[index] !== "push") return undefined;
+        for (let j = index + 1; j < argv.length; j++) {
+            const a = argv[j]!;
+            if (PUSH_VALUE_OPTS.has(a)) j++;
+            else if (/^--force(-with-lease|-if-includes)?(=|$)/.test(a) || /^-[a-zA-Z]*f[a-zA-Z]*$/.test(a) || /^\+./.test(a)) return "force-pushes to a remote";
+        }
+        return undefined;
+    }
+    const args = argv.slice(1);
+    const cut = args.indexOf("--");
+    // Its own words: what follows a `--` is handed on to something else (`npm test -- publish`).
+    const own = cut < 0 ? args : args.slice(0, cut);
+    // The words that aren't options (cargo's `+toolchain` is one), each with whether it may be the value of the
+    // option before it (`--filter web`).
+    const words = own.flatMap((a, i) => (a.startsWith("-") || a.startsWith("+") ? [] : [{ a, at: i, value: i > 0 && own[i - 1]!.startsWith("-") && !own[i - 1]!.includes("=") }]));
+    if (runs(prog, ...PUBLISHERS)) {
+        // What it's told to do: the first word that isn't an option's value. `publish` is never taken for a value.
+        const told = words.find((w) => !w.value || w.a === "publish");
+        if (!told) return undefined;
+        if (told.a === "publish") return "publishes a package";
+        const after = words.filter((w) => w.at > told.at);
+        // In a workspace, or in each: publishing if that's what follows (`yarn workspace web publish`,
+        // `yarn workspaces foreach npm publish`).
+        if (["workspace", "workspaces", "foreach"].includes(told.a) && after.some((w) => w.a === "publish")) return "publishes a package";
+        // A script named for it.
+        if (told.a === "run" && after[0]?.a === "publish") return "publishes a package";
+        // What it's asked to run, judged as itself (`npm exec -- lerna publish`, `pnpm dlx changeset publish`).
+        if (["exec", "x", "dlx"].includes(told.a)) {
+            const rest = args.slice(told.at + 1).filter((a, i) => !(i === 0 && a === "--"));
+            const at = rest.findIndex((a) => !a.startsWith("-"));
+            return at >= 0 ? reachesBeyond([rest[at]!.replace(/(?<=.)@[^/]*$/, ""), ...rest.slice(at + 1)]) : undefined;
+        }
+        // Gradle's task of that name, in the root project or one of its own (`:lib:publish`).
+        if (runs(prog, "gradle", "gradlew") && words.some((w) => !w.value && /(^|:)publish$/.test(w.a))) return "publishes a package";
+        return undefined;
+    }
+    const told = words.find((w) => !w.value)?.a;
+    if (runs(prog, "twine") && told === "upload") return "publishes a package";
+    if (runs(prog, "gem") && told === "push") return "publishes a package";
+    if (runs(prog, "mvn", "mvnw") && own.some((a, i) => a === "deploy" && !(i > 0 && MVN_VALUED.has(own[i - 1]!)))) return "publishes a package";
+    if (runs(prog, "dotnet") && told === "nuget" && own.includes("push")) return "publishes a package";
+    return undefined;
+}
+
+function dangerousArgv(argv0: string[], depth: number, server: boolean): string | undefined {
     for (const { argv, at } of runLevels(argv0)) {
         // What env -S's string runs: checked as a command line of its own, so the patterns see it too.
-        if (at < 0) return depth < 4 ? dangerousReason(argv.map(shellWord).join(" "), depth + 1) : undefined;
+        if (at < 0) return depth < 4 ? dangerousReason(argv.map(shellWord).join(" "), depth + 1, false, server) : undefined;
         const prog = argv[0];
         const args = argv.slice(1);
         const dd = args.indexOf("--");
@@ -1605,25 +1677,29 @@ function dangerousArgv(argv0: string[], depth: number): string | undefined {
         if ((runs(prog, "cavvy", "harness") || (/[$`]/.test(prog ?? "") && first === "host")) && isHost && !["", "status", "check", "version", "-h", "--help"].includes(args[1] ?? "")) {
             return HOST_CONTROL;
         }
+        // A force-push or a publish however it's spelled: `git -C repo push "--force"`, `pnpm -r publish`. The patterns
+        // above only see the plainest spellings, and on one of the user's servers these are what's left to ask about.
+        const beyond = reachesBeyond(argv);
+        if (beyond) return beyond;
         // The server's own folder, in the words as the shell has unquoted them (`~/.cavvy/'server'/…`), and behind a
         // pattern that would match it (`~/.cavvy/serve?/…`).
         if (argv.some(namesServerFolder)) return "touches Cavvy credential store";
-        if (runs(prog, "rm") && opts.some((a) => /^-[a-zA-Z]*[rR]/.test(a) || a === "--recursive") && operands.some((o) => criticalTarget(o))) {
+        if (!server && runs(prog, "rm") && opts.some((a) => /^-[a-zA-Z]*[rR]/.test(a) || a === "--recursive") && operands.some((o) => criticalTarget(o))) {
             return "recursive delete of a root, home or parent directory";
         }
-        if (runs(prog, "find") && args.some((a) => a === "-delete" || a === "-exec" || a === "-execdir") && criticalTarget(args[0] ?? ".", true)) {
+        if (!server && runs(prog, "find") && args.some((a) => a === "-delete" || a === "-exec" || a === "-execdir") && criticalTarget(args[0] ?? ".", true)) {
             return "deletes or runs commands across a root or home directory";
         }
         // Look inside `sh -c '...'` and `eval ...`.
         if (runs(prog, ...SHELLS)) {
             const c = args.findIndex((a) => /^-[a-zA-Z]*c$/.test(a));
             if (c >= 0 && args[c + 1] !== undefined) {
-                const r = dangerousReason(args[c + 1]!);
+                const r = dangerousReason(args[c + 1]!, 0, false, server);
                 if (r) return r;
             }
         }
         if (runs(prog, "eval") && args.length) {
-            const r = dangerousReason(args.join(" "));
+            const r = dangerousReason(args.join(" "), 0, false, server);
             if (r) return r;
         }
     }
@@ -1700,25 +1776,27 @@ export function withoutHeredocData(cmd: string): string | undefined {
 /**
  * Returns a reason if the command matches a known-catastrophic pattern.
  * A here-document's data counts only when something may run it.
+ * `server`: on one of the user's servers, where only what reaches beyond the machine counts (DANGEROUS), with
+ * Cavvy's own credentials and who may connect to the server.
  */
-export function dangerousReason(cmd: string, depth = 0, dataBlanked = false): string | undefined {
+export function dangerousReason(cmd: string, depth = 0, dataBlanked = false, server = false): string | undefined {
     if (!dataBlanked) {
         const t = withoutHeredocData(cmd);
-        if (t !== undefined) return dangerousReason(t, depth, true);
+        if (t !== undefined) return dangerousReason(t, depth, true, server);
     }
     const said = withoutMessages(cmd);
-    for (const text of [said, ...programsSpelled(said)]) for (const [re, reason] of DANGEROUS) if (re.test(text)) return reason;
+    for (const text of [said, ...programsSpelled(said)]) for (const [re, reason, beyond] of DANGEROUS) if ((beyond || !server) && re.test(text)) return reason;
     const spelled = [said, ...spellings(said)];
     if (spelled.some((t) => CREDENTIAL_STORE.test(t))) return "touches Cavvy credential store";
-    if (spelled.some((t) => STARTUP_FILE.test(t))) return "overwrites a shell startup file";
+    if (!server && spelled.some((t) => STARTUP_FILE.test(t))) return "overwrites a shell startup file";
     if (depth > 4) return undefined;
     const a = analyzeCommand(cmd);
     for (const c of a.commands) {
-        const r = dangerousArgv(c.argv, depth);
+        const r = dangerousArgv(c.argv, depth, server);
         if (r) return r;
     }
     for (const body of substitutionBodies(cmd)) {
-        const r = dangerousReason(body, depth + 1);
+        const r = dangerousReason(body, depth + 1, false, server);
         if (r) return r;
     }
     return undefined;
@@ -2460,10 +2538,27 @@ const PUSH_VALUE_OPTS = new Set(["-o", "--push-option", "--repo", "--receive-pac
  */
 export function pushesDefaultBranch(cmd: string, cwd?: string): string | undefined {
     const commands = commandsWithDirs(cmd, cwd);
+    // The branch an earlier command on the line moved to (`git checkout main && git merge x && git push`): what a
+    // later push from the same folder sends when it names no branch, whatever is checked out as this is read.
+    let moved: { to: string; dir: string | null | undefined; made: boolean } | undefined;
     for (const { programs, dir } of commands) {
         for (const argv of programs) {
             if (!runs(argv[0], "git")) continue;
             const { index: i, dirs } = gitSubcommand(argv);
+            if (argv[i] === "checkout" || argv[i] === "switch") {
+                const rest = argv.slice(i + 1);
+                const words = rest.filter((a) => !a.startsWith("-"));
+                const made = rest.findIndex((a) => /^-[bBcC]$/.test(a) || a === "--create" || a === "--force-create" || a === "--orphan");
+                // Somewhere else's checkout (-C), files brought back (`checkout <tree> <paths>`, `--`, -p) and a
+                // detached head move this folder's branch nowhere.
+                if (dirs.length || rest.includes("--") || rest.some((a) => a === "-p" || a === "--patch" || a === "--detach" || a === "-d")) continue;
+                let to: string | undefined;
+                if (made >= 0) to = rest[made + 1];
+                else if (words.length === 1) to = rest.some((a) => a === "-t" || a === "--track") ? words[0]!.replace(/^[^/]+\//, "") : words[0];
+                // Made with the flags that only ever name a branch: that's what a push now sends, whatever it's called.
+                if (to) moved = { to, dir, made: made >= 0 };
+                continue;
+            }
             if (argv[i] !== "push") continue;
             const positional: string[] = [];
             for (let j = i + 1; j < argv.length; j++) {
@@ -2474,13 +2569,17 @@ export function pushesDefaultBranch(cmd: string, cwd?: string): string | undefin
             }
             // positional[0] is the remote; the rest are refspecs ([+]src[:dst]).
             const specs = positional.slice(1);
-            const branch = typeof dir === "string" ? headBranch(resolve(dir, ...dirs)) : undefined;
+            // A single word may be a file brought back, not a branch: one that isn't the default branch's name
+            // leaves the branch to what's checked out now, so it only ever adds a reason to ask. A branch that was
+            // made on the line is the branch.
+            const here = moved && !dirs.length && moved.dir === dir && (moved.made || DEFAULT_BRANCH.test(moved.to)) ? moved.to : undefined;
+            const branch = here ?? (typeof dir === "string" ? headBranch(resolve(dir, ...dirs)) : undefined);
             // Without a refspec git pushes the current branch (push.default "simple").
             if (!specs.length && branch && DEFAULT_BRANCH.test(branch)) return `git push from ${branch}`;
-            if (!specs.length && dir === null) return "git push (branch unknown)";
+            if (!specs.length && dir === null && !here) return "git push (branch unknown)";
             for (const spec of specs) {
                 let dst = spec.replace(/^\+/, "").split(":").pop()!;
-                if ((dst === "HEAD" || dst === "@") && dir === null) return "git push to HEAD (branch unknown)";
+                if ((dst === "HEAD" || dst === "@") && dir === null && !here) return "git push to HEAD (branch unknown)";
                 if ((dst === "HEAD" || dst === "@") && branch) dst = branch;
                 if (DEFAULT_BRANCH.test(dst)) return `git push to ${dst.replace(/^refs\/heads\//, "")}`;
             }

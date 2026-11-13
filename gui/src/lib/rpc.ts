@@ -49,12 +49,13 @@ export class Rpc {
     state: ConnectionState = "connecting";
 
     /** `windowKey`: this window's, presented on every connection; the server's terminals belong to it. */
-    constructor(private credentials: () => Promise<Credentials | undefined>, private windowKey?: () => string) {}
+    /** `credentials(stream)`: `stream` when it's for a pictures connection (browserStream), not the window's own. */
+    constructor(private credentials: (stream?: boolean) => Promise<Credentials | undefined>, private windowKey?: () => string) {}
 
     /** A separate connection with the same credential lifecycle; pictures never queue behind chat. */
     browserStream(): Rpc {
         const stream = new Rpc(async () => {
-            const credentials = await this.credentials();
+            const credentials = await this.credentials(true);
             if (!credentials) return;
             const url = new URL(credentials.url);
             url.pathname = "/browser-stream";

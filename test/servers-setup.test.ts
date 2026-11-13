@@ -23,7 +23,7 @@ const { setUpServer, ServerBusy } = await import("../src/servers/install");
 const { probeServer } = await import("../src/servers/remote");
 const { offeredHostKey, trustHostKey, SshError } = await import("../src/servers/ssh");
 const { ServerLink, exchangeCode } = await import("../src/servers/connect");
-const { remoteStatus, revokeOverSsh, setUpService, stopRemote, serviceTiming, StoppedThere, UpdateFailed } = await import("../src/servers/service");
+const { previousBuild, remoteStatus, revokeOverSsh, setUpService, stopRemote, serviceTiming, StoppedThere, UpdateFailed } = await import("../src/servers/service");
 const { thisDesktop } = await import("../src/servers/store");
 import type { BuildSource } from "../src/servers/build";
 import type { LinkState } from "../src/servers/connect";
@@ -439,7 +439,7 @@ describe("the terminal's commands", () => {
         const r = await cavvy("servers", "add", "box", "dev@box.example", "--no-copy");
         expect(r.err).toBe("Connecting to box.example…\n");
         const lines = r.out.trim().split("\n");
-        expect(lines.slice(0, 3)).toEqual(["box is ready.", "Only put credentials on it that you'd accept an agent using.", "It won't start Cavvy again after a reboot."]);
+        expect(lines.slice(0, 4)).toEqual(["box is ready.", "Only put credentials on it that you'd accept an agent using.", "Sessions there run without asking (Bypass).", "It won't start Cavvy again after a reboot."]);
         expect(lines).toContain("No agent CLI is installed there (Claude Code, Codex). Models with an API key work without one.");
         expect(lines.at(-1)).toBe("Work there: cavvy --server box   or   cavvy gui --server box");
         expect(r.code).toBe(0);
@@ -452,6 +452,8 @@ describe("the terminal's commands", () => {
         expect(r.out.split("\n")[0]).toBe("box: Cavvy is running.");
         expect(r.out).toContain("  It won't start Cavvy again after a reboot.");
         expect(r.out).not.toContain("different version");
+        // And how its sessions stand with permissions, last.
+        expect(r.out.trim().split("\n").at(-1)).toMatch(/^  Sessions start in Bypass\. Auto mode('s sandbox is (on|off)| has no sandbox there)/);
     });
 
     test("--server: the rest of the line runs there, in the folder named", async () => {
@@ -832,6 +834,29 @@ esac`;
         });
     });
 
+    test("rollback: the server goes back on the build it ran before its last update; with none to go back to, that's said", async () => {
+        // From before any update: nothing is recorded there.
+        rmSync(join(serverDir, "previous"), { force: true });
+        expect(await cavvy("servers", "rollback", "box")).toEqual({ code: 1, out: "", err: "box has no earlier version to go back to.\n" });
+        expect(await cavvy("servers", "rollback")).toMatchObject({ code: 1, err: "Usage: cavvy servers rollback <name> [--force]\n" });
+        await setUpServer(entry, { source: source(B), confirmRestart: async () => true });
+        expect(await remoteStatus(entry)).toMatchObject({ running: true, build: B });
+        expect(await previousBuild(entry)).toBe(A);
+        // This machine's own version is the one it lands on (the terminal's Cavvy here is build A): nothing more to say.
+        expect(await cavvy("servers", "rollback", "box")).toEqual({ code: 0, out: "box is back on the version it ran before.\n", err: "" });
+        expect(await remoteStatus(entry)).toMatchObject({ running: true, build: A });
+        // Once more goes forward again, to a version that isn't this machine's: said, with how to bring it level.
+        expect(await cavvy("servers", "rollback", "box")).toEqual({ code: 0, out: "box is back on the version it ran before.\nThat isn't this machine's version. To bring it level: cavvy servers update box\n", err: "" });
+        expect(await remoteStatus(entry)).toMatchObject({ running: true, build: B });
+        expect((await cavvy("servers", "rollback", "box")).code).toBe(0);
+        expect(await remoteStatus(entry)).toMatchObject({ running: true, build: A });
+        // What it left is now the one before: going back again would return to it.
+        expect(await previousBuild(entry)).toBe(B);
+        // A build that's no longer there isn't offered.
+        rmSync(join(serverDir, "builds", B), { recursive: true, force: true });
+        expect(await previousBuild(entry)).toBeUndefined();
+    });
+
     test("remove: it's forgotten here, this machine is signed out there, and the line to put it back is given", async () => {
         const r = await cavvy("servers", "remove", "box");
         expect(r).toEqual({ code: 0, out: "Removed box.\nTo put it back: cavvy servers add box dev@box.example\n", err: "" });
@@ -839,6 +864,30 @@ esac`;
         expect(fake.calls().some((c) => c.command?.includes("host revoke --machine"))).toBe(true);
         // Cavvy there keeps running: other machines may be using it.
         expect(await remoteStatus(entry)).toMatchObject({ running: true, build: A });
+    });
+});
+
+describe("permissions on a server", () => {
+    test("the Cavvy another machine put there is a server's: its sessions start in Bypass unless its settings say otherwise", async () => {
+        const link = new ServerLink(entry);
+        await link.start();
+        try {
+            const s = link.state;
+            if (s.state !== "connected") throw new Error("not connected");
+            const c = new Client(s.localPort, await exchangeCode(s.localPort, s.pairing.code));
+            await c.opened.promise;
+            expect(await c.call("settings.get", {})).toMatchObject({ defaultMode: "bypassPermissions", allowBypass: true });
+            const cwd = tempDir("cavvy-servers-proj-");
+            const snap = await c.call("session.create", { cwd });
+            expect(snap.state).toMatchObject({ mode: "bypassPermissions", bypassAllowed: true });
+            // A mode asked for is the one it gets, and it can be changed there.
+            const manual = await c.call("session.create", { cwd, mode: "default" });
+            expect(manual.state.mode).toBe("default");
+            await c.call("session.setMode", { id: manual.state.id, mode: "bypassPermissions" });
+            c.ws.close();
+        } finally {
+            await link.stop();
+        }
     });
 });
 
