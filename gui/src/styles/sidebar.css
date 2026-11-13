@@ -3,10 +3,11 @@
    the work. From the top: the line level with the traffic lights (its few
    tools at the far end), New session and Search, the list, the footer.
 
-   Every row in it is one shape: 32px tall, a 16px slot for a glyph, the
-   words, something quiet at the end. A session's glyph is a dot that says
-   how it's doing; its end is when it last moved. The open one is a soft
-   fill, no stroke and no shadow. Headings are small plain words. */
+   Every row in it is one shape: the words from the headings' edge, then at
+   the far end a glyph when there's news (needs you, working, unread,
+   failed, pinned) and when it last moved. Listed by date, a session's
+   second line is its project. The open one is a soft fill. Headings are
+   plain words, never smaller than what they head. */
 
 .sidebar {
     /* The rail's width: it fills .win-rail's track (shell.css), which keeps it while the column opens and closes. */
@@ -28,6 +29,8 @@
     --row-pad: calc(8 * var(--sp));
     --lead-w: calc(16 * var(--sp));
     --lead-gap: calc(8 * var(--sp));
+    /* How far a session's title sits in from the headings: none by date, under the project's name by project. */
+    --indent: 0px;
 }
 
 /* Narrow windows: the shell floats the rail over the work (data-rail="overlay" on an ancestor).
@@ -192,8 +195,9 @@
 }
 
 /* ---- Headings: a day, a project, Needs you, Settled, Archived -----------
-   Small plain words over their rows, starting where the rows' glyphs do. A
-   count, where there is one, is as quiet as the heading. */
+   Plain words over their rows, starting where the rows' glyphs do, never
+   smaller or dimmer than the rows' second line. A count, where there is one,
+   a step quieter. */
 
 .day-head,
 .shelf {
@@ -203,11 +207,11 @@
     gap: calc(6 * var(--sp));
     flex: none;
     min-height: calc(26 * var(--sp));
-    margin-top: calc(12 * var(--sp));
+    margin-top: calc(16 * var(--sp));
     padding: 0 var(--row-pad);
-    font-size: 0.857rem;
-    font-weight: 500;
-    color: var(--fg-3);
+    font-size: 0.929rem;
+    font-weight: 600;
+    color: var(--fg-2);
     text-align: left;
 }
 
@@ -222,9 +226,9 @@
 }
 
 .shelf .n {
-    font-weight: 400;
+    font-weight: 500;
     font-variant-numeric: tabular-nums;
-    opacity: 0.75;
+    color: var(--fg-3);
 }
 
 .shelf-btn {
@@ -293,7 +297,22 @@
 }
 
 /* Grouped by project, a heading folds its sessions under it (and unfolds
-   them), like Settled. Its New session shows at its end on hover. */
+   them), like Settled. It reads as the first row of its group: a folder in
+   the glyph slot (open or shut), the name at the rows' size, so the titles
+   under it start where the name does. Its New session shows at its end on
+   hover. */
+.project-head {
+    min-height: calc(32 * var(--sp));
+    margin-top: calc(14 * var(--sp));
+    font-size: inherit;
+    font-weight: 500;
+    color: var(--rail-fg);
+}
+
+.project-head .lead {
+    color: var(--fg-3);
+}
+
 .shelf-toggle {
     flex: 1;
     min-width: 0;
@@ -314,6 +333,15 @@
     color: var(--rail-fg);
 }
 
+.project-head .shelf-toggle {
+    gap: var(--lead-gap);
+    transition: background 140ms;
+}
+
+.project-head .shelf-toggle:hover {
+    background: var(--rail-hover);
+}
+
 .project-head .wait-dot {
     margin-left: calc(2 * var(--sp));
 }
@@ -323,7 +351,7 @@
     margin-top: 0;
 }
 
-/* ---- A session: a dot, what it's about, when ------------------------------ */
+/* ---- A session: what it's about, a glyph when there's news, when --------- */
 
 .card,
 .slim {
@@ -345,8 +373,8 @@
 /* The open one: a soft fill. */
 .card.cur,
 .slim.cur {
-    background: var(--rail-sel);
-    box-shadow: inset 0 0 0 0.5px var(--rail-sel-stroke);
+    background: color-mix(in srgb, var(--fg) 11%, transparent);
+    box-shadow: inset 0 0 0 0.5px var(--line-strong);
 }
 
 /* Picked for a bulk action (Shift- or ⌘-click): an accent-tinted row, apart
@@ -367,19 +395,82 @@
     box-shadow: inset 0 0 0 1px var(--accent-border);
 }
 
+/* The title from the headings' edge; how it's doing (the glyph), then when, at the far end. */
 .card-hit,
 .slim-hit {
     display: grid;
-    grid-template-columns: var(--lead-w) minmax(0, 1fr) auto;
-    column-gap: var(--lead-gap);
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    column-gap: calc(8 * var(--sp));
     align-items: center;
     width: 100%;
     min-width: 0;
     min-height: calc(32 * var(--sp));
-    padding: 0 var(--row-pad);
+    padding: 0 var(--row-pad) 0 calc(var(--row-pad) + var(--indent));
     border-radius: var(--r-row);
     text-align: left;
     color: inherit;
+}
+
+/* Listed by date: two lines, the second its project. By project, the heading says that: one line. */
+[data-group="date"] .card:not(.needs-row) .card-hit {
+    grid-template-rows: auto auto;
+    row-gap: calc(2 * var(--sp));
+    min-height: calc(50 * var(--sp));
+    padding-top: calc(7 * var(--sp));
+    padding-bottom: calc(8 * var(--sp));
+}
+
+.card-hit > .t,
+.slim-hit > .truncate {
+    grid-column: 1;
+    grid-row: 1;
+}
+
+.card-hit > .lead,
+.slim-hit > .lead {
+    grid-column: 2;
+    grid-row: 1;
+}
+
+.card-hit > .end {
+    grid-column: 3;
+    grid-row: 1;
+}
+
+/* Nothing to say: no glyph, and no room kept for one. */
+.sidebar :is(.card-hit, .slim-hit) > .lead:not(:has(*)) {
+    display: none;
+}
+
+/* Archive and More take the time's place while you point at the row: the glyph gives way with it. */
+.card:not(.needs-row):is(:hover, :focus-within, .menu-open) .card-hit > .lead {
+    visibility: hidden;
+}
+
+/* By project, a project's sessions sit under its name, as in a tree; Settled's don't. */
+.side-list[data-group="project"] > .project-head ~ [data-session-row] {
+    --indent: calc(var(--lead-w) + var(--lead-gap));
+}
+
+.side-list[data-group="project"] > .settled-head ~ [data-session-row] {
+    --indent: 0px;
+}
+
+.card .sub {
+    display: none;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.821rem;
+    line-height: 1.3;
+    color: var(--fg-3);
+}
+
+[data-group="date"] .card .sub {
+    display: block;
 }
 
 [data-density="compact"] :is(.card-hit, .slim-hit) {
@@ -394,14 +485,6 @@
     width: var(--lead-w);
     height: var(--lead-w);
     flex: none;
-}
-
-/* In play, nothing to say: a faint dot, so the list reads as a column of them. */
-.sidebar .idle-dot {
-    width: calc(6 * var(--sp));
-    height: calc(6 * var(--sp));
-    border-radius: 50%;
-    background: var(--fg-4);
 }
 
 /* Finished, and you haven't looked. */
@@ -467,6 +550,10 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+.card .t {
+    font-weight: 500;
 }
 
 .card.unread .t {
@@ -536,7 +623,7 @@
 /* Over the title, its text where the title's was. */
 .card-rename {
     position: absolute;
-    left: calc(var(--row-pad) + var(--lead-w) + var(--lead-gap) - 6 * var(--sp));
+    left: calc(var(--row-pad) + var(--indent) - 6 * var(--sp));
     right: calc(6 * var(--sp));
     top: calc(5 * var(--sp));
 }
@@ -573,7 +660,7 @@
 
 /* What it asks, under the title, from where the title starts. */
 .needs-row .m {
-    grid-column: 2 / -1;
+    grid-column: 1 / -1;
     display: flex;
     min-width: 0;
     margin-top: 1px;
@@ -616,7 +703,7 @@
 
 .slim-hit {
     flex: 1;
-    grid-template-columns: var(--lead-w) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) auto;
     padding-right: calc(4 * var(--sp));
 }
 
@@ -649,12 +736,16 @@
     text-align: left;
 }
 
+.slim.more > .lead {
+    display: none;
+}
+
 .slim.more:hover {
     color: var(--rail-fg);
 }
 
 .slim > .sess-rename {
-    margin: 0 calc(8 * var(--sp)) 0 calc(var(--row-pad) + var(--lead-w) + var(--lead-gap) - 6 * var(--sp));
+    margin: 0 calc(8 * var(--sp)) 0 calc(var(--row-pad) + var(--indent) - 6 * var(--sp));
 }
 
 /* Renaming edits the title in place: the same type and spot, a quiet field around it, not a box over the row. */

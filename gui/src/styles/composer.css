@@ -995,9 +995,14 @@
     color: var(--fg-2);
 }
 
-/* The provider's mark waits until the model's name gives way (below). */
-.composer-bar .pick > :is(svg:not(.chev), .provider-mono) {
+/* The mode's glyph waits until its word gives way (below). The model's provider always shows its mark, before the name. */
+.composer-bar .pick:not(.model) > :is(svg:not(.chev), .provider-mono) {
     display: none;
+}
+
+.composer-bar .pick.model > :is(svg:not(.chev), .provider-mono) {
+    flex: none;
+    margin-right: calc(2 * var(--sp));
 }
 
 .composer-bar[data-fit~="4"] .pick.model > :is(svg:not(.chev), .provider-mono) {
@@ -1710,22 +1715,13 @@
 }
 
 /* ---- The context card -----------------------------------------------------------
-   In a session it grows out of the words under the composer: they stay where
-   they are, as the card's last line, with what the context holds beside them,
-   the bar over that, and the one thing to do on top. (ComposerMeter.tsx places
-   it by the paddings here: 15 across, the popover's 5 and .cx-info's 10; 7
-   down, 3 and 4.) Plan limits are in the rail's footer: only a reached one is said
+   Above the words under the composer that open it: what the context holds, the bar,
+   then Compact now. Plan limits are in the rail's footer: only a reached one is said
    here, since it stops this session. */
 
 .popover.ctx-card {
     max-width: calc(100vw - 16 * var(--sp));
     overflow-wrap: anywhere;
-}
-
-/* It grows from the words, at its bottom right; less under them, as they're near the window's edge. */
-.popover.ctx-card.over {
-    padding-bottom: calc(3 * var(--sp));
-    transform-origin: bottom right;
 }
 
 .cx {
@@ -1742,14 +1738,14 @@
 }
 
 .cx-info {
-    padding: calc(6 * var(--sp)) calc(10 * var(--sp)) calc(7 * var(--sp));
-}
-
-.over .cx-info {
-    padding: calc(7 * var(--sp)) calc(10 * var(--sp)) calc(4 * var(--sp));
+    padding: calc(7 * var(--sp)) calc(10 * var(--sp)) calc(8 * var(--sp));
 }
 
 .cx-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: calc(12 * var(--sp));
     font-size: 0.929rem;
 }
 
@@ -1760,8 +1756,16 @@
     color: var(--fg);
 }
 
+.cx-head span {
+    min-width: 0;
+    font-size: 0.857rem;
+    color: var(--fg-3);
+    text-align: right;
+}
+
 .cx-bar {
     height: calc(3 * var(--sp));
+    margin-top: calc(8 * var(--sp));
     overflow: hidden;
     border-radius: var(--pill);
     background: var(--press);
@@ -1777,39 +1781,6 @@
 
 .cx-bar.warning i { background: var(--warn); }
 .cx-bar.danger i { background: var(--danger); }
-
-/* The last line: what the context holds, and the words that opened the card, in their own place and type
-   (.composer-under's), so they don't move as it opens. */
-.cx-foot {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: calc(12 * var(--sp));
-    margin-top: calc(7 * var(--sp));
-    font-size: 0.857rem;
-    line-height: 1.5;
-}
-
-.cx-of {
-    min-width: 0;
-    color: var(--fg-3);
-}
-
-.cx-words {
-    flex: none;
-    padding: 0;
-    font: inherit;
-    color: var(--fg);
-}
-
-.cx-words.warning { color: var(--warn); }
-.cx-words.danger { color: var(--danger); }
-
-.cx-note {
-    margin-top: calc(4 * var(--sp));
-    font-size: 0.857rem;
-    color: var(--fg-3);
-}
 
 /* A reached limit: red while it blocks, amber while credits carry the turns past it (#426). */
 .cx-limit {
@@ -1857,6 +1828,18 @@
     height: auto;
     min-height: calc(26 * var(--sp));
     white-space: normal;
+}
+
+/* Compact now: its icon, as the other menus' items have. */
+.cx .compact {
+    display: flex;
+    align-items: center;
+    gap: calc(9 * var(--sp));
+}
+
+.cx .compact svg {
+    flex: none;
+    color: var(--fg-2);
 }
 
 /* The card's small buttons, like the mockup's ghost pills. */
@@ -1921,11 +1904,12 @@
 }
 
 /* The model and its effort, as on the button that opened this; the whole row goes to the models. */
+/* Centred, not on the text's baseline: the provider's mark and Fast's bolt beside it line up with the words. */
 .mpe-model {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     flex: 1;
-    gap: calc(6 * var(--sp));
+    gap: calc(8 * var(--sp));
     min-width: 0;
     height: calc(32 * var(--sp));
     padding: 0 calc(6 * var(--sp)) 0 calc(8 * var(--sp));
@@ -1941,6 +1925,10 @@
     outline: none;
 }
 
+.mpe-model > :is(svg, .provider-mono) {
+    flex: none;
+}
+
 .mpe-name {
     flex: 0 1 auto;
     min-width: 0;
@@ -1950,6 +1938,7 @@
 
 .mpe-eff {
     flex: none;
+    margin-left: calc(-2 * var(--sp));
     color: var(--fg-3);
 }
 
@@ -2245,6 +2234,9 @@
 
 .mp-f {
     position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
     flex: none;
     height: calc(26 * var(--sp));
     padding: 0 calc(8 * var(--sp));
@@ -2282,15 +2274,41 @@
 }
 
 /* Searching, each provider's matches under its name: a quiet label. */
+.mp-f > :is(svg, .provider-mono) {
+    flex: none;
+}
+
+/* Favorites' star, quiet until its tab is the one shown. */
+.mp-f:not(.on) > .lucide-star {
+    color: var(--fg-4);
+}
+
 .mp-h {
     display: flex;
     align-items: center;
     flex: none;
+    gap: calc(8 * var(--sp));
     min-width: 0;
     height: calc(26 * var(--sp));
     padding: 0 calc(10 * var(--sp));
     font-size: 0.821rem;
     color: var(--fg-3);
+}
+
+.mp-h-ic {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: calc(16 * var(--sp));
+}
+
+/* In Favorites, where providers mix: each row's provider mark before its name. */
+.mr-ic {
+    display: grid;
+    place-items: center;
+    flex: none;
+    align-self: center;
+    margin-right: calc(-2 * var(--sp));
 }
 
 .mp-group + .mp-group {

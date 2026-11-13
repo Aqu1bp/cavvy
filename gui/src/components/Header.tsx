@@ -92,19 +92,12 @@ export function NeedsYou(p: { waiting: SessionSummary[] }) {
  * on you while the rail is hidden shows as an amber dot on the rail's button.
  */
 export function TitleBar(p: { children: JSX.Element; end?: JSX.Element }) {
-    // Listed by the rail when it's there (by Settings over both); hidden, its button here says there are some. The session in front of you shows its own request.
-    const waiting = createMemo(() => (needsPlace({ railShown: shellLayout().railShown, settings: Boolean(settingsTab()) }) === "title" ? needsYou([...app.sessions, ...app.archived], inFront({ activeId: app.activeId, settings: false, agentFocus: agentFocus() })) : []));
     return (
         <header class={`header ${isDesktop && os === "macos" ? "traffic" : ""} ${prefs.sidebar ? "" : "rail-off"}`}>
             {/* Opens and closes with the rail's slide (header.css): the inner box keeps the buttons' own width. */}
             <div class="bar-rail">
                 <div class="bar-rail-in">
-                    <button class={`hb ${waiting().length ? "has-wait" : ""}`} title={withShortcut(waiting().length ? "Show sidebar: a session needs you" : "Show sidebar", "app:toggleSidebar")} aria-label={waiting().length ? "Show sidebar, a session needs you" : "Show sidebar"} onClick={toggleSidebar}>
-                        <PanelLeft size={16} />
-                    </button>
-                    <button class="hb" title={withShortcut("New session", "app:newSession")} aria-label="New session" onClick={() => (setSettingsTab(undefined), newSession(app.homeCwd))}>
-                        <SquarePen size={16} />
-                    </button>
+                    <RailButtons />
                 </div>
             </div>
             <nav class="crumbs" aria-label="Breadcrumb">
@@ -113,6 +106,22 @@ export function TitleBar(p: { children: JSX.Element; end?: JSX.Element }) {
             <span class="grow" />
             <div class="bar-end">{p.end}</div>
         </header>
+    );
+}
+
+/** The rail's own two buttons (show it, new session), where the rail is hidden: the title bar, or a full-screen panel over it. */
+export function RailButtons() {
+    // Listed by the rail when it's there (by Settings over both); hidden, its button here says there are some. The session in front of you shows its own request.
+    const waiting = createMemo(() => (needsPlace({ railShown: shellLayout().railShown, settings: Boolean(settingsTab()) }) === "title" ? needsYou([...app.sessions, ...app.archived], inFront({ activeId: app.activeId, settings: false, agentFocus: agentFocus() })) : []));
+    return (
+        <>
+            <button class={`hb ${waiting().length ? "has-wait" : ""}`} title={withShortcut(waiting().length ? "Show sidebar: a session needs you" : "Show sidebar", "app:toggleSidebar")} aria-label={waiting().length ? "Show sidebar, a session needs you" : "Show sidebar"} onClick={toggleSidebar}>
+                <PanelLeft size={16} />
+            </button>
+            <button class="hb" title={withShortcut("New session", "app:newSession")} aria-label="New session" onClick={() => (setSettingsTab(undefined), newSession(app.homeCwd))}>
+                <SquarePen size={16} />
+            </button>
+        </>
     );
 }
 

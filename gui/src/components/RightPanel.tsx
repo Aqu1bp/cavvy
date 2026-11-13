@@ -1,6 +1,5 @@
 // The side panel, in the sheet's inspector column: Changes | Agents | Commands | Browser
-// at the top. Changes: the folder's changes, each opening the diff reader, with
-// Commit and Push at the foot. Agents: every sub-agent once (a background one's
+// at the top. Changes opens the diff reader, with its file count on the icon. Agents: every sub-agent once (a background one's
 // task and its run are one row), and tasks given to other models. Commands:
 // background shells and monitors, watched pull requests, and the session's
 // secrets and MCP servers that failed or ask for approval. Browser: the session's
@@ -8,23 +7,22 @@
 // drawn. The plan and its steps are in the conversation (Composer, Activity).
 
 import { batch, createEffect, createMemo, createResource, createSignal, For, Match, on, onCleanup, Show, Switch } from "solid-js";
-import { Bot, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitCommitHorizontal, GitPullRequestArrow, Globe, KeyRound, Plug, Smartphone, SquarePen, Terminal, X } from "lucide-solid";
+import { Bot, Copy, FileDiff, FolderGit2, FolderOpen, GitBranch, GitPullRequestArrow, Globe, KeyRound, Maximize2, Minimize2, Plug, Smartphone, SquarePen, Terminal, X } from "lucide-solid";
 import type { ChangesInfo, GitFileDiff } from "@shared/protocol";
 import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc, toast } from "../state/app";
 import { setPrefs } from "../state/prefs";
-import { inspectorPane, setCommitRequest, setInspectorPane, setMcpOpen, setReview } from "../state/ui";
+import { inspectorPane, panelFull, setInspectorPane, setMcpOpen, setPanelFull, setReview } from "../state/ui";
 import { newSession, openReview } from "../state/actions";
 import { needsAttention, shownName, statusLabel } from "../lib/mcp";
-import { commitUnavailable, sessionReadReady, useGitChanges } from "../state/changes";
+import { sessionReadReady, useGitChanges } from "../state/changes";
 import { canReveal, copyText, openExternal, revealPath } from "../lib/platform";
 import { tildify } from "../lib/format";
 import { workingBranch } from "../lib/worktree-work";
 import { agentRows, backgroundOf, commandRows, rowLive, type WorkRow } from "../lib/background";
-import { CHANGE, dirOf, nameOf, tabName, type Change, type InspectorPane } from "../lib/inspector";
+import { tabName, type Change, type InspectorPane } from "../lib/inspector";
 import { Menu } from "./ui/Menu";
-import { Segmented, Spinner } from "./ui/bits";
-import { DiffStat } from "./blocks/DiffView";
+import { Segmented } from "./ui/bits";
 import { PublishDialog } from "./PublishDialog";
 import { uncleared, WorkList } from "./BackgroundTasks";
 import { BrowserPane } from "./BrowserPane";
@@ -115,73 +113,10 @@ function useFolderChanges(handle: () => SessionHandle) {
     });
 }
 
-function FileRow(p: { f: Listed; onOpen: () => void }) {
-    const c = () => CHANGE[p.f.change];
-    return (
-        <button class="file" title={p.f.from ? `${p.f.from} → ${p.f.path}` : undefined} onClick={() => p.onOpen()}>
-            <span class={`fs ${p.f.change}`} title={c().label} aria-label={c().label}>
-                {c().letter}
-            </span>
-            <span class="nm">
-                <b class="truncate">{nameOf(p.f.path)}</b>
-                <Show when={dirOf(p.f.path)}>
-                    <span class="truncate">{dirOf(p.f.path)}</span>
-                </Show>
-            </span>
-            <Show when={p.f.added || p.f.removed}>
-                <span class="stat">
-                    <Show when={p.f.added}>
-                        <span class="add">+{p.f.added}</span>
-                    </Show>
-                    <Show when={p.f.removed}>
-                        <span class="del">−{p.f.removed}</span>
-                    </Show>
-                </span>
-            </Show>
-        </button>
-    );
-}
-
 type FolderChanges = ReturnType<ReturnType<typeof useFolderChanges>>;
 
 /** The diff reader on these changes: git's uncommitted view, or (outside a repository) Cavvy's own record. */
 const openChanges = (c: FolderChanges, path?: string, token?: string) => openReview(path, c?.repo === false ? "cavvy" : "uncommitted", undefined, token);
-
-/** The Changes pane: each file (the counts are on the pane's title line); a file opens the diff reader on it. */
-function ChangesPane(p: { changes: FolderChanges }) {
-    const c = () => p.changes;
-    const open = (path?: string, token?: string) => openChanges(c(), path, token);
-    return (
-        <Show when={c()} fallback={<div class="blank" aria-busy="true"><Spinner size={16} /></div>}>
-            {(ch) => (
-                <Show
-                    when={ch().count}
-                    fallback={
-                        <div class="none">
-                            <Show when={ch().error} fallback="No changes yet">
-                                <b>Changes unavailable</b>
-                                <span class="selectable">{ch().error}</span>
-                            </Show>
-                            <button class="link-btn" onClick={() => open()}>
-                                {ch().repo ? "Review the branch or a turn" : "Open the diff reader"}
-                            </button>
-                        </div>
-                    }
-                >
-                    <div>
-                        <For each={ch().files}>{(f) => <FileRow f={f} onOpen={() => open(f.path, f.pathToken)} />}</For>
-                        <Show when={ch().more}>
-                            <div class="file-more">
-                                {ch().more.toLocaleString()}
-                                {ch().atLeast ? "+" : ""} more not shown
-                            </div>
-                        </Show>
-                    </div>
-                </Show>
-            )}
-        </Show>
-    );
-}
 
 /** Pull requests the agent watches: it's woken when checks fail or someone comments. A click opens the pull request. */
 function Watches(p: { handle: SessionHandle }) {
@@ -299,31 +234,6 @@ function CommandsPane(p: { handle: SessionHandle; rows: WorkRow[] }) {
     );
 }
 
-/** Commit and push, at the panel's foot (the diff reader has its own, for the files checked there). */
-function PanelFoot(p: { handle: SessionHandle; changes: ReturnType<ReturnType<typeof useFolderChanges>> }) {
-    const [publish, setPublish] = createSignal<string>();
-    createEffect(on(() => p.handle.id, () => setPublish(undefined)));
-    const paths = () => (p.changes?.files ?? []).filter((f) => f.kind !== "folder" && f.kind !== "repo").map((f) => f.path);
-    const commitOff = () => commitUnavailable(p.handle) ?? (p.changes?.error ? "Refresh the changes before committing." : !paths().length ? "Nothing to commit." : undefined);
-    return (
-        <Show when={p.changes?.repo}>
-            <div class="insp-foot">
-                <span class="grow" title={commitOff() ?? "Commit the changed files"}>
-                    <button class="btn ghost" disabled={Boolean(commitOff())} onClick={() => setCommitRequest({ id: p.handle.id, paths: paths() })}>
-                        <GitCommitHorizontal size={14} /> Commit…
-                    </button>
-                </span>
-                <span class="grow" title={commitUnavailable(p.handle)?.replace(/committing/g, "pushing") ?? "Push the branch, and open a pull request"}>
-                    <button class="btn primary" disabled={Boolean(commitUnavailable(p.handle))} onClick={() => setPublish(p.handle.id)}>
-                        <GitPullRequestArrow size={14} /> Push…
-                    </button>
-                </span>
-            </div>
-            <PublishDialog id={publish()} onClose={() => setPublish(undefined)} onPublished={() => {}} />
-        </Show>
-    );
-}
-
 /** What the panel's views hold, for its rail and its panes: the folder's changes, the agents and the commands. */
 function usePanelWork(handle: () => SessionHandle) {
     const changes = useFolderChanges(handle);
@@ -347,7 +257,9 @@ function PanelRail(p: { handle: SessionHandle; work: ReturnType<typeof usePanelW
     const running = (rows: readonly WorkRow[]) => rows.filter(rowLive).length;
     const asks = () => agents().some((r) => r.status === "waiting");
     const files = () => (changes()?.count ? `${changes()!.count.toLocaleString()}${changes()!.atLeast ? "+" : ""}` : undefined);
+    // Changes is the diff reader itself; the other icons are the panel's panes.
     const show = (pane: InspectorPane) => batch(() => {
+        if (pane === "changes") return openChanges(changes());
         setReview(undefined);
         setInspectorPane(pane);
         setPrefs("panel", true);
@@ -445,6 +357,11 @@ function PanelRail(p: { handle: SessionHandle; work: ReturnType<typeof usePanelW
                 ]}
             />
             <span class="grow" />
+            <button class="hb" aria-pressed={panelFull()} aria-label="Full screen" title={panelFull() ? "Exit full screen" : "Full screen"} onClick={() => setPanelFull(!panelFull())}>
+                <Show when={panelFull()} fallback={<Maximize2 size={15} />}>
+                    <Minimize2 size={15} />
+                </Show>
+            </button>
             <WorkspaceButton handle={p.handle} />
         </div>
     );
@@ -457,9 +374,9 @@ export function ReviewRail(p: { handle: SessionHandle }) {
 
 export function RightPanel(p: { handle: SessionHandle }) {
     const work = usePanelWork(() => p.handle);
-    const { changes, agents, commands } = work;
+    const { agents, commands } = work;
     createEffect(() => {
-        if (inspectorPane() === "simulator" && simulatorState(p.handle.id)?.status === "unavailable") setInspectorPane("changes");
+        if (inspectorPane() === "simulator" && simulatorState(p.handle.id)?.status === "unavailable") setInspectorPane("agents");
     });
     // The panes with a title line; the browser's and the simulator's own bars say what they are.
     const titled = () => (inspectorPane() === "browser" || inspectorPane() === "simulator" ? undefined : inspectorPane());
@@ -471,13 +388,6 @@ export function RightPanel(p: { handle: SessionHandle }) {
                 {(pane) => (
                     <div class="insp-t">
                         <h2>{pane()}</h2>
-                        <Show when={pane() === "changes" && changes()?.count}>
-                            <DiffStat added={changes()!.added} removed={changes()!.removed} />
-                            <span class="grow" />
-                            <button class="btn ghost sm" title="Open the diff reader" onClick={() => openChanges(changes())}>
-                                Review
-                            </button>
-                        </Show>
                     </div>
                 )}
             </Show>
@@ -504,16 +414,8 @@ export function RightPanel(p: { handle: SessionHandle }) {
                             <SimulatorPane handle={p.handle} />
                         </div>
                     </Match>
-                    <Match when={inspectorPane() === "changes"}>
-                        <div class="pane">
-                            <ChangesPane changes={changes()} />
-                        </div>
-                    </Match>
                 </Switch>
             </div>
-            <Show when={inspectorPane() === "changes"}>
-                <PanelFoot handle={p.handle} changes={changes()} />
-            </Show>
             </div>
         </aside>
     );

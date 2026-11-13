@@ -1,6 +1,6 @@
 // Which dialogs and popovers are open, and how the window is laid out.
 
-import { createSignal } from "solid-js";
+import { batch, createSignal } from "solid-js";
 import type { ArchiveOffer } from "@shared/protocol";
 import type { ReviewScope } from "./changes";
 import { coversConversation, INSPECTOR_DEFAULT, type Held, type WindowLayout } from "../lib/layout";
@@ -38,7 +38,8 @@ export const [contextCardOpen, setContextCardOpen] = createSignal(false);
 /** Setup must be visible; an overlay opened during checkout leaves it for a manual run. */
 export const setupObscured = () => Boolean(settingsTab() || paletteOpen() || rewindOpen() || commitRequest() || folderPickerOpen() || mcpOpen() || modelPickerOpen() || modePickerOpen() || contextCardOpen());
 /** The side panel's tab; kept while the app runs, like the reader's layout. */
-export const [inspectorPane, setInspectorPane] = createSignal<InspectorPane>("changes");
+/** The side panel's pane. Changes isn't one: its icon opens the diff reader. */
+export const [inspectorPane, setInspectorPane] = createSignal<InspectorPane>("agents");
 /** The sub-agent the main view shows (an AgentRun id); none for the session itself. */
 export const [agentFocus, setAgentFocus] = createSignal<string | undefined>();
 /** The review pane docked on the right, and the file (and view) it opens on. */
@@ -76,7 +77,7 @@ export const [findOpen, setFindOpen] = createSignal(false);
 export const [findQuery, setFindQuery] = createSignal("");
 export const [findFocus, setFindFocus] = createSignal(0);
 export const openFind = () => {
-    if (coversConversation(shellLayout())) setReview(undefined);
+    if (coversConversation(shellLayout())) batch(() => (setReview(undefined), setPanelFull(false)));
     setFindOpen(true);
     setFindFocus((n) => n + 1);
 };
@@ -103,8 +104,10 @@ export const takeDockGlide = () => {
     dockGlideUntil = -Infinity;
     return glides;
 };
-/** The diff reader shows changes side by side: the inspector widens further for it. */
+/** The diff reader shows changes side by side, at the width the panel has (full screen gives it room). Kept while the app runs. */
 export const [reviewSplit, setReviewSplit] = createSignal(false);
+/** The side panel (or the diff reader in it) fills the sheet, from the sidebar to the window's edge. Off when it closes. */
+export const [panelFull, setPanelFull] = createSignal(false);
 /** The inspector's width (its resizer), when it isn't the diff reader. */
 export const [inspectorWidth, setInspectorWidth] = createSignal(INSPECTOR_DEFAULT);
 
@@ -123,7 +126,7 @@ export const [shellLayout, setShellLayout] = createSignal<WindowLayout>({
     railShown: true,
     sheet: { w: 0, h: 0 },
     column: { w: 0, h: 0 },
-    inspector: { open: false, mode: "dock", width: INSPECTOR_DEFAULT, short: false, bottom: 0 },
+    inspector: { open: false, mode: "dock", width: INSPECTOR_DEFAULT, short: false, bottom: 0, full: false },
     terminal: { shown: false, height: 0, maximized: false, most: 0 },
 });
 

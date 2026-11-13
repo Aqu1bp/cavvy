@@ -504,7 +504,6 @@
 
 /* The reply: no avatar, no name. Work, folded once it's done, then what was said. */
 .reply {
-    /* Where the live line's row fades as it steps aside (LiveLine.tsx fadeAway). */
     position: relative;
     display: flex;
     flex-direction: column;
@@ -615,12 +614,12 @@
 }
 
 /* ---- The live line ----------------------------------------------------
-   The running turn's one indicator, always its last row (LiveLine.tsx). Its
-   states share one grid cell and roll (the old one up and out, the new one up
-   from below, clipped to the row), so the row never changes height. Label,
-   what it's about (a file, a command, the thought being written), and its own
-   timer at the right. A running command's line is a button, like its row: it
-   opens to the block its row opens to (.cmd-body), under it. */
+   The running turn's one indicator, always its last row (LiveLine.tsx). One
+   glyph, then its states in one grid cell, crossfading in place, so the row
+   never moves or changes height. One sentence: the label, what it's about (a
+   file, a command, the thought being written), and its own time right after.
+   A running command's line is a button, like its row: it opens to the block
+   its row opens to (.cmd-body), under it. */
 
 .live-line {
     display: flex;
@@ -629,17 +628,24 @@
     margin-top: calc(2 * var(--sp));
 }
 
-/* The line's row fading where it was as it steps aside, over what took its place. */
-.live-line.ghost {
-    position: absolute;
-    margin: 0;
-    pointer-events: none;
-}
-
 .live-stack {
     display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
     height: calc(30 * var(--sp));
+    padding-left: calc(2 * var(--sp));
     overflow: hidden;
+}
+
+/* The hand, only while the line waits on the user. */
+.live-stack > .lic {
+    grid-area: 1 / 1;
+    margin-right: calc(8 * var(--sp));
+    width: calc(18 * var(--sp));
+    height: calc(22 * var(--sp));
+    display: grid;
+    place-items: center;
+    color: var(--fg-3);
 }
 
 /* Hover shows it's a button, as on a command row, and the chevron after the command. */
@@ -677,35 +683,65 @@
 }
 
 .live-line .layer {
-    grid-area: 1 / 1;
+    grid-area: 1 / 2;
     display: flex;
     align-items: center;
-    gap: calc(9 * var(--sp));
+    gap: calc(8 * var(--sp));
     min-width: 0;
-    /* Its timer ends where the rows above end what they came to (a command's chevron column, .cmd-h). */
-    padding: 0 calc(31 * var(--sp)) 0 calc(2 * var(--sp));
+    /* Its end stays clear of where the rows above end what they came to (a command's chevron column, .cmd-h). */
+    padding-right: calc(31 * var(--sp));
     font-size: 0.964rem;
     color: var(--fg-3);
     white-space: nowrap;
 }
 
-.layer .lic {
-    width: calc(22 * var(--sp));
-    height: calc(22 * var(--sp));
-    flex: none;
-    display: grid;
-    place-items: center;
-    color: var(--accent);
-}
-
-.layer.k-wait .lic,
-.layer.k-wait .lbl {
-    color: var(--warn);
-}
-
+/* The label leads, and holds still: the glyph says it's working. What it's about is quieter. */
 .layer .lbl {
     flex: none;
     font-weight: 500;
+    color: var(--fg-2);
+}
+
+/* The light sweeps the label for 1.2s, then rests for 1.2s. The label sits a little dimmer so the light shows. */
+.layer .lbl.shim {
+    position: relative;
+    color: color-mix(in srgb, var(--fg-2) 64%, transparent);
+}
+
+.shim-win {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 50%, transparent);
+    mask-image: linear-gradient(90deg, transparent, #000 50%, transparent);
+    animation: shim-win 2.4s steps(24) infinite;
+}
+
+.shim-hi {
+    display: block;
+    color: var(--fg);
+    animation: shim-hi 2.4s steps(24) infinite;
+}
+
+@keyframes shim-win {
+    0% { transform: translateX(-100%); }
+    50%, 100% { transform: translateX(100%); }
+}
+
+@keyframes shim-hi {
+    0% { transform: translateX(100%); }
+    50%, 100% { transform: translateX(-100%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .shim-win { display: none; }
+    .layer .lbl.shim { color: var(--fg-2); }
+}
+
+.live-stack:has(.layer.k-wait:not(.leaving)) > .lic,
+.layer.k-wait .lbl {
+    color: var(--warn);
 }
 
 .layer .det {
@@ -718,35 +754,25 @@
 .layer .det.mono {
     font-family: var(--font-mono);
     font-size: 0.893rem;
-    color: var(--fg-2);
 }
 
 .layer .lend {
-    margin-left: auto;
     flex: none;
     display: flex;
     align-items: center;
-    gap: calc(8 * var(--sp));
-    padding-left: calc(8 * var(--sp));
+    gap: calc(6 * var(--sp));
     font-size: 0.857rem;
     font-variant-numeric: tabular-nums;
     color: var(--fg-3);
 }
 
-/* Thinking: a breathing dot, where the others have a spinner. */
-.orb {
-    width: calc(8 * var(--sp));
-    height: calc(8 * var(--sp));
-    border-radius: 50%;
-    background: var(--accent);
-    animation: orb 1.1s steps(22) infinite alternate;
+.layer .lend:not(:empty)::before,
+.layer .lend > * + *::before {
+    content: "·";
 }
 
-@keyframes orb {
-    to {
-        transform: scale(0.55);
-        opacity: 0.45;
-    }
+.layer .lend > * + *::before {
+    margin-right: calc(6 * var(--sp));
 }
 
 /* A sub-agent's view (Agents.tsx): its own one-line status under its log. */

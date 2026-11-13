@@ -45,8 +45,8 @@ describe("the view menu", () => {
         // Not listed (yet): no number to give it.
         expect(viewLabel("turn", 12, turns)).toBe("Turn");
         expect(viewLabel("turn", undefined, undefined)).toBe("Turn");
-        // One line each, in place of the paragraph under the diff; the long note stays as the item's title.
-        for (const v of Object.values(VIEWS)) expect(v.desc).not.toContain("\n");
+        // Names only: what each covers is in docs/git.md, not in the menu.
+        expect(Object.values(VIEWS).map((v) => Object.keys(v))).toEqual([["label"], ["label"], ["label"], ["label"]]);
     });
 
     test("at home: the four views, the recorded turns newest first, a running one not yet pickable", () => {
@@ -57,7 +57,8 @@ describe("the view menu", () => {
             ["last-turn", false, undefined],
             ["cavvy", false, undefined],
         ]);
-        expect(m.views[1]!.desc).toBe("Everything on main since it left origin/main");
+        // Only Branch has a second line: what it's compared with.
+        expect(m.views.map((v) => v.desc)).toEqual([undefined, "vs origin/main", undefined, undefined]);
         expect(m.turns.map((t) => [t.id, t.label, t.on, Boolean(t.disabled)])).toEqual([
             [9, "Turn 3", false, true],
             [7, "Turn 2", true, false],

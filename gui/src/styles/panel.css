@@ -34,7 +34,8 @@
     gap: calc(4 * var(--sp));
     flex: none;
     width: calc(46 * var(--sp));
-    padding: calc(8 * var(--sp)) 0;
+    /* 9: its first icon's centre on a pane title's (26px down). */
+    padding: calc(9 * var(--sp)) 0 calc(8 * var(--sp));
     border-left: 0.5px solid var(--line);
 }
 
@@ -136,6 +137,17 @@
     animation: insp-fade 260ms var(--ease);
 }
 
+/* Full screen (shell.css): an empty pane's line in the middle of the sheet, not alone at the top of it. */
+[data-inspfull="on"] .insp-body:not(.br-body):has(> .pane > .none:only-child) {
+    display: flex;
+}
+
+[data-inspfull="on"] .insp-body:not(.br-body) > .pane:has(> .none:only-child) {
+    flex: 1;
+    display: grid;
+    place-items: center;
+}
+
 @keyframes insp-fade {
     from {
         opacity: 0;
@@ -212,34 +224,20 @@
     flex: none;
 }
 
-/* git status's letter, as a small tinted square. */
-.fs {
-    display: inline-grid;
-    place-items: center;
+/* What's unusual about a file's change, as a quiet word after its name ("new", "deleted"), as on a turn's file rows. */
+.fs-w {
     flex: none;
-    width: calc(18 * var(--sp));
-    height: calc(18 * var(--sp));
-    border-radius: calc(5 * var(--sp));
-    font: 700 0.714rem/1 var(--font-ui);
-    color: var(--warn);
-    background: var(--warn-bg);
+    font: 600 0.786rem/1 var(--font-ui);
+    color: var(--fg-3);
 }
 
-.fs.added,
-.fs.untracked {
-    color: var(--ok);
-    background: color-mix(in srgb, var(--ok) 13%, transparent);
+.fs-w.added,
+.fs-w.untracked {
+    color: var(--add-fg);
 }
 
-.fs.deleted {
-    color: var(--danger);
-    background: color-mix(in srgb, var(--danger) 12%, transparent);
-}
-
-.fs.renamed,
-.fs.typechange {
-    color: var(--accent-text);
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
+.fs-w.deleted {
+    color: var(--del-fg);
 }
 
 /* Nothing to show: a glyph, a line, a sentence. */
@@ -266,55 +264,6 @@
 
 .blank .link-btn {
     margin-top: calc(8 * var(--sp));
-}
-
-/* ---- Changes ---- */
-
-.file {
-    display: grid;
-    grid-template-columns: calc(20 * var(--sp)) minmax(0, 1fr) auto;
-    align-items: center;
-    gap: calc(8 * var(--sp));
-    width: 100%;
-    padding: calc(8 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    text-align: left;
-    transition: background 140ms;
-}
-
-.file:hover {
-    background: var(--hover);
-}
-
-.file:active {
-    background: var(--press);
-}
-
-.file .nm {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-}
-
-.file .nm b {
-    font-weight: 500;
-    color: var(--fg);
-}
-
-.file .nm span {
-    font-size: 0.821rem;
-    color: var(--fg-3);
-}
-
-.file .stat {
-    font: 500 0.857rem/1 var(--font-ui);
-    font-variant-numeric: tabular-nums;
-}
-
-.file-more {
-    padding: calc(8 * var(--sp));
-    font-size: 0.821rem;
-    color: var(--fg-3);
 }
 
 /* ---- Agents and Commands: what runs in the session's background, with Stop ---- */

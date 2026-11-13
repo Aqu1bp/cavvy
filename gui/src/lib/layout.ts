@@ -50,19 +50,16 @@ export function sheetSize(win: Size, railDocked: boolean, railWidth: number): Si
 export const REVIEW_DOCK_MIN = 480;
 
 /**
- * The diff reader widens the inspector: to 55% of the sheet (68% side by side), up to 860px
- * (1120px side by side), and never narrower than the inspector (`inspector`). Its own resize
- * handle (`base`) widens it further, as far as it still docks. In a sheet too narrow for that share
- * beside the conversation it takes what the conversation can spare, down to `REVIEW_DOCK_MIN`, and
- * stays beside it: it covers the conversation only when there's no room for both.
+ * The diff reader widens the inspector: to 55% of the sheet, up to 860px, and never narrower than the
+ * inspector (`inspector`). Its own resize handle (`base`) widens it further, as far as it still docks.
+ * In a sheet too narrow for that share beside the conversation it takes what the conversation can
+ * spare, down to `REVIEW_DOCK_MIN`, and stays beside it: it covers the conversation only when there's
+ * no room for both, or when it's made full screen (`windowLayout`'s `full`).
  */
-export function reviewWidth(base: number, sheetWidth: number, split: boolean, inspector = INSPECTOR_DEFAULT): number {
-    const cap = split ? 1120 : 860;
-    const share = Math.round(sheetWidth * (split ? 0.68 : 0.55));
-    const least = Math.min(cap, Math.max(inspector, share));
+export function reviewWidth(base: number, sheetWidth: number, inspector = INSPECTOR_DEFAULT): number {
+    const least = Math.min(860, Math.max(inspector, Math.round(sheetWidth * 0.55)));
     const room = Math.floor(sheetWidth - CONVERSATION_MIN);
-    // Side by side needs room for two columns: short of it, the reader fills the sheet as before.
-    if (least > room && room >= (split ? 760 : REVIEW_DOCK_MIN)) return room;
+    if (least > room && room >= REVIEW_DOCK_MIN) return room;
     return Math.max(least, Math.min(base, room));
 }
 
@@ -166,7 +163,11 @@ export interface WindowLayout {
      * `width` is its width docked or floating (the diff reader's while reviewing). A diff reader that can't
      * dock fills the sheet instead: floating at that width, it would leave a cut-off strip of conversation beside it.
      */
-    inspector: { open: boolean; mode: InspectorMode; width: number; short: boolean; bottom: number };
+    /**
+     * `full`: made full screen. It fills the sheet as "fill" does, but flat, as the docked panel is: under the title
+     * bar, to the sheet's edges and the terminal (or the bottom), over the conversation and its composer.
+     */
+    inspector: { open: boolean; mode: InspectorMode; width: number; short: boolean; bottom: number; full: boolean };
     terminal: { shown: boolean; height: number; maximized: boolean; most: number };
 }
 
@@ -178,7 +179,8 @@ export function windowLayout(o: {
     railWidth: number;
     panel: boolean;
     review: boolean;
-    split: boolean;
+    /** The panel made full screen: it fills the sheet over the conversation, whatever its width. */
+    full: boolean;
     reviewBase: number;
     inspectorWidth: number;
     terminalShown: boolean;
@@ -191,12 +193,12 @@ export function windowLayout(o: {
     const sheet = sheetSize(o.win, docked, o.railWidth);
     const saved = Math.max(INSPECTOR_MIN, Math.min(INSPECTOR_MAX, o.inspectorWidth));
     const inspector = saved > INSPECTOR_KEEP ? Math.max(INSPECTOR_KEEP, Math.min(saved, Math.floor(sheet.w - CONVERSATION_MIN))) : saved;
-    const width = o.review ? reviewWidth(o.reviewBase, sheet.w, o.split, inspector) : inspector;
+    const width = o.review ? reviewWidth(o.reviewBase, sheet.w, inspector) : inspector;
     const term = o.terminalShown ? terminalHeight(o.terminalPreferred, sheet.h, o.terminalMax) : 0;
     const short = floatShort(sheet.h, term, o.dock);
     const open = o.panel || o.review;
     const fits = inspectorMode(sheet.w, width);
-    const docks = fits === "float" && o.review ? "fill" : fits;
+    const docks = (open && o.full) || (fits === "float" && o.review) ? "fill" : fits;
     return {
         railMode: mode,
         railShown: mode === "dock" ? o.rail : o.railOpen,
@@ -205,7 +207,7 @@ export function windowLayout(o: {
             w: sheet.w - (open && docks === "dock" ? width : 0),
             h: sheet.h - (o.terminalShown ? terminalHeight(o.terminalPreferred, sheet.h, false) : 0),
         },
-        inspector: { open, mode: docks, width, short, bottom: floatBottom(term, o.dock, short) },
+        inspector: { open, mode: docks, width, short, bottom: open && o.full ? term : floatBottom(term, o.dock, short), full: open && o.full },
         terminal: { shown: o.terminalShown, height: term, maximized: o.terminalShown && o.terminalMax, most: Math.max(TERMINAL_MIN, sheet.h - TERMINAL_KEEP) },
     };
 }
@@ -223,7 +225,7 @@ export function coversConversation(l: WindowLayout): boolean {
  * terminal maximized over it, or a short floating or filling inspector, which comes down over the dock.
  */
 export function coversComposer(l: WindowLayout): boolean {
-    return l.terminal.maximized || (l.inspector.open && l.inspector.mode !== "dock" && l.inspector.short);
+    return l.terminal.maximized || l.inspector.full || (l.inspector.open && l.inspector.mode !== "dock" && l.inspector.short);
 }
 
 /**

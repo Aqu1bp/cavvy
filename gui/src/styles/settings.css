@@ -63,9 +63,9 @@
 /* Lines up with the icon column of the rows above. */
 
 /* ---- Settings pages -------------------------------------------------------
-   A centred column on the window's glass; a header that stays while the page
-   scrolls; settings in grouped cards: title and description on the left, the
-   control on the right. */
+   A column on the window's glass, sections named on its left where there's room;
+   a header that stays while the page scrolls; settings in grouped cards: title
+   and description on the left, the control on the right. */
 
 .settings-page {
     flex: 1;
@@ -95,7 +95,8 @@
 }
 
 .set-in {
-    max-width: calc(680 * var(--sp));
+    container: settings / inline-size;
+    max-width: calc(1000 * var(--sp));
     margin: 0 auto;
     padding: 0 calc(28 * var(--sp)) calc(60 * var(--sp));
 }
@@ -245,10 +246,97 @@
     color: var(--fg-3);
 }
 
-.set-pills + .set-h,
-.set-top + .set-pills + .set-h,
-.set-pills + .ap > .set-h:first-child {
+/* A page's first heading starts at the top. */
+.set-body > .set-h:first-child,
+.set-body > :first-child > .set-h:first-child {
     margin-top: 0;
+}
+
+/* Narrow, each section's name over its settings; a section is no box of its own. */
+.set-sec {
+    display: contents;
+}
+
+.set-sec + .set-sec > .set-group:first-child {
+    margin-top: calc(12 * var(--sp));
+}
+
+/* A section's line under its name: narrow, between the name and the card; with room, under the name on the left. */
+.set-hd {
+    display: contents;
+}
+
+.set-cap {
+    margin: calc(-3 * var(--sp)) calc(4 * var(--sp)) calc(8 * var(--sp));
+    font-size: 0.786rem;
+    line-height: 1.45;
+    color: var(--fg-3);
+}
+
+.set-cap code {
+    font-size: 0.95em;
+}
+
+/* With room, each section's name in a column on the left and its settings beside it (Appearance's sections too),
+   so the page uses the sheet's width. A page with no sections of its own (Plugins, Usage) takes both columns. */
+@container settings (min-width: 800px) {
+    .set-body {
+        display: grid;
+        grid-template-columns: calc(200 * var(--sp)) minmax(0, 1fr);
+        column-gap: calc(28 * var(--sp));
+        align-items: start;
+    }
+
+    .set-body > * {
+        grid-column: 2;
+    }
+
+    .set-body > * + * {
+        margin-top: calc(12 * var(--sp));
+    }
+
+    .set-body > :is(.plg, .usage-view) {
+        grid-column: 1 / -1;
+    }
+
+    .set-body > :is(.set-sec, .ap) {
+        grid-column: 1 / -1;
+        display: grid;
+        grid-template-columns: subgrid;
+        align-items: start;
+    }
+
+    .set-body > :is(.set-sec, .ap) > :not(.set-h, .set-hd) {
+        grid-column: 2;
+    }
+
+    .set-body > :is(.set-sec, .ap) > .set-hd {
+        display: block;
+        grid-column: 1;
+    }
+
+    .set-body > :is(.set-sec, .ap) > .set-hd > .set-cap {
+        margin: calc(4 * var(--sp)) 0 0;
+    }
+
+    .set-body > :is(.set-sec, .ap) > .set-h,
+    .set-body > :is(.set-sec, .ap) > .set-hd > .set-h {
+        grid-column: 1;
+        margin: 0;
+        padding-top: calc(13 * var(--sp));
+        font-size: 0.929rem;
+        color: var(--fg-2);
+    }
+
+    .set-body > .set-sec + .set-sec > .set-group:first-child {
+        margin-top: 0;
+    }
+
+    .set-body > .set-sec:has(> :is(.set-h, .set-hd)):not(:first-child),
+    .set-body > .ap > .set-h:not(:first-child),
+    .set-body > .ap > .set-h:not(:first-child) + * {
+        margin-top: calc(28 * var(--sp));
+    }
 }
 
 .set-group {
@@ -978,4 +1066,43 @@
 .upd-error .btn {
     flex: none;
     margin-top: calc(-3 * var(--sp));
+}
+
+/* About: the app's mark, its name and version, over its updates. */
+.ab-hero {
+    display: flex;
+    align-items: center;
+    gap: calc(12 * var(--sp));
+    padding: calc(14 * var(--sp));
+}
+
+.ab-hero + .set-row {
+    border-top: 0.5px solid var(--line);
+}
+
+.ab-name {
+    display: flex;
+    flex-direction: column;
+}
+
+.ab-name b {
+    font-size: 1.071rem;
+    font-weight: 600;
+}
+
+.ab-name span {
+    font-size: 0.857rem;
+    color: var(--fg-3);
+}
+
+/* Shortcuts: the keybindings file's path as its row's title. */
+.sc-file .set-title {
+    font: 0.857rem var(--font-mono);
+    overflow-wrap: anywhere;
+}
+
+/* A value in words (macOS, Connected), not a path or a number. */
+.set-val.plain {
+    font: inherit;
+    font-size: 0.929rem;
 }

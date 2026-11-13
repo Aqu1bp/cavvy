@@ -6,7 +6,7 @@
 // them all, under Needs you, with what they ask, until answered.
 
 import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
-import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronsUpDown, ChevronUp, Download, FolderPlus, Layers, ListFilter, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
+import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronsUpDown, ChevronUp, Download, Folder, FolderOpen, FolderPlus, Layers, ListFilter, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
 import { activate, app, handleFor, isUnread, refreshSessions, reportError } from "../state/app";
 import { createUpdateAction } from "./UpdateAction";
@@ -203,16 +203,15 @@ function rowLabel(s: SessionSummary, unread: boolean, picked = false): string {
 }
 
 /**
- * The start of a row, the one place it says how it's doing: a check while it's picked, an amber dot while it needs
+ * How a row is doing, just before its time at the far end: a check while it's picked, an amber dot while it needs
  * you, a ring while it works, a red dot when it stopped on an error, a solid dot when it finished unread, a pin when
- * pinned. Otherwise a faint dot while it's in play, and nothing once it's settled (`quiet`): the titles still start
- * at one edge.
+ * pinned. Otherwise nothing, so a glyph there always means something: the titles still start at one edge.
  */
-function RowLead(p: { s: SessionSummary; unread: boolean; picked?: boolean; quiet?: boolean }) {
+function RowLead(p: { s: SessionSummary; unread: boolean; picked?: boolean }) {
     const word = () => sessionStatus(p.s, now())?.text;
     return (
         <span class="lead" aria-hidden="true">
-            <Switch fallback={<Show when={!p.quiet}><span class="idle-dot" /></Show>}>
+            <Switch>
                 <Match when={p.picked}>
                     <span class="st pick"><Check size={10} stroke-width={3.4} /></span>
                 </Match>
@@ -438,6 +437,8 @@ function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) =
                 <span class="end">
                     <RowEnd s={p.s} />
                 </span>
+                {/* Its project, under the title. Listed by date only: by project, the heading says it. */}
+                <span class="sub" aria-hidden="true">{p.s.projectName}</span>
             </button>
             <span class="sess-acts">
                 {/* A session waiting for you isn't archived from under its question. */}
@@ -484,7 +485,7 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
                     aria-label={rowLabel(p.s, unread(), picked())}
                     title={`${p.s.title}\n${p.s.cwd}\nUpdated ${(now(), ago(p.s.updatedAt))}`}
                 >
-                    <RowLead s={p.s} unread={unread()} picked={picked()} quiet />
+                    <RowLead s={p.s} unread={unread()} picked={picked()} />
                     <span class="truncate">{p.s.run ? `${p.s.run.modelName} · ${p.s.title}` : p.s.title}</span>
                 </button>
                 <span class="slim-end">
@@ -931,7 +932,7 @@ export function Sidebar() {
                 </button>
             </div>
 
-            <nav ref={listEl} class="side-list" aria-label="Session list" onKeyDown={onRailKey}
+            <nav ref={listEl} class="side-list" data-group={prefs.groupBy} aria-label="Session list" onKeyDown={onRailKey}
                 onPointerEnter={() => setHovered(true)}
                 onPointerLeave={() => setHovered(false)}>
                 <For each={keys()}>{(key) => {
@@ -981,10 +982,11 @@ export function Sidebar() {
                         const needsYou = () => !open() && (group().ids ?? []).some((id) => sessions().get(id)?.status === "waiting");
                         return <div class={`shelf project-head ${open() ? "" : "folded"}`}>
                             <button class="shelf-toggle" aria-expanded={open()} title={group().cwd} onClick={() => toggleFold(group().cwd)}>
+                                <span class="lead" aria-hidden="true"><Show when={open()} fallback={<Folder size={15} />}><FolderOpen size={15} /></Show></span>
                                 <span class="truncate">{group().name}</span>
                                 <Show when={needsYou()}><span class="wait-dot" title="A session here needs you" /></Show>
-                                <span class="n">{counts().get(key)}</span>
-                                <ChevronUp size={14} class={`settled-chev ${open() ? "" : "closed"}`} />
+                                {/* Folded, how many are under it. Open, its rows say so. */}
+                                <Show when={!open()}><span class="n">{counts().get(key)}</span></Show>
                             </button>
                             <button class="shelf-btn add" title={`New session in ${group().name}`} aria-label={`New session in ${group().name}`} onClick={() => newSession(group().cwd)}><Plus size={13} /></button>
                         </div>;

@@ -19,28 +19,12 @@ export function oneSided(f: { status: "added" | "modified" | "deleted"; change?:
     return side !== undefined && f.hunks.every((h) => h.lines.every((l) => l.t === side));
 }
 
-/** The four views: the button's label, the menu's line about each, and the longer note as its title. */
-export const VIEWS: Record<Exclude<ReviewScope, "turn">, { label: string; desc: string; note: string }> = {
-    uncommitted: {
-        label: "Uncommitted",
-        desc: "Everything since the last commit, whoever changed it",
-        note: "Everything that differs from the last commit: staged, unstaged and untracked files, whoever changed them.",
-    },
-    branch: {
-        label: "Branch",
-        desc: "Everything on this branch since it left its base",
-        note: "Everything on this branch since it left its base, committed or not.",
-    },
-    "last-turn": {
-        label: "Last turn",
-        desc: "What the last recorded turn changed",
-        note: "The last recorded turn’s start and end snapshots. Ignored files are excluded. Changes from other sessions in this folder are included.",
-    },
-    cavvy: {
-        label: "Cavvy edits",
-        desc: "Only Cavvy's own edit tools, this session",
-        note: "Only what Cavvy's own edit tools changed in this session. Shell commands and Claude Code or Codex edits aren't included.",
-    },
+/** The four views, by the names the menu and its button show. What each covers is in docs/git.md. */
+export const VIEWS: Record<Exclude<ReviewScope, "turn">, { label: string }> = {
+    uncommitted: { label: "Uncommitted" },
+    branch: { label: "Branch" },
+    "last-turn": { label: "Last turn" },
+    cavvy: { label: "Cavvy edits" },
 };
 
 /** A recorded turn as git's answer lists it, oldest first. */
@@ -56,8 +40,8 @@ export function viewLabel(scope: ReviewScope, turnId?: number, turns?: readonly 
 export interface ViewItem {
     scope: Exclude<ReviewScope, "turn">;
     label: string;
-    desc: string;
-    note: string;
+    /** A second line when there's something to say: Branch's base ("vs main"), or why it can't be picked. */
+    desc?: string;
     on: boolean;
     /** Why it can't be picked here. */
     disabled?: string;
@@ -82,15 +66,15 @@ export function viewMenu(o: { place: ReviewPlace; turnId?: number; repo: boolean
     const shown: ReviewScope = !o.repo && !away ? "cavvy" : o.place.scope;
     const views = (Object.keys(VIEWS) as ViewItem["scope"][]).map((scope): ViewItem => {
         const v = VIEWS[scope];
-        const desc = scope === "branch" && o.branch && o.base ? `Everything on ${o.branch} since it left ${o.base}` : v.desc;
-        const disabled = away && !OTHER_WORKTREE_SCOPES.has(scope) ? "Turns and Cavvy edits are this session's own folder's. Pick This session under Worktree to see them." : !o.repo && !away && scope !== "cavvy" ? (o.reason ?? "This folder isn't in a Git repository.") : undefined;
-        return { scope, label: v.label, desc, note: v.note, on: shown === scope, ...(disabled ? { disabled } : {}) };
+        const disabled = away && !OTHER_WORKTREE_SCOPES.has(scope) ? "Only in this session's folder" : !o.repo && !away && scope !== "cavvy" ? (o.reason ?? "Not a Git repository") : undefined;
+        const desc = disabled ?? (scope === "branch" && o.base ? `vs ${o.base}` : undefined);
+        return { scope, label: v.label, ...(desc ? { desc } : {}), on: shown === scope, ...(disabled ? { disabled } : {}) };
     });
     const list = !o.repo || away ? [] : (o.turns ?? []);
     const turns = list
         .map((t, i): TurnItem => {
             const running = o.busy && i === list.length - 1 && t.endedAt === undefined;
-            return { id: t.id, label: `Turn ${i + 1}`, prompt: t.prompt, startedAt: t.startedAt, on: shown === "turn" && o.turnId === t.id, ...(running ? { disabled: "Running: its changes show when it ends" } : {}) };
+            return { id: t.id, label: `Turn ${i + 1}`, prompt: t.prompt, startedAt: t.startedAt, on: shown === "turn" && o.turnId === t.id, ...(running ? { disabled: "Still running" } : {}) };
         })
         .reverse();
     return { views, turns };

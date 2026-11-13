@@ -1,7 +1,7 @@
 // The inspector: the diff reader's resize rule (lib/inspector.ts), and its controls rendered
 // (fixtures/gui-inspector.ts: real Solid reactivity in an in-memory DOM).
 import { expect, test } from "bun:test";
-import { CHANGE, dirOf, nameOf, REVIEW_MAX, REVIEW_MIN, reviewDragWidth, reviewWidthRange, tabName } from "../gui/src/lib/inspector";
+import { CHANGE_WORD, dirOf, nameOf, REVIEW_MAX, REVIEW_MIN, reviewDragWidth, reviewWidthRange, tabName } from "../gui/src/lib/inspector";
 
 test("dragging the reader's edge moves from the width shown, within its bounds", () => {
     // Left (negative dx) widens it, right narrows it, from the width shown.
@@ -29,7 +29,8 @@ test("file names, folders and git's letters", () => {
     expect(nameOf("README.md")).toBe("README.md");
     expect(dirOf("README.md")).toBe("");
     expect(dirOf("../other/b.ts")).toBe("../other/");
-    expect(Object.fromEntries(Object.entries(CHANGE).map(([k, v]) => [k, v.letter]))).toEqual({ added: "A", modified: "M", deleted: "D", untracked: "U", renamed: "R", typechange: "T" });
+    // A word only for what's unusual: a modified file, most of them, has none.
+    expect(CHANGE_WORD).toEqual({ added: "new", untracked: "new", modified: undefined, deleted: "deleted", renamed: "renamed", typechange: "type changed" });
 });
 
 test("a tab's name says its count, which may be hidden or shown as an icon's badge", () => {
@@ -40,7 +41,7 @@ test("a tab's name says its count, which may be hidden or shown as an icon's bad
     expect(tabName("Commands", false, "")).toBe("Commands");
 });
 
-test("the reader's handle, its layout switch and the side panel's Changes pane", () => {
+test("the reader's handle", () => {
     // In a browser-conditions process, so Solid's renderer and signals are the same copy.
     const result = Bun.spawnSync([process.execPath, "--no-env-file", "--conditions=browser", "test", new URL("./fixtures/gui-inspector.ts", import.meta.url).pathname], { timeout: 15000 });
     expect({ code: result.exitCode, output: result.stderr.toString() }).toMatchObject({ code: 0 });

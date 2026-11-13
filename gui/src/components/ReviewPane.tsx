@@ -22,7 +22,8 @@ import { changedOutside, commitUnavailable, fetchGitChanges, lastView, sessionRe
 import { editorName, openInEditor } from "../state/actions";
 import { canReveal, revealPath } from "../lib/platform";
 import { plural, since } from "../lib/format";
-import { CHANGE, dirOf, nameOf, REVIEW_DEFAULT, REVIEW_STEP, reviewDragWidth, reviewWidthRange } from "../lib/inspector";
+import { incompleteLine } from "../lib/turn-places";
+import { CHANGE_WORD, dirOf, nameOf, REVIEW_DEFAULT, REVIEW_STEP, reviewDragWidth, reviewWidthRange } from "../lib/inspector";
 import { Counts, DiffView, type DiffComments } from "./blocks/DiffView";
 import { buildComment } from "../lib/review-comments";
 import { findPick, pickGone, pickHeld, pickKey, pickParams, type ReviewPick } from "../lib/review-pick";
@@ -52,10 +53,10 @@ function fileTag(f: Row): string | undefined {
     return changeOf(f) === "renamed" && f.from ? `Renamed from ${f.from}` : undefined;
 }
 
-/** Side by side, or unified; side by side widens the inspector further (lib/layout.ts). Kept while the app runs. */
+/** Side by side, or unified, at the panel's width. */
 function SplitToggle() {
     return (
-        <button class="hb" aria-pressed={reviewSplit()} aria-label="Side by side" title={reviewSplit() ? "Unified" : "Side by side (new and deleted files stay unified)"} onClick={() => setReviewSplit(!reviewSplit())}>
+        <button class="hb" aria-pressed={reviewSplit()} aria-label="Side by side" title={reviewSplit() ? "Unified" : "Side by side"} onClick={() => setReviewSplit(!reviewSplit())}>
             <Columns2 size={15} />
         </button>
     );
@@ -199,10 +200,10 @@ function ViewMenu(p: {
                     <div class="menu-head">Changes</div>
                     <For each={p.menu.views}>
                         {(v) => (
-                            <Radio on={v.on} disabled={v.disabled} title={v.note} onPick={() => p.onView(v.scope)}>
+                            <Radio on={v.on} disabled={v.disabled} onPick={() => p.onView(v.scope)}>
                                 <span class="menu-text">
                                     <span class="menu-label">{v.label}</span>
-                                    <span class="menu-desc">{v.desc}</span>
+                                    <Show when={v.desc}>{(d) => <span class="menu-desc">{d()}</span>}</Show>
                                 </span>
                             </Radio>
                         )}
@@ -298,13 +299,11 @@ function FilesMenu(p: { label: string; files: Row[]; more?: string; comments: (f
                         <For each={p.files}>
                             {(f) => (
                                 <button class="menu-item rv-fl-item" role="menuitem" title={f.from ? `${f.from} → ${f.path}` : f.path} onClick={() => pick(() => p.onJump(f))}>
-                                    <span class={`fs ${changeOf(f)}`} aria-label={CHANGE[changeOf(f)].label}>
-                                        {CHANGE[changeOf(f)].letter}
-                                    </span>
                                     <span class="nm">
                                         <b>{nameOf(f.path)}</b>
                                         <span>{dirOf(f.path) || "./"}</span>
                                     </span>
+                                    <Show when={CHANGE_WORD[changeOf(f)]}>{(w) => <span class={`fs-w ${changeOf(f)}`}>{w()}</span>}</Show>
                                     <span class="aside">
                                         <Show when={p.comments(f)}>
                                             {(n) => (
@@ -555,15 +554,14 @@ function FileCard(p: {
                 >
                     <ChevronRight size={14} />
                 </button>
-                <span class={`fs ${ch()}`} title={CHANGE[ch()].label} aria-label={CHANGE[ch()].label}>
-                    {CHANGE[ch()].letter}
-                </span>
                 <span class="path" title={p.file.from ? `${p.file.from} → ${p.file.path}` : p.file.path}>
                     <b class="selectable">{nameOf(p.file.path)}</b>
                     <Show when={dirOf(p.file.path) || tag()}>
                         <span class="selectable">{[dirOf(p.file.path), tag()].filter(Boolean).join(" · ")}</span>
                     </Show>
                 </span>
+                {/* "Renamed from …" says it already. */}
+                <Show when={ch() !== "renamed" || !tag() ? CHANGE_WORD[ch()] : undefined}>{(w) => <span class={`fs-w ${ch()}`}>{w()}</span>}</Show>
                 <Show when={p.count}>
                     {(n) => (
                         <span class="cm" title={plural(n(), "comment")} aria-label={plural(n(), "comment")}>
@@ -734,7 +732,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     const error = () => (shownScope() !== "cavvy" ? git()?.error : undefined);
     /** Commit opens the Commit dialog with every file; it picks from there. A collapsed folder or a nested repository can't be. */
     const commitPaths = () => files().filter((f) => f.kind !== "folder" && f.kind !== "repo").map(key);
-    const commitDisabled = () => commitUnavailable(p.handle) ?? (loading() ? "Wait for changes to finish loading." : error() ? "Refresh the changes before committing." : !commitPaths().length ? "Nothing to commit." : undefined);
+    const commitDisabled = () => commitUnavailable(p.handle) ?? (loading() ? "Loading changes" : error() ? "Refresh first" : !commitPaths().length ? "Nothing to commit" : undefined);
 
     const absolute = (path: string) => {
         const full = path.startsWith("/") ? path : path.startsWith("~/") && app.hello?.homeDir ? `${app.hello.homeDir}/${path.slice(2)}` : `${shownRoot()}/${path}`;
@@ -781,7 +779,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
             const q = pickParams(k.pick);
             const r = await fetchGitChanges(k.id, k.scope, k.base, q.path, k.turnId, k.worktree, q.pathToken);
             const f = r.files[0];
-            return { key: k.key, file: f, error: r.error ?? (f ? undefined : "This file has no changes in this view.") };
+            return { key: k.key, file: f, error: r.error ?? (f ? undefined : "No changes in this view") };
         },
     );
     const asked = () => {
@@ -795,7 +793,7 @@ export function ReviewPane(p: { handle: SessionHandle }) {
         const k = { id: id(), scope: gitScope(), base: base(), turnId: turnId(), worktree: worktree() };
         return fetchGitChanges(k.id, k.scope, k.base, f.path, k.turnId, k.worktree, f.pathToken).then((r) => {
             const got = r.files[0];
-            return { file: got && !got.deferred ? got : undefined, error: r.error ?? (got ? "Couldn't load this diff." : "This file no longer has changes. Refresh the list.") };
+            return { file: got && !got.deferred ? got : undefined, error: r.error ?? (got ? "Couldn't load this diff." : "No longer changed. Refresh.") };
         });
     };
     // A failed Branch view (no main branch to default to) still needs branches to pick from.
@@ -853,10 +851,10 @@ export function ReviewPane(p: { handle: SessionHandle }) {
     const empty = () => {
         const v = view();
         if (!v) return undefined;
-        if (shownScope() === "cavvy") return v.tracked === false ? "This session isn't saved yet." : "No file changes yet.";
-        if (shownScope() === "branch") return `Nothing has changed since ${branchLabel()} left ${git()?.base?.ref ?? "its base"}.`;
-        if (shownScope() === "turn" || shownScope() === "last-turn") return git()?.incomplete ? "This turn’s snapshot is incomplete." : "No file changes in this turn.";
-        return "Nothing to commit.";
+        if (shownScope() === "cavvy") return v.tracked === false ? "Not saved yet" : "No changes yet";
+        if (shownScope() === "branch") return `No changes vs ${git()?.base?.ref ?? "its base"}`;
+        if (shownScope() === "turn" || shownScope() === "last-turn") return git()?.incomplete ? "Snapshot incomplete" : "No changes in this turn";
+        return "Nothing to commit";
     };
     const menu = createMemo(() => viewMenu({ place: place(), turnId: turnId(), repo: !noRepo(), reason: git()?.reason, turns: git()?.turns, busy: p.handle.view.state.busy, branch: git()?.head ? branchLabel() : undefined, base: git()?.base?.ref ?? baseLabel() ?? git()?.defaultBase }));
     /** The branch of the worktree looked at, for the chip and the notice. */
@@ -1043,16 +1041,18 @@ export function ReviewPane(p: { handle: SessionHandle }) {
                 </Show>
                 <Show when={gone()}>
                     {(w) => (
-                        <div class="rv-slim warn selectable" role="status" title={`The worktree ${w()} is gone, so this shows this session's folder.`}>
-                            The worktree {w()} is gone, so this shows this session's folder.
+                        <div class="rv-slim warn selectable" role="status">
+                            {w()} is gone. Showing this folder.
                         </div>
                     )}
                 </Show>
-                <Show when={shownScope() !== "cavvy" && (git()?.incomplete || git()?.notes?.length)}>
-                    <div class="rv-slim warn selectable" role="status" title={`${git()?.incomplete ? "This turn’s snapshot is incomplete. " : ""}${git()?.notes?.join(" ") ?? ""}`}>
-                        {git()?.incomplete ? "This turn’s snapshot is incomplete. " : ""}
-                        {git()?.notes?.join(" ")}
-                    </div>
+                {/* A problem with the turn's snapshot, in one line; what Git or the snapshot said, on hover. */}
+                <Show when={shownScope() !== "cavvy" && (git()?.incomplete || git()?.notes?.length) ? incompleteLine(git()?.notes) : undefined}>
+                    {(line) => (
+                        <div class="rv-slim warn selectable" role="status" title={line().detail}>
+                            {git()?.incomplete ? line().text : (git()?.notes?.[0] ?? line().text)}
+                        </div>
+                    )}
                 </Show>
                 <Show when={askedFor() && !asked()?.file}>
                     <div class="rv-slim selectable">
@@ -1100,13 +1100,13 @@ export function ReviewPane(p: { handle: SessionHandle }) {
             <Show when={!noRepo() && own()}>
                 <div class="insp-foot">
                     <Show when={shownScope() === "uncommitted"}>
-                        <span class="grow" title={commitDisabled() ?? "Commit: pick the files in the Commit dialog"}>
+                        <span class="grow" title={commitDisabled()}>
                             <button class="btn ghost" disabled={Boolean(commitDisabled())} onClick={() => setCommitRequest({ id: id(), paths: commitPaths() })}>
                                 <GitCommitHorizontal size={14} /> Commit…
                             </button>
                         </span>
                     </Show>
-                    <span class="grow" title={commitUnavailable(p.handle)?.replace(/committing/g, "pushing") ?? "Push the branch, and open a pull request"}>
+                    <span class="grow" title={commitUnavailable(p.handle)?.replace(/committing/g, "pushing")}>
                         <button class="btn primary" disabled={Boolean(commitUnavailable(p.handle))} onClick={() => setPublishRequest(id())}>
                             <GitPullRequestArrow size={14} /> Push…
                         </button>

@@ -52,6 +52,16 @@ function resolve(current: ModelSummary | undefined, ref: string | undefined): Mo
 
 const FAVORITES = "favorites";
 
+/** Design options to compare, from ?picker= (main.tsx): list, columns, inline, steps; none is the picker as it is. Temporary. */
+type Variant = "" | "list" | "columns" | "inline" | "steps";
+const variant = (): Variant => (typeof document === "undefined" ? "" : ((document.documentElement.dataset.picker ?? "") as Variant));
+/** Every provider's models under its name, not one provider's behind a filter. */
+const grouped = () => ["list", "inline", "steps"].includes(variant());
+/** Opens on the effort, with the models a step away. */
+const twoStep = () => variant() === "" || variant() === "steps";
+/** A level's word on a segment: as on the button, short enough for five in a row. */
+const segWord = (l: Effort) => (l.id === "xhigh" ? "XHigh" : l.label);
+
 type Row = { m: ModelSummary; i: number; line: string };
 /** A run of rows under one heading: the provider's (or Favorites) in a list, each provider's in search results. */
 type Section = { key: string; name: string; provider?: string; rows: Row[] };
@@ -143,7 +153,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
         });
     };
     /** There's something to set besides the model itself: the popover opens on that. */
-    const hasEffortView = () => (reasoning() || fastOk()) && !multi();
+    const hasEffortView = () => (reasoning() || fastOk()) && !multi() && twoStep();
     /** To the models, in the popover's place; `seed`: what was typed to get there, into the search. */
     const toModels = (seed = "") => {
         setView("models");
@@ -169,9 +179,6 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
             .filter((g) => g.models.length || g.status === "error"),
     );
     const providerName = (id: string) => app.models.find((g) => g.provider === id)?.providerName ?? id;
-    // The panel's height (px at text size 14) for every model listed at once, which a search can show: the search
-    // box, filters and foot, then a heading and its rows for each provider. Between Popover's least and most.
-    const fit = createMemo(() => Math.max(200, Math.min(440, 100 + (p.compare ? 40 : 0) + groups().reduce((n, g) => n + (groups().length > 1 ? 26 : 0) + Math.max(1, g.models.length) * 35, 0))));
     /** The model and whose it is: Claude Code's Opus and the Anthropic API's both read "Opus 5.5" on the chip. */
     const chipName = () => {
         const name = currentModel()?.name ?? currentRef() ?? "Model";
@@ -188,6 +195,11 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
         const all = new Map(groups().flatMap((g) => g.models.map((m) => [m.ref, m] as const)));
         return prefs.favoriteModels.map((ref) => all.get(ref)).filter((m): m is ModelSummary => Boolean(m));
     });
+    // The panel's height (px at text size 14): the search box, filters and foot, and the longest of the lists a tab
+    // shows (Favorites or one provider's), so it keeps one height from tab to tab and a short list isn't left in a
+    // tall panel. At most seven and a half rows, so a cut-off row says there's more: a longer list scrolls, and the
+    // search finds the rest.
+    const fit = createMemo(() => Math.max(200, Math.min(104 + (p.compare ? 40 : 0) + 7.5 * 35, 104 + (p.compare ? 40 : 0) + Math.max(1, favorites().length, ...groups().map((g) => g.models.length)) * 35)));
     const group = () => groups().find((g) => g.provider === filter());
     /** One provider's models, or the favorites; searching looks through every provider's, under its name. */
     const sections = createMemo((): Section[] => {
@@ -198,6 +210,12 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                 .map((g) => ({ g, models: g.models.filter((m) => fuzzy(q(), `${g.providerName} ${m.name} ${m.id}`)) }))
                 .filter((x) => x.models.length)
                 .map(({ g, models }) => ({ key: g.provider, name: g.providerName, provider: g.provider, rows: models.map((m) => row(m)) }));
+        }
+        if (grouped()) {
+            const out: Section[] = [];
+            if (favorites().length) out.push({ key: FAVORITES, name: "Favorites", rows: favorites().map((m) => row(m, true)) });
+            for (const g of groups()) out.push({ key: g.provider, name: g.providerName, provider: g.provider, rows: g.models.map((m) => row(m)) });
+            return out;
         }
         if (filter() === FAVORITES) return [{ key: FAVORITES, name: "Favorites", rows: favorites().map((m) => row(m, true)) }];
         return [{ key: filter(), name: group()?.providerName ?? providerName(filter()), provider: filter(), rows: (group()?.models ?? []).map((m) => row(m)) }];
@@ -382,12 +400,46 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
         return { text: "No models." };
     };
 
+    /** Options: effort as labelled segments, one per level the model takes. */
+    const segments = () => (
+        <div class="mpx-seg" role="radiogroup" aria-label="Effort">
+            <For each={levels()}>
+                {(l) => (
+                    <button class={`mpx-sg ${effort() === l.id ? "on" : ""}`} role="radio" aria-checked={effort() === l.id} title={`${l.label} effort`} onClick={() => pickEffort(l.id)}>
+                        {segWord(l)}
+                    </button>
+                )}
+            </For>
+        </div>
+    );
+    const fastPill = () => (
+        <Show when={fastOk()}>
+            <button class={`mpx-fast ${fastOn() ? "on" : ""}`} aria-pressed={fastOn()} disabled={p.busy} title={p.busy ? FAST_BUSY : FAST_TIP} onClick={() => void setFastMode(!p.fast)}>
+                <Zap size={13} stroke-width={2} />
+                Fast
+            </button>
+        </Show>
+    );
+    /** Options A and B: effort and speed along the panel's foot. */
+    const effortBar = () => (
+        <Show when={(reasoning() || fastOk()) && !multi()}>
+            <div class="mpx-eff">
+                <Show when={reasoning()}>
+                    <span class="mpx-eff-l">Effort</span>
+                    {segments()}
+                </Show>
+                {fastPill()}
+            </div>
+        </Show>
+    );
+
     const rowView = (r: Row) => {
         const name = modelName(r.m);
         const i = r.i;
         const on = () => (multi() ? picked(r.m.ref) : isCurrent(r.m.ref));
+        const inlineEffort = () => variant() === "inline" && !multi() && isCurrent(r.m.ref) && (reasoning() || fastOk());
         return (
-            <div class={`mr ${i === sel() ? "sel" : ""} ${on() ? "on" : ""}`} onMouseMove={() => sel() !== i && setSel(i)}>
+            <div class={`mr ${i === sel() ? "sel" : ""} ${on() ? "on" : ""} ${inlineEffort() ? "has-eff" : ""}`} onMouseMove={() => sel() !== i && setSel(i)}>
                 <button
                     class="mr-pick"
                     id={`${listId}-${i}`}
@@ -416,6 +468,9 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                     </span>
                     {/* One line: the name, then what it stands for (or whose it is, its window and price) dimmed, cut first. */}
                     <span class="mr-text">
+                        <Show when={r.line}>
+                            <span class="mr-ic" aria-hidden="true"><ProviderIcon id={r.m.provider} name={r.line} size={14} /></span>
+                        </Show>
                         <span class="mr-name truncate">{name}</span>
                         <Show when={r.line}>
                             <span class="mr-sub truncate">{r.line}</span>
@@ -428,6 +483,13 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                 <button onFocus={() => setSel(i)} class={`mr-star ${isFav(r.m.ref) ? "f" : ""}`} aria-pressed={isFav(r.m.ref)} title={isFav(r.m.ref) ? "Remove from Favorites" : "Add to Favorites"} aria-label={isFav(r.m.ref) ? `Remove ${name} from Favorites` : `Add ${name} to Favorites`} onClick={() => toggleFav(r.m.ref)}>
                     <Star size={14} />
                 </button>
+                {/* Option C: the model in use carries its effort under its name. */}
+                <Show when={inlineEffort()}>
+                    <div class="mr-eff">
+                        <Show when={reasoning()}>{segments()}</Show>
+                        {fastPill()}
+                    </div>
+                </Show>
             </div>
         );
     };
@@ -497,8 +559,12 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
 
     /** Searching, each provider's matches under its name: a quiet label. */
     const heading = (s: Section) => (
-        <div class="mp-h" aria-hidden="true">
-            <span class="truncate">{s.name}</span>
+        <div class="mp-h">
+            <span class="mp-h-ic" aria-hidden="true">
+                <Show when={s.provider} fallback={<Star size={13} />}>{(id) => <ProviderIcon id={id()} name={s.name} size={14} />}</Show>
+            </span>
+            <span class="truncate" aria-hidden="true">{s.name}</span>
+            <Show when={grouped() && !q() && s.provider && s.provider === currentProvider() && showAccounts(s.provider)}>{accounts(s.provider!)}</Show>
         </div>
     );
 
@@ -508,13 +574,13 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
             <button ref={anchor} class={`pick model ${multi() ? "on" : ""} ${p.open ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={multi() ? picks().map((r) => resolve(undefined, r)?.name ?? r).join(", ") || "Pick 2 to 4 models" : withShortcut([chipName(), showAccounts() ? accountName() : undefined, reasoning() && effortOf(effort()) ? `${effortOf(effort())!.label} effort` : undefined, fastOn() ? "fast mode" : undefined].filter(Boolean).join(" · "), "chat:modelPicker")}>
                 <Show when={multi()} fallback={
                     <>
-                        <Show when={currentProvider()}>{(id) => <ProviderIcon id={id()} name={providerName(id())} size={15} />}</Show>
-                        {/* Fast mode: its bolt before the name. */}
+                        {/* Fast mode: its bolt first, ahead of the provider's mark and the name. */}
                         <Show when={fastOn()}>
                             <span class="fz" aria-hidden="true">
                                 <Zap size={13} stroke-width={2} />
                             </span>
                         </Show>
+                        <Show when={currentProvider()}>{(id) => <ProviderIcon id={id()} name={providerName(id())} size={15} />}</Show>
                         <span class="truncate">{chipModel()}</span>
                         {/* How hard it thinks, after its name, a step quieter: "Opus 5.5 xhigh". */}
                         <Show when={effortWord()}>{(w) => <span class="lbl pick-eff">{w()}<span class="sr-only"> effort</span></span>}</Show>
@@ -549,13 +615,40 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                 anchor={() => anchor}
                 onClose={() => p.setOpen(false)}
                 placement={p.placement ?? "top"}
-                width={view() === "effort" ? 288 : 340}
-                maxHeight={440}
-                minHeight={view() === "effort" ? 0 : 200}
-                class={`mp ${view() === "effort" ? "mp-effort" : ""}`}
+                width={view() === "effort" ? (variant() === "steps" ? 320 : 288) : variant() === "columns" ? 540 : variant() ? 360 : 340}
+                maxHeight={variant() === "columns" ? 420 : 460}
+                minHeight={view() === "effort" || (variant() && variant() !== "columns") ? 0 : 200}
+                class={`mp ${view() === "effort" ? "mp-effort" : ""} ${variant() ? `mpx mpx-${variant()}` : ""}`}
                 exit
             >
-                <Show when={view() === "effort"}>
+                <Show when={view() === "effort" && variant() === "steps"}>
+                    {/* Option D: the model and whose it is, Change to the models; effort as labelled steps; fast mode as a switch. */}
+                    <div class="mpe mpx-mpe">
+                        <button ref={modelRow} class="mpx-model" aria-label={`${chipName()}. Change model`} onClick={() => toModels()}>
+                            <Show when={currentProvider()}>{(id) => <ProviderIcon id={id()} name={providerName(id())} size={20} />}</Show>
+                            <span class="mpx-model-t">
+                                <span class="mpx-model-n truncate">{chipModel()}</span>
+                                <Show when={currentProvider()}>{(id) => <span class="mpx-model-p truncate">{providerName(id())}</span>}</Show>
+                            </span>
+                            <span class="mpx-change">Change</span>
+                            <ChevronRight size={14} class="chev" />
+                        </button>
+                        <Show when={reasoning()}>
+                            <div class="mpx-field">
+                                <span class="mpx-field-l">Effort</span>
+                                {segments()}
+                            </div>
+                        </Show>
+                        <Show when={fastOk()}>
+                            <button class="mpx-fastrow" role="switch" aria-checked={fastOn()} disabled={p.busy} title={p.busy ? FAST_BUSY : FAST_TIP} onClick={() => void setFastMode(!p.fast)}>
+                                <Zap size={14} stroke-width={2} />
+                                <span>Fast mode</span>
+                                <span class={`mp-switch ${fastOn() ? "on" : ""}`} aria-hidden="true" />
+                            </button>
+                        </Show>
+                    </div>
+                </Show>
+                <Show when={view() === "effort" && variant() !== "steps"}>
                     {/* The model in use and how hard it thinks; its name opens the models. Fast mode's bolt beside it. */}
                     <div class="mpe">
                         <div class="mpe-h">
@@ -565,6 +658,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                                 </button>
                             </Show>
                             <button ref={modelRow} class="mpe-model" title="Change model" aria-label={`${chipName()}. Change model`} onClick={() => toModels()}>
+                                <Show when={currentProvider()}>{(id) => <ProviderIcon id={id()} name={providerName(id())} size={16} />}</Show>
                                 <span class="mpe-name truncate">{chipModel()}</span>
                                 <Show when={reasoning()}>
                                     <span class="mpe-eff">{effortOf(effort())?.id ?? "default"}</span>
@@ -579,7 +673,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                 </Show>
                 <Show when={view() === "models"}>
                 {/* A click anywhere else in the picker closes the accounts list. */}
-                <div class="mp-wrap" style={{ "--mp-fit": fit() }} onPointerDown={(e) => acctOpen() && !acctEl?.contains(e.target as Node) && setAcctOpen(false)}>
+                <div class={`mp-wrap ${variant() ? `mpx-wrap-${variant()}` : ""}`} style={{ "--mp-fit": fit() }} onPointerDown={(e) => acctOpen() && !acctEl?.contains(e.target as Node) && setAcctOpen(false)}>
                     <div class="mp-search">
                         {/* Back to the effort, where the picker opened on it. */}
                         <Show when={hasEffortView()} fallback={<Search size={14} />}>
@@ -599,7 +693,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                     </div>
                     {/* Whose models are listed: the favourites or one provider's, as plain words (a wheel scrolls them sideways).
                         At the row's end, the listed provider's account, where it's a subscription with accounts. */}
-                    <div class="mp-bar">
+                    <div class="mp-bar" hidden={grouped()}>
                         <div
                             class={`mp-filters ${edges()}`}
                             ref={filtersEl}
@@ -613,6 +707,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                             }}
                         >
                             <button class={`mp-f ${filter() === FAVORITES && !q() ? "on" : ""}`} role="tab" aria-selected={filter() === FAVORITES} onClick={(e) => (show(FAVORITES), e.detail && input?.focus())}>
+                                <Star size={13} />
                                 Favorites
                             </button>
                             <For each={groups()}>
@@ -625,7 +720,8 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                                         title={g.status === "error" ? (g.error ?? "Couldn't list this provider's models") : g.status === "cached" ? "The provider didn't answer; this is the last list it gave" : undefined}
                                         onClick={(e) => (show(g.provider), e.detail && input?.focus())}
                                     >
-                                        {g.providerName}
+                                        <ProviderIcon id={g.provider} name={g.providerName} size={variant() === "columns" ? 15 : 14} />
+                                        <span class="truncate">{g.providerName}</span>
                                     </button>
                                 )}
                             </For>
@@ -660,7 +756,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                                 </div>
                             }
                         >
-                            <Show when={q()} fallback={<For each={rows()}>{rowView}</For>}>
+                            <Show when={q() || grouped()} fallback={<For each={rows()}>{rowView}</For>}>
                                 <For each={sections()}>
                                     {(s) => (
                                         <div class="mp-group" role="group" aria-label={s.name}>
@@ -672,6 +768,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                             </Show>
                         </Show>
                     </div>
+                    <Show when={variant() === "list" || variant() === "columns"}>{effortBar()}</Show>
                     <Show when={multi()}>
                         <div class="mp-cmp-note">{COMPARE_ON}</div>
                     </Show>

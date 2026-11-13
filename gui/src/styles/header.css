@@ -84,11 +84,13 @@
 }
 
 /* A session needs you while the rail that lists it is hidden: an amber dot on Show sidebar. */
-.bar-rail .has-wait {
+.bar-rail .has-wait,
+.insp-lead .has-wait {
     position: relative;
 }
 
-.bar-rail .has-wait::after {
+.bar-rail .has-wait::after,
+.insp-lead .has-wait::after {
     content: "";
     position: absolute;
     top: 4px;
@@ -99,7 +101,8 @@
     background: var(--warn);
 }
 
-.header .hb {
+.header .hb,
+.insp-lead .hb {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -114,12 +117,14 @@
 }
 
 .header .hb:hover:not(:disabled),
+.insp-lead .hb:hover:not(:disabled),
 .header .hb[aria-expanded="true"] {
     background: var(--hover);
     color: var(--fg);
 }
 
-.header .hb:active:not(:disabled) {
+.header .hb:active:not(:disabled),
+.insp-lead .hb:active:not(:disabled) {
     transform: scale(0.94);
     background: var(--press);
 }

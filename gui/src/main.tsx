@@ -25,12 +25,16 @@ import "./styles/composer.css";
 import "./styles/plan.css";
 import "./styles/overlays.css";
 import "./styles/markdown.css";
+import "./styles/picker-options.css";
 import "./state/prefs";
 import { start } from "./state/app";
 import { alignAnimations } from "./lib/stream-clock";
 import { RenderBoundary } from "./components/ui/ErrorBoundary";
 import { App } from "./App";
 
+// Model picker options to compare: ?picker=list|columns|inline|steps (ModelPicker.tsx). Temporary.
+const picker = new URLSearchParams(location.search).get("picker");
+if (picker) document.documentElement.dataset.picker = picker;
 alignAnimations();
 start();
 render(() => <RenderBoundary app><App /></RenderBoundary>, document.getElementById("root")!);

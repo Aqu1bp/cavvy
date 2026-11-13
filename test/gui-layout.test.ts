@@ -7,7 +7,7 @@ import {
 } from "../gui/src/lib/layout";
 
 const base = {
-    win: { w: 1360, h: 880 }, rail: true, railOpen: false, railWidth: 260, panel: false, review: false, split: false,
+    win: { w: 1360, h: 880 }, rail: true, railOpen: false, railWidth: 260, panel: false, review: false, full: false,
     reviewBase: 720, inspectorWidth: 360, terminalShown: false, terminalPreferred: 260, terminalMax: false, dock: 140,
 };
 
@@ -48,29 +48,39 @@ test("the inspector docks while the conversation keeps 480px, else floats", () =
     expect(windowLayout({ ...base, win: { w: 1090, h: 700 }, panel: true, rail: false }).inspector.mode).toBe("dock");
 });
 
-test("the diff reader widens the inspector: 55% of the sheet up to 860px, 68% up to 1120px side by side", () => {
-    expect(reviewWidth(360, 1400, false)).toBe(770);
-    expect(reviewWidth(360, 2000, false)).toBe(860);
+test("the diff reader widens the inspector: 55% of the sheet up to 860px", () => {
+    expect(reviewWidth(360, 1400)).toBe(770);
+    expect(reviewWidth(360, 2000)).toBe(860);
     // Short of that share beside 480px of conversation, it takes what's left rather than cover it, down to 480px.
-    expect(reviewWidth(360, 1000, false)).toBe(520);
-    expect(reviewWidth(360, 960, false)).toBe(480);
-    expect(reviewWidth(360, 959, false)).toBe(527);
-    expect(reviewWidth(360, 1000, true)).toBe(680);
-    expect(reviewWidth(360, 2000, true)).toBe(1120);
+    expect(reviewWidth(360, 1000)).toBe(520);
+    expect(reviewWidth(360, 960)).toBe(480);
+    expect(reviewWidth(360, 959)).toBe(527);
     // Never narrower than the inspector it replaces.
-    expect(reviewWidth(360, 600, false, 400)).toBe(400);
+    expect(reviewWidth(360, 600, 400)).toBe(400);
     // Its own handle widens it, as far as the conversation keeps 480px, and past the cap.
-    expect(reviewWidth(720, 1000, false)).toBe(520);
-    expect(reviewWidth(720, 1300, false)).toBe(720);
-    expect(reviewWidth(900, 1300, false)).toBe(820);
-    expect(reviewWidth(1000, 2000, false)).toBe(1000);
+    expect(reviewWidth(720, 1000)).toBe(520);
+    expect(reviewWidth(720, 1300)).toBe(720);
+    expect(reviewWidth(900, 1300)).toBe(820);
+    expect(reviewWidth(1000, 2000)).toBe(1000);
     // At 1360×880 the default (720) docks at what's left beside 480px of conversation.
     expect(windowLayout({ ...base, review: true }).inspector).toMatchObject({ open: true, width: 620, mode: "dock" });
     expect(windowLayout({ ...base, review: true, reviewBase: 420 }).inspector).toMatchObject({ width: 605, mode: "dock" });
-    // Side by side it needs 748px there, so it can't dock: it fills the sheet.
-    expect(windowLayout({ ...base, review: true, split: true }).inspector).toMatchObject({ width: 748, mode: "fill" });
+    // Full screen: it fills the sheet over the conversation, though it would dock.
+    expect(windowLayout({ ...base, review: true, full: true }).inspector).toMatchObject({ open: true, mode: "fill" });
     // 1024 wide: 55% of the sheet, too wide to dock.
     expect(windowLayout({ ...base, win: { w: 1024, h: 700 }, review: true }).inspector).toMatchObject({ width: 420, mode: "fill" });
+});
+
+test("full screen: the open panel or reader fills the sheet over the conversation, at any width", () => {
+    expect(windowLayout({ ...base, panel: true, full: true }).inspector).toMatchObject({ open: true, mode: "fill" });
+    expect(coversConversation(windowLayout({ ...base, panel: true, full: true }))).toBe(true);
+    expect(windowLayout({ ...base, win: { w: 1024, h: 700 }, panel: true, full: true }).inspector.mode).toBe("fill");
+    // Nothing open: nothing fills, and the conversation keeps the sheet.
+    expect(coversConversation(windowLayout({ ...base, full: true }))).toBe(false);
+    // Flat to the bottom (above a terminal), and over the composer.
+    expect(windowLayout({ ...base, panel: true, full: true }).inspector).toMatchObject({ full: true, bottom: 0 });
+    expect(coversComposer(windowLayout({ ...base, panel: true, full: true }))).toBe(true);
+    expect(coversComposer(windowLayout({ ...base, panel: true }))).toBe(false);
 });
 
 test("a diff reader that can't dock fills the sheet; the side panel floats", () => {

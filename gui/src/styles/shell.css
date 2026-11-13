@@ -316,6 +316,13 @@
     border-left-color: transparent;
 }
 
+/* Docked or full screen it starts at the window's top: its top row (a pane's title, the reader's or the browser's
+   bar, the rail's first icon, centred 26px down) sits on the window's top line, as the title bar and the lights do. */
+[data-inspmode="dock"] .insp,
+[data-inspfull="on"] .insp {
+    padding-top: max(0px, calc(var(--top-line) - 26 * var(--sp)));
+}
+
 .insp > :not(.insp-resizer) {
     min-width: 0;
     min-height: 0;
@@ -377,6 +384,52 @@
 [data-inspmode="fill"] .main .transcript-wrap {
     visibility: hidden;
 }
+
+/* Full screen: the panel grown to the whole sheet, flat as when it's docked (no card), from the window's top: its
+   own top row takes the place of the conversation's title bar, level with the traffic lights as when docked. The
+   conversation, its title bar and its composer wait under it (lib/layout.ts coversComposer). */
+[data-inspfull="on"] .insp {
+    top: 0;
+    left: 0;
+    right: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    animation: none;
+}
+
+[data-inspfull="on"] .main :is(.header, .composer-dock) {
+    visibility: hidden;
+}
+
+/* With the sidebar hidden the sheet starts at the window's edge: the title bar's sidebar buttons, past the traffic
+   lights, lead the panel's top row (header.css), and each pane's row starts after them. */
+.insp-lead {
+    display: none;
+}
+
+.app.rail-off[data-inspfull="on"] .insp-lead,
+[data-rail="overlay"][data-inspfull="on"] .insp-lead {
+    position: absolute;
+    z-index: 2;
+    top: calc(var(--top-line) - 15px);
+    left: calc(92px - var(--win-pad, 8px));
+    display: flex;
+    gap: 2px;
+}
+
+.app.rail-off[data-inspfull="on"] .insp-t,
+.app.rail-off[data-inspfull="on"] .rv-h,
+.app.rail-off[data-inspfull="on"] .br-bar,
+.app.rail-off[data-inspfull="on"] .sim-bar,
+[data-rail="overlay"][data-inspfull="on"] .insp-t,
+[data-rail="overlay"][data-inspfull="on"] .rv-h,
+[data-rail="overlay"][data-inspfull="on"] .br-bar,
+[data-rail="overlay"][data-inspfull="on"] .sim-bar {
+    padding-left: calc(92px - var(--win-pad, 8px) + 76px);
+}
+
+
 
 .insp-resizer {
     position: absolute;

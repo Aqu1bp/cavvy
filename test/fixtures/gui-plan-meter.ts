@@ -39,7 +39,7 @@ function mount(options: { plan?: number; reached?: boolean; unknown?: boolean; h
         rpc: { call: (...args: any[]) => { calls.push(args); return args[0] === "accounts.list" ? pending.promise : Promise.resolve(); } },
         now: () => timestamp, planLimitKey, limitAlternatives, meterOf, windowLine, contextView, cost, tokens,
         reportError: (error: unknown) => errors.push(error), toast: (message: string) => notices.push(message), setSettingsTab: (tab: string) => { settingsTab = tab; },
-        document: doc, Popover, Ring, Gauge: () => null, renderer: domRenderer, sp: (n: number) => n,
+        document: doc, Popover, Ring, Gauge: () => null, Shrink: () => null, renderer: domRenderer, sp: (n: number) => n,
     });
     const dispose = renderer.render(() => Meter({ sessionId: options.home ? undefined : "session", provider: "cli" }), root);
     const wire = () => all(root).forEach((n: any) => {
@@ -68,7 +68,7 @@ test("API context-only control, compaction, spend, busy state, and usage navigat
         expect(text(m.trigger())).toBe("25% context");
         m.show();
         // The card grows out of the words: what to do on top, then what the context holds beside the words themselves.
-        expect(text(m.root)).toContain("Compact now50k of 200k25% context");
+        expect(text(m.root)).toContain("Context50k / 200kCompact now");
         expect(text(m.root)).not.toContain("Limit reached");
         // The card is the context alone: what the session has used is Settings → Usage's.
         expect(text(m.root)).not.toContain(" in, ");
@@ -126,7 +126,7 @@ for (const reached of [false, true]) test(`unknown size stays empty${reached ? "
         expect(m.trigger().props["aria-label"]).toContain("size not known yet");
         if (reached) expect(m.trigger().props["aria-label"]).toContain("Pro · Default usage:");
         m.show();
-        expect(text(m.root)).toContain("Known after CLI's first reply");
+        expect(text(m.root)).toContain("After the first reply");
         expect(all(m.root).filter(n => n.props.role === "dialog")).toHaveLength(1);
         expect(m.trigger().props["aria-controls"]).toBe(all(m.root).find(n => n.props.role === "dialog")!.props.id);
     } finally { m.dispose(); }
@@ -193,37 +193,29 @@ test("Home uses default account; session uses its own account", () => {
     }
 });
 
-test("focus/click/ArrowDown open; Escape closes and restores focus; delayed hover/blur close", async () => {
+test("a click or ArrowDown opens it, not hover or focus; another click, Escape or focus elsewhere closes it", () => {
     const m = mount();
     try {
-        m.trigger().props.onFocus(); m.wire();
+        // Hovering or tabbing onto the words opens nothing.
+        expect(m.trigger().props.onMouseEnter).toBeUndefined();
+        expect(m.trigger().props.onFocus).toBeUndefined();
+        m.trigger().props.onKeyDown({ key: "ArrowDown", preventDefault() {} }); m.wire();
         expect(m.open()).toBe(true);
-        m.trigger().props.onKeyDown({ key: "ArrowDown", preventDefault() {} });
         expect(m.doc.activeElement.props.role).toBe("dialog");
         m.escape();
         expect(m.open()).toBe(false);
         expect(m.doc.activeElement).toBe(m.trigger());
         m.trigger().props.onClick(); m.wire();
         expect(m.open()).toBe(true);
-        m.escape(); m.doc.activeElement = undefined;
-        m.trigger().props.onMouseEnter(); m.wire();
-        m.trigger().props.onMouseLeave();
-        expect(m.open()).toBe(true);
-        const panel = all(m.root).find(n => n.props.role === "dialog")!;
-        panel.props.onMouseEnter();
-        await Bun.sleep(180);
-        expect(m.open()).toBe(true);
-        panel.props.onMouseLeave();
-        await Bun.sleep(180);
+        m.trigger().props.onClick();
         expect(m.open()).toBe(false);
-        m.trigger().props.onFocus(); m.wire();
-        m.trigger().props.onBlur();
-        m.doc.activeElement = m.button("Compact now");
-        await Bun.sleep(180);
+        m.trigger().props.onClick(); m.wire();
+        const panel = () => all(m.root).find(n => n.props.role === "dialog")!;
+        // Focus moving inside the card, or back to the words, keeps it; anywhere else closes it.
+        panel().props.onFocusOut({ relatedTarget: m.button("Compact now") });
+        panel().props.onFocusOut({ relatedTarget: m.trigger() });
         expect(m.open()).toBe(true);
-        m.doc.activeElement = undefined;
-        all(m.root).find(n => n.props.role === "dialog")!.props.onFocusOut();
-        await Bun.sleep(180);
+        panel().props.onFocusOut({ relatedTarget: {} });
         expect(m.open()).toBe(false);
     } finally { m.dispose(); }
 });
@@ -246,14 +238,14 @@ test("context is measured to where it compacts, and the numbers say where that c
     const m = mount({ autoCompact: true });
     try {
         m.show();
-        const numbers = () => all(m.root).find(n => n.tag === "span" && n.props.title !== undefined && text(n).includes(" of "))!;
+        const numbers = () => all(m.root).find(n => n.tag === "span" && n.props.title !== undefined && text(n).includes(" / "))!;
         expect(numbers().props.title).toBe("CLI decides when to compact. The model holds up to 200k.");
         m.setState({ ...m.state(), compactAt: 100_000 });
-        expect(text(m.root)).toContain("50k of 100k50% context");
+        expect(text(m.root)).toContain("Context50k / 100k");
         expect(m.trigger().props["aria-label"]).toBe("Context: 50% used");
         expect(numbers().props.title).toBe("CLI compacts at 100k, your auto-compact setting. The model holds up to 200k.");
         // A setting past the model's window: the window wins.
         m.setState({ ...m.state(), compactAt: 500_000 });
-        expect(text(m.root)).toContain("50k of 200k");
+        expect(text(m.root)).toContain("50k / 200k");
     } finally { m.dispose(); }
 });
