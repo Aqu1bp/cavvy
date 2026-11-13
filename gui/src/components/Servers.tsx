@@ -12,6 +12,7 @@ import { app, reportError, rpc, toast } from "../state/app";
 import { Dialog } from "./ui/Dialog";
 import { Menu } from "./ui/Menu";
 import { Logo, Spinner } from "./ui/bits";
+import { watchOthers } from "./OtherMachines";
 import "../styles/servers.css";
 
 // What the window's connection needs of a server (state/app.ts), from the one place this is all loaded from.
@@ -46,6 +47,15 @@ export function openMachines(anchor: HTMLElement) {
     }
     setMenuAnchor(anchor);
     setServerMenu(!serverMenu());
+}
+
+/**
+ * The window's Cavvy answered (each time it connects): a window on a server is on it now, and where this computer
+ * has servers, the other machines' sessions are shown under the window's own (OtherMachines.tsx).
+ */
+export function connected() {
+    if (machine) setMachineIssue(undefined);
+    watchOthers(HERE);
 }
 
 /** Shows, in `el`, what a window on a server shows until it's connected (MachineCover). */
@@ -206,6 +216,8 @@ function AddServerDialog() {
     /** What the copy leaves here, said so nobody looks for it there. */
     const notCopied = (left?: string) => (left ? `Not copied, since they could hold a key: ${left}.` : undefined);
     const finish = async (r: Extract<AddResult, { status: "added" }>, copied?: string) => {
+        // The first server: its sessions are listed from now on, not from the window's next start.
+        watchOthers(HERE);
         let lines: string[] | undefined;
         try {
             lines = checkLines(r.name, await servers().call("servers.check", { name: r.name }));

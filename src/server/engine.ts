@@ -180,6 +180,10 @@ export interface EngineClient {
     window?: string;
     /** The session on its screen (null: none). Undefined until it says, and then all count. */
     shown?: string | null;
+    /** The server its window is on (it asked this Cavvy to connect it there): what that server says, it hears itself. */
+    machine?: string;
+    /** It shows the other machines' sessions (servers.overview): it's told how they change, and what they have to say. */
+    watching?: boolean;
 }
 
 
@@ -573,6 +577,9 @@ export class Engine {
     notify(rt: Runtime, kind: "done" | "permission" | "question" | "plan" | "error", body: string) {
         const title = this.notifyTitle(rt);
         this.broadcast({ type: "notify", sessionId: rt.id, kind, title, body });
+        // No window is on this computer, only windows on servers: one of those says it, as it would another machine's.
+        const windows = [...this.clients].filter((c) => c.watching);
+        if (windows.length && windows.every((c) => c.machine)) windows[0]!.send({ type: "servers.notify", sessionId: rt.id, kind, title, body });
         this.sessionChanged(rt);
         const message = `Cavvy: ${body}`;
         void fireHooks(rt.settings(), "Notification", { session_id: rt.id, message, kind, notification_type: kind }, rt.ws.cwd, () => {});
@@ -1809,10 +1816,24 @@ export class Engine {
                 source: this.o.serverBuilds,
                 onProgress: (e) => this.serverAskers.get(e.name)?.send({ type: "servers.progress", ...e }),
                 onLink: (e) => this.broadcast({ type: "servers.link", ...e }),
+                onOverview: (machine) => {
+                    for (const c of this.clients) if (c.watching) c.send({ type: "servers.overview", machine });
+                },
+                onNotice: (name, n) => {
+                    // A window on that server hears it from there. Otherwise one window says it, not each of them.
+                    if ([...this.clients].some((c) => c.machine === name)) return;
+                    this.oneWatching()?.send({ type: "servers.notify", name, ...n });
+                },
             });
         }
         if (asking) this.serverAskers.set(asking, client);
         return this.serverLinks;
+    }
+
+    /** The window that says what another machine's session has to tell: one on this computer if there is one, else the first that shows them. */
+    private oneWatching(): EngineClient | undefined {
+        const watching = [...this.clients].filter((c) => c.watching);
+        return watching.find((c) => !c.machine) ?? watching[0];
     }
 
     /**
@@ -2280,7 +2301,14 @@ export class Engine {
                 } catch {
                     user = process.env.USER ?? "";
                 }
-                return { version: APP_VERSION, protocol: PROTOCOL_VERSION, home: cavvyHome(), platform: process.platform, homeDir: homedir(), user, host: hostname().replace(/\.local$/, ""), startCwd } satisfies HelloResult;
+                // What a window needs to know to show other machines at all: none of that is loaded otherwise.
+                // A servers file that can't be read says so where servers are managed, not here: this is every window's first call.
+                const servers = this.o.away
+                    ? 0
+                    : await import("../servers/store")
+                          .then((m) => m.listServers().length)
+                          .catch(() => 0);
+                return { version: APP_VERSION, protocol: PROTOCOL_VERSION, home: cavvyHome(), platform: process.platform, homeDir: homedir(), user, host: hostname().replace(/\.local$/, ""), startCwd, ...(servers ? { servers } : {}) } satisfies HelloResult;
             }
             case "keybindings.get":
                 return { path: keybindingsPath(), ...readKeybindings() } satisfies KeybindingsFile;
@@ -2652,6 +2680,11 @@ export class Engine {
                 return await this.connectCli(str(p.provider, "provider"));
             case "servers.list":
                 return { servers: (await this.servers(client)).list() };
+            case "servers.overview": {
+                const servers = await this.servers(client);
+                client.watching = true;
+                return { machines: servers.watchAll() };
+            }
             case "servers.add": {
                 const servers = await this.servers(client, str(p.name, "name"));
                 const name = str(p.name, "name");
@@ -2668,6 +2701,7 @@ export class Engine {
                 const servers = await this.servers(client, name);
                 const trust = fingerprints(p.trust);
                 if (trust) servers.trust(name, trust);
+                client.machine = name;
                 return await servers.connect(name, { retry: p.retry === true, renew: p.renew === true });
             }
             case "servers.update": {

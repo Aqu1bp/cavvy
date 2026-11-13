@@ -7,7 +7,7 @@
 // a server that's working, a copy) says so in what it returns, and the
 // window calls again with the answer.
 
-import { PROTOCOL_VERSION, type AddResult, type ConnectResult, type ServerCheck, type ServerProblem, type ServerSummary, type UnknownHost, type UpdateResult } from "../server/protocol";
+import { PROTOCOL_VERSION, type AddResult, type ConnectResult, type MachineOverview, type ServerCheck, type ServerProblem, type ServerSummary, type UnknownHost, type UpdateResult } from "../server/protocol";
 import { loadScope } from "../config/settings";
 import { thisBuild, UNKNOWN_BUILD, type BuildSource } from "./build";
 import { exchangeCode, ServerLink, type LinkState } from "./connect";
@@ -18,6 +18,7 @@ import { probeServer } from "./remote";
 import { NotSetUp, remoteCheck, remoteStatus, revokeOverSsh, serviceReport, stopRemote, StoppedThere } from "./service";
 import { hostOf, offeredHostKey, printable, SshError, trustHostKey, type OfferedHostKey } from "./ssh";
 import { draftServer, getServer, listServers, removeServer, requireServer, saveServer, ServerError, thisDesktop, type ServerEntry } from "./store";
+import { MachineWatch, type MachineNotice } from "./watch";
 
 export interface ServerProgress {
     name: string;
@@ -77,9 +78,69 @@ export class ServerLinks {
     /** The key each unknown host offered, by the server's name: what `trust` saves is what was shown. */
     private offered = new Map<string, { entry: ServerEntry; key: OfferedHostKey }>();
 
+    /** Each server's sessions, watched from here once a window asks for them (watchAll). */
+    private watches = new Map<string, MachineWatch>();
+    /** Servers whose sessions changed, told together a moment later. */
+    private told = new Map<string, ReturnType<typeof setTimeout>>();
+    /** Disconnected on the user's word: not connected to again until they ask. */
+    private apart = new Set<string>();
+    /** A window has asked for the servers' sessions: servers added from here on are watched too. */
+    private watching = false;
+    private stopped = false;
+
     /** `source`: where builds for servers come from (tests bring their own; otherwise this checkout). */
-    /** `renewAfterMs`: for tests (RENEW_AFTER_MS). */
-    constructor(private o: { onProgress?: (p: ServerProgress) => void; onLink?: (e: ServerLinkEvent) => void; source?: BuildSource; renewAfterMs?: number } = {}) {}
+    /** `renewAfterMs`, `watchRetryMs`: for tests (RENEW_AFTER_MS; watch.ts). */
+    constructor(
+        private o: {
+            onProgress?: (p: ServerProgress) => void;
+            onLink?: (e: ServerLinkEvent) => void;
+            /** A watched server's sessions, or how it's reached, changed. */
+            onOverview?: (m: MachineOverview) => void;
+            /** A session on a watched server has something to tell its user. */
+            onNotice?: (name: string, n: MachineNotice) => void;
+            source?: BuildSource;
+            renewAfterMs?: number;
+            watchRetryMs?: number[];
+        } = {},
+    ) {}
+
+    /**
+     * Every server's sessions, watched from now on: a connection to each that's kept, and made again when it's lost,
+     * without starting or setting up anything there. Asked again, it takes in servers added or removed since.
+     */
+    watchAll(): MachineOverview[] {
+        this.watching = true;
+        const names = new Set(listServers().map((s) => s.name));
+        for (const [name, w] of this.watches) {
+            if (names.has(name)) continue;
+            w.stop();
+            this.watches.delete(name);
+            this.o.onOverview?.({ name, state: "removed", sessions: [] });
+        }
+        for (const name of names) {
+            if (this.watches.has(name) || this.stopped) continue;
+            const w = new MachineWatch(name, {
+                reach: async (renew) => (this.apart.has(name) ? { status: "disconnected" } : this.connect(name, { retry: true, renew, quiet: true })),
+                changed: () => this.tell(name),
+                notice: (n) => this.o.onNotice?.(name, n),
+                retryMs: this.o.watchRetryMs,
+            });
+            this.watches.set(name, w);
+            w.start();
+        }
+        return [...this.watches.values()].map((w) => w.overview());
+    }
+
+    private tell(name: string) {
+        if (this.told.has(name) || !this.o.onOverview) return;
+        const t = setTimeout(() => {
+            this.told.delete(name);
+            const w = this.watches.get(name);
+            if (w) this.o.onOverview?.(w.overview());
+        }, 150);
+        (t as { unref?: () => void }).unref?.();
+        this.told.set(name, t);
+    }
 
     /** This Cavvy's own build, as a server would have it. */
     private build(): string {
@@ -142,6 +203,7 @@ export class ServerLinks {
             else return { status: "failed", problem: problemOf(e) };
         }
         saveServer(entry);
+        if (this.watching) this.watchAll();
         return { status: "added", name: entry.name, ...(note ? { note } : {}), ...this.copyOffer() };
     }
 
@@ -231,19 +293,38 @@ export class ServerLinks {
      * that's coming back instead of making another, and leaves a server that was stopped on purpose stopped.
      * `renew`: the sign-in last handed out didn't open anything (it had run out, or was taken away): a new one.
      */
-    connect(name: string, o: { retry?: boolean; renew?: boolean } = {}): Promise<ConnectResult> {
+    connect(name: string, o: { retry?: boolean; renew?: boolean; quiet?: boolean } = {}): Promise<ConnectResult> {
+        if (!o.retry) {
+            this.apart.delete(name);
+            // The user is waiting: a connection that's coming back by itself, which the watch of its sessions only
+            // waits on, is tried now.
+            const link = this.links.get(name)?.link;
+            if (link?.state.state === "reconnecting") link.tryNow();
+        }
         const going = this.starting.get(name);
         // One attempt at a time, shared. Not a retry's answer for the user's asking, though: a retry leaves a
         // stopped server stopped and waits on a connection that's coming back, where the user's asking doesn't.
         if (going && (o.retry || !going.retry)) return going.attempt;
-        const attempt = (going ? going.attempt.then((r) => (r.status === "connected" ? r : this.reach(name, o))) : this.reach(name, o)).finally(() => {
-            if (this.starting.get(name)?.attempt === attempt) this.starting.delete(name);
-        });
+        const attempt = (going ? going.attempt.then((r) => (r.status === "connected" ? r : this.reach(name, o))) : this.reach(name, o))
+            .then(async (r): Promise<ConnectResult> => {
+                if (r.status !== "connected") return r;
+                // Removed while it was being connected to: nothing of it is kept, and this machine is signed out again.
+                if (!getServer(name)) {
+                    await this.drop(name, true);
+                    return { status: "failed", problem: { message: `No server named ${name}.` } };
+                }
+                // The user's own doing (they opened it, started it, trusted its key): its sessions are listed at once.
+                if (!o.retry) this.watches.get(name)?.poke();
+                return r;
+            })
+            .finally(() => {
+                if (this.starting.get(name)?.attempt === attempt) this.starting.delete(name);
+            });
         this.starting.set(name, { attempt, retry: Boolean(o.retry) });
         return attempt;
     }
 
-    private async reach(name: string, o: { retry?: boolean; renew?: boolean }): Promise<ConnectResult> {
+    private async reach(name: string, o: { retry?: boolean; renew?: boolean; quiet?: boolean }): Promise<ConnectResult> {
         const had = this.links.get(name);
         const here = (l: Linked): ConnectResult => ({ status: "connected", url: `ws://127.0.0.1:${l.localPort}/ws`, token: l.token! });
         const up = (l: Linked) => l.link.state.state === "connected" && l.token !== undefined && l.localPort !== undefined;
@@ -261,7 +342,8 @@ export class ServerLinks {
         } else if (had && o.retry && had.link.state.state === "reconnecting") {
             // Coming back by itself: waited for, not replaced (the address and the sign-in then stay as they were).
             // Tried now rather than when its own wait is over: a window asks again when there's reason to.
-            if (Date.now() - (had.poked ?? 0) >= TRY_NOW_EVERY_MS) {
+            // Not for the watch of its sessions (`quiet`), which nobody is waiting on: the connection's own pace will do.
+            if (!o.quiet && Date.now() - (had.poked ?? 0) >= TRY_NOW_EVERY_MS) {
                 had.poked = Date.now();
                 had.link.tryNow();
             }
@@ -359,6 +441,7 @@ export class ServerLinks {
             try {
                 await this.signIn(linked, s);
                 this.o.onLink?.({ name, state: "connected" });
+                this.watches.get(name)?.poke();
             } catch (e) {
                 // Connected and not signed in is no use to a window: ended, so the next one to ask starts over.
                 await this.drop(name, false);
@@ -384,7 +467,10 @@ export class ServerLinks {
 
     /** Closes this Cavvy's connection to a server and signs it out there. Work there keeps running. */
     async disconnect(name: string) {
+        // Its sessions aren't watched either until the user opens it again: a watch would connect straight back.
+        this.apart.add(name);
         await this.drop(name, true);
+        this.watches.get(name)?.poke();
     }
 
     /** Stops the server's Cavvy. It stays stopped until it's opened again. */
@@ -392,6 +478,7 @@ export class ServerLinks {
         const entry = requireServer(name);
         await this.drop(name, false);
         await stopRemote(entry);
+        this.watches.get(name)?.poke();
     }
 
     /**
@@ -402,6 +489,7 @@ export class ServerLinks {
         await this.drop(name, false);
         const entry = removeServer(name);
         this.removed.set(name, entry);
+        if (this.watching) this.watchAll();
         const out = revokeOverSsh(entry, thisDesktop().id)
             .catch(() => undefined)
             .then(() => {
@@ -418,10 +506,16 @@ export class ServerLinks {
         if (getServer(name)) throw new ServerError(`There's already a server named ${name}.`);
         saveServer(entry);
         this.removed.delete(name);
+        if (this.watching) this.watchAll();
     }
 
     /** The engine is stopping: every connection is closed and signed out. */
     async stopAll() {
+        this.stopped = true;
+        for (const w of this.watches.values()) w.stop();
+        this.watches.clear();
+        for (const t of this.told.values()) clearTimeout(t);
+        this.told.clear();
         await Promise.all([...this.links.keys()].map((name) => this.drop(name, true)));
     }
 }
