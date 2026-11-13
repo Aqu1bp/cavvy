@@ -1,15 +1,15 @@
 // What the user does, as calls to the server.
 
 import { batch, createSignal } from "solid-js";
-import { adjacentSession, sidebarEntries, sidebarIds, SESSION_PAGE } from "../lib/session-order";
+import { onAnother, adjacentSession, sidebarEntries, sidebarIds, SESSION_PAGE } from "../lib/session-order";
 import { sidebarOrder, unselect } from "./sidebar";
 import { sessionCount, sessionNames } from "../lib/rail-select";
-import type { ArchiveResult, CliSessionInfo, EditorInfo, EffortLevel, FollowUpMode, GitCommitHead, InteractionResponse, PermissionModeId, ProviderInfo } from "@shared/protocol";
-import { RpcError } from "../lib/rpc";
+import type { ArchiveResult, CliSessionInfo, EditorInfo, EffortLevel, FollowUpMode, GitCommitHead, Interaction, InteractionResponse, PermissionModeId, ProviderInfo } from "@shared/protocol";
+import { RpcError, type Rpc } from "../lib/rpc";
 import { UNDO_DELETE_MS } from "../lib/toasts";
-import { copyText, pickFolder } from "../lib/platform";
+import { copyText, machine, pickFolder } from "../lib/platform";
 import { toWire, type Attachment } from "../lib/attachments";
-import { activate, app, createSession, revealBackground, dropHandle, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, setApp, toast } from "./app";
+import { activate, app, createSession, revealBackground, dropHandle, forkSession, handleFor, importCliSession, markSeen, refreshModels, refreshProjects, refreshProviders, refreshSessions, refreshSettings, reportError, requestTrust, rpc, serversUi, setApp, toast } from "./app";
 import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { keepSentImages } from "./images";
@@ -23,7 +23,9 @@ export { forkAnchor } from "../lib/fork";
 export type { Attachment } from "../lib/attachments";
 
 /** Back to the home screen to start a new session (optionally in another project). */
-export function newSession(cwd?: string) {
+/** `on`: the session or project heading it was asked from, when the machine that's on may not be the window's. */
+export function newSession(cwd?: string, on?: { machine?: string }) {
+    if (onAnother(on, machine)) return void serversUi().then((m) => m.switchMachine(on!.machine, undefined, cwd), reportError);
     if (cwd) setApp("homeCwd", cwd);
     setApp("activeId", undefined);
     requestComposerFocus();
@@ -198,10 +200,10 @@ export async function stopAgent(sessionId: string, agentId?: string) {
     }
 }
 
-/** Stop background tasks (the side panel, /tasks stop): these, or every one running. */
-export async function stopBackground(sessionId: string, ids?: string[]) {
+/** Stop background tasks (the side panel, /tasks stop): these, or every one running. `left`: and what its commands left running. */
+export async function stopBackground(sessionId: string, ids?: string[], left?: boolean) {
     try {
-        const results = await stopTasks(rpc.call.bind(rpc) as never, sessionId, handleFor(sessionId)?.view.state, ids);
+        const results = await stopTasks(rpc.call.bind(rpc) as never, sessionId, handleFor(sessionId)?.view.state, ids, left);
         const { message, level } = stopOutcome(results);
         toast(message, level);
     } catch (e) {
@@ -311,9 +313,15 @@ export function interrupt(id = app.activeId) {
     if (id) void rpc.call("session.interrupt", { id }).catch(reportError);
 }
 
+/**
+ * In a window on a server (lib/lent.ts, there before the window connects): what this computer asks before it does
+ * something for a session there (`asks`, with the id of its own session for it), and where that's answered (`rpc`).
+ */
+export const far: { rpc?: (id: string) => Rpc | undefined; asks?: (session: string) => { id: string; items: Interaction[] } | undefined } = {};
+
 /** Whether the answer was taken. */
 export function respond(id: string, interactionId: string, response: InteractionResponse): Promise<boolean> {
-    return rpc.call("session.respond", { id, interactionId, response }).then(
+    return (far.rpc?.(id) ?? rpc).call("session.respond", { id, interactionId, response }).then(
         () => true,
         (e) => {
             reportError(e);
@@ -578,7 +586,11 @@ export async function archive(id: string, archived: boolean) {
         // Can't ask (an older server, say): archived as before, keeping everything.
         const offer = await rpc.call("session.archiveOffer", { id }).catch(() => undefined);
         if (offer?.worktree) {
-            const title = [...app.sessions, ...app.archived].find((s) => s.id === id)?.title ?? handleFor(id)?.view.state.title ?? "this session";
+            const row = [...app.sessions, ...app.archived].find((s) => s.id === id);
+            // On another machine: removing a worktree asks about folders there, which a window on that machine does.
+            // From here it's kept, and said to be.
+            if (row && row.machine !== machine) return setArchived(id, archived, `Archived. Its worktree stays on ${row.machine ?? "this computer"}.`);
+            const title = row?.title ?? handleFor(id)?.view.state.title ?? "this session";
             setArchiveRequest({ id, title, offer });
             return;
         }
@@ -587,7 +599,7 @@ export async function archive(id: string, archived: boolean) {
 }
 
 /** Undo brings the session back, never a removed worktree. */
-export async function setArchived(id: string, archived: boolean) {
+export async function setArchived(id: string, archived: boolean, said = "Session archived") {
     try {
         await rpc.call("session.archive", { id, archived });
     } catch (e) {
@@ -596,7 +608,7 @@ export async function setArchived(id: string, archived: boolean) {
     }
     if (archived && app.activeId === id) newSession(app.homeCwd);
     toast(
-        archived ? "Session archived" : "Session restored",
+        archived ? said : "Session restored",
         "info",
         archived
             ? {

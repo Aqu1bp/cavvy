@@ -801,6 +801,11 @@ export interface SessionSummary {
     live: boolean;
     /** Started with other models from one prompt (runs.start). */
     run?: RunMember;
+    /**
+     * The server it runs on; none: the user's own computer. Never sent: a window that lists every machine's sessions
+     * sets it, from where it heard of each (gui/src/components/OtherMachines.tsx).
+     */
+    machine?: string;
 }
 
 export type RunOutcome = "working" | "done" | "stopped";
@@ -1482,6 +1487,8 @@ export interface GuiSettings {
     /** The Simulator tools and pane (false turns them off; true, the default, is stored as unset). */
     simulator?: boolean;
     allowBypass?: boolean;
+    /** Bypass can always be chosen here (one of the user's servers): the switch that allows it has nothing to do. */
+    bypassAlways?: boolean;
     /** A message sent while a turn runs: steer it (default) or wait for it to end. */
     followUpBehavior?: FollowUpMode;
     /** "Open files with": an id from the server's editor list (src/server/editors.ts). */
@@ -1623,7 +1630,134 @@ export type SimulatorCommand = "select" | "boot" | "shutdown" | "take_control";
 // ---------------------------------------------------------------------------
 // Events
 
+// Servers: what the calls below hand back (src/servers/manager.ts makes them).
+
+/**
+ * What the user's own machine has for a session on a server that's lent its tools (src/tools/lent.ts). Its windows
+ * show it in that session: the simulator there, and what's asked of the user here.
+ */
+export interface LentSession {
+    /** There's something to lend it: this machine has simulators, and lends them. */
+    offered: boolean;
+    /** The session here its calls run in, once there is one: what simulator.* is asked of, and session.respond answers. */
+    id?: string;
+    /** What it waits for the user to allow here. */
+    asks: Interaction[];
+    /** Where its simulator would stand, while there's no session here for it: what the pane shows until the user or the agent uses one. */
+    state?: SimulatorState;
+}
+
+/**
+ * What a session's row in the list offers, which a window may ask of a session on another machine without being on
+ * it (servers.relay). Anything else is done in a window that's on that machine: so is removing a session's worktree
+ * as it's archived, which asks about folders on that machine.
+ */
+export const RELAYED_SESSION_METHODS = ["session.rename", "session.pin", "session.settle", "session.archive", "session.delete", "session.restore"] as const;
+/**
+ * Asked the same way before a session there is archived, for a yes or no only: whether it works in a worktree, which
+ * archiving from here keeps (the user is told so). Nothing of the worktree itself is passed on.
+ */
+export const RELAYED_ARCHIVE_OFFER = "session.archiveOffer";
+
+/** A server as a window lists it. */
+export interface ServerSummary {
+    name: string;
+    destination: string;
+    /** Connected to from this Cavvy right now. */
+    connected: boolean;
+}
+
+/**
+ * Another machine's sessions, as this computer's Cavvy sees them through a connection of its own there
+ * (src/servers/watch.ts), for the one list a window shows of every machine's sessions.
+ */
+export interface MachineOverview {
+    name: string;
+    /** needs-you: reaching it takes the user's word (its key isn't known, it runs another version). */
+    /** disconnected: on the user's word, until they open it again. removed: it's no longer one of this Cavvy's servers. */
+    state: "connecting" | "connected" | "unreachable" | "stopped" | "needs-you" | "disconnected" | "removed";
+    /** Its sessions as last heard, the archived among them. While it isn't heard from, none of them is shown at work. */
+    sessions: SessionSummary[];
+}
+
+/** Why something on a server didn't happen, in words for the user: what, ssh's own line, and what to do. */
+export interface ServerProblem {
+    message: string;
+    detail?: string;
+    fix?: string;
+}
+
+/** A host key this machine hasn't seen: shown, and saved only if the user says so (`servers.trust`). */
+export interface UnknownHost {
+    host: string;
+    fingerprints: string[];
+}
+
+export type ConnectResult =
+    /** Where a window reaches the server's Cavvy, and what signs it in there. */
+    | { status: "connected"; url: string; token: string }
+    | { status: "unknown-host"; unknown: UnknownHost }
+    /** The Cavvy there speaks another version of the protocol than this one: `servers.update` brings it level. */
+    | { status: "other-version" }
+    /** Cavvy there was stopped on purpose, and this was a connection trying again by itself (`retry`): asked for by the user, it's started. */
+    | { status: "stopped" }
+    | { status: "failed"; problem: ServerProblem };
+
+export type AddResult =
+    /** `copy`: what the one-time copy would carry. `left`: what it won't ("2 MCP servers"), said even when there's nothing to copy. */
+    | { status: "added"; name: string; note?: string; copy?: { what: string }; left?: string }
+    | { status: "unknown-host"; unknown: UnknownHost }
+    | { status: "failed"; problem: ServerProblem };
+
+export type UpdateResult =
+    | { status: "updated"; note?: string }
+    /** Sessions there are working or waiting: updating stops them, so it's asked (`force`). */
+    | { status: "busy"; working: number; waiting: number }
+    | { status: "unknown-host"; unknown: UnknownHost }
+    | { status: "failed"; problem: ServerProblem };
+
+/** What a server has for agents, and what it lacks, as a window shows it. */
+export interface ServerCheck {
+    running: boolean;
+    /** Runs the same build as this Cavvy. */
+    current: boolean;
+    clis: { id: string; product: string; installed: boolean; signedIn?: boolean; on?: boolean; install: string }[];
+    git: boolean;
+    gh: { installed: boolean; signedIn?: boolean };
+    browser: boolean;
+    /** Starts again by itself after the server restarts; when not, the command that makes it so. */
+    service: boolean;
+    lingerFix?: string;
+}
+
+
 export type ServerEvent =
+    /** A step of what's being done to a server (servers.add, servers.update, servers.connect), for the window that asked. */
+    | { type: "servers.progress"; name: string; text: string; percent?: number }
+    /** A server this Cavvy is connected to came back, is being reached again, or is gone (to every window). */
+    | { type: "servers.link"; name: string; state: "connected" | "reconnecting" | "stopped"; problem?: ServerProblem }
+    /** How a server is reached changed, or its sessions were listed anew (servers.overview), to the windows that asked for them. */
+    | { type: "servers.overview"; machine: MachineOverview }
+    /**
+     * One session on a server changed (`session`), went (`remove`: its id), or is still there and no longer among
+     * those listed here (`unlisted`), to the same windows.
+     */
+    | { type: "servers.session"; name: string; session?: SessionSummary; remove?: string; unlisted?: string }
+    /**
+     * What a session on another machine has to tell its user, for one window to show: `name` is the server's, and
+     * left out when it's this computer's own session, told to a window that's on a server. No `sessionId` ("") when
+     * it's said for several at once (more of them ask than are passed on one by one). `lent`: it's this computer
+     * that asks, for a session there that uses a tool it lends: the server itself says nothing of it.
+     */
+    | { type: "servers.notify"; name?: string; sessionId: string; kind: "done" | "permission" | "question" | "plan" | "error"; title: string; body: string; lent?: true }
+    /** What this machine has for a server's session that's lent its tools changed (offers.session), to its windows that are on that server. */
+    | { type: "offers.session"; name: string; sessionId: string; lent: LentSession }
+    /**
+     * A session here calls a tool the connected machine lends (offers.set): that machine runs it, through its own
+     * checks, and answers with offers.result. offers.cancel: the call was given up here.
+     */
+    | { type: "offers.call"; callId: string; tool: string; input: Record<string, unknown>; session: { id: string; title: string } }
+    | { type: "offers.cancel"; callId: string }
     /** A session's browser changed: its tabs, who drives them, or whether it runs (sent to the windows that have the session open). */
     | { type: "browser.state"; sessionId: string; state: BrowserState }
     /**
@@ -1726,9 +1860,52 @@ export interface HelloResult {
     host: string;
     /** The folder the server was started in, when it's a project. */
     startCwd?: string;
+    /** How many servers this Cavvy knows (src/servers), when it has any: a window then shows them beside its own sessions. */
+    servers?: number;
 }
 
 export interface Methods {
+    // Servers: other machines this Cavvy runs on, reached over SSH (src/servers/manager.ts). Not offered by a
+    // server's own Cavvy. A call that needs the user's word says so in its result; `trust` carries the answer to
+    // an unknown host's key back: the fingerprints that were shown.
+    /**
+     * Only a server's own Cavvy takes these, from one of the user's machines connected to it: what that machine
+     * lends the server's sessions (kinds: src/tools/lent.ts; none: nothing any more), and the result of a call the
+     * server sent it (offers.call).
+     */
+    "offers.set": { params: { kinds: string[] }; result: null };
+    "offers.result": { params: { callId: string; text: string; isError?: boolean; images?: { type: "image"; mediaType: string; data: string }[] }; result: null };
+    /**
+     * Only the user's own machine takes this, from its windows: what it has for a session on one of its servers
+     * that's lent its tools. `open`: the user started or chose a device in that session's Simulator pane, so there's one from now on.
+     */
+    "offers.session": { params: { name: string; sessionId: string; title?: string; open?: boolean }; result: LentSession };
+    /** The same machine, to the same windows: the sessions on that server it asks its user something for right now. */
+    "offers.asking": { params: { name: string }; result: { sessionId: string; lent: LentSession }[] };
+    "servers.list": { params: Record<string, never>; result: { servers: ServerSummary[] } };
+    /**
+     * Each server's sessions, kept up to date from then on (servers.overview events) for the window that asks, which
+     * is also told what sessions on machines no window is on have to say (servers.notify). Starts nothing on a server.
+     */
+    "servers.overview": { params: Record<string, never>; result: { machines: MachineOverview[] } };
+    /**
+     * Something a session's row offers (rename, pin, settle, archive, delete, restore: RELAYED_SESSION_METHODS),
+     * asked of a session on a server by a window that isn't on it. `params`: that call's own, with the session's id.
+     * Nothing of the server's answer is passed on, but whether a session it's about to archive works in a worktree
+     * (RELAYED_ARCHIVE_OFFER).
+     */
+    "servers.relay": { params: { name: string; method: string; params: Record<string, unknown> }; result: { worktree: true } | null };
+    "servers.add": { params: { name: string; destination: string; port?: number; identityFile?: string; trust?: string[] }; result: AddResult };
+    "servers.copy": { params: { name: string }; result: { took: string; left?: string } };
+    "servers.check": { params: { name: string }; result: ServerCheck };
+    /** `retry`: the window's connection trying again by itself. `renew`: the sign-in it was last given opened nothing. */
+    "servers.connect": { params: { name: string; trust?: string[]; retry?: boolean; renew?: boolean }; result: ConnectResult };
+    "servers.update": { params: { name: string; force?: boolean; trust?: string[] }; result: UpdateResult };
+    "servers.disconnect": { params: { name: string }; result: null };
+    "servers.stop": { params: { name: string }; result: null };
+    "servers.remove": { params: { name: string }; result: null };
+    /** Undoes a `servers.remove` made since this Cavvy started. */
+    "servers.restore": { params: { name: string }; result: null };
     "terminal.open": { params: { id: string; cwd: string; cols: number; rows: number; login?: { provider: string; accountId: string } }; result: { id: string; cwd: string } };
     "terminal.write": { params: { id: string; data: string }; result: null };
     /** The window has drawn this many characters of the terminal's output (flow control). */
@@ -1868,8 +2045,11 @@ export interface Methods {
     /** The sessions in the trash (deleted in the past week), the most recently deleted first. */
     "sessions.trash": { params: Record<string, never>; result: TrashedSessionSummary[] };
     "session.killShell": { params: { id: string; shellId: string }; result: null };
-    /** Stop background tasks (SessionState.backgroundTasks) by id, or every one running: how each went. */
-    "session.stopBackground": { params: { id: string; ids?: string[] }; result: { results: Record<string, BackgroundStopResult> } };
+    /**
+     * Stop background tasks (SessionState.backgroundTasks) by id, or every one running: how each went. `left`: also
+     * end what the session's commands left running that no task shows (as stopping every one does).
+     */
+    "session.stopBackground": { params: { id: string; ids?: string[]; left?: boolean }; result: { results: Record<string, BackgroundStopResult> } };
     /** Clear the finished tasks from the Background panel. */
     "session.clearBackground": { params: { id: string }; result: null };
     /** Restart the session's agent CLI process (/tasks restart): what it runs in the background stops. */

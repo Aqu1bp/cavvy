@@ -817,6 +817,30 @@ describe("engine", () => {
         expect(await find()).toMatchObject({ settled: false });
         await engine.stop();
     });
+
+    test("a session that isn't open is told to the windows when it's archived, and when it's brought back", async () => {
+        const a = Session.create(join(tempDir(), "proj-archive"));
+        a.push({ role: "user", content: [{ type: "text", text: "put me away" }], meta: { kind: "prompt" } });
+        const engine = new Engine({ listModels: async () => [] });
+        const upserts: SessionSummary[] = [];
+        const client = { subs: new Set<string>(), send: (e: { type: string; session?: SessionSummary }) => e.type === "sessions.upsert" && upserts.push(e.session!) };
+        engine.clients.add(client as never);
+        // Never opened here: there's only its file to go by.
+        expect(engine.runtimes.has(a.meta.id)).toBe(false);
+        await engine.handle(client as never, "session.archive", { id: a.meta.id, archived: true });
+        expect(upserts.map((s) => [s.id, s.archived])).toEqual([[a.meta.id, true]]);
+        // Undo: its row comes back without the window asking for the list again.
+        await engine.handle(client as never, "session.archive", { id: a.meta.id, archived: false });
+        expect(upserts.map((s) => [s.id, s.archived])).toEqual([[a.meta.id, true], [a.meta.id, false]]);
+        for (const [key, method] of [["pinned", "session.pin"], ["settled", "session.settle"]] as const) {
+            for (const on of [true, false]) {
+                await engine.handle(client as never, method, { id: a.meta.id, [key]: on });
+                expect(upserts.at(-1)).toMatchObject({ id: a.meta.id, [key]: on, archived: false });
+            }
+        }
+        expect(upserts.length).toBe(6);
+        await engine.stop();
+    });
 });
 
 

@@ -76,6 +76,7 @@ import { pluginsFor } from "../plugins/loader";
 import { loadsPluginsNatively, onlyPluginHooks, sessionHookSettings, withoutPluginHooks } from "../plugins/native";
 import { displayPath } from "../util/files";
 import { redact } from "../util/redact";
+import { SESSION_VAR } from "../util/session-processes";
 import { SecretStore, secretValueError } from "../agent/secrets";
 import { planLimitKey } from "../server/protocol";
 import { mergeLimits } from "../backends/limits";
@@ -263,7 +264,21 @@ export class App {
         this.mcp = new McpManager(init.cwd, () => this.settings, init.trusted, () => this.reloadSettings(), true);
         this.mcp.onChange = () => this.renderLive();
         this.files = new FileIndex(init.cwd);
-        this.toolState = { cwd: init.cwd, projectRoot: init.cwd, fileState: new Map(), todos: [], shells: new Map(), secrets: new SecretStore(), wakes: new WakeQueue(), watchers: new WatcherMap() };
+        // `session`: the one open now (one terminal runs on across /new and /resume), read when a command starts.
+        const sessionNow = () => this.session?.meta.id;
+        this.toolState = {
+            cwd: init.cwd,
+            projectRoot: init.cwd,
+            get session() {
+                return sessionNow();
+            },
+            fileState: new Map(),
+            todos: [],
+            shells: new Map(),
+            secrets: new SecretStore(),
+            wakes: new WakeQueue(),
+            watchers: new WatcherMap(),
+        };
         this.schedules = new SessionSchedules({
             session: () => this.session,
             settings: () => this.settings,
@@ -3012,7 +3027,7 @@ export class App {
         // The person's own command: work, as in the app (Session.worked).
         this.session.worked(Date.now(), true);
         // As a task: esc and ctrl+c stop it, and prompts typed meanwhile queue up.
-        const res = await this.runTask("Running", (signal) => runShell({ command: cmd, cwd: this.toolState.cwd, timeoutMs: 120_000, signal, env: childEnv(this.settings.env) }));
+        const res = await this.runTask("Running", (signal) => runShell({ command: cmd, cwd: this.toolState.cwd, timeoutMs: 120_000, signal, env: { ...childEnv(this.settings.env), [SESSION_VAR]: this.session.meta.id } }));
         this.session.worked(Date.now(), true);
         if (!res) return;
         const out = redact(res.output.replace(/\s+$/, ""));

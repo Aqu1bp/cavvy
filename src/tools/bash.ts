@@ -11,6 +11,7 @@ import { childEnv } from "../util/env";
 import { blockedBySandbox, sandboxArgv, sandboxCacheEnv, sandboxHint, type Sandbox } from "../permissions/sandbox";
 import { parseHostRule, proxyEnv, refusedHint, startProxy, type CommandProxy, type HostRule } from "../permissions/proxy";
 import { finalSearch } from "../permissions/bash-safety";
+import { SESSION_VAR } from "../util/session-processes";
 
 export { childEnv };
 
@@ -796,7 +797,7 @@ export function validateHosts(hosts: unknown): string | undefined {
 /** A command's environment: this session's secrets, and in the sandbox its caches and proxy. */
 export async function commandEnv(ctx: Pick<ToolContext, "settings" | "state" | "sandbox">, hosts: string[] | undefined): Promise<{ env: Record<string, string>; proxy?: CommandProxy }> {
     // childEnv leaves out every registered secret; this session's own go back in, for its shell alone.
-    const env = { ...childEnv(ctx.settings.env), ...ctx.state.secrets?.env() };
+    const env = { ...childEnv(ctx.settings.env), ...ctx.state.secrets?.env(), ...(ctx.state.session ? { [SESSION_VAR]: ctx.state.session } : {}) };
     return ctx.sandbox ? sandboxedEnv(env, ctx.sandbox, hosts) : { env };
 }
 

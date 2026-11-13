@@ -283,13 +283,18 @@ test("Stop and Stop all against a server without backgroundTasks stop its shells
     calls.length = 0;
     expect(await stopTasks(call, "s1", { shells, backgroundTasks: [task()] }, ["t1"])).toEqual({ t1: "stopped" });
     await stopTasks(call, "s1", { shells, backgroundTasks: [task()] });
+    // Stop all under Commands: those listed, and what the session's commands left running that isn't.
+    await stopTasks(call, "s1", { shells, backgroundTasks: [task()] }, ["t1"], true);
     expect(calls).toEqual([
         ["session.stopBackground", { id: "s1", ids: ["t1"] }],
         ["session.stopBackground", { id: "s1", ids: undefined }],
+        ["session.stopBackground", { id: "s1", ids: ["t1"], left: true }],
     ]);
+    const panel = readFileSync(new URL("../gui/src/components/BackgroundTasks.tsx", import.meta.url), "utf8");
+    expect(panel).toContain('stopBackground(p.handle.id, tasks, p.tab === "commands")');
     // The panel's Stop goes through it.
     const actions = readFileSync(new URL("../gui/src/state/actions.ts", import.meta.url), "utf8");
-    expect(actions).toContain("await stopTasks(rpc.call.bind(rpc) as never, sessionId, handleFor(sessionId)?.view.state, ids)");
+    expect(actions).toContain("await stopTasks(rpc.call.bind(rpc) as never, sessionId, handleFor(sessionId)?.view.state, ids, left)");
 });
 
 test("task endings close together go as one desktop notification, since the desktop app's can't replace one another on macOS", () => {
