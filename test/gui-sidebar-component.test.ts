@@ -89,7 +89,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
         requestAnimationFrame: (fn: () => void) => { frames.set(++sequence, fn); return sequence; },
         cancelAnimationFrame: (id: number) => frames.delete(id),
         matchMedia: () => ({ matches: reduced }),
-        settingsTab: () => settingsTab(), agentFocus: () => agentFocus(), ResizeObserver: class { observe() {} disconnect() {} },
+        settingsTab: () => settingsTab(), agentFocus: () => agentFocus(), railFree: () => false, ResizeObserver: class { observe() {} disconnect() {} },
     };
     const render = new Function(...Object.keys(scope), `${js}; return Sidebar;`)(...Object.values(scope));
     let dispose!: () => void;

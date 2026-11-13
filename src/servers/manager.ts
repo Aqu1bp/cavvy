@@ -7,7 +7,7 @@
 // a server that's working, a copy) says so in what it returns, and the
 // window calls again with the answer.
 
-import { PROTOCOL_VERSION, type AddResult, type ConnectResult, type MachineOverview, type ServerCheck, type ServerProblem, type ServerSummary, type UnknownHost, type UpdateResult } from "../server/protocol";
+import { PROTOCOL_VERSION, RELAYED_ARCHIVE_OFFER, RELAYED_SESSION_METHODS, type AddResult, type ConnectResult, type MachineOverview, type ServerCheck, type ServerProblem, type ServerSummary, type UnknownHost, type UpdateResult } from "../server/protocol";
 import { loadScope } from "../config/settings";
 import { thisBuild, UNKNOWN_BUILD, type BuildSource } from "./build";
 import { exchangeCode, ServerLink, type LinkState } from "./connect";
@@ -18,7 +18,7 @@ import { probeServer } from "./remote";
 import { NotSetUp, remoteCheck, remoteStatus, revokeOverSsh, serviceReport, stopRemote, StoppedThere } from "./service";
 import { hostOf, offeredHostKey, printable, SshError, trustHostKey, type OfferedHostKey } from "./ssh";
 import { draftServer, getServer, listServers, removeServer, requireServer, saveServer, ServerError, thisDesktop, type ServerEntry } from "./store";
-import { MachineWatch, type LentCall, type LentResult, type MachineNotice } from "./watch";
+import { MachineWatch, type LentCall, type LentResult, type MachineNotice, type SessionChange } from "./watch";
 
 export interface ServerProgress {
     name: string;
@@ -94,8 +94,10 @@ export class ServerLinks {
         private o: {
             onProgress?: (p: ServerProgress) => void;
             onLink?: (e: ServerLinkEvent) => void;
-            /** A watched server's sessions, or how it's reached, changed. */
+            /** How a watched server is reached changed, or its sessions were listed anew. */
             onOverview?: (m: MachineOverview) => void;
+            /** One session on a watched server changed, or went. */
+            onSession?: (name: string, change: SessionChange) => void;
             /** A session on a watched server has something to tell its user. */
             onNotice?: (name: string, n: MachineNotice) => void;
             /** What this machine lends its servers' sessions (src/tools/lent.ts), and the running of one call of it. */
@@ -125,6 +127,7 @@ export class ServerLinks {
             const w = new MachineWatch(name, {
                 reach: async (renew) => (this.apart.has(name) ? { status: "disconnected" } : this.connect(name, { retry: true, renew, quiet: true })),
                 changed: () => this.tell(name),
+                session: (change) => this.o.onSession?.(name, change),
                 notice: (n) => this.o.onNotice?.(name, n),
                 lends: this.o.lends,
                 lend: this.o.lend && ((call, signal) => this.o.lend!(name, call, signal)),
@@ -134,6 +137,36 @@ export class ServerLinks {
             w.start();
         }
         return [...this.watches.values()].map((w) => w.overview());
+    }
+
+    /**
+     * Asks a server's Cavvy for something a session's row offers (rename, pin, archive, delete and the like), for a
+     * window that isn't on that server. Only those: anything else is done in a window that's on it.
+     */
+    async relay(name: string, method: string, params: Record<string, unknown>): Promise<{ worktree: true } | null> {
+        const known = method === RELAYED_ARCHIVE_OFFER ? RELAYED_ARCHIVE_OFFER : RELAYED_SESSION_METHODS.find((m) => m === method);
+        if (!known) throw new Error("Open the session to do that.");
+        const id = params.id;
+        if (typeof id !== "string" || !/^[\w.-]{1,120}$/.test(id)) throw new Error("That isn't a session's id.");
+        const w = this.watches.get(name);
+        if (!w) throw new Error(`${name} isn't one of this Cavvy's servers.`);
+        // Each with what it takes and nothing else (archiving never removes a worktree from here), and nothing of
+        // what the server answers is passed on: these answer nothing.
+        const sent =
+            known === "session.rename" ? { id, title: typeof params.title === "string" ? params.title.slice(0, 300) : "" }
+            : known === "session.pin" ? { id, pinned: params.pinned === true }
+            : known === "session.settle" ? { id, settled: params.settled === true }
+            : known === "session.archive" ? { id, archived: params.archived === true }
+            : { id };
+        const answer = await w.call(known, sent);
+        // Only that it has one: where it is and what removing it would take are that machine's to ask about.
+        if (known === RELAYED_ARCHIVE_OFFER) return answer && typeof answer === "object" && (answer as { worktree?: unknown }).worktree ? { worktree: true } : null;
+        return null;
+    }
+
+    /** This machine asks its user something for a session on a server (it lends it a tool), or no longer does: its row there says it waits. */
+    asking(name: string, id: string, on: boolean) {
+        this.watches.get(name)?.setAsking(id, on);
     }
 
     private tell(name: string) {

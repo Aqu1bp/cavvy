@@ -71,9 +71,18 @@ class Window {
         await until("the window to be gone", () => mine.engine.clients.size < n);
     }
 
-    /** The server's sessions as this window was last told. */
+    /** The server's sessions as this window was last told: the list, and each change since. */
     machine(name: string): MachineOverview | undefined {
-        return this.events.findLast((e) => e.type === "servers.overview" && e.machine.name === name)?.machine;
+        const at = this.events.findLastIndex((e) => e.type === "servers.overview" && e.machine.name === name);
+        if (at < 0) return undefined;
+        const m = this.events[at].machine as MachineOverview;
+        let sessions = m.sessions;
+        for (const e of this.events.slice(at + 1)) {
+            if (e.type !== "servers.session" || e.name !== name) continue;
+            sessions = sessions.filter((s) => s.id !== (e.session?.id ?? e.remove));
+            if (e.session) sessions = [e.session, ...sessions];
+        }
+        return { ...m, sessions };
     }
 }
 
@@ -124,7 +133,7 @@ test("a window is told whether there are servers at all; with none, nothing of t
 let there: { url: string; token: string };
 let onBox: Window;
 
-test("a server's sessions are listed, the ones waiting or working first, and kept up to date", async () => {
+test("a server's sessions are listed and kept up to date, each change told by itself; what a row offers is done there", async () => {
     const first = (await here.call("servers.overview")).machines as MachineOverview[];
     expect(first.map((m) => m.name)).toEqual(["box"]);
     await until("its sessions to be listed", () => here.machine("box")?.state === "connected");
@@ -140,14 +149,44 @@ test("a server's sessions are listed, the ones waiting or working first, and kep
     const again = (await second.call("servers.overview")).machines as MachineOverview[];
     expect(again[0]!.sessions.map((s) => s.id)).toEqual([id]);
     await second.close();
-    // One that's working goes before one that's done.
+    // One that's working is told as it starts, by itself: the list isn't sent again for it.
     const remote = new Window(there.url, there.token);
     await remote.opened.promise;
     const busy = (await remote.call("session.create", { cwd: tempDir("cavvy-overview-proj-") })).state.id as string;
+    const lists = here.events.filter((e) => e.type === "servers.overview").length;
     await remote.call("session.send", { id: busy, text: "hangforever please" });
-    await until("the working one to be first", () => here.machine("box")?.sessions[0]?.id === busy && here.machine("box")!.sessions[0]!.status === "running");
-    expect(here.machine("box")!.sessions.map((s) => s.id)).toEqual([busy, id]);
+    await until("the working one to be told", () => here.machine("box")?.sessions.find((s) => s.id === busy)?.status === "running");
+    expect(here.machine("box")!.sessions.map((s) => s.id).sort()).toEqual([busy, id].sort());
+    expect(here.events.filter((e) => e.type === "servers.overview").length).toBe(lists);
     await remote.call("session.interrupt", { id: busy });
+    // What a session's row offers is asked of the server by this computer's Cavvy, for a window that isn't on it:
+    // pinned there, and told back like any change; archived, it's still listed, as archived.
+    expect(await here.call("servers.relay", { name: "box", method: "session.pin", params: { id, pinned: true } })).toBeNull();
+    await until("it to be told pinned", () => here.machine("box")?.sessions.find((s) => s.id === id)?.pinned === true);
+    await here.call("servers.relay", { name: "box", method: "session.archive", params: { id, archived: true } });
+    await until("it to be told archived", () => here.machine("box")?.sessions.find((s) => s.id === id)?.archived === true);
+    expect(((await remote.call("sessions.list", { limit: 50, archived: true })) as { id: string; pinned: boolean }[]).map((s) => [s.id, s.pinned])).toEqual([[id, true]]);
+    await here.call("servers.relay", { name: "box", method: "session.archive", params: { id, archived: false } });
+    await until("it to be told back in play", () => here.machine("box")?.sessions.find((s) => s.id === id)?.archived === false);
+    // Only what a row offers, only for a session, only on one of this Cavvy's servers; and why not, in the server's words.
+    await expect(here.call("servers.relay", { name: "box", method: "session.send", params: { id, text: "hi" } })).rejects.toThrow("Open the session to do that.");
+    // What asks about folders there (removing a session's worktree as it's archived) isn't done from here. Only
+    // whether it works in one is asked, so the user can be told it stays: a yes or no, nothing of where it is.
+    expect(await here.call("servers.relay", { name: "box", method: "session.archiveOffer", params: { id } })).toBeNull();
+    const watch = (mine.engine as any).serverLinks.watches.get("box");
+    const asks = watch.call;
+    watch.call = async () => ({ worktree: { path: "/srv/app/.claude/worktrees/x", branch: "x", main: "/srv/app" }, removable: true, reason: "It has changes." });
+    expect(await here.call("servers.relay", { name: "box", method: "session.archiveOffer", params: { id } })).toEqual({ worktree: true });
+    watch.call = asks;
+    // And archiving passes on only the session and whether it's archived.
+    expect(await here.call("servers.relay", { name: "box", method: "session.archive", params: { id, archived: true, removeWorktree: true, deleteIgnored: "x" } })).toBeNull();
+    await until("it to be told archived, its folder left alone", () => here.machine("box")?.sessions.find((s) => s.id === id)?.archived === true);
+    await here.call("servers.relay", { name: "box", method: "session.archive", params: { id, archived: false } });
+    await until("it to be back in play", () => here.machine("box")?.sessions.find((s) => s.id === id)?.archived === false);
+    await expect(here.call("servers.relay", { name: "box", method: "session.pin", params: { id: "../x", pinned: true } })).rejects.toThrow("That isn't a session's id.");
+    await expect(here.call("servers.relay", { name: "nowhere", method: "session.pin", params: { id, pinned: true } })).rejects.toThrow("nowhere isn't one of this Cavvy's servers.");
+    // The server's own words are said to be the server's.
+    await expect(here.call("servers.relay", { name: "box", method: "session.rename", params: { id: "20261113-000000-zzzzzz", title: "x" } })).rejects.toThrow(/^box: /);
     remote.ws.close();
 });
 
@@ -194,7 +233,8 @@ test("a server that was stopped is said to be, and isn't started by being watche
     await until("it to be shown working", () => w.machine("box")?.sessions.some((s) => s.id === busy && s.status === "running") ?? false);
     await w.call("servers.stop", { name: "box" });
     await until("it to be said stopped", () => w.machine("box")?.state === "stopped");
-    expect(w.machine("box")!.sessions).toEqual([]);
+    // Still listed, but not as at work: there's no news of it coming.
+    expect(w.machine("box")!.sessions.find((s) => s.id === busy)?.status).toBe("idle");
     await Bun.sleep(1000);
     expect(await remoteStatus({ name: "box", destination: "dev@box.example", addedAt: "" })).toBeUndefined();
     // Started again by the user, from a window: its sessions are listed again at once, not when the next look is due.

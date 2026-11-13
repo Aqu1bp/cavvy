@@ -11,10 +11,10 @@ import { activate, app, handleFor, isUnread, refreshSessions, reportError, serve
 import { createUpdateAction } from "./UpdateAction";
 import { archive, archiveSessions, chooseProject, deleteSessions, newSession, openProject, openWaiting, pin, rename, settle, settleSessions, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
-import { agentFocus, setDeletedOpen, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
+import { agentFocus, railFree, setDeletedOpen, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
 import { frameDrag } from "../lib/drag";
 import { ago, monogram, projectColor, since } from "../lib/format";
-import { holdSidebar, listedOnce, projectOf, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type SidebarEntry } from "../lib/session-order";
+import { folderOf, holdSidebar, listedOnce, machineLabel, projectOf, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type SidebarEntry } from "../lib/session-order";
 import { sessionStatus } from "../lib/session-status";
 import { foldOrder, groupCounts, inFront, needsRowLine, needsYou, planFit, railFoot, type RailPlan } from "../lib/rail";
 import { railSelection, setRailSelection, setSidebarOrder } from "../state/sidebar";
@@ -46,7 +46,8 @@ const usualBranch = (branch: string | undefined) => branch === "main" || branch 
 
 function branchOf(s: SessionSummary): string | undefined {
     if (s.id === app.activeId) return handleFor(s.id)?.view.state.branch;
-    return handleFor(s.id)?.view.state.branch ?? app.projects.find((p) => p.path === s.cwd)?.branch;
+    // The projects are the window's machine's: a folder at the same path on another isn't one of them.
+    return handleFor(s.id)?.view.state.branch ?? (s.machine === machine ? app.projects.find((p) => p.path === s.cwd)?.branch : undefined);
 }
 
 /** The model it last used: the open session's own, else the one it was saved with. */
@@ -159,7 +160,7 @@ function SingleItems(p: { s: SessionSummary; close: () => void; onRename: () => 
                     {p.s.settled ? <Undo2 size={14} /> : <CheckCheck size={14} />} {p.s.settled ? "Back in play" : "Settle"}
                 </button>
             </Show>
-            <button role="menuitem" class="menu-item compact" title={`New session in ${p.s.projectName}`} onClick={() => (close(), newSession(p.s.cwd))}>
+            <button role="menuitem" class="menu-item compact" title={`New session in ${p.s.projectName}`} onClick={() => (close(), newSession(p.s.cwd, p.s))}>
                 {/* Short enough for the narrowest rail at the largest text: the menu is the row's width. Where: its tooltip. */}
                 <Plus size={14} /> New session
             </button>
@@ -198,7 +199,7 @@ function useRowMenu(more: () => HTMLElement | undefined) {
 /** What a screen reader hears for a row: its title, then how it's doing, and whether it's selected. */
 function rowLabel(s: SessionSummary, unread: boolean, picked = false): string {
     const word = sessionStatus(s, now())?.text;
-    return [s.run ? `${s.run.modelName} · ${s.title}` : s.title, s.status === "idle" ? (unread ? "unread" : undefined) : word, s.pinned ? "pinned" : undefined, picked ? "selected" : undefined].filter(Boolean).join(", ");
+    return [s.run ? `${s.run.modelName} · ${s.title}` : s.title, s.machine && `on ${s.machine}`, s.status === "idle" ? (unread ? "unread" : undefined) : word, s.pinned ? "pinned" : undefined, picked ? "selected" : undefined].filter(Boolean).join(", ");
 }
 
 /**
@@ -252,15 +253,15 @@ function PlanGauge(p: { plan: RailPlan }) {
 }
 
 /**
- * Beside Settings in the desktop app: the machine this window is on, and the way to another (components/Servers.tsx,
- * loaded when it's first pressed). On a server it carries the server's name: everything in the window is that machine's.
+ * Beside Settings in the desktop app: this Cavvy's servers, to add one or start a session on one
+ * (components/Servers.tsx, loaded when it's first pressed).
  */
 function MachineButton() {
     return (
         <button
             class="hb lg machine"
-            title={machine ? `On ${machine}` : "Machines"}
-            aria-label="Machines"
+            title="Servers"
+            aria-label="Servers"
             aria-haspopup="menu"
             onClick={(e) => {
                 const button = e.currentTarget;
@@ -268,7 +269,6 @@ function MachineButton() {
             }}
         >
             <Layers size={16} />
-            {machine}
         </button>
     );
 }
@@ -402,15 +402,17 @@ function NeedsRow(p: { s: SessionSummary; hold: (id: string, held: boolean) => v
     onCleanup(() => p.hold(id, false));
     let el: HTMLDivElement | undefined;
     const title = () => (p.s.run ? `${p.s.run.modelName} · ${p.s.title}` : p.s.title);
+    // What it waits for; one on a server says which first, as its row in the list does.
+    const line = () => (p.s.machine ? `${machineLabel(p.s.machine)} · ` : "") + needsRowLine(p.s);
     const waiting = () => p.s.status === "waiting";
     const current = () => app.activeId === p.s.id;
     const unread = () => isUnread(p.s) && !current();
     return (
         <div ref={el} data-needs-id={p.s.id} class={`needs-row card ${waiting() ? "waiting" : ""} ${current() ? "cur" : ""} ${menu() ? "menu-open" : ""} ${r.editing() ? "renaming" : ""}`} onContextMenu={contextMenu} onKeyDown={contextKey}>
-            <button class="card-hit needs-hit" onClick={() => p.pick.open(p.s.id)} aria-current={current() ? "page" : undefined} aria-label={`${title()}, ${needsRowLine(p.s)}`} title={`${p.s.title}: ${needsRowLine(p.s)}`}>
+            <button class="card-hit needs-hit" onClick={() => p.pick.open(p.s.id)} aria-current={current() ? "page" : undefined} aria-label={`${title()}, ${line()}`} title={`${p.s.title}: ${line()}`}>
                 <span class="t"><Show when={!r.editing()}>{title()}</Show></span>
                 <span class="end"><RowEnd s={p.s} unread={unread()} /></span>
-                <span class="m"><span class="truncate">{needsRowLine(p.s)}</span></span>
+                <span class="m"><span class="truncate">{line()}</span></span>
             </button>
             <Show when={r.editing()}>
                 <div class="card-rename">{r.input()}</div>
@@ -435,7 +437,8 @@ function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) =
     // Working in the background: it's fine, it can recede.
     const recede = () => p.s.status === "running" && !current();
     // Grouped by project, the heading names it; listed by date, the row does.
-    const where = () => [p.grouped ? undefined : p.s.projectName, usualBranch(branchOf(p.s)) ? undefined : branchOf(p.s)].filter(Boolean).join(" · ") || p.s.projectName;
+    // A session on a server says which, first.
+    const where = () => [p.s.machine && machineLabel(p.s.machine), p.grouped ? undefined : p.s.projectName, usualBranch(branchOf(p.s)) ? undefined : branchOf(p.s)].filter(Boolean).join(" · ") || p.s.projectName;
     const picked = () => p.pick.picked(p.s.id);
     return (
         <div
@@ -444,7 +447,7 @@ function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) =
             class={`card ${current() ? "cur" : ""} ${picked() ? "picked" : ""} ${recede() ? "rec" : ""} ${unread() ? "unread" : ""} ${waiting() ? "waiting" : ""} ${menu() ? "menu-open" : ""} ${r.editing() ? "renaming" : ""}`}
             onContextMenu={contextMenu} onKeyDown={contextKey}
         >
-            <button class="card-hit" onClick={(e) => p.pick.click(e, p.s.id)} onDblClick={(e) => !e.shiftKey && !e.metaKey && !e.ctrlKey && r.setEditing(true)} aria-current={current() ? "page" : undefined} aria-label={rowLabel(p.s, unread(), picked())} title={`${p.s.title}\n${p.s.cwd}`}>
+            <button class="card-hit" onClick={(e) => p.pick.click(e, p.s.id)} onDblClick={(e) => !e.shiftKey && !e.metaKey && !e.ctrlKey && r.setEditing(true)} aria-current={current() ? "page" : undefined} aria-label={rowLabel(p.s, unread(), picked())} title={`${p.s.title}\n${p.s.machine ? `${p.s.machine}: ` : ""}${p.s.cwd}`}>
                 <span class="t">
                     {/* A run's sessions all start from one prompt (the group's label): each says which model it is. */}
                     <Show when={!r.editing()}>{p.s.run ? p.s.run.modelName : p.s.title}</Show>
@@ -509,9 +512,12 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
                     onDblClick={(e) => !e.shiftKey && !e.metaKey && !e.ctrlKey && r.setEditing(true)}
                     aria-current={current() ? "page" : undefined}
                     aria-label={rowLabel(p.s, unread(), picked())}
-                    title={`${p.s.title}\n${p.s.cwd}\nUpdated ${(now(), ago(p.s.updatedAt))}`}
+                    title={`${p.s.title}\n${p.s.machine ? `${p.s.machine}: ` : ""}${p.s.cwd}\nUpdated ${(now(), ago(p.s.updatedAt))}`}
                 >
                     <span class="truncate">{p.s.run ? `${p.s.run.modelName} · ${p.s.title}` : p.s.title}</span>
+                    <Show when={p.s.machine}>
+                        <span class="slim-at">{p.s.machine}</span>
+                    </Show>
                     <Show when={p.s.pinned}>
                         <Pin size={11} class="slim-pin" />
                     </Show>
@@ -666,9 +672,9 @@ export function Sidebar() {
         return railFoot({ limits: app.limits, providers: app.providers, provider, account: provider ? st?.accounts?.[provider] : undefined, recent: recent(), now: now() });
     });
     // While rows are picked they stay put too, so a range never jumps under the pointer or the keys.
-    const held = () => ((hovered() || railSelection().ids.length > 0) && !manualLayout()) || locked().size > 0;
+    const held = () => ((hovered() || railSelection().ids.length > 0) && !manualLayout() && !railFree()) || locked().size > 0;
     // Needs you isn't in a selection's range, so rows picked don't hold it: only the pointer or an open menu does.
-    const pinnedHeld = () => (hovered() && !manualLayout()) || locked().size > 0;
+    const pinnedHeld = () => (hovered() && !manualLayout() && !railFree()) || locked().size > 0;
     // Waiting on you, but the session in front of you (not under Settings or a sub-agent's view: lib/rail.ts inFront): pinned at the top as well.
     const needs = createMemo(() => needsYou(all(), inFront({ activeId: app.activeId, settings: Boolean(settingsTab()), agentFocus: agentFocus() })).map((s) => s.id), undefined, { equals: (a, b) => a.length === b.length && a.every((id, i) => id === b[i]) });
     // Today's midnight: the day headings move when the date does, not with every tick of the clock.
@@ -1001,13 +1007,13 @@ export function Sidebar() {
                         // Folded, a session in it that needs you still shows: the amber dot, on the heading.
                         const needsYou = () => !open() && (group().ids ?? []).some((id) => sessions().get(id)?.status === "waiting");
                         return <div class={`shelf project-head ${open() ? "" : "folded"}`}>
-                            <button class="shelf-toggle" aria-expanded={open()} title={group().cwd} onClick={() => toggleFold(group().cwd)}>
-                                <Folder size={14} /><span class="truncate">{group().name}</span>
+                            <button class="shelf-toggle" aria-expanded={open()} title={(group().machine ? `${group().machine}: ` : "") + folderOf(group().cwd)} onClick={() => toggleFold(group().cwd)}>
+                                <Folder size={14} /><span class="truncate">{group().machine ? `${group().name} · ${group().machine}` : group().name}</span>
                                 <Show when={needsYou()}><span class="wait-dot" title="A session here needs you" /></Show>
                                 <span class="n">{counts().get(key)}</span>
                                 <ChevronUp size={14} class={`settled-chev ${open() ? "" : "closed"}`} />
                             </button>
-                            <button class="shelf-btn add" title={`New session in ${group().name}`} aria-label={`New session in ${group().name}`} onClick={() => newSession(group().cwd)}><Plus size={13} /></button>
+                            <button class="shelf-btn add" title={`New session in ${group().name}`} aria-label={`New session in ${group().name}`} onClick={() => newSession(folderOf(group().cwd), group())}><Plus size={13} /></button>
                         </div>;
                     }
                     if (kind === "day") return <div class="day-head">{(entry() as Extract<SidebarEntry, { kind: "day" }>).label}</div>;

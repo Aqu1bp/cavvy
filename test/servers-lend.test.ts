@@ -376,6 +376,8 @@ test("a call this machine can't take now is answered, not left waiting: over fou
                 if (m.method === "offers.result") return void results.push(m.params);
                 if (m.method !== "sessions.list") return;
                 ws.send(JSON.stringify({ id: m.id, result: [] }));
+                // Once, on the list of those in play (the archived are asked for after it).
+                if (m.params?.archived) return;
                 for (let i = 0; i < 6; i++) ws.send(JSON.stringify({ event: { type: "offers.call", callId: `c${i}`, tool: "SimulatorControl", input: { action: "boot" }, session: { id: `s${i}`, title: "t" } } }));
                 ws.send(JSON.stringify({ event: { type: "offers.call", callId: "long", tool: "SimulatorAct", input: { action: "type", text: "x".repeat(20_000) }, session: { id: "s9", title: "t" } } }));
                 ws.send(JSON.stringify({ event: { type: "offers.call", callId: "odd", tool: 7, input: {}, session: { id: "../x" } } }));
