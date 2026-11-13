@@ -219,6 +219,23 @@ test("a call from a session there runs here, after this machine's own asking, sh
     expect((await lentTo(id)).id).toBe(mineId);
 });
 
+test("the Simulator turned off here while a session there waits for this machine's answer: the question goes, and the session is told why", async () => {
+    const id = await sessionThere();
+    await remote.call("session.send", { id, text: "simulator before it's off" });
+    await answer(remote, id, "yes");
+    await until("the question here", async () => (await lentTo(id)).asks.length > 0);
+    await here.call("settings.update", { patch: { simulator: false } });
+    try {
+        await until("the turn there to end", async () => (await lastTurn(remote, id)).status === "done");
+        expect(JSON.stringify(await lastTurn(remote, id))).toContain("Your Mac's Simulator isn't available now");
+        await until("the question here to go", async () => (await lentTo(id)).asks.length === 0);
+    } finally {
+        await here.call("settings.update", { patch: { simulator: true } });
+    }
+    // Turned on again, it's lent again: the next test's session there has the tools.
+    await until("it to be lent again", async () => (await lentTo(id)).offered);
+});
+
 test("the user's no here is what the session there is told; this machine going away ends a call that waits", async () => {
     const seen = new Set<string>();
     const id = await sessionThere();
@@ -484,4 +501,43 @@ test("asks from one server ring the user a few times a minute, then once more to
     mine.engine.notify(guestRt as never, "permission", "Wants to tap again");
     await until("it to ring", () => rang().length === 1);
     expect(rang()).toEqual(["Wants to tap again"]);
+});
+
+test("each call runs under this machine's mode as it is now, not the one it had when the session there first used it", async () => {
+    (mine.engine as any).lentAt.clear();
+    const session = "20261113-000000-cccccc";
+    // The session here for it is made while this machine is in Manual.
+    await lendHere("SimulatorControl", { action: "list" }, session);
+    await here.call("settings.update", { patch: { allowBypass: true, defaultMode: "bypassPermissions" } });
+    try {
+        const before = ran.length;
+        // Nothing is asked (nobody answers here): it goes straight to the device.
+        const free = await lendHere("SimulatorControl", { action: "boot", device: "iPhone 17" }, session);
+        expect([free.text.includes("declined"), ran.slice(before).some((a) => a[2] === "bootstatus")]).toEqual([false, true]);
+        // Back in Manual: the same session's next call asks, though this machine didn't when it began there.
+        await here.call("settings.update", { patch: { defaultMode: "default" } });
+        const asked = lendHere("SimulatorControl", { action: "shutdown" }, session);
+        await answerLent(session, "no");
+        expect((await asked).text).toContain("declined");
+    } finally {
+        await here.call("settings.update", { patch: { allowBypass: false, defaultMode: "default" } });
+    }
+});
+
+test("this machine's Cavvy quitting while its question waits: the session there is told it went away, not that the user said no", async () => {
+    // An earlier test stopped this machine listening to the server: it listens again, and lends.
+    (mine.engine as any).serverLinks.watches.delete("box");
+    await here.call("servers.overview");
+    await until("this machine to be connected there", () => here.machine("box")?.state === "connected");
+    remote = new Window(there.url, there.token);
+    expect(await remote.opened.promise).toBe(true);
+    const id = await sessionThere();
+    await remote.call("session.send", { id, text: "simulator at the end" });
+    await answer(remote, id, "yes");
+    await until("the question here", async () => (await lentTo(id)).asks.length > 0);
+    // Quitting ends this machine's way to the server too, so what the session there was told is read from its record.
+    await mine.engine.stop();
+    const record = () => [...new Bun.Glob(`**/${id}.jsonl`).scanSync({ cwd: join(fake.home, ".cavvy"), absolute: true })].map((f) => readFileSync(f, "utf8")).join("");
+    await until("the session there to be told", () => record().includes("went away before it answered"));
+    expect(record()).not.toContain("declined this tool call");
 });

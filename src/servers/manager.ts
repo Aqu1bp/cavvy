@@ -515,6 +515,21 @@ export class ServerLinks {
     }
 
     /** The engine is stopping: every connection is closed and signed out. */
+    /** What this machine lends changed (its Simulator turned off or on): each server it's connected to is told now. */
+    relend() {
+        for (const w of this.watches.values()) w.relend();
+    }
+
+    /**
+     * This Cavvy is going: the servers aren't listened to from here on, before anything else of it ends. What a
+     * session there still waits for from this machine is then "it went away", not whatever closing its sessions
+     * here would answer for the user.
+     */
+    stopWatching() {
+        this.stopped = true;
+        for (const w of this.watches.values()) w.stop();
+    }
+
     async stopAll() {
         this.stopped = true;
         for (const w of this.watches.values()) w.stop();
