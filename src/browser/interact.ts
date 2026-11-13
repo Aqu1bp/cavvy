@@ -443,8 +443,11 @@ const DROPDOWN = `function () {
  *
  * The page is asked in a world of its own, where nothing the page has redefined is in the way: what comes back is
  * as big as these functions make it, and no bigger. It's checked again here all the same.
+ *
+ * `meant` is the page the press was made on (Page.loaded): the page that came after it isn't asked, and what it
+ * holds under the same point isn't listed.
  */
-async function dropdown(page: Page, x: number, y: number): Promise<boolean> {
+async function dropdown(page: Page, x: number, y: number, meant: number): Promise<boolean> {
     type Found = { result: { objectId?: string; subtype?: string } };
     const ask = async () => {
         // Chrome says the world as it's made (Page.choiceWorld). With none, the press is the page's as it is.
@@ -454,27 +457,34 @@ async function dropdown(page: Page, x: number, y: number): Promise<boolean> {
         return page.send<Found>("Runtime.evaluate", { expression: `(${DROPDOWN_AT})(${Number(x)}, ${Number(y)})`, uniqueContextId: used, objectGroup: CHOICE_OBJECTS });
     };
     let used: string | undefined;
-    // A world that went with its page just now (the id names nothing): once more, in the new page's (unless Chrome
-    // has said that one already).
+    // A world that's gone while its page stays (the id names nothing): once more, in a new one.
     const asked = ask()
         .catch((e) => {
             if (!/context/i.test(String((e as Error)?.message))) throw e;
             if (page.choiceWorld === used) page.choiceWorld = undefined;
-            return ask();
+            return page.loaded === meant ? ask() : undefined;
         })
         .catch(() => undefined);
     let late = false;
     const found = await Promise.race([asked, new Promise<undefined>((r) => setTimeout(() => ((late = true), r(undefined)), DROPDOWN_MS))]);
     const object = found?.result.subtype === "node" ? found.result.objectId : undefined;
+    const drop = (id: string) => void page.send("Runtime.releaseObject", { objectId: id }).catch(() => undefined);
+    if (object && page.loaded !== meant) {
+        drop(object);
+        return false;
+    }
     if (!object) {
         // Answered after the press went on without it: what it found isn't kept.
-        if (late) void asked.then((r) => r?.result.objectId && page.send("Runtime.releaseObject", { objectId: r.result.objectId }).catch(() => undefined));
+        if (late) void asked.then((r) => r?.result.objectId && drop(r.result.objectId));
         return false;
     }
     const r = await page.send<{ result: { value?: unknown } }>("Runtime.callFunctionOn", { objectId: object, functionDeclaration: DROPDOWN, returnByValue: true }).catch(() => undefined);
     const said = (r?.result.value ?? {}) as { label?: unknown; options?: unknown; selected?: unknown };
     const options = (Array.isArray(said.options) ? said.options.slice(0, MAX_OPTIONS) : []).map((o: { label?: unknown; disabled?: unknown }) => ({ label: String(o?.label ?? "").slice(0, MAX_LABEL), ...(o?.disabled === true ? { disabled: true } : {}) }));
-    if (!options.length) return false;
+    if (!options.length || page.loaded !== meant) {
+        drop(object);
+        return false;
+    }
     const choice: PendingChoice = { label: String(said.label ?? "").slice(0, MAX_LABEL), options, selected: Number.isInteger(said.selected) ? (said.selected as number) : -1 };
     page.setChoice(choice, object);
     return true;
@@ -510,7 +520,7 @@ export async function forward(page: Page, e: BrowserInput): Promise<void> {
                         if (!still()) return;
                     }
                     page.setChoice(undefined);
-                    page.choicePress = button === "left" && (await dropdown(page, e.x, e.y));
+                    page.choicePress = button === "left" && (await dropdown(page, e.x, e.y, meant));
                     if (!page.choicePress && still()) await send();
                 })();
                 const pressing = press.catch(() => undefined).finally(() => page.pressing === pressing && (page.pressing = undefined));

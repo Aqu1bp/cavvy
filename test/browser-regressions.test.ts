@@ -376,6 +376,33 @@ describe.skipIf(!chromePath)("browser regressions with Chrome", () => {
         } finally { void site.stop(true); }
     }, 60_000);
 
+    test("a press on a page that's leaving doesn't open the next page's dropdown", async () => {
+        // The page hangs on its way to another site, which has a dropdown where the press lands.
+        const A = `<body style="margin:20px"><div style="width:200px;height:60px">plain</div></body>`;
+        const B = `<body style="margin:20px"><select style="width:200px;height:60px"><option>b-one</option><option>b-two</option></select><script>window.heard=[];addEventListener('mousedown',()=>heard.push('mousedown'),true)</script></body>`;
+        const site = Bun.serve({ port: 0, fetch: async (r) => (new URL(r.url).pathname === "/b" && (await Bun.sleep(200)), new Response(new URL(r.url).pathname === "/b" ? B : A, { headers: { "content-type": "text/html" } })) });
+        const b = session();
+        try {
+            const p = await b.page();
+            await p.goto(`http://localhost:${site.port}/a`);
+            const at = { x: 120, y: 50, button: "left" as const, clickCount: 1 };
+            // A press first, so the pane has asked this page once (what it asks with is there to go stale).
+            await b.input({ kind: "mouse", type: "down", ...at, buttons: 1 });
+            await b.input({ kind: "mouse", type: "up", ...at, buttons: 0 });
+            void p.send("Runtime.evaluate", { expression: `setTimeout(()=>{location.href='http://127.0.0.1:${site.port}/b';while(true);},0)` }).catch(() => undefined);
+            await Bun.sleep(100);
+            await b.input({ kind: "mouse", type: "down", ...at, buttons: 1 });
+            await b.input({ kind: "mouse", type: "up", ...at, buttons: 0 });
+            for (let t = 0; t < 80 && !p.url.includes("/b"); t++) await Bun.sleep(100);
+            await Bun.sleep(300);
+            expect([p.url.endsWith("/b"), b.state().tabs[0]!.choice, await p.evaluate("window.heard.join()")]).toEqual([true, undefined, '""']);
+            // And the page that came is used as any other: its dropdown opens on a press of its own.
+            await b.input({ kind: "mouse", type: "down", ...at, buttons: 1 });
+            await b.input({ kind: "mouse", type: "up", ...at, buttons: 0 });
+            expect(b.state().tabs[0]!.choice?.options.map((o) => o.label)).toEqual(["b-one", "b-two"]);
+        } finally { void site.stop(true); }
+    }, 60_000);
+
     test("the demo form submits in Chrome and renders the search text", async () => {
         const demo = startDemoSite();
         const b = session();
