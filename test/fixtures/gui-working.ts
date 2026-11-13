@@ -172,4 +172,35 @@ try {
     assert.equal(ends.length, 1, "a stopped turn with no output shows the stop line");
     assert.ok(text(ends[0]!).includes("Stopped. Nothing after this point ran."));
     disposeStopped();
+    // A command it started that outlasts it: the line doesn't say nothing ran.
+    const ran = (task: Record<string, unknown>) => {
+        const root = node("root");
+        const done = renderer.render(() => TurnView({
+            turn: { id: "left", status: "aborted", archived: true, startedAt: 1000, endedAt: 1200, prompt: { text: "sleep" }, blocks: [{ t: "tool", id: "call-1", name: "Bash", title: "Bash", status: "done", input: {} }] },
+            state: { ...state(), busy: false, backgroundTasks: [{ id: "p1", provider: "codex", kind: "shell", label: "sleep 40", startedAt: 1100, stoppable: true, ...task }] }, last: true,
+        } as never), root);
+        const said = text(all(root).filter((n) => hasClass(n, "end-note"))[0]!);
+        done();
+        return said;
+    };
+    assert.ok(ran({ toolUseId: "call-1", status: "running" }).includes("Stopped. A command it started is still running."));
+    // Once it has ended, however it did (by itself, by the user's Stop, with Cavvy): it ran on past the stop.
+    for (const task of [{ toolUseId: "call-1", status: "done", endedAt: 5000 }, { toolUseId: "call-1", status: "stopped", endedAt: 5000 }, { toolUseId: "call-1", status: "stopped", lost: true, endedAt: 9000 }]) {
+        assert.ok(ran(task).includes("Stopped. A command it started ran on after that."), JSON.stringify(task));
+    }
+    // Ended before the turn did, or another turn's: as before.
+    for (const task of [{ toolUseId: "call-1", status: "done", endedAt: 1150 }, { toolUseId: "other", status: "running" }]) {
+        assert.ok(ran(task).includes("Stopped. Nothing after this point ran."), JSON.stringify(task));
+    }
+    // With the list of what ran since cleared (or the session opened again), the command's own row still says it.
+    const kept = node("root");
+    const disposeKept = renderer.render(() => TurnView({
+        turn: { id: "kept", status: "aborted", archived: true, startedAt: 1000, endedAt: 1200, prompt: { text: "sleep" }, blocks: [{ t: "tool", id: "call-2", name: "Bash", title: "Bash", status: "done", input: {}, output: "Still running in the background (process 41). Cavvy lists it under Background, and Codex is told when it finishes." }] },
+        state: { ...state(), busy: false }, last: true,
+    } as never), kept);
+    assert.ok(text(all(kept).filter((n) => hasClass(n, "end-note"))[0]!).includes("Stopped. A command it started ran on after that."));
+    disposeKept();
+    // Those are the words Codex's row ends with: if they change there, they change here.
+    assert.ok(readFileSync(new URL("../../src/backends/codex-live.ts", import.meta.url), "utf8").includes("`Still running in the background (process "));
+    assert.ok(source.includes('const LEFT_RUNNING = "Still running in the background";'));
 } finally { dispose(); }

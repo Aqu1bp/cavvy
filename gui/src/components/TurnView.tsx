@@ -554,6 +554,27 @@ const END_TEXT: Partial<Record<Turn["status"], string>> = {
     blocked: "Blocked by a hook",
 };
 
+/**
+ * How a command's row ends when its turn ended and it didn't: what the row says first (src/backends/codex-live.ts,
+ * which leaves one running). It stays in the conversation, so it tells later that the turn's command outlived it.
+ */
+const LEFT_RUNNING = "Still running in the background";
+
+/**
+ * How a stopped turn's line reads. A command it started can outlast it (Codex leaves one running; any CLI's
+ * background command does): then "nothing after this point ran" isn't so, and the line says what is.
+ */
+function stoppedText(turn: Turn, state: SessionState): string {
+    const calls = new Set(turn.blocks.flatMap((b) => (b.t === "tool" ? [b.id] : [])));
+    const left = (state.backgroundTasks ?? []).filter((t) => t.kind === "shell" && t.toolUseId !== undefined && calls.has(t.toolUseId));
+    if (left.some((t) => t.status === "running")) return "Stopped. A command it started is still running.";
+    // It ran on past the stop, however it ended since (by itself, by the user's Stop, with Cavvy). The list of what
+    // ran is only kept a while: the command's own row says so for good (LEFT_RUNNING).
+    const after = left.some((t) => turn.endedAt !== undefined && (t.endedAt ?? 0) > turn.endedAt);
+    if (after || turn.blocks.some((b) => b.t === "tool" && b.output?.startsWith(LEFT_RUNNING))) return "Stopped. A command it started ran on after that.";
+    return END_TEXT.aborted!;
+}
+
 type TurnViewProps = {
     turn: Turn;
     state: SessionState;
@@ -711,7 +732,7 @@ function TurnViewContent(p: TurnViewProps) {
                         <Show when={END_TEXT[p.turn.status] && !(p.turn.status === "error" && hasErrorCard(p.turn.blocks))}>
                             <div class={`notice end-note end-${p.turn.status}`} data-find-skip>
                                 {p.turn.status === "aborted" ? <CircleStop size={14} /> : p.turn.status === "error" || p.turn.status === "blocked" ? <AlertCircle size={14} /> : <AlertTriangle size={14} />}
-                                <span>{END_TEXT[p.turn.status]}</span>
+                                <span>{p.turn.status === "aborted" ? stoppedText(p.turn, p.state) : END_TEXT[p.turn.status]}</span>
                             </div>
                         </Show>
                         <div class="turn-foot">
