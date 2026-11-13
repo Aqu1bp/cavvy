@@ -6,7 +6,7 @@
     "markdownParsedPerCharacter": 12.3,
     "codeTokenizedPerLine": 2,
     "streamClockWakesPerSecond": 21,
-    "guiEagerJsBytes": 1294000,
+    "guiEagerJsBytes": 1300000,
     "guiEagerCssBytes": 295000,
     "glidesPerScreenOfReply": 3.5,
     "idleLayoutsAfterReply": 2,
