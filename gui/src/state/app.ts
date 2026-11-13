@@ -685,10 +685,13 @@ export async function refreshSessions() {
     });
 }
 
-export async function refreshModels(refresh = false) {
+/** `after`: what the list waits for before it's taken in, once it has come (at startup, the providers: Home's "connect a model" card reads both, and says the wrong thing with the models alone). */
+export async function refreshModels(refresh = false, after?: Promise<unknown>) {
     setApp("modelsLoading", true);
     try {
-        setApp("models", reconcile(await rpc.call("models.list", { refresh }), { key: "provider" }));
+        const models = await rpc.call("models.list", { refresh });
+        await after?.catch(() => undefined);
+        setApp("models", reconcile(models, { key: "provider" }));
         setApp("modelsLoaded", true);
     } finally {
         setApp("modelsLoading", false);
@@ -967,10 +970,11 @@ export function start() {
             try {
                 setApp("hello", await rpc.call("hello", { client: isDesktop ? "desktop" : "browser" }));
                 openAhead();
-                // Asked for with the lists (the composer names its model from them, and offers its efforts), but
-                // not waited for: listing can mean asking each CLI.
-                void refreshModels().catch(() => undefined);
-                await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders(), refreshKeybindings().catch(() => undefined)]);
+                // The models are asked for with the lists (the composer names its model from them, and offers its
+                // efforts), but not waited for: listing can mean asking each CLI.
+                const providers = refreshProviders();
+                void refreshModels(false, providers).catch(() => undefined);
+                await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), providers, refreshKeybindings().catch(() => undefined)]);
                 void refreshLimits().catch(() => undefined);
                 // A server from before app.update.get has nothing to say: no update state, no button.
                 void refreshUpdate().then(recheckUpdate, () => undefined);
