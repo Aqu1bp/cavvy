@@ -143,13 +143,23 @@ export class ServerLinks {
      * Asks a server's Cavvy for something a session's row offers (rename, pin, archive, delete and the like), for a
      * window that isn't on that server. Only those: anything else is done in a window that's on it.
      */
-    relay(name: string, method: string, params: Record<string, unknown>): Promise<unknown> {
+    async relay(name: string, method: string, params: Record<string, unknown>): Promise<null> {
         const known = RELAYED_SESSION_METHODS.find((m) => m === method);
         if (!known) throw new Error("Open the session to do that.");
-        if (typeof params.id !== "string" || !/^[\w.-]{1,120}$/.test(params.id)) throw new Error("That isn't a session's id.");
+        const id = params.id;
+        if (typeof id !== "string" || !/^[\w.-]{1,120}$/.test(id)) throw new Error("That isn't a session's id.");
         const w = this.watches.get(name);
         if (!w) throw new Error(`${name} isn't one of this Cavvy's servers.`);
-        return w.call(known, params);
+        // Each with what it takes and nothing else (archiving never removes a worktree from here), and nothing of
+        // what the server answers is passed on: these answer nothing.
+        const sent =
+            known === "session.rename" ? { id, title: typeof params.title === "string" ? params.title.slice(0, 300) : "" }
+            : known === "session.pin" ? { id, pinned: params.pinned === true }
+            : known === "session.settle" ? { id, settled: params.settled === true }
+            : known === "session.archive" ? { id, archived: params.archived === true }
+            : { id };
+        await w.call(known, sent);
+        return null;
     }
 
     /** This machine asks its user something for a session on a server (it lends it a tool), or no longer does: its row there says it waits. */

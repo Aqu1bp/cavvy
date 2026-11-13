@@ -887,7 +887,8 @@ function Shortcuts() {
  * (a browser's server never updates an app).
  */
 function Updates() {
-    const working = () => app.sessions.filter((s) => s.status === "running").length;
+    // Those on this computer: the app's restart doesn't stop a server's.
+    const working = () => app.sessions.filter((s) => !s.machine && s.status === "running").length;
     const v = createMemo(() => updateView(app.update, working(), now()));
     const [asking, setAsking] = createSignal(false);
     const u = () => app.update!;

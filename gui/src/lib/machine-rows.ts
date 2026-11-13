@@ -49,9 +49,10 @@ export function routeOf(
     const id = method.startsWith("session.") && params && typeof params === "object" ? (params as { id?: unknown }).id : undefined;
     if (typeof id !== "string") return "here";
     const to = (at: string | undefined) => (at === undefined ? ("mac" as const) : { relay: at });
+    // Deleted on another machine, and not listed since: brought back there. (Most calls are about the window's own
+    // sessions and end here, without the list being looked through.)
+    if (!far.has(id)) return method === "session.restore" && gone.has(id) && !row(id) ? to(gone.get(id)) : "here";
     const now = row(id);
-    // Deleted on another machine, and not listed since: brought back there.
-    if (!far.has(id)) return method === "session.restore" && gone.has(id) && !now ? to(gone.get(id)) : "here";
     // Just deleted there (its row is gone, the server hasn't said so yet): Undo is still that machine's.
     if (!now) return method === "session.restore" ? to(far.get(id)) : "here";
     // One of the window's own machine's has that id now: it's that one that's meant.

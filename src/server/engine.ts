@@ -2910,10 +2910,13 @@ export class Engine {
             case "servers.relay": {
                 const servers = await this.servers(client);
                 const params = p.params && typeof p.params === "object" && !Array.isArray(p.params) ? (p.params as Record<string, unknown>) : {};
+                const name = str(p.name, "name");
                 try {
-                    return await servers.relay(str(p.name, "name"), str(p.method, "method"), params);
+                    return await servers.relay(name, str(p.method, "method"), params);
                 } catch (e) {
-                    throw new RpcError((e as Error).message, (e as { code?: string }).code ?? "failed");
+                    // Whose words they are: the server's own are said to be its.
+                    const said = (e as Error).message;
+                    throw new RpcError(said.startsWith(name) || said.startsWith("Open the session") || said.startsWith("That isn't") ? said : `${name}: ${said}`, (e as { code?: string }).code ?? "failed");
                 }
             }
             case "servers.overview": {

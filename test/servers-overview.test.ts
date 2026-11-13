@@ -170,9 +170,17 @@ test("a server's sessions are listed and kept up to date, each change told by it
     await until("it to be told back in play", () => here.machine("box")?.sessions.find((s) => s.id === id)?.archived === false);
     // Only what a row offers, only for a session, only on one of this Cavvy's servers; and why not, in the server's words.
     await expect(here.call("servers.relay", { name: "box", method: "session.send", params: { id, text: "hi" } })).rejects.toThrow("Open the session to do that.");
+    // What asks about folders there (removing a session's worktree as it's archived) isn't done from here: nothing
+    // is asked, and archiving passes on only the session and whether it's archived.
+    await expect(here.call("servers.relay", { name: "box", method: "session.archiveOffer", params: { id } })).rejects.toThrow("Open the session to do that.");
+    expect(await here.call("servers.relay", { name: "box", method: "session.archive", params: { id, archived: true, removeWorktree: true, deleteIgnored: "x" } })).toBeNull();
+    await until("it to be told archived, its folder left alone", () => here.machine("box")?.sessions.find((s) => s.id === id)?.archived === true);
+    await here.call("servers.relay", { name: "box", method: "session.archive", params: { id, archived: false } });
+    await until("it to be back in play", () => here.machine("box")?.sessions.find((s) => s.id === id)?.archived === false);
     await expect(here.call("servers.relay", { name: "box", method: "session.pin", params: { id: "../x", pinned: true } })).rejects.toThrow("That isn't a session's id.");
     await expect(here.call("servers.relay", { name: "nowhere", method: "session.pin", params: { id, pinned: true } })).rejects.toThrow("nowhere isn't one of this Cavvy's servers.");
-    await expect(here.call("servers.relay", { name: "box", method: "session.rename", params: { id: "20261113-000000-zzzzzz", title: "x" } })).rejects.toThrow();
+    // The server's own words are said to be the server's.
+    await expect(here.call("servers.relay", { name: "box", method: "session.rename", params: { id: "20261113-000000-zzzzzz", title: "x" } })).rejects.toThrow(/^box: /);
     remote.ws.close();
 });
 

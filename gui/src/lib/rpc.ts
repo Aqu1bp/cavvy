@@ -229,7 +229,7 @@ export class Rpc {
 
     /**
      * Where a call goes when it isn't this connection's to answer: one about a session on another machine, in a
-     * window that lists every machine's (lib/all-machines.ts). Undefined: here.
+     * window that lists every machine's (components/OtherMachines.tsx). Undefined: here.
      */
     route?: (method: string, params: unknown) => Promise<unknown> | undefined;
 

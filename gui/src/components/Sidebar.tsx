@@ -160,7 +160,7 @@ function SingleItems(p: { s: SessionSummary; close: () => void; onRename: () => 
                     {p.s.settled ? <Undo2 size={14} /> : <CheckCheck size={14} />} {p.s.settled ? "Back in play" : "Settle"}
                 </button>
             </Show>
-            <button role="menuitem" class="menu-item compact" title={`New session in ${p.s.projectName}`} onClick={() => (close(), newSession(p.s.cwd, p.s.machine))}>
+            <button role="menuitem" class="menu-item compact" title={`New session in ${p.s.projectName}`} onClick={() => (close(), newSession(p.s.cwd, p.s))}>
                 {/* Short enough for the narrowest rail at the largest text: the menu is the row's width. Where: its tooltip. */}
                 <Plus size={14} /> New session
             </button>
@@ -1011,7 +1011,7 @@ export function Sidebar() {
                                 <span class="n">{counts().get(key)}</span>
                                 <ChevronUp size={14} class={`settled-chev ${open() ? "" : "closed"}`} />
                             </button>
-                            <button class="shelf-btn add" title={`New session in ${group().name}`} aria-label={`New session in ${group().name}`} onClick={() => newSession(folderOf(group().cwd), group().machine)}><Plus size={13} /></button>
+                            <button class="shelf-btn add" title={`New session in ${group().name}`} aria-label={`New session in ${group().name}`} onClick={() => newSession(folderOf(group().cwd), group())}><Plus size={13} /></button>
                         </div>;
                     }
                     if (kind === "day") return <div class="day-head">{(entry() as Extract<SidebarEntry, { kind: "day" }>).label}</div>;

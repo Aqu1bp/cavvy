@@ -78,31 +78,49 @@ test("a session a server describes is taken apart and put together again: its ow
 test("however many sessions a server lists or sends later, and however long their words, only so much is kept and shown", async () => {
     const big = "x".repeat(100_000);
     const { watch, each } = serverSaying(
-        // Fifty times what was asked for, in one answer that's still small enough to be read.
-        Array.from({ length: 5000 }, (_, i) => ({ id: `s${i}`, title: "x".repeat(300), status: "idle", updatedAt: i })),
+        // Fifty times what was asked for, in one answer that's still small enough to be read: the most recent first,
+        // as a server lists them.
+        Array.from({ length: 5000 }, (_, i) => ({ id: `s${i}`, title: "x".repeat(300), status: "idle", updatedAt: 9000 - i })),
         (send) => {
-            for (let i = 0; i < 40; i++) send({ event: { type: "sessions.upsert", session: { id: `late${i}`, title: big, cwd: big, status: "waiting", updatedAt: 10_000 + i } } });
-            for (let i = 0; i < 400; i++) send({ event: { type: "sessions.upsert", session: { id: `later${i}`, title: "t", status: "idle", updatedAt: 20_000 + i } } });
-            send({ event: { type: "sessions.upsert", session: { id: "last", title: "The last one", status: "waiting", updatedAt: 99_999 } } });
+            setTimeout(() => {
+                for (let i = 0; i < 5; i++) send({ event: { type: "sessions.upsert", session: { id: `late${i}`, title: big, cwd: big, status: "waiting", updatedAt: 10_000 + i } } });
+                send({ event: { type: "sessions.upsert", session: { id: "last", title: "The last one", status: "waiting", updatedAt: 99_999 } } });
+            }, 300);
         },
         // And as many archived as it likes.
-        Array.from({ length: 5000 }, (_, i) => ({ id: `a${i}`, title: "old", status: "idle", archived: true, updatedAt: i })),
+        Array.from({ length: 5000 }, (_, i) => ({ id: `a${i}`, title: "old", status: "idle", archived: true, updatedAt: 9000 - i })),
     );
-    await until("the last one to be heard", () => watch.overview().sessions[0]?.id === "last");
     await until("the archived to be listed", () => watch.overview().sessions.some((s) => s.archived));
+    await until("the last one to be heard", () => watch.overview().sessions[0]?.id === "last");
     const o = watch.overview();
-    // What a window lists of its own machine, at most: three hundred in play and as many archived, the oldest heard of gone first.
+    // What a window lists of its own machine, at most: three hundred in play and as many archived.
     expect(o.sessions.length).toBe(600);
-    expect(o.sessions.some((s) => s.id === "s0")).toBe(false);
     expect(Math.max(...o.sessions.map((s) => s.title.length + s.cwd.length))).toBeLessThanOrEqual(600);
-    // Each change after the list was told by itself, the ones that made room for it too.
-    expect(each.filter((c) => "session" in c).length).toBe(441);
-    expect(each.some((c) => "remove" in c && c.remove === "s0")).toBe(true);
+    // Room for the new ones was made by those least recently at work, the server's newest session never among
+    // them; and each of those is said to be out of the list, not gone from the server.
+    expect(o.sessions.some((s) => s.id === "s0")).toBe(true);
+    expect(each.filter((c) => "session" in c).length).toBe(6);
+    const out = each.flatMap((c) => ("unlisted" in c ? [c.unlisted] : []));
+    expect([out.length, out.includes("s0"), each.some((c) => "remove" in c)]).toEqual([6, false, false]);
+    expect(out.every((id) => !o.sessions.some((s) => s.id === id))).toBe(true);
+});
+
+test("a server whose sessions change faster than sessions ever do is told as its list, now and then, not change by change", async () => {
+    const { watch, each, changes } = serverSaying([{ id: "s1", title: "one", status: "idle", updatedAt: 1 }], (send) => {
+        setTimeout(() => {
+            for (let i = 0; i < 500; i++) send({ event: { type: "sessions.upsert", session: { id: `n${i}`, title: "t", status: "idle", updatedAt: 100 + i } } });
+        }, 300);
+    });
+    await until("them all to be heard", () => watch.overview().sessions.length === 501);
+    const listed = changes();
+    // A few by themselves, then the rest as "the list changed" (which whoever tells the windows does only so often).
+    expect(each.length).toBeLessThanOrEqual(40);
+    expect(listed).toBeGreaterThan(400);
 });
 
 test("what a session's row offers is asked of the server for a window that isn't on it: answered, refused in its words, or given up", async () => {
     const { watch, asked } = serverSaying([{ id: "s1", title: "one", status: "idle", updatedAt: 1 }], undefined, [], (m) =>
-        m.method === "session.pin" ? { result: null } : m.method === "session.delete" ? { error: { message: `${"Still working. ".repeat(100)}`, code: "busy" } } : m.method === "session.archiveOffer" ? { result: { big: "x".repeat(200_000) } } : undefined,
+        m.method === "session.pin" ? { result: null } : m.method === "session.delete" ? { error: { message: `${"Still working. ".repeat(100)}`, code: "busy" } } : m.method === "session.archive" ? { result: { big: "x".repeat(200_000) } } : undefined,
     );
     // Not before it's heard from.
     await expect(watch.call("session.pin", { id: "s1", pinned: true })).rejects.toThrow("box isn't connected.");
@@ -112,7 +130,7 @@ test("what a session's row offers is asked of the server for a window that isn't
     const refused = await watch.call("session.delete", { id: "s1" }).catch((e) => e as Error & { code?: string });
     expect([(refused as Error).message.length, (refused as { code?: string }).code]).toEqual([300, "busy"]);
     // More than such an answer ever is isn't passed on.
-    await expect(watch.call("session.archiveOffer", { id: "s1" })).rejects.toThrow("box answered with more than was asked for.");
+    await expect(watch.call("session.archive", { id: "s1", archived: true })).rejects.toThrow("box answered with more than was asked for.");
     // One it never answers ends when the connection does.
     const waits = watch.call("session.rename", { id: "s1", title: "x" });
     watch.stop();

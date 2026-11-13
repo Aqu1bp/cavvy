@@ -119,12 +119,23 @@ export function Home() {
 
     // Which machine it runs on is said (and chosen) only where there's more than this one: once the window knows.
     let where: HTMLSpanElement | undefined;
+    /** Takes it away again: undefined until it's shown; called at once if this screen went first. */
+    let unmountWhere: (() => void) | undefined;
     let whereShown = false;
+    let left = false;
     createEffect(() => {
         if (whereShown || !where || !(machine || app.hello?.servers)) return;
         whereShown = true;
         const el = where;
-        void serversUi().then((m) => m.mountWhere(el), reportError);
+        void serversUi().then((m) => {
+            const off = m.mountWhere(el);
+            if (left) off();
+            else unmountWhere = off;
+        }, reportError);
+    });
+    onCleanup(() => {
+        left = true;
+        unmountWhere?.();
     });
 
     /** Under the composer, like a drawer: where the session runs, then the composer's prefixes. */

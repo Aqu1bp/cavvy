@@ -6,7 +6,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { listable, mayTake, otherRows, routeOf } from "../gui/src/lib/machine-rows";
-import { folderOf, projectOf, sidebarEntries } from "../gui/src/lib/session-order";
+import { folderOf, onAnother, projectOf, sidebarEntries } from "../gui/src/lib/session-order";
 import type { MachineOverview, SessionSummary } from "../src/server/protocol";
 
 const s = (id: string, o: Partial<SessionSummary> = {}): SessionSummary => ({ id, cwd: "/srv/app", projectName: "app", title: id, createdAt: 1, updatedAt: 1, messages: 1, status: "idle", pinned: false, archived: false, settled: false, live: false, ...o });
@@ -41,9 +41,10 @@ test("what a row offers is sent to the machine its session is on; anything else 
     const to = (method: string, params: unknown) => routeOf(method, params, far, (id) => rows[id], "den");
     expect(to("session.archive", { id: "b1", archived: true })).toEqual({ relay: "box" });
     expect(to("session.rename", { id: "m1", title: "x" })).toBe("mac");
-    for (const method of ["session.pin", "session.settle", "session.archiveOffer", "session.delete", "session.restore"]) expect(to(method, { id: "b1" })).toEqual({ relay: "box" });
-    // Sending a message, opening, stopping: done in a window that's on that machine.
-    for (const method of ["session.send", "session.open", "session.interrupt", "session.respond", "session.setMode"]) expect(to(method, { id: "b1" })).toBe("refused");
+    for (const method of ["session.pin", "session.settle", "session.delete", "session.restore"]) expect(to(method, { id: "b1" })).toEqual({ relay: "box" });
+    // Sending a message, opening, stopping: done in a window that's on that machine. So is asking what archiving
+    // would remove there (a worktree): from here it's archived with everything kept.
+    for (const method of ["session.send", "session.open", "session.interrupt", "session.respond", "session.setMode", "session.archiveOffer"]) expect(to(method, { id: "b1" })).toBe("refused");
     // The window's own sessions, and whatever isn't about a session (a terminal with that id, say), go where they always did.
     expect(to("session.send", { id: "mine", text: "hi" })).toBe("here");
     expect(to("terminal.write", { id: "b1", data: "x" })).toBe("here");
@@ -60,6 +61,15 @@ test("what a row offers is sent to the machine its session is on; anything else 
     expect([after("session.restore", "deleted"), after("session.restore", "mac-deleted"), after("session.delete", "deleted"), after("session.restore", "never-heard-of")]).toEqual([{ relay: "box" }, "mac", "here", "here"]);
     // Listed again since (another one took the id, or it came back): where it's listed now is what counts.
     expect(after("session.restore", "b1")).toEqual({ relay: "box" });
+});
+
+test("a new session asked for from a row or a heading starts on that one's machine: in a window on a server, this computer's is another machine too", () => {
+    // In a window on this computer: its own rows and headings are here, a server's aren't.
+    expect([onAnother({ machine: undefined }, undefined), onAnother({}, undefined), onAnother({ machine: "box" }, undefined)]).toEqual([false, false, true]);
+    // In a window on box: box's are here, this computer's (no machine) and another server's aren't.
+    expect([onAnother({ machine: "box" }, "box"), onAnother({ machine: undefined }, "box"), onAnother({}, "box"), onAnother({ machine: "den" }, "box")]).toEqual([false, true, true, true]);
+    // Not asked from a row at all (the New session button, a shortcut): the window's own machine.
+    expect([onAnother(undefined, undefined), onAnother(undefined, "box")]).toEqual([false, false]);
 });
 
 test("grouped by project, a folder at the same path on two machines is two projects, each named with its server", () => {

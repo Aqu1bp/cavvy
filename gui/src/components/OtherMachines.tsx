@@ -34,19 +34,24 @@ const rows = () => otherRows(machine, mac.values(), servers.values());
 
 const listed = (id: string) => app.sessions.find((s) => s.id === id) ?? app.archived.find((s) => s.id === id);
 
-/** New to this window: nothing in it is unread yet, as on the window's first run. */
-function seen(list: SessionSummary[]) {
+/**
+ * New to this window: nothing in it is unread yet, as on the window's first run. `unlisted`: those no longer listed
+ * here, of which nothing is kept.
+ */
+function seen(list: SessionSummary[], unlisted: string[] = []) {
     const fresh = list.filter((s) => app.seen[s.id] === undefined);
-    if (fresh.length) markSeenAll(fresh);
+    const stale = unlisted.filter((id) => app.seen[id] !== undefined);
+    if (fresh.length || stale.length) markSeenAll(fresh, stale);
 }
 
 /** The list made again from the window's own sessions and every other machine's as they stand. */
 function relist() {
     const ownOf = (list: SessionSummary[]) => list.filter((s) => s.machine === machine);
     const add = listable([...ownOf(app.sessions), ...ownOf(app.archived)], rows());
+    const before = [...far.keys()];
     far.clear();
     for (const s of add) far.set(s.id, s.machine);
-    seen(add);
+    seen(add, before.filter((id) => !far.has(id)));
     batch(() => {
         setApp("sessions", reconcile(orderSessions([...ownOf(app.sessions), ...add.filter((s) => !s.archived)]), { key: "id" }));
         setApp("archived", reconcile(orderSessions([...ownOf(app.archived), ...add.filter((s) => s.archived)]), { key: "id" }));
@@ -60,6 +65,22 @@ function put(s: SessionSummary) {
     far.set(s.id, s.machine);
     seen([s]);
     upsertSession(s);
+}
+
+/**
+ * One session of another machine is no longer among those listed here (its machine has more than are kept): its
+ * row goes, and that's all. It isn't deleted: what's kept of it on its own machine stays.
+ */
+function unlist(id: string, at: string | undefined) {
+    if (!far.has(id) || far.get(id) !== at) return;
+    far.delete(id);
+    const now = listed(id);
+    if (!now || now.machine === machine) return;
+    batch(() => {
+        setApp("sessions", (l) => l.filter((s) => s.id !== id));
+        setApp("archived", (l) => l.filter((s) => s.id !== id));
+    });
+    seen([], [id]);
 }
 
 /** One session of another machine is gone from it. */
@@ -185,6 +206,9 @@ export function watchOthers(hereName: string) {
             } else if (e.remove) {
                 m.sessions = m.sessions.filter((x) => x.id !== e.remove);
                 drop(e.remove, e.name);
+            } else if (e.unlisted) {
+                m.sessions = m.sessions.filter((x) => x.id !== e.unlisted);
+                unlist(e.unlisted, e.name);
             }
         } else if (e.type === "servers.notify") tell(e);
         else if (home && e.type === "sessions.upsert") {

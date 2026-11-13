@@ -1,7 +1,7 @@
 // What the user does, as calls to the server.
 
 import { batch, createSignal } from "solid-js";
-import { adjacentSession, sidebarEntries, sidebarIds, SESSION_PAGE } from "../lib/session-order";
+import { onAnother, adjacentSession, sidebarEntries, sidebarIds, SESSION_PAGE } from "../lib/session-order";
 import { sidebarOrder, unselect } from "./sidebar";
 import { sessionCount, sessionNames } from "../lib/rail-select";
 import type { ArchiveResult, CliSessionInfo, EditorInfo, EffortLevel, FollowUpMode, GitCommitHead, Interaction, InteractionResponse, PermissionModeId, ProviderInfo } from "@shared/protocol";
@@ -23,9 +23,9 @@ export { forkAnchor } from "../lib/fork";
 export type { Attachment } from "../lib/attachments";
 
 /** Back to the home screen to start a new session (optionally in another project). */
-/** `at`: the machine the folder is on (a server's name; none: this computer), when it isn't the window's. */
-export function newSession(cwd?: string, at = machine) {
-    if (at !== machine) return void serversUi().then((m) => m.switchMachine(at, undefined, cwd), reportError);
+/** `on`: the session or project heading it was asked from, when the machine that's on may not be the window's. */
+export function newSession(cwd?: string, on?: { machine?: string }) {
+    if (onAnother(on, machine)) return void serversUi().then((m) => m.switchMachine(on!.machine, undefined, cwd), reportError);
     if (cwd) setApp("homeCwd", cwd);
     setApp("activeId", undefined);
     requestComposerFocus();

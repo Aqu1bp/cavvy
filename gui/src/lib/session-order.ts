@@ -91,6 +91,12 @@ export function dayOf(s: Pick<SessionSummary, "pinned" | "status" | "updatedAt">
  * that server's: two machines can each have a folder at one path.
  */
 export const projectOf = (s: Pick<SessionSummary, "cwd" | "run" | "machine">) => (s.machine ? `${s.machine}\n` : "") + (s.run?.cwd ?? s.cwd);
+/**
+ * Whether what's named (a session, a project heading) is on another machine than the window's: `on.machine` is the
+ * server it's on, none for the user's own computer, which in a window on a server is another machine too.
+ */
+export const onAnother = (on: { machine?: string } | undefined, here: string | undefined) => on !== undefined && on.machine !== here;
+
 /** A project's folder (projectOf), without the server it's on. */
 export const folderOf = (project: string) => project.slice(project.indexOf("\n") + 1);
 

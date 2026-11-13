@@ -803,7 +803,7 @@ export interface SessionSummary {
     run?: RunMember;
     /**
      * The server it runs on; none: the user's own computer. Never sent: a window that lists every machine's sessions
-     * sets it, from where it heard of each (gui/src/lib/all-machines.ts).
+     * sets it, from where it heard of each (gui/src/components/OtherMachines.tsx).
      */
     machine?: string;
 }
@@ -1647,9 +1647,10 @@ export interface LentSession {
 
 /**
  * What a session's row in the list offers, which a window may ask of a session on another machine without being on
- * it (servers.relay). Anything else is done in a window that's on that machine.
+ * it (servers.relay). Anything else is done in a window that's on that machine: so is removing a session's worktree
+ * as it's archived, which asks about folders on that machine.
  */
-export const RELAYED_SESSION_METHODS = ["session.rename", "session.pin", "session.settle", "session.archiveOffer", "session.archive", "session.delete", "session.restore"] as const;
+export const RELAYED_SESSION_METHODS = ["session.rename", "session.pin", "session.settle", "session.archive", "session.delete", "session.restore"] as const;
 
 /** A server as a window lists it. */
 export interface ServerSummary {
@@ -1730,8 +1731,11 @@ export type ServerEvent =
     | { type: "servers.link"; name: string; state: "connected" | "reconnecting" | "stopped"; problem?: ServerProblem }
     /** How a server is reached changed, or its sessions were listed anew (servers.overview), to the windows that asked for them. */
     | { type: "servers.overview"; machine: MachineOverview }
-    /** One session on a server changed (`session`), or went (`remove`: its id), to the same windows. */
-    | { type: "servers.session"; name: string; session?: SessionSummary; remove?: string }
+    /**
+     * One session on a server changed (`session`), went (`remove`: its id), or is still there and no longer among
+     * those listed here (`unlisted`), to the same windows.
+     */
+    | { type: "servers.session"; name: string; session?: SessionSummary; remove?: string; unlisted?: string }
     /**
      * What a session on another machine has to tell its user, for one window to show: `name` is the server's, and
      * left out when it's this computer's own session, told to a window that's on a server. No `sessionId` ("") when
@@ -1878,10 +1882,11 @@ export interface Methods {
      */
     "servers.overview": { params: Record<string, never>; result: { machines: MachineOverview[] } };
     /**
-     * Something a session's row offers (rename, pin, settle, archive, delete, restore: src/servers/watch.ts RELAYED),
+     * Something a session's row offers (rename, pin, settle, archive, delete, restore: RELAYED_SESSION_METHODS),
      * asked of a session on a server by a window that isn't on it. `params`: that call's own, with the session's id.
+     * Nothing of the server's answer is passed on.
      */
-    "servers.relay": { params: { name: string; method: string; params: Record<string, unknown> }; result: unknown };
+    "servers.relay": { params: { name: string; method: string; params: Record<string, unknown> }; result: null };
     "servers.add": { params: { name: string; destination: string; port?: number; identityFile?: string; trust?: string[] }; result: AddResult };
     "servers.copy": { params: { name: string }; result: { took: string; left?: string } };
     "servers.check": { params: { name: string }; result: ServerCheck };

@@ -38,6 +38,10 @@ const REPLY_MS = 20_000;
  * many in play, as many archived: what a window lists of its own machine).
  */
 const HEARD = 300;
+/** How long the archived list is waited for before the sessions in play are told without it. */
+const ARCHIVED_MS = 3000;
+/** One session's change is told by itself this many times a second at most: past that, the whole list, now and then. */
+const CHANGES_PER_SECOND = 20;
 /** What a window asked of a session there: only so many at once, and an answer no bigger than this. */
 const MAX_CALLS = 16;
 const MAX_ANSWER = 64 * 1024;
@@ -88,8 +92,11 @@ export function heardSession(v: unknown): SessionSummary | undefined {
     };
 }
 
-/** One change to a server's sessions: a session as it is now, or the id of one that's gone. */
-export type SessionChange = { session: SessionSummary } | { remove: string };
+/**
+ * One change to a server's sessions: a session as it is now, the id of one that's gone from the server (`remove`),
+ * or of one that's still there and no longer among those kept here (`unlisted`: the list is only so long).
+ */
+export type SessionChange = { session: SessionSummary } | { remove: string } | { unlisted: string };
 
 
 export class MachineWatch {
@@ -156,7 +163,31 @@ export class MachineWatch {
         if (on) this.asking.add(id);
         else this.asking.delete(id);
         const s = this.sessions.get(id);
-        if (s) this.o.session?.({ session: this.shown(s) });
+        if (s) this.say({ session: this.shown(s) });
+    }
+
+    /** Session changes told in this second (CHANGES_PER_SECOND). */
+    private burst = { from: 0, told: 0 };
+
+    /** Tells one change, unless there are more in a second than a server's sessions ever change: then the list is told anew, which is only so often (manager.ts). */
+    private say(change: SessionChange) {
+        const now = Date.now();
+        if (now - this.burst.from >= 1000) this.burst = { from: now, told: 0 };
+        if (++this.burst.told > CHANGES_PER_SECOND) return this.o.changed();
+        this.o.session?.(change);
+    }
+
+    /**
+     * Makes room when a server has more sessions than are kept: those least recently at work go, the ones in play
+     * and the archived alike. `told`: each is said to be out of the list (it isn't gone from the server).
+     */
+    private bound(told: boolean) {
+        const over = this.sessions.size - 2 * HEARD;
+        if (over <= 0) return;
+        for (const s of [...this.sessions.values()].sort((a, b) => a.updatedAt - b.updatedAt).slice(0, over)) {
+            this.sessions.delete(s.id);
+            if (told) this.say({ unlisted: s.id });
+        }
     }
 
     /** Calls waiting for the server's answer (call), by the id they were sent with. */
@@ -170,7 +201,7 @@ export class MachineWatch {
     call(method: (typeof RELAYED_SESSION_METHODS)[number], params: Record<string, unknown>): Promise<unknown> {
         const ws = this.ws;
         if (!ws?.open || this.state !== "connected") return Promise.reject(new Error(`${this.name} isn't connected.`));
-        if (this.calls.size >= MAX_CALLS) return Promise.reject(new Error(`${this.name} is still busy with what was asked before.`));
+        if (this.calls.size >= MAX_CALLS) return Promise.reject(new Error(`${this.name} is still busy. Try again.`));
         const id = this.nextId++;
         return new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
@@ -265,12 +296,11 @@ export class MachineWatch {
                 const s = heardSession(v);
                 if (s && s.archived === archived) this.sessions.set(s.id, s);
             }
-            // Bounded, whatever the server lists: the oldest heard of go first.
-            for (const id of this.sessions.keys()) {
-                if (this.sessions.size <= 2 * HEARD) break;
-                this.sessions.delete(id);
-            }
+            // Bounded, whatever the server lists.
+            this.bound(false);
         };
+        /** Both lists are in, or the archived one is slow to come: the list is told. */
+        let told: ReturnType<typeof setTimeout> | undefined;
         const timeout = setTimeout(() => ws.close(), REPLY_MS);
         const heard = (text: string) => {
             if (this.ws !== ws) return;
@@ -290,7 +320,9 @@ export class MachineWatch {
                 this.sessions.clear();
                 list(msg.result, false);
                 this.state = "connected";
-                this.o.changed();
+                // Told once the archived are in too (they come at once), so a window's archived rows aren't dropped and put back.
+                told = setTimeout(() => this.ws === ws && this.o.changed(), ARCHIVED_MS);
+                (told as { unref?: () => void }).unref?.();
                 ws.send(JSON.stringify({ id: 2, method: "sessions.list", params: { limit: HEARD, archived: true } }));
                 const kinds = this.o.lends?.() ?? [];
                 if (kinds.length && this.o.lend) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds } }));
@@ -300,6 +332,7 @@ export class MachineWatch {
                 if (!listed || archivedListed) return;
                 archivedListed = true;
                 list(msg.result, true);
+                clearTimeout(told);
                 this.o.changed();
                 return;
             }
@@ -317,15 +350,11 @@ export class MachineWatch {
                 if (!s) return;
                 this.sessions.delete(s.id);
                 this.sessions.set(s.id, s);
-                this.o.session?.({ session: this.shown(s) });
-                // Bounded, whatever the server sends: the oldest heard of go first.
-                for (const id of this.sessions.keys()) {
-                    if (this.sessions.size <= 2 * HEARD) break;
-                    this.sessions.delete(id);
-                    this.o.session?.({ remove: id });
-                }
+                this.say({ session: this.shown(s) });
+                // Bounded, whatever the server sends.
+                this.bound(true);
             } else if (ev.type === "sessions.remove") {
-                if (typeof ev.id === "string" && this.sessions.delete(ev.id)) this.o.session?.({ remove: ev.id });
+                if (typeof ev.id === "string" && this.sessions.delete(ev.id)) this.say({ remove: ev.id });
             } else if (ev.type === "notify") {
                 const kind = KINDS.find((k) => k === ev.kind);
                 if (!kind || typeof ev.sessionId !== "string" || !/^[\w.-]{1,120}$/.test(ev.sessionId)) return;
@@ -394,6 +423,7 @@ export class MachineWatch {
             },
             onClose: (why) => {
                 clearTimeout(timeout);
+                clearTimeout(told);
                 // Whoever asked can't be answered any more.
                 for (const stop of lending.values()) stop.abort();
                 lending.clear();

@@ -295,10 +295,14 @@ export function markSeen(id: string, at = Date.now()) {
     saveSeen();
 }
 
-/** Sessions new to this window (another machine's, just heard of): seen as they are, so none starts unread. */
-export function markSeenAll(list: SessionSummary[]) {
+/**
+ * Sessions new to this window (another machine's, just heard of): seen as they are, so none starts unread. And
+ * `unlisted`: those of another machine that are no longer listed here, of which nothing is kept.
+ */
+export function markSeenAll(list: SessionSummary[], unlisted: string[] = []) {
     batch(() => {
         for (const s of list) setApp("seen", s.id, s.updatedAt);
+        for (const id of unlisted) setApp("seen", id, undefined!);
     });
     saveSeen();
 }
@@ -658,7 +662,8 @@ export async function refreshSessions() {
     // while either request was in flight (including a second deletion after Undo).
     const [list, archived] = lists.map((rows) => rows.filter((s) => !deleted.has(s.id) || deleted.get(s.id) === markers.get(s.id)).map(own)) as typeof lists;
     // The other machines' sessions go on being listed: none in the place of one of this machine's own.
-    for (const s of others.list?.() ?? []) if (![...list, ...archived].some((x) => x.id === s.id)) (s.archived ? archived : list).push(s);
+    const mine = new Set([...list, ...archived].map((s) => s.id));
+    for (const s of others.list?.() ?? []) if (!mine.has(s.id)) (s.archived ? archived : list).push(s);
     // The open search result can be older than the server's list window.
     const active = [...app.sessions, ...app.archived].find((s) => s.id === app.activeId);
     if (active && !deleted.has(active.id) && ![...list, ...archived].some((s) => s.id === active.id)) {

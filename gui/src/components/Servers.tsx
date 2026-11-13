@@ -8,7 +8,7 @@ import { Check, ChevronDown, Plus, Server, Trash2 } from "lucide-solid";
 import type { AddResult, ServerCheck, ServerProblem, UnknownHost } from "@shared/protocol";
 import { homeRpc, machineIssue, setMachineIssue, switchMachine, trustMachine, userAsked } from "../lib/machines";
 import { machine, os } from "../lib/platform";
-import { app, reportError, rpc, toast } from "../state/app";
+import { app, reportError, rpc, setApp, toast } from "../state/app";
 import { Dialog } from "./ui/Dialog";
 import { Menu } from "./ui/Menu";
 import { Logo, Spinner } from "./ui/bits";
@@ -66,8 +66,8 @@ export function connected() {
  * Puts, in `el` (the new session's strip, before its project), where the session will run: this computer or a
  * server, and the way to another.
  */
-export function mountWhere(el: HTMLElement) {
-    render(
+export function mountWhere(el: HTMLElement): () => void {
+    return render(
         () => (
             <button class="strip-ctl" title="Where the session runs" aria-haspopup="menu" onClick={(e) => openMachines(e.currentTarget, "start")}>
                 <Server size={14} class="ic" />
@@ -237,8 +237,10 @@ function AddServerDialog() {
     /** What the copy leaves here, said so nobody looks for it there. */
     const notCopied = (left?: string) => (left ? `Not copied, since they could hold a key: ${left}.` : undefined);
     const finish = async (r: Extract<AddResult, { status: "added" }>, copied?: string) => {
-        // The first server: its sessions are listed from now on, not from the window's next start.
+        // The first server: its sessions are listed from now on, not from the window's next start, and a new
+        // session says where it runs.
         watchOthers(HERE);
+        if (app.hello) setApp("hello", "servers", (app.hello.servers ?? 0) + 1);
         let lines: string[] | undefined;
         try {
             lines = checkLines(r.name, await servers().call("servers.check", { name: r.name }));
