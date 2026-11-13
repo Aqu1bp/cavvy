@@ -1418,6 +1418,173 @@ export function shellWord(w: string): string {
 }
 
 /** The argv checks of dangerousReason, for each program the command runs (through env, exec, nohup…), by any name it's found by. */
+const HOST_CONTROL = "controls who can connect to this server";
+
+/** More words than this from one, and it isn't worked out (`{a..z}{a..z}{a..z}`). */
+const BRACE_WORDS_MAX = 256;
+
+/**
+ * What a word with brace lists stands for, as the shell writes it out: `{host,}` is `host` and nothing, `a{b,c}d`
+ * is `abd` and `acd`, `{r..t}x` is `rx`, `sx` and `tx`, and several lists multiply. Undefined when that's more
+ * words than can be gone through: the caller takes it for the worst it could be.
+ */
+function braceWords(word: string): string[] | undefined {
+    // The first list with nothing nested inside it, each time, until none is left.
+    let words = [word];
+    for (let pass = 0; pass < 32; pass++) {
+        let changed = false;
+        const next: string[] = [];
+        for (const w of words) {
+            const m = /\{([^{}]*)\}/.exec(w);
+            const body = m?.[1];
+            const range = body === undefined ? null : /^(-?\d+|[A-Za-z])\.\.(-?\d+|[A-Za-z])$/.exec(body);
+            let alts: string[] | undefined;
+            if (body !== undefined && body.includes(",")) alts = body.split(",");
+            else if (range) {
+                const [from, to] = [range[1]!, range[2]!];
+                const letters = /^[A-Za-z]$/.test(from) && /^[A-Za-z]$/.test(to);
+                const [a, b] = letters ? [from.charCodeAt(0), to.charCodeAt(0)] : [Number(from), Number(to)];
+                if (letters || (/\d/.test(from) && /\d/.test(to))) {
+                    if (Math.abs(b - a) >= BRACE_WORDS_MAX) return undefined;
+                    alts = [];
+                    for (let i = a; a <= b ? i <= b : i >= b; i += a <= b ? 1 : -1) alts.push(letters ? String.fromCharCode(i) : String(i));
+                }
+            }
+            if (!m || !alts) {
+                // Braces that list nothing are themselves; marked so they aren't looked at again.
+                next.push(m ? w.slice(0, m.index) + "\u0001" + body + "\u0002" + w.slice(m.index + m[0].length) : w);
+                changed ||= Boolean(m);
+                continue;
+            }
+            changed = true;
+            for (const alt of alts) next.push(w.slice(0, m.index) + alt + w.slice(m.index + m[0].length));
+            if (next.length > BRACE_WORDS_MAX) return undefined;
+        }
+        words = next;
+        if (!changed) break;
+    }
+    return words.map((w) => w.replace(/\u0001/g, "{").replace(/\u0002/g, "}"));
+}
+
+const POSIX_CLASSES: Record<string, (c: string) => boolean> = {
+    alpha: (c) => /[A-Za-z]/.test(c),
+    lower: (c) => /[a-z]/.test(c),
+    upper: (c) => /[A-Z]/.test(c),
+    digit: (c) => /[0-9]/.test(c),
+    alnum: (c) => /[A-Za-z0-9]/.test(c),
+    xdigit: (c) => /[0-9A-Fa-f]/.test(c),
+    word: (c) => /\w/.test(c),
+    punct: (c) => /[!-/:-@[-`{-~]/.test(c),
+    space: (c) => /\s/.test(c),
+    blank: (c) => c === " " || c === "\t",
+};
+
+/** One place in a pattern: `*` (any run of characters), or a test of the one character there. */
+type PatternPart = "*" | ((c: string) => boolean);
+
+/**
+ * A path segment as the pattern the shell would match with it, or undefined for one that can't be read as a
+ * pattern (a list in parentheses, a class it doesn't know, a `[` that never closes).
+ */
+function patternParts(segment: string): PatternPart[] | undefined {
+    const parts: PatternPart[] = [];
+    for (let i = 0; i < segment.length; i++) {
+        const c = segment[i]!;
+        if (c === "*") {
+            // Several in a row are one.
+            if (parts.at(-1) !== "*") parts.push("*");
+        } else if (c === "?") parts.push(() => true);
+        else if (c === "[") {
+            // Read as the shell does: an optional `!`, a `]` right after that is itself, then characters, ranges
+            // and `[:classes:]` up to the closing `]`.
+            let j = i + 1;
+            const not = segment[j] === "!" || segment[j] === "^";
+            if (not) j++;
+            const tests: ((c: string) => boolean)[] = [];
+            if (segment[j] === "]") {
+                tests.push((x) => x === "]");
+                j++;
+            }
+            for (; j < segment.length && segment[j] !== "]"; j++) {
+                if (segment.startsWith("[:", j)) {
+                    const close = segment.indexOf(":]", j + 2);
+                    const cls = close < 0 ? undefined : POSIX_CLASSES[segment.slice(j + 2, close)];
+                    if (!cls) return undefined;
+                    tests.push(cls);
+                    j = close + 1;
+                } else if (segment[j + 1] === "-" && j + 2 < segment.length && segment[j + 2] !== "]") {
+                    const [from, to] = [segment[j]!, segment[j + 2]!];
+                    tests.push((x) => x >= from && x <= to);
+                    j += 2;
+                } else {
+                    const one = segment[j]!;
+                    tests.push((x) => x === one);
+                }
+            }
+            if (j >= segment.length || !tests.length) return undefined;
+            parts.push((x) => tests.some((t) => t(x)) !== not);
+            i = j;
+        } else if ("()|".includes(c)) return undefined;
+        // Braces still here list nothing (braceWords wrote the lists out): they're themselves, like any other character.
+        else parts.push((x) => x === c);
+    }
+    return parts;
+}
+
+/**
+ * Could a path segment be `name`? "is" when it's written out; "matches" when it's a pattern the shell would match
+ * `name` with; "maybe" for a pattern that can't be read. Matched a place at a time, so no word can make it slow.
+ */
+function segmentMatches(segment: string, name: string): "is" | "matches" | "maybe" | "no" {
+    if (segment === name) return "is";
+    if (!/[*?[(|]/.test(segment)) return "no";
+    // A pattern doesn't match a leading dot unless it's written with one.
+    if (name.startsWith(".") && !segment.startsWith(".")) return "no";
+    const parts = patternParts(segment);
+    if (!parts) return "maybe";
+    // The places in `name` the pattern so far can have got to.
+    let at = new Set([0]);
+    for (const part of parts) {
+        const next = new Set<number>();
+        for (const i of at) {
+            if (part === "*") for (let j = i; j <= name.length; j++) next.add(j);
+            else if (i < name.length && part(name[i]!)) next.add(i + 1);
+        }
+        at = next;
+        if (!at.size) return "no";
+    }
+    return at.has(name.length) ? "matches" : "no";
+}
+
+/**
+ * Does a word name the folder a server keeps its sign-ins in (`.cavvy/server`)? However it's written: with a
+ * doubled slash, a `./` or an `x/..` on the way, brace lists, or a pattern in place of one of its two parts. A
+ * pattern in both places isn't taken for it: a star, a dot-star and a star with slashes between is how commands
+ * say "not in hidden folders", and names nothing in particular.
+ */
+function namesServerFolder(word: string): boolean {
+    const words = braceWords(word);
+    // Too many to go through: guarded if it could be naming Cavvy's folder at all.
+    if (!words) return /cavvy|harness/.test(word);
+    for (const one of words) {
+        // As the path it comes to: `a//b`, `a/./b` and `a/x/../b` are all `a/b`.
+        const parts: string[] = [];
+        for (const part of one.split("/")) {
+            if (part === "" || part === ".") continue;
+            if (part === ".." && parts.length && parts.at(-1) !== "..") parts.pop();
+            else parts.push(part);
+        }
+        for (let at = 0; at + 1 < parts.length; at++) {
+            const home = [segmentMatches(parts[at]!, ".cavvy"), segmentMatches(parts[at]!, ".harness")];
+            if (home.every((h) => h === "no")) continue;
+            const folder = segmentMatches(parts[at + 1]!, "server");
+            // One part behind a pattern (or one that can't be read) counts when the other is written out.
+            if (home.includes("is") ? folder !== "no" : folder === "is") return true;
+        }
+    }
+    return false;
+}
+
 function dangerousArgv(argv0: string[], depth: number): string | undefined {
     for (const { argv, at } of runLevels(argv0)) {
         // What env -S's string runs: checked as a command line of its own, so the patterns see it too.
@@ -1427,6 +1594,20 @@ function dangerousArgv(argv0: string[], depth: number): string | undefined {
         const dd = args.indexOf("--");
         const opts = dd < 0 ? args : args.slice(0, dd);
         const operands = dd < 0 ? positional(args) : [...positional(args.slice(0, dd)), ...args.slice(dd + 1)];
+        // On a server: `cavvy host pair` signs a machine in, and an agent that could run it could connect as one and
+        // answer its own prompts (src/servers/host.ts). Read from the words as the shell would run them, so quoting one
+        // doesn't hide it; everything under `host` but the commands that only look counts, a word still to be worked
+        // out (`$verb`) included.
+        // A program still to be worked out (`$c host pair`) counts as Cavvy when what follows is `host`; and `{host,}`
+        // is `host` once the shell has expanded it.
+        const first = args[0] ?? "";
+        const isHost = first === "host" || /[$`]/.test(first) || (/[{}]/.test(first) && (braceWords(first)?.includes("host") ?? true));
+        if ((runs(prog, "cavvy", "harness") || (/[$`]/.test(prog ?? "") && first === "host")) && isHost && !["", "status", "check", "version", "-h", "--help"].includes(args[1] ?? "")) {
+            return HOST_CONTROL;
+        }
+        // The server's own folder, in the words as the shell has unquoted them (`~/.cavvy/'server'/…`), and behind a
+        // pattern that would match it (`~/.cavvy/serve?/…`).
+        if (argv.some(namesServerFolder)) return "touches Cavvy credential store";
         if (runs(prog, "rm") && opts.some((a) => /^-[a-zA-Z]*[rR]/.test(a) || a === "--recursive") && operands.some((o) => criticalTarget(o))) {
             return "recursive delete of a root, home or parent directory";
         }
@@ -1485,7 +1666,7 @@ function anyCase(re: RegExp): RegExp {
 }
 
 /** Matched in every spelling of the command, like SENSITIVE. */
-const CREDENTIAL_STORE = anyCase(/\.(cavvy|harness)\/(credentials|providers)\.json/);
+const CREDENTIAL_STORE = anyCase(/\.(cavvy|harness)\/(credentials|providers)\.json|\.(cavvy|harness)\/server(?=$|[/\s'";|&)<>])/);
 const STARTUP_FILE = anyCase(/>\s*~\/\.(bash|zsh)(rc|_profile|env)|>\s*~\/\.profile/);
 
 /** Programs that only read or copy their input, whatever their options: a here-document's data stays data with them (not sort: --compress-program runs one). */
@@ -1779,7 +1960,7 @@ const SENSITIVE = ([
     [/Library\/Keychains|\bsecurity\s+(find|dump|export)-/, "the system keychain"],
     [/\.(cavvy|harness)\/(credentials|providers)\.json/, "Cavvy credential store"],
     [/\.codex\/auth\.json|\.claude\/\.credentials\.json|\.config\/gh\/hosts\.yml/, "a CLI's sign-in file"],
-    [/(^|[\s'"=:])(~|\$HOME|\$\{HOME\})\/\.(cavvy|harness)\/accounts(?=$|[/\s'";|&)])/, "Cavvy credential store"],
+    [/(^|[\s'"=:])(~|\$HOME|\$\{HOME\})\/\.(cavvy|harness)\/(accounts|server)(?=$|[/\s'";|&)])/, "Cavvy credential store"],
     [/\b(grep|egrep|fgrep|rg|ag|ack)\b[^|;&\n]*\s(~|\$HOME|\$\{HOME\}|\/Users\/[^\s/]+|\/home\/[^\s/]+|\/)\/?(?=$|[\s;|&)])/, "your whole home directory"],
     [/\bkubectl\s+get\s+secrets?\b|\bkubectl\s+config\s+view\b[^|;&\n]*--raw/, "cluster secrets"],
     [/\bgcloud\b[^|;&\n]*\b(print-(access|identity|refresh)-token|config-helper)\b/, "a Google Cloud access token"],
@@ -1794,7 +1975,7 @@ function credentialStore(cavvyHome: string): { files: string[]; folders: string[
     const homes = [cavvyHome, ...homeAliases(cavvyHome)];
     return {
         files: [...homes.flatMap((h) => [join(h, "credentials.json"), join(h, "providers.json")]), ...accountCredentialFiles()],
-        folders: [...homes.map((h) => join(h, "accounts")), ...accountFolders()],
+        folders: [...homes.flatMap((h) => [join(h, "accounts"), join(h, "server")]), ...accountFolders()],
     };
 }
 

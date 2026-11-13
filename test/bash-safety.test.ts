@@ -377,11 +377,63 @@ describe("dangerousReason", () => {
         ["launchctl bootout gui/501/x", /scheduled jobs|system services/],
         ["npm publish", /publishes a package/],
         ["cargo publish", /publishes a package/],
+        ["cavvy host pair --machine 0123456789abcdef0123456789abcdef", /who can connect/],
+        ["cavvy host stop", /who can connect/],
+        ["cavvy host revoke --machine 0123456789abcdef0123456789abcdef", /who can connect/],
+        ["cavvy host run", /who can connect/],
+        // Quoting a word, or leaving it to be worked out, doesn't hide it: the words are read as the shell runs them.
+        ["cavvy host 'pair' --machine x", /who can connect/],
+        ['cavvy "host" pair', /who can connect/],
+        ["cavvy host pa\\ir", /who can connect/],
+        ["cavvy host $(printf pair)", /who can connect/],
+        ["verb=pair; cavvy host $verb", /who can connect/],
+        ["cavvy $what pair", /who can connect/],
+        ["env X=1 cavvy host stop", /who can connect/],
+        ["cavvy {host,} pair --machine x", /who can connect/],
+        ["c=cavvy; $c host pair --machine x", /who can connect/],
+        // A server's own folder is what signs a machine in to it: asked about like the credential files.
+        ["~/.cavvy/server/current/cavvy host pair --machine x", /who can connect|credential store/],
+        ["curl -s --unix-socket ~/.cavvy/server/control.sock -X POST http://x/pair", /credential store/],
+        ["cat $HOME/.cavvy/server/state.json", /credential store/],
+        // The folder's name quoted, or behind a pattern that matches it, is the same folder to the shell.
+        ["cat ~/.cavvy/'server'/state.json", /credential store/],
+        ["curl --unix-socket ~/.cavvy/server*/control.sock http://x/pair", /credential store/],
+        ["cat ~/.cavvy/serve?/state.json", /credential store/],
+        ["cat ~/.cavvy/s[e]rver/state.json", /credential store/],
+        ["cat ~/.cavvy/[!a]erver/state.json", /credential store/],
+        // And the same folder by another way of writing its path.
+        ["cat ~/.cavvy//server/state.json", /credential store/],
+        ["cat ~/.cavvy/./server/state.json", /credential store/],
+        ["cat ~/.cavvy/projects/../server/state.json", /credential store/],
+        ["cat ~/.cavvy/{server,x}/state.json", /credential store/],
+        // Lists that multiply, a list that counts, a named class, and the folder above it behind a pattern.
+        ["cat ~/.{cavvy,x}/{server,y}/state.json", /credential store/],
+        ["cat ~/.cavvy/{r..t}erver/state.json", /credential store/],
+        ["cat ~/.cavvy/[[:alpha:]]erver/state.json", /credential store/],
+        ["curl -s --unix-socket ~/.cavvy/[[:lower:]]erver/control.sock -X POST http://x/pair", /credential store/],
+        ["cat ~/.cav?y/server/state.json", /credential store/],
+        ["cat ~/.cavvy/s[[:lower:]e]rver/state.json", /credential store/],
+        ["cat ~/.cavvy/[[:alpha:][:digit:]]erver/state.json", /credential store/],
+        ["cat ~/.cavvy/[]s]erver/state.json", /credential store/],
+        ["cat ~/.c{a,b}vvy/ser{v,w}er/state.json", /credential store/],
+        ["cat ~/.cavvy/{{server,a},b}/state.json", /credential store/],
+        ["cat ~/.*/server/state.json", /credential store/],
+        // A pattern this can't read, where the server's folder would be, is taken for it.
+        ["cat ~/.cavvy/@(server|x)/state.json", /credential store/],
+        ["cat ~/.cavvy/[[:nonsense:]]erver/state.json", /credential store/],
+        ["cat ~/.cavvy/{a..z}{a..z}{a..z}/state.json", /credential store/],
         ["history -c", /history/],
         ["echo 'x' > ~/.zshrc", /shell startup/],
         ["echo 'x' >> ~/.bash_profile", /shell startup/],
     ] as const)("%p is dangerous", (cmd, reason) => {
         expect(dangerousReason(cmd)).toMatch(reason);
+    });
+
+    test("a word made to be slow to match isn't: the server-folder check goes through a pattern a place at a time", () => {
+        // Each of these took a minute or more when the pattern was handed to a regular expression.
+        for (const word of ["a/" + "*".repeat(5000) + "x", "~/.cavvy/" + "*?".repeat(5000) + "x", "~/.cavvy/" + "*e".repeat(5000), "~/." + "*".repeat(3000) + "/" + "[a-z]*".repeat(1000)]) {
+            expect(typeof dangerousReason(`ls ${word}`)).not.toBe("number");
+        }
     });
 
     test.each([
@@ -392,6 +444,46 @@ describe("dangerousReason", () => {
         "rm file.txt",
         "ls /",
         "git push origin main",
+        "cavvy host status",
+        "cavvy host check",
+        "cavvy host version",
+        "cavvy host",
+        "cavvy servers check",
+        "cavvy -p 'host pair'",
+        "ls ~/.cavvy/servers.json",
+        "cat ~/.cavvy/sessions*/x",
+        "cat ~/.cavvy/{projects,logs}/x",
+        "cat ~/.cavvy/[!s]erver/x",
+        "cat ~/.cavvy/[[:digit:]]erver/x",
+        "cat ~/.cavvy/[[:upper:][:punct:]]erver/x",
+        // How commands say "not in hidden folders": a pattern in both places names nothing in particular.
+        "find . -type f -not -path '*/.*/*'",
+        "find src -type f -not -path '*/.*/*' -name '*.ts' | xargs wc -l",
+        "find . -path '*/.*/*' -prune -o -type f -print",
+        "rg --files -g '!**/.*/**'",
+        "fd -t f --exclude '**/.*/**'",
+        "npx prettier --check '**/*.{ts,tsx}' '!**/.*/**'",
+        "rsync -a --exclude '.*/*' src/ dst/",
+        "zip -r out.zip . -x '.*/*'",
+        "tar czf out.tgz --exclude '.*/*' .",
+        "git ls-files '*/.*/*'",
+        "du -sh .[!.]*/*",
+        "ls -d .*/*/",
+        "ls ~/.config/*/settings.json",
+        "cat .github/workflows/*.yml",
+        "cat ~/.cavvy/logs/server.log",
+        "ls ./server/.cavvy",
+        "cat ~/.cavvy/{a..c}erver/x",
+        "ls ~/projects/server",
+        "ls ~/*/server",
+        "cat ~/.cavvy/projects/server/x",
+        "ls src/{a,b}/{server,client}",
+        "echo {1..5}",
+        "mkdir -p out/{a..z}{a..z}{a..z}",
+        "ls ~/.cavvy/projects/*/",
+        "$tool status",
+        "git {status,}",
+        "cat ~/.cavvy/server-notes.txt",
         "git push -u origin feature",
         "git reset --soft HEAD~1",
         "git clean -n",
@@ -458,6 +550,9 @@ describe("sensitiveTarget", () => {
         ["security find-generic-password -s x", /keychain/],
         ["cat ~/.cavvy/credentials.json", /credential store/],
         ["cat ~/.cavvy/providers.json", /credential store/],
+        // A server's own folder: what signs a machine in to it.
+        ["curl --unix-socket ~/.cavvy/server/control.sock http://x/pair", /credential store/],
+        ["cat $HOME/.cavvy/server/state.json", /credential store/],
         // Quoting doesn't hide the name: the shell reads these as the names above.
         ["cat .e''nv", /\.env/],
         ['cat ".e"nv.local', /\.env/],
