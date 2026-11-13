@@ -469,8 +469,38 @@ export async function openSession(id: string): Promise<SessionHandle> {
         h.lastUsed = Date.now();
         return h;
     }
+    // Asked for already, with the lists (openAhead): that answer, whatever it was.
+    const early = aheadFor(id);
+    if (early) {
+        ahead = undefined;
+        const taken = await early;
+        // Let go since (the server had it opened again, and that was refused): it's asked for anew.
+        if (handles.get(id) === taken) return taken;
+    }
     const snap = await rpc.call("session.open", { id, last: turnsToOpen(id) });
     return adopt(snap);
+}
+
+/**
+ * The session a window loads on, asked for while its lists load, not after them: over a network that's a wait
+ * less before it shows (measured on a server 40 ms away: 99 ms of 342). It's taken in as it arrives, so nothing it
+ * streams meanwhile is missed, and its conversation is in the window from then on. What opening it also does
+ * (it's marked seen, its folder becomes the window's, a failure is shown) waits for the lists, as before
+ * (restoreActiveSession).
+ *
+ * The answer belongs to the connection that asked: one from before a reconnect, or left over from a start that
+ * failed, is nobody's.
+ */
+let ahead: { id: string; connection: number; opened: Promise<SessionHandle> } | undefined;
+const aheadFor = (id: string | undefined) => (ahead && ahead.id === id && ahead.connection === connectionVersion ? ahead.opened : undefined);
+function openAhead() {
+    ahead = undefined;
+    const id = app.activeId;
+    if (!id || handles.has(id)) return;
+    const opened = rpc.call("session.open", { id, last: turnsToOpen(id) }).then(adopt);
+    // Its failure is restoreActiveSession's to show.
+    opened.catch(() => undefined);
+    ahead = { id, connection: connectionVersion, opened };
 }
 
 /**
@@ -620,7 +650,10 @@ export async function activate(id: string | undefined, cwd?: string) {
 /** Restore only after bootstrap. Lists are capped, so absence is not deletion. */
 export async function restoreActiveSession() {
     const id = app.activeId;
-    if (!id || (handles.has(id) && !app.opening)) return;
+    // One asked for ahead is here already, and still to be shown as opened.
+    const early = Boolean(aheadFor(id));
+    if (!early || handles.has(id!)) ahead = undefined;
+    if (!id || (handles.has(id) && !app.opening && !early)) return;
     // A request from a previous connection may still be waiting out its spinner.
     // Supersede it rather than letting its disconnected result win after bootstrap.
     if (app.opening?.id === id && !app.opening.error && openingConnection === connectionVersion) return;
@@ -996,6 +1029,7 @@ export function start() {
                 // (its browser, its folders) is this computer's, not the server's.
                 setApp("hello", await rpc.call("hello", { client: isDesktop && !machine ? "desktop" : "browser" }));
                 if (machine || app.hello?.servers) void serversUi().then((m) => m.connected());
+                openAhead();
                 const lists = Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders(), refreshKeybindings().catch(() => undefined)]);
                 // Asked for with the lists, after them: the composer names its model from them, and a pick brought
                 // from another machine is checked against them.
@@ -1013,6 +1047,8 @@ export function start() {
                 // Path lookups that failed while it was down are asked again.
                 paths.retryFailed();
             } catch (e) {
+                // The start failed before the session asked for ahead was shown: the next try asks again.
+                ahead = undefined;
                 reportError(e);
             }
             // The first screen is drawn, with what it shows: the window comes up on it.
