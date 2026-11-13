@@ -55,6 +55,8 @@ const MAX_PER_MINUTE = 32 * 1024 * 1024;
 const DONE_PER_MINUTE = 6;
 const ASKS_PER_MINUTE = 12;
 const KINDS = ["done", "permission", "question", "plan", "error"] as const;
+/** What a call is answered when this machine lends nothing (now). */
+const NOT_LENT: LentResult = { text: "Your Mac's Simulator isn't available now: it's turned off in Cavvy's settings there, or Xcode isn't set up.", isError: true };
 /** Calls of what this machine lends that one server may have running here at once. */
 const LENT_AT_ONCE = 4;
 /** What one call's input may hold, as text: a device's name, a tap, a few lines to type. */
@@ -226,6 +228,12 @@ export class MachineWatch {
         });
     }
 
+    /** What this machine lends changed: said to the server on the connection there is, if any. */
+    relend() {
+        if (this.ws?.open) this.relendNow?.();
+    }
+    private relendNow?: () => void;
+
     stop() {
         this.stopped = true;
         clearTimeout(this.timer);
@@ -303,6 +311,22 @@ export class MachineWatch {
         };
         /** Both lists are in, or the archived one is slow to come: the list is told. */
         let told: ReturnType<typeof setTimeout> | undefined;
+        const answerTo = (callId: string, r: LentResult) => void (ws.open && ws.send(JSON.stringify({ id: this.nextId++, method: "offers.result", params: { callId, ...r } })));
+        // What this machine lends changed while connected (the Simulator turned off or on in its settings): the server
+        // is told now. Turned off, the calls still waiting here (for the user's answer, say) are answered and given up:
+        // nothing is left asking for what can't run.
+        this.relendNow = () => {
+            if (!listed || !this.o.lend) return;
+            const kinds = this.o.lends?.() ?? [];
+            if (!kinds.length) {
+                for (const [callId, stop] of lending) {
+                    answerTo(callId, NOT_LENT);
+                    stop.abort();
+                }
+                lending.clear();
+            }
+            if (ws.open) ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds } }));
+        };
         const timeout = setTimeout(() => ws.close(), REPLY_MS);
         const heard = (text: string) => {
             if (this.ws !== ws) return;
@@ -376,7 +400,7 @@ export class MachineWatch {
                 // answered: nothing there waits on a call that was only dropped here.
                 if (!this.o.lend || typeof ev.callId !== "string" || ev.callId.length > 100 || lending.has(ev.callId)) return;
                 const callId = ev.callId;
-                const answer = (r: LentResult) => void (ws.open && ws.send(JSON.stringify({ id: this.nextId++, method: "offers.result", params: { callId, ...r } })));
+                const answer = (r: LentResult) => answerTo(callId, r);
                 const session = ev.session && typeof ev.session === "object" ? ev.session : ({} as { id?: unknown; title?: unknown });
                 if (typeof ev.tool !== "string" || typeof session.id !== "string" || !/^[\w.-]{1,120}$/.test(session.id)) return answer({ text: "That call isn't one your Mac takes.", isError: true });
                 const input = ev.input && typeof ev.input === "object" && !Array.isArray(ev.input) ? ev.input : {};
@@ -388,7 +412,7 @@ export class MachineWatch {
                 const kinds = this.o.lends?.() ?? [];
                 if (!kinds.length) {
                     // The answer first: saying nothing is lent ends every call this machine still has there.
-                    answer({ text: "Your Mac's Simulator isn't available now: it's turned off in Cavvy's settings there, or Xcode isn't set up.", isError: true });
+                    answer(NOT_LENT);
                     return void ws.send(JSON.stringify({ id: this.nextId++, method: "offers.set", params: { kinds } }));
                 }
                 const stop = new AbortController();
