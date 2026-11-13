@@ -36,7 +36,7 @@ test("the rail's edge: shown once a frame within 220-420, saved on release; a do
         setRailDrag: (w: number | undefined) => shown.push(w),
         frameDrag: (o: Parameters<typeof frameDrag>[0]) => frameDrag({ ...o, frames }),
         SidebarTop: () => node("top"),
-        isTauri: false, isDesktop: false, isElectron: false, os: "macos",
+        isTauri: false, isDesktop: false, isElectron: false, machine: undefined, connNote: () => undefined, serversUi: () => new Promise(() => {}), os: "macos",
         window: world.window, document: world.document,
     });
     const root = node("root");

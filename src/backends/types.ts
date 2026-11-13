@@ -325,6 +325,12 @@ export interface BackendTurn {
     /** Cavvy session (or child agent) the turn belongs to: a live CLI process is kept per key. */
     sessionKey: string;
     /**
+     * The Cavvy session whose commands these are (a sub-agent's are its session's): the CLI's process is started with
+     * it in its environment, which the commands it runs inherit, so what one leaves running can be found
+     * (src/util/session-processes.ts).
+     */
+    processMark?: string;
+    /**
      * Send nothing: the CLI started this turn itself (BackendWake.ref), and this run takes its events
      * until it ends. Only for a backend with adoptsTurns.
      */

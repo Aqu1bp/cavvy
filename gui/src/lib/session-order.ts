@@ -41,7 +41,8 @@ export type SidebarEntry =
     | { key: string; kind: "card" | "row"; id: string }
     | { key: string; kind: "run"; ids: string[]; row: boolean }
     /** A project heading; `collapsed`: its sessions in play (`ids`) are folded under it. */
-    | { key: string; kind: "project"; cwd: string; name: string; collapsed?: boolean; ids?: string[] }
+    /** `cwd`: the project (projectOf). `machine`: the server it's on. */
+    | { key: string; kind: "project"; cwd: string; name: string; machine?: string; collapsed?: boolean; ids?: string[] }
     | { key: string; kind: "settled" | "archived" }
     /** Listed by date: the day its sessions below were last at work (dayOf). */
     | { key: string; kind: "day"; label: DayLabel }
@@ -85,8 +86,19 @@ export function dayOf(s: Pick<SessionSummary, "pinned" | "status" | "updatedAt">
     return s.updatedAt >= day(7) ? "Previous 7 days" : "Older";
 }
 
-/** The project a session is listed under when grouped by project: a run's own folder, else its folder. */
-export const projectOf = (s: Pick<SessionSummary, "cwd" | "run">) => s.run?.cwd ?? s.cwd;
+/**
+ * The project a session is listed under when grouped by project: a run's own folder, else its folder. On a server,
+ * that server's: two machines can each have a folder at one path.
+ */
+export const projectOf = (s: Pick<SessionSummary, "cwd" | "run" | "machine">) => (s.machine ? `${s.machine}\n` : "") + (s.run?.cwd ?? s.cwd);
+/**
+ * Whether what's named (a session, a project heading) is on another machine than the window's: `on.machine` is the
+ * server it's on, none for the user's own computer, which in a window on a server is another machine too.
+ */
+export const onAnother = (on: { machine?: string } | undefined, here: string | undefined) => on !== undefined && on.machine !== here;
+
+/** A project's folder (projectOf), without the server it's on. */
+export const folderOf = (project: string) => project.slice(project.indexOf("\n") + 1);
 
 /** Fold a project's sessions under its heading, or unfold them. */
 export function toggleProject(collapsed: readonly string[], cwd: string): string[] {
@@ -146,9 +158,10 @@ export function sidebarEntries(sessions: readonly SessionSummary[], archived: re
         }
         for (const [cwd, group] of groups) {
             const name = group[0]!.run ? basename(cwd) : group[0]!.projectName;
-            if (folded.has(cwd)) entries.push({ key: `project:${cwd}`, kind: "project", cwd, name, collapsed: true, ids: group.map((s) => s.id) });
+            const machine = group[0]!.machine;
+            if (folded.has(cwd)) entries.push({ key: `project:${cwd}`, kind: "project", cwd, name, machine, collapsed: true, ids: group.map((s) => s.id) });
             else {
-                entries.push({ key: `project:${cwd}`, kind: "project", cwd, name });
+                entries.push({ key: `project:${cwd}`, kind: "project", cwd, name, machine });
                 rows(group, "card", "cards");
             }
         }
@@ -174,6 +187,9 @@ export function sidebarEntries(sessions: readonly SessionSummary[], archived: re
     }
     return entries;
 }
+
+/** A server's name as a row has room for it: what follows it on the line (the project) still shows. */
+export const machineLabel = (name: string) => (name.length > 18 ? `${name.slice(0, 17)}…` : name);
 
 /** Hold the entire layout, not just sorting: moving between shelves also moves targets.
  * New attention/open rows append while held, without displacing any existing row.

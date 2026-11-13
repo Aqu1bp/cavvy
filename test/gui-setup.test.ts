@@ -67,6 +67,7 @@ async function panel() {
         RpcError, Terminal, FitAddon: class { fit() {} }, EarlyInput, terminalInputChunks,
         getComputedStyle: () => ({ getPropertyValue: () => "" }), MutationObserver: Observer, ResizeObserver: Observer,
         document: { documentElement: {} }, cancelAnimationFrame() {}, requestAnimationFrame() {},
+        terminalAsked() {}, terminalTakesKeys: () => true, terminalUsed() {},
     };
     let source = readFileSync(new URL("../gui/src/components/TerminalPanel.tsx", import.meta.url), "utf8");
     source = source.replace(/^import .*;\r?\n/gm, "").replace(/^export /gm, "");

@@ -4,6 +4,7 @@
 import { createSignal } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import type { SimulatorState } from "@shared/protocol";
+import type { Rpc } from "../lib/rpc";
 import { AGENT_ACTIVE_MS } from "../lib/simulator";
 import { app, rpc, toast } from "./app";
 import { setPrefs } from "./prefs";
@@ -37,9 +38,21 @@ export function adoptSimulatorState(id: string, state: SimulatorState) {
     changed(id, state);
 }
 
+/** What the Simulator pane uses of its connection. */
+export type SimStream = Pick<Rpc, "state" | "connect" | "close" | "onState" | "onEvent" | "onSimulatorFrame" | "notify" | "call">;
+
+/**
+ * Where a session's simulator is asked of: the window's own Cavvy. In a window on a server, the servers code puts
+ * this computer's in its place (lib/lent.ts), before the window connects.
+ */
+export const sim = {
+    state: (id: string): Promise<SimulatorState> => rpc.call("simulator.state", { id }),
+    stream: (_id: () => string): SimStream => rpc.browserStream(),
+};
+
 /** Reads where the session's simulator stands. */
 export async function loadSimulatorState(id: string): Promise<void> {
-    adoptSimulatorState(id, await rpc.call("simulator.state", { id }));
+    adoptSimulatorState(id, await sim.state(id));
 }
 
 /** Shows the Simulator pane: the panel open, on its tab. */
