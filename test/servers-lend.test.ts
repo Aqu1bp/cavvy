@@ -182,7 +182,7 @@ test("a server with no simulators is lent this machine's: its sessions have the 
 test("a call from a session there runs here, after this machine's own asking, shown and told as that session's; the result goes back", async () => {
     const id = await sessionThere();
     await remote.call("session.send", { id, text: "simulator please" });
-    // The server's own asking first (it starts in Manual here), then this machine's.
+    // The server's own asking first (sessionThere puts it in Manual), then this machine's.
     expect((await answer(remote, id, "yes")).kind).toBe("permission");
     expect(ran.some((a) => a[2] === "boot")).toBe(false);
     // This machine's asking is its windows' to show, in the session there, and says whose it is.
