@@ -16,7 +16,8 @@ import { deleteScript, findScript, findSetupScript, listScripts, markUsed, reord
 import { checkGrant, SetupTickets, setupTrusted } from "./setup";
 import { RpcError } from "./rpc-error";
 export { RpcError };
-import { readdirSync, realpathSync, statSync } from "fs";
+import { randomUUID } from "crypto";
+import { mkdirSync, readdirSync, realpathSync, statSync } from "fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { homedir, hostname, userInfo } from "os";
 import { APP_VERSION, cavvyHome, paths } from "../config/paths";
@@ -31,7 +32,8 @@ import { loadCustomCommands, pluginCommandFor, type CustomCommand } from "../com
 import { loadSkills, sameSkills, type Skill } from "../agent/skills";
 import { McpManager, SignInReplaced } from "../mcp/manager";
 import { approvalMeaning, McpApprovalError, visible } from "../mcp/approval";
-import { PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
+import { defaultMode, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
+import { onServer } from "../servers/role";
 import { cachedListings, clientFor, defaultModelFrom, forgetClient, listAllModels, resolveModelInfo, type ProviderListing } from "../providers/models";
 import { allProviders, getProvider, readAgentConfig, readVertexConfig, removeAgentConfig, saveAgentConfig, SEARCH_PROVIDERS } from "../providers/registry";
 import { checkAgentPlan, vendorOf, type AgentCliStatus } from "../backends/index";
@@ -54,6 +56,10 @@ import { expandPath, isInside, MAX_SHOWN_IMAGE, sniffImage } from "../util/files
 import { maskKey, redact } from "../util/redact";
 import { searchResources } from "../mcp/mentions";
 import { cleanTitle, modelSummary, promptTitle, Runtime } from "./runtime";
+import { LENDABLE, setLent, type Lendable } from "../tools/lent";
+import { OWN_SIMULATOR_TOOLS, simulatorsToLend } from "../tools/simulator-tools";
+import { isReadOnly, type ToolResult } from "../tools/types";
+import type { LentCall, LentResult } from "../servers/watch";
 import type { PeerHost } from "./session-peers";
 import type { WakeMemory } from "../agent/wakes";
 import { forkUiLog } from "./history";
@@ -67,6 +73,7 @@ import type {
     ArchiveOffer,
     ArchiveResult,
     BrowserState,
+    LentSession,
     SimulatorInput,
     SimulatorState,
     CliSessionInfo,
@@ -114,7 +121,9 @@ import { modelRef, type AttachedPart, type ImagePart } from "../providers/types"
 import { checkFiles, checkMedia, toWire } from "./attachments";
 import { BrowserError } from "../browser/page";
 import { SimulatorError } from "../simulator/simctl";
+import { simulatorOutlook } from "../simulator/session";
 import { TitleQueue } from "./title-queue";
+import { WorkingIndex } from "./working";
 
 export interface EngineOptions {
     /** --dangerously-skip-permissions: bypass mode may be chosen. */
@@ -127,6 +136,8 @@ export interface EngineOptions {
     listModels?: typeof listAllModels;
     /** How long a session no window shows waits to be closed once it has nothing to do (tests shorten it). */
     unloadAfterMs?: number;
+    /** For tests: GUEST_IDLE_MS. */
+    guestIdleMs?: number;
     /** How long a window that went away has to come back to its terminals before they're stopped (tests shorten it). */
     terminalGraceMs?: number;
     /** The server's log (stderr), for details the GUI isn't shown. */
@@ -135,6 +146,15 @@ export interface EngineOptions {
     editorEnv?: () => DetectEnv;
     /** Starts an editor (tests record the argv instead). */
     launchEditor?: (argv: string[]) => Promise<void>;
+    /** Where builds of Cavvy for servers come from (tests bring their own; otherwise this checkout). */
+    serverBuilds?: import("../servers/build").BuildSource;
+    /** This Cavvy is reached from other machines (it's a server's): a CLI's sign-in can't open the person's browser. */
+    away?: boolean;
+    /**
+     * Where to keep which sessions have a turn running (server/working.ts): given, sessions that were working when
+     * this Cavvy last stopped carry on by themselves once it starts. A server's Cavvy gives it (src/servers/host.ts).
+     */
+    working?: string;
 }
 
 /**
@@ -161,6 +181,22 @@ const PURGE_EVERY_MS = 60 * 60 * 1000;
 /** How long opening a session waits for its model to be set up, so the snapshot has it (a slow provider's comes after). */
 const OPEN_MODEL_WAIT_MS = 2_000;
 
+/** Sessions of one server that may each have a session here they're lent tools through (Engine.lend), since this Cavvy started. */
+const MAX_GUESTS = 30;
+/**
+ * Calls one server's sessions may be lent in a minute: those that only read (the screen, the list of devices), those
+ * that act (and may each ask the user), and how often the user is told that one asks. A server gone wrong can't keep
+ * this machine busy, or bury its user in notifications.
+ */
+const LENT_PER_MINUTE = { read: 120, act: 40, told: 6 };
+/** A server's name for its session, in this machine's own words: the server's title is its to choose. */
+async function lentTitle(title: string): Promise<string> {
+    return cleanTitle((await import("../servers/ssh")).printable(title, 80)) || "a session";
+}
+
+/** How long a session that lends this machine's tools to one on a server is kept after its last call. */
+const GUEST_IDLE_MS = 30 * 60_000;
+
 export interface EngineClient {
     send(ev: ServerEvent): void;
     /** Sessions this client has open. */
@@ -169,6 +205,10 @@ export interface EngineClient {
     window?: string;
     /** The session on its screen (null: none). Undefined until it says, and then all count. */
     shown?: string | null;
+    /** The server its window is on (it asked this Cavvy to connect it there): what that server says, it hears itself. */
+    machine?: string;
+    /** It shows the other machines' sessions (servers.overview): it's told how they change, and what they have to say. */
+    watching?: boolean;
 }
 
 
@@ -380,6 +420,11 @@ export class Engine {
     /** The desktop app updating itself from main: only the installed app does. */
     private readonly updates = new AppUpdates({ emit: (info) => this.broadcast({ type: "app.update", info }) });
 
+    /** This Cavvy is a server's (others reach it): it's the one that may be lent what it hasn't got (borrow). */
+    get away(): boolean {
+        return Boolean(this.o.away);
+    }
+
     constructor(private o: EngineOptions = {}) {
         this.fallbackModel = o.fallbackModel;
         this.terminals = new Terminals({ graceMs: o.terminalGraceMs });
@@ -398,6 +443,7 @@ export class Engine {
         this.stopKeybindings = watchKeybindings((r) => this.broadcast({ type: "keybindings.changed", keybindings: { path: keybindingsPath(), ...r } }));
         this.updates.start();
         this.reopenScheduled();
+        void this.resumeWorking();
         purgeTrash();
         this.purgeTimer = setInterval(() => purgeTrash(), PURGE_EVERY_MS);
         this.purgeTimer.unref?.();
@@ -424,8 +470,53 @@ export class Engine {
         }
     }
 
+    /** Which sessions have a turn running, when this Cavvy keeps that (EngineOptions.working). */
+    private working?: WorkingIndex;
+
+    /** A session's turn started or ended. Once stopping, the list is left as it is: what's cut off now is what carries on next time. */
+    turnRunning(rt: Runtime, running: boolean) {
+        if (!this.working || this.stopping) return;
+        if (running) this.working.started(rt.id, rt.ws.cwd);
+        else this.working.ended(rt.id);
+    }
+
+    /**
+     * The sessions that were working when the Cavvy before this one stopped (an update, a reboot, a crash) carry on:
+     * each is opened, which notes its turn as cut off, and given a turn to go on from there. One at a time, so a
+     * server with many doesn't start them all in the same moment. A session carried on too often within the hour is
+     * left as it is and says so: it may be what keeps bringing Cavvy down.
+     */
+    private async resumeWorking() {
+        if (!this.o.working) return;
+        this.working = new WorkingIndex(this.o.working);
+        for (const [id, e] of this.working.entries()) {
+            if (this.stopping) return;
+            try {
+                if (!isDir(e.cwd)) {
+                    this.working.ended(id);
+                    continue;
+                }
+                const goes = this.working.resume(id);
+                // Its turn ended since the list was read (the user got to it first): nothing to carry on.
+                if (goes === "gone") continue;
+                const rt = this.openSession(id);
+                await rt.ready;
+                if (goes === "go") rt.resumeAfterRestart();
+                else rt.notRestarted();
+                // With no window on it, it's closed again once it has nothing running, as one a schedule opened is.
+                this.unloadLater(id);
+            } catch (err) {
+                this.working.ended(id);
+                this.log(`Couldn't carry session ${id} on after the restart: ${(err as Error).message}`);
+            }
+            await new Promise((r) => setTimeout(r, 250));
+        }
+    }
+
     async stop() {
         this.stopping = true;
+        // First: a call a server's session waits for here is told this machine went away, not answered by its end.
+        this.serverLinks?.stopWatching();
         this.planChecks.abort();
         for (const pending of this.openingTerminals.values()) pending.cancelled = true;
         const terminalsStopped = this.terminals.stop();
@@ -436,6 +527,8 @@ export class Engine {
         this.unloadTimers.clear();
         await Promise.all([...this.runtimes.values()].map((r) => r.close().catch(() => undefined)).concat([...this.closing.values()]));
         await terminalsStopped;
+        // What this Cavvy signed in on its servers ends with it.
+        await Promise.race([this.serverLinks?.stopAll(), new Promise((r) => setTimeout(r, 3000))]);
         await Promise.race([Promise.all([...this.workspaces.values()].map((w) => w.mcp.closeAll().catch(() => undefined))), new Promise((r) => setTimeout(r, 1500))]);
         await Promise.race([this.checkingPlans, new Promise((r) => setTimeout(r, 1500))]);
         this.unregisterAccountRoots();
@@ -458,7 +551,9 @@ export class Engine {
 
     /** The session's simulator changed: the windows that have it open hear of it. */
     sendSimulator(sessionId: string, state: SimulatorState) {
-        for (const c of this.clients) if (c.subs.has(sessionId)) c.send({ type: "simulator.state", sessionId, state });
+        // One that lends to a session on a server shows in that session: this machine's windows on that server hear of it too.
+        const lentTo = this.runtimes.get(sessionId)?.guestOf;
+        for (const c of this.clients) if (c.subs.has(sessionId) || (lentTo !== undefined && c.machine === lentTo)) c.send({ type: "simulator.state", sessionId, state });
     }
 
     /** The session's browser changed: the windows that have it open hear of it. */
@@ -499,15 +594,35 @@ export class Engine {
         this.broadcast({ type: "notify", sessionId: rt.id, kind: "background", title: this.notifyTitle(rt), body: endedText(task), tag: `background:${rt.id}:${task.id}:${task.startedAt}:${outcome}`, task: { id: task.id, outcome } });
     }
 
+    /**
+     * What a restart would cost: the sessions it would cut off part way (`working`), and the ones holding a
+     * question for the user that it would drop (`waiting`). For a server asked to update (src/servers/host.ts).
+     */
+    activity(): { sessions: number; working: number; waiting: number } {
+        let working = 0;
+        let waiting = 0;
+        for (const rt of this.runtimes.values()) {
+            if (rt.status === "waiting") waiting++;
+            else if (!rt.idle) working++;
+        }
+        return { sessions: this.runtimes.size, working, waiting };
+    }
+
     notify(rt: Runtime, kind: "done" | "permission" | "question" | "plan" | "error", body: string) {
+        if (rt.guestOf !== undefined) return this.notifyLent(rt, rt.guestOf, kind, body);
         const title = this.notifyTitle(rt);
         this.broadcast({ type: "notify", sessionId: rt.id, kind, title, body });
+        // No window is on this computer, only windows on servers: one of those says it, as it would another machine's.
+        const windows = [...this.clients].filter((c) => c.watching);
+        if (windows.length && windows.every((c) => c.machine)) windows[0]!.send({ type: "servers.notify", sessionId: rt.id, kind, title, body });
         this.sessionChanged(rt);
         const message = `Cavvy: ${body}`;
         void fireHooks(rt.settings(), "Notification", { session_id: rt.id, message, kind, notification_type: kind }, rt.ws.cwd, () => {});
     }
 
     sessionChanged(rt: Runtime) {
+        // One that lends to a session on a server is never listed: what it asks shows in that session (lentChanged).
+        if (rt.guest) return this.lentChanged(rt);
         // An empty new session isn't listed. A turn can end with nothing in the history (a !command, a prompt a hook blocked): its row has to hear that it ended.
         if (!rt.session.messages.length && !rt.busy && rt.firstPrompt() === undefined) return;
         const member = readStore().runs?.flatMap((r) => r.sessions).find((s) => s.id === rt.id);
@@ -600,7 +715,8 @@ export class Engine {
     }
 
     bypassAllowed(cwd: string): boolean {
-        return Boolean(this.o.allowBypass) || Boolean(loadScope("user", cwd).permissions?.allowBypass);
+        // One of the user's servers runs without asking by default (servers/role.ts).
+        return Boolean(this.o.allowBypass) || onServer() || Boolean(loadScope("user", cwd).permissions?.allowBypass);
     }
 
     // -----------------------------------------------------------------------
@@ -840,7 +956,7 @@ export class Engine {
             out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false, run: runs.get(s.id) });
         }
         for (const rt of this.runtimes.values()) {
-            if (!rt.session.messages.length && !rt.busy) continue;
+            if (rt.guest || (!rt.session.messages.length && !rt.busy)) continue;
             // By when it last worked, which its file can't say yet while it works (Session.worked writes a line a minute).
             out.set(rt.id, this.summaryOf(rt));
         }
@@ -882,13 +998,12 @@ export class Engine {
     }
 
     private defaultMode(ws: Workspace): PermissionMode {
-        const m = ws.settings.permissions?.defaultMode ?? "default";
-        // Bypass as a default only counts from the user's own settings file.
-        if (m === "bypassPermissions" && loadScope("user", ws.cwd).permissions?.defaultMode !== "bypassPermissions") return "default";
-        return m;
+        // Bypass as a default only counts from the user's own settings file, or on one of the user's servers.
+        return defaultMode(ws.settings, ws.cwd).mode;
     }
 
-    async createSession(cwd: string, opts: { model?: string; mode?: PermissionModeId; accounts?: Record<string, string>; startedBy?: string } = {}): Promise<Runtime> {
+    /** `unlisted`: its folder isn't one of the user's projects (a session that lends to one on a server: guestFor). */
+    async createSession(cwd: string, opts: { model?: string; mode?: PermissionModeId; accounts?: Record<string, string>; startedBy?: string; unlisted?: boolean } = {}): Promise<Runtime> {
         const p = resolve(expandHome(cwd));
         if (!isDir(p)) throw new RpcError(`${p} isn't a folder`);
         const ws = this.workspaceFor(p);
@@ -900,7 +1015,7 @@ export class Engine {
         const mode = opts.mode && PERMISSION_MODES.includes(opts.mode) ? opts.mode : this.defaultMode(ws);
         const rt = new Runtime(this, ws, session, { mode, resumed: false });
         this.runtimes.set(rt.id, rt);
-        this.remember(p);
+        if (!opts.unlisted) this.remember(p);
         await rt.ready.catch(() => undefined);
         if (opts.model) await rt.setModel(opts.model);
         return rt;
@@ -1143,6 +1258,10 @@ export class Engine {
     private unloadIfUnused(id: string) {
         const rt = this.runtimes.get(id);
         if (!rt || this.stopping || [...this.clients].some((c) => c.subs.has(id))) return;
+        // One a server's session is lent tools through stays until it has sat unused for a while (guestLater), and
+        // while a window shows its simulator.
+        if (rt.guest && rt.simulator.watched) return this.guestLater(rt);
+        if (rt.guest && Date.now() - rt.lastLent < (this.o.guestIdleMs ?? GUEST_IDLE_MS)) return;
         // A watch (a pull request) goes on with no window open: it wakes the session when there's news.
         if (!rt.idle || rt.scheduled || rt.watching) return this.unloadLater(id);
         void this.unload(rt);
@@ -1151,6 +1270,7 @@ export class Engine {
     /** Close a session as quitting a terminal would (its SessionEnd hooks run); it can be opened again once that's done. */
     private unload(rt: Runtime): Promise<void> {
         const id = rt.id;
+        if (rt.guest) this.guestGone(rt);
         const timer = this.unloadTimers.get(id);
         if (timer) clearTimeout(timer);
         this.unloadTimers.delete(id);
@@ -1182,6 +1302,8 @@ export class Engine {
     /** A window went away (closed, reloading, or lost its connection). Its terminals wait a while for it to come back. */
     dropClient(client: EngineClient) {
         this.clients.delete(client);
+        if (this.lenders.has(client) || [...this.lentCalls.values()].some((c) => c.client === client)) this.setLender(client, [], true);
+        for (const [name, asker] of this.serverAskers) if (asker === client) this.serverAskers.delete(name);
         this.terminals.drop(client);
         for (const rt of this.runtimes.values()) rt.browser.unwatch(client);
         for (const rt of this.runtimes.values()) rt.simulator.unwatch(client);
@@ -1240,6 +1362,8 @@ export class Engine {
                     this.runtimes.delete(id);
                     clearTimeout(this.unloadTimers.get(id));
                     this.unloadTimers.delete(id);
+                    // One a server's session is lent tools through: the session there gets a new one for its next call.
+                    if (rt.guest) this.guestGone(rt);
                     await rt.close().catch(() => undefined);
                 }
                 trashSession(id, flags);
@@ -1721,8 +1845,249 @@ export class Engine {
         return { provider: id, masked: maskKey(value), warning, model: this.adoptDefaultModel(id) };
     }
 
-    /** `auth add claude-code|codex` for the GUI: the CLI says whether it's installed and signed in; nothing secret is saved. */
-    private async connectCli(providerId: string): Promise<{ description: string; warning?: string; model?: string }> {
+    /**
+     * On a server: the connected machines that lend this one their tools (offers.set), the latest to say so last, and
+     * the calls they're running. A call goes to the latest; when a machine leaves, the others still lend.
+     */
+    private lenders = new Map<EngineClient, Lendable[]>();
+    private lentCalls = new Map<string, { client: EngineClient; done: (r: ToolResult) => void }>();
+
+    /**
+     * A session here calls a tool another of the user's machines lends (src/tools/lent.ts): sent to that machine,
+     * which runs it through its own checks. Answers when it does, when the call is given up here, or when that
+     * machine goes away.
+     */
+    borrow(rt: Runtime, tool: string, input: Record<string, unknown>, signal: AbortSignal): Promise<ToolResult> {
+        const client = [...this.lenders.keys()].at(-1);
+        if (!client) return Promise.resolve({ content: "This runs on your Mac, and Cavvy there isn't connected to this machine right now. Ask the user to open Cavvy on their Mac, then try again.", isError: true });
+        const callId = randomUUID();
+        return new Promise((resolve) => {
+            const done = (r: ToolResult) => {
+                if (!this.lentCalls.delete(callId)) return;
+                signal.removeEventListener("abort", stop);
+                resolve(r);
+            };
+            const stop = () => {
+                client.send({ type: "offers.cancel", callId });
+                done({ content: "Interrupted by user", isError: true });
+            };
+            this.lentCalls.set(callId, { client, done });
+            signal.addEventListener("abort", stop, { once: true });
+            client.send({ type: "offers.call", callId, tool, input, session: { id: rt.id, title: this.notifyTitle(rt) } });
+        });
+    }
+
+    /** A machine says what it lends now (nothing: it stopped, or left): its calls end when it lends nothing, and sessions learn what they have. */
+    private setLender(client: EngineClient, kinds: Lendable[], left = false) {
+        this.lenders.delete(client);
+        if (kinds.length) this.lenders.set(client, kinds);
+        // Only its leaving ends what it was asked: a machine that stops lending still answers the calls it has.
+        if (left) for (const c of [...this.lentCalls.values()]) if (c.client === client) c.done({ content: "Your Mac's Cavvy went away before it answered.", isError: true });
+        setLent(new Set([...this.lenders.values()].flat()));
+    }
+
+    /** On the user's own machine: the local session each session on a server is lent tools through, by server and session. */
+    private guests = new Map<string, Promise<Runtime>>();
+    /** When each server's sessions were last lent a call that only reads, and one that acts, and when one of them last had the user told it asks (LENT_PER_MINUTE). */
+    private lentAt = new Map<string, { read: number[]; act: number[]; told: number[]; summed?: number }>();
+
+    /** The user answered what a session lent to this server asked: they're there, and its asks ring again from the start. */
+    private guestAnswered(name: string) {
+        const at = this.lentAt.get(name);
+        if (!at) return;
+        at.told = [];
+        at.summed = undefined;
+    }
+
+    /** Whether one more of this sort may be let through for this server now; counted when it may. */
+    private lentMay(name: string, sort: "read" | "act" | "told"): boolean {
+        const at = this.lentAt.get(name) ?? { read: [], act: [], told: [] };
+        this.lentAt.set(name, at);
+        const now = Date.now();
+        const times = (at[sort] = at[sort].filter((t) => now - t < 60_000));
+        if (times.length >= LENT_PER_MINUTE[sort]) return false;
+        times.push(now);
+        return true;
+    }
+
+    /**
+     * A session on one of this machine's servers calls a tool this machine lends. It runs in a session of this
+     * machine's own, one per session there (guestFor), under this machine's mode and rules. What's answered is read
+     * on the server, so it speaks of this machine as "your Mac".
+     */
+    private async lend(name: string, call: LentCall, signal: AbortSignal): Promise<LentResult> {
+        const tool = OWN_SIMULATOR_TOOLS.find((t) => t.name === call.tool);
+        if (!tool) return { text: `${call.tool.slice(0, 40)} isn't something your Mac lends.`, isError: true };
+        if (!simulatorsToLend(loadSettings(homedir(), { trusted: false }))) return { text: "Your Mac's Simulator isn't available now: it's turned off in Cavvy's settings there, or Xcode isn't set up.", isError: true };
+        if (!/^[\w.-]{1,120}$/.test(call.session.id)) return { text: "That call isn't one your Mac takes.", isError: true };
+        // Only so many a minute, those that only read counted apart from those that act (and may each ask the user).
+        if (!this.lentMay(name, isReadOnly(tool, call.input) ? "read" : "act")) return { text: "That's more simulator calls in a minute than your Mac takes from one machine. Wait a little, then go on.", isError: true };
+        const opening = this.guestFor(name, call.session);
+        if (!opening) return { text: `Your Mac's Simulator is already in use by ${MAX_GUESTS} sessions on this machine. Each is let go a while after it last used it.`, isError: true };
+        const rt = await opening;
+        // Under this machine's mode as it is now: the session here was made under the one it had then. Bypass only
+        // while it's still allowed here, as for a session that starts now.
+        const set = this.defaultMode(rt.ws);
+        const mode = set === "bypassPermissions" && !rt.bypassAllowed() ? "default" : set;
+        if (rt.mode !== mode) rt.setMode(mode, { fromAgent: true });
+        // What the session there is called now, for what the user is told of it.
+        const title = await lentTitle(call.session.title);
+        if (rt.guestSession && rt.guestSession.title !== title) rt.guestSession = { id: call.session.id, title };
+        try {
+            return await rt.lend(tool, call.input, signal);
+        } finally {
+            this.guestLater(rt);
+        }
+    }
+
+    /**
+     * The session here that a session on a server is lent tools through, made when there's none: one per session
+     * there. It's never listed: its simulator and what it asks show in the session there, in this machine's windows
+     * (offers.session, lentChanged). Undefined when the server has as many as it gets.
+     */
+    private guestFor(name: string, session: { id: string; title: string }): Promise<Runtime> | undefined {
+        const key = `${name}\0${session.id}`;
+        let opening = this.guests.get(key);
+        if (opening) return opening;
+        // A session here for each session there that's using it, but not without end.
+        if ([...this.guests.keys()].filter((k) => k.startsWith(`${name}\0`)).length >= MAX_GUESTS) return undefined;
+        opening = (async () => {
+            const folder = join(cavvyHome(), "guests", name);
+            mkdirSync(folder, { recursive: true });
+            const title = await lentTitle(session.title);
+            const rt = await this.createSession(folder, { unlisted: true });
+            rt.guestOf = name;
+            rt.guestSession = { id: session.id, title };
+            rt.lastLent = Date.now();
+            this.guestLater(rt);
+            this.lentChanged(rt);
+            return rt;
+        })();
+        this.guests.set(key, opening);
+        opening.catch(() => this.guests.get(key) === opening && this.guests.delete(key));
+        return opening;
+    }
+
+    /** What this machine has for a server's session that's lent its tools: `rt`, the session here for it, when there is one. */
+    private lentSession(rt?: Runtime): LentSession {
+        return {
+            offered: simulatorsToLend(loadSettings(homedir(), { trusted: false })),
+            ...(rt ? { id: rt.id } : {}),
+            // Said to be this machine's: they show in a session that runs on another.
+            // Only what's asked before a call runs (nothing else is asked through such a session).
+            asks: (rt?.asks ?? []).flatMap((i) => (i.kind === "permission" ? [i.where ? i : { ...i, where: "On this Mac" }] : [])),
+        };
+    }
+
+    /**
+     * A session that lends to one on a server began, asks, or was answered: this machine's windows that are on that
+     * server hear of it, for the session there.
+     */
+    private lentChanged(rt: Runtime, gone = false) {
+        const name = rt.guestOf;
+        const at = rt.guestSession;
+        if (name === undefined || !at) return;
+        const lent = this.lentSession(gone ? undefined : rt);
+        for (const c of this.clients) if (c.machine === name) c.send({ type: "offers.session", name, sessionId: at.id, lent });
+        // And its row in the list, in any window, says it waits for the user.
+        this.serverLinks?.asking(name, at.id, lent.asks.length > 0);
+    }
+
+    /**
+     * What a session that lends to one on a server has to tell the user (it asks to be allowed something here): told
+     * as the session there, by one window. Only so often (LENT_PER_MINUTE): a server gone wrong can't ring the user
+     * without end.
+     */
+    private notifyLent(rt: Runtime, name: string, kind: "done" | "permission" | "question" | "plan" | "error", body: string) {
+        this.lentChanged(rt);
+        if (!this.lentMay(name, "told")) {
+            // Said once that there's more, so the user isn't left waiting on a session that never rang. The count
+            // starts again when the user answers one (guestAnswered): what's limited is asking unanswered.
+            const at = this.lentAt.get(name)!;
+            if (Date.now() - (at.summed ?? 0) < 60_000) return;
+            at.summed = Date.now();
+            body = `More from ${name} is waiting for you.`;
+        }
+        // A window that's on that server if there is one (the session is in it), else one that shows the other machines.
+        const to = [...this.clients].find((c) => c.machine === name && c.watching) ?? this.oneWatching();
+        to?.send({ type: "servers.notify", name, sessionId: rt.guestSession?.id ?? "", kind, title: rt.guestSession?.title ?? name, body, lent: true });
+        void fireHooks(rt.settings(), "Notification", { session_id: rt.id, message: `Cavvy: ${body}`, kind, notification_type: kind }, rt.ws.cwd, () => {});
+    }
+
+    private guestTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+    /**
+     * Closed once it has sat unused for a good while (GUEST_IDLE_MS), not after the half minute other sessions get:
+     * what the user allowed it "for this session" would be asked again by the one that takes its place.
+     */
+    private guestLater(rt: Runtime) {
+        clearTimeout(this.guestTimers.get(rt.id));
+        const t = setTimeout(() => {
+            this.guestTimers.delete(rt.id);
+            this.unloadIfUnused(rt.id);
+        }, this.o.guestIdleMs ?? GUEST_IDLE_MS);
+        t.unref?.();
+        this.guestTimers.set(rt.id, t);
+    }
+
+    /**
+     * A session a server's session was lent tools through is over (closed after sitting unused): nothing was ever
+     * said in it, so there's no file of it. The next call from that session there gets a new one.
+     */
+    private guestGone(rt: Runtime) {
+        clearTimeout(this.guestTimers.get(rt.id));
+        this.guestTimers.delete(rt.id);
+        for (const [key, opening] of this.guests) void opening.then((g) => g === rt && this.guests.get(key) === opening && this.guests.delete(key), () => undefined);
+        this.lentChanged(rt, true);
+    }
+
+    private serverLinks?: import("../servers/manager").ServerLinks;
+    /** The window a server's progress is told to: the one that last asked for something slow of it. */
+    private serverAskers = new Map<string, EngineClient>();
+
+    /**
+     * The servers this Cavvy reaches, made when a window first asks (nothing of them is loaded before). `asking`:
+     * the server whose progress this window is to be told. A server's own Cavvy offers none of this: what it may
+     * reach is decided where its user sits.
+     */
+    private async servers(client: EngineClient, asking?: string) {
+        if (this.o.away) throw new RpcError("Servers are managed from your own machine.", "unsupported");
+        if (!this.serverLinks) {
+            const { ServerLinks } = await import("../servers/manager");
+            this.serverLinks = new ServerLinks({
+                source: this.o.serverBuilds,
+                onProgress: (e) => this.serverAskers.get(e.name)?.send({ type: "servers.progress", ...e }),
+                onLink: (e) => this.broadcast({ type: "servers.link", ...e }),
+                onOverview: (machine) => {
+                    for (const c of this.clients) if (c.watching) c.send({ type: "servers.overview", machine });
+                },
+                onSession: (name, change) => {
+                    for (const c of this.clients) if (c.watching) c.send({ type: "servers.session", name, ...change });
+                },
+                lends: () => (simulatorsToLend(loadSettings(homedir(), { trusted: false })) ? ["simulator"] : []),
+                lend: (name, call, signal) => this.lend(name, call, signal),
+                onNotice: (name, n) => {
+                    // A window on that server hears it from there. Otherwise one window says it, not each of them.
+                    if ([...this.clients].some((c) => c.machine === name)) return;
+                    this.oneWatching()?.send({ type: "servers.notify", name, ...n });
+                },
+            });
+        }
+        if (asking) this.serverAskers.set(asking, client);
+        return this.serverLinks;
+    }
+
+    /** The window that says what another machine's session has to tell: one on this computer if there is one, else the first that shows them. */
+    private oneWatching(): EngineClient | undefined {
+        const watching = [...this.clients].filter((c) => c.watching);
+        return watching.find((c) => !c.machine) ?? watching[0];
+    }
+
+    /**
+     * `auth add claude-code|codex` for the GUI: the CLI says whether it's installed and signed in; nothing secret is saved.
+     * Also what `cavvy host login` asks of a server once the CLI's own sign-in is done there.
+     */
+    async connectCli(providerId: string): Promise<{ description: string; warning?: string; model?: string }> {
         const def = getProvider(providerId);
         if (def?.auth !== "cli") throw new RpcError(`${providerId} isn't used through a CLI`);
         const { status: st, limits } = await checkAgentPlan(def.id);
@@ -1765,14 +2130,16 @@ export class Engine {
             reviewModel: s.reviewModel,
             effort: s.effort,
             fastMode: s.fastMode,
-            defaultMode: s.permissions?.defaultMode,
+            // On one of the user's servers: Bypass unless its settings say otherwise, and always there to choose.
+            defaultMode: s.permissions?.defaultMode ?? (onServer() ? "bypassPermissions" : undefined),
             showThinking: s.showThinking,
             autoCompact: s.autoCompact,
             idleCompaction: s.idleCompaction,
             webSearch: s.webSearch,
             browser: s.browser?.enabled,
             simulator: s.simulator?.enabled,
-            allowBypass: s.permissions?.allowBypass,
+            allowBypass: s.permissions?.allowBypass || onServer() || undefined,
+            bypassAlways: onServer() || undefined,
             followUpBehavior: s.followUpBehavior,
             editor: s.editor,
         };
@@ -1816,6 +2183,8 @@ export class Engine {
             }
         });
         this.reloadSettings();
+        // The Simulator turned off or on: the servers this machine lends it to hear now, and what waits here for it ends.
+        if ("simulator" in patch) this.serverLinks?.relend();
         return this.guiSettings(cwd);
     }
 
@@ -2032,7 +2401,7 @@ export class Engine {
                     // Seen by removals in other Cavvy processes too, until the login process exits.
                     const release = holdLogin(provider, accountId);
                     try {
-                        const command = loginCommand(provider, accountId);
+                        const command = loginCommand(provider, accountId, { away: this.o.away });
                         return this.terminals.open(client, str(p.id, "id"), homedir(), p.cols, p.rows, { command, login: { provider, accountId, name: account(provider, accountId).name }, onExit: () => { release(); void this.accountsList(provider, true).then(() => this.refreshListings(true)).then(() => this.broadcast({ type: "models.changed" })).catch(() => undefined); } });
                     } catch (e) {
                         release();
@@ -2181,7 +2550,14 @@ export class Engine {
                 } catch {
                     user = process.env.USER ?? "";
                 }
-                return { version: APP_VERSION, protocol: PROTOCOL_VERSION, home: cavvyHome(), platform: process.platform, homeDir: homedir(), user, host: hostname().replace(/\.local$/, ""), startCwd } satisfies HelloResult;
+                // What a window needs to know to show other machines at all: none of that is loaded otherwise.
+                // A servers file that can't be read says so where servers are managed, not here: this is every window's first call.
+                const servers = this.o.away
+                    ? 0
+                    : await import("../servers/store")
+                          .then((m) => m.listServers().length)
+                          .catch(() => 0);
+                return { version: APP_VERSION, protocol: PROTOCOL_VERSION, home: cavvyHome(), platform: process.platform, homeDir: homedir(), user, host: hostname().replace(/\.local$/, ""), startCwd, ...(servers ? { servers } : {}) } satisfies HelloResult;
             }
             case "keybindings.get":
                 return { path: keybindingsPath(), ...readKeybindings() } satisfies KeybindingsFile;
@@ -2274,6 +2650,7 @@ export class Engine {
             case "session.respond":
                 if (this.implementing.has(p.id)) throw new RpcError("This plan is being taken to a worktree. Wait for that to finish before answering it.", "busy");
                 this.runtime(p.id).respond(str(p.interactionId, "interactionId"), p.response);
+                if (this.runtime(p.id).guestOf !== undefined) this.guestAnswered(this.runtime(p.id).guestOf!);
                 return null;
             case "session.setModel": {
                 const rt = this.runtime(p.id);
@@ -2551,6 +2928,100 @@ export class Engine {
                 return await this.addKey(optStr(p.provider), str(p.key, "key"));
             case "providers.connectCli":
                 return await this.connectCli(str(p.provider, "provider"));
+            case "offers.set": {
+                // Only a server takes what another machine lends: the user's own machine is lent nothing by a client.
+                if (!this.o.away) throw new RpcError("This machine isn't lent tools.", "unsupported");
+                const kinds = (Array.isArray(p.kinds) ? p.kinds : []).filter((k: unknown): k is Lendable => LENDABLE.includes(k as Lendable));
+                this.setLender(client, kinds);
+                return null;
+            }
+            case "offers.session": {
+                // Asked by this machine's own windows: a server's Cavvy lends nothing.
+                if (this.o.away) throw new RpcError("This machine lends nothing.", "unsupported");
+                const name = str(p.name, "name");
+                const sessionId = str(p.sessionId, "sessionId");
+                if (!/^[\w.-]{1,120}$/.test(sessionId)) throw new RpcError("That isn't a session's id.", "invalid");
+                if (!(await this.servers(client)).list().some((s) => s.name === name)) throw new RpcError(`No server is called ${name}.`, "invalid");
+                let opening = this.guests.get(`${name}\0${sessionId}`);
+                const settings = loadSettings(homedir(), { trusted: false });
+                // The user started or chose a device in the session's Simulator pane: there's one to show from then on.
+                if (!opening && p.open === true && simulatorsToLend(settings)) {
+                    opening = this.guestFor(name, { id: sessionId, title: optStr(p.title) ?? "" });
+                    if (!opening) throw new RpcError(`This Mac's Simulator is already in use by ${MAX_GUESTS} sessions on ${name}.`, "busy");
+                }
+                const rt = await opening?.catch(() => undefined);
+                const lent = this.lentSession(rt);
+                // Only looked at: nothing is made here for it, and the pane shows what could be started.
+                return rt || !lent.offered ? lent : { ...lent, state: await simulatorOutlook(settings) };
+            }
+            case "offers.asking": {
+                if (this.o.away) throw new RpcError("This machine lends nothing.", "unsupported");
+                const name = str(p.name, "name");
+                return [...this.runtimes.values()].flatMap((rt) => (rt.guestOf === name && rt.guestSession && rt.asks.length ? [{ sessionId: rt.guestSession.id, lent: this.lentSession(rt) }] : []));
+            }
+            case "offers.result": {
+                const call = this.lentCalls.get(str(p.callId, "callId"));
+                if (!call || call.client !== client) return null;
+                const images = (Array.isArray(p.images) ? p.images : []).filter((i: any) => i && i.type === "image" && typeof i.mediaType === "string" && typeof i.data === "string").slice(0, 8);
+                call.done({ content: typeof p.text === "string" ? p.text : "", ...(p.isError === true ? { isError: true } : {}), ...(images.length ? { images } : {}) });
+                return null;
+            }
+            case "servers.list":
+                return { servers: (await this.servers(client)).list() };
+            case "servers.relay": {
+                const servers = await this.servers(client);
+                const params = p.params && typeof p.params === "object" && !Array.isArray(p.params) ? (p.params as Record<string, unknown>) : {};
+                const name = str(p.name, "name");
+                try {
+                    return await servers.relay(name, str(p.method, "method"), params);
+                } catch (e) {
+                    // Whose words they are: the server's own are always said to be its, whatever they say.
+                    const said = (e as Error).message;
+                    throw new RpcError((e as { theirs?: boolean }).theirs ? `${name}: ${said}` : said, (e as { code?: string }).code ?? "failed");
+                }
+            }
+            case "servers.overview": {
+                const servers = await this.servers(client);
+                client.watching = true;
+                return { machines: servers.watchAll() };
+            }
+            case "servers.add": {
+                const servers = await this.servers(client, str(p.name, "name"));
+                const name = str(p.name, "name");
+                const draft = { name, destination: str(p.destination, "destination"), ...(typeof p.port === "number" ? { port: p.port } : {}), ...(typeof p.identityFile === "string" && p.identityFile ? { identityFile: p.identityFile } : {}) };
+                const trust = fingerprints(p.trust);
+                return await servers.add(draft, trust ? servers.trust(name, trust) : undefined);
+            }
+            case "servers.copy":
+                return await (await this.servers(client, str(p.name, "name"))).copy(str(p.name, "name"));
+            case "servers.check":
+                return await (await this.servers(client, str(p.name, "name"))).check(str(p.name, "name"));
+            case "servers.connect": {
+                const name = str(p.name, "name");
+                const servers = await this.servers(client, name);
+                const trust = fingerprints(p.trust);
+                if (trust) servers.trust(name, trust);
+                client.machine = name;
+                return await servers.connect(name, { retry: p.retry === true, renew: p.renew === true });
+            }
+            case "servers.update": {
+                const name = str(p.name, "name");
+                const servers = await this.servers(client, name);
+                const trust = fingerprints(p.trust);
+                if (trust) servers.trust(name, trust);
+                return await servers.update(name, p.force === true);
+            }
+            case "servers.disconnect":
+                await (await this.servers(client)).disconnect(str(p.name, "name"));
+                return null;
+            case "servers.stop":
+                await (await this.servers(client)).stop(str(p.name, "name"));
+                return null;
+            case "servers.remove":
+                return await (await this.servers(client)).remove(str(p.name, "name"));
+            case "servers.restore":
+                (await this.servers(client)).restore(str(p.name, "name"));
+                return null;
             case "providers.removeKey": {
                 const id = str(p.provider, "provider");
                 if (getProvider(id)?.auth === "cli") {
@@ -2796,6 +3267,11 @@ async function launchEditor(argv: string[]): Promise<void> {
 
 function validImage(i: { mediaType: unknown; data: unknown }): boolean {
     return /^image\/(png|jpeg|gif|webp)$/.test(String(i?.mediaType)) && typeof i?.data === "string" && i.data.length < 20_000_000 && /^[A-Za-z0-9+/=]+$/.test(i.data.slice(0, 100));
+}
+
+/** The fingerprints a window sends back as the user's yes to an unknown host's key. */
+function fingerprints(v: unknown): string[] | undefined {
+    return Array.isArray(v) && v.length > 0 && v.length <= 8 && v.every((x) => typeof x === "string" && x.length <= 200) ? (v as string[]) : undefined;
 }
 
 function str(v: unknown, name: string): string {

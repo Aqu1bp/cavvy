@@ -29,6 +29,7 @@ import { INIT_PROMPT, reviewPrompt } from "../commands/index";
 import { expandCommand, pluginCommandFor, slashCommand } from "../commands/custom";
 import { addPermissionRule, updateSettings, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { MODE_INFO, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
+import { onServer } from "../servers/role";
 import { PermissionChecker } from "../permissions/checker";
 import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "../permissions/classifier";
 import { toolPath } from "../permissions/rules";
@@ -53,7 +54,7 @@ import { agentCli, steersMidTurn, type AttachmentKind } from "../backends/defs";
 import { claudeCompactAt, cliCompactSetting, cavvyCompactAt, modelKeys } from "../backends/compact-at";
 import { account, accountSwitch, removedAccount, removedAccountNote, switchHow } from "../providers/accounts";
 import { attachmentsNote, readsPdf } from "../providers/files";
-import { continuationGroups, modelRef, parseModelRef, textOf, toolCallsOf, assistantText, type AttachedPart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart, type UserContent } from "../providers/types";
+import { continuationGroups, modelRef, parseModelRef, textOf, toolCallsOf, assistantText, type AttachedPart, type ImagePart, type Message, type ModelInfo, type ProviderClient, type ToolCallPart, type UserContent } from "../providers/types";
 import { expandMentions } from "../ui/mentions";
 import { expandMcpMentions, findMcpMentions } from "../mcp/mentions";
 import type { McpAsker } from "../mcp/elicitation";
@@ -120,6 +121,11 @@ import type { Engine, Workspace } from "./engine";
 import { MCP_SERVER_NAME } from "../agent/delegation";
 import { numberedTitles, titlesByNumber } from "./title-queue";
 import { SecretStore, secretValueError } from "../agent/secrets";
+import { MAX_RESTART_RESUMES } from "./working";
+
+/** What a session is told when it carries on after Cavvy restarted under it, and what its turn is called. */
+export const RESTART_PROMPT = "Cavvy restarted while you were working, which cut your last turn off. Continue where you left off.";
+export const RESTART_LABEL = "Continued after a restart";
 
 /** How often streamed output goes out to the GUI. */
 const FLUSH_MS = 24;
@@ -431,7 +437,7 @@ export class Runtime {
         this.ui = new UiLog(session.path, session.meta.id, opts.resumed);
         // A reopened session keeps the mode it was left in (bypass only when chosen again) and the effort chosen for it.
         const left = opts.resumed && this.ui.state.mode && PERMISSION_MODES.includes(this.ui.state.mode) ? this.ui.state.mode : undefined;
-        this.mode = (left !== "bypassPermissions" ? left : undefined) ?? opts.mode ?? ws.settings.permissions?.defaultMode ?? "default";
+        this.mode = (left !== "bypassPermissions" ? left : undefined) ?? opts.mode ?? ws.settings.permissions?.defaultMode ?? (onServer() ? "bypassPermissions" : "default");
         if (this.mode === "bypassPermissions" && !this.bypassAllowed()) this.mode = "default";
         if (left && left !== this.mode) this.leftIn = left;
         const effort = opts.resumed ? this.ui.state.effort : undefined;
@@ -443,10 +449,13 @@ export class Runtime {
         this.placeAgent(parseModelRef(session.model ?? "")?.provider);
         this.toolState.background!.onChange(() => this.syncBackground());
         // The browser exists from the start, so the window hears of the first page the agent opens (it makes no process until then).
-        this.toolState.browser = new BrowserSession({ root: ws.cwd, settings: () => this.settings(), refuse: (url, approved) => this.checker.urlRefusal(url, approved) });
+        this.toolState.browser = new BrowserSession({ root: ws.cwd, settings: () => this.settings(), refuse: (url, approved) => this.checker.urlRefusal(url, approved), far: engine.away });
         this.toolState.browser.onChange(() => this.engine.sendBrowser(this.id, this.browser.state()));
         // So does the simulator, so the window hears when the agent starts or uses one (it starts nothing until then).
         this.toolState.simulator = new SimulatorSession({ settings: () => this.settings() });
+        // On a server: tools it hasn't got and another of the user's machines lends it (its Mac's simulators). Kept for
+        // as long as the session, so a call made after the Mac has left is told that, not that there are no simulators.
+        if (engine.away) this.toolState.lends = { call: (tool, input, signal) => engine.borrow(this, tool, input, signal) };
         this.toolState.simulator.onChange(() => this.engine.sendSimulator(this.id, this.simulator.state()));
         this.toolState.secrets!.onChange(() => this.setState({ secrets: this.toolState.secrets!.names() }));
         this.schedules = new SessionSchedules({
@@ -531,6 +540,11 @@ export class Runtime {
 
     get status(): SessionState["status"] {
         return this.view.state.status;
+    }
+
+    /** What it waits for the user to answer. */
+    get asks(): Interaction[] {
+        return this.view.state.interactions;
     }
 
     get waitingKind(): Interaction["kind"] | undefined {
@@ -646,6 +660,53 @@ export class Runtime {
     scheduleAction(scheduleId: string, action: ScheduleAction): boolean {
         return Boolean(this.schedules.act(scheduleId, action));
     }
+
+    /**
+     * Cavvy stopped while this session's turn was running, and has started again (Engine.resumeWorking, which knows
+     * from the list it keeps: a turn the user had stopped, or that had ended, isn't on it): the session goes on from
+     * where it was cut off, as it does after a usage limit resets. Like a scheduled prompt it waits for what's in its
+     * way; if the user gets there first (a message, a question to answer), it's theirs.
+     */
+    resumeAfterRestart(tries = 0) {
+        this.carryingOn = false;
+        // The user's own turn, or a message of theirs about to run: its end takes the session off the list.
+        if (this.closed || this.busy || this.nextQueued()) return;
+        // Messages held back since the restart don't hold it up: they wait for the user, as they would have.
+        const model = Boolean(this.agent) && !this.needsAccount();
+        const ready = model && !this.pending.size && !this.switching && !this.committing && !this.goal.pending();
+        if (!ready) {
+            if (tries < 60) {
+                this.carryingOn = true;
+                setTimeout(() => this.resumeAfterRestart(tries + 1), 1000).unref?.();
+                return;
+            }
+            // Left for the user, and off the list: or a restart days later would start it when it wasn't working.
+            this.engine.turnRunning(this, false);
+            return this.sayKept(`It didn't continue by itself after Cavvy restarted${model ? "" : ": its model isn't available"}. Send a message to go on.`, "warn");
+        }
+        this.scheduledLabel = RESTART_LABEL;
+        this.scheduledResume = true;
+        void this.dispatch(RESTART_PROMPT)
+            .catch((e) => this.notice(redact((e as Error).message), "error"))
+            .finally(() => {
+                this.scheduledLabel = undefined;
+                this.scheduledResume = false;
+            });
+    }
+
+    /** It was cut off by a restart again and again: said, and left for the user. */
+    notRestarted() {
+        this.sayKept(`It didn't continue by itself: Cavvy restarted ${MAX_RESTART_RESUMES} times within an hour while it was working. Send a message to go on.`, "warn");
+    }
+
+    /** A notice that's kept with the session: still there after the next restart. */
+    private sayKept(text: string, level: "info" | "warn" | "error") {
+        this.session.recordNotice(level, text);
+        this.notice(text, level);
+    }
+
+    /** Waiting to carry on after a restart (resumeAfterRestart): not to be closed meanwhile. */
+    private carryingOn = false;
 
     /**
      * Picks up again by itself once the limit that stopped the last turn resets, as that turn's end would have had it
@@ -2360,6 +2421,7 @@ export class Runtime {
         this.stepsLogged.delete(turnId);
         if (this.uiTurn) this.ui.write({ t: "turn", ...this.uiTurn, end, status });
         this.uiTurn = undefined;
+        this.engine.turnRunning(this, false);
         this.recordState();
         // The turn may have switched branches, here or in the worktree it works in.
         this.showWorkingIn(this.workingIn && this.worktreeAt(this.workingIn.path));
@@ -3189,6 +3251,7 @@ export class Runtime {
         this.responseTurn.clear();
         this.uiTurn = { seg: this.segment, index, at: this.turnStartedAt };
         this.ui.write({ t: "turn", ...this.uiTurn });
+        this.engine.turnRunning(this, true);
         // The mode and effort it's sent with, once the session is going to be on disk.
         if (this.ui.state.mode !== this.mode || this.ui.state.effort !== this.effort) this.recordState({ force: true });
         this.setState({ busy: true, status: "running", activity: { label: "Thinking", since: this.turnStartedAt } });
@@ -4244,7 +4307,45 @@ export class Runtime {
     /** Schedules run only while it's loaded: one that will run keeps it open with no window on it (it isn't busy, though). */
     get scheduled(): boolean {
         const s = this.schedules.scheduler;
-        return s.active > 0 || s.list().some((j) => j.due);
+        return this.carryingOn || this.lending > 0 || s.active > 0 || s.list().some((j) => j.due);
+    }
+
+    /** Calls of this machine's tools that another machine asked for and that are running here (lend): it isn't closed meanwhile. */
+    private lending = 0;
+    /** When a call was last lent through this session (Engine.guestLater). */
+    lastLent = 0;
+    /** The server whose session is lent this machine's tools through this one (Engine.lend); undefined for any other session. */
+    private lentTo?: string;
+    get guestOf(): string | undefined {
+        return this.lentTo;
+    }
+    set guestOf(name: string | undefined) {
+        this.lentTo = name;
+        // Its tools know they run for another machine: what they'd keep or say for a session here isn't for it.
+        this.toolState.forAnother = name !== undefined;
+    }
+    get guest(): boolean {
+        return this.lentTo !== undefined;
+    }
+    /** The session there this one lends to: its id, and its name in this machine's own words (Engine.guestFor). */
+    guestSession?: { id: string; title: string };
+
+    /**
+     * Runs a tool of this machine's for a session on another of the user's machines (Engine.lend). What's asked of
+     * the user is asked by this session, under this machine's mode and rules, and shown in the session there.
+     */
+    async lend(tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal): Promise<{ text: string; isError?: boolean; images?: ImagePart[] }> {
+        await this.ready.catch(() => undefined);
+        const agent = this.agent;
+        if (!agent) return { text: "Cavvy on your Mac has no model set up yet, which it needs before it lends its Simulator. Ask the user to set one up there.", isError: true };
+        this.lending++;
+        this.lastLent = Date.now();
+        try {
+            return await agent.runLent(tool, input, signal);
+        } finally {
+            this.lending--;
+            this.lastLent = Date.now();
+        }
     }
 
     /** SessionEnd hooks and background shells, when the server stops or the session is closed. */

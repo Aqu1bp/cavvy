@@ -8,7 +8,7 @@ import { planLimitKey, type PlanLimits } from "@shared/protocol";
 import type { AppUpdateInfo, GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
 import { applyOp, fromWireLimits, fromWireState, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
-import { credentials, focused, notify, isDesktop, showWindow, windowKey } from "../lib/platform";
+import { credentials, focused, machine, notify, isDesktop, showWindow, windowKey } from "../lib/platform";
 import { prefs, setPrefs } from "./prefs";
 import { backgroundOf, COALESCE_MS, combineEnded, noticeRoute, tabOf, workTabFor } from "../lib/background";
 import { mayCreateFiles } from "../lib/pathcache";
@@ -23,11 +23,16 @@ import { jumpTarget, setAgentFocus, setFindOpen, setInspectorPane, setJumpTarget
 import { applyKeybindingsFile, keymap } from "./keybindings";
 import { orderSessions } from "../lib/session-order";
 import { composerStorage } from "../lib/drafts";
+import { pickedPatch, takePicked } from "../lib/picked";
 import { composerDrafts } from "../lib/composer-draft";
 import { onStep } from "../lib/stream-clock";
 import { keyedTurn, placeBefore, type TurnKey } from "../lib/transcript-scroll";
 
-export const rpc = new Rpc(credentials, windowKey);
+// On a server, the window talks to the Cavvy there; this computer's own Cavvy says where that is (lib/machines.ts).
+export const serversUi = () => import("../components/Servers");
+/** Why a window on a server isn't connected, in a few words, for the banner that says it's reconnecting. */
+export const [connNote, setConnNote] = createSignal<string>();
+export const rpc = new Rpc(machine ? async (stream?: boolean) => (await serversUi()).machineCredentials(stream) : credentials, windowKey);
 rpc.retriesCredentials = isDesktop;
 
 // ---------------------------------------------------------------------------
@@ -291,6 +296,18 @@ export function markSeen(id: string, at = Date.now()) {
     saveSeen();
 }
 
+/**
+ * Sessions new to this window (another machine's, just heard of): seen as they are, so none starts unread. And
+ * `unlisted`: those of another machine that are no longer listed here, of which nothing is kept.
+ */
+export function markSeenAll(list: SessionSummary[], unlisted: string[] = []) {
+    batch(() => {
+        for (const s of list) setApp("seen", s.id, s.updatedAt);
+        for (const id of unlisted) setApp("seen", id, undefined!);
+    });
+    saveSeen();
+}
+
 export function isUnread(s: SessionSummary): boolean {
     if (s.id === app.activeId || s.status === "running") return false;
     const seen = app.seen[s.id];
@@ -532,6 +549,9 @@ export async function forkSession(id: string, at: { index: number; text: string;
 
 /** Show a session in the main view. Select immediately; only the newest request may finish navigation. */
 export async function activate(id: string | undefined, cwd?: string) {
+    // One on another machine: the window goes there, and opens it.
+    const at = id ? [...app.sessions, ...app.archived].find((s) => s.id === id) : undefined;
+    if (at && at.machine !== machine) return void serversUi().then((m) => m.switchMachine(at.machine, id), reportError);
     if (jumpTarget() && jumpTarget()!.sessionId !== id) setJumpTarget(undefined);
     if (id !== app.activeId) setFindOpen(false);
     pending.cancel();
@@ -620,6 +640,19 @@ export function requestTrust(path: string, then: () => void, purpose?: "mcp-appr
 // ---------------------------------------------------------------------------
 // Lists
 
+/**
+ * The sessions on the user's other machines, where this Cavvy has servers: listed with this machine's own, each
+ * with the machine it's on (`list`: components/OtherMachines.tsx keeps them, and adds and removes one as it
+ * changes). And `shown`: one of the window's own as its row shows it, when more is known of it than the machine
+ * it's on says (lib/lent.ts, in a window on a server).
+ */
+export const others: { list?: () => SessionSummary[]; shown?: (s: SessionSummary) => SessionSummary } = {};
+/** A session of the window's own machine, as the list holds it: with that machine, when it's a server. */
+const own = (s: SessionSummary): SessionSummary => {
+    const row = machine ? { ...s, machine } : s;
+    return others.shown?.(row) ?? row;
+};
+
 export async function refreshSessions() {
     const markers = new Map(deleted);
     const lists = await Promise.all([rpc.call("sessions.list", { limit: 300 }), rpc.call("sessions.list", { limit: 300, archived: true })]).catch((e) => {
@@ -628,7 +661,10 @@ export async function refreshSessions() {
     });
     // A list confirms a missed restore, but cannot undo a deletion that happened
     // while either request was in flight (including a second deletion after Undo).
-    const [list, archived] = lists.map((rows) => rows.filter((s) => !deleted.has(s.id) || deleted.get(s.id) === markers.get(s.id))) as typeof lists;
+    const [list, archived] = lists.map((rows) => rows.filter((s) => !deleted.has(s.id) || deleted.get(s.id) === markers.get(s.id)).map(own)) as typeof lists;
+    // The other machines' sessions go on being listed: none in the place of one of this machine's own.
+    const mine = new Set([...list, ...archived].map((s) => s.id));
+    for (const s of others.list?.() ?? []) if (!mine.has(s.id)) (s.archived ? archived : list).push(s);
     // The open search result can be older than the server's list window.
     const active = [...app.sessions, ...app.archived].find((s) => s.id === app.activeId);
     if (active && !deleted.has(active.id) && ![...list, ...archived].some((s) => s.id === active.id)) {
@@ -657,6 +693,7 @@ export async function refreshModels(refresh = false) {
     try {
         setApp("models", reconcile(await rpc.call("models.list", { refresh }), { key: "provider" }));
         setApp("modelsLoaded", true);
+        usePicked();
     } finally {
         setApp("modelsLoading", false);
     }
@@ -722,8 +759,30 @@ function keybindingsChanged(next: Parameters<typeof applyKeybindingsFile>[0]) {
     toast(next.text === undefined ? "Keybindings file removed: default shortcuts" : "Keybindings reloaded", "info");
 }
 
+/**
+ * What the user had picked for a new session on the machine the window came from (lib/picked.ts): taken up here
+ * once this machine's settings and models are both in, when it has that model. Then it's this machine's too.
+ */
+let picked = takePicked(() => sessionStorage);
+/** Still to be taken up: a window that leaves before then takes it on (lib/machines.ts). */
+export const pendingPicked = () => picked;
+/** How long the first screen waits for the models when a pick came with the window: after that it's let go, so the composer doesn't change once it's shown. */
+const PICKED_WAIT_MS = 400;
+let settingsIn = false;
+function usePicked() {
+    if (!picked || !settingsIn || !app.modelsLoaded) return;
+    const patch = pickedPatch(picked, app.settings, app.models.flatMap((g) => g.models));
+    picked = undefined;
+    if (!patch) return;
+    // Shown at once; what the machine then says it has is what stays.
+    setApp("settings", { ...app.settings, ...patch });
+    void rpc.call("settings.update", { patch }).then((s) => setApp("settings", s), (e) => (reportError(e), refreshSettings()));
+}
+
 export async function refreshSettings() {
     setApp("settings", await rpc.call("settings.get", {}));
+    settingsIn = true;
+    usePicked();
     // Observe the first settings immediately: other startup refreshes may still be pending when the editor changes.
     if (!watchingEditor) {
         watchingEditor = true;
@@ -747,7 +806,7 @@ function sessionPresent(id: string) {
 const seenBeforeDelete = new Map<string, number>();
 
 /** A session deleted (here, in another window, or while this one was away): out of the lists, its handle and draft dropped, and off the screen. */
-function forgetSession(id: string) {
+export function forgetSession(id: string) {
     deleted.set(id, Symbol());
     setSessionPresenceVersion((v) => v + 1);
     if (jumpTarget()?.sessionId === id) setJumpTarget(undefined);
@@ -777,7 +836,7 @@ function reopenFailed(id: string, e: unknown) {
     }
 }
 
-function upsertSession(s: SessionSummary) {
+export function upsertSession(s: SessionSummary) {
     sessionPresent(s.id);
     const seen = seenBeforeDelete.get(s.id);
     if (seen !== undefined) {
@@ -815,7 +874,7 @@ function onEvent(ev: ServerEvent) {
             return;
         }
         case "sessions.upsert":
-            upsertSession(ev.session);
+            upsertSession(own(ev.session));
             return;
         case "sessions.remove":
             forgetSession(ev.id);
@@ -849,7 +908,8 @@ function onEvent(ev: ServerEvent) {
             if (!prefs.notifications) return;
             if (focused() && app.activeId === ev.sessionId) return;
             if (ev.kind === "done" && focused()) return;
-            void notify(ev.title, ev.body, () => void activate(ev.sessionId));
+            // In a window on a server the machine is named, as it is for sessions on machines no window is on.
+            void notify(machine ? `${machine}: ${ev.title}` : ev.title, ev.body, () => void activate(ev.sessionId));
             return;
         }
     }
@@ -932,9 +992,18 @@ export function start() {
         if (s !== "open") return;
         void (async () => {
             try {
-                setApp("hello", await rpc.call("hello", { client: isDesktop ? "desktop" : "browser" }));
-                await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders(), refreshKeybindings().catch(() => undefined)]);
-                void refreshModels().catch(() => undefined);
+                // To a server's Cavvy this window is a page like any other: what the desktop app lends its own Cavvy
+                // (its browser, its folders) is this computer's, not the server's.
+                setApp("hello", await rpc.call("hello", { client: isDesktop && !machine ? "desktop" : "browser" }));
+                if (machine || app.hello?.servers) void serversUi().then((m) => m.connected());
+                const lists = Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders(), refreshKeybindings().catch(() => undefined)]);
+                // Asked for with the lists, after them: the composer names its model from them, and a pick brought
+                // from another machine is checked against them.
+                const models = refreshModels().catch(() => undefined);
+                await lists;
+                // That pick is in the composer from the first screen, or not at all: the models are waited for, a moment.
+                if (picked) await Promise.race([models, new Promise((r) => setTimeout(r, PICKED_WAIT_MS))]);
+                picked = undefined;
                 void refreshLimits().catch(() => undefined);
                 // A server from before app.update.get has nothing to say: no update state, no button.
                 void refreshUpdate().then(recheckUpdate, () => undefined);

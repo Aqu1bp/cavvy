@@ -31,7 +31,25 @@ export interface ServeOptions extends EngineOptions {
     staticDir?: string;
     /** Extra origins allowed to connect (a Vite dev server). */
     origins?: string[];
+    /**
+     * A server other machines sign in to, each through its own SSH tunnel (src/servers/host.ts). There's no one
+     * token then: a machine trades a pairing code made over SSH for a sign-in of its own, which can be taken away.
+     * The tunnel's end is some port on that machine's loopback, so any loopback port names this server.
+     */
+    signIns?: SignIns;
+    /**
+     * Which run of the server this is, said with every health check (not a secret): a machine connected through a
+     * tunnel learns from it that the server restarted behind the tunnel, and that it has to sign in again.
+     */
+    run?: string;
     log?: (msg: string) => void;
+}
+
+export interface SignIns {
+    /** A pairing code's sign-in, once: the token its machine connects with from then on. */
+    redeem(code: string): string | undefined;
+    /** Who a token signs in, while it's good: the machine, and which of its connections made the sign-in. */
+    check(token: string): { machine: string; client?: string } | undefined;
 }
 
 export interface RunningServer {
@@ -41,6 +59,10 @@ export interface RunningServer {
     token: string;
     /** A single-use link for a browser. */
     loginUrl(): string;
+    /** Closes the connections a machine has (its sign-in was taken away): all of them, or those one of its clients signed in. */
+    dropMachine(id: string, client?: string): number;
+    /** Connections open now, by machine (with `signIns`). */
+    machines(): Map<string, number>;
     stop(): Promise<void>;
 }
 
@@ -73,6 +95,9 @@ function sameSecret(a: string, b: string): boolean {
 
 interface Conn {
     browser: boolean;
+    /** The machine it signed in as (with `signIns`), and which of that machine's clients made the sign-in. */
+    machine?: string;
+    signedInBy?: string;
     /** The desktop app's browser (browser/host.ts), on /browser-host: not a window, and no RPC. */
     desktop?: { host?: DesktopHost };
     held: Map<string, { id: string; tab?: number; input: BrowserInput }>;
@@ -91,14 +116,22 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
     const staticDir = o.staticDir && existsSync(join(o.staticDir, "index.html")) ? resolve(o.staticDir) : undefined;
 
     let port = 0;
+    const signIns = o.signIns;
+    const sockets = new Set<ServerWebSocket<Conn>>();
+    /** A loopback name with any port: what a tunnel's other end is called on the machine that made it. */
+    const LOOPBACK = /^(127\.0\.0\.1|localhost|\[::1\]):\d{1,5}$/;
     const hostOk = (h: string | null): boolean => {
         if (!h) return false;
+        // A page that rebinds a DNS name to this address still sends its own name, which isn't one of these.
+        if (signIns) return LOOPBACK.test(h.toLowerCase());
         const allowed = [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`];
         if (host !== "127.0.0.1" && host !== "localhost") allowed.push(`${host}:${port}`);
         return allowed.includes(h.toLowerCase());
     };
-    const originOk = (origin: string | null): boolean => {
+    const originOk = (origin: string | null, via?: string | null): boolean => {
         if (origin === null) return true; // not a browser: the token decides
+        // Through a tunnel, this server's own pages come from wherever the tunnel starts: the address the request names.
+        if (signIns && via && LOOPBACK.test(via.toLowerCase()) && origin === `http://${via.toLowerCase()}`) return true;
         const own = [`http://127.0.0.1:${port}`, `http://localhost:${port}`, `http://[::1]:${port}`];
         if (host !== "127.0.0.1" && host !== "localhost") own.push(`http://${host}:${port}`);
         return [...own, ...APP_ORIGINS, ...(o.origins ?? [])].includes(origin);
@@ -167,13 +200,16 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                     debug(`refused browser host from origin ${req.headers.get("origin")}`);
                     return new Response("Forbidden origin", { status: 403 });
                 }
-                if (!originOk(req.headers.get("origin"))) {
+                // The desktop app's own pages are on the machine it runs on, not on one it reaches through a tunnel.
+                if (url.pathname === "/browser-host" && signIns) return new Response("Not found", { status: 404 });
+                if (!originOk(req.headers.get("origin"), req.headers.get("host"))) {
                     debug(`refused WebSocket from origin ${req.headers.get("origin")}`);
                     return new Response("Forbidden origin", { status: 403 });
                 }
                 const protocols = (req.headers.get("sec-websocket-protocol") ?? "").split(",").map((s) => s.trim());
                 const auth = protocols.find((p) => p.startsWith("auth."))?.slice(5) ?? "";
-                if (!protocols.includes(SUBPROTOCOL) || !sameSecret(auth, token)) {
+                const who = signIns?.check(auth);
+                if (!protocols.includes(SUBPROTOCOL) || (signIns ? who === undefined : !sameSecret(auth, token))) {
                     debug(`refused WebSocket without the token (origin ${req.headers.get("origin")})`);
                     return new Response("Unauthorized", { status: 401 });
                 }
@@ -184,7 +220,7 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                     return new Response("Bad window key", { status: 400 });
                 }
                 debug(`WebSocket from ${req.headers.get("origin") ?? "no origin"}`);
-                const conn: Conn = { browser: url.pathname === "/browser-stream", held: new Map(), client: { subs: new Set(), send: () => {}, window }, ...(url.pathname === "/browser-host" ? { desktop: {} } : {}) };
+                const conn: Conn = { browser: url.pathname === "/browser-stream", machine: who?.machine, signedInBy: who?.client, held: new Map(), client: { subs: new Set(), send: () => {}, window }, ...(url.pathname === "/browser-host" ? { desktop: {} } : {}) };
                 if (srv.upgrade(req, { data: conn, headers: { "Sec-WebSocket-Protocol": SUBPROTOCOL } })) return undefined;
                 return new Response("Upgrade failed", { status: 400 });
             }
@@ -192,12 +228,18 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                 // The page trades the link's one-time code for the token.
                 if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
                 const origin = req.headers.get("origin");
-                if (!origin || !originOk(origin)) return new Response("Forbidden origin", { status: 403 });
+                // A machine's own Cavvy trades its code too, and it's no page: it sends no origin.
+                if (signIns ? !originOk(origin, req.headers.get("host")) : !origin || !originOk(origin)) return new Response("Forbidden origin", { status: 403 });
                 let code = "";
                 try {
                     code = String(((await req.json()) as { code?: unknown }).code ?? "");
                 } catch {
                     return new Response("Bad request", { status: 400 });
+                }
+                if (signIns) {
+                    const signedIn = signIns.redeem(code);
+                    if (!signedIn) return Response.json({ error: "This link has expired. Connect to the server again for a new one." }, { status: 401, headers: securityHeaders });
+                    return Response.json({ token: signedIn }, { headers: { ...securityHeaders, "Cache-Control": "no-store" } });
                 }
                 const now = Date.now();
                 for (const [c, exp] of codes) if (exp < now) codes.delete(c);
@@ -206,7 +248,7 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                 codes.delete(match);
                 return Response.json({ token }, { headers: { ...securityHeaders, "Cache-Control": "no-store" } });
             }
-            if (url.pathname === "/healthz") return new Response("ok", { headers: securityHeaders });
+            if (url.pathname === "/healthz") return new Response(o.run ? `ok ${o.run}` : "ok", { headers: securityHeaders });
             if (req.method !== "GET" && req.method !== "HEAD") return new Response("Method not allowed", { status: 405 });
             return serveFile(url.pathname);
         },
@@ -215,6 +257,7 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
             idleTimeout: 120,
             sendPings: true,
             open(ws: ServerWebSocket<Conn>) {
+                sockets.add(ws);
                 if (ws.data.desktop) {
                     ws.data.desktop.host = attachDesktopHost({ send: (t) => void ws.send(t), close: (code, reason) => ws.close(code, reason) });
                     log("the desktop app's browser connected");
@@ -280,6 +323,7 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
                 if (!notification && ws.readyState === 1) ws.send(JSON.stringify(reply, wireReplacer));
             },
             close(ws: ServerWebSocket<Conn>) {
+                sockets.delete(ws);
                 if (ws.data.desktop) {
                     if (ws.data.desktop.host) detachDesktopHost(ws.data.desktop.host);
                     return;
@@ -305,6 +349,20 @@ export async function startServer(o: ServeOptions = {}): Promise<RunningServer> 
             const code = randomBytes(18).toString("base64url");
             codes.set(code, Date.now() + CODE_TTL_MS);
             return `${url}/#code=${code}`;
+        },
+        dropMachine(id: string, client?: string) {
+            let n = 0;
+            for (const ws of [...sockets]) {
+                if (ws.data.machine !== id || (client !== undefined && ws.data.signedInBy !== client)) continue;
+                ws.close(4001, "Signed out");
+                n++;
+            }
+            return n;
+        },
+        machines() {
+            const out = new Map<string, number>();
+            for (const ws of sockets) if (ws.data.machine !== undefined) out.set(ws.data.machine, (out.get(ws.data.machine) ?? 0) + 1);
+            return out;
         },
         async stop() {
             await engine.stop();

@@ -24,7 +24,8 @@ export function createUpdateAction() {
     };
     const request = () => {
         if (pending() || app.update?.updating) return;
-        const working = app.sessions.filter((s) => s.status === "running").length;
+        // Those on this computer: the app's restart doesn't stop a server's.
+        const working = app.sessions.filter((s) => !s.machine && s.status === "running").length;
         if (working) setAsking(working);
         else void start();
     };

@@ -39,7 +39,8 @@ Options:
   --dangerously-skip-permissions  allow bypass mode in the GUI
   --dev-origin <url>              also accept connections from this origin (a Vite dev server)`;
 
-function defaultStatic(): string | undefined {
+/** The built GUI: beside a compiled program, or in the checkout this runs from. */
+export function defaultStatic(): string | undefined {
     const candidates = [process.env.CAVVY_GUI_DIST, join(resolve(import.meta.dir, "..", ".."), "gui", "dist"), join(dirname(process.execPath), "gui")].filter((d): d is string => Boolean(d));
     return candidates.find((d) => existsSync(join(d, "index.html")));
 }

@@ -49,12 +49,13 @@ export class Rpc {
     state: ConnectionState = "connecting";
 
     /** `windowKey`: this window's, presented on every connection; the server's terminals belong to it. */
-    constructor(private credentials: () => Promise<Credentials | undefined>, private windowKey?: () => string) {}
+    /** `credentials(stream)`: `stream` when it's for a pictures connection (browserStream), not the window's own. */
+    constructor(private credentials: (stream?: boolean) => Promise<Credentials | undefined>, private windowKey?: () => string) {}
 
     /** A separate connection with the same credential lifecycle; pictures never queue behind chat. */
     browserStream(): Rpc {
         const stream = new Rpc(async () => {
-            const credentials = await this.credentials();
+            const credentials = await this.credentials(true);
             if (!credentials) return;
             const url = new URL(credentials.url);
             url.pathname = "/browser-stream";
@@ -226,8 +227,16 @@ export class Rpc {
         else p.resolve(msg.result);
     }
 
+    /**
+     * Where a call goes when it isn't this connection's to answer: one about a session on another machine, in a
+     * window that lists every machine's (components/OtherMachines.tsx). Undefined: here.
+     */
+    route?: (method: string, params: unknown) => Promise<unknown> | undefined;
+
     /** Never wait for reconnect: an offline action must not run later without the user. */
     async call<M extends Method>(method: M, params: ParamsOf<M>): Promise<ResultOf<M>> {
+        const elsewhere = this.route?.(method, params);
+        if (elsewhere) return elsewhere as Promise<ResultOf<M>>;
         if (this.closed || this.state !== "open") throw new RpcError("Not connected", "disconnected");
         const ws = this.ws;
         if (!ws || ws.readyState !== WebSocket.OPEN) throw new RpcError("Not connected", "disconnected");
