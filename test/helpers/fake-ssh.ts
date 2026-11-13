@@ -209,7 +209,7 @@ export function fakeSsh(o: { systemd?: boolean } = {}): FakeServer {
             // pretend server has no agent CLIs of its own, whatever is installed on the machine the tests run on.
             const program = o.broken
                 ? "#!/bin/sh\necho 'cannot execute binary file: Exec format error' >&2\nexit 126\n"
-                : `#!/bin/sh\nPATH=${join(dir, "tools")}:/usr/bin:/bin:/usr/sbin:/sbin; SHELL=${join(dir, "bin", "quiet-shell")}; CAVVY_BUILD=${id}; CAVVY_GUI_DIST="$(dirname "$0")/gui"; export PATH SHELL CAVVY_BUILD CAVVY_GUI_DIST\nexec ${JSON.stringify(process.execPath)} --no-env-file --config=${JSON.stringify(join(REPO, "bunfig.toml"))} ${JSON.stringify(join(REPO, "src", "index.ts"))} "$@"\n`;
+                : `#!/bin/sh\nPATH=${join(dir, "tools")}:/usr/bin:/bin:/usr/sbin:/sbin; SHELL=${join(dir, "bin", "quiet-shell")}; CAVVY_BUILD=${id}; CAVVY_GUI_DIST="$(dirname "$0")/gui"; CAVVY_SERVER_PROGRAM="$0"; export PATH SHELL CAVVY_BUILD CAVVY_GUI_DIST CAVVY_SERVER_PROGRAM\nexec ${JSON.stringify(process.execPath)} --no-env-file --config=${JSON.stringify(join(REPO, "bunfig.toml"))} ${JSON.stringify(join(REPO, "src", "index.ts"))} "$@"\n`;
             writeFileSync(join(stage, "cavvy"), program);
             chmodSync(join(stage, "cavvy"), 0o755);
             if (o.gui) {

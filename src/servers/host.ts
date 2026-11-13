@@ -31,8 +31,9 @@ import { AGENT_CLIS, agentCli } from "../backends/defs";
 import { findCli } from "../backends/cli";
 import { cachedChrome } from "../browser/chrome";
 import { APP_NAME, APP_VERSION, cavvyHome, ensureDir, paths } from "../config/paths";
-import { loadSettings, writeJson } from "../config/settings";
-import { sandboxKind } from "../permissions/sandbox";
+import { loadSettings, writeJson, type Settings } from "../config/settings";
+import { sandboxEnabled, sandboxKind } from "../permissions/sandbox";
+import { defaultMode, type PermissionMode } from "../permissions/modes";
 import { readAgentConfig, saveAgentConfig } from "../providers/registry";
 import { PROTOCOL_VERSION } from "../server/protocol";
 import type { SignIns } from "../server/server";
@@ -448,6 +449,10 @@ export interface HostCheck {
     browser: boolean;
     /** The sandbox Cavvy's own models' commands can run in, if this machine has one that works. */
     sandbox?: string;
+    /** That sandbox is in use (Linux's is off until its settings turn it on). Left out by a server from before it was said. */
+    sandboxOn?: boolean;
+    /** The permission mode sessions start in there. Left out by a server from before it was said. */
+    mode?: PermissionMode;
     memMb: number;
 }
 
@@ -486,9 +491,16 @@ export async function hostCheck(): Promise<HostCheck> {
         }),
     );
     const gh = which("gh");
+    // This user's own settings: no project is open here.
+    let settings: Settings = {};
+    try {
+        settings = loadSettings(homedir(), { trusted: false });
+    } catch {
+        // unreadable: as none
+    }
     let browser = false;
     try {
-        browser = cachedChrome(loadSettings(homedir(), { trusted: false }).browser?.executable).ok;
+        browser = cachedChrome(settings.browser?.executable).ok;
     } catch {
         browser = false;
     }
@@ -498,6 +510,8 @@ export async function hostCheck(): Promise<HostCheck> {
         gh: { installed: Boolean(gh), signedIn: gh ? await runs([gh, "auth", "status", "--hostname", "github.com"]) : undefined },
         browser,
         sandbox: sandboxKind(),
+        sandboxOn: sandboxEnabled(settings.sandbox),
+        mode: defaultMode(settings, homedir()).mode,
         memMb: Math.round(totalmem() / 1024 / 1024),
     };
 }

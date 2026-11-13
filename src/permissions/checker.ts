@@ -27,11 +27,12 @@ import type { HiddenReason, Tool } from "../tools/types";
 import type { PermissionMode } from "./modes";
 import { sandboxAllowedHosts, sandboxExcludedCommands, type Settings } from "../config/settings";
 import { findMatch, EDIT_TOOLS, READ_TOOLS, toolPath, type RuleTarget } from "./rules";
-import { accountTarget, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, type CommandAnalysis, CAVVY_FILES, cavvyHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, suggestBashRules, withoutHeredocData } from "./bash-safety";
+import { accountTarget, ANALYSIS_LIMIT, analyzeCommand, commandsWithDirs, configTarget, dangerousReason, effectiveArgv, expandWord, type CommandAnalysis, CAVVY_FILES, cavvyHomeReads, isReadOnlyCommand, programNames, pushesDefaultBranch, sensitiveTarget, sensitiveWord, shellVars, type ShellEnv, suggestBashRules, withoutHeredocData } from "./bash-safety";
 import { accessNeeded, looksDestructive, sandboxEnabled, sandboxKind, sandboxPolicy, type SandboxKind, type SandboxPolicy } from "./sandbox";
 import { stableStringify, type ApprovedAction } from "./classifier";
 import { isBrowserTool, isQuietBrowserCall, isReadOnly, isShellTool, isSimulatorTool } from "../tools/types";
 import { canonical, expandPath, isInside, spellings } from "../util/files";
+import { onServer } from "../servers/role";
 import { antigravityConfigDirs, cavvyHome, opencodeConfigDir, paths } from "../config/paths";
 import { homeAliases, LEGACY } from "../config/legacy";
 import { childEnv } from "../util/env";
@@ -160,6 +161,8 @@ export class PermissionChecker {
         private root: string,
         /** The sandbox auto mode runs shell commands in here, if any (replaceable in tests). */
         readonly sandbox: () => SandboxKind | undefined = () => (sandboxEnabled(settings().sandbox) ? sandboxKind() : undefined),
+        /** This machine is one of the user's servers (servers/role.ts): only what reaches beyond it is always asked about. */
+        private server: () => boolean = onServer,
     ) {}
 
     sandboxAvailable(): boolean {
@@ -454,7 +457,20 @@ export class PermissionChecker {
         }
 
         let dangerous: string | undefined;
-        if (isShellTool(tool.name)) dangerous = dangerousReason(t.command ?? "");
+        // On a server, a push whose branch can't be worked out: asked about in Bypass too, as what it may be.
+        let unknownPush = false;
+        if (isShellTool(tool.name)) {
+            const server = this.server();
+            dangerous = dangerousReason(t.command ?? "", 0, false, server);
+            // A server runs without asking, and a push there is an agent's own doing: one to the default branch is
+            // asked about in every mode, as Auto asks here. Looked for only where the word is: it reads the command again.
+            const push = server && !dangerous && /push/.test(judged.replace(/['"\\]/g, "")) ? pushesDefaultBranch(judged, cwd) : undefined;
+            // Not a command too long to read through: that says nothing of a push, and would ask for every such command.
+            if (push && push !== ANALYSIS_LIMIT) {
+                if (push.endsWith("(branch unknown)")) unknownPush = true;
+                else dangerous = `pushes to the default branch (${push})`;
+            }
+        }
 
         // Plan mode: research only.
         if (mode === "plan") {
@@ -489,6 +505,8 @@ export class PermissionChecker {
         if (dangerous) {
             return { behavior: "ask", dangerous: true, reason: `This command ${dangerous}.` };
         }
+        // Not flagged as dangerous: it may be an ordinary push, and can be allowed for the session.
+        if (unknownPush && mode === "bypassPermissions") return { behavior: "ask", reason: "This command may push to the default branch: the branch it pushes couldn't be worked out." };
 
         const askRule = findMatch(ask, t, this.root, "deny") ?? (resolved && findMatch(ask, resolved, this.root, "deny")) ?? (opened && (findMatch(ask, opened, this.root, "deny") ?? findMatch(ask, { ...opened, path: canonical(opened.path!) }, this.root, "deny")));
         if (askRule && mode !== "bypassPermissions") return { behavior: "ask", rule: askRule, reason: `Rule ${askRule} requires confirmation` };
