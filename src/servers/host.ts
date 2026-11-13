@@ -39,7 +39,7 @@ import { PROTOCOL_VERSION } from "../server/protocol";
 import type { SignIns } from "../server/server";
 import { childEnv } from "../util/env";
 import { redact, registerSecret, unregisterSecret } from "../util/redact";
-import { thisBuild } from "./build";
+import { thisBuild, thisBuildTime } from "./build";
 import { LOGIN_EXIT } from "./remote";
 
 export const hostDir = () => join(cavvyHome(), "server");
@@ -53,9 +53,14 @@ export interface HostVersion {
     version: string;
     protocol: number;
     build: string;
+    /** When the build's commit was made (seconds): what orders two builds for a machine with no checkout. Left out by a build that doesn't know. */
+    builtAt?: number;
 }
 
-export const hostVersion = (): HostVersion => ({ version: APP_VERSION, protocol: PROTOCOL_VERSION, build: thisBuild() });
+export const hostVersion = (): HostVersion => {
+    const builtAt = thisBuildTime();
+    return { version: APP_VERSION, protocol: PROTOCOL_VERSION, build: thisBuild(), ...(builtAt === undefined ? {} : { builtAt }) };
+};
 
 export interface HostState extends HostVersion {
     pid: number;
