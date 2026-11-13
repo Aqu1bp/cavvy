@@ -28,6 +28,12 @@ const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const PIECE_COST = 64;
 /** What may wait to go out when the other end is slow to take it, unless told otherwise: this end says little. */
 const MAX_UNSENT = 64 * 1024;
+/**
+ * A frame whose body hasn't all come yet is gathered in a buffer of its own size from this size up, so each new
+ * piece of it costs its own bytes, not a copy of everything so far (measured before this: a 4 MB frame finished a
+ * byte at a time kept a core busy).
+ */
+const GATHER_FROM = 16 * 1024;
 /** The answer to the handshake is a few hundred bytes. */
 const MAX_HEAD = 16 * 1024;
 
@@ -39,6 +45,8 @@ export function openBoundedSocket(o: {
     maxMessage: number;
     /** The most that may wait to go out to an end that isn't reading (MAX_UNSENT): past it the connection ends. */
     maxUnsent?: number;
+    /** The most that may come in within any minute, when given: past it the connection ends as for a message too big. */
+    maxPerMinute?: number;
     onOpen(): void;
     onMessage(text: string): void;
     /** Once, however it ends: by either side ("closed"), for a message over the limit ("too-much"), or never opened or broken ("failed"). */
@@ -51,6 +59,13 @@ export function openBoundedSocket(o: {
     /** A message that came in pieces: the pieces so far. */
     let parts: Buffer[] = [];
     let partsSize = 0;
+    /** A frame whose header has been read and whose body is still coming (GATHER_FROM). */
+    let gathering: { first: number; opcode: number; body: Buffer; filled: number } | undefined;
+    /** The last ping of what was just read: answered once, after all of it is read. */
+    let pong: Buffer | undefined;
+    /** What came in since `minuteFrom` (maxPerMinute). */
+    let minuteFrom = 0;
+    let minuteBytes = 0;
     /** What hasn't gone out yet, in order: the other end was slow to take it. Only so much (maxUnsent). */
     let unsent: Buffer[] = [];
     let unsentBytes = 0;
@@ -61,6 +76,8 @@ export function openBoundedSocket(o: {
         state = "closed";
         buffered = Buffer.alloc(0);
         parts = [];
+        gathering = undefined;
+        pong = undefined;
         unsent = [];
         unsentBytes = 0;
         try {
@@ -117,6 +134,31 @@ export function openBoundedSocket(o: {
         return true;
     };
 
+    /** One whole frame. False when it ended the connection. */
+    const took = (first: number, opcode: number, payload: Buffer): boolean => {
+        if (opcode === 0x8) {
+            frame(0x8, Buffer.alloc(0));
+            return (end("closed"), false);
+        }
+        if (opcode === 0x9) {
+            // Answered once per read, the latest (as the protocol allows): a run of pings costs one answer, not one each.
+            pong = Buffer.from(payload);
+            return true;
+        }
+        if (opcode === 0xa) return true;
+        if (opcode !== 0x1 && opcode !== 0x0) return (end("failed"), false);
+        // A piece with nothing before it, or a new message inside another: not how messages are sent.
+        if ((opcode === 0x0) !== parts.length > 0) return (end("failed"), false);
+        parts.push(payload);
+        partsSize += payload.length + (first & 0x80 && parts.length === 1 ? 0 : PIECE_COST);
+        if (!(first & 0x80)) return true;
+        const text = (parts.length === 1 ? parts[0]! : Buffer.concat(parts)).toString("utf-8");
+        parts = [];
+        partsSize = 0;
+        o.onMessage(text);
+        return state === "open";
+    };
+
     /** Takes whole frames off the front of what's come in. False when it ended the connection. */
     const frames = (): boolean => {
         for (;;) {
@@ -142,30 +184,50 @@ export function openBoundedSocket(o: {
             if (second & 0x80 || first & 0x70) return (end("failed"), false);
             const control = opcode >= 0x8;
             if (control ? length > 125 || !(first & 0x80) : partsSize + length > o.maxMessage) return (end(control ? "failed" : "too-much"), false);
-            if (buffered.length < at + length) return true;
-            const payload = buffered.subarray(at, at + length);
+            if (buffered.length < at + length) {
+                if (length < GATHER_FROM) return true;
+                // The rest of it is gathered as it comes (data), each byte copied once.
+                const body = Buffer.allocUnsafe(length);
+                const filled = buffered.copy(body, 0, at);
+                gathering = { first, opcode, body, filled };
+                buffered = Buffer.alloc(0);
+                return true;
+            }
+            const payload = Buffer.from(buffered.subarray(at, at + length));
             buffered = buffered.subarray(at + length);
-            if (opcode === 0x8) {
-                frame(0x8, Buffer.alloc(0));
-                return (end("closed"), false);
+            if (!took(first, opcode, payload)) return false;
+        }
+    };
+
+    /** What just came in. */
+    const read = (chunk: Buffer) => {
+        if (o.maxPerMinute !== undefined) {
+            const now = Date.now();
+            if (now - minuteFrom >= 60_000) {
+                minuteFrom = now;
+                minuteBytes = 0;
             }
-            // A ping is answered unless what was said before hasn't gone out yet: answers don't pile up for an end that isn't reading.
-            if (opcode === 0x9) {
-                if (!unsent.length) frame(0xa, Buffer.from(payload));
-            }
-            else if (opcode === 0x1 || opcode === 0x0) {
-                // A piece with nothing before it, or a new message inside another: not how messages are sent.
-                if ((opcode === 0x0) !== parts.length > 0) return (end("failed"), false);
-                parts.push(Buffer.from(payload));
-                partsSize += length + (first & 0x80 && parts.length === 1 ? 0 : PIECE_COST);
-                if (first & 0x80) {
-                    const text = (parts.length === 1 ? parts[0]! : Buffer.concat(parts)).toString("utf-8");
-                    parts = [];
-                    partsSize = 0;
-                    o.onMessage(text);
-                    if (state !== "open") return false;
-                }
-            } else if (opcode !== 0xa) return (end("failed"), false);
+            minuteBytes += chunk.length;
+            // More than this connection ever has reason to carry: whatever it's made of, it isn't listened to.
+            if (minuteBytes > o.maxPerMinute) return end("too-much");
+        }
+        let rest = chunk;
+        if (gathering) {
+            const g = gathering;
+            const n = rest.copy(g.body, g.filled, 0, Math.min(rest.length, g.body.length - g.filled));
+            g.filled += n;
+            if (g.filled < g.body.length) return;
+            gathering = undefined;
+            rest = rest.subarray(n);
+            if (!took(g.first, g.opcode, g.body)) return;
+        }
+        buffered = buffered.length ? Buffer.concat([buffered, rest]) : Buffer.from(rest);
+        if (state === "connecting" && !handshake()) return;
+        if (!frames()) return;
+        if (pong && state === "open") {
+            // Not while what was said before hasn't gone out yet: answers don't pile up for an end that isn't reading.
+            if (!unsent.length) frame(0xa, pong);
+            pong = undefined;
         }
     };
 
@@ -181,9 +243,7 @@ export function openBoundedSocket(o: {
             data(_s, chunk) {
                 if (state === "closed") return;
                 bytesIn += chunk.length;
-                buffered = buffered.length ? Buffer.concat([buffered, chunk]) : Buffer.from(chunk);
-                if (state === "connecting" && !handshake()) return;
-                frames();
+                read(chunk);
             },
             drain(s) {
                 while (unsent.length && state !== "closed") {

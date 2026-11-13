@@ -23,6 +23,8 @@ const REPLY_MS = 20_000;
 /** A server's own words are its to choose: only so much of each is kept, and only so many sessions heard of. */
 const HEARD = 300;
 const MAX_MESSAGE = 4 * 1024 * 1024;
+/** And all it sends within a minute: a list and its changes are kilobytes. Past this it isn't listened to for a while. */
+const MAX_PER_MINUTE = 32 * 1024 * 1024;
 /**
  * What a server's sessions have to say is passed on at most this often, turns ending and sessions asking counted
  * apart: a server gone wrong can't bury the user in it, and a busy one can't have its asking go unsaid.
@@ -226,6 +228,7 @@ export class MachineWatch {
             path: "/ws",
             protocols: ["cavvy.v1", `auth.${token}`],
             maxMessage: MAX_MESSAGE,
+            maxPerMinute: MAX_PER_MINUTE,
             onOpen: () => ws.send(JSON.stringify({ id: 1, method: "sessions.list", params: { limit: 100 } })),
             onMessage: (text) => {
                 try {
