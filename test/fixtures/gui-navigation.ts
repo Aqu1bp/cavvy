@@ -21,12 +21,17 @@ Object.assign(globalThis, {
     // Navigation must leave authentication/deep-link URLs untouched.
     location: { hash: "#code=link-code", search: "?existing=value", pathname: "/" },
     history: { replaceState() { throw Error("navigation must not rewrite URLs"); } },
+    // What a session streams is drawn on the frame after it arrives.
+    requestAnimationFrame: (fn: (at: number) => void) => setTimeout(() => fn(performance.now()), 0),
+    cancelAnimationFrame: (n: ReturnType<typeof setTimeout>) => clearTimeout(n),
 });
 const snapshot = (id: string) => ({ seq: 0, state: { id, cwd: "/project", busy: true, interactions: [] }, turns: [], agents: [] });
 let failure: string | undefined;
 let hold = false;
 let release: (() => void) | undefined;
 let opens = 0;
+// "ahead": the lists are slow, and the session the window loads on is asked for meanwhile.
+const lists: (() => void)[] = [];
 class ServerSocket extends Socket {
     send(raw: string) {
         super.send(raw);
@@ -43,6 +48,7 @@ class ServerSocket extends Socket {
             if (hold) release = answer; else answer();
         } else if (method === "settings.get") reply({});
         else if (method === "projects.recent") reply([{ path: "/recent" }]);
+        else if (method === "sessions.list" && mode === "ahead" && opens) lists.push(() => reply([]));
         else if (["sessions.list", "providers.list", "models.list", "limits.get"].includes(method)) reply([]);
         else throw Error(`Unexpected RPC: ${method}`);
     }
@@ -97,6 +103,22 @@ try {
         assert.equal(opens, 1, "Home never restores an older session");
         assert.equal(second.app.homeCwd, mode === "home" ? "/chosen-home" : "/startup");
         assert.ok(onHome());
+    } else if (mode === "ahead") {
+        // Asked for while the lists load, and taken in as it arrives: what it streams meanwhile isn't missed.
+        assert.deepEqual([opens, lists.length], [2, 2], "the session is asked for, and answered, before the lists have answered");
+        assert.equal(second.app.sessionsLoaded, false);
+        assert.ok(second.handleFor("saved")?.ready());
+        Socket.instances.at(-1)!.message({ event: { type: "session.ops", sessionId: "saved", seq: 1, ops: [{ op: "state", patch: { title: "streamed meanwhile" } }] } });
+        await settle();
+        for (const answer of lists.splice(0)) answer();
+        await settle();
+        await settle();
+        assert.equal(second.app.sessionsLoaded, true);
+        assert.equal(second.app.activeId, "saved");
+        assert.equal(second.app.opening, undefined);
+        for (let t = 0; t < 50 && second.handleFor("saved")?.view.state.title === undefined; t++) await new Promise((r) => setTimeout(r, 20));
+        assert.equal(second.handleFor("saved")?.view.state.title, "streamed meanwhile");
+        assert.equal(opens, 2, "asked for once");
     } else if (mode === "navigate") {
         assert.ok(release);
         assert.equal(onHome(), false, "pending restoration does not flash Home");
