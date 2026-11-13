@@ -61,6 +61,17 @@ Removing a server (the bin beside it, from a window that isn't on it) forgets it
 
 Sessions on a server are its own: its folders, its `~/.cavvy`, its settings and memory. The GUI's server there is the same one the desktop app runs locally, so sub-agents, other sessions, schedules, pull request watching and worktrees work as they do here, with the server's tools and sign-ins.
 
+## Your Mac's Simulator, from a server
+
+A server has no iOS simulators. Your Mac has, and while the desktop app is open it lends them to the servers it's connected to: a session on a server then has the simulator tools (`SimulatorControl`, `SimulatorSnapshot`, `SimulatorAct`, `SimulatorScreenshot`), and each call runs on your Mac.
+
+It runs there under your Mac's own rules, not the server's. Each session on a server that uses the Simulator gets a session on your Mac named for it (`box: Fix the login screen`). That session is where you're asked: in Manual, the first time it starts a device or acts on one (**Allow once**, or for the session), with a notification if the window isn't in front. It's also where the Simulator pane shows the device and where what was run is listed. Your Mac's deny rules apply. A screenshot comes back to the server and is kept there, so the chat on the server shows it.
+
+- It needs the desktop app open on a Mac with Xcode, the Simulator turned on in its settings, and a model set up there.
+- With the app closed, sessions on the server don't have the tools. One that calls them just as the app goes is told your Mac went away.
+- The session on your Mac stays for as long as the app runs; it isn't kept after you quit.
+- Only the simulator tools are lent. To put an app on a device, the `.app` has to be on your Mac: a server can't build one for iOS.
+
 ## Keeping it running, and updating
 
 Where the server has systemd, Cavvy runs as a user service: started at boot, restarted if it crashes. That needs "lingering" for your user, which Cavvy turns on itself; where the server refuses, Cavvy still runs but won't come back after a reboot, and `cavvy servers check` gives the command an administrator runs to fix that (`sudo loginctl enable-linger <user>`).
