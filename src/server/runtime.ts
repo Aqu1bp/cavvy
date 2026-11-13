@@ -29,6 +29,7 @@ import { INIT_PROMPT, reviewPrompt } from "../commands/index";
 import { expandCommand, pluginCommandFor, slashCommand } from "../commands/custom";
 import { addPermissionRule, updateSettings, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { MODE_INFO, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
+import { onServer } from "../servers/role";
 import { PermissionChecker } from "../permissions/checker";
 import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "../permissions/classifier";
 import { toolPath } from "../permissions/rules";
@@ -431,7 +432,7 @@ export class Runtime {
         this.ui = new UiLog(session.path, session.meta.id, opts.resumed);
         // A reopened session keeps the mode it was left in (bypass only when chosen again) and the effort chosen for it.
         const left = opts.resumed && this.ui.state.mode && PERMISSION_MODES.includes(this.ui.state.mode) ? this.ui.state.mode : undefined;
-        this.mode = (left !== "bypassPermissions" ? left : undefined) ?? opts.mode ?? ws.settings.permissions?.defaultMode ?? "default";
+        this.mode = (left !== "bypassPermissions" ? left : undefined) ?? opts.mode ?? ws.settings.permissions?.defaultMode ?? (onServer() ? "bypassPermissions" : "default");
         if (this.mode === "bypassPermissions" && !this.bypassAllowed()) this.mode = "default";
         if (left && left !== this.mode) this.leftIn = left;
         const effort = opts.resumed ? this.ui.state.effort : undefined;
