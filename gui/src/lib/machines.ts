@@ -6,8 +6,9 @@ import { createSignal } from "solid-js";
 import type { ServerProblem, UnknownHost } from "@shared/protocol";
 import { credentials, electron, machine, MACHINE_KEY, windowKey } from "./platform";
 import { Rpc, type Credentials } from "./rpc";
-import { app, setConnNote } from "../state/app";
-import { PICKED_KEY, pickedOf } from "./picked";
+import { app, pendingPicked, setConnNote } from "../state/app";
+import { PICKED_KEY } from "./picked";
+import { pickedOf } from "./picked-leaving";
 import { inspectorPane, PANE_KEY } from "../state/ui";
 
 /** Why the window isn't on its server yet, for the cover that says so (components/Servers.tsx). */
@@ -130,8 +131,9 @@ export function switchMachine(name: string | undefined, session?: string, folder
         else sessionStorage.removeItem("cavvy.navigation");
         // The side panel stays on the tab it was on: it's the same window to the user.
         sessionStorage.setItem(PANE_KEY, inspectorPane());
-        // From one new-session screen to another, so does what was picked for the session (lib/picked.ts).
-        const picked = !session && !app.activeId ? pickedOf(app.settings) : undefined;
+        // From one new-session screen to another, so does what was picked for the session (lib/picked.ts): this
+        // machine's, or what the window came with and hasn't taken up (it never got on this machine).
+        const picked = !session && !app.activeId ? (pickedOf(app.settings, app.models.flatMap((g) => g.models)) ?? pendingPicked()) : undefined;
         if (picked) sessionStorage.setItem(PICKED_KEY, JSON.stringify(picked));
         else sessionStorage.removeItem(PICKED_KEY);
     } catch {

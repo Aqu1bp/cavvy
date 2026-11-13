@@ -2,8 +2,11 @@
 // the model, its effort and fast mode. Each machine saves its own, so without this the composer changed under the
 // user's hand whenever they changed only where the session would run. The permission mode isn't carried: it's each
 // machine's own (a server's is Bypass; this computer's is never set by a server's).
+//
+// This half is what the window does where it arrives. What it leaves with is in lib/picked-leaving.ts, which only
+// the servers code loads.
 
-import type { EffortLevel, GuiSettings } from "@shared/protocol";
+import type { EffortLevel, GuiSettings, ModelSummary } from "@shared/protocol";
 
 export const PICKED_KEY = "cavvy.picked";
 
@@ -13,9 +16,8 @@ export interface Picked {
     fastMode?: boolean;
 }
 
-/** What to carry from a window on the new-session screen: nothing where no model is picked. */
-export const pickedOf = (settings: GuiSettings): Picked | undefined =>
-    settings.model ? { model: settings.model, ...(settings.effort ? { effort: settings.effort } : {}), ...(settings.fastMode !== undefined ? { fastMode: settings.fastMode } : {}) } : undefined;
+/** A model as a machine lists it: what says whether a pick can be had there. */
+export type Listed = Pick<ModelSummary, "ref" | "effortLevels" | "supportsFastMode">;
 
 /** What the window brought with it, once. (`storage` is asked for here: where there's none, there's nothing.) */
 export function takePicked(storage: () => Pick<Storage, "getItem" | "removeItem">): Picked | undefined {
@@ -31,13 +33,15 @@ export function takePicked(storage: () => Pick<Storage, "getItem" | "removeItem"
 
 /**
  * What to change in this machine's settings so a new session here starts as picked there. Nothing when this
- * machine hasn't that model (`refs`: the models it has), or is set that way already.
+ * machine hasn't that model (`models`: the ones it lists), or is set that way already. An effort the model doesn't
+ * take here, or fast mode where it can't run fast, is left out: the machine would refuse the rest with it.
  */
-export function pickedPatch(picked: Picked, settings: GuiSettings, refs: readonly string[]): GuiSettings | undefined {
-    if (!refs.includes(picked.model)) return undefined;
+export function pickedPatch(picked: Picked, settings: GuiSettings, models: readonly Listed[]): GuiSettings | undefined {
+    const model = models.find((m) => m.ref === picked.model);
+    if (!model) return undefined;
     const patch: GuiSettings = {};
     if (settings.model !== picked.model) patch.model = picked.model;
-    if (picked.effort && settings.effort !== picked.effort) patch.effort = picked.effort;
-    if (picked.fastMode !== undefined && Boolean(settings.fastMode) !== picked.fastMode) patch.fastMode = picked.fastMode;
+    if (picked.effort && model.effortLevels?.includes(picked.effort) && settings.effort !== picked.effort) patch.effort = picked.effort;
+    if (picked.fastMode !== undefined && (model.supportsFastMode || !picked.fastMode) && Boolean(settings.fastMode) !== picked.fastMode) patch.fastMode = picked.fastMode;
     return Object.keys(patch).length ? patch : undefined;
 }

@@ -764,10 +764,14 @@ function keybindingsChanged(next: Parameters<typeof applyKeybindingsFile>[0]) {
  * once this machine's settings and models are both in, when it has that model. Then it's this machine's too.
  */
 let picked = takePicked(() => sessionStorage);
+/** Still to be taken up: a window that leaves before then takes it on (lib/machines.ts). */
+export const pendingPicked = () => picked;
+/** How long the first screen waits for the models when a pick came with the window: after that it's let go, so the composer doesn't change once it's shown. */
+const PICKED_WAIT_MS = 400;
 let settingsIn = false;
 function usePicked() {
     if (!picked || !settingsIn || !app.modelsLoaded) return;
-    const patch = pickedPatch(picked, app.settings, app.models.flatMap((g) => g.models.map((m) => m.ref)));
+    const patch = pickedPatch(picked, app.settings, app.models.flatMap((g) => g.models));
     picked = undefined;
     if (!patch) return;
     // Shown at once; what the machine then says it has is what stays.
@@ -992,8 +996,13 @@ export function start() {
                 // (its browser, its folders) is this computer's, not the server's.
                 setApp("hello", await rpc.call("hello", { client: isDesktop && !machine ? "desktop" : "browser" }));
                 if (machine || app.hello?.servers) void serversUi().then((m) => m.connected());
+                // Asked for with the lists: the composer names its model from them, and a pick brought from another
+                // machine is checked against them.
+                const models = refreshModels().catch(() => undefined);
                 await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders(), refreshKeybindings().catch(() => undefined)]);
-                void refreshModels().catch(() => undefined);
+                // That pick is in the composer from the first screen, or not at all: the models are waited for, a moment.
+                if (picked) await Promise.race([models, new Promise((r) => setTimeout(r, PICKED_WAIT_MS))]);
+                picked = undefined;
                 void refreshLimits().catch(() => undefined);
                 // A server from before app.update.get has nothing to say: no update state, no button.
                 void refreshUpdate().then(recheckUpdate, () => undefined);
