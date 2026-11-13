@@ -179,6 +179,71 @@ describe("background terminals", () => {
         expect(pids()).toHaveLength(1);
     });
 
+    // Codex 0.167 gives a command it asked about first no process id, and runs it on past its turn (measured with the
+    // real CLI on macOS and Linux): only its list of what it's running names it.
+    test("a command Codex asked about first, its turn stopped at once: named from Codex's list, it's a background task and can be stopped", async () => {
+        Object.assign(process.env, { FAKE_SCENARIO: "hang", FAKE_HANG_ASK: "1", FAKE_HANG_MS: "20000" });
+        const a = await makeAgent({ mode: "default", ask: async () => ({ allow: true }) as any });
+        const stop = new AbortController();
+        const running = a.run("go", stop.signal);
+        // Usually before Cavvy has asked by itself: then it's the stop that asks.
+        await until(() => logLines().some((l) => l.terminalStarted), "the command to start");
+        stop.abort();
+        expect(await running).toBe("aborted");
+        expect(calls("thread/backgroundTerminals/list")[0]).toEqual({ threadId: "thr-new" });
+        expect(a.task("hang-turn-1")).toMatchObject({ provider: "codex", kind: "shell", status: "running", stoppable: true, label: "sleep 60" });
+        expect(JSON.stringify(a.events)).toContain("Still running in the background (process 40001)");
+        expect(JSON.stringify(a.events)).not.toContain("Interrupted by user");
+        expect(await a.agent.stopBackground(["hang-turn-1"])).toEqual({ "hang-turn-1": "stopped" });
+        expect(calls("thread/backgroundTerminals/terminate")).toEqual([{ threadId: "thr-new", processId: "40001" }]);
+        expect(a.task("hang-turn-1")?.status).toBe("stopped");
+        // Stopped by the user: nothing starts a turn for it.
+        await Bun.sleep(300);
+        expect(a.wakes).toEqual([]);
+    });
+
+    test("a command Codex asked about first, still running when its turn ends by itself: a background task, as one with a process id is", async () => {
+        Object.assign(process.env, { FAKE_SCENARIO: "hang", FAKE_HANG_ASK: "1", FAKE_HANG_MS: "700" });
+        const a = await makeAgent({ mode: "default", ask: async () => ({ allow: true }) as any });
+        expect(await a.run("go")).toBe("done");
+        expect(a.task("hang-turn-1")).toMatchObject({ kind: "shell", status: "running", stoppable: true });
+        expect(JSON.stringify(a.events)).toContain("Still running in the background (process 40001)");
+        expect(await a.agent.stopBackground()).toEqual({ "hang-turn-1": "stopped" });
+    });
+
+    test("a stopped turn's command that Codex doesn't list ends with the turn, as before", async () => {
+        Object.assign(process.env, { FAKE_SCENARIO: "hang", FAKE_HANG_ASK: "1", FAKE_HANG_MS: "20000", FAKE_HANG_START_MS: "5000" });
+        const a = await makeAgent({ mode: "default", ask: async () => ({ allow: true }) as any });
+        const stop = new AbortController();
+        const running = a.run("go", stop.signal);
+        await until(() => calls("thread/backgroundTerminals/list").length > 0, "Cavvy to ask what's running");
+        stop.abort();
+        expect(await running).toBe("aborted");
+        expect(a.task("hang-turn-1")).toBeUndefined();
+        expect(JSON.stringify(a.events)).toContain("Interrupted by user");
+    });
+
+    test("a command that starts only after its turn was stopped is ended: it was said to be interrupted", async () => {
+        Object.assign(process.env, { FAKE_SCENARIO: "hang", FAKE_HANG_ASK: "1", FAKE_HANG_MS: "20000", FAKE_HANG_START_MS: "5000", FAKE_HANG_LATE: "100" });
+        const a = await makeAgent({ mode: "default", ask: async () => ({ allow: true }) as any });
+        const stop = new AbortController();
+        const running = a.run("go", stop.signal);
+        await until(() => calls("thread/backgroundTerminals/list").length > 0, "Cavvy to ask what's running");
+        stop.abort();
+        expect(await running).toBe("aborted");
+        expect(JSON.stringify(a.events)).toContain("Interrupted by user");
+        await until(() => logLines().some((l) => l.terminalStarted), "the command to start late");
+        await until(() => calls("thread/backgroundTerminals/terminate").length > 0, "it to be ended");
+        expect(calls("thread/backgroundTerminals/terminate")).toEqual([{ threadId: "thr-new", processId: "40001" }]);
+        // Nothing is listed, and no turn starts for its end.
+        expect(a.task("hang-turn-1")).toBeUndefined();
+        await Bun.sleep(300);
+        expect(a.wakes).toEqual([]);
+        process.env.FAKE_SCENARIO = "cmd";
+        for (const k of ["FAKE_HANG_ASK", "FAKE_HANG_MS", "FAKE_HANG_START_MS", "FAKE_HANG_LATE"]) delete process.env[k];
+        expect(await a.run("next")).toBe("done");
+    });
+
     test("codex.wakeOnBackgroundCommand false: no turn starts for it; Codex hears with the next prompt", async () => {
         process.env.FAKE_CODEX_SCENARIOS = "bg,cmd";
         process.env.FAKE_BG_MS = "100";

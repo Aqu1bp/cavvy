@@ -497,6 +497,8 @@ export class CodexLiveConnection extends CodexTurn {
                 () => {},
             );
         for (const [thread, sub] of this.subs) if (sub.turnId && this.subRoots.get(thread) === ref) void this.sendInterrupt(thread, sub.turnId);
+        // What the turn is running is named first (nameCommands): once it's stopped, Codex leaves the command going.
+        await this.nameCommands();
         // Refused before the turn is active (Codex answers turn/start first): again once it is (#439).
         if (this.threadId) await this.sendInterrupt(this.threadId, ref);
     }
@@ -1035,7 +1037,7 @@ export class CodexLiveConnection extends CodexTurn {
         if (this.completedTurns.size > 64) this.completedTurns.delete(this.completedTurns.keys().next().value!);
         // The turn's events still go to it until it's over.
         if (this.mainTurn === undefined) this.mainTurn = id;
-        this.closeTurnItems(id);
+        this.closeTurnItems(id, status === "interrupted");
         if (this.turnId === id) this.status = status;
         if (status === "failed") this.fail(p.turn?.error, "Codex reported a failed turn");
         const reason = status === "completed" ? "done" : status === "interrupted" ? "aborted" : status === "failed" ? "error" : "done";
@@ -1050,8 +1052,10 @@ export class CodexLiveConnection extends CodexTurn {
      * A turn is over: a command it left running (unified exec, a process of its own) goes on in the background,
      * as a sub-agent of it still working does; anything else open ended with it.
      */
-    private closeTurnItems(turn: string) {
+    private closeTurnItems(turn: string, interrupted = false) {
         const fresh: Terminal[] = [];
+        // Commands of a stopped turn that Codex wasn't running yet when asked (nameCommands): see endLate.
+        const unstarted = new Set<string>();
         for (const [id, it] of [...this.items]) {
             if (it.sub) continue;
             if (it.name === "Bash" && it.processId) {
@@ -1063,8 +1067,10 @@ export class CodexLiveConnection extends CodexTurn {
                 liveDebug("codex", "background terminal", { thread: this.threadId, turn, item: id, processId: it.processId });
                 continue;
             }
+            if (interrupted && it.name === "Bash") unstarted.add(id);
             this.endItem(id, it, this.aborted ? "Interrupted by user" : "Codex stopped before this finished.", true);
         }
+        if (unstarted.size && this.terminalsApi && this.threadId) this.endLate(this.threadId, unstarted);
         for (const [thread, sub] of [...this.subs]) {
             // Done: one set going again in a later turn shows under that turn's call (its label is kept).
             if (!sub.turnId && !this.bgSubs.has(thread)) {
@@ -1098,14 +1104,69 @@ export class CodexLiveConnection extends CodexTurn {
     }
 
     private async listTerminals(threadId: string | undefined): Promise<Set<string> | undefined> {
+        const rows = await this.terminalRows(threadId, 10_000);
+        return rows && new Set(rows.map((d) => String(d?.processId ?? "")));
+    }
+
+    /** What Codex says it's still running in a thread: each with the command's item and the id to stop it by. */
+    private async terminalRows(threadId: string | undefined, ms: number): Promise<any[] | undefined> {
         if (!threadId || this.rpc.closed) return undefined;
         try {
-            const r: any = await withTimeout(this.rpc.request("thread/backgroundTerminals/list", { threadId }), 10_000, "Codex didn't list its background terminals");
-            return new Set((Array.isArray(r?.data) ? r.data : []).map((d: any) => String(d?.processId ?? "")));
+            const r: any = await withTimeout(this.rpc.request("thread/backgroundTerminals/list", { threadId }), ms, "Codex didn't list its background terminals");
+            return Array.isArray(r?.data) ? r.data : [];
         } catch (e) {
             if (/experimentalApi/i.test((e as Error).message)) this.terminalsApi = false;
             return undefined;
         }
+    }
+
+    /**
+     * Codex gives a command it asked the user about no process id (0.167: its item never says one), and goes on
+     * running it when its turn ends, stopped or not. Only Codex's own list of what it's running says which process
+     * the command is. So it's asked: a moment after such a command is allowed, and as a turn is stopped. Named by
+     * the turn's end, the command is a background one like any other (closeTurnItems): listed, and stoppable.
+     * Without this it was ended in the conversation as "Interrupted by user" and ran on, with nothing to stop it by.
+     */
+    private async nameCommands(): Promise<void> {
+        const unnamed = () => [...this.items].filter(([, it]) => !it.sub && it.name === "Bash" && !it.processId);
+        if (!this.terminalsApi || !unnamed().length) return;
+        const rows = await this.terminalRows(this.threadId, 2000);
+        if (!rows) return;
+        const listed = new Map(rows.filter((d) => typeof d?.itemId === "string" && typeof d?.processId === "string" && d.processId).map((d) => [d.itemId as string, d.processId as string]));
+        for (const [id, it] of unnamed()) {
+            const processId = listed.get(id);
+            if (!processId) continue;
+            it.processId = processId;
+            liveDebug("codex", "command named from the list", { thread: this.threadId, item: id, processId });
+        }
+    }
+
+    /**
+     * A command allowed just before its turn was stopped can start after Codex has ended the turn (measured with
+     * 0.167: stopped 150 ms after the approval, Codex's list was empty at the stop and the command ran from then
+     * on). The conversation has said it was interrupted, so it's ended once Codex lists it, by Codex's own stop.
+     */
+    private endLate(threadId: string, items: Set<string>) {
+        const look = async () => {
+            if (!items.size || !this.terminalsApi) return;
+            for (const d of (await this.terminalRows(threadId, 2000)) ?? []) {
+                if (typeof d?.itemId !== "string" || typeof d?.processId !== "string" || !items.delete(d.itemId)) continue;
+                liveDebug("codex", "ending a command that started after its turn was stopped", { thread: threadId, item: d.itemId, processId: d.processId });
+                await this.rpc.request("thread/backgroundTerminals/terminate", { threadId, processId: d.processId }).catch(() => undefined);
+            }
+        };
+        for (const ms of [300, 1500]) setTimeout(() => void look(), ms).unref?.();
+    }
+
+    /** The command just allowed starts a moment later (measured: 20 to 45 ms); one slow to start is asked after again. */
+    private nameSoon() {
+        for (const ms of [200, 1500]) setTimeout(() => void this.nameCommands(), ms).unref?.();
+    }
+
+    protected override async onRequest(method: string, p: any): Promise<unknown> {
+        const answer = await super.onRequest(method, p);
+        if (method === "item/commandExecution/requestApproval" && !this.origin(p) && this.terminalsApi) this.nameSoon();
+        return answer;
     }
 
     /** A background command ended (its item completed): the task says how, and Codex hears of it. */

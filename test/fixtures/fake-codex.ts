@@ -36,7 +36,9 @@
 //                     did, #310); the answer is logged (childAsked), and it ends the sub-agent's turn: completed once
 //                     approved, else interrupted (as Codex does)
 // FAKE_SCENARIO=hang   the turn runs a foreground command (FAKE_HANG_PHASE=tool, default) or streams text
-//                     (FAKE_HANG_PHASE=stream) until interrupted (or FAKE_HANG_MS, default 10000)
+//                     (FAKE_HANG_PHASE=stream) until interrupted (or FAKE_HANG_MS, default 10000); FAKE_HANG_ASK=1: it asks
+//                     about the command first, and the command then runs on past its turn, named only by
+//                     thread/backgroundTerminals/list (FAKE_HANG_START_MS after the answer, default 30)
 // FAKE_ENV_FILE       a JSON file of FAKE_* settings, read again with every message: a test changes them between
 //                     turns of one live app-server as it would between per-turn ones (only those read per turn)
 // FAKE_CRASH_FILE     exits (code 3) as soon as this file exists (and removes it): a crash on demand
@@ -512,9 +514,34 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
     if (scenario === "hang") {
         // Works until interrupted: in a foreground command (tool), or streaming its answer (stream).
         const stream = process.env.FAKE_HANG_PHASE === "stream";
-        const cmd = { type: "commandExecution", id: `hang-${turnId}`, command: "/bin/zsh -lc 'sleep 60'", cwd, status: "inProgress", commandActions: [{ type: "unknown", command: "sleep 60" }], aggregatedOutput: null, exitCode: null };
+        // FAKE_HANG_ASK=1: a command it asks about first, as Codex 0.167 runs one: its item never says which process
+        // it is, and it runs on when its turn ends (stopped, or over after FAKE_HANG_MS) with no item/completed. Only
+        // thread/backgroundTerminals/list has it, by the item's id.
+        const asks = !stream && process.env.FAKE_HANG_ASK === "1";
+        const cmd = { type: "commandExecution", id: `hang-${turnId}`, command: "/bin/zsh -lc 'sleep 60'", cwd, status: "inProgress", commandActions: [{ type: "unknown", command: "sleep 60" }], aggregatedOutput: null, exitCode: null, ...(asks ? { processId: null, source: "agent" } : {}) };
         if (!stream) notify("item/started", { threadId, turnId, item: cmd });
         else notify("item/started", { threadId, turnId, item: { type: "agentMessage", id: `stream-${turnId}`, text: "" } });
+        if (asks) {
+            const d = (await serverRequest("item/commandExecution/requestApproval", { threadId, turnId, itemId: cmd.id, command: cmd.command, cwd, commandActions: cmd.commandActions, availableDecisions: ["accept", "decline", "cancel"] }))?.decision;
+            if (d !== "accept") {
+                notify("item/completed", { threadId, turnId, item: { ...cmd, status: "declined" } });
+                return finish(t.interrupted ? "interrupted" : "completed");
+            }
+            // It starts a moment after the answer.
+            for (const starts = Date.now() + Number(process.env.FAKE_HANG_START_MS ?? 30); Date.now() < starts && !t.interrupted; ) await Bun.sleep(10);
+            const start = () => {
+                const processId = String(++processSeq);
+                terminals.set(processId, { threadId, turnId, item: { ...cmd, processId, source: "unifiedExecStartup" } });
+                log({ terminalStarted: { processId, itemId: cmd.id } });
+            };
+            // Stopped before it started: nothing runs, and nothing is said of the command. FAKE_HANG_LATE=<ms>: it
+            // starts all the same, that long after the turn is over (seen when the stop lands as it's being started).
+            if (t.interrupted) {
+                if (process.env.FAKE_HANG_LATE) setTimeout(start, Number(process.env.FAKE_HANG_LATE));
+                return finish("interrupted");
+            }
+            start();
+        }
         const until = Date.now() + Number(process.env.FAKE_HANG_MS ?? 10000);
         let woken = false;
         const wake = new Promise<void>((r) => (t.wake = () => ((woken = true), r())));
@@ -528,6 +555,7 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
             }
         }
         log({ hangEnded: { turnId, interrupted: t.interrupted } });
+        if (asks) return finish(t.interrupted ? "interrupted" : "completed");
         if (!stream) notify("item/completed", { threadId, turnId, item: { ...cmd, status: t.interrupted ? "failed" : "completed", exitCode: t.interrupted ? -1 : 0, aggregatedOutput: "" } });
         else notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `stream-${turnId}`, text: "more more" } });
         return finish(t.interrupted ? "interrupted" : "completed");
