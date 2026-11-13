@@ -518,7 +518,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 else sendFirstQueued();
                 return;
             case "app:interrupt":
-                if (!canStop(st())) return;
+                // Not while it asks something: Esc is then the card's, which says so (with nothing typed here it
+                // denies it: lib/card-keys.ts), and never stops the whole turn in its place.
+                if (!canStop(st()) || (p.sessionId && busy() && !working())) return;
                 e.preventDefault();
                 interrupt(p.sessionId);
                 return;
