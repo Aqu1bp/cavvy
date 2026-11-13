@@ -45,6 +45,18 @@ What can go wrong, and what you see:
 
 A `LocalForward` in your SSH config for that host is opened along with Cavvy's own tunnel; if its port is taken, the connection fails.
 
+### In the desktop app
+
+The button beside Settings, at the foot of the sidebar, lists your machines: this one and each server. **Add server…** asks for a name, an address (`user@host`) and, if ssh wouldn't find it by itself, a key file; it then does what `cavvy servers add` does: shows the server's key when this machine hasn't seen it, puts Cavvy there, offers the one-time copy, and says what the server lacks.
+
+Picking a server puts that window on it: its sessions, folders, models and settings are the server's, and the button carries the server's name. Other windows stay where they are. Picking this machine brings the window back. A window opens on this machine when the app starts.
+
+What a window on a server doesn't have: the desktop app's own browser pane and the Finder (choosing a folder uses Cavvy's own list of the server's folders; Reveal isn't offered). The Browser tool there needs a Chrome on the server.
+
+If the connection drops, the window keeps what it shows and says why beside `Reconnecting…`; it comes back by itself. A message you send while it's down stays in the box. When getting back needs you, the window asks: the server's key is one this machine hasn't seen (**Trust**), the Cavvy there is another version (**Update**, which asks first if that would stop work there), or Cavvy there was stopped on purpose (**Start**: a window never starts it again by itself).
+
+Removing a server (the bin beside it, from a window that isn't on it) forgets it here at once and then signs this machine out there; Cavvy and the sessions on the server stay. **Undo** puts it back.
+
 Sessions on a server are its own: its folders, its `~/.cavvy`, its settings and memory. The GUI's server there is the same one the desktop app runs locally, so sub-agents, other sessions, schedules, pull request watching and worktrees work as they do here, with the server's tools and sign-ins.
 
 ## Permissions on a server

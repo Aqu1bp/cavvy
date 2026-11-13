@@ -226,7 +226,8 @@ export class ServerLink {
 
     constructor(
         readonly entry: ServerEntry,
-        private readonly o: { onState?: (s: LinkState) => void; backoffMs?: number[]; healthEveryMs?: number } = {},
+        /** `resume`: its first connection too is one coming back by itself, which leaves a server that was stopped on purpose stopped. */
+        private readonly o: { onState?: (s: LinkState) => void; backoffMs?: number[]; healthEveryMs?: number; resume?: boolean } = {},
     ) {}
 
     get state(): LinkState {
@@ -247,7 +248,7 @@ export class ServerLink {
     start(): Promise<void> {
         return (this.first ??= (async () => {
             try {
-                await this.open();
+                await this.open(this.o.resume);
             } catch (e) {
                 this.set({ state: "stopped", error: e as ServerError });
                 throw e;
@@ -299,7 +300,9 @@ export class ServerLink {
                 if (permanent || unknown > UNKNOWN_TRIES) return this.set({ state: "stopped", error });
                 this.set({ state: "reconnecting", error, attempt });
                 const backoff = this.o.backoffMs ?? BACKOFF_MS;
-                await pause(backoff[Math.min(attempt - 1, backoff.length - 1)]!, this.stopping.signal);
+                // Until the next try: sooner when someone asks for it now (tryNow).
+                await Promise.race([pause(backoff[Math.min(attempt - 1, backoff.length - 1)]!, this.stopping.signal), new Promise<void>((now) => (this.sooner = now))]);
+                this.sooner = undefined;
                 if (this.stopping.signal.aborted) return;
                 try {
                     await this.open(true);
@@ -311,6 +314,13 @@ export class ServerLink {
                 }
             }
         }
+    }
+
+    private sooner?: () => void;
+
+    /** While it's waiting to try again: tries now (a window asking again, the user pressing Reconnect). */
+    tryNow() {
+        this.sooner?.();
     }
 
     /** A new sign-in for one more client (a browser tab, a window), through the tunnel that's up. */

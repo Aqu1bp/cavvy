@@ -18,7 +18,7 @@ import { frameDrag } from "../lib/drag";
 import { dockHeight, settingsTab } from "../state/ui";
 import { currentTab, tabLabel } from "../lib/browser";
 import { clampFloat, dragWidth, floatHost, floatMax, floatShown, keyWidth, FLOAT_DEFAULT, type FloatEdge, type FloatRoom } from "../lib/browser-float";
-import { electron } from "../lib/platform";
+import { electron, machine } from "../lib/platform";
 
 /** It stays this long after the agent's turn ends, so its last page can be seen. */
 const LINGER_MS = 4000;
@@ -52,7 +52,7 @@ function saveWidth(w: number | undefined) {
 }
 
 export function FloatingBrowser(p: { handle: SessionHandle }) {
-    if (!electron) return null;
+    if (!electron || machine) return null;
     const id = () => p.handle.id;
     const busy = () => p.handle.view.state.busy;
     const tab = () => currentTab(browserState(id()));
