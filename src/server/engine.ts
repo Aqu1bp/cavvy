@@ -1416,7 +1416,8 @@ export class Engine {
             s[key] = [...list];
         });
         const rt = this.runtimes.get(id);
-        const summary = rt ? this.summaryOf(rt) : this.listSessions(1000, key === "archived" ? !on : false).find((s) => s.id === id) ?? this.listSessions(1000, true).find((s) => s.id === id);
+        // One that isn't open is read from its file, in whichever list its flags now put it.
+        const summary = rt ? this.summaryOf(rt) : (this.listSessions(1000).find((s) => s.id === id) ?? this.listSessions(1000, true).find((s) => s.id === id));
         if (summary) this.broadcast({ type: "sessions.upsert", session: { ...summary, [key]: on } });
     }
 
