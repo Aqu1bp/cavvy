@@ -232,8 +232,13 @@ test("the Simulator turned off here while a session there waits for this machine
     } finally {
         await here.call("settings.update", { patch: { simulator: true } });
     }
-    // Turned on again, it's lent again: the next test's session there has the tools.
-    await until("it to be lent again", async () => (await lentTo(id)).offered);
+    // Turned on again, it's lent again: a session there has the tools once more.
+    await until("the server to be lent it again", async () => {
+        const again = await sessionThere();
+        await remote.call("session.send", { id: again, text: "simulator once it's back" });
+        await Bun.sleep(300);
+        return JSON.stringify(await lastTurn(remote, again)).includes("No such tool") === false;
+    });
 });
 
 test("the user's no here is what the session there is told; this machine going away ends a call that waits", async () => {
@@ -516,9 +521,21 @@ test("each call runs under this machine's mode as it is now, not the one it had 
         expect([free.text.includes("declined"), ran.slice(before).some((a) => a[2] === "bootstatus")]).toEqual([false, true]);
         // Back in Manual: the same session's next call asks, though this machine didn't when it began there.
         await here.call("settings.update", { patch: { defaultMode: "default" } });
+        const seen = new Set<string>();
         const asked = lendHere("SimulatorControl", { action: "shutdown" }, session);
-        await answerLent(session, "no");
+        await answerLent(session, "no", seen);
         expect((await asked).text).toContain("declined");
+        // Bypass again, then only "Allow bypass mode" turned off (the mode set stays Bypass): it asks, as a session
+        // that starts now would, and nothing is said over and over in the session here.
+        await here.call("settings.update", { patch: { defaultMode: "bypassPermissions" } });
+        await lendHere("SimulatorControl", { action: "boot", device: "iPhone 17" }, session);
+        await here.call("settings.update", { patch: { allowBypass: false } });
+        const guest = [...mine.engine.runtimes.values()].find((r: any) => r.guestOf === "box" && r.guestSession?.id === session) as any;
+        const notices = () => JSON.stringify(guest.view ?? guest.session.messages ?? "").split("Bypass mode is off").length - 1;
+        const said = notices();
+        const again = lendHere("SimulatorControl", { action: "shutdown" }, session);
+        await answerLent(session, "no", seen);
+        expect([(await again).text.includes("declined"), guest.mode, notices() - said]).toEqual([true, "default", 0]);
     } finally {
         await here.call("settings.update", { patch: { allowBypass: false, defaultMode: "default" } });
     }

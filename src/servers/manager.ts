@@ -514,7 +514,6 @@ export class ServerLinks {
         if (this.watching) this.watchAll();
     }
 
-    /** The engine is stopping: every connection is closed and signed out. */
     /** What this machine lends changed (its Simulator turned off or on): each server it's connected to is told now. */
     relend() {
         for (const w of this.watches.values()) w.relend();
@@ -530,6 +529,7 @@ export class ServerLinks {
         for (const w of this.watches.values()) w.stop();
     }
 
+    /** The engine is stopping: every connection is closed and signed out. */
     async stopAll() {
         this.stopped = true;
         for (const w of this.watches.values()) w.stop();
