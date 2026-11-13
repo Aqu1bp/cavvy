@@ -352,13 +352,13 @@ export async function hostRun(args: string[], env: HostRunEnv): Promise<void> {
     }
     const { startServer } = await import("../server/server");
     const { defaultStatic } = await import("../server/cli");
+    // What a CLI that isn't signed in is told to do says it's to be done here.
+    (await import("../backends/account-login")).signInsOnServer();
     const signIns = new MachineSignIns();
     // The GUI that came with this build. CAVVY_GUI_DIST, when set, is the only place looked in (tests name the build's own).
     const named = process.env.CAVVY_GUI_DIST;
     const staticDir = named === undefined ? defaultStatic() : existsSync(join(named, "index.html")) ? named : undefined;
     const srv = await startServer({ host: "127.0.0.1", port, signIns, run, staticDir, startCwd: homedir(), fallbackModel: env.fallbackModel, log, away: true });
-    // What a CLI that isn't signed in is told to do says it's to be done here.
-    (await import("../backends/account-login")).signInsOnServer();
     for (const n of env.notes) log(`note: ${n}`);
 
     let stopping = false;
