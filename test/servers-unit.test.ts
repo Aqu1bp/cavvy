@@ -335,6 +335,8 @@ describe("which build is newer", () => {
         const root = join(import.meta.dir, "..");
         expect(readFileSync(join(root, "desktop-electron", "pack.ts"), "utf-8")).toContain(`const SERVER_BUN = "${SERVER_BUN}";`);
         expect(readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf-8")).toContain(`BUN_VERSION: ${SERVER_BUN}`);
+        // And the one a release's builds are made with.
+        expect(readFileSync(join(root, ".github", "workflows", "release.yml"), "utf-8")).toContain(`BUN_VERSION: ${SERVER_BUN}`);
     });
 });
 
