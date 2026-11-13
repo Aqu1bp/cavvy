@@ -14,9 +14,10 @@ import { countCopied, describeCopy, describeLeft, planCopy, sendCopy } from "./c
 import type { HostCheck, HostStatus } from "./host";
 import { ensureBuildThere, ServerBusy, setUpServer, type SetupProgress, type SetupResult } from "./install";
 import { LOGIN_EXIT, probeServer, REMOTE_CURRENT, REMOTE_DIR, remoteBuildDir } from "./remote";
-import { NotSetUp, remoteCheck, remoteStatus, revokeOverSsh, serviceReport, stopRemote, type ServiceReport } from "./service";
+import { applyBuild, NotSetUp, previousBuild, remoteCheck, remoteStatus, revokeOverSsh, serviceReport, stopRemote, UpdateFailed, type ServiceReport } from "./service";
 import { hostOf, offeredHostKey, printable, remoteSh, shQuote, ssh, sshCommandArgv, SshError, trustHostKey } from "./ssh";
 import { draftServer, listServers, removeServer, requireServer, saveServer, ServerError, thisDesktop, type ServerEntry } from "./store";
+import type { PermissionMode } from "../permissions/modes";
 
 const out = (line = "") => process.stdout.write(line + "\n");
 const err = (line: string) => process.stderr.write(line + "\n");
@@ -31,6 +32,7 @@ export const SERVERS_HELP = `Usage:
   ${APP_NAME} servers check [name]             what a server has, and what it's missing
   ${APP_NAME} servers login <name> [cli]       sign Claude Code or Codex in there, and turn it on
   ${APP_NAME} servers update <name>            bring its Cavvy up to this machine's (--force: whatever it runs)
+  ${APP_NAME} servers rollback <name>          put it back on the version it ran before its last update
   ${APP_NAME} servers stop <name>              stop Cavvy there
   ${APP_NAME} servers remove <name>            forget it here, and sign this machine out of it
 
@@ -164,6 +166,19 @@ export function checkLines(name: string, c: HostCheck, service?: ServiceReport):
     else if (c.gh.signedIn === false) lines.push("The GitHub CLI isn't signed in there. On it: gh auth login");
     if (!c.browser) lines.push("No Chrome there: the Browser tool needs one.");
     return lines;
+}
+
+const MODE_NAMES: Record<PermissionMode, string> = { default: "Manual", acceptEdits: "Accept edits", plan: "Plan", auto: "Auto", bypassPermissions: "Bypass" };
+
+/** How sessions on a server stand with permissions: the mode they start in, and the sandbox Auto mode would use. Nothing for a server that doesn't say. */
+export function permissionLines(c: HostCheck): string[] {
+    if (!c.mode) return [];
+    const sandbox = !c.sandbox
+        ? "Auto mode has no sandbox there."
+        : c.sandboxOn
+          ? `Auto mode's sandbox is on (${c.sandbox === "bwrap" ? "bubblewrap" : "Seatbelt"}).`
+          : `Auto mode's sandbox is off: "sandbox": true in its settings turns it on (bubblewrap, experimental).`;
+    return [`Sessions start in ${MODE_NAMES[c.mode]}. ${sandbox}`];
 }
 
 async function check(e: ServerEntry): Promise<HostCheck | undefined> {
@@ -371,6 +386,7 @@ async function add(args: string[]): Promise<number> {
     out(setup.kept === "newer" ? `${e.name} is ready. It runs a newer Cavvy than this machine.` : `${e.name} is ready.`);
     out("Only put credentials on it that you'd accept an agent using.");
     let c = await check(e);
+    if (c?.mode === "bypassPermissions") out("Sessions there run without asking (Bypass).");
     // Asked about one at a time; what's said afterwards is the server as that left it.
     if (c && (await offerSignIns(e, c))) c = await check(e);
     for (const line of c ? checkLines(e.name, c, setup.service) : serviceLines(setup.service)) out(line);
@@ -395,6 +411,7 @@ async function checkCommand(names: string[]): Promise<number> {
             const lines = c ? checkLines(e.name, c, serviceReport(facts)) : [];
             for (const line of lines) out(`  ${line}`);
             if (c && !lines.length) out("  Nothing missing.");
+            for (const line of c ? permissionLines(c) : []) out(`  ${line}`);
         } catch (x) {
             if (x instanceof NotSetUp) out(`${e.name}: Cavvy isn't set up there. Set it up: ${APP_NAME} servers update ${e.name}`);
             else if (!report(x)) throw x;
@@ -418,6 +435,52 @@ async function update(args: string[]): Promise<number> {
     else out(r.replaced ? `${e.name} is updated.` : `${e.name} is up to date.`);
     for (const line of serviceLines(r.service)) out(line);
     return 0;
+}
+
+/** Puts a server back on the build it ran before its last update: for an update that starts but doesn't work. */
+async function rollback(args: string[]): Promise<number> {
+    const name = args.find((a) => !a.startsWith("-"));
+    if (!name) {
+        err(`Usage: ${APP_NAME} servers rollback <name> [--force]`);
+        return 1;
+    }
+    const e = requireServer(name);
+    // All of it as the entry stands once its key is trusted: the one from before would be refused again.
+    const { value: code } = await withTrust(
+        e,
+        async (entry) => {
+            const previous = await previousBuild(entry);
+            if (!previous) {
+                err(`${e.name} has no earlier version to go back to.`);
+                return 1;
+            }
+            const status = await remoteStatus(entry);
+            if (status && (status.working || status.waiting) && !args.includes("--force") && !(await ask(`Go back to the version before on ${e.name}?`, [busyLine(status)], "Go back", "Cancel"))) {
+                err(`${e.name} is working (${busyLine(status)}). To go back anyway: ${APP_NAME} servers rollback ${e.name} --force`);
+                return 1;
+            }
+            let now: HostStatus;
+            try {
+                now = await applyBuild(entry, previous);
+            } catch (x) {
+                // Said as what it is here: "back on the version before" would read as the going back having worked.
+                if (!(x instanceof UpdateFailed)) throw x;
+                err(
+                    x.status
+                        ? `The version before didn't start on ${e.name}, so it still runs the one it had.`
+                        : x.down
+                          ? `The version before didn't start on ${e.name}, and the one it had didn't start again either: nothing runs there now. Start it: ${APP_NAME} servers update ${e.name}`
+                          : `${e.name} couldn't be put back on the version before. ${printable(x.message, 2000)}`,
+                );
+                return 1;
+            }
+            out(`${e.name} is back on the version it ran before.`);
+            if (thisBuild() !== UNKNOWN_BUILD && now.build !== thisBuild()) out(`That isn't this machine's version. To bring it level: ${APP_NAME} servers update ${e.name}`);
+            return 0;
+        },
+        { saved: true },
+    );
+    return code;
 }
 
 async function stop(args: string[]): Promise<number> {
@@ -475,6 +538,7 @@ export async function serversCommand(args: string[]): Promise<number> {
         if (sub === "check") return await checkCommand(args.slice(1).filter((a) => !a.startsWith("-")));
         if (sub === "login") return await login(args.slice(1));
         if (sub === "update") return await update(args.slice(1));
+        if (sub === "rollback") return await rollback(args.slice(1));
         if (sub === "stop") return await stop(args.slice(1));
         if (sub === "remove" || sub === "rm") return await remove(args.slice(1));
         (sub === "-h" || sub === "--help" || sub === "help" ? out : err)(SERVERS_HELP);
