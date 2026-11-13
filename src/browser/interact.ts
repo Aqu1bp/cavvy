@@ -447,12 +447,18 @@ const DROPDOWN = `function () {
 async function dropdown(page: Page, x: number, y: number): Promise<boolean> {
     type Found = { result: { objectId?: string; subtype?: string } };
     const ask = async () => {
-        page.choiceWorld ??= (await page.send<{ executionContextId: number }>("Page.createIsolatedWorld", { frameId: page.targetId, worldName: CHOICE_OBJECTS })).executionContextId;
-        return page.send<Found>("Runtime.evaluate", { expression: `(${DROPDOWN_AT})(${Number(x)}, ${Number(y)})`, contextId: page.choiceWorld, objectGroup: CHOICE_OBJECTS });
+        // Chrome says the world as it's made (Page.choiceWorld). With none, the press is the page's as it is.
+        if (!page.choiceWorld) await page.send("Page.createIsolatedWorld", { frameId: page.targetId, worldName: CHOICE_OBJECTS });
+        if (!page.choiceWorld) return undefined;
+        return page.send<Found>("Runtime.evaluate", { expression: `(${DROPDOWN_AT})(${Number(x)}, ${Number(y)})`, uniqueContextId: page.choiceWorld, objectGroup: CHOICE_OBJECTS });
     };
-    // A world from before the page was loaded again is gone: once more, in a new one.
+    // A world that went with its page just now (the id names nothing): once more, in the new page's.
     const asked = ask()
-        .catch(() => ((page.choiceWorld = undefined), ask()))
+        .catch((e) => {
+            if (!/context/i.test(String((e as Error)?.message))) throw e;
+            page.choiceWorld = undefined;
+            return ask();
+        })
         .catch(() => undefined);
     let late = false;
     const found = await Promise.race([asked, new Promise<undefined>((r) => setTimeout(() => ((late = true), r(undefined)), DROPDOWN_MS))]);
@@ -474,6 +480,10 @@ async function dropdown(page: Page, x: number, y: number): Promise<boolean> {
 /** Forwards what a person did in the pane to the page. */
 export async function forward(page: Page, e: BrowserInput): Promise<void> {
     page.ready();
+    // What follows a press reaches the page after it (a key typed into the field just clicked, the press's own
+    // release, the next press): the press may still be finding out what's under it.
+    const before = page.pressing;
+    if (before && !(e.kind === "mouse" && e.type === "down")) await before;
     switch (e.kind) {
         case "mouse": {
             const type = e.type === "move" ? "mouseMoved" : e.type === "down" ? "mousePressed" : "mouseReleased";
@@ -482,16 +492,15 @@ export async function forward(page: Page, e: BrowserInput): Promise<void> {
             if (e.type === "down") {
                 // A press anywhere closes the list the pane shows; one on a dropdown shows that one's.
                 const press = (async () => {
+                    await before;
                     page.setChoice(undefined);
                     page.choicePress = button === "left" && (await dropdown(page, e.x, e.y));
                     if (!page.choicePress) await send();
                 })();
-                // What follows a press reaches the page after it: the press may still be finding out what's under it.
                 const pressing = press.catch(() => undefined).finally(() => page.pressing === pressing && (page.pressing = undefined));
                 page.pressing = pressing;
                 return press;
             }
-            if (page.pressing) await page.pressing;
             if (e.type === "up" && page.choicePress) {
                 // The release of the press that opened the list: the page didn't get the press.
                 page.choicePress = false;

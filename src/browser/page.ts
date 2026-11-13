@@ -189,8 +189,11 @@ export class Page {
     choicePress = false;
     /** A press on its way to the page (it's finding out what's under it first): what follows it waits for it. */
     pressing?: Promise<unknown>;
-    /** The world of its own in the page where a dropdown is looked at (src/browser/interact.ts); a new page has none yet. */
-    choiceWorld?: number;
+    /**
+     * The world of its own in this page where a dropdown is looked at (src/browser/interact.ts), by the id that is
+     * that world's alone: one from the page before names nothing in the next. A new page has none yet.
+     */
+    choiceWorld?: string;
     canGoBack = false;
     canGoForward = false;
     viewport: Viewport;
@@ -359,8 +362,18 @@ export class Page {
             // The browser's report of the title can come late or not at all: the pane's tab strip reads it from the page.
             void this.readTitle();
         });
+        // The pane's own world in this page's main frame, as Chrome says it's made; gone with the page it was in.
+        this.on("Runtime.executionContextCreated", (p: { context: { uniqueId?: string; name?: string; auxData?: { frameId?: string } } }) => {
+            if (p.context.name === CHOICE_OBJECTS && p.context.auxData?.frameId === this.targetId && p.context.uniqueId) this.choiceWorld = p.context.uniqueId;
+        });
+        this.on("Runtime.executionContextsCleared", () => {
+            this.choiceWorld = undefined;
+        });
         this.on("Page.frameNavigated", (p: { frame: { id: string; parentId?: string; url: string; loaderId?: string } }) => {
             if (p.frame.parentId) return;
+            // Its dropdown, and the world it was looked at in, went with the page before.
+            this.setChoice(undefined);
+            this.choiceWorld = undefined;
             this.navigations++;
             this.documents++;
             this.url = p.frame.url;
@@ -386,7 +399,6 @@ export class Page {
             this.url = p.url;
             // Its dropdown went with the page it was on.
             this.setChoice(undefined);
-            this.choiceWorld = undefined;
             this.changed();
             void this.refreshHistory();
         });
@@ -406,6 +418,8 @@ export class Page {
             this.changed();
         });
         this.on("Inspector.targetCrashed", () => {
+            this.setChoice(undefined);
+            this.choiceWorld = undefined;
             this.crashed = true;
             this.loading = false;
             this.changed();

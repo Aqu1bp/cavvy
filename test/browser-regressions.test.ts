@@ -289,6 +289,17 @@ describe.skipIf(!chromePath)("browser regressions with Chrome", () => {
                 const c = await open(path);
                 expect({ path, options: c.options.length, labels: c.options.every((o) => typeof o.label === "string" && o.label.length <= 200), selected: c.selected, bytes: JSON.stringify(b.state()).length < 200_000 }).toEqual({ path, options: 2, labels: true, selected: 0, bytes: true });
             }
+            // After going to another site (another process, where ids start again), the world asked is still the pane's
+            // own: a page there with frames that redefine the same things gets no more through.
+            await open("/moves");
+            const other = `http://127.0.0.1:${site.port}`;
+            pages["/frames"] = `<body style="margin:0">${Array.from({ length: 8 }, () => `<iframe src="/big" style="position:absolute;left:0;top:0;width:300px;height:100px;border:0"></iframe>`).join("")}<select id=s style="position:absolute;left:0;top:0;width:200px;height:80px"><option>a</option><option>b</option></select></body>`;
+            await p.goto(`${other}/frames`);
+            await Bun.sleep(300);
+            await b.input({ kind: "mouse", type: "down", x: 100, y: 40, button: "left", buttons: 1, clickCount: 1 });
+            await b.input({ kind: "mouse", type: "up", x: 100, y: 40, button: "left", buttons: 0, clickCount: 1 });
+            const after = b.state().tabs[0]!.choice;
+            expect({ options: after?.options.length, small: JSON.stringify(b.state()).length < 200_000 }).toEqual({ options: 2, small: true });
             // The page puts another option where "b" was listed: picking "b" picks nothing.
             await open("/moves");
             await p.evaluate("s.options[1].text = 'c'");
@@ -314,6 +325,26 @@ describe.skipIf(!chromePath)("browser regressions with Chrome", () => {
                 for (let t = 0; t < 50 && (await p.evaluate("window.heard.length")) !== "3"; t++) await Bun.sleep(100);
                 expect(await p.evaluate("window.heard.join()")).toBe('"mousedown,mouseup,click"');
             }
+            // A double click: the second press doesn't pass the first release either.
+            await p.evaluate("window.heard=[]");
+            const o = { x: 120, y: 50, button: "left" as const };
+            const sent = [
+                b.input({ kind: "mouse", type: "down", ...o, buttons: 1, clickCount: 1 }),
+                b.input({ kind: "mouse", type: "up", ...o, buttons: 0, clickCount: 1 }),
+                b.input({ kind: "mouse", type: "down", ...o, buttons: 1, clickCount: 2 }),
+                b.input({ kind: "mouse", type: "up", ...o, buttons: 0, clickCount: 2 }),
+            ];
+            await Promise.all(sent);
+            for (let t = 0; t < 50 && (await p.evaluate("window.heard.length")) !== "6"; t++) await Bun.sleep(100);
+            expect(await p.evaluate("window.heard.join()")).toBe('"mousedown,mouseup,click,mousedown,mouseup,click"');
+            // And what's typed after a click goes where the click put the keyboard.
+            await p.evaluate("document.body.insertAdjacentHTML('beforeend','<input id=i style=\"position:absolute;left:300px;top:20px;width:200px;height:40px\">'); 1");
+            const click = b.input({ kind: "mouse", type: "down", x: 400, y: 40, button: "left", buttons: 1, clickCount: 1 });
+            const release = b.input({ kind: "mouse", type: "up", x: 400, y: 40, button: "left", buttons: 0, clickCount: 1 });
+            const typed = b.input({ kind: "text", text: "日本語" });
+            await Promise.all([click, release, typed]);
+            for (let t = 0; t < 50 && (await p.evaluate("document.getElementById('i').value")) !== '"日本語"'; t++) await Bun.sleep(100);
+            expect(await p.evaluate("document.getElementById('i').value")).toBe('"日本語"');
         } finally { void site.stop(true); }
     }, 60_000);
 
