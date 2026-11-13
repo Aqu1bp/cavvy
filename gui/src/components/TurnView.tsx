@@ -555,15 +555,15 @@ const END_TEXT: Partial<Record<Turn["status"], string>> = {
 };
 
 /**
- * How a stopped turn's line reads. A command it started can outlast it (Codex leaves one running; any CLI's
- * background command does): then "nothing after this point ran" isn't so, and the line says what is.
- */
-/**
  * How a command's row ends when its turn ended and it didn't: what the row says first (src/backends/codex-live.ts,
  * which leaves one running). It stays in the conversation, so it tells later that the turn's command outlived it.
  */
 const LEFT_RUNNING = "Still running in the background";
 
+/**
+ * How a stopped turn's line reads. A command it started can outlast it (Codex leaves one running; any CLI's
+ * background command does): then "nothing after this point ran" isn't so, and the line says what is.
+ */
 function stoppedText(turn: Turn, state: SessionState): string {
     const calls = new Set(turn.blocks.flatMap((b) => (b.t === "tool" ? [b.id] : [])));
     const left = (state.backgroundTasks ?? []).filter((t) => t.kind === "shell" && t.toolUseId !== undefined && calls.has(t.toolUseId));
