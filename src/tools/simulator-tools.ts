@@ -389,8 +389,20 @@ function lendable(tool: Tool<any>): Tool<any> {
     return {
         ...tool,
         ...(validate ? { validate: (input: any, ctx: ToolContext) => (far(ctx) ? undefined : validate.call(tool, input, ctx)) } : {}),
-        run: (input, ctx) => far(ctx)?.call(tool.name, input as Record<string, unknown>, ctx.signal) ?? run.call(tool, input, ctx),
+        run: (input, ctx) => far(ctx)?.call(tool.name, input as Record<string, unknown>, ctx.signal).then(keptHere) ?? run.call(tool, input, ctx),
     };
+}
+
+/**
+ * A picture taken on the machine that lends comes with where that machine saved it, which is no file here. It's
+ * saved here instead, and the result says so, so the chat on this machine can show it.
+ */
+export async function keptHere(r: ToolResult): Promise<ToolResult> {
+    const image = r.images?.[0];
+    if (!image) return r;
+    const said = r.content.replace(/ Saved as [^\n]*? in your last message\./, "");
+    const file = await saveScreenshot({ ...image, width: Number(/(\d+)×\d+/.exec(said)?.[1]) || 0 }).catch(() => undefined);
+    return { ...r, content: file ? `${said} Saved as ${file}: to show it to the user, put ${imageMarkdown(file)} in your last message.` : said };
 }
 
 export const SIMULATOR_TOOLS: Tool<any>[] = [SimulatorControlTool, SimulatorSnapshotTool, SimulatorActTool, SimulatorScreenshotTool].map(lendable);

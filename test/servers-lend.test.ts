@@ -4,7 +4,7 @@
 // its own, and ends plainly when the user says no or this machine goes away.
 
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "fs";
+import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 import { fakeSsh } from "./helpers/fake-ssh";
@@ -218,4 +218,21 @@ test("the user's no here is what the session there is told; this machine going a
     // And the question here is withdrawn: nobody waits for its answer.
     await until("the question here to go", async () => ((await here.call("session.open", { id: waits })) as SessionSnapshot).state.interactions.length === 0);
     remote.ws.close();
+});
+
+test("a screenshot taken on the lending machine is kept on this one, and the result names this one's file", async () => {
+    const { keptHere } = await import("../src/tools/simulator-tools");
+    const { paths } = await import("../src/config/paths");
+    // A one-pixel PNG, as the lender's result carries it, with the lender's own path in its words.
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    const theirs = "/Users/me/.cavvy/screenshots/2026-11-13T00-00-00-000Z-abcd.png";
+    const r = await keptHere({ content: `Screenshot of the simulator, 390×844: a pixel in it is a point, as SimulatorAct's x and y are. Saved as ${theirs}: to show it to the user, put ![what it shows](${theirs}) in your last message.`, images: [{ type: "image", mediaType: "image/png", data: png }] });
+    expect(r.content).not.toContain(theirs);
+    const mine = /Saved as (\S+): to show it to the user, put !\[what it shows\]\((\S+)\) in your last message\.$/.exec(r.content)!;
+    expect(mine[1]).toBe(mine[2]);
+    expect(mine[1]!.startsWith(join(paths.home(), "screenshots"))).toBe(true);
+    expect(readFileSync(mine[1]!).length).toBeGreaterThan(20);
+    // What has no picture is passed on as it came.
+    const plain = { content: "iPhone 17e is running.", isError: false };
+    expect(await keptHere(plain)).toBe(plain);
 });
