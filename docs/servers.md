@@ -76,7 +76,7 @@ A screenshot comes back to the server and is kept there, so the chat on the serv
 
 - It needs the desktop app open on a Mac with Xcode, the Simulator turned on in its settings, and a model set up there.
 - With the app closed, sessions on the server don't have the tools. One that calls them just as the app goes is told your Mac went away.
-- The session on your Mac closes by itself half an hour after its last call, or when you delete it. Nothing of it is kept.
+- The session on your Mac closes by itself half an hour after its last call, or when you delete it. Nothing of it is kept, unless you wrote in it yourself.
 - One server gets at most four calls at once on your Mac and a limited number a minute; past that a call is told to wait.
 - Only the simulator tools are lent. To put an app on a device, the `.app` has to be on your Mac: a server can't build one for iOS.
 

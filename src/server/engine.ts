@@ -551,13 +551,12 @@ export class Engine {
         // What a server's session asks through this machine is told only so often (LENT_PER_MINUTE): the session
         // still shows as waiting, but a server gone wrong can't ring the user without end.
         if (rt.guestOf !== undefined && !this.lentMay(rt.guestOf, "told")) {
-            // Said once that there's more, so the user isn't left waiting on a session that never rang.
+            // Said once that there's more, so the user isn't left waiting on a session that never rang. The count
+            // starts again when the user answers one (guestAnswered): what's limited is asking unanswered.
             const at = this.lentAt.get(rt.guestOf)!;
-            if (Date.now() - (at.summed ?? 0) >= 60_000) {
-                at.summed = Date.now();
-                this.broadcast({ type: "notify", sessionId: rt.id, kind, title, body: `More from ${rt.guestOf} is waiting for you.` });
-            }
-            return this.sessionChanged(rt);
+            if (Date.now() - (at.summed ?? 0) < 60_000) return this.sessionChanged(rt);
+            at.summed = Date.now();
+            body = `More from ${rt.guestOf} is waiting for you.`;
         }
         this.broadcast({ type: "notify", sessionId: rt.id, kind, title, body });
         // No window is on this computer, only windows on servers: one of those says it, as it would another machine's.
@@ -1246,7 +1245,7 @@ export class Engine {
     /** A window went away (closed, reloading, or lost its connection). Its terminals wait a while for it to come back. */
     dropClient(client: EngineClient) {
         this.clients.delete(client);
-        if (this.lenders.has(client)) this.setLender(client, []);
+        if (this.lenders.has(client) || [...this.lentCalls.values()].some((c) => c.client === client)) this.setLender(client, [], true);
         for (const [name, asker] of this.serverAskers) if (asker === client) this.serverAskers.delete(name);
         this.terminals.drop(client);
         for (const rt of this.runtimes.values()) rt.browser.unwatch(client);
@@ -1311,6 +1310,9 @@ export class Engine {
                     this.runtimes.delete(id);
                     clearTimeout(this.unloadTimers.get(id));
                     this.unloadTimers.delete(id);
+                    // One a server's session was lent tools through (and that the user wrote in, so it has a file):
+                    // the session there gets a new one for its next call, not this one back.
+                    if (rt.guest) this.guestGone(rt);
                     await rt.close().catch(() => undefined);
                 }
                 trashSession(id, flags);
@@ -1825,10 +1827,11 @@ export class Engine {
     }
 
     /** A machine says what it lends now (nothing: it stopped, or left): its calls end when it lends nothing, and sessions learn what they have. */
-    private setLender(client: EngineClient, kinds: Lendable[]) {
+    private setLender(client: EngineClient, kinds: Lendable[], left = false) {
         this.lenders.delete(client);
         if (kinds.length) this.lenders.set(client, kinds);
-        else for (const c of [...this.lentCalls.values()]) if (c.client === client) c.done({ content: "Your Mac's Cavvy went away before it answered.", isError: true });
+        // Only its leaving ends what it was asked: a machine that stops lending still answers the calls it has.
+        if (left) for (const c of [...this.lentCalls.values()]) if (c.client === client) c.done({ content: "Your Mac's Cavvy went away before it answered.", isError: true });
         setLent(new Set([...this.lenders.values()].flat()));
     }
 
@@ -1836,6 +1839,14 @@ export class Engine {
     private guests = new Map<string, Promise<Runtime>>();
     /** When each server's sessions were last lent a call that only reads, and one that acts, and when one of them last had the user told it asks (LENT_PER_MINUTE). */
     private lentAt = new Map<string, { read: number[]; act: number[]; told: number[]; summed?: number }>();
+
+    /** The user answered what a session lent to this server asked: they're there, and its asks ring again from the start. */
+    private guestAnswered(name: string) {
+        const at = this.lentAt.get(name);
+        if (!at) return;
+        at.told = [];
+        at.summed = undefined;
+    }
 
     /** Whether one more of this sort may be let through for this server now; counted when it may. */
     private lentMay(name: string, sort: "read" | "act" | "told"): boolean {
@@ -2523,6 +2534,7 @@ export class Engine {
             case "session.respond":
                 if (this.implementing.has(p.id)) throw new RpcError("This plan is being taken to a worktree. Wait for that to finish before answering it.", "busy");
                 this.runtime(p.id).respond(str(p.interactionId, "interactionId"), p.response);
+                if (this.runtime(p.id).guestOf !== undefined) this.guestAnswered(this.runtime(p.id).guestOf!);
                 return null;
             case "session.setModel": {
                 const rt = this.runtime(p.id);
@@ -2705,7 +2717,7 @@ export class Engine {
                 return null;
             case "session.restore": {
                 const id = checkId(p.id);
-                if (this.goneGuests.has(id)) throw new RpcError("That session only showed what a server did on this Mac. Nothing of it was kept.", "invalid");
+                if (this.goneGuests.has(id)) throw new RpcError("That session can't be brought back.", "invalid");
                 while (this.closing.has(id)) await this.afterClosing(id);
                 const flags = restoreSession(id, this.removing.size ? (cwd) => {
                     if (!cwd || [...this.removing].some((dir) => within(dir)(cwd))) throw new RpcError("This session's worktree is being removed. Wait for removal to finish before restoring it.", "busy");

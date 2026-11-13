@@ -415,9 +415,36 @@ test("asks from one server ring the user a few times a minute, then once more to
     const guestRt = [...mine.engine.runtimes.values()].find((r: any) => r.guestOf === "box" && r.title === "box: limits")!;
     here.events.length = 0;
     for (let i = 0; i < 10; i++) mine.engine.notify(guestRt as never, "permission", `Wants to tap ${i}`);
-    // An ordinary session of this machine's own isn't counted with them.
     await until("them to arrive", () => here.events.filter((e) => e.type === "notify").length >= 7);
     await Bun.sleep(200);
-    const rang = here.events.filter((e) => e.type === "notify").map((e) => e.body);
-    expect(rang).toEqual(["Wants to tap 0", "Wants to tap 1", "Wants to tap 2", "Wants to tap 3", "Wants to tap 4", "Wants to tap 5", "More from box is waiting for you."]);
+    const rang = () => here.events.filter((e) => e.type === "notify").map((e) => e.body);
+    expect(rang()).toEqual(["Wants to tap 0", "Wants to tap 1", "Wants to tap 2", "Wants to tap 3", "Wants to tap 4", "Wants to tap 5", "More from box is waiting for you."]);
+    // The user answers one (they're there): what the server's sessions ask next rings again, from the start.
+    here.events.length = 0;
+    (mine.engine as any).guestAnswered("box");
+    mine.engine.notify(guestRt as never, "permission", "Wants to tap again");
+    await until("it to ring", () => rang().length === 1);
+    expect(rang()).toEqual(["Wants to tap again"]);
+});
+
+test("a session here that the user wrote in is deleted like any other, and the session there gets a new one for its next call", async () => {
+    (mine.engine as any).lentAt.clear();
+    const lendTyped = () => lendHere("SimulatorControl", { action: "list" }, "20261113-000000-cccccc");
+    const id = () => here.events.findLast((e) => e.type === "sessions.upsert" && e.session.title === "box: limits" && e.session.id !== undefined)?.session.id as string;
+    here.events.length = 0;
+    await lendTyped();
+    await until("its session here", () => Boolean(id()));
+    const first = id();
+    await here.call("session.open", { id: first });
+    await here.call("session.send", { id: first, text: "say hi" });
+    await until("the user's own turn there to end", async () => ((await here.call("session.open", { id: first })) as SessionSnapshot).turns.at(-1)?.status === "done");
+    await here.call("session.close", { id: first }).catch(() => undefined);
+    await here.call("session.delete", { id: first });
+    // It had a file, so it went to the trash like any session, and nothing still points at it.
+    expect(mine.engine.runtimes.has(first)).toBe(false);
+    here.events.length = 0;
+    await lendTyped();
+    await until("another session here", () => Boolean(id()) && id() !== first);
+    expect(((await here.call("sessions.list", { limit: 200 })) as { id: string }[]).some((x) => x.id === first)).toBe(false);
+    await here.call("session.restore", { id: first });
 });
