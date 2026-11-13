@@ -135,6 +135,8 @@ export interface EngineOptions {
     editorEnv?: () => DetectEnv;
     /** Starts an editor (tests record the argv instead). */
     launchEditor?: (argv: string[]) => Promise<void>;
+    /** Where builds of Cavvy for servers come from (tests bring their own; otherwise this checkout). */
+    serverBuilds?: import("../servers/build").BuildSource;
     /** This Cavvy is reached from other machines (it's a server's): a CLI's sign-in can't open the person's browser. */
     away?: boolean;
 }
@@ -438,6 +440,8 @@ export class Engine {
         this.unloadTimers.clear();
         await Promise.all([...this.runtimes.values()].map((r) => r.close().catch(() => undefined)).concat([...this.closing.values()]));
         await terminalsStopped;
+        // What this Cavvy signed in on its servers ends with it.
+        await Promise.race([this.serverLinks?.stopAll(), new Promise((r) => setTimeout(r, 3000))]);
         await Promise.race([Promise.all([...this.workspaces.values()].map((w) => w.mcp.closeAll().catch(() => undefined))), new Promise((r) => setTimeout(r, 1500))]);
         await Promise.race([this.checkingPlans, new Promise((r) => setTimeout(r, 1500))]);
         this.unregisterAccountRoots();
@@ -1198,6 +1202,7 @@ export class Engine {
     /** A window went away (closed, reloading, or lost its connection). Its terminals wait a while for it to come back. */
     dropClient(client: EngineClient) {
         this.clients.delete(client);
+        for (const [name, asker] of this.serverAskers) if (asker === client) this.serverAskers.delete(name);
         this.terminals.drop(client);
         for (const rt of this.runtimes.values()) rt.browser.unwatch(client);
         for (const rt of this.runtimes.values()) rt.simulator.unwatch(client);
@@ -1735,6 +1740,29 @@ export class Engine {
         if (eff?.source === "env") warning = `$${eff.envVar} is set and takes precedence over the saved key.`;
         await this.afterKeyChange(id);
         return { provider: id, masked: maskKey(value), warning, model: this.adoptDefaultModel(id) };
+    }
+
+    private serverLinks?: import("../servers/manager").ServerLinks;
+    /** The window a server's progress is told to: the one that last asked for something slow of it. */
+    private serverAskers = new Map<string, EngineClient>();
+
+    /**
+     * The servers this Cavvy reaches, made when a window first asks (nothing of them is loaded before). `asking`:
+     * the server whose progress this window is to be told. A server's own Cavvy offers none of this: what it may
+     * reach is decided where its user sits.
+     */
+    private async servers(client: EngineClient, asking?: string) {
+        if (this.o.away) throw new RpcError("Servers are managed from your own machine.", "unsupported");
+        if (!this.serverLinks) {
+            const { ServerLinks } = await import("../servers/manager");
+            this.serverLinks = new ServerLinks({
+                source: this.o.serverBuilds,
+                onProgress: (e) => this.serverAskers.get(e.name)?.send({ type: "servers.progress", ...e }),
+                onLink: (e) => this.broadcast({ type: "servers.link", ...e }),
+            });
+        }
+        if (asking) this.serverAskers.set(asking, client);
+        return this.serverLinks;
     }
 
     /**
@@ -2570,6 +2598,44 @@ export class Engine {
                 return await this.addKey(optStr(p.provider), str(p.key, "key"));
             case "providers.connectCli":
                 return await this.connectCli(str(p.provider, "provider"));
+            case "servers.list":
+                return { servers: (await this.servers(client)).list() };
+            case "servers.add": {
+                const servers = await this.servers(client, str(p.name, "name"));
+                const name = str(p.name, "name");
+                const draft = { name, destination: str(p.destination, "destination"), ...(typeof p.port === "number" ? { port: p.port } : {}), ...(typeof p.identityFile === "string" && p.identityFile ? { identityFile: p.identityFile } : {}) };
+                const trust = fingerprints(p.trust);
+                return await servers.add(draft, trust ? servers.trust(name, trust) : undefined);
+            }
+            case "servers.copy":
+                return await (await this.servers(client, str(p.name, "name"))).copy(str(p.name, "name"));
+            case "servers.check":
+                return await (await this.servers(client, str(p.name, "name"))).check(str(p.name, "name"));
+            case "servers.connect": {
+                const name = str(p.name, "name");
+                const servers = await this.servers(client, name);
+                const trust = fingerprints(p.trust);
+                if (trust) servers.trust(name, trust);
+                return await servers.connect(name, { retry: p.retry === true, renew: p.renew === true });
+            }
+            case "servers.update": {
+                const name = str(p.name, "name");
+                const servers = await this.servers(client, name);
+                const trust = fingerprints(p.trust);
+                if (trust) servers.trust(name, trust);
+                return await servers.update(name, p.force === true);
+            }
+            case "servers.disconnect":
+                await (await this.servers(client)).disconnect(str(p.name, "name"));
+                return null;
+            case "servers.stop":
+                await (await this.servers(client)).stop(str(p.name, "name"));
+                return null;
+            case "servers.remove":
+                return await (await this.servers(client)).remove(str(p.name, "name"));
+            case "servers.restore":
+                (await this.servers(client)).restore(str(p.name, "name"));
+                return null;
             case "providers.removeKey": {
                 const id = str(p.provider, "provider");
                 if (getProvider(id)?.auth === "cli") {
@@ -2815,6 +2881,11 @@ async function launchEditor(argv: string[]): Promise<void> {
 
 function validImage(i: { mediaType: unknown; data: unknown }): boolean {
     return /^image\/(png|jpeg|gif|webp)$/.test(String(i?.mediaType)) && typeof i?.data === "string" && i.data.length < 20_000_000 && /^[A-Za-z0-9+/=]+$/.test(i.data.slice(0, 100));
+}
+
+/** The fingerprints a window sends back as the user's yes to an unknown host's key. */
+function fingerprints(v: unknown): string[] | undefined {
+    return Array.isArray(v) && v.length > 0 && v.length <= 8 && v.every((x) => typeof x === "string" && x.length <= 200) ? (v as string[]) : undefined;
 }
 
 function str(v: unknown, name: string): string {
