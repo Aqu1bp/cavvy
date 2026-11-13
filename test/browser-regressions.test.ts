@@ -223,6 +223,191 @@ describe.skipIf(!chromePath)("browser regressions with Chrome", () => {
         }
     }, 120_000);
 
+    test("a dropdown clicked in the pane lists its options there, and the one picked is chosen in the page", async () => {
+        const html = `<body style="margin:20px"><label>Fruit <select id=s><option>apple</option><optgroup label="Stone"><option>cherry</option><option disabled>plum</option></optgroup><option>date</option></select></label>
+            <br><br><textarea id=t rows=6 cols=40></textarea><select id=box size=3><option>one</option><option>two</option></select>
+            <script>window.heard=[];addEventListener('mousedown',e=>heard.push('down:'+(e.target.id||e.target.tagName)),true);for(const k of ['input','change'])s.addEventListener(k,()=>heard.push(k+':'+s.value))</script></body>`;
+        const site = Bun.serve({ port: 0, fetch: () => new Response(html, { headers: { "content-type": "text/html" } }) });
+        const b = session();
+        try {
+            const p = await b.page();
+            await p.goto(`http://localhost:${site.port}/`);
+            const at = async (id: string) => JSON.parse(await p.evaluate(`(()=>{const r=document.getElementById('${id}').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`)) as { x: number; y: number };
+            const click = async (o: { x: number; y: number }) => {
+                await b.input({ kind: "mouse", type: "down", ...o, button: "left", buttons: 1, clickCount: 1 });
+                await b.input({ kind: "mouse", type: "up", ...o, button: "left", buttons: 0, clickCount: 1 });
+            };
+            const heard = async () => JSON.parse(await p.evaluate("window.heard")) as string[];
+            // The press isn't the page's: Chrome's own list (which takes no click sent to the page) never opens.
+            await click(await at("s"));
+            expect(b.state().tabs[0]!.choice).toEqual({ id: 1, label: "Fruit", options: [{ label: "apple" }, { label: "Stone: cherry" }, { label: "Stone: plum", disabled: true }, { label: "date" }], selected: 0 });
+            expect(await heard()).toEqual([]);
+            // Picked there: the page hears it as from a person. One that's disabled isn't picked, and the list closes.
+            await b.choose(3);
+            expect([await p.evaluate("document.getElementById('s').value"), await heard(), b.state().tabs[0]!.choice]).toEqual(['"date"', ["input:date", "change:date"], undefined]);
+            await click(await at("s"));
+            await b.choose(2);
+            expect([await p.evaluate("document.getElementById('s').value"), b.state().tabs[0]!.choice]).toEqual(['"date"', undefined]);
+            // Closed without a pick, by Cancel or by a press elsewhere, which is the page's as ever.
+            await click(await at("s"));
+            await b.choose();
+            await click(await at("s"));
+            expect(b.state().tabs[0]!.choice?.selected).toBe(3);
+            // A pick made in a list that's been replaced since (the pane hadn't heard yet) picks nothing: this one stays.
+            const open = b.state().tabs[0]!.choice!.id;
+            await b.choose(0, undefined, open - 1);
+            await b.choose(undefined, undefined, open - 1);
+            expect([await p.evaluate("document.getElementById('s').value"), b.state().tabs[0]!.choice?.id]).toEqual(['"date"', open]);
+            await click(await at("t"));
+            expect([b.state().tabs[0]!.choice, (await heard()).at(-1)]).toEqual([undefined, "down:t"]);
+            await expect(b.choose(0)).rejects.toThrow("No list is open in this tab.");
+            // A list box is drawn in the page and takes its clicks there.
+            await click(await at("box"));
+            expect([b.state().tabs[0]!.choice, (await heard()).at(-1)]).toEqual([undefined, "down:OPTION"]);
+        } finally { void site.stop(true); }
+    }, 30_000);
+
+    test("a dropdown's list is only what was asked of the page, whatever the page redefines; a pick is only of what was listed", async () => {
+        const page = (script: string) => `<body style="margin:20px"><select id=s style="width:200px;height:40px"><option>a</option><option>b</option></select><script>${script}</script></body>`;
+        const pages: Record<string, string> = {
+            // More options than are ever listed.
+            "/many": page("const f=document.createDocumentFragment();for(let i=0;i<20000;i++){const o=document.createElement('option');o.text='opt '+i;f.append(o)}s.append(f)"),
+            // A page that makes cutting a list or a text short do nothing, and every option's name long.
+            "/big": page("Array.prototype.slice=function(){return Array.from({length:200000},()=>this[0])};String.prototype.slice=function(){return String(this)};Object.defineProperty(HTMLOptionElement.prototype,'label',{get(){return 'x'.repeat(2000)}})"),
+            // One that answers with things that aren't a list's.
+            "/odd": page("Array.prototype.map=function(){return [{label:{evil:1},disabled:'no'}]};Object.defineProperty(HTMLSelectElement.prototype,'selectedIndex',{get(){return 'boo'}})"),
+            "/moves": page("window.heard=[];s.addEventListener('change',()=>heard.push(s.value))"),
+        };
+        const site = Bun.serve({ port: 0, fetch: (req) => new Response(pages[new URL(req.url).pathname] ?? "", { headers: { "content-type": "text/html" } }) });
+        const b = session();
+        try {
+            const p = await b.page();
+            const open = async (path: string) => {
+                await p.goto(`http://localhost:${site.port}${path}`);
+                await b.input({ kind: "mouse", type: "down", x: 100, y: 40, button: "left", buttons: 1, clickCount: 1 });
+                await b.input({ kind: "mouse", type: "up", x: 100, y: 40, button: "left", buttons: 0, clickCount: 1 });
+                return b.state().tabs[0]!.choice!;
+            };
+            const many = await open("/many");
+            expect([many.options.length, many.options[2]]).toEqual([500, { label: "opt 0" }]);
+            for (const path of ["/big", "/odd"]) {
+                const c = await open(path);
+                expect({ path, options: c.options.length, labels: c.options.every((o) => typeof o.label === "string" && o.label.length <= 200), selected: c.selected, bytes: JSON.stringify(b.state()).length < 200_000 }).toEqual({ path, options: 2, labels: true, selected: 0, bytes: true });
+            }
+            // After going to another site (another process, where ids start again), the world asked is still the pane's
+            // own: a page there with frames that redefine the same things gets no more through.
+            await open("/moves");
+            const other = `http://127.0.0.1:${site.port}`;
+            pages["/frames"] = `<body style="margin:0">${Array.from({ length: 8 }, () => `<iframe src="/big" style="position:absolute;left:0;top:0;width:300px;height:100px;border:0"></iframe>`).join("")}<select id=s style="position:absolute;left:0;top:0;width:200px;height:80px"><option>a</option><option>b</option></select></body>`;
+            await p.goto(`${other}/frames`);
+            await Bun.sleep(300);
+            await b.input({ kind: "mouse", type: "down", x: 100, y: 40, button: "left", buttons: 1, clickCount: 1 });
+            await b.input({ kind: "mouse", type: "up", x: 100, y: 40, button: "left", buttons: 0, clickCount: 1 });
+            const after = b.state().tabs[0]!.choice;
+            expect({ options: after?.options.length, small: JSON.stringify(b.state()).length < 200_000 }).toEqual({ options: 2, small: true });
+            // The page puts another option where "b" was listed: picking "b" picks nothing.
+            await open("/moves");
+            await p.evaluate("s.options[1].text = 'c'");
+            await b.choose(1);
+            expect([await p.evaluate("s.value"), await p.evaluate("window.heard")]).toEqual(['"a"', "[]"]);
+        } finally { void site.stop(true); }
+    }, 60_000);
+
+    test("a press reaches a busy page before its release, though it's the press that asks what's under it first", async () => {
+        const html = `<body style="margin:20px"><button style="width:200px;height:60px">go</button><script>window.heard=[];for(const k of ['mousedown','mouseup','click'])addEventListener(k,()=>heard.push(k),true);setInterval(()=>{const t=performance.now();while(performance.now()-t<600);},610)</script></body>`;
+        const site = Bun.serve({ port: 0, fetch: () => new Response(html, { headers: { "content-type": "text/html" } }) });
+        const b = session();
+        try {
+            const p = await b.page();
+            await p.goto(`http://localhost:${site.port}/`);
+            for (let i = 0; i < 3; i++) {
+                await p.evaluate("window.heard=[]");
+                // As the server takes them: each message by itself, the release not waiting for the press.
+                const down = b.input({ kind: "mouse", type: "down", x: 120, y: 50, button: "left", buttons: 1, clickCount: 1 });
+                await Bun.sleep(80);
+                const up = b.input({ kind: "mouse", type: "up", x: 120, y: 50, button: "left", buttons: 0, clickCount: 1 });
+                await Promise.all([down, up]);
+                for (let t = 0; t < 50 && (await p.evaluate("window.heard.length")) !== "3"; t++) await Bun.sleep(100);
+                expect(await p.evaluate("window.heard.join()")).toBe('"mousedown,mouseup,click"');
+            }
+            // A double click: the second press doesn't pass the first release either.
+            await p.evaluate("window.heard=[]");
+            const o = { x: 120, y: 50, button: "left" as const };
+            const sent = [
+                b.input({ kind: "mouse", type: "down", ...o, buttons: 1, clickCount: 1 }),
+                b.input({ kind: "mouse", type: "up", ...o, buttons: 0, clickCount: 1 }),
+                b.input({ kind: "mouse", type: "down", ...o, buttons: 1, clickCount: 2 }),
+                b.input({ kind: "mouse", type: "up", ...o, buttons: 0, clickCount: 2 }),
+            ];
+            await Promise.all(sent);
+            for (let t = 0; t < 50 && (await p.evaluate("window.heard.length")) !== "6"; t++) await Bun.sleep(100);
+            expect(await p.evaluate("window.heard.join()")).toBe('"mousedown,mouseup,click,mousedown,mouseup,click"');
+            // And what's typed after a click goes where the click put the keyboard.
+            await p.evaluate("document.body.insertAdjacentHTML('beforeend','<input id=i style=\"position:absolute;left:300px;top:20px;width:200px;height:40px\">'); 1");
+            const click = b.input({ kind: "mouse", type: "down", x: 400, y: 40, button: "left", buttons: 1, clickCount: 1 });
+            const release = b.input({ kind: "mouse", type: "up", x: 400, y: 40, button: "left", buttons: 0, clickCount: 1 });
+            const typed = b.input({ kind: "text", text: "日本語" });
+            await Promise.all([click, release, typed]);
+            for (let t = 0; t < 50 && (await p.evaluate("document.getElementById('i').value")) !== '"日本語"'; t++) await Bun.sleep(100);
+            expect(await p.evaluate("document.getElementById('i').value")).toBe('"日本語"');
+        } finally { void site.stop(true); }
+    }, 60_000);
+
+    test("what a person did while a page hung isn't given to the page that comes after it", async () => {
+        // The page hangs in its mousedown and goes to another site, which is slow to come: the clicks and the key
+        // meant for the hung page aren't that site's.
+        const A = `<body style="margin:20px"><button style="width:200px;height:60px" onmousedown="location.href=location.href.replace('localhost','127.0.0.1').replace('/a','/b');while(true);">hang</button></body>`;
+        const B = `<body style="margin:20px"><button style="width:200px;height:60px">b</button><script>window.heard=[];for(const k of ['mousedown','mouseup','click','keydown'])addEventListener(k,()=>heard.push(k),true)</script></body>`;
+        const site = Bun.serve({ port: 0, fetch: async (r) => (new URL(r.url).pathname === "/b" && (await Bun.sleep(1500)), new Response(new URL(r.url).pathname === "/b" ? B : A, { headers: { "content-type": "text/html" } })) });
+        const b = session();
+        try {
+            const p = await b.page();
+            await p.goto(`http://localhost:${site.port}/a`);
+            const sent: Promise<unknown>[] = [];
+            for (let i = 0; i < 3; i++) {
+                sent.push(b.input({ kind: "mouse", type: "down", x: 120, y: 50, button: "left", buttons: 1, clickCount: 1 }));
+                sent.push(b.input({ kind: "mouse", type: "up", x: 120, y: 50, button: "left", buttons: 0, clickCount: 1 }));
+                await Bun.sleep(150);
+            }
+            sent.push(b.input({ kind: "key", type: "down", key: "a", code: "KeyA" }));
+            await Promise.race([Promise.all(sent), Bun.sleep(20_000)]);
+            for (let t = 0; t < 80 && !p.url.includes("/b"); t++) await Bun.sleep(100);
+            await Bun.sleep(500);
+            // No press, click or key of theirs is the new page's. (The release of the press the first page did get can
+            // still land there, as it always could: by itself it presses nothing.)
+            const heard = JSON.parse(await p.evaluate("window.heard")) as string[];
+            expect([p.url.endsWith("/b"), heard.filter((k) => k !== "mouseup")]).toEqual([true, []]);
+            expect(heard.length).toBeLessThanOrEqual(1);
+        } finally { void site.stop(true); }
+    }, 60_000);
+
+    test("a press on a page that's leaving doesn't open the next page's dropdown", async () => {
+        // The page hangs on its way to another site, which has a dropdown where the press lands.
+        const A = `<body style="margin:20px"><div style="width:200px;height:60px">plain</div></body>`;
+        const B = `<body style="margin:20px"><select style="width:200px;height:60px"><option>b-one</option><option>b-two</option></select><script>window.heard=[];addEventListener('mousedown',()=>heard.push('mousedown'),true)</script></body>`;
+        const site = Bun.serve({ port: 0, fetch: async (r) => (new URL(r.url).pathname === "/b" && (await Bun.sleep(200)), new Response(new URL(r.url).pathname === "/b" ? B : A, { headers: { "content-type": "text/html" } })) });
+        const b = session();
+        try {
+            const p = await b.page();
+            await p.goto(`http://localhost:${site.port}/a`);
+            const at = { x: 120, y: 50, button: "left" as const, clickCount: 1 };
+            // A press first, so the pane has asked this page once (what it asks with is there to go stale).
+            await b.input({ kind: "mouse", type: "down", ...at, buttons: 1 });
+            await b.input({ kind: "mouse", type: "up", ...at, buttons: 0 });
+            void p.send("Runtime.evaluate", { expression: `setTimeout(()=>{location.href='http://127.0.0.1:${site.port}/b';while(true);},0)` }).catch(() => undefined);
+            await Bun.sleep(100);
+            await b.input({ kind: "mouse", type: "down", ...at, buttons: 1 });
+            await b.input({ kind: "mouse", type: "up", ...at, buttons: 0 });
+            for (let t = 0; t < 80 && !p.url.includes("/b"); t++) await Bun.sleep(100);
+            await Bun.sleep(300);
+            expect([p.url.endsWith("/b"), b.state().tabs[0]!.choice, await p.evaluate("window.heard.join()")]).toEqual([true, undefined, '""']);
+            // And the page that came is used as any other: its dropdown opens on a press of its own.
+            await b.input({ kind: "mouse", type: "down", ...at, buttons: 1 });
+            await b.input({ kind: "mouse", type: "up", ...at, buttons: 0 });
+            expect(b.state().tabs[0]!.choice?.options.map((o) => o.label)).toEqual(["b-one", "b-two"]);
+        } finally { void site.stop(true); }
+    }, 60_000);
+
     test("the demo form submits in Chrome and renders the search text", async () => {
         const demo = startDemoSite();
         const b = session();

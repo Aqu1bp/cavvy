@@ -2487,6 +2487,9 @@ export class Engine {
                 await browserCall(() => rt.browser.command({ command: str(p.command, "command"), url: typeof p.url === "string" ? p.url : undefined, tab: typeof p.tab === "number" ? p.tab : undefined }));
                 return rt.browser.state();
             }
+            case "browser.choose":
+                await browserCall(() => this.runtime(p.id).browser.choose(typeof p.index === "number" ? p.index : undefined, typeof p.tab === "number" ? p.tab : undefined, typeof p.list === "number" ? p.list : undefined));
+                return null;
             case "browser.dialog":
                 if (typeof p.accept !== "boolean") throw new RpcError("accept must be a boolean");
                 await browserCall(() => this.runtime(p.id).browser.answerDialog(p.accept, typeof p.text === "string" ? p.text : undefined, typeof p.tab === "number" ? p.tab : undefined));

@@ -5,7 +5,7 @@
 import type { BrowserInput } from "../server/protocol";
 import { CdpError } from "./cdp";
 import { MODIFIER_BITS, fromKeyboardEvent, parseKey, type KeyPress } from "./keys";
-import { BrowserError, raceAbort, type Page } from "./page";
+import { BrowserError, CHOICE_OBJECTS, MAX_LABEL, OPTION_LINE, raceAbort, type Page, type PendingChoice } from "./page";
 import type { RefEntry } from "./refs";
 
 export interface Point {
@@ -408,14 +408,131 @@ export function parseInput(raw: unknown): BrowserInput | undefined {
 /** Whether an input is the person using the tab (the agent is told): moving the pointer over the pane isn't. */
 export const usesTab = (e: BrowserInput) => e.kind === "mouse" ? e.type === "down" || (e.type === "move" && !!e.buttons) : e.kind === "key" ? e.type === "down" : true;
 
+/** The most options of a dropdown that are listed, and how long the page has to say what's under a press. */
+const MAX_OPTIONS = 500;
+const DROPDOWN_MS = 300;
+
+/** The dropdown under a point, if any: a <select> that opens a list of its own (not a list box, not disabled). */
+const DROPDOWN_AT = `(x, y) => {
+    let el = document.elementFromPoint(x, y);
+    while (el && el.shadowRoot) {
+        const inner = el.shadowRoot.elementFromPoint(x, y);
+        if (!inner || inner === el) break;
+        el = inner;
+    }
+    const s = el && el.closest ? el.closest("select") : null;
+    return s && !s.disabled && !s.multiple && s.size <= 1 ? s : null;
+}`;
+/** What the pane lists for it: its name and its options. It takes the keyboard, as a clicked one does. */
+const DROPDOWN = `function () {
+    const line = ${OPTION_LINE};
+    const off = (o) => o.disabled || (o.parentElement && o.parentElement.tagName === "OPTGROUP" && o.parentElement.disabled);
+    this.focus();
+    // Its label's own words (a label around it holds its options' too).
+    const name = this.getAttribute("aria-label") || (this.labels && this.labels[0] && [...this.labels[0].childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join(" ")) || this.name;
+    return {
+        label: String(name ?? "").replace(/\\s+/g, " ").trim().slice(0, ${MAX_LABEL}),
+        options: [...this.options].slice(0, ${MAX_OPTIONS}).map((o) => ({ label: line(o), ...(off(o) ? { disabled: true } : {}) })),
+        selected: this.selectedIndex,
+    };
+}`;
+/**
+ * A left press on a dropdown isn't sent to the page: the list Chrome would open takes no click that's sent to the
+ * page. Its options go to the pane instead (Page.choice). Resolves true when the press was taken this way. A page
+ * too busy to say what's under the press in time gets the press as it is.
+ *
+ * The page is asked in a world of its own, where nothing the page has redefined is in the way: what comes back is
+ * as big as these functions make it, and no bigger. It's checked again here all the same.
+ *
+ * `meant` is the page the press was made on (Page.loaded): the page that came after it isn't asked, and what it
+ * holds under the same point isn't listed.
+ */
+async function dropdown(page: Page, x: number, y: number, meant: number): Promise<boolean> {
+    type Found = { result: { objectId?: string; subtype?: string } };
+    const ask = async () => {
+        // Chrome says the world as it's made (Page.choiceWorld). With none, the press is the page's as it is.
+        if (!page.choiceWorld) await page.send("Page.createIsolatedWorld", { frameId: page.targetId, worldName: CHOICE_OBJECTS });
+        if (!page.choiceWorld) return undefined;
+        used = page.choiceWorld;
+        return page.send<Found>("Runtime.evaluate", { expression: `(${DROPDOWN_AT})(${Number(x)}, ${Number(y)})`, uniqueContextId: used, objectGroup: CHOICE_OBJECTS });
+    };
+    let used: string | undefined;
+    // A world that's gone while its page stays (the id names nothing): once more, in a new one.
+    const asked = ask()
+        .catch((e) => {
+            if (!/context/i.test(String((e as Error)?.message))) throw e;
+            if (page.choiceWorld === used) page.choiceWorld = undefined;
+            return page.loaded === meant ? ask() : undefined;
+        })
+        .catch(() => undefined);
+    let late = false;
+    const found = await Promise.race([asked, new Promise<undefined>((r) => setTimeout(() => ((late = true), r(undefined)), DROPDOWN_MS))]);
+    const object = found?.result.subtype === "node" ? found.result.objectId : undefined;
+    const drop = (id: string) => void page.send("Runtime.releaseObject", { objectId: id }).catch(() => undefined);
+    if (object && page.loaded !== meant) {
+        drop(object);
+        return false;
+    }
+    if (!object) {
+        // Answered after the press went on without it: what it found isn't kept.
+        if (late) void asked.then((r) => r?.result.objectId && drop(r.result.objectId));
+        return false;
+    }
+    const r = await page.send<{ result: { value?: unknown } }>("Runtime.callFunctionOn", { objectId: object, functionDeclaration: DROPDOWN, returnByValue: true }).catch(() => undefined);
+    const said = (r?.result.value ?? {}) as { label?: unknown; options?: unknown; selected?: unknown };
+    const options = (Array.isArray(said.options) ? said.options.slice(0, MAX_OPTIONS) : []).map((o: { label?: unknown; disabled?: unknown }) => ({ label: String(o?.label ?? "").slice(0, MAX_LABEL), ...(o?.disabled === true ? { disabled: true } : {}) }));
+    if (!options.length || page.loaded !== meant) {
+        drop(object);
+        return false;
+    }
+    const choice: Omit<PendingChoice, "id"> = { label: String(said.label ?? "").slice(0, MAX_LABEL), options, selected: Number.isInteger(said.selected) ? (said.selected as number) : -1 };
+    page.setChoice(choice, object);
+    return true;
+}
+
 /** Forwards what a person did in the pane to the page. */
 export async function forward(page: Page, e: BrowserInput): Promise<void> {
     page.ready();
+    // What follows a press reaches the page after it (a key typed into the field just clicked, the press's own
+    // release, the next press): the press may still be finding out what's under it.
+    const before = page.pressing;
+    // And only the page it was meant for: what waited while a page hung isn't given to the page that came after it.
+    const meant = page.loaded;
+    const still = () => {
+        if (page.loaded !== meant) return false;
+        page.ready();
+        return true;
+    };
+    if (before && !(e.kind === "mouse" && e.type === "down")) {
+        await before;
+        if (!still()) return;
+    }
     switch (e.kind) {
         case "mouse": {
             const type = e.type === "move" ? "mouseMoved" : e.type === "down" ? "mousePressed" : "mouseReleased";
             const button = e.button ?? "left";
-            await mouse(page, type, { x: e.x, y: e.y }, { button: e.type === "move" ? (e.buttons ? button : "none") : button, buttons: e.buttons ?? 0, clickCount: e.type === "move" ? 0 : (e.clickCount ?? 1), modifiers: e.modifiers ?? 0 });
+            const send = () => mouse(page, type, { x: e.x, y: e.y }, { button: e.type === "move" ? (e.buttons ? button : "none") : button, buttons: e.buttons ?? 0, clickCount: e.type === "move" ? 0 : (e.clickCount ?? 1), modifiers: e.modifiers ?? 0 });
+            if (e.type === "down") {
+                // A press anywhere closes the list the pane shows; one on a dropdown shows that one's.
+                const press = (async () => {
+                    if (before) {
+                        await before;
+                        if (!still()) return;
+                    }
+                    page.setChoice(undefined);
+                    page.choicePress = button === "left" && (await dropdown(page, e.x, e.y, meant));
+                    if (!page.choicePress && still()) await send();
+                })();
+                const pressing = press.catch(() => undefined).finally(() => page.pressing === pressing && (page.pressing = undefined));
+                page.pressing = pressing;
+                return press;
+            }
+            if (e.type === "up" && page.choicePress) {
+                // The release of the press that opened the list: the page didn't get the press.
+                page.choicePress = false;
+                return;
+            }
+            await send();
             return;
         }
         case "wheel":
