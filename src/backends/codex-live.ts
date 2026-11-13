@@ -1173,17 +1173,26 @@ export class CodexLiveConnection extends CodexTurn {
      */
     private async endWithTurn(term: Terminal) {
         liveDebug("codex", "ending a stopped turn's command", { thread: term.threadId, item: term.itemId, processId: term.processId });
+        // Known from here on, so its own end isn't missed while Codex is asked (it's held: terminalEnded). Said to
+        // nobody unless it turns out to go on.
+        term.stopping = true;
+        this.terminals.set(term.itemId, term);
         const r: any = await this.rpc.request("thread/backgroundTerminals/terminate", { threadId: term.threadId, processId: term.processId }).catch((e) => {
             if (/experimentalApi/i.test((e as Error).message)) this.terminalsApi = false;
             return undefined;
         });
-        if (r && r.terminated !== false) return;
-        // Not ended by that: gone by itself meanwhile, or still going.
-        const listed = await this.listTerminals(term.threadId);
-        if (listed && !listed.has(term.processId)) return;
-        term.stopping = true;
+        // Ended by that, or by itself meanwhile (its end came, or the list no longer has it).
+        let over = Boolean(r && r.terminated !== false) || term.heldEnd !== undefined;
+        if (!over) {
+            const listed = await this.listTerminals(term.threadId);
+            over = term.heldEnd !== undefined || Boolean(listed && !listed.has(term.processId));
+        }
+        if (over) {
+            term.heldEnd = undefined;
+            if (this.terminals.get(term.itemId) === term) this.terminals.delete(term.itemId);
+            return;
+        }
         term.answer = "refused";
-        this.terminals.set(term.itemId, term);
         this.reportTerminal(term, "running");
     }
 

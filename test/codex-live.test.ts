@@ -218,6 +218,19 @@ describe("background terminals", () => {
         expect(a.wakes).toEqual([]);
     });
 
+    test("a stopped turn's command that Codex won't end and that then finishes by itself starts nothing: the user had stopped", async () => {
+        Object.assign(process.env, { FAKE_SCENARIO: "hang", FAKE_HANG_ASK: "1", FAKE_HANG_MS: "20000", FAKE_TERMINATE_LATE: "refuse-then-ends" });
+        const a = await makeAgent({ mode: "default", ask: async () => ({ allow: true }) as any });
+        const stop = new AbortController();
+        const running = a.run("go", stop.signal);
+        await until(() => logLines().some((l) => l.terminalStarted), "the command to start");
+        stop.abort();
+        expect(await running).toBe("aborted");
+        await until(() => a.task("hang-turn-1")?.status === "done", "its own end");
+        await Bun.sleep(300);
+        expect(a.wakes).toEqual([]);
+    });
+
     test("a command Codex asked about first, still running when its turn ends by itself: a background task, as one with a process id is", async () => {
         Object.assign(process.env, { FAKE_SCENARIO: "hang", FAKE_HANG_ASK: "1", FAKE_HANG_MS: "700" });
         const a = await makeAgent({ mode: "default", ask: async () => ({ allow: true }) as any });
