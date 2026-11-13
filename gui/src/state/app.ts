@@ -23,6 +23,7 @@ import { jumpTarget, setAgentFocus, setFindOpen, setInspectorPane, setJumpTarget
 import { applyKeybindingsFile, keymap } from "./keybindings";
 import { orderSessions } from "../lib/session-order";
 import { composerStorage } from "../lib/drafts";
+import { pickedPatch, takePicked } from "../lib/picked";
 import { composerDrafts } from "../lib/composer-draft";
 import { onStep } from "../lib/stream-clock";
 import { keyedTurn, placeBefore, type TurnKey } from "../lib/transcript-scroll";
@@ -692,6 +693,7 @@ export async function refreshModels(refresh = false) {
     try {
         setApp("models", reconcile(await rpc.call("models.list", { refresh }), { key: "provider" }));
         setApp("modelsLoaded", true);
+        usePicked();
     } finally {
         setApp("modelsLoading", false);
     }
@@ -757,8 +759,26 @@ function keybindingsChanged(next: Parameters<typeof applyKeybindingsFile>[0]) {
     toast(next.text === undefined ? "Keybindings file removed: default shortcuts" : "Keybindings reloaded", "info");
 }
 
+/**
+ * What the user had picked for a new session on the machine the window came from (lib/picked.ts): taken up here
+ * once this machine's settings and models are both in, when it has that model. Then it's this machine's too.
+ */
+let picked = takePicked(() => sessionStorage);
+let settingsIn = false;
+function usePicked() {
+    if (!picked || !settingsIn || !app.modelsLoaded) return;
+    const patch = pickedPatch(picked, app.settings, app.models.flatMap((g) => g.models.map((m) => m.ref)));
+    picked = undefined;
+    if (!patch) return;
+    // Shown at once; what the machine then says it has is what stays.
+    setApp("settings", { ...app.settings, ...patch });
+    void rpc.call("settings.update", { patch }).then((s) => setApp("settings", s), (e) => (reportError(e), refreshSettings()));
+}
+
 export async function refreshSettings() {
     setApp("settings", await rpc.call("settings.get", {}));
+    settingsIn = true;
+    usePicked();
     // Observe the first settings immediately: other startup refreshes may still be pending when the editor changes.
     if (!watchingEditor) {
         watchingEditor = true;
