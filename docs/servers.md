@@ -49,7 +49,7 @@ A `LocalForward` in your SSH config for that host is opened along with Cavvy's o
 
 The **Servers** button beside Settings, at the foot of the sidebar, lists your machines: this one and each server. **Add server…** asks for a name, an address (`user@host`) and, if ssh wouldn't find it by itself, a key file; it then does what `cavvy servers add` does: shows the server's key when this machine hasn't seen it, puts Cavvy there, offers the one-time copy, and says what the server lacks.
 
-The sidebar is one list of every machine's sessions. One on a server says which under its title (`box · my-app`); one on this machine doesn't. A click opens any of them. What a row offers (rename, pin, settle, archive, delete, and Undo) works whichever machine the session is on. Grouped by project, a folder on a server is its own project, named with the server.
+The sidebar is one list of every machine's sessions. One on a server says which under its title (`box · my-app`); one on this machine doesn't. A click opens any of them. What a row offers (rename, pin, settle, archive, delete, and Undo) works whichever machine the session is on. Grouped by project, a folder on a server is its own project, named with the server. Archiving a session that works in a worktree from another machine's window keeps the worktree and says so; a window on its own machine asks whether to remove it.
 
 A new session starts on the machine named first in the strip under its composer (**This Mac**, or a server's name): pick another there. While a session on a server is open, the folders, models and settings the window shows are that server's.
 

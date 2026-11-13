@@ -6,7 +6,7 @@
 // It never starts or sets up anything there: a server that's stopped, or that needs the user's word, is left as it
 // is and said to be so.
 
-import type { ConnectResult, MachineOverview, RELAYED_SESSION_METHODS, ServerEvent, SessionSummary } from "../server/protocol";
+import type { ConnectResult, MachineOverview, RELAYED_ARCHIVE_OFFER, RELAYED_SESSION_METHODS, ServerEvent, SessionSummary } from "../server/protocol";
 import { openBoundedSocket, type BoundedSocket } from "./bounded-socket";
 
 /** A call of a tool this machine lends, as the server sent it. */
@@ -200,7 +200,7 @@ export class MachineWatch {
      * Asks the server's Cavvy for one of the things a session's row offers (RELAYED_SESSION_METHODS), for a window that isn't on
      * that server. Its answer is passed on only if it's small; what went wrong, in a few of its words.
      */
-    call(method: (typeof RELAYED_SESSION_METHODS)[number], params: Record<string, unknown>): Promise<unknown> {
+    call(method: (typeof RELAYED_SESSION_METHODS)[number] | typeof RELAYED_ARCHIVE_OFFER, params: Record<string, unknown>): Promise<unknown> {
         const ws = this.ws;
         if (!ws?.open || this.state !== "connected") return Promise.reject(new Error(`${this.name} isn't connected.`));
         if (this.calls.size >= MAX_CALLS) return Promise.reject(new Error(`${this.name} is still busy. Try again.`));

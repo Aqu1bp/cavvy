@@ -1651,6 +1651,11 @@ export interface LentSession {
  * as it's archived, which asks about folders on that machine.
  */
 export const RELAYED_SESSION_METHODS = ["session.rename", "session.pin", "session.settle", "session.archive", "session.delete", "session.restore"] as const;
+/**
+ * Asked the same way before a session there is archived, for a yes or no only: whether it works in a worktree, which
+ * archiving from here keeps (the user is told so). Nothing of the worktree itself is passed on.
+ */
+export const RELAYED_ARCHIVE_OFFER = "session.archiveOffer";
 
 /** A server as a window lists it. */
 export interface ServerSummary {
@@ -1884,9 +1889,10 @@ export interface Methods {
     /**
      * Something a session's row offers (rename, pin, settle, archive, delete, restore: RELAYED_SESSION_METHODS),
      * asked of a session on a server by a window that isn't on it. `params`: that call's own, with the session's id.
-     * Nothing of the server's answer is passed on.
+     * Nothing of the server's answer is passed on, but whether a session it's about to archive works in a worktree
+     * (RELAYED_ARCHIVE_OFFER).
      */
-    "servers.relay": { params: { name: string; method: string; params: Record<string, unknown> }; result: null };
+    "servers.relay": { params: { name: string; method: string; params: Record<string, unknown> }; result: { worktree: true } | null };
     "servers.add": { params: { name: string; destination: string; port?: number; identityFile?: string; trust?: string[] }; result: AddResult };
     "servers.copy": { params: { name: string }; result: { took: string; left?: string } };
     "servers.check": { params: { name: string }; result: ServerCheck };

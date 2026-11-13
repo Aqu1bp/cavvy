@@ -1,7 +1,7 @@
 // The rules of the one list of every machine's sessions (components/OtherMachines.tsx): which sessions of other
 // machines are listed beside the window's own, and where what a row offers is sent.
 
-import { RELAYED_SESSION_METHODS, type MachineOverview, type SessionSummary } from "@shared/protocol";
+import { RELAYED_ARCHIVE_OFFER, RELAYED_SESSION_METHODS, type MachineOverview, type SessionSummary } from "@shared/protocol";
 
 /**
  * The other machines' sessions, each with its machine (the server's name; none: this computer). Not the window's
@@ -69,6 +69,6 @@ export function routeOf(
     if (!now) return method === "session.restore" ? to(far.get(id)) : "here";
     // One of the window's own machine's has that id now: it's that one that's meant.
     if (now.machine === machine) return "here";
-    if (!RELAYED_SESSION_METHODS.some((m) => m === method)) return "refused";
+    if (method !== RELAYED_ARCHIVE_OFFER && !RELAYED_SESSION_METHODS.some((m) => m === method)) return "refused";
     return to(far.get(id));
 }

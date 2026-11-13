@@ -188,6 +188,9 @@ export function sidebarEntries(sessions: readonly SessionSummary[], archived: re
     return entries;
 }
 
+/** A server's name as a row has room for it: what follows it on the line (the project) still shows. */
+export const machineLabel = (name: string) => (name.length > 18 ? `${name.slice(0, 17)}…` : name);
+
 /** Hold the entire layout, not just sorting: moving between shelves also moves targets.
  * New attention/open rows append while held, without displacing any existing row.
  * Needs you (pinned above it all) is held only while `pinnedHeld` (the pointer on the

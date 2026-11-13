@@ -6,7 +6,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { listable, mayTake, otherRows, relisted, routeOf } from "../gui/src/lib/machine-rows";
-import { folderOf, onAnother, projectOf, sidebarEntries } from "../gui/src/lib/session-order";
+import { folderOf, machineLabel, onAnother, projectOf, sidebarEntries } from "../gui/src/lib/session-order";
 import type { MachineOverview, SessionSummary } from "../src/server/protocol";
 
 const s = (id: string, o: Partial<SessionSummary> = {}): SessionSummary => ({ id, cwd: "/srv/app", projectName: "app", title: id, createdAt: 1, updatedAt: 1, messages: 1, status: "idle", pinned: false, archived: false, settled: false, live: false, ...o });
@@ -44,7 +44,9 @@ test("what a row offers is sent to the machine its session is on; anything else 
     for (const method of ["session.pin", "session.settle", "session.delete", "session.restore"]) expect(to(method, { id: "b1" })).toEqual({ relay: "box" });
     // Sending a message, opening, stopping: done in a window that's on that machine. So is asking what archiving
     // would remove there (a worktree): from here it's archived with everything kept.
-    for (const method of ["session.send", "session.open", "session.interrupt", "session.respond", "session.setMode", "session.archiveOffer"]) expect(to(method, { id: "b1" })).toBe("refused");
+    // Whether it works in a worktree is asked there too, before it's archived from here (a yes or no: manager.ts).
+    expect(to("session.archiveOffer", { id: "b1" })).toEqual({ relay: "box" });
+    for (const method of ["session.send", "session.open", "session.interrupt", "session.respond", "session.setMode", "session.implementPlan"]) expect(to(method, { id: "b1" })).toBe("refused");
     // The window's own sessions, and whatever isn't about a session (a terminal with that id, say), go where they always did.
     expect(to("session.send", { id: "mine", text: "hi" })).toBe("here");
     expect(to("terminal.write", { id: "b1", data: "x" })).toBe("here");
@@ -124,4 +126,10 @@ test("a machine's sessions joining the list is said once, so they show though th
     const sidebar = readFileSync(new URL("../gui/src/components/Sidebar.tsx", import.meta.url), "utf8");
     expect(sidebar).toMatch(/const held = \(\) => \(\(hovered\(\) \|\| railSelection\(\)\.ids\.length > 0\) && !manualLayout\(\) && !railFree\(\)\)/);
     expect(readFileSync(new URL("../gui/src/components/OtherMachines.tsx", import.meta.url), "utf8")).toContain("if (now.joins) freeRail();");
+});
+
+test("a long server name is cut in a row, so the project after it still shows", () => {
+    expect(machineLabel("vps")).toBe("vps");
+    expect(machineLabel("a-very-long-server-name-for-layout-x1")).toBe("a-very-long-serve…");
+    expect(machineLabel("a".repeat(18))).toBe("a".repeat(18));
 });

@@ -586,7 +586,11 @@ export async function archive(id: string, archived: boolean) {
         // Can't ask (an older server, say): archived as before, keeping everything.
         const offer = await rpc.call("session.archiveOffer", { id }).catch(() => undefined);
         if (offer?.worktree) {
-            const title = [...app.sessions, ...app.archived].find((s) => s.id === id)?.title ?? handleFor(id)?.view.state.title ?? "this session";
+            const row = [...app.sessions, ...app.archived].find((s) => s.id === id);
+            // On another machine: removing a worktree asks about folders there, which a window on that machine does.
+            // From here it's kept, and said to be.
+            if (row && row.machine !== machine) return setArchived(id, archived, `Archived. Its worktree stays on ${row.machine ?? "this Mac"}.`);
+            const title = row?.title ?? handleFor(id)?.view.state.title ?? "this session";
             setArchiveRequest({ id, title, offer });
             return;
         }
@@ -595,7 +599,7 @@ export async function archive(id: string, archived: boolean) {
 }
 
 /** Undo brings the session back, never a removed worktree. */
-export async function setArchived(id: string, archived: boolean) {
+export async function setArchived(id: string, archived: boolean, said = "Session archived") {
     try {
         await rpc.call("session.archive", { id, archived });
     } catch (e) {
@@ -604,7 +608,7 @@ export async function setArchived(id: string, archived: boolean) {
     }
     if (archived && app.activeId === id) newSession(app.homeCwd);
     toast(
-        archived ? "Session archived" : "Session restored",
+        archived ? said : "Session restored",
         "info",
         archived
             ? {

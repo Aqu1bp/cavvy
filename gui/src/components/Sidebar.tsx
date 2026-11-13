@@ -14,7 +14,7 @@ import { prefs, setPrefs } from "../state/prefs";
 import { agentFocus, railFree, setDeletedOpen, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
 import { frameDrag } from "../lib/drag";
 import { ago, monogram, projectColor, since } from "../lib/format";
-import { folderOf, holdSidebar, listedOnce, projectOf, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type SidebarEntry } from "../lib/session-order";
+import { folderOf, holdSidebar, listedOnce, machineLabel, projectOf, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type SidebarEntry } from "../lib/session-order";
 import { sessionStatus } from "../lib/session-status";
 import { foldOrder, groupCounts, inFront, needsRowLine, needsYou, planFit, railFoot, type RailPlan } from "../lib/rail";
 import { railSelection, setRailSelection, setSidebarOrder } from "../state/sidebar";
@@ -403,7 +403,7 @@ function NeedsRow(p: { s: SessionSummary; hold: (id: string, held: boolean) => v
     let el: HTMLDivElement | undefined;
     const title = () => (p.s.run ? `${p.s.run.modelName} · ${p.s.title}` : p.s.title);
     // What it waits for; one on a server says which first, as its row in the list does.
-    const line = () => (p.s.machine ? `${p.s.machine} · ` : "") + needsRowLine(p.s);
+    const line = () => (p.s.machine ? `${machineLabel(p.s.machine)} · ` : "") + needsRowLine(p.s);
     const waiting = () => p.s.status === "waiting";
     const current = () => app.activeId === p.s.id;
     const unread = () => isUnread(p.s) && !current();
@@ -438,7 +438,7 @@ function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) =
     const recede = () => p.s.status === "running" && !current();
     // Grouped by project, the heading names it; listed by date, the row does.
     // A session on a server says which, first.
-    const where = () => [p.s.machine, p.grouped ? undefined : p.s.projectName, usualBranch(branchOf(p.s)) ? undefined : branchOf(p.s)].filter(Boolean).join(" · ") || p.s.projectName;
+    const where = () => [p.s.machine && machineLabel(p.s.machine), p.grouped ? undefined : p.s.projectName, usualBranch(branchOf(p.s)) ? undefined : branchOf(p.s)].filter(Boolean).join(" · ") || p.s.projectName;
     const picked = () => p.pick.picked(p.s.id);
     return (
         <div

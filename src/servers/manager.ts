@@ -7,7 +7,7 @@
 // a server that's working, a copy) says so in what it returns, and the
 // window calls again with the answer.
 
-import { PROTOCOL_VERSION, RELAYED_SESSION_METHODS, type AddResult, type ConnectResult, type MachineOverview, type ServerCheck, type ServerProblem, type ServerSummary, type UnknownHost, type UpdateResult } from "../server/protocol";
+import { PROTOCOL_VERSION, RELAYED_ARCHIVE_OFFER, RELAYED_SESSION_METHODS, type AddResult, type ConnectResult, type MachineOverview, type ServerCheck, type ServerProblem, type ServerSummary, type UnknownHost, type UpdateResult } from "../server/protocol";
 import { loadScope } from "../config/settings";
 import { thisBuild, UNKNOWN_BUILD, type BuildSource } from "./build";
 import { exchangeCode, ServerLink, type LinkState } from "./connect";
@@ -143,8 +143,8 @@ export class ServerLinks {
      * Asks a server's Cavvy for something a session's row offers (rename, pin, archive, delete and the like), for a
      * window that isn't on that server. Only those: anything else is done in a window that's on it.
      */
-    async relay(name: string, method: string, params: Record<string, unknown>): Promise<null> {
-        const known = RELAYED_SESSION_METHODS.find((m) => m === method);
+    async relay(name: string, method: string, params: Record<string, unknown>): Promise<{ worktree: true } | null> {
+        const known = method === RELAYED_ARCHIVE_OFFER ? RELAYED_ARCHIVE_OFFER : RELAYED_SESSION_METHODS.find((m) => m === method);
         if (!known) throw new Error("Open the session to do that.");
         const id = params.id;
         if (typeof id !== "string" || !/^[\w.-]{1,120}$/.test(id)) throw new Error("That isn't a session's id.");
@@ -158,7 +158,9 @@ export class ServerLinks {
             : known === "session.settle" ? { id, settled: params.settled === true }
             : known === "session.archive" ? { id, archived: params.archived === true }
             : { id };
-        await w.call(known, sent);
+        const answer = await w.call(known, sent);
+        // Only that it has one: where it is and what removing it would take are that machine's to ask about.
+        if (known === RELAYED_ARCHIVE_OFFER) return answer && typeof answer === "object" && (answer as { worktree?: unknown }).worktree ? { worktree: true } : null;
         return null;
     }
 

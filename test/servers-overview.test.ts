@@ -170,9 +170,15 @@ test("a server's sessions are listed and kept up to date, each change told by it
     await until("it to be told back in play", () => here.machine("box")?.sessions.find((s) => s.id === id)?.archived === false);
     // Only what a row offers, only for a session, only on one of this Cavvy's servers; and why not, in the server's words.
     await expect(here.call("servers.relay", { name: "box", method: "session.send", params: { id, text: "hi" } })).rejects.toThrow("Open the session to do that.");
-    // What asks about folders there (removing a session's worktree as it's archived) isn't done from here: nothing
-    // is asked, and archiving passes on only the session and whether it's archived.
-    await expect(here.call("servers.relay", { name: "box", method: "session.archiveOffer", params: { id } })).rejects.toThrow("Open the session to do that.");
+    // What asks about folders there (removing a session's worktree as it's archived) isn't done from here. Only
+    // whether it works in one is asked, so the user can be told it stays: a yes or no, nothing of where it is.
+    expect(await here.call("servers.relay", { name: "box", method: "session.archiveOffer", params: { id } })).toBeNull();
+    const watch = (mine.engine as any).serverLinks.watches.get("box");
+    const asks = watch.call;
+    watch.call = async () => ({ worktree: { path: "/srv/app/.claude/worktrees/x", branch: "x", main: "/srv/app" }, removable: true, reason: "It has changes." });
+    expect(await here.call("servers.relay", { name: "box", method: "session.archiveOffer", params: { id } })).toEqual({ worktree: true });
+    watch.call = asks;
+    // And archiving passes on only the session and whether it's archived.
     expect(await here.call("servers.relay", { name: "box", method: "session.archive", params: { id, archived: true, removeWorktree: true, deleteIgnored: "x" } })).toBeNull();
     await until("it to be told archived, its folder left alone", () => here.machine("box")?.sessions.find((s) => s.id === id)?.archived === true);
     await here.call("servers.relay", { name: "box", method: "session.archive", params: { id, archived: false } });
