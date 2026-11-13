@@ -104,7 +104,7 @@ describe("permissions", () => {
         c.approve(SimulatorControlTool, { action: "boot", udid: "AAAA" }, W);
         expect(c.check(SimulatorControlTool, { action: "boot", udid: "AAAA" }, "default", W)).toMatchObject({ behavior: "allow", remembered: true });
         // Not what acts on whatever runs there by then: the app ended, the link opened, the device shut down or taken back.
-        for (const input of [{ action: "shutdown" }, { action: "terminate", bundleId: "com.example.app" }, { action: "open_url", url: "example://pay" }, { action: "take_control" }]) {
+        for (const input of [{ action: "shutdown" }, { action: "terminate", bundleId: "com.example.app" }, { action: "open_url", url: "example://pay" }, { action: "take_control" }, { action: "launch", bundleId: "com.example.app", args: ["-reset"] }]) {
             expect(c.check(SimulatorControlTool, input, "default", W).behavior, input.action).toBe("ask");
             c.approve(SimulatorControlTool, input, W);
             expect(c.check(SimulatorControlTool, input, "default", W), input.action).toMatchObject({ behavior: "ask" });

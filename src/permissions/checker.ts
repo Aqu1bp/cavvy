@@ -120,7 +120,10 @@ function isLink(p: string): boolean {
 const ONE_CALL_APPROVAL = new Set(["GitCommit", "GitPush", "CreatePullRequest", "BrowserAct", "BrowserEval", "SimulatorAct"]);
 /** What a simulator is told that acts on whatever runs there then: ending an app, a link opened in one, the device shut down or taken back. */
 const ONE_CALL_CONTROLS = new Set(["shutdown", "terminate", "open_url", "take_control"]);
-const oneCall = (tool: Tool<any>, input: any) => ONE_CALL_APPROVAL.has(tool.name) || (tool.name === "SimulatorControl" && ONE_CALL_CONTROLS.has(input?.action));
+const oneCall = (tool: Tool<any>, input: any) =>
+    ONE_CALL_APPROVAL.has(tool.name) ||
+    // A launch with arguments ends the app if it's running, to start it with them.
+    (tool.name === "SimulatorControl" && (ONE_CALL_CONTROLS.has(input?.action) || (input?.action === "launch" && Array.isArray(input.args) && input.args.length > 0)));
 const CONFIG_NAMES = new Set([".cavvy", LEGACY.dir, ".claude", ".codex", ".opencode", ".grok", ".agents", ".git", ".mcp.json", "opencode.json", "opencode.jsonc"]);
 
 /**
