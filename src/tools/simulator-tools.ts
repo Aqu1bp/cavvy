@@ -80,6 +80,9 @@ const short = (text: string, n = 60) => {
 /** Longest heading a permission prompt shows (oneLineSummary in src/agent/agent.ts). */
 const PROMPT_HEADING_MAX = 200;
 
+/** What a tap, a key and the rest are called where the user is asked about one. */
+const ACT_VERBS: Record<string, string> = { tap: "Tap", double_tap: "Double-tap", long_press: "Long-press", swipe: "Swipe", press: "Press", button: "Press", wait: "Wait" };
+
 /**
  * Text to type, quoted, in at most `room` characters: the prompt shows it nowhere else, so it's cut here, inside its
  * quotes and marked, as late as fits, rather than at the prompt's bound.
@@ -163,7 +166,7 @@ To build an app for it: xcodebuild -scheme <scheme> -destination 'platform=iOS S
             open_url: `Open ${short(input.url ?? "", 80)} on the simulator`,
             take_control: "Take the simulator's input back (closes its apps)",
         };
-        return { summary: what[input.action] ?? `Simulator: ${input.action}` };
+        return { summary: what[input.action] ?? "List the simulators" };
     },
     run: (input, ctx) =>
         guarded(ctx, async (s) => {
@@ -317,11 +320,18 @@ Returns the screen once it's still, as a new outline; it says when the user used
         }
     },
     async preview(input) {
-        const where = input.ref ? ` ${input.ref}` : typeof input.x === "number" ? ` at ${Math.round(input.x)},${Math.round(input.y ?? 0)}` : "";
-        const head = `Simulator: ${input.action.replace("_", " ")}${where}`;
-        if (input.action === "type") return { summary: `${head} ${typedText(input.text ?? "", PROMPT_HEADING_MAX - head.length - 1)}` };
-        const what = input.action === "press" ? ` ${input.key}` : input.action === "button" ? ` ${input.button}` : input.direction ? ` ${input.direction}` : "";
-        return { summary: `${head}${what}` };
+        // What it does, as one would say it ("Tap e12 on the simulator"): it heads the prompt, and a notification
+        // puts "Wants to" before it.
+        const on = " on the simulator";
+        if (input.action === "type") {
+            // Nothing to type: it empties the field.
+            if (!input.text && input.clear) return { summary: `Clear ${input.ref ?? "the field"}${on}` };
+            const into = input.ref ? ` into ${input.ref}` : "";
+            return { summary: `Type ${typedText(input.text ?? "", PROMPT_HEADING_MAX - 5 - into.length - on.length)}${into}${on}` };
+        }
+        const where = input.ref ? ` ${input.action === "swipe" ? "from " : ""}${input.ref}` : typeof input.x === "number" ? ` at ${Math.round(input.x)},${Math.round(input.y ?? 0)}` : "";
+        const what = input.action === "press" ? ` ${input.key}` : input.action === "button" ? ` the ${input.button} button` : input.direction ? ` ${input.direction}` : "";
+        return { summary: `${ACT_VERBS[input.action] ?? input.action}${what}${where}${on}` };
     },
     run: (input, ctx) =>
         guarded(ctx, async (s) => {

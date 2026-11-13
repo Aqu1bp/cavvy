@@ -2488,7 +2488,11 @@ export class Runtime {
             const kind = interaction.kind;
             // A sub-agent's request says whose it is: the session's own agent didn't ask.
             const asker = kind === "permission" && interaction.agentLabel ? `Sub-agent "${interaction.agentLabel}" wants` : "Wants";
-            this.engine.notify(this, kind, kind === "permission" ? `${asker} to ${interaction.heading.toLowerCase()}` : kind === "question" ? interaction.question : "Plan ready for your review");
+            // The heading's first letter only, and not a word in capitals (an MCP tool's "SQL query"): a name, a
+            // key or what's typed in it stays as it's written.
+            const h = interaction.kind === "permission" ? interaction.heading : "";
+            const wants = /^\p{Lu}(?!\p{Lu})/u.test(h) ? h.charAt(0).toLowerCase() + h.slice(1) : h;
+            this.engine.notify(this, kind, kind === "permission" ? `${asker} to ${wants}` : kind === "question" ? interaction.question : "Plan ready for your review");
         });
     }
 
@@ -2606,7 +2610,7 @@ export class Runtime {
             if (input.prompt) it.description = redact(String(input.prompt).slice(0, 300));
             if (suggestions.length) it.options.push({ id: "always", label: `Always allow ${suggestions[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1")}` });
         } else if (SIMULATOR_TOOL_HEADINGS[tool.name]) {
-            // What it does ("Start iPhone 17", "Simulator: tap e4") heads the prompt where the preview says.
+            // What it does ("Start iPhone 17", "Tap e4 on the simulator") heads the prompt where the preview says.
             it.heading = req.preview?.summary ? redact(req.preview.summary) : SIMULATOR_TOOL_HEADINGS[tool.name]!;
         } else if (BROWSER_TOOL_HEADINGS[tool.name]) {
             it.heading = BROWSER_TOOL_HEADINGS[tool.name]!;
