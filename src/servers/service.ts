@@ -11,6 +11,7 @@
 // An update is a trial: the new build is started, and if it isn't answering
 // as itself within the wait, the build before it is put back and started.
 
+import { agentCli } from "../backends/defs";
 import { ServerError, type ServerEntry } from "./store";
 import { hostOf, printable, remoteSh, ssh, shQuote } from "./ssh";
 import { BUILD_ID, REMOTE_DIR, type ServerFacts } from "./remote";
@@ -291,17 +292,24 @@ function readStatus(text: string | undefined): HostStatus | undefined {
     };
 }
 
-/** What a server says it has for agents, with only what has the shape it should (see readStatus). */
-function readCheck(text: string | undefined): HostCheck | undefined {
+/**
+ * What a server says it has for agents, with only what has the shape it should (see readStatus). Of its CLIs, only
+ * the ones this Cavvy knows, each once, and named and described in this Cavvy's own words: a server says which it
+ * has and how each stands, never what a question about one will read.
+ */
+export function readCheck(text: string | undefined): HostCheck | undefined {
     const c = json<Record<string, unknown>>(text);
     if (!c || !Array.isArray(c.clis)) return undefined;
     const flag = (v: unknown) => (typeof v === "boolean" ? v : undefined);
     const gh = (c.gh && typeof c.gh === "object" ? c.gh : {}) as Record<string, unknown>;
+    const seen = new Set<string>();
     return {
         clis: c.clis.flatMap((v: unknown) => {
             const x = (v && typeof v === "object" ? v : {}) as Record<string, unknown>;
-            if (typeof x.id !== "string" || !/^[a-z0-9-]{1,40}$/.test(x.id)) return [];
-            return [{ id: x.id, product: printable(String(x.product ?? x.id), 60), installed: x.installed === true, signedIn: flag(x.signedIn), install: printable(String(x.install ?? ""), 200), signIn: printable(String(x.signIn ?? ""), 120) }];
+            const def = typeof x.id === "string" ? agentCli(x.id) : undefined;
+            if (!def || seen.has(def.id)) return [];
+            seen.add(def.id);
+            return [{ id: def.id, product: def.cli.product, installed: x.installed === true, signedIn: flag(x.signedIn), on: flag(x.on), install: def.cli.install, signIn: def.cli.signIn }];
         }),
         git: c.git === true,
         gh: { installed: gh.installed === true, signedIn: flag(gh.signedIn) },

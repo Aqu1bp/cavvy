@@ -4,7 +4,8 @@ import { childEnv } from "../util/env";
 import { extraArgs, requireCli } from "./cli";
 import { agentCli } from "./defs";
 
-export function loginCommand(provider: string, id = "default"): { argv: string[]; env: Record<string, string> } {
+/** `away`: the person's browser is on another machine than this one (a server), so the CLI can't open it. */
+export function loginCommand(provider: string, id = "default", o: { away?: boolean } = {}): { argv: string[]; env: Record<string, string> } {
     const def = agentCli(provider);
     // One without accounts (an ACP agent) signs in its default only.
     if (!def || def.account || id !== "default") accountProvider(provider);
@@ -12,7 +13,7 @@ export function loginCommand(provider: string, id = "default"): { argv: string[]
     const cli = def!.cli;
     return {
         // Its sign-in command's arguments ("claude auth login": auth login).
-        argv: [requireCli(provider, cli), ...extraArgs(provider), ...cli.signIn.split(" ").slice(1)],
+        argv: [requireCli(provider, cli), ...extraArgs(provider), ...((o.away && cli.signInAway) || cli.signIn).split(" ").slice(1)],
         env: { ...childEnv(), ...env },
     };
 }

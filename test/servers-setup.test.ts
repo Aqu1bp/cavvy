@@ -119,6 +119,38 @@ function spawnCavvy(build: string, args: string[]) {
     });
 }
 
+/** The terminals opened by inTerminal: one a test left open (it failed part way) is closed after it. */
+const terminals: Bun.Subprocess[] = [];
+
+/** `cavvy …` on build `build`, in a terminal of its own as a person runs it: what it has shown, and typing into it. */
+function inTerminal(build: string, args: string[]) {
+    let raw = "";
+    const decoder = new TextDecoder();
+    const proc = Bun.spawn([process.execPath, "--no-env-file", `--config=${join(import.meta.dir, "..", "bunfig.toml")}`, join(import.meta.dir, "..", "src", "index.ts"), ...args], {
+        env: { ...process.env, CAVVY_BUILD: build, TERM: "xterm-256color" } as Record<string, string>,
+        terminal: {
+            cols: 120,
+            rows: 30,
+            data: (_terminal, bytes) => {
+                raw += decoder.decode(bytes, { stream: true });
+            },
+        },
+    });
+    terminals.push(proc);
+    // What a person reads: without the colours and the cursor's moves.
+    const shown = () => raw.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Za-z0-9]|\x1b[=>]/g, "").replace(/\r/g, "");
+    return {
+        shown,
+        type: (text: string) => void proc.terminal!.write(text),
+        sees: (text: string) => until(`"${text}" on screen`, () => shown().includes(text)),
+        async done() {
+            const code = await proc.exited;
+            proc.terminal!.close();
+            return code;
+        },
+    };
+}
+
 async function until(what: string, ok: () => boolean | Promise<boolean>, ms = 20_000) {
     const end = Date.now() + ms;
     while (Date.now() < end) {
@@ -137,6 +169,10 @@ afterEach(() => {
     fake.diskFree();
     fake.settings();
     fake.unhold();
+    for (const proc of terminals.splice(0)) {
+        if (proc.exitCode === null) proc.kill("SIGKILL");
+        proc.terminal?.close();
+    }
 });
 
 afterAll(async () => {
@@ -656,6 +692,144 @@ describe("the terminal's commands", () => {
         } finally {
             proc.kill("SIGKILL");
         }
+    });
+
+    describe("a CLI on the server that isn't signed in", () => {
+        // Claude Code as far as signing in goes: signed in once its own sign-in is given the code it wants.
+        const CLAUDE = `f="$HOME/.claude/.credentials.json"
+case "$1 $2" in
+"auth status") if [ -f "$f" ]; then echo '{"loggedIn":true,"authMethod":"oauth_token","subscriptionType":"max"}'; else echo '{"loggedIn":false}'; fi ;;
+"auth login")
+    echo "If the browser didn't open, visit: https://claude.example/authorize"
+    printf 'Paste code here if prompted > '
+    read -r code
+    [ "$code" = right-code ] || { echo "Invalid code." >&2; exit 1; }
+    mkdir -p "$HOME/.claude" && echo '{}' > "$f" ;;
+esac`;
+        const credentials = join(fake.home, ".claude", ".credentials.json");
+        const providers = join(fake.home, ".cavvy", "providers.json");
+        const turnedOn = () => Object.keys(JSON.parse(readFileSync(providers, "utf-8")).agents ?? {});
+        const signOut = () => rmSync(join(fake.home, ".claude"), { recursive: true, force: true });
+        const turnOff = () => {
+            const file = JSON.parse(readFileSync(providers, "utf-8"));
+            delete file.agents;
+            writeFileSync(providers, JSON.stringify(file));
+        };
+
+        afterAll(() => {
+            fake.install("claude");
+            signOut();
+            turnOff();
+        });
+
+        test("check: it's said, with the command that signs it in; with no terminal, nothing is started", async () => {
+            fake.install("claude", CLAUDE);
+            const r = await cavvy("servers", "check", "box");
+            expect(r.out).toContain("  Claude Code isn't signed in there: cavvy servers login box\n");
+            expect(r.out).not.toContain("No agent CLI is installed");
+            expect(await cavvy("servers", "login", "box")).toEqual({ code: 1, out: "", err: "Signing in needs a terminal.\n" });
+            expect(await cavvy("servers", "login", "box", "nope")).toMatchObject({ code: 1, err: expect.stringMatching(/^No CLI called nope\. There are: claude-code, codex/) });
+            expect(await cavvy("servers", "login", "box", "codex")).toEqual({ code: 1, out: "", err: "Codex isn't installed on box. Install the Codex CLI (npm install -g @openai/codex)\n" });
+        });
+
+        test("login: the CLI's own sign-in has this terminal, and then the CLI is turned on there", async () => {
+            const t = inTerminal(A, ["servers", "login", "box"]);
+            await t.sees("Paste code here if prompted >");
+            expect(t.shown()).toContain("Open the link Claude Code shows in a browser on this machine.");
+            expect(t.shown()).toContain("https://claude.example/authorize");
+            t.type("right-code\n");
+            expect(await t.done()).toBe(0);
+            expect(t.shown()).toContain("Claude Code is ready on box.");
+            // Signed in by the CLI itself, with this terminal; and turned on in the server's Cavvy.
+            expect(existsSync(credentials)).toBe(true);
+            expect(turnedOn()).toEqual(["claude-code"]);
+            expect((await cavvy("servers", "check", "box")).out).not.toContain("Claude Code");
+            expect(await cavvy("servers", "login", "box")).toEqual({ code: 0, out: "Nothing to sign in on box.\n", err: "" });
+        });
+
+        test("login: a sign-in that's given up is said, with how to try again", async () => {
+            signOut();
+            const t = inTerminal(A, ["servers", "login", "box", "claude-code"]);
+            await t.sees("Paste code here if prompted >");
+            t.type("a wrong one\n");
+            expect(await t.done()).toBe(1);
+            expect(t.shown()).toContain("Claude Code isn't signed in on box. To try again: cavvy servers login box claude-code");
+            expect(existsSync(credentials)).toBe(false);
+        });
+
+        test("login: one that's signed in there and not turned on is turned on, with a terminal or without", async () => {
+            mkdirSync(join(fake.home, ".claude"), { recursive: true });
+            writeFileSync(credentials, "{}");
+            turnOff();
+            expect((await cavvy("servers", "check", "box")).out).toContain("  Claude Code isn't turned on there: cavvy servers login box\n");
+            expect(await cavvy("servers", "login", "box")).toEqual({ code: 0, out: "Claude Code is ready on box.\n", err: "" });
+            expect(turnedOn()).toEqual(["claude-code"]);
+        });
+
+        test("login: with no terminal, the one that only needs turning on is, and the one that needs signing in is said", async () => {
+            turnOff();
+            // A second CLI there, not signed in: nothing of it is run, since there's nowhere to show its link.
+            fake.install("codex", "echo 'run without a terminal' >&2; exit 9");
+            try {
+                expect((await cavvy("servers", "check", "box")).out).toContain("  Codex isn't signed in there: cavvy servers login box\n");
+                expect(await cavvy("servers", "login", "box")).toEqual({ code: 1, out: "Claude Code is ready on box.\n", err: "Signing in needs a terminal.\n" });
+                expect(turnedOn()).toEqual(["claude-code"]);
+            } finally {
+                fake.install("codex");
+            }
+        });
+
+        test("login: a CLI that can't say whether it's signed in is said in its own words, not as one that isn't installed", async () => {
+            turnOff();
+            fake.install("claude", `case "$1 $2" in "auth status") echo "cannot read its settings" >&2; exit 1 ;; esac`);
+            try {
+                const t = inTerminal(A, ["servers", "login", "box", "claude-code"]);
+                expect(await t.done()).toBe(1);
+                expect(t.shown()).toContain("cannot read its settings");
+                expect(t.shown()).toContain("Claude Code wasn't turned on on box.");
+                expect(t.shown()).not.toContain("isn't installed");
+                expect(turnedOn()).toEqual([]);
+            } finally {
+                fake.install("claude", CLAUDE);
+            }
+        });
+
+        test("add: in a terminal it's offered, and what's said afterwards is the server as that left it", async () => {
+            signOut();
+            turnOff();
+            const t = inTerminal(A, ["servers", "add", "box3", "dev@box.example", "--no-copy"]);
+            try {
+                await t.sees("Sign in to Claude Code on box3?");
+                t.type("\r");
+                await t.sees("Paste code here if prompted >");
+                t.type("right-code\n");
+                expect(await t.done()).toBe(0);
+                const shown = t.shown();
+                expect(shown).toContain("Claude Code is ready on box3.");
+                // Of Claude Code, that is: other things the server lacks are said in the same words.
+                expect(shown).not.toContain("Claude Code isn't");
+                expect(shown).toContain("Work there: cavvy --server box3");
+                expect(turnedOn()).toEqual(["claude-code"]);
+            } finally {
+                await cavvy("servers", "remove", "box3");
+            }
+        });
+
+        test("add: said no, it's left as it is, with the command for later", async () => {
+            signOut();
+            turnOff();
+            const t = inTerminal(A, ["servers", "add", "box3", "dev@box.example", "--no-copy"]);
+            try {
+                await t.sees("Sign in to Claude Code on box3?");
+                t.type("\x1b");
+                expect(await t.done()).toBe(0);
+                expect(t.shown()).toContain("Claude Code isn't signed in there: cavvy servers login box3");
+                expect(t.shown()).not.toContain("Paste code here");
+                expect(existsSync(credentials)).toBe(false);
+            } finally {
+                await cavvy("servers", "remove", "box3");
+            }
+        });
     });
 
     test("remove: it's forgotten here, this machine is signed out there, and the line to put it back is given", async () => {

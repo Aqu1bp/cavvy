@@ -13,7 +13,7 @@ import { ServerLink, type LinkState } from "./connect";
 import { countCopied, describeCopy, describeLeft, planCopy, sendCopy } from "./copy";
 import type { HostCheck, HostStatus } from "./host";
 import { ensureBuildThere, ServerBusy, setUpServer, type SetupProgress, type SetupResult } from "./install";
-import { probeServer, REMOTE_DIR, remoteBuildDir } from "./remote";
+import { LOGIN_EXIT, probeServer, REMOTE_CURRENT, REMOTE_DIR, remoteBuildDir } from "./remote";
 import { NotSetUp, remoteCheck, remoteStatus, revokeOverSsh, serviceReport, stopRemote, type ServiceReport } from "./service";
 import { hostOf, offeredHostKey, printable, remoteSh, shQuote, ssh, sshCommandArgv, SshError, trustHostKey } from "./ssh";
 import { draftServer, listServers, removeServer, requireServer, saveServer, ServerError, thisDesktop, type ServerEntry } from "./store";
@@ -29,6 +29,7 @@ export const SERVERS_HELP = `Usage:
       --identity <file>                      the private key to use
       --copy / --no-copy                     copy your settings there, or don't (asked otherwise)
   ${APP_NAME} servers check [name]             what a server has, and what it's missing
+  ${APP_NAME} servers login <name> [cli]       sign Claude Code or Codex in there, and turn it on
   ${APP_NAME} servers update <name>            bring its Cavvy up to this machine's (--force: whatever it runs)
   ${APP_NAME} servers stop <name>              stop Cavvy there
   ${APP_NAME} servers remove <name>            forget it here, and sign this machine out of it
@@ -137,15 +138,27 @@ function serviceLines(service: ServiceReport | undefined): string[] {
     return [service.lingerFix ? `It won't start Cavvy again after a reboot. To fix that, run on it: ${service.lingerFix}` : "It won't start Cavvy again after a reboot."];
 }
 
-/** What a server lacks, as lines: only what the user would act on. */
-export function checkLines(c: HostCheck, service?: ServiceReport): string[] {
+type CheckedCli = HostCheck["clis"][number];
+
+/** Installed on a server and not usable there yet: not signed in, or signed in and not turned on in its Cavvy. */
+const needsSignIn = (cli: CheckedCli) => cli.installed && cli.signedIn === false;
+const needsTurningOn = (cli: CheckedCli) => cli.installed && cli.signedIn === true && cli.on === false;
+
+/** Said of a server with no agent CLI on it, with how to install the two most used. */
+function noCliLines(c: HostCheck): string[] {
+    if (c.clis.some((x) => x.installed)) return [];
+    return ["No agent CLI is installed there (Claude Code, Codex). Models with an API key work without one.", ...c.clis.filter((x) => x.id === "claude-code" || x.id === "codex").map((cli) => `  ${cli.install}`)];
+}
+
+/** What server `name` lacks, as lines: only what the user would act on. */
+export function checkLines(name: string, c: HostCheck, service?: ServiceReport): string[] {
     const lines = serviceLines(service);
     const have = c.clis.filter((x) => x.installed);
-    for (const cli of have) if (cli.signedIn === false) lines.push(`${cli.product} isn't signed in there. On it: ${cli.signIn}`);
-    if (!have.length) {
-        lines.push("No agent CLI is installed there (Claude Code, Codex). Models with an API key work without one.");
-        for (const cli of c.clis.filter((x) => x.id === "claude-code" || x.id === "codex")) lines.push(`  ${cli.install}`);
+    for (const cli of have) {
+        if (needsSignIn(cli)) lines.push(`${cli.product} isn't signed in there: ${APP_NAME} servers login ${name}`);
+        else if (needsTurningOn(cli)) lines.push(`${cli.product} isn't turned on there: ${APP_NAME} servers login ${name}`);
     }
+    lines.push(...noCliLines(c));
     if (!c.git) lines.push("git isn't installed there.");
     if (!c.gh.installed) lines.push("The GitHub CLI isn't installed there: pull requests need it.");
     else if (c.gh.signedIn === false) lines.push("The GitHub CLI isn't signed in there. On it: gh auth login");
@@ -234,6 +247,107 @@ async function offerCopy(e: ServerEntry, wanted: boolean | undefined) {
     }
 }
 
+/** Not set up there (exit ${NOT_SET_UP}), or `cavvy host login` for CLI $1 with this terminal. */
+const NOT_SET_UP = 46;
+const LOGIN = `
+b="${REMOTE_CURRENT}"
+[ -x "$b" ] || exit ${NOT_SET_UP}
+exec "$b" host login "$1"
+`;
+
+/**
+ * Signs a CLI in on the server and turns it on in the Cavvy there. The CLI's own sign-in has this terminal for as
+ * long as it runs: its link is opened here, and what's typed goes to it alone. True once it's usable there.
+ */
+async function signInThere(e: ServerEntry, cli: CheckedCli): Promise<boolean> {
+    // The CLI talks of a browser that didn't open: it's on the server, and the browser is here.
+    if (needsSignIn(cli)) err(`Open the link ${cli.product} shows in a browser on this machine.`);
+    const tty = interactive();
+    const proc = Bun.spawn(sshCommandArgv(e, remoteSh(LOGIN, [cli.id]), { tty }), { stdin: "inherit", stdout: "inherit", stderr: "inherit", env: childEnv() });
+    // With a terminal, Ctrl+C is typed to the other end. Without one it reaches this and ssh both, and ssh ends.
+    let interrupted = false;
+    const onInterrupt = () => {
+        interrupted = true;
+    };
+    process.on("SIGINT", onInterrupt);
+    const code = await proc.exited;
+    process.off("SIGINT", onInterrupt);
+    if (code === 0) {
+        out(`${cli.product} is ready on ${e.name}.`);
+        return true;
+    }
+    // Stopped with Ctrl+C: nothing was lost, and there's nothing to add.
+    if (code === LOGIN_EXIT.stopped || (interrupted && !tty)) return false;
+    const again = `${APP_NAME} servers login ${e.name} ${cli.id}`;
+    if (code === LOGIN_EXIT.notSignedIn) err(`${cli.product} isn't signed in on ${e.name}. To try again: ${again}`);
+    else if (code === LOGIN_EXIT.notInstalled) err(`${cli.product} isn't installed on ${e.name}.`);
+    else if (code === NOT_SET_UP) err(`Cavvy isn't set up on ${e.name}. Set it up: ${APP_NAME} servers update ${e.name}`);
+    // What was wrong is on the lines above: the server's Cavvy said it.
+    else if (code === LOGIN_EXIT.problem) err(`${cli.product} wasn't turned on on ${e.name}.`);
+    else if (code === 255 || proc.signalCode) {
+        // The CLI there couldn't put the terminal back as it found it.
+        if (tty) process.stdout.write((await import("../ui/screen")).TERMINAL_OFF + "\n");
+        err(`Connection to ${e.name} lost. To try again: ${again}`);
+    }
+    // A Cavvy there from before it could do this answers with its usage.
+    else err(`Couldn't sign ${cli.product} in on ${e.name}. If Cavvy there is older than this one: ${APP_NAME} servers update ${e.name}`);
+    return false;
+}
+
+/**
+ * After a server is added or checked in a terminal: each CLI that's installed there and can't be used yet is offered,
+ * one question each. True when anything was tried, so the caller looks at the server again.
+ */
+async function offerSignIns(e: ServerEntry, c: HostCheck): Promise<boolean> {
+    if (!interactive()) return false;
+    let tried = false;
+    for (const cli of c.clis) {
+        const wanted = needsSignIn(cli)
+            ? await ask(`Sign in to ${cli.product} on ${e.name}?`, [], "Sign in", "Not now")
+            : needsTurningOn(cli) && (await ask(`Use ${cli.product} on ${e.name}?`, ["It's signed in there."], "Use", "Not now"));
+        if (!wanted) continue;
+        tried = true;
+        await signInThere(e, cli);
+    }
+    return tried;
+}
+
+async function login(args: string[]): Promise<number> {
+    const [name, id] = args.filter((a) => !a.startsWith("-"));
+    if (!name) {
+        err(`Usage: ${APP_NAME} servers login <name> [cli]`);
+        return 1;
+    }
+    let e = requireServer(name);
+    const { value: c } = await withTrust(e, (entry) => remoteCheck(entry), { saved: true, onTrusted: (entry) => (e = entry) });
+    const named = id === undefined ? undefined : c.clis.find((x) => x.id === id);
+    if (id !== undefined && !named) {
+        err(`No CLI called ${printable(id, 40)}. There are: ${c.clis.map((x) => x.id).join(", ")}`);
+        return 1;
+    }
+    if (named && !named.installed) {
+        err(`${named.product} isn't installed on ${e.name}. ${named.install}`);
+        return 1;
+    }
+    // Named: that one, whatever its state (the server's Cavvy looks again). Otherwise every one that isn't usable yet.
+    const todo = named ? [named] : c.clis.filter((x) => needsSignIn(x) || needsTurningOn(x));
+    if (!todo.length) {
+        const none = noCliLines(c);
+        for (const line of none.length ? none : [`Nothing to sign in on ${e.name}.`]) out(line);
+        return 0;
+    }
+    // One that's signed in there only needs turning on, which is done with a terminal or without. A sign-in shows a
+    // link and may take a code: without a terminal those are said, and left.
+    const now = interactive() ? todo : todo.filter((x) => x.signedIn === true);
+    let failed = 0;
+    for (const cli of now) if (!(await signInThere(e, cli))) failed++;
+    if (now.length < todo.length) {
+        err("Signing in needs a terminal.");
+        failed++;
+    }
+    return failed ? 1 : 0;
+}
+
 async function add(args: string[]): Promise<number> {
     const { name, destination, flags } = parseAdd(args);
     if (!name || !destination) {
@@ -256,8 +370,10 @@ async function add(args: string[]): Promise<number> {
     await offerCopy(e, flags.copy);
     out(setup.kept === "newer" ? `${e.name} is ready. It runs a newer Cavvy than this machine.` : `${e.name} is ready.`);
     out("Only put credentials on it that you'd accept an agent using.");
-    const c = await check(e);
-    for (const line of c ? checkLines(c, setup.service) : serviceLines(setup.service)) out(line);
+    let c = await check(e);
+    // Asked about one at a time; what's said afterwards is the server as that left it.
+    if (c && (await offerSignIns(e, c))) c = await check(e);
+    for (const line of c ? checkLines(e.name, c, setup.service) : serviceLines(setup.service)) out(line);
     out(`Work there: ${APP_NAME} --server ${e.name}   or   ${APP_NAME} gui --server ${e.name}`);
     return 0;
 }
@@ -276,7 +392,7 @@ async function checkCommand(names: string[]): Promise<number> {
             // Only a Cavvy that knows which build it is can say another one differs, or bring it level.
             if (status && thisBuild() !== UNKNOWN_BUILD && status.build !== thisBuild()) out(`  It runs a different version from this machine's: ${APP_NAME} servers update ${e.name}`);
             const c = await check(e);
-            const lines = c ? checkLines(c, serviceReport(facts)) : [];
+            const lines = c ? checkLines(e.name, c, serviceReport(facts)) : [];
             for (const line of lines) out(`  ${line}`);
             if (c && !lines.length) out("  Nothing missing.");
         } catch (x) {
@@ -357,6 +473,7 @@ export async function serversCommand(args: string[]): Promise<number> {
         }
         if (sub === "add") return await add(args.slice(1));
         if (sub === "check") return await checkCommand(args.slice(1).filter((a) => !a.startsWith("-")));
+        if (sub === "login") return await login(args.slice(1));
         if (sub === "update") return await update(args.slice(1));
         if (sub === "stop") return await stop(args.slice(1));
         if (sub === "remove" || sub === "rm") return await remove(args.slice(1));

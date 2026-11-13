@@ -13,8 +13,12 @@ import { hostOf, printable, remoteSh, ssh } from "./ssh";
 
 /** `$HOME`-relative, for scripts: always inside double quotes there. */
 export const REMOTE_DIR = "$HOME/.cavvy/server";
+
 export const remoteBuildDir = (build: string) => `${REMOTE_DIR}/builds/${build}`;
 export const REMOTE_CURRENT = `${REMOTE_DIR}/current/cavvy`;
+
+/** `cavvy host login`'s exit codes: what the machine that ran it over SSH says for each (src/servers/cli.ts). */
+export const LOGIN_EXIT = { notInstalled: 4, notSignedIn: 5, unknown: 6, problem: 7, stopped: 130 } as const;
 
 /** A build's name on disk: nothing a shell or a path would read into. */
 export const BUILD_ID = /^[0-9a-z][0-9a-z.-]{5,60}$/;
