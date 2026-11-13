@@ -38,6 +38,18 @@ export function mayTake(row: Pick<SessionSummary, "machine"> | undefined, machin
  * a row offers: that's done in a window that's on it. `far`: the listed sessions of other machines, by id, with the
  * server each is on (none: this computer); `gone`: those deleted since, which Undo brings back where they were.
  */
+/**
+ * The list made again from every machine's sessions as they stand: which are another machine's now (`far`), which
+ * left (`out`: with the machine each was on, for what's asked of it next), and whether some machine's sessions are
+ * in it that weren't (`joins`).
+ */
+export function relisted(before: ReadonlyMap<string, string | undefined>, add: readonly Pick<SessionSummary, "id" | "machine">[], joined: ReadonlySet<string | undefined>) {
+    const far = new Map(add.map((s) => [s.id, s.machine]));
+    const out = [...before].filter(([id]) => !far.has(id));
+    const machines = new Set(far.values());
+    return { far, out, machines, joins: [...machines].some((m) => !joined.has(m)) };
+}
+
 export function routeOf(
     method: string,
     params: unknown,

@@ -11,7 +11,7 @@ import { activate, app, handleFor, isUnread, refreshSessions, reportError, serve
 import { createUpdateAction } from "./UpdateAction";
 import { archive, archiveSessions, chooseProject, deleteSessions, newSession, openProject, openWaiting, pin, rename, settle, settleSessions, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
-import { agentFocus, setDeletedOpen, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
+import { agentFocus, railFree, setDeletedOpen, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
 import { frameDrag } from "../lib/drag";
 import { ago, monogram, projectColor, since } from "../lib/format";
 import { folderOf, holdSidebar, listedOnce, projectOf, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type SidebarEntry } from "../lib/session-order";
@@ -672,9 +672,9 @@ export function Sidebar() {
         return railFoot({ limits: app.limits, providers: app.providers, provider, account: provider ? st?.accounts?.[provider] : undefined, recent: recent(), now: now() });
     });
     // While rows are picked they stay put too, so a range never jumps under the pointer or the keys.
-    const held = () => ((hovered() || railSelection().ids.length > 0) && !manualLayout()) || locked().size > 0;
+    const held = () => ((hovered() || railSelection().ids.length > 0) && !manualLayout() && !railFree()) || locked().size > 0;
     // Needs you isn't in a selection's range, so rows picked don't hold it: only the pointer or an open menu does.
-    const pinnedHeld = () => (hovered() && !manualLayout()) || locked().size > 0;
+    const pinnedHeld = () => (hovered() && !manualLayout() && !railFree()) || locked().size > 0;
     // Waiting on you, but the session in front of you (not under Settings or a sub-agent's view: lib/rail.ts inFront): pinned at the top as well.
     const needs = createMemo(() => needsYou(all(), inFront({ activeId: app.activeId, settings: Boolean(settingsTab()), agentFocus: agentFocus() })).map((s) => s.id), undefined, { equals: (a, b) => a.length === b.length && a.every((id, i) => id === b[i]) });
     // Today's midnight: the day headings move when the date does, not with every tick of the clock.

@@ -120,7 +120,7 @@ test("a server whose sessions change faster than sessions ever do is told as its
 
 test("what a session's row offers is asked of the server for a window that isn't on it: answered, refused in its words, or given up", async () => {
     const { watch, asked } = serverSaying([{ id: "s1", title: "one", status: "idle", updatedAt: 1 }], undefined, [], (m) =>
-        m.method === "session.pin" ? { result: null } : m.method === "session.delete" ? { error: { message: `${"Still working. ".repeat(100)}`, code: "busy" } } : m.method === "session.archive" ? { result: { big: "x".repeat(200_000) } } : undefined,
+        m.method === "session.pin" ? { result: null } : m.method === "session.delete" ? { error: { message: `${"Still working. ".repeat(100)}`, code: "busy" } } : m.method === "session.archive" ? { result: { big: "x".repeat(200_000) } } : m.method === "session.settle" ? { error: { message: "That isn't allowed.\n\nOpen the session   and sign in again." } } : undefined,
     );
     // Not before it's heard from.
     await expect(watch.call("session.pin", { id: "s1", pinned: true })).rejects.toThrow("box isn't connected.");
@@ -129,12 +129,18 @@ test("what a session's row offers is asked of the server for a window that isn't
     expect(asked).toEqual([{ method: "session.pin", params: { id: "s1", pinned: true } }]);
     const refused = await watch.call("session.delete", { id: "s1" }).catch((e) => e as Error & { code?: string });
     expect([(refused as Error).message.length, (refused as { code?: string }).code]).toEqual([300, "busy"]);
+    // Its words are marked as its own, on one line, whatever they begin with: they're shown with its name in front.
+    const worded = await watch.call("session.settle", { id: "s1", settled: true }).catch((e) => e as Error & { theirs?: boolean });
+    expect([(worded as Error).message, (worded as { theirs?: boolean }).theirs, (refused as { theirs?: boolean }).theirs]).toEqual(["That isn't allowed. Open the session and sign in again.", true, true]);
+    // This machine's own words about it aren't.
+    expect(((await watch.call("session.pin", { id: "s1", pinned: true }).then(() => undefined)) as undefined) ?? "ok").toBe("ok");
     // More than such an answer ever is isn't passed on.
     await expect(watch.call("session.archive", { id: "s1", archived: true })).rejects.toThrow("box answered with more than was asked for.");
     // One it never answers ends when the connection does.
     const waits = watch.call("session.rename", { id: "s1", title: "x" });
     watch.stop();
-    await expect(waits).rejects.toThrow("box went away before it answered.");
+    const went = await waits.catch((e) => e as Error & { theirs?: boolean });
+    expect([(went as Error).message, (went as { theirs?: boolean }).theirs]).toEqual(["box went away before it answered.", undefined]);
 });
 
 test("a session there that this machine asks its user something for shows as waiting, until it no longer does", async () => {

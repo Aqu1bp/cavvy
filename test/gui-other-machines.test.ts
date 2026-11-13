@@ -5,7 +5,7 @@
 
 import { expect, test } from "bun:test";
 import { readFileSync } from "fs";
-import { listable, mayTake, otherRows, routeOf } from "../gui/src/lib/machine-rows";
+import { listable, mayTake, otherRows, relisted, routeOf } from "../gui/src/lib/machine-rows";
 import { folderOf, onAnother, projectOf, sidebarEntries } from "../gui/src/lib/session-order";
 import type { MachineOverview, SessionSummary } from "../src/server/protocol";
 
@@ -96,4 +96,32 @@ test("nothing of other machines is loaded or asked for unless this Cavvy has ser
     expect(others).toContain("seenRail.observe(rail, { childList: true });");
     expect(others).not.toContain("subtree");
     expect(others).not.toContain("setInterval");
+});
+
+test("a session that left with the whole list (its server said too much at once to say each) is still that server's: Undo of its delete goes there", () => {
+    const before = new Map<string, string | undefined>([["a", "box"], ["b", "box"], ["m", undefined]]);
+    // The server's list came again without "a" (deleted there) and this computer's without "m".
+    const now = relisted(before, [s("b", { machine: "box" })], new Set(["box", undefined]));
+    expect(now.out).toEqual([["a", "box"], ["m", undefined]]);
+    const gone = new Map(now.out);
+    expect(routeOf("session.restore", { id: "a" }, now.far, () => undefined, "elsewhere", gone)).toEqual({ relay: "box" });
+    expect(routeOf("session.restore", { id: "m" }, now.far, () => undefined, "elsewhere", gone)).toBe("mac");
+    // Nothing else is sent after one that's gone, and one never listed is the window's own.
+    expect(routeOf("session.pin", { id: "a", pinned: true }, now.far, () => undefined, "elsewhere", gone)).toBe("here");
+    expect(routeOf("session.restore", { id: "never" }, now.far, () => undefined, "elsewhere", gone)).toBe("here");
+});
+
+test("a machine's sessions joining the list is said once, so they show though the sidebar holds its rows still", () => {
+    const first = relisted(new Map(), [s("a", { machine: "box" })], new Set());
+    expect(first.joins).toBe(true);
+    // More of the same machine's, or fewer: nothing joined.
+    expect(relisted(first.far, [s("a", { machine: "box" }), s("b", { machine: "box" })], first.machines).joins).toBe(false);
+    expect(relisted(first.far, [], first.machines).joins).toBe(false);
+    // Another machine's, or the same one's again after it had none.
+    expect(relisted(first.far, [s("a", { machine: "box" }), s("c", { machine: "lab" })], first.machines).joins).toBe(true);
+    expect(relisted(new Map(), [s("a", { machine: "box" })], new Set()).joins).toBe(true);
+    // The sidebar lets a change through while the rail is free, and the servers code frees it for a join.
+    const sidebar = readFileSync(new URL("../gui/src/components/Sidebar.tsx", import.meta.url), "utf8");
+    expect(sidebar).toMatch(/const held = \(\) => \(\(hovered\(\) \|\| railSelection\(\)\.ids\.length > 0\) && !manualLayout\(\) && !railFree\(\)\)/);
+    expect(readFileSync(new URL("../gui/src/components/OtherMachines.tsx", import.meta.url), "utf8")).toContain("if (now.joins) freeRail();");
 });

@@ -191,7 +191,7 @@ export class MachineWatch {
     }
 
     /** Calls waiting for the server's answer (call), by the id they were sent with. */
-    private calls = new Map<number, { done: (r: { result?: unknown; error?: unknown }) => void; timer: ReturnType<typeof setTimeout> }>();
+    private calls = new Map<number, { done: (r: { result?: unknown; error?: unknown }) => void; gone: () => void; timer: ReturnType<typeof setTimeout> }>();
     private nextId = 10;
 
     /**
@@ -211,10 +211,12 @@ export class MachineWatch {
             (timer as { unref?: () => void }).unref?.();
             this.calls.set(id, {
                 timer,
+                gone: () => reject(new Error(`${this.name} went away before it answered.`)),
                 done: (r) => {
                     const error = r.error && typeof r.error === "object" ? (r.error as { message?: unknown; code?: unknown }) : undefined;
-                    // Why, in a few of its words, and its kind when it names one (a window treats some apart).
-                    if (error) return reject(Object.assign(new Error(cut(error.message, 300) || "It didn't work."), typeof error.code === "string" && /^[a-z_]{1,40}$/.test(error.code) ? { code: error.code } : {}));
+                    // Why, in a few of its words on one line (marked as its words, so they're shown as that server's),
+                    // and its kind when it names one (a window treats some apart).
+                    if (error) return reject(Object.assign(new Error(cut(error.message, 300).replace(/\s+/g, " ").trim() || "It didn't work."), { theirs: true }, typeof error.code === "string" && /^[a-z_]{1,40}$/.test(error.code) ? { code: error.code } : {}));
                     const result = r.result ?? null;
                     if (JSON.stringify(result).length > MAX_ANSWER) return reject(new Error(`${this.name} answered with more than was asked for.`));
                     resolve(result);
@@ -432,7 +434,7 @@ export class MachineWatch {
                 for (const [id, call] of this.calls) {
                     this.calls.delete(id);
                     clearTimeout(call.timer);
-                    call.done({ error: { message: `${this.name} went away before it answered.` } });
+                    call.gone();
                 }
                 this.ws = undefined;
                 if (this.stopped) return;

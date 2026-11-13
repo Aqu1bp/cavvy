@@ -2914,9 +2914,9 @@ export class Engine {
                 try {
                     return await servers.relay(name, str(p.method, "method"), params);
                 } catch (e) {
-                    // Whose words they are: the server's own are said to be its.
+                    // Whose words they are: the server's own are always said to be its, whatever they say.
                     const said = (e as Error).message;
-                    throw new RpcError(said.startsWith(name) || said.startsWith("Open the session") || said.startsWith("That isn't") ? said : `${name}: ${said}`, (e as { code?: string }).code ?? "failed");
+                    throw new RpcError((e as { theirs?: boolean }).theirs ? `${name}: ${said}` : said, (e as { code?: string }).code ?? "failed");
                 }
             }
             case "servers.overview": {

@@ -73,6 +73,9 @@ export const [archiveRequest, setArchiveRequest] = createSignal<{ id: string; ti
 
 /** Bottom panel; hiding it keeps its shells running. */
 export const [terminalOpen, setTerminalOpen] = createSignal(false);
+/** The sidebar holds its rows still under the pointer (components/Sidebar.tsx): not for a change that says so here. */
+export const [railFree, setRailFree] = createSignal(false);
+export const freeRail = () => { setRailFree(true); queueMicrotask(() => setRailFree(false)); };
 
 /** The models Home's next prompt goes to, each in a worktree of its own (Compare in the model picker); undefined while that's off. */
 export const [comparePicks, setComparePicks] = createSignal<string[] | undefined>();
