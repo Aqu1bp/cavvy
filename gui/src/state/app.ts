@@ -23,6 +23,7 @@ import { jumpTarget, setAgentFocus, setFindOpen, setInspectorPane, setJumpTarget
 import { applyKeybindingsFile, keymap } from "./keybindings";
 import { orderSessions } from "../lib/session-order";
 import { composerStorage } from "../lib/drafts";
+import { pickedPatch, takePicked } from "../lib/picked";
 import { composerDrafts } from "../lib/composer-draft";
 import { onStep } from "../lib/stream-clock";
 import { keyedTurn, placeBefore, type TurnKey } from "../lib/transcript-scroll";
@@ -692,6 +693,7 @@ export async function refreshModels(refresh = false) {
     try {
         setApp("models", reconcile(await rpc.call("models.list", { refresh }), { key: "provider" }));
         setApp("modelsLoaded", true);
+        usePicked();
     } finally {
         setApp("modelsLoading", false);
     }
@@ -757,8 +759,30 @@ function keybindingsChanged(next: Parameters<typeof applyKeybindingsFile>[0]) {
     toast(next.text === undefined ? "Keybindings file removed: default shortcuts" : "Keybindings reloaded", "info");
 }
 
+/**
+ * What the user had picked for a new session on the machine the window came from (lib/picked.ts): taken up here
+ * once this machine's settings and models are both in, when it has that model. Then it's this machine's too.
+ */
+let picked = takePicked(() => sessionStorage);
+/** Still to be taken up: a window that leaves before then takes it on (lib/machines.ts). */
+export const pendingPicked = () => picked;
+/** How long the first screen waits for the models when a pick came with the window: after that it's let go, so the composer doesn't change once it's shown. */
+const PICKED_WAIT_MS = 400;
+let settingsIn = false;
+function usePicked() {
+    if (!picked || !settingsIn || !app.modelsLoaded) return;
+    const patch = pickedPatch(picked, app.settings, app.models.flatMap((g) => g.models));
+    picked = undefined;
+    if (!patch) return;
+    // Shown at once; what the machine then says it has is what stays.
+    setApp("settings", { ...app.settings, ...patch });
+    void rpc.call("settings.update", { patch }).then((s) => setApp("settings", s), (e) => (reportError(e), refreshSettings()));
+}
+
 export async function refreshSettings() {
     setApp("settings", await rpc.call("settings.get", {}));
+    settingsIn = true;
+    usePicked();
     // Observe the first settings immediately: other startup refreshes may still be pending when the editor changes.
     if (!watchingEditor) {
         watchingEditor = true;
@@ -972,8 +996,14 @@ export function start() {
                 // (its browser, its folders) is this computer's, not the server's.
                 setApp("hello", await rpc.call("hello", { client: isDesktop && !machine ? "desktop" : "browser" }));
                 if (machine || app.hello?.servers) void serversUi().then((m) => m.connected());
-                await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders(), refreshKeybindings().catch(() => undefined)]);
-                void refreshModels().catch(() => undefined);
+                const lists = Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders(), refreshKeybindings().catch(() => undefined)]);
+                // Asked for with the lists, after them: the composer names its model from them, and a pick brought
+                // from another machine is checked against them.
+                const models = refreshModels().catch(() => undefined);
+                await lists;
+                // That pick is in the composer from the first screen, or not at all: the models are waited for, a moment.
+                if (picked) await Promise.race([models, new Promise((r) => setTimeout(r, PICKED_WAIT_MS))]);
+                picked = undefined;
                 void refreshLimits().catch(() => undefined);
                 // A server from before app.update.get has nothing to say: no update state, no button.
                 void refreshUpdate().then(recheckUpdate, () => undefined);
