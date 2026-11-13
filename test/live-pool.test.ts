@@ -172,9 +172,9 @@ function sink() {
     return { texts, emit: (e: AgentEvent) => void (e.type === "text" && texts.push(e.text)) };
 }
 
-async function turn(s: LiveCliSession, text: string, o: { system?: string; model?: string; signal?: AbortSignal; sink?: ReturnType<typeof sink> } = {}) {
+async function turn(s: LiveCliSession, text: string, o: { system?: string; model?: string; signal?: AbortSignal; sink?: ReturnType<typeof sink>; mark?: string } = {}) {
     const k = o.sink ?? sink();
-    const spawn: SpawnConfig = { cwd: tmpdir(), model, mode: "default", additionalDirectories: [], trusted: true, rules: { deny: [], ask: [], root: tmpdir() }, appendSystemPrompt: o.system };
+    const spawn: SpawnConfig = { cwd: tmpdir(), model, mode: "default", additionalDirectories: [], trusted: true, rules: { deny: [], ask: [], root: tmpdir() }, appendSystemPrompt: o.system, processMark: o.mark };
     const settings: LiveSettings = { model: o.model ? backendModel("fake", o.model) : model, mode: "default" };
     const r = await s.runTurn({ text, images: [] }, k, o.signal ?? new AbortController().signal, { spawn, settings, host });
     return { ...r, texts: k.texts, pid: pidOf(k.texts[0] ?? "") };
@@ -854,4 +854,24 @@ test("which turns a process ended doesn't carry over to the next process", async
     take();
     await until(() => seen);
     expect(s.unresponsive).toBe(true);
+});
+
+test("a CLI's process is started with its Cavvy session's mark, which what its commands leave running then carries; the mark doesn't make it another process", async () => {
+    // The tests may themselves be run by a Cavvy session, whose commands carry its own mark.
+    const outer = process.env.CAVVY_SESSION;
+    process.env.CAVVY_SESSION = "outer-session";
+    try {
+        const { pool } = setup();
+        const s = pool.session("a", "fake");
+        const first = await turn(s, "mark", { mark: "20261113-101010-abc123" });
+        // Its own session's, not the one of whatever started Cavvy.
+        expect(first.texts[0]).toStartWith("mark 20261113-101010-abc123 ");
+        // The same process serves the session's next turn.
+        expect((await turn(s, "mark", { mark: "20261113-101010-abc123" })).pid).toBe(first.pid);
+        // With no session to name (a one-off), nothing is added: it has what Cavvy itself was started with.
+        expect((await turn(pool.session("b", "fake"), "mark")).texts[0]).toStartWith("mark outer-session ");
+    } finally {
+        if (outer === undefined) delete process.env.CAVVY_SESSION;
+        else process.env.CAVVY_SESSION = outer;
+    }
 });

@@ -750,3 +750,38 @@ test("final review, blocker 1: Esc doesn't send at once a queued message naming 
         await engine.stop();
     }
 });
+
+// Only Linux lets a process's environment be read (src/util/session-processes.ts): elsewhere nothing is looked for.
+test.skipIf(process.platform !== "linux")("stopping every command also ends what the session's commands left running, and says what; stopping some doesn't", async () => {
+    const { engine, c, id, rt } = await session();
+    const alive = (pid: number) => {
+        try {
+            process.kill(pid, 0);
+            return true;
+        } catch {
+            return false;
+        }
+    };
+    let left = 0;
+    try {
+        // The session's commands, and a sub-agent's, carry its mark.
+        expect(rt.toolState.session).toBe(id);
+        // A command of the session's that left a server behind and ended.
+        const p = Bun.spawn(["sh", "-c", "nohup sleep 298 >/dev/null 2>&1 & echo $!"], { stdout: "pipe", stderr: "ignore", stdin: "ignore", env: { PATH: process.env.PATH ?? "", CAVVY_SESSION: id } });
+        left = Number((await new Response(p.stdout).text()).trim());
+        await p.exited;
+        // Until it is the program it was started to be (the shell's child becomes nohup, then that).
+        await until(() => readFileSync(`/proc/${left}/cmdline`, "utf-8").startsWith("sleep\0"));
+        // Tasks by id (a row's Stop): nothing else is touched.
+        await engine.handle(c, "session.stopBackground", { id, ids: ["nope"] });
+        expect(alive(left)).toBe(true);
+        // Stop all under Commands sends the rows it shows, and asks for the rest too.
+        await engine.handle(c, "session.stopBackground", { id, ids: [], left: true });
+        await until(() => !alive(left));
+        // Said in the conversation, with what the session shows next.
+        await until(() => JSON.stringify(sent.get(c as never)).includes("Stopped a process this session left running: sleep 298"));
+    } finally {
+        if (left && alive(left)) process.kill(left, "SIGKILL");
+        await engine.stop();
+    }
+});

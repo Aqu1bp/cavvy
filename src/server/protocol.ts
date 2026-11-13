@@ -2045,8 +2045,11 @@ export interface Methods {
     /** The sessions in the trash (deleted in the past week), the most recently deleted first. */
     "sessions.trash": { params: Record<string, never>; result: TrashedSessionSummary[] };
     "session.killShell": { params: { id: string; shellId: string }; result: null };
-    /** Stop background tasks (SessionState.backgroundTasks) by id, or every one running: how each went. */
-    "session.stopBackground": { params: { id: string; ids?: string[] }; result: { results: Record<string, BackgroundStopResult> } };
+    /**
+     * Stop background tasks (SessionState.backgroundTasks) by id, or every one running: how each went. `left`: also
+     * end what the session's commands left running that no task shows (as stopping every one does).
+     */
+    "session.stopBackground": { params: { id: string; ids?: string[]; left?: boolean }; result: { results: Record<string, BackgroundStopResult> } };
     /** Clear the finished tasks from the Background panel. */
     "session.clearBackground": { params: { id: string }; result: null };
     /** Restart the session's agent CLI process (/tasks restart): what it runs in the background stops. */
