@@ -303,7 +303,7 @@ export class PermissionChecker {
         const rules = d.suggestions ?? [];
         if (!rules.length) return undefined;
         if (tool.name === "WebFetch" || tool.name === "BrowserNavigate") return { label: rules[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1"), rules };
-        if (tool.name === "SimulatorControl") return { label: rules[0]!, rules };
+        if (tool.name === "SimulatorControl") return { label: SIMULATOR_CONTROL_NOUNS[String(input?.action)] ?? rules[0]!, rules };
         return { label: toolNoun(tool.name), rules };
     }
 
@@ -1009,6 +1009,17 @@ function dirGlob(abs: string): string {
     const dir = dirname(abs);
     return dir === "/" ? "//**" : `/${dir}/**`;
 }
+
+/** What allowing one thing a simulator is told allows, in words: the popup's "Allow … this session". */
+const SIMULATOR_CONTROL_NOUNS: Record<string, string> = {
+    boot: "starting simulators",
+    shutdown: "shutting simulators down",
+    install: "installing apps on simulators",
+    launch: "launching apps on simulators",
+    terminate: "ending apps on simulators",
+    open_url: "opening links on simulators",
+    take_control: "taking a simulator's input back",
+};
 
 const TOOL_NOUNS: Record<string, string> = {
     BrowserAct: "browser actions",

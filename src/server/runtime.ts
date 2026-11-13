@@ -2543,7 +2543,7 @@ export class Runtime {
             if (input.prompt) it.description = redact(String(input.prompt).slice(0, 300));
             if (suggestions.length) it.options.push({ id: "always", label: `Always allow ${suggestions[0]!.replace(/^WebFetch\(domain:(.*)\)$/, "$1")}` });
         } else if (SIMULATOR_TOOL_HEADINGS[tool.name]) {
-            // What it does ("Start iPhone 17", "Simulator: tap e4") heads the prompt where the preview says.
+            // What it does ("Start iPhone 17", "Tap e4 on the simulator") heads the prompt where the preview says.
             it.heading = req.preview?.summary ? redact(req.preview.summary) : SIMULATOR_TOOL_HEADINGS[tool.name]!;
         } else if (BROWSER_TOOL_HEADINGS[tool.name]) {
             it.heading = BROWSER_TOOL_HEADINGS[tool.name]!;
