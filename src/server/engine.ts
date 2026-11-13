@@ -57,7 +57,7 @@ import { searchResources } from "../mcp/mentions";
 import { cleanTitle, modelSummary, promptTitle, Runtime } from "./runtime";
 import { LENDABLE, setLent, type Lendable } from "../tools/lent";
 import { OWN_SIMULATOR_TOOLS, simulatorsToLend } from "../tools/simulator-tools";
-import type { ToolResult } from "../tools/types";
+import { isReadOnly, type ToolResult } from "../tools/types";
 import type { LentCall, LentResult } from "../servers/watch";
 import type { PeerHost } from "./session-peers";
 import type { WakeMemory } from "../agent/wakes";
@@ -132,6 +132,8 @@ export interface EngineOptions {
     listModels?: typeof listAllModels;
     /** How long a session no window shows waits to be closed once it has nothing to do (tests shorten it). */
     unloadAfterMs?: number;
+    /** For tests: GUEST_IDLE_MS. */
+    guestIdleMs?: number;
     /** How long a window that went away has to come back to its terminals before they're stopped (tests shorten it). */
     terminalGraceMs?: number;
     /** The server's log (stderr), for details the GUI isn't shown. */
@@ -172,6 +174,14 @@ const OPEN_MODEL_WAIT_MS = 2_000;
 
 /** Sessions of one server that may each have a session here they're lent tools through (Engine.lend), since this Cavvy started. */
 const MAX_GUESTS = 30;
+/**
+ * Calls one server's sessions may be lent in a minute: those that only read (the screen, the list of devices), those
+ * that act (and may each ask the user), and how often the user is told that one asks. A server gone wrong can't keep
+ * this machine busy, or bury its user in notifications.
+ */
+const LENT_PER_MINUTE = { read: 120, act: 40, told: 6 };
+/** How long a session that lends this machine's tools to one on a server is kept after its last call. */
+const GUEST_IDLE_MS = 30 * 60_000;
 
 export interface EngineClient {
     send(ev: ServerEvent): void;
@@ -533,6 +543,9 @@ export class Engine {
 
     notify(rt: Runtime, kind: "done" | "permission" | "question" | "plan" | "error", body: string) {
         const title = this.notifyTitle(rt);
+        // What a server's session asks through this machine is told only so often (LENT_PER_MINUTE): the session
+        // still shows as waiting, but a server gone wrong can't ring the user without end.
+        if (rt.guestOf !== undefined && !this.lentMay(rt.guestOf, "told")) return this.sessionChanged(rt);
         this.broadcast({ type: "notify", sessionId: rt.id, kind, title, body });
         // No window is on this computer, only windows on servers: one of those says it, as it would another machine's.
         const windows = [...this.clients].filter((c) => c.watching);
@@ -1177,8 +1190,9 @@ export class Engine {
      */
     private unloadIfUnused(id: string) {
         const rt = this.runtimes.get(id);
-        // One that lends this machine's tools to a session elsewhere stays: closed, it couldn't be opened again (Engine.lend).
-        if (!rt || rt.guest || this.stopping || [...this.clients].some((c) => c.subs.has(id))) return;
+        if (!rt || this.stopping || [...this.clients].some((c) => c.subs.has(id))) return;
+        // One a server's session is lent tools through stays until it has sat unused for a while (guestLater).
+        if (rt.guest && Date.now() - rt.lastLent < (this.o.guestIdleMs ?? GUEST_IDLE_MS)) return;
         // A watch (a pull request) goes on with no window open: it wakes the session when there's news.
         if (!rt.idle || rt.scheduled || rt.watching) return this.unloadLater(id);
         void this.unload(rt);
@@ -1187,6 +1201,7 @@ export class Engine {
     /** Close a session as quitting a terminal would (its SessionEnd hooks run); it can be opened again once that's done. */
     private unload(rt: Runtime): Promise<void> {
         const id = rt.id;
+        if (rt.guest) this.guestGone(rt);
         const timer = this.unloadTimers.get(id);
         if (timer) clearTimeout(timer);
         this.unloadTimers.delete(id);
@@ -1218,7 +1233,7 @@ export class Engine {
     /** A window went away (closed, reloading, or lost its connection). Its terminals wait a while for it to come back. */
     dropClient(client: EngineClient) {
         this.clients.delete(client);
-        if (this.lender === client) this.setLender(undefined, []);
+        if (this.lenders.has(client)) this.setLender(client, []);
         for (const [name, asker] of this.serverAskers) if (asker === client) this.serverAskers.delete(name);
         this.terminals.drop(client);
         for (const rt of this.runtimes.values()) rt.browser.unwatch(client);
@@ -1267,6 +1282,8 @@ export class Engine {
         const rt = this.runtimes.get(id);
         // Only when one runs: otherwise the delete goes on in the same tick, as before.
         if (rt?.compactingWhileIdle) await rt.yieldIdleCompaction();
+        // One a server's session is lent tools through has no file to put in the trash: it's closed, and gone.
+        if (rt?.guest && rt.idle) return void (await this.unload(rt));
         if (rt && !rt.idle) throw new RpcError("This session is still working (a response, queued messages, a question, or shells or tasks running). Stop it first, then delete it.", "busy");
         const store = readStore();
         const flags: SessionFlags = { pinned: !!store.pinned?.includes(id), archived: !!store.archived?.includes(id), settled: !!store.settled?.includes(id) };
@@ -1759,8 +1776,11 @@ export class Engine {
         return { provider: id, masked: maskKey(value), warning, model: this.adoptDefaultModel(id) };
     }
 
-    /** On a server: the connected machine that lends this one its tools (offers.set), and the calls it's running. */
-    private lender?: EngineClient;
+    /**
+     * On a server: the connected machines that lend this one their tools (offers.set), the latest to say so last, and
+     * the calls they're running. A call goes to the latest; when a machine leaves, the others still lend.
+     */
+    private lenders = new Map<EngineClient, Lendable[]>();
     private lentCalls = new Map<string, { client: EngineClient; done: (r: ToolResult) => void }>();
 
     /**
@@ -1769,7 +1789,7 @@ export class Engine {
      * machine goes away.
      */
     borrow(rt: Runtime, tool: string, input: Record<string, unknown>, signal: AbortSignal): Promise<ToolResult> {
-        const client = this.lender;
+        const client = [...this.lenders.keys()].at(-1);
         if (!client) return Promise.resolve({ content: "This runs on your Mac, and Cavvy there isn't connected to this machine right now. Ask the user to open Cavvy on their Mac, then try again.", isError: true });
         const callId = randomUUID();
         return new Promise((resolve) => {
@@ -1788,42 +1808,97 @@ export class Engine {
         });
     }
 
-    /** The machine that lends is another one now, or none: its calls end, and sessions learn what they have. */
-    private setLender(client: EngineClient | undefined, kinds: Lendable[]) {
-        const was = this.lender;
-        this.lender = kinds.length ? client : undefined;
-        setLent(kinds);
-        if (was && was !== this.lender) for (const c of [...this.lentCalls.values()]) if (c.client === was) c.done({ content: "Your Mac's Cavvy went away before it answered.", isError: true });
+    /** A machine says what it lends now (nothing: it stopped, or left): its calls end when it lends nothing, and sessions learn what they have. */
+    private setLender(client: EngineClient, kinds: Lendable[]) {
+        this.lenders.delete(client);
+        if (kinds.length) this.lenders.set(client, kinds);
+        else for (const c of [...this.lentCalls.values()]) if (c.client === client) c.done({ content: "Your Mac's Cavvy went away before it answered.", isError: true });
+        setLent(new Set([...this.lenders.values()].flat()));
     }
 
     /** On the user's own machine: the local session each session on a server is lent tools through, by server and session. */
-    private guests = new Map<string, string>();
+    private guests = new Map<string, Promise<Runtime>>();
+    /** When each server's sessions were last lent a call that only reads, and one that acts, and when one of them last had the user told it asks (LENT_PER_MINUTE). */
+    private lentAt = new Map<string, { read: number[]; act: number[]; told: number[] }>();
+
+    /** Whether one more of this sort may be let through for this server now; counted when it may. */
+    private lentMay(name: string, sort: "read" | "act" | "told"): boolean {
+        const at = this.lentAt.get(name) ?? { read: [], act: [], told: [] };
+        this.lentAt.set(name, at);
+        const now = Date.now();
+        const times = (at[sort] = at[sort].filter((t) => now - t < 60_000));
+        if (times.length >= LENT_PER_MINUTE[sort]) return false;
+        times.push(now);
+        return true;
+    }
 
     /**
      * A session on one of this machine's servers calls a tool this machine lends. It runs in a session of this
      * machine's own, one per session there, named for it: that's where the user is asked (under this machine's mode
-     * and rules), where the simulator shows, and where what was run is noted.
+     * and rules), where the simulator shows, and where what was run is noted. What's answered is read on the server,
+     * so it speaks of this machine as "your Mac".
      */
     private async lend(name: string, call: LentCall, signal: AbortSignal): Promise<LentResult> {
         const tool = OWN_SIMULATOR_TOOLS.find((t) => t.name === call.tool);
-        if (!tool || !simulatorsToLend(loadSettings(homedir(), { trusted: false }))) return { text: `${call.tool} isn't lent by this machine.`, isError: true };
-        if (!/^[\w.-]{1,120}$/.test(call.session.id)) return { text: "That session can't be told apart.", isError: true };
+        if (!tool) return { text: `${call.tool.slice(0, 40)} isn't something your Mac lends.`, isError: true };
+        if (!simulatorsToLend(loadSettings(homedir(), { trusted: false }))) return { text: "Your Mac's Simulator isn't available now: it's turned off in Cavvy's settings there, or Xcode isn't set up.", isError: true };
+        if (!/^[\w.-]{1,120}$/.test(call.session.id)) return { text: "That call isn't one your Mac takes.", isError: true };
+        // Only so many a minute, those that only read counted apart from those that act (and may each ask the user).
+        if (!this.lentMay(name, isReadOnly(tool, call.input) ? "read" : "act")) return { text: "That's more simulator calls in a minute than your Mac takes from one machine. Wait a little, then go on.", isError: true };
         const key = `${name}\0${call.session.id}`;
-        let rt = this.runtimes.get(this.guests.get(key) ?? "");
-        if (!rt) {
-            // A session here for each session there, but not without end: a server gone wrong can't fill this machine's list.
-            if (!this.guests.has(key) && [...this.guests.keys()].filter((k) => k.startsWith(`${name}\0`)).length >= MAX_GUESTS) return { text: `Too many sessions on ${name} have used this machine's tools since it started. Restart Cavvy there to make room.`, isError: true };
-            const folder = join(cavvyHome(), "guests", name);
-            mkdirSync(folder, { recursive: true });
-            rt = await this.createSession(folder);
-            this.guests.set(key, rt.id);
-            // Listed, and kept open while this Cavvy runs, though nothing was ever said in it (a session with no
-            // message leaves no file to open again): it's where the user answers, and sees what was done.
-            rt.guest = true;
-            // Named for where it's from, in words that are this machine's own: the server's title is its to choose.
-            rt.rename(cleanTitle(`${name}: ${(await import("../servers/ssh")).printable(call.session.title, 80) || "a session"}`));
+        let opening = this.guests.get(key);
+        if (!opening) {
+            // A session here for each session there that's using it, but not without end.
+            if ([...this.guests.keys()].filter((k) => k.startsWith(`${name}\0`)).length >= MAX_GUESTS) return { text: `Your Mac already has ${MAX_GUESTS} sessions open for sessions on this machine. They close by themselves a while after they're last used.`, isError: true };
+            opening = (async () => {
+                const folder = join(cavvyHome(), "guests", name);
+                mkdirSync(folder, { recursive: true });
+                const rt = await this.createSession(folder);
+                // Listed though nothing was ever said in it: it's where the user answers, and sees what was done.
+                rt.guestOf = name;
+                // Named for where it's from, in words that are this machine's own: the server's title is its to choose.
+                rt.rename(cleanTitle(`${name}: ${(await import("../servers/ssh")).printable(call.session.title, 80) || "a session"}`));
+                // Said to the windows now: a session that only reads the screen never asks, and would otherwise not be seen.
+                this.sessionChanged(rt);
+                return rt;
+            })();
+            this.guests.set(key, opening);
+            opening.catch(() => this.guests.get(key) === opening && this.guests.delete(key));
         }
-        return rt.lend(tool, call.input, signal);
+        const rt = await opening;
+        try {
+            return await rt.lend(tool, call.input, signal);
+        } finally {
+            this.guestLater(rt);
+        }
+    }
+
+    private guestTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+    /**
+     * Closed once it has sat unused for a good while (GUEST_IDLE_MS), not after the half minute other sessions get:
+     * what the user allowed it "for this session" would be asked again by the one that takes its place.
+     */
+    private guestLater(rt: Runtime) {
+        clearTimeout(this.guestTimers.get(rt.id));
+        const t = setTimeout(() => {
+            this.guestTimers.delete(rt.id);
+            this.unloadIfUnused(rt.id);
+        }, this.o.guestIdleMs ?? GUEST_IDLE_MS);
+        t.unref?.();
+        this.guestTimers.set(rt.id, t);
+    }
+
+    /**
+     * A session a server's session was lent tools through is over (closed after sitting unused, or deleted): nothing
+     * was ever said in it, so there's no file of it, and it's gone from the list. The next call from that session
+     * there gets a new one.
+     */
+    private guestGone(rt: Runtime) {
+        clearTimeout(this.guestTimers.get(rt.id));
+        this.guestTimers.delete(rt.id);
+        for (const [key, opening] of this.guests) void opening.then((g) => g === rt && this.guests.get(key) === opening && this.guests.delete(key), () => undefined);
+        this.broadcast({ type: "sessions.remove", id: rt.id });
     }
 
     private serverLinks?: import("../servers/manager").ServerLinks;
@@ -2709,8 +2784,7 @@ export class Engine {
                 // Only a server takes what another machine lends: the user's own machine is lent nothing by a client.
                 if (!this.o.away) throw new RpcError("This machine isn't lent tools.", "unsupported");
                 const kinds = (Array.isArray(p.kinds) ? p.kinds : []).filter((k: unknown): k is Lendable => LENDABLE.includes(k as Lendable));
-                if (kinds.length) this.setLender(client, kinds);
-                else if (this.lender === client) this.setLender(undefined, []);
+                this.setLender(client, kinds);
                 return null;
             }
             case "offers.result": {

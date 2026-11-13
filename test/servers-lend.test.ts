@@ -12,6 +12,7 @@ import { fakeSsh } from "./helpers/fake-ssh";
 setDefaultTimeout(60_000);
 
 // The pretend server has no simulators of its own (its Cavvy inherits this); this machine is given some below.
+const simulatorWas = process.env.CAVVY_SIMULATOR;
 process.env.CAVVY_SIMULATOR = "0";
 const iso = isolate();
 const fake = fakeSsh();
@@ -92,7 +93,8 @@ async function until(what: string, ok: () => boolean | Promise<boolean>, ms = 12
 }
 
 // Sessions no window is on are closed after a third of a second here (half a minute in the app).
-const mine = await startServer({ token: "mine", serverBuilds: source, unloadAfterMs: 300 });
+// And a session a server's session is lent through, four seconds after its last call (half an hour in the app).
+const mine = await startServer({ token: "mine", serverBuilds: source, unloadAfterMs: 300, guestIdleMs: 4000 });
 const window = async () => {
     const w = new Window(`ws://127.0.0.1:${mine.port}/ws`, "mine");
     expect(await w.opened.promise).toBe(true);
@@ -114,7 +116,8 @@ afterAll(async () => {
     simctl.setAvailability(undefined);
     simctl.setRunner(undefined);
     resetSimulators();
-    delete process.env.CAVVY_SIMULATOR;
+    if (simulatorWas === undefined) delete process.env.CAVVY_SIMULATOR;
+    else process.env.CAVVY_SIMULATOR = simulatorWas;
     here.ws.close();
     await mine.stop().catch(() => undefined);
     await stopRemote({ name: "box", destination: "dev@box.example", addedAt: "" }).catch(() => undefined);
@@ -235,4 +238,116 @@ test("a screenshot taken on the lending machine is kept on this one, and the res
     // What has no picture is passed on as it came.
     const plain = { content: "iPhone 17e is running.", isError: false };
     expect(await keptHere(plain)).toBe(plain);
+});
+
+/** A call as the server sends one, straight to this machine's lending (Engine.lend), for a session there. */
+const lendHere = (tool: string, input: Record<string, unknown>, session = "20261113-000000-aaaaaa") => (mine.engine as any).lend("box", { tool, input, session: { id: session, title: "limits" } }, new AbortController().signal) as Promise<{ text: string; isError?: boolean }>;
+
+test("only what's lent, in bounds: no other tool, no file of this machine's opened, only so many calls a minute", async () => {
+    expect(await lendHere("Bash", { command: "id" })).toEqual({ text: "Bash isn't something your Mac lends.", isError: true });
+    // Refused before anything is asked of the user, and without a word about what's on this machine.
+    expect(await lendHere("SimulatorControl", { action: "open_url", url: "file:///etc/hosts" })).toMatchObject({ isError: true, text: expect.stringContaining("can't open a file: address on your Mac") });
+    const none = await lendHere("SimulatorControl", { action: "install", app: "/no/such/Thing.app" });
+    expect([none.isError, none.text]).toEqual([true, "There's no app at that path on your Mac. It has to be built there first."]);
+    // Reading is let through a hundred and twenty times a minute for one server, then not.
+    const answers = await Promise.all(Array.from({ length: 125 }, () => lendHere("SimulatorControl", { action: "list" })));
+    const refused = answers.filter((a) => a.text.startsWith("That's more simulator calls in a minute"));
+    expect(refused.length).toBeGreaterThanOrEqual(5);
+    expect(answers.filter((a) => !a.isError).length).toBeGreaterThan(100);
+    // All for one session there: one session here, however many came at once.
+    const rows = () => new Set(here.events.filter((e) => e.type === "sessions.upsert" && e.session.title === "box: limits").map((e) => e.session.id));
+    // Shown to the window though it never asked anything (every call here only read, or was refused).
+    await until("its session here to be shown", () => rows().size > 0);
+    expect(rows().size).toBe(1);
+});
+
+test("the session here that a session there is lent through can be deleted, and goes by itself once it has sat unused", async () => {
+    const id = (session: string) => here.events.findLast((e) => e.type === "sessions.upsert" && e.session.title === `box: ${session}`)?.session.id as string | undefined;
+    const call = (session: string) => (mine.engine as any).lend("box", { tool: "SimulatorSnapshot", input: {}, session: { id: session, title: session } }, new AbortController().signal);
+    // The test before used up this minute's calls for the server: a new minute.
+    (mine.engine as any).lentAt.clear();
+    await call("one");
+    await until("its session here", () => Boolean(id("one")));
+    const first = id("one")!;
+    // Nothing was ever said in it, so there's no file to put in the trash: deleting it just closes it.
+    await here.call("session.delete", { id: first });
+    expect(here.events.some((e) => e.type === "sessions.remove" && e.id === first)).toBe(true);
+    expect(((await here.call("sessions.list", { limit: 200 })) as { id: string }[]).some((x) => x.id === first)).toBe(false);
+    // The session there goes on being lent to, through a new one here.
+    here.events.length = 0;
+    await call("one");
+    await until("another session here", () => Boolean(id("one")) && id("one") !== first);
+    const second = id("one")!;
+    // Unused for a while (four seconds here), with no window on it: gone, without being asked to.
+    await until("it to be closed", () => here.events.some((e) => e.type === "sessions.remove" && e.id === second), 15_000);
+    expect(mine.engine.runtimes.has(second)).toBe(false);
+});
+
+test("a call this machine can't take now is answered, not left waiting: over four at once, or too long", async () => {
+    const { MachineWatch } = await import("../src/servers/watch");
+    const results: { callId: string; text: string; isError?: boolean }[] = [];
+    const srv = Bun.serve({
+        port: 0,
+        fetch: (req, s) => (s.upgrade(req) ? undefined : new Response("no")),
+        websocket: {
+            message(ws, raw) {
+                const m = JSON.parse(String(raw));
+                if (m.method === "offers.result") return void results.push(m.params);
+                if (m.method !== "sessions.list") return;
+                ws.send(JSON.stringify({ id: m.id, result: [] }));
+                for (let i = 0; i < 6; i++) ws.send(JSON.stringify({ event: { type: "offers.call", callId: `c${i}`, tool: "SimulatorControl", input: { action: "boot" }, session: { id: `s${i}`, title: "t" } } }));
+                ws.send(JSON.stringify({ event: { type: "offers.call", callId: "long", tool: "SimulatorAct", input: { action: "type", text: "x".repeat(20_000) }, session: { id: "s9", title: "t" } } }));
+                ws.send(JSON.stringify({ event: { type: "offers.call", callId: "odd", tool: 7, input: {}, session: { id: "../x" } } }));
+            },
+        },
+    });
+    const started: string[] = [];
+    // The user never answers the first four.
+    const watch = new MachineWatch("box", { reach: async () => ({ status: "connected", url: `ws://127.0.0.1:${srv.port}/ws`, token: "t" }), changed: () => {}, notice: () => {}, lends: () => ["simulator"], lend: (c) => (started.push(c.session.id), new Promise(() => {})) });
+    watch.start();
+    try {
+        await until("the ones turned away to be answered", () => results.length === 4);
+        expect(started).toEqual(["s0", "s1", "s2", "s3"]);
+        expect(results.map((r) => [r.callId, r.isError, r.text.split(" ").slice(0, 5).join(" ")])).toEqual([
+            ["c4", true, "Your Mac is still on"],
+            ["c5", true, "Your Mac is still on"],
+            ["long", true, "That call's input is too"],
+            ["odd", true, "That call isn't one your"],
+        ]);
+    } finally {
+        watch.stop();
+        void srv.stop(true);
+    }
+});
+
+test("two of the user's machines can lend to one server: one leaving doesn't take the tools away while the other is there", async () => {
+    const { Engine } = await import("../src/server/engine");
+    const { lent } = await import("../src/tools/lent");
+    const engine = new Engine({ away: true });
+    const client = () => {
+        const events: any[] = [];
+        const c = { subs: new Set<string>(), send: (e: any) => void events.push(e), events };
+        engine.clients.add(c as never);
+        return c;
+    };
+    const a = client();
+    const b = client();
+    try {
+        await engine.handle(a as never, "offers.set", { kinds: ["simulator"] });
+        await engine.handle(b as never, "offers.set", { kinds: ["simulator", "something-else"] });
+        expect(lent("simulator")).toBe(true);
+        // A call goes to the one that said so last, and ends when that one leaves.
+        const answer = engine.borrow({ id: "s1", title: "t", firstPrompt: () => undefined, ws: { cwd: "/srv/app" } } as never, "SimulatorSnapshot", {}, new AbortController().signal);
+        expect([a.events.length, b.events.map((e) => e.type)]).toEqual([0, ["offers.call"]]);
+        engine.dropClient(b as never);
+        expect(await answer).toEqual({ content: "Your Mac's Cavvy went away before it answered.", isError: true });
+        // The other still lends: sessions keep the tools, and the next call goes to it.
+        expect(lent("simulator")).toBe(true);
+        void engine.borrow({ id: "s1", title: "t", firstPrompt: () => undefined, ws: { cwd: "/srv/app" } } as never, "SimulatorSnapshot", {}, new AbortController().signal);
+        expect(a.events.map((e) => e.type)).toEqual(["offers.call"]);
+        engine.dropClient(a as never);
+        expect(lent("simulator")).toBe(false);
+    } finally {
+        await engine.stop();
+    }
 });

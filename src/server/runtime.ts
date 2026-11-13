@@ -4251,8 +4251,21 @@ export class Runtime {
 
     /** Calls of this machine's tools that another machine asked for and that are running here (lend): it isn't closed meanwhile. */
     private lending = 0;
-    /** It's the session a session on another machine is lent this machine's tools through (Engine.lend). */
-    guest = false;
+    /** When a call was last lent through this session (Engine.guestLater). */
+    lastLent = 0;
+    /** The server whose session is lent this machine's tools through this one (Engine.lend); undefined for any other session. */
+    private lentTo?: string;
+    get guestOf(): string | undefined {
+        return this.lentTo;
+    }
+    set guestOf(name: string | undefined) {
+        this.lentTo = name;
+        // Its tools know they run for another machine: what they'd keep or say for a session here isn't for it.
+        this.toolState.forAnother = name !== undefined;
+    }
+    get guest(): boolean {
+        return this.lentTo !== undefined;
+    }
 
     /**
      * Runs a tool of this machine's for a session on another of the user's machines (Engine.lend). This session is
@@ -4262,16 +4275,19 @@ export class Runtime {
     async lend(tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal): Promise<{ text: string; isError?: boolean; images?: ImagePart[] }> {
         await this.ready.catch(() => undefined);
         const agent = this.agent;
-        if (!agent) return { text: "Cavvy on that machine has no model set up yet, which it needs before it lends its tools.", isError: true };
+        if (!agent) return { text: "Cavvy on your Mac has no model set up yet, which it needs before it lends its Simulator. Ask the user to set one up there.", isError: true };
         this.lending++;
+        this.lastLent = Date.now();
         try {
             const r = await agent.runLent(tool, input, signal);
-            const line = `${redact(tool.title(input))}${r.isError ? ": not done" : ""}`;
-            this.session.recordNotice("info", line);
-            this.notice(line, "info");
+            // What was run, for whoever looks at this session: its words are in part the other machine's, so only so
+            // much of them, and not kept beyond what the window shows (a session with no message keeps no file).
+            const title = redact(tool.title(input));
+            this.notice(`${title.length > 120 ? `${title.slice(0, 119)}…` : title}${r.isError ? " (not done)" : ""}`, "info");
             return r;
         } finally {
             this.lending--;
+            this.lastLent = Date.now();
         }
     }
 

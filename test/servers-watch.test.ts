@@ -173,15 +173,18 @@ test("an ordinary exchange over it: messages both ways, in pieces and whole, and
     expect(await none.promise).toBe("failed");
 });
 
-/** A server that speaks the handshake and then sends the bytes it's given, as a hostile one could: raw frames. */
-function rawServer(frames: (write: (bytes: Uint8Array) => void) => void) {
+/**
+ * A server that speaks the handshake and then sends the bytes it's given, as a hostile one could: raw frames.
+ * `heard`: the bytes this end sent it after the handshake, as they came.
+ */
+function rawServer(frames: (write: (bytes: Uint8Array) => void) => void, heard: (bytes: number) => void = () => {}) {
     const srv = Bun.listen({
         hostname: "127.0.0.1",
         port: 0,
         socket: {
             data(socket, chunk) {
                 const key = /sec-websocket-key:\s*(\S+)/i.exec(Buffer.from(chunk).toString("latin1"))?.[1];
-                if (!key) return;
+                if (!key) return heard(chunk.length);
                 const accept = createHash("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
                 socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
                 frames((bytes) => void socket.write(bytes));
@@ -219,4 +222,67 @@ test("what waits to go out to an end that isn't taking it is only so much; told 
     const roomy = openBoundedSocket({ port: srv.port!, path: "/ws", protocols: [], maxMessage: 1024, maxUnsent: 64 * 1024 * 1024, onOpen: () => roomy.send(big), onMessage: () => {}, onClose: () => {} });
     await until("the whole message to arrive", () => got === big.length);
     roomy.close();
+});
+
+/** One unmasked text frame, as a server sends it. */
+function textFrame(text: string, fin = true): Uint8Array {
+    const body = Buffer.from(text, "utf-8");
+    const head = body.length < 126 ? Buffer.from([fin ? 0x81 : 0x01, body.length]) : body.length < 65536 ? Buffer.from([fin ? 0x81 : 0x01, 126, body.length >> 8, body.length & 0xff]) : Buffer.concat([Buffer.from([fin ? 0x81 : 0x01, 127, 0, 0, 0, 0]), Buffer.from([(body.length >>> 24) & 0xff, (body.length >>> 16) & 0xff, (body.length >>> 8) & 0xff, body.length & 0xff])]);
+    return Buffer.concat([head, body]);
+}
+
+test("a run of pings is answered once for all that came together, not once each", async () => {
+    let answered = 0;
+    const port = rawServer(
+        (write) => {
+            // Forty thousand empty pings in a few writes, then a message.
+            const pings = Buffer.alloc(80_000);
+            for (let i = 0; i < pings.length; i += 2) pings[i] = 0x89;
+            write(pings);
+            write(textFrame("after"));
+        },
+        (bytes) => (answered += bytes),
+    );
+    const got: string[] = [];
+    const s = openBoundedSocket({ port, path: "/ws", protocols: [], maxMessage: 1024, onOpen: () => {}, onMessage: (t) => void got.push(t), onClose: () => {} });
+    await until("the message after them", () => got.length === 1);
+    await Bun.sleep(100);
+    // An answer is six bytes: a handful of them, one per read, not forty thousand.
+    expect(answered).toBeGreaterThan(0);
+    expect(answered).toBeLessThan(6 * 200);
+    s.close();
+});
+
+test("a big message that trickles in arrives whole, and what follows it in the same read isn't lost", async () => {
+    const big = Array.from({ length: 30_000 }, (_, i) => `${i % 97},`).join("");
+    const port = rawServer((write) => {
+        const frame = Buffer.concat([textFrame(big), textFrame("next"), textFrame("la", false)]);
+        // The first part at once, the rest a few bytes at a time, the end of it together with what comes after.
+        write(frame.subarray(0, 20_000));
+        let at = 20_000;
+        const drip = () => {
+            for (let n = 0; n < 400 && at < frame.length; n++, at += 7) write(frame.subarray(at, Math.min(frame.length, at + 7)));
+            if (at < frame.length) setTimeout(drip, 1);
+            else write(Uint8Array.from([0x80, 0x02, 0x73, 0x74]));
+        };
+        drip();
+    });
+    const got: string[] = [];
+    const s = openBoundedSocket({ port, path: "/ws", protocols: [], maxMessage: 1024 * 1024, onOpen: () => {}, onMessage: (t) => void got.push(t), onClose: () => {} });
+    await until("all three messages", () => got.length === 3);
+    expect([got[0] === big, got[1], got[2]]).toEqual([true, "next", "last"]);
+    s.close();
+});
+
+test("more in a minute than the connection has reason to carry ends it, whatever it's made of", async () => {
+    const port = rawServer((write) => {
+        // Small, well-formed messages, without end.
+        const one = textFrame("x".repeat(1000));
+        for (let i = 0; i < 400; i++) write(one);
+    });
+    const closed = Promise.withResolvers<string>();
+    let got = 0;
+    openBoundedSocket({ port, path: "/ws", protocols: [], maxMessage: 4096, maxPerMinute: 100_000, onOpen: () => {}, onMessage: () => void got++, onClose: (why) => closed.resolve(why) });
+    expect(await closed.promise).toBe("too-much");
+    expect(got).toBeLessThanOrEqual(100);
 });

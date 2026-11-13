@@ -38,6 +38,8 @@ const REPLY_MS = 20_000;
 /** A server's own words are its to choose: only so much of each is kept, and only so many sessions heard of. */
 const HEARD = 300;
 const MAX_MESSAGE = 4 * 1024 * 1024;
+/** And all it sends within a minute: a list and its changes are kilobytes. Past this it isn't listened to for a while. */
+const MAX_PER_MINUTE = 32 * 1024 * 1024;
 /**
  * What a server's sessions have to say is passed on at most this often, turns ending and sessions asking counted
  * apart: a server gone wrong can't bury the user in it, and a busy one can't have its asking go unsaid.
@@ -47,6 +49,8 @@ const ASKS_PER_MINUTE = 12;
 const KINDS = ["done", "permission", "question", "plan", "error"] as const;
 /** Calls of what this machine lends that one server may have running here at once. */
 const LENT_AT_ONCE = 4;
+/** What one call's input may hold, as text: a device's name, a tap, a few lines to type. */
+const LENT_INPUT = 16 * 1024;
 /** Answers to those that may wait to go out to a server that's slow to take them: a few screenshots' worth. */
 const LENT_UNSENT = 32 * 1024 * 1024;
 
@@ -248,23 +252,34 @@ export class MachineWatch {
                     this.o.notice({ sessionId: "", kind: "question", title: "More sessions need you", body: "" });
                 }
             } else if (ev.type === "offers.call") {
-                // What this machine lends is asked for by a session there. Only so many at once, and only by a
-                // session that can be told apart: a server gone wrong can't open sessions here without end.
-                if (!this.o.lend || typeof ev.callId !== "string" || ev.callId.length > 100 || lending.has(ev.callId) || lending.size >= LENT_AT_ONCE) return;
-                const session = ev.session && typeof ev.session === "object" ? ev.session : ({} as { id?: unknown; title?: unknown });
-                if (typeof ev.tool !== "string" || typeof session.id !== "string" || !/^[\w.-]{1,120}$/.test(session.id)) return;
-                const stop = new AbortController();
-                lending.set(ev.callId, stop);
-                const call: LentCall = { tool: ev.tool.slice(0, 100), input: ev.input && typeof ev.input === "object" && !Array.isArray(ev.input) ? ev.input : {}, session: { id: session.id, title: cut(session.title, 80) } };
+                // What this machine lends is asked for by a session there. Whatever is wrong with a call, it's
+                // answered: nothing there waits on a call that was only dropped here.
+                if (!this.o.lend || typeof ev.callId !== "string" || ev.callId.length > 100 || lending.has(ev.callId)) return;
                 const callId = ev.callId;
+                const answer = (r: LentResult) => void (ws.open && ws.send(JSON.stringify({ id: next++, method: "offers.result", params: { callId, ...r } })));
+                const session = ev.session && typeof ev.session === "object" ? ev.session : ({} as { id?: unknown; title?: unknown });
+                if (typeof ev.tool !== "string" || typeof session.id !== "string" || !/^[\w.-]{1,120}$/.test(session.id)) return answer({ text: "That call isn't one your Mac takes.", isError: true });
+                const input = ev.input && typeof ev.input === "object" && !Array.isArray(ev.input) ? ev.input : {};
+                if (JSON.stringify(input).length > LENT_INPUT) return answer({ text: "That call's input is too long for your Mac to take.", isError: true });
+                // Only so many at once: a server gone wrong can't have calls here without end.
+                if (lending.size >= LENT_AT_ONCE) return answer({ text: `Your Mac is still on ${LENT_AT_ONCE} other calls from this machine (it may be waiting for the user's answer there). Wait for them, then try again.`, isError: true });
+                // What's lent may have changed since the connection was made (the Simulator turned off there): said, so
+                // sessions there stop being offered what can't run.
+                const kinds = this.o.lends?.() ?? [];
+                if (!kinds.length) {
+                    ws.send(JSON.stringify({ id: next++, method: "offers.set", params: { kinds } }));
+                    return answer({ text: "Your Mac's Simulator isn't available now: it's turned off in Cavvy's settings there, or Xcode isn't set up.", isError: true });
+                }
+                const stop = new AbortController();
+                lending.set(callId, stop);
+                const call: LentCall = { tool: ev.tool.slice(0, 100), input, session: { id: session.id, title: cut(session.title, 80) } };
                 void this.o
                     .lend(call, stop.signal)
-                    .catch((e): LentResult => ({ text: `It couldn't be run: ${(e as Error).message}`, isError: true }))
+                    .catch((e): LentResult => ({ text: `It couldn't be run on your Mac: ${cut((e as Error).message, 300)}`, isError: true }))
                     .then((r) => {
                         lending.delete(callId);
                         // Given up there meanwhile, or the connection is another one now: nobody waits for it.
-                        if (stop.signal.aborted || !ws.open) return;
-                        ws.send(JSON.stringify({ id: next++, method: "offers.result", params: { callId, ...r } }));
+                        if (!stop.signal.aborted) answer(r);
                     });
             } else if (ev.type === "offers.cancel") {
                 if (typeof ev.callId === "string") lending.get(ev.callId)?.abort();
@@ -275,6 +290,7 @@ export class MachineWatch {
             path: "/ws",
             protocols: ["cavvy.v1", `auth.${token}`],
             maxMessage: MAX_MESSAGE,
+            maxPerMinute: MAX_PER_MINUTE,
             // What this machine lends is answered with what was asked for, a picture of a screen among it: that may
             // wait to go out, where otherwise this end says next to nothing.
             ...(this.o.lend ? { maxUnsent: LENT_UNSENT } : {}),

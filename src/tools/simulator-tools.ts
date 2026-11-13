@@ -143,10 +143,14 @@ To build an app for it: xcodebuild -scheme <scheme> -destination 'platform=iOS S
             if (typeof input.app !== "string" || !input.app.trim()) return "install needs app, the path to a .app";
             const p = pathOf(input.app, ctx);
             if (!/\.app\/?$/.test(p)) return "app must be a .app folder";
-            if (!existsSync(p) || !statSync(p).isDirectory()) return `There's no app at ${p}`;
+            // For a session on another machine, what's on this one isn't described: only that it isn't there.
+            if (!existsSync(p) || !statSync(p).isDirectory()) return ctx.state.forAnother ? "There's no app at that path on your Mac. It has to be built there first." : `There's no app at ${p}`;
         }
         if ((input.action === "launch" || input.action === "terminate") && (typeof input.bundleId !== "string" || !input.bundleId.trim())) return `${input.action} needs a bundleId`;
         if (input.action === "open_url" && (typeof input.url !== "string" || !/^[a-z][a-z0-9+.-]*:/i.test(input.url))) return "open_url needs a url";
+        // A file: address is a file of this machine's (measured: the simulator offers /etc/hosts when asked to open
+        // it): not something a session on another machine may have opened here.
+        if (input.action === "open_url" && ctx.state.forAnother && /^file:/i.test(input.url!.trim())) return "open_url can't open a file: address on your Mac.";
         return undefined;
     },
     async preview(input) {
@@ -363,7 +367,8 @@ export const SimulatorScreenshotTool: Tool<Record<string, never>> = {
             const shot = await s.screenshot();
             const image = { type: "image" as const, mediaType: "image/png", data: Buffer.from(shot.png).toString("base64") };
             // At the screen's size in points: drawn as it is.
-            const file = await saveScreenshot({ ...image, width: shot.width });
+            // Taken for a session on another machine: it's kept there (keptHere), not here as well.
+            const file = ctx.state.forAnother ? undefined : await saveScreenshot({ ...image, width: shot.width });
             const show = file ? ` Saved as ${file}: to show it to the user, put ${imageMarkdown(file)} in your last message.` : "";
             return {
                 content: `Screenshot of the simulator, ${shot.width}×${shot.height}: a pixel in it is a point, as SimulatorAct's x and y are.${show}`,
@@ -384,7 +389,8 @@ export const SIMULATOR_TOOL_HEADINGS: Record<string, string> = {
  * goes there. What it names (an app's path) is the other machine's, so it's checked there, not here.
  */
 function lendable(tool: Tool<any>): Tool<any> {
-    const far = (ctx: Pick<ToolContext, "state">) => (simulatorsLikely() ? undefined : ctx.state.lends);
+    // Only where another machine's are lent: a Mac whose own Xcode turns out not to be usable says that, as before.
+    const far = (ctx: Pick<ToolContext, "state">) => (!simulatorsLikely() && lent("simulator") ? ctx.state.lends : undefined);
     const { run, validate } = tool;
     return {
         ...tool,
