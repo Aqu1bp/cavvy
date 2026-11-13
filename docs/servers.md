@@ -61,6 +61,18 @@ Removing a server (the bin beside it, from a window that isn't on it) forgets it
 
 Sessions on a server are its own: its folders, its `~/.cavvy`, its settings and memory. The GUI's server there is the same one the desktop app runs locally, so sub-agents, other sessions, schedules, pull request watching and worktrees work as they do here, with the server's tools and sign-ins.
 
+## Permissions on a server
+
+A server is there to run agents freely, and it can be rebuilt. So in the Cavvy that `cavvy servers add` puts on a machine:
+
+- Sessions start in **Bypass**: tools run without asking. `cavvy servers add` says so. To start them in another mode, set it in the server's own settings (Settings in its GUI, `/config` in its terminal app, or `permissions.defaultMode`); a mode asked for (`--permission-mode`, the mode picker) is always the one a session gets.
+- What still asks, in every mode, is what reaches beyond the machine: a force-push, a push to the default branch (`main`, `master`, `trunk`), publishing a package, and commands that name Cavvy's own credentials or the server's folder (who may connect to it). What only the server itself would lose (`rm -rf ~`, `sudo`, a script piped into a shell) doesn't. Reading a key or a token kept on the server doesn't ask either, in Bypass, there as anywhere: put only credentials on a server that you'd accept an agent using. Your own computer keeps its full list ([permissions](permissions.md)).
+- Deny rules apply as anywhere.
+
+This goes for every session of that Cavvy, whether you reach it from another machine or start it on the server yourself (`~/.cavvy/server/current/cavvy`). Another copy of Cavvy installed on the same machine keeps the rules of a computer of your own.
+
+Claude Code and Codex apply their own sandboxes and rules to what they run: in Bypass they run under their own, and what they ask Cavvy about is theirs to decide, so the list above is what Cavvy checks when it's asked. Cavvy's sandbox is for models used with an API key, in Auto mode: on Linux it's bubblewrap, off until `"sandbox": true` in the server's settings. `cavvy servers check` says which mode sessions start in and how the sandbox stands.
+
 ## Keeping it running, and updating
 
 Where the server has systemd, Cavvy runs as a user service: started at boot, restarted if it crashes. That needs "lingering" for your user, which Cavvy turns on itself; where the server refuses, Cavvy still runs but won't come back after a reboot, and `cavvy servers check` gives the command an administrator runs to fix that (`sudo loginctl enable-linger <user>`).
@@ -70,15 +82,29 @@ cavvy servers                 # the servers you've added
 cavvy servers check [name]    # is Cavvy running there, and what's missing
 cavvy servers login <name>    # sign Claude Code or Codex in there, and turn it on
 cavvy servers update <name>   # bring its Cavvy up to this machine's
+cavvy servers rollback <name> # put it back on the version before its last update
 cavvy servers stop <name>     # stop Cavvy there
 cavvy servers remove <name>   # forget it here, and sign this machine out of it
 ```
 
-A server runs the build of Cavvy that the machine setting it up runs, made from the checkout that machine's Cavvy came from. `update` restarts Cavvy there, which ends turns in flight and drops questions waiting for an answer, so it asks first when sessions are working (`Stop work on <name> to update?`). The new build is tried before the old one is given up: if it doesn't start, the build before it is put back and started. A server on a newer build than this machine's is left alone, so two machines that share a server don't each put their own version back; `--force` replaces it anyway.
+A server runs the build of Cavvy that the machine setting it up runs. Where that build comes from depends on the Cavvy doing the setting up: run from a checkout, it makes the build from that checkout; the installed desktop app carries the builds for Linux servers it was installed with (about 110 MB of the app); any other copy can't set a server up yet: it will download the build Cavvy published for it, and use it only if Cavvy's release key signed it, once builds are published ([publishing builds](releasing.md)). `update` restarts Cavvy there, which cuts off turns in flight and drops questions waiting for an answer, so it asks first when sessions are working (`Stop work on <name> to update?`). What was cut off isn't lost: see [after a restart](#after-a-restart). The new build is tried before the old one is given up: if it doesn't start, the build before it is put back and started. A server on a newer build than this machine's is left alone, so two machines that share a server don't each put their own version back; `--force` replaces it anyway.
+
+An update that starts and then turns out not to work can be undone: `rollback` puts the server back on the build it ran before (kept there for this), asking first when sessions are working. `update` brings it level again.
 
 `stop` waits until Cavvy there has closed its sessions and gone, and it stays stopped: a connection that was open says `Cavvy on <name> was stopped.` and doesn't start it again by reconnecting. Connecting again (`cavvy gui --server`, `cavvy servers update`) starts it.
 
 `remove` doesn't stop Cavvy on the server or delete anything there. The line it prints puts the server back.
+
+## After a restart
+
+When Cavvy on a server stops while sessions are working and then starts again (an update, a reboot where it runs as a service, a crash), those sessions carry on by themselves: each shows its turn as stopped where it was cut off, then a new turn, `Cavvy restarted while you were working, which cut your last turn off. Continue where you left off.` A question a session was waiting on is gone with the restart; the session goes on and asks again if it still needs to. Messages you had queued wait for you, as after any stop.
+
+What doesn't carry on:
+
+- A turn you had stopped yourself, or that had ended.
+- Anything after `cavvy servers stop`: a server stopped on purpose starts again with nothing running. Stopped any other way (`cavvy host stop` on the server itself, its service manager), the sessions carry on at its next start.
+- A session that Cavvy has already carried on three times within an hour: it says so and waits for you, in case it's what keeps bringing Cavvy down.
+- A session that can't go on within a minute of the start, because its model isn't available there any more: it says so and waits for you.
 
 ## How a machine signs in
 
