@@ -2,24 +2,25 @@
 // frames are lighter than the still (lower quality: page.ts FAR_QUALITY), so that the pane ends on the still
 // matters here as it doesn't for a pane on the same machine:
 //
-// - Each frame of the stream is shown as it comes.
-// - When frames stop, the still. Taking one makes Chrome send a frame of the stream too (measured with Chrome 157:
-//   one, while the still is taken, every time), so one frame meanwhile isn't the page moving, and isn't shown over
-//   the still; more than one is the page moving, and the still waits until it stops.
-// - A still is looked at once more a moment later, and sent again only if it differs: a change that came with the
-//   still's own frame isn't missed, and an unchanged page costs nothing more.
+// - Each frame of the stream that shows something new is shown as it comes.
+// - When frames stop, the still.
+// - Taking a still makes Chrome send a frame of the stream too, while it's taken or a moment after. That frame is
+//   the page as it already was: byte for byte the stream's last frame (measured with Chrome 157 on macOS and on
+//   Linux: 24 of 24). So a frame with the bytes of the one before it shows nothing new and is passed over, whenever
+//   it comes; any other is the page changing, and is shown, with another still to follow once it stops.
 
-/** How long without a frame counts as the page having stopped moving. */
+/** How long without a new frame counts as the page having stopped moving. */
 export const STOPPED_MS = 200;
 
 export class FarStream<F> {
     private timer?: ReturnType<typeof setTimeout>;
-    /** A still is being taken: the frames that come meanwhile, and the last of them. */
+    /** What tells the stream's last frame from another (its bytes, hashed). */
+    private last?: unknown;
+    /** A still is being taken, and whether the page changed meanwhile. */
     private taking = false;
-    private meanwhile = 0;
-    private held?: F;
+    private changed = false;
     /** The still the pane shows, by what tells one from another; none once a frame of the stream was shown over it. */
-    private shown?: string;
+    private shown?: unknown;
     /** Each start and stop: what was under way before isn't shown after. */
     private run = 0;
     private stopped = true;
@@ -28,8 +29,8 @@ export class FarStream<F> {
         private o: {
             /** Sends a picture to the pane. */
             show: (frame: F) => void;
-            /** Takes the sharp still: the picture, and what tells it from another (its bytes). Undefined: there's none to be had now. */
-            still: () => Promise<{ frame: F; key: string } | undefined>;
+            /** Takes the sharp still: the picture, and what tells it from another. Undefined: there's none to be had now. */
+            still: () => Promise<{ frame: F; key: unknown } | undefined>;
         },
     ) {}
 
@@ -37,6 +38,7 @@ export class FarStream<F> {
     start() {
         this.run++;
         this.stopped = false;
+        this.last = undefined;
         this.shown = undefined;
         this.later();
     }
@@ -45,17 +47,13 @@ export class FarStream<F> {
         this.run++;
         this.stopped = true;
         clearTimeout(this.timer);
-        this.held = undefined;
     }
 
-    /** A frame of the stream. */
-    frame(f: F) {
-        if (this.stopped) return;
-        if (this.taking) {
-            this.meanwhile++;
-            this.held = f;
-            return;
-        }
+    /** A frame of the stream, and what tells it from another. */
+    frame(f: F, key: unknown) {
+        if (this.stopped || key === this.last) return;
+        this.last = key;
+        this.changed = true;
         this.shown = undefined;
         this.o.show(f);
         this.later();
@@ -68,25 +66,17 @@ export class FarStream<F> {
     }
 
     private async settle() {
-        if (this.stopped || this.taking) return;
+        // One at a time: a still that's slow (a page busy, or held by a dialog) is waited for, and looked at again after.
+        if (this.stopped) return;
+        if (this.taking) return this.later();
         const run = this.run;
         this.taking = true;
-        this.meanwhile = 0;
-        this.held = undefined;
+        this.changed = false;
         const still = await this.o.still().catch(() => undefined);
         this.taking = false;
-        const held = this.held;
-        this.held = undefined;
-        if (run !== this.run) return;
-        if (this.meanwhile > 1) {
-            // The page moved while the still was taken: its newest frame, and another still once it stops.
-            if (held !== undefined) this.o.show(held);
-            this.shown = undefined;
-            return this.later();
-        }
-        if (!still || still.key === this.shown) return;
+        // Stopped or started again meanwhile; or the page changed while it was taken, and its frame set the next one going.
+        if (run !== this.run || this.changed || !still || still.key === this.shown) return;
         this.shown = still.key;
         this.o.show(still.frame);
-        this.later();
     }
 }

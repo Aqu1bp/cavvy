@@ -439,7 +439,7 @@ export class Page {
             // picture is the current stream's size, which Chrome sometimes mislabels (frame-size.ts).
             const frame = { data: p.data, ...frameSize(p.metadata, this.viewport, () => pictureSize(p.data)) };
             // Watched over a network: which frames are shown, and when the still is, is another matter (far-stream.ts).
-            if (this.far) return this.far.frame(frame);
+            if (this.far) return this.far.frame(frame, Bun.hash(p.data));
             this.o.hooks.frame(this, frame);
             this.paced(Date.now());
         });
@@ -737,7 +737,7 @@ export class Page {
                   still: async () => {
                       if (!this.streaming || this.closed) return undefined;
                       const { data } = await this.send<{ data: string }>("Page.captureScreenshot", { format: "jpeg", quality: STREAM_QUALITY, captureBeyondViewport: false });
-                      return { frame: { data, width: this.viewport.width, height: this.viewport.height }, key: data };
+                      return { frame: { data, width: this.viewport.width, height: this.viewport.height }, key: Bun.hash(data) };
                   },
               })
             : undefined;
