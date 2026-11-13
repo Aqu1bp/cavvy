@@ -236,8 +236,14 @@ test("the Simulator turned off here while a session there waits for this machine
     await until("the server to be lent it again", async () => {
         const again = await sessionThere();
         await remote.call("session.send", { id: again, text: "simulator once it's back" });
-        await Bun.sleep(300);
-        return JSON.stringify(await lastTurn(remote, again)).includes("No such tool") === false;
+        // It has the tool when its own asking about the call comes; without it the turn ends on "No such tool".
+        let has = false;
+        await until("that session to ask, or to end", async () => {
+            const now = ((await remote.call("session.open", { id: again })) as SessionSnapshot);
+            has = now.state.interactions.length > 0;
+            return has || now.turns.at(-1)?.status === "done";
+        });
+        return has;
     });
 });
 
@@ -537,7 +543,11 @@ test("each call runs under this machine's mode as it is now, not the one it had 
         const said = notices();
         const again = lendHere("SimulatorControl", { action: "shutdown" }, session);
         await answerLent(session, "no", seen);
-        expect([(await again).text.includes("declined"), guest.mode, notices() - said]).toEqual([true, "default", 0]);
+        expect([(await again).text.includes("declined"), guest.mode]).toEqual([true, "default"]);
+        // And the next: the session here is in Manual, the mode set is still Bypass, and nothing says so each call.
+        const next = lendHere("SimulatorControl", { action: "shutdown" }, session);
+        await answerLent(session, "no", seen);
+        expect([(await next).text.includes("declined"), guest.mode, notices() - said]).toEqual([true, "default", 0]);
     } finally {
         await here.call("settings.update", { patch: { allowBypass: false, defaultMode: "default" } });
     }
