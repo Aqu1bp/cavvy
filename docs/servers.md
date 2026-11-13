@@ -69,7 +69,7 @@ It all shows in the session on the server: its side panel has the Simulator tab,
 
 A call is checked twice: on the server by its own mode and rules, as any tool there, and then on your Mac by your Mac's default mode and rules.
 
-- In Manual on your Mac, starting a device or acting on one asks first, with a notification that names the server and the session if it isn't the one in front (a few a minute from one server at most, then one saying there's more). **Allow once** asks again next time; allowing it for the session doesn't.
+- In Manual on your Mac, starting a device or acting on one asks first, with a notification that names the server and the session if it isn't the one in front (a few a minute from one server at most, then one saying there's more). **Allow once** covers that one tap or key press, and the next asks again; allowing it for the session doesn't. Starting the same device again isn't asked about, until the session has left the Simulator alone for half an hour.
 - In Auto or Bypass on your Mac, these calls run without asking.
 - Reading the screen and listing devices never ask, in any mode: a session on a server can see whatever simulator is running on your Mac.
 - Your Mac's deny rules apply, and `open_url` won't open a `file:` address there for a server.

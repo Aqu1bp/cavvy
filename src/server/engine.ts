@@ -464,6 +464,8 @@ export class Engine {
 
     async stop() {
         this.stopping = true;
+        // First: a call a server's session waits for here is told this machine went away, not answered by its end.
+        this.serverLinks?.stopWatching();
         this.planChecks.abort();
         for (const pending of this.openingTerminals.values()) pending.cancelled = true;
         const terminalsStopped = this.terminals.stop();
@@ -1873,6 +1875,11 @@ export class Engine {
         const opening = this.guestFor(name, call.session);
         if (!opening) return { text: `Your Mac's Simulator is already in use by ${MAX_GUESTS} sessions on this machine. Each is let go a while after it last used it.`, isError: true };
         const rt = await opening;
+        // Under this machine's mode as it is now: the session here was made under the one it had then. Bypass only
+        // while it's still allowed here, as for a session that starts now.
+        const set = this.defaultMode(rt.ws);
+        const mode = set === "bypassPermissions" && !rt.bypassAllowed() ? "default" : set;
+        if (rt.mode !== mode) rt.setMode(mode, { fromAgent: true });
         // What the session there is called now, for what the user is told of it.
         const title = await lentTitle(call.session.title);
         if (rt.guestSession && rt.guestSession.title !== title) rt.guestSession = { id: call.session.id, title };
@@ -2119,6 +2126,8 @@ export class Engine {
             }
         });
         this.reloadSettings();
+        // The Simulator turned off or on: the servers this machine lends it to hear now, and what waits here for it ends.
+        if ("simulator" in patch) this.serverLinks?.relend();
         return this.guiSettings(cwd);
     }
 
