@@ -721,10 +721,13 @@ export async function refreshSessions() {
     });
 }
 
-export async function refreshModels(refresh = false) {
+/** `after`: what the list waits for before it's taken in, once it has come (at startup, the providers: Home's "connect a model" card reads both, and says the wrong thing with the models alone). */
+export async function refreshModels(refresh = false, after?: Promise<unknown>) {
     setApp("modelsLoading", true);
     try {
-        setApp("models", reconcile(await rpc.call("models.list", { refresh }), { key: "provider" }));
+        const models = await rpc.call("models.list", { refresh });
+        await after?.catch(() => undefined);
+        setApp("models", reconcile(models, { key: "provider" }));
         setApp("modelsLoaded", true);
         usePicked();
     } finally {
@@ -1030,10 +1033,13 @@ export function start() {
                 setApp("hello", await rpc.call("hello", { client: isDesktop && !machine ? "desktop" : "browser" }));
                 if (machine || app.hello?.servers) void serversUi().then((m) => m.connected());
                 openAhead();
-                const lists = Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders(), refreshKeybindings().catch(() => undefined)]);
-                // Asked for with the lists, after them: the composer names its model from them, and a pick brought
-                // from another machine is checked against them.
-                const models = refreshModels().catch(() => undefined);
+                const providers = refreshProviders();
+                const lists = Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), providers, refreshKeybindings().catch(() => undefined)]);
+                // The models are asked for with the lists (the composer names its model from them, offers its efforts,
+                // and a pick brought from another machine is checked against them), but after them, and not waited
+                // for: the machine answers in the order it's asked, and the first screen waits for the lists (asked
+                // for first, the models put 60 ms on a switch to a server).
+                const models = refreshModels(false, providers).catch(() => undefined);
                 await lists;
                 // That pick is in the composer from the first screen, or not at all: the models are waited for, a moment.
                 if (picked) await Promise.race([models, new Promise((r) => setTimeout(r, PICKED_WAIT_MS))]);
