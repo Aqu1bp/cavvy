@@ -47,6 +47,8 @@ const ASKS_PER_MINUTE = 12;
 const KINDS = ["done", "permission", "question", "plan", "error"] as const;
 /** Calls of what this machine lends that one server may have running here at once. */
 const LENT_AT_ONCE = 4;
+/** Answers to those that may wait to go out to a server that's slow to take them: a few screenshots' worth. */
+const LENT_UNSENT = 32 * 1024 * 1024;
 
 const cut = (v: unknown, max: number): string => (typeof v === "string" ? (v.length > max ? `${v.slice(0, max - 1)}…` : v) : "");
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
@@ -273,6 +275,9 @@ export class MachineWatch {
             path: "/ws",
             protocols: ["cavvy.v1", `auth.${token}`],
             maxMessage: MAX_MESSAGE,
+            // What this machine lends is answered with what was asked for, a picture of a screen among it: that may
+            // wait to go out, where otherwise this end says next to nothing.
+            ...(this.o.lend ? { maxUnsent: LENT_UNSENT } : {}),
             onOpen: () => ws.send(JSON.stringify({ id: 1, method: "sessions.list", params: { limit: 100 } })),
             onMessage: (text) => {
                 try {
