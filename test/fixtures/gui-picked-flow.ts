@@ -56,7 +56,7 @@ try {
     await wait(15);
     // The lists are in and the models aren't: the first screen waits for them, so the composer isn't seen changing.
     assert.equal(m.app.sessionsLoaded, true);
-    assert.ok(sent.indexOf("models.list") < sent.indexOf("sessions.list"), "the models are asked for with the lists");
+    assert.ok(sent.includes("models.list") && sent.indexOf("models.list") > sent.indexOf("sessions.list"), "the models are asked for with the lists, after them");
     assert.deepEqual([isWindowShown(), shows()], [false, { model: "claude-code:haiku", effort: "medium", fastMode: undefined }]);
     await wait(mode === "slow-models" ? 480 : 80);
     assert.equal(isWindowShown(), true);

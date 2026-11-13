@@ -996,10 +996,11 @@ export function start() {
                 // (its browser, its folders) is this computer's, not the server's.
                 setApp("hello", await rpc.call("hello", { client: isDesktop && !machine ? "desktop" : "browser" }));
                 if (machine || app.hello?.servers) void serversUi().then((m) => m.connected());
-                // Asked for with the lists: the composer names its model from them, and a pick brought from another
-                // machine is checked against them.
+                const lists = Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders(), refreshKeybindings().catch(() => undefined)]);
+                // Asked for with the lists, after them: the composer names its model from them, and a pick brought
+                // from another machine is checked against them.
                 const models = refreshModels().catch(() => undefined);
-                await Promise.all([refreshSessions(), refreshProjects(), refreshSettings(), refreshProviders(), refreshKeybindings().catch(() => undefined)]);
+                await lists;
                 // That pick is in the composer from the first screen, or not at all: the models are waited for, a moment.
                 if (picked) await Promise.race([models, new Promise((r) => setTimeout(r, PICKED_WAIT_MS))]);
                 picked = undefined;
