@@ -3,7 +3,8 @@
 // tools working in a temp project.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { FAKE, isolate, tempDir } from "./helpers/isolate";
 
@@ -3294,6 +3295,85 @@ describe("reopening a Claude Code session", () => {
             await cleanup();
         }
     }, 60_000);
+
+    test("a Cavvy that keeps the list carries on the sessions that were working when it stopped: not one the user had stopped, and each only once", async () => {
+        const list = join(mkdtempSync(join(tmpdir(), "cavvy-test-working-")), "working.json");
+        const kept = () => (existsSync(list) ? Object.keys(JSON.parse(readFileSync(list, "utf-8")).sessions) : []);
+        const first = await startServer({ token: TOKEN, working: list });
+        let second: Awaited<ReturnType<typeof startServer>> | undefined;
+        try {
+            const c = new Client(TOKEN, {}, first.port);
+            await c.opened();
+            const start = async () => {
+                const id = await c.open("session.create", { cwd: project() });
+                await c.call("session.setModel", { id, ref: "mock:mock-opus", persist: false });
+                await c.call("session.send", { id, text: "hangforever please" });
+                await c.until(id, (v) => v.state.busy);
+                return id;
+            };
+            const working = await start();
+            const stopped = await start();
+            expect(kept().sort()).toEqual([working, stopped].sort());
+            await c.call("session.interrupt", { id: stopped });
+            await c.until(stopped, (v) => !v.state.busy);
+            expect(kept()).toEqual([working]);
+            c.close();
+            await first.stop();
+            // Cut off by the stop, not ended: still on the list for the Cavvy that starts next.
+            expect(kept()).toEqual([working]);
+
+            second = await startServer({ token: TOKEN, working: list, unloadAfterMs: 300 });
+            // With no window on it, it carries on all the same: its turn ends (it's off the list), and it's closed
+            // again, as a session a schedule opened is.
+            const loaded = () => Boolean((second!.engine as any).runtimes.get(working));
+            for (const end = Date.now() + 20_000; kept().length || loaded(); await Bun.sleep(50)) if (Date.now() > end) throw new Error(`timed out; listed: ${kept()}, loaded: ${loaded()}`);
+            const d = new Client(TOKEN, {}, second.port);
+            await d.opened();
+            await d.open("session.open", { id: working });
+            expect(d.view(working).turns.map((t) => [t.prompt?.text, t.status])).toEqual([
+                ["hangforever please", "aborted"],
+                ["Cavvy restarted while you were working, which cut your last turn off. Continue where you left off.", "done"],
+            ]);
+            // Its turn ended: it's off the list, and a restart now starts nothing.
+            expect(kept()).toEqual([]);
+            await d.open("session.open", { id: stopped });
+            expect(d.view(stopped).turns.map((t) => t.status)).toEqual(["aborted"]);
+            d.close();
+        } finally {
+            await first.stop().catch(() => undefined);
+            await second?.stop().catch(() => undefined);
+            await cleanup();
+        }
+    }, 60_000);
+
+    test("a session that can't carry on within a minute is left for the user, off the list, and says so for good", async () => {
+        const list = join(mkdtempSync(join(tmpdir(), "cavvy-test-working-")), "working.json");
+        const kept = () => (existsSync(list) ? Object.keys(JSON.parse(readFileSync(list, "utf-8")).sessions) : []);
+        const server = await startServer({ token: TOKEN, working: list });
+        try {
+            const c = new Client(TOKEN, {}, server.port);
+            await c.opened();
+            const id = await c.open("session.create", { cwd: project() });
+            const engine = server.engine as any;
+            const rt = engine.runtimes.get(id);
+            await rt.ready;
+            // As a restart finds it: on the list, and its model gone since (the provider removed, its account signed out).
+            engine.turnRunning(rt, true);
+            rt.needsAccount = () => true;
+            rt.resumeAfterRestart();
+            // Waiting for what's in its way: kept open, and still on the list.
+            expect([rt.scheduled, kept()]).toEqual([true, [id]]);
+            rt.resumeAfterRestart(60);
+            // Or a restart days later would start a turn in a session that wasn't working.
+            expect([rt.scheduled, kept()]).toEqual([false, []]);
+            const said = "It didn't continue by itself after Cavvy restarted: its model isn't available. Send a message to go on.";
+            expect(rt.session.notices.map((n: { text: string }) => n.text)).toContain(said);
+            c.close();
+        } finally {
+            await server.stop();
+            rmSync(dirname(list), { recursive: true, force: true });
+        }
+    });
 
     test("a turn that ended after a message sent while its tools ran isn't taken for one cut off", async () => {
         const c = await client();

@@ -16,6 +16,7 @@ import { ServerError, type ServerEntry } from "./store";
 import { hostOf, printable, remoteSh, ssh, shQuote } from "./ssh";
 import { BUILD_ID, REMOTE_DIR, type ServerFacts } from "./remote";
 import { NOT_RUNNING, type HostCheck, type HostStatus } from "./host";
+import { PERMISSION_MODES } from "../permissions/modes";
 
 /**
  * The unit. `mixed`: stopping it asks Cavvy alone to stop, which closes its
@@ -151,7 +152,12 @@ stop
 rm -f "$d/stopped"
 point_at "$new"
 start
-if wait_up "$new"; then echo "status=$(status)"; exit 0; fi
+if wait_up "$new"; then
+    # What it ran before, for going back to (PREVIOUS): kept by the pruning that follows an update.
+    if [ -n "$prev" ] && [ "$prev" != "$new" ]; then echo "$prev" > "$d/previous"; fi
+    echo "status=$(status)"
+    exit 0
+fi
 echo "the new build didn't start" >&2
 stop
 if [ -n "$prev" ] && [ "$prev" != "$new" ] && [ -x "$d/builds/$prev/cavvy" ]; then
@@ -193,6 +199,8 @@ const STOP = `${LIB}
 [ -x "$bin" ] || exit 0
 stop
 : > "$d/stopped"
+# Stopped on purpose: what was working isn't carried on when it's next started (src/server/working.ts).
+rm -f "$d/working.json"
 if has_systemd && [ -f "$unit" ]; then systemctl --user disable cavvy.service >/dev/null 2>&1; fi
 exit 0
 `;
@@ -220,7 +228,7 @@ cur=$(current || true)
 for b in "$d"/builds/*/; do
     [ -d "$b" ] || continue
     n=$(basename "$b")
-    case "$n" in "$cur"|"$1"|"$2") continue ;; esac
+    case "$n" in "$cur"|"$1"|"$2"|"$(cat "$d/previous" 2>/dev/null)") continue ;; esac
     [ -n "$(find "$b" -maxdepth 0 -mmin +60 2>/dev/null)" ] || continue
     rm -rf "$b"
 done
@@ -284,6 +292,7 @@ function readStatus(text: string | undefined): HostStatus | undefined {
         version: printable(String(s.version ?? ""), 40),
         protocol: count(s.protocol),
         build: s.build,
+        ...(typeof s.builtAt === "number" && Number.isSafeInteger(s.builtAt) && s.builtAt > 0 ? { builtAt: s.builtAt } : {}),
         sessions: count(s.sessions),
         working: count(s.working),
         waiting: count(s.waiting),
@@ -315,6 +324,8 @@ export function readCheck(text: string | undefined): HostCheck | undefined {
         gh: { installed: gh.installed === true, signedIn: flag(gh.signedIn) },
         browser: c.browser === true,
         sandbox: typeof c.sandbox === "string" ? printable(c.sandbox, 40) : undefined,
+        sandboxOn: flag(c.sandboxOn),
+        mode: PERMISSION_MODES.find((m) => m === c.mode),
         memMb: count(c.memMb),
     };
 }
@@ -334,6 +345,8 @@ export class UpdateFailed extends ServerError {
         message: string,
         /** What runs there now: the build before, when it could be put back. */
         readonly status?: HostStatus,
+        /** Neither the build asked for nor the one before it started: nothing runs there now. */
+        readonly down = false,
     ) {
         super(message);
     }
@@ -348,7 +361,25 @@ export async function applyBuild(e: ServerEntry, build: string, signal?: AbortSi
     if (r.code === 48) throw new ServerError(`Cavvy on ${e.name} is being updated right now. Try again in a minute.`);
     if (r.code === 44) throw new UpdateFailed(`Cavvy didn't start on ${hostOf(e)}, so it's back on the version before.`, status);
     const why = said(r.stderr);
-    throw new UpdateFailed(`Cavvy didn't start on ${hostOf(e)}${why ? `: ${why}` : "."}`);
+    throw new UpdateFailed(`Cavvy didn't start on ${hostOf(e)}${why ? `: ${why}` : "."}`, undefined, r.code === 45);
+}
+
+/** The build the server ran before the one it runs now, if it's still there: prints `previous=`. */
+const PREVIOUS = `${LIB}
+[ -x "$bin" ] || exit 46
+p=$(cat "$d/previous" 2>/dev/null) || exit 49
+case "$p" in ""|*[!0-9a-z-]*) exit 49 ;; esac
+[ -x "$d/builds/$p/cavvy" ] || exit 49
+[ "$p" != "$(current || true)" ] || exit 49
+echo "previous=$p"
+`;
+
+/** The build a server can be put back on: the one it ran before its last update. Undefined when there's none to go back to. */
+export async function previousBuild(e: ServerEntry, signal?: AbortSignal): Promise<string | undefined> {
+    const r = await ssh(e, remoteSh(timed(PREVIOUS), []), { timeoutMs: 30_000, signal });
+    if (r.code === 46) throw new NotSetUp(`Cavvy isn't set up on ${hostOf(e)}.`);
+    const p = value(r.stdout, "previous");
+    return r.code === 0 && p && BUILD_ID.test(p) ? p : undefined;
 }
 
 export interface Pairing {
