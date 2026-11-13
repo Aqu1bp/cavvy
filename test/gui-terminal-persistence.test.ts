@@ -183,6 +183,8 @@ function mounted(name: "TerminalPanel" | "TerminalScreen", opts: { conn?: string
         ResizeObserver: class { constructor(private cb: () => void) {} observe() { resizes.add(this.cb); } disconnect() { resizes.delete(this.cb); } }, MutationObserver: class { observe() {} disconnect() {} },
         getComputedStyle: () => ({ getPropertyValue: () => "#000" }), document: { documentElement: {} },
         requestAnimationFrame: (fn: () => void) => frameQueue.push(fn), cancelAnimationFrame() {}, isMod: () => false, copyText() {},
+        // Whose the keyboard is (lib/terminal-keys.ts, tested in gui-terminal-keys.test.ts): here the terminal always takes it.
+        terminalAsked() {}, terminalTakesKeys: () => true, terminalUsed() {},
     };
     const component = new Function(...Object.keys(deps), `${js}; return ${name};`)(...Object.values(deps));
     let dispose!: () => void;

@@ -14,6 +14,7 @@ import { agentProvider } from "../lib/agent-marks";
 import { approvalChoices } from "../lib/approval";
 import { AgentMark } from "./ui/AgentMark";
 import { columnHeight, setPlanDialog, settingsTab } from "../state/ui";
+import { cardArrived } from "../lib/terminal-keys";
 import { DiffView } from "./blocks/DiffView";
 import { Markdown } from "./blocks/Markdown";
 
@@ -56,6 +57,8 @@ export function InteractionTab(p: { sessionId: string; items: Interaction[] }) {
     return (
         <Show when={first()?.id} keyed>
             {(_id) => (
+                // A terminal that took the keyboard by itself gives it up, so the card's keys answer it.
+                cardArrived(),
                 <div class={`ask glass itab itab-${first()!.kind} ${first()!.kind === "permission" && (first() as PermissionInteraction).dangerous ? "danger" : ""}`} style={{ "--column-h": columnHeight() }} role="alertdialog" aria-label="Waiting for you">
                     <Show when={p.items.length > 1}>
                         <div class="itab-count">1 of {p.items.length} waiting</div>
