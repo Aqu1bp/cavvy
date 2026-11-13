@@ -13,6 +13,7 @@ import { Dialog } from "./ui/Dialog";
 import { Menu } from "./ui/Menu";
 import { Logo, Spinner } from "./ui/bits";
 import { watchOthers } from "./OtherMachines";
+import "../lib/lent";
 import "../styles/servers.css";
 
 // What the window's connection needs of a server (state/app.ts), from the one place this is all loaded from.

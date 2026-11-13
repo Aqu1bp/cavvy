@@ -1625,6 +1625,19 @@ export type SimulatorCommand = "select" | "boot" | "shutdown" | "take_control";
 
 // Servers: what the calls below hand back (src/servers/manager.ts makes them).
 
+/**
+ * What the user's own machine has for a session on a server that's lent its tools (src/tools/lent.ts). Its windows
+ * show it in that session: the simulator there, and what's asked of the user here.
+ */
+export interface LentSession {
+    /** There's something to lend it: this machine has simulators, and lends them. */
+    offered: boolean;
+    /** The session here its calls run in, once there is one: what simulator.* is asked of, and session.respond answers. */
+    id?: string;
+    /** What it waits for the user to allow here. */
+    asks: Interaction[];
+}
+
 /** A server as a window lists it. */
 export interface ServerSummary {
     name: string;
@@ -1708,9 +1721,12 @@ export type ServerEvent =
     /**
      * What a session on another machine has to tell its user, for one window to show: `name` is the server's, and
      * left out when it's this computer's own session, told to a window that's on a server. No `sessionId` ("") when
-     * it's said for several at once (more of them ask than are passed on one by one).
+     * it's said for several at once (more of them ask than are passed on one by one). `lent`: it's this computer
+     * that asks, for a session there that uses a tool it lends: the server itself says nothing of it.
      */
-    | { type: "servers.notify"; name?: string; sessionId: string; kind: "done" | "permission" | "question" | "plan" | "error"; title: string; body: string }
+    | { type: "servers.notify"; name?: string; sessionId: string; kind: "done" | "permission" | "question" | "plan" | "error"; title: string; body: string; lent?: true }
+    /** What this machine has for a server's session that's lent its tools changed (offers.session), to its windows that are on that server. */
+    | { type: "offers.session"; name: string; sessionId: string; lent: LentSession }
     /**
      * A session here calls a tool the connected machine lends (offers.set): that machine runs it, through its own
      * checks, and answers with offers.result. offers.cancel: the call was given up here.
@@ -1834,6 +1850,11 @@ export interface Methods {
      */
     "offers.set": { params: { kinds: string[] }; result: null };
     "offers.result": { params: { callId: string; text: string; isError?: boolean; images?: { type: "image"; mediaType: string; data: string }[] }; result: null };
+    /**
+     * Only the user's own machine takes this, from its windows: what it has for a session on one of its servers
+     * that's lent its tools. `open`: the user opened that session's Simulator, so there's one from now on.
+     */
+    "offers.session": { params: { name: string; sessionId: string; title?: string; open?: boolean }; result: LentSession };
     "servers.list": { params: Record<string, never>; result: { servers: ServerSummary[] } };
     /**
      * Each server's sessions, kept up to date from then on (servers.overview events) for the window that asks, which

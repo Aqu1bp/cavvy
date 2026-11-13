@@ -536,6 +536,11 @@ export class Runtime {
         return this.view.state.status;
     }
 
+    /** What it waits for the user to answer. */
+    get asks(): Interaction[] {
+        return this.view.state.interactions;
+    }
+
     get waitingKind(): Interaction["kind"] | undefined {
         return this.status === "waiting" ? this.view.state.interactions[0]?.kind : undefined;
     }
@@ -4267,11 +4272,12 @@ export class Runtime {
     get guest(): boolean {
         return this.lentTo !== undefined;
     }
+    /** The session there this one lends to: its id, and its name in this machine's own words (Engine.guestFor). */
+    guestSession?: { id: string; title: string };
 
     /**
-     * Runs a tool of this machine's for a session on another of the user's machines (Engine.lend). This session is
-     * where that shows: what's asked of the user is asked here, under this machine's mode and rules, and what was
-     * run is noted here.
+     * Runs a tool of this machine's for a session on another of the user's machines (Engine.lend). What's asked of
+     * the user is asked by this session, under this machine's mode and rules, and shown in the session there.
      */
     async lend(tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal): Promise<{ text: string; isError?: boolean; images?: ImagePart[] }> {
         await this.ready.catch(() => undefined);
@@ -4280,12 +4286,7 @@ export class Runtime {
         this.lending++;
         this.lastLent = Date.now();
         try {
-            const r = await agent.runLent(tool, input, signal);
-            // What was run, for whoever looks at this session: its words are in part the other machine's, so only so
-            // much of them, and not kept beyond what the window shows (a session with no message keeps no file).
-            const title = redact(tool.title(input));
-            this.notice(`${title.length > 120 ? `${title.slice(0, 119)}…` : title}${r.isError ? " (not done)" : ""}`, "info");
-            return r;
+            return await agent.runLent(tool, input, signal);
         } finally {
             this.lending--;
             this.lastLent = Date.now();

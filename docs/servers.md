@@ -65,9 +65,11 @@ Sessions on a server are its own: its folders, its `~/.cavvy`, its settings and 
 
 A server has no iOS simulators. Your Mac has, and while the desktop app is open it lends them to the servers it's connected to: a session there then has the simulator tools (`SimulatorControl`, `SimulatorSnapshot`, `SimulatorAct`, `SimulatorScreenshot`), and each call runs on your Mac. That's for sessions opened from the desktop app or `cavvy gui --server`; one run in a terminal with `cavvy --server box` doesn't have them.
 
-A call is checked twice: on the server by its own mode and rules, as any tool there, and then on your Mac by your Mac's. Each session on a server that uses the Simulator gets a session on your Mac named for it (`box: Fix the login screen`). That's where you're asked, where the Simulator pane shows the device, and where each call is listed.
+It all shows in the session on the server: its side panel has the Simulator tab, with the device on your Mac that you can watch and use by hand, and what your Mac asks before a call appears in that chat, marked "On this Mac". Your answer goes to your Mac, not through the server.
 
-- In Manual on your Mac, starting a device or acting on one asks first, with a notification if the window isn't in front (a few a minute from one server at most, then one saying there's more). **Allow once** asks again next time; allowing it for the session doesn't.
+A call is checked twice: on the server by its own mode and rules, as any tool there, and then on your Mac by your Mac's default mode and rules.
+
+- In Manual on your Mac, starting a device or acting on one asks first, with a notification that names the server and the session if it isn't the one in front (a few a minute from one server at most, then one saying there's more). **Allow once** asks again next time; allowing it for the session doesn't.
 - In Auto or Bypass on your Mac, these calls run without asking.
 - Reading the screen and listing devices never ask, in any mode: a session on a server can see whatever simulator is running on your Mac.
 - Your Mac's deny rules apply, and `open_url` won't open a `file:` address there for a server.
@@ -76,7 +78,7 @@ A screenshot comes back to the server and is kept there, so the chat on the serv
 
 - It needs the desktop app open on a Mac with Xcode, the Simulator turned on in its settings, and a model set up there.
 - With the app closed, sessions on the server don't have the tools. One that calls them just as the app goes is told your Mac went away.
-- The session on your Mac closes by itself half an hour after its last call, or when you delete it. Nothing of it is kept, unless you wrote in it yourself.
+- What you allowed "for this session" holds until the session on the server has left the Simulator unused for half an hour with its pane closed.
 - One server gets at most four calls at once on your Mac and a limited number a minute; past that a call is told to wait.
 - Only the simulator tools are lent. To put an app on a device, the `.app` has to be on your Mac: a server can't build one for iOS.
 

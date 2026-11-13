@@ -72,6 +72,7 @@ import type {
     ArchiveOffer,
     ArchiveResult,
     BrowserState,
+    LentSession,
     SimulatorInput,
     SimulatorState,
     CliSessionInfo,
@@ -180,6 +181,11 @@ const MAX_GUESTS = 30;
  * this machine busy, or bury its user in notifications.
  */
 const LENT_PER_MINUTE = { read: 120, act: 40, told: 6 };
+/** A server's name for its session, in this machine's own words: the server's title is its to choose. */
+async function lentTitle(title: string): Promise<string> {
+    return cleanTitle((await import("../servers/ssh")).printable(title, 80)) || "a session";
+}
+
 /** How long a session that lends this machine's tools to one on a server is kept after its last call. */
 const GUEST_IDLE_MS = 30 * 60_000;
 
@@ -491,7 +497,9 @@ export class Engine {
 
     /** The session's simulator changed: the windows that have it open hear of it. */
     sendSimulator(sessionId: string, state: SimulatorState) {
-        for (const c of this.clients) if (c.subs.has(sessionId)) c.send({ type: "simulator.state", sessionId, state });
+        // One that lends to a session on a server shows in that session: this machine's windows on that server hear of it too.
+        const lentTo = this.runtimes.get(sessionId)?.guestOf;
+        for (const c of this.clients) if (c.subs.has(sessionId) || (lentTo !== undefined && c.machine === lentTo)) c.send({ type: "simulator.state", sessionId, state });
     }
 
     /** The session's browser changed: the windows that have it open hear of it. */
@@ -547,17 +555,8 @@ export class Engine {
     }
 
     notify(rt: Runtime, kind: "done" | "permission" | "question" | "plan" | "error", body: string) {
+        if (rt.guestOf !== undefined) return this.notifyLent(rt, rt.guestOf, kind, body);
         const title = this.notifyTitle(rt);
-        // What a server's session asks through this machine is told only so often (LENT_PER_MINUTE): the session
-        // still shows as waiting, but a server gone wrong can't ring the user without end.
-        if (rt.guestOf !== undefined && !this.lentMay(rt.guestOf, "told")) {
-            // Said once that there's more, so the user isn't left waiting on a session that never rang. The count
-            // starts again when the user answers one (guestAnswered): what's limited is asking unanswered.
-            const at = this.lentAt.get(rt.guestOf)!;
-            if (Date.now() - (at.summed ?? 0) < 60_000) return this.sessionChanged(rt);
-            at.summed = Date.now();
-            body = `More from ${rt.guestOf} is waiting for you.`;
-        }
         this.broadcast({ type: "notify", sessionId: rt.id, kind, title, body });
         // No window is on this computer, only windows on servers: one of those says it, as it would another machine's.
         const windows = [...this.clients].filter((c) => c.watching);
@@ -568,8 +567,10 @@ export class Engine {
     }
 
     sessionChanged(rt: Runtime) {
+        // One that lends to a session on a server is never listed: what it asks shows in that session (lentChanged).
+        if (rt.guest) return this.lentChanged(rt);
         // An empty new session isn't listed. A turn can end with nothing in the history (a !command, a prompt a hook blocked): its row has to hear that it ended.
-        if (!rt.guest && !rt.session.messages.length && !rt.busy && rt.firstPrompt() === undefined) return;
+        if (!rt.session.messages.length && !rt.busy && rt.firstPrompt() === undefined) return;
         const member = readStore().runs?.flatMap((r) => r.sessions).find((s) => s.id === rt.id);
         const outcome = runOutcome(rt);
         if (member && member.outcome !== outcome) updateStore((s) => {
@@ -900,7 +901,7 @@ export class Engine {
             out.set(s.id, { id: s.id, cwd: s.cwd, projectName: basename(s.cwd) || s.cwd, title: s.title, createdAt: s.createdAt, updatedAt: s.updatedAt, messages: s.messages, status: "idle", pinned: pinned.has(s.id), archived: arch.has(s.id), settled: settled.has(s.id), model: s.model, live: false, run: runs.get(s.id) });
         }
         for (const rt of this.runtimes.values()) {
-            if (!rt.guest && !rt.session.messages.length && !rt.busy) continue;
+            if (rt.guest || (!rt.session.messages.length && !rt.busy)) continue;
             // By when it last worked, which its file can't say yet while it works (Session.worked writes a line a minute).
             out.set(rt.id, this.summaryOf(rt));
         }
@@ -1203,7 +1204,9 @@ export class Engine {
     private unloadIfUnused(id: string) {
         const rt = this.runtimes.get(id);
         if (!rt || this.stopping || [...this.clients].some((c) => c.subs.has(id))) return;
-        // One a server's session is lent tools through stays until it has sat unused for a while (guestLater).
+        // One a server's session is lent tools through stays until it has sat unused for a while (guestLater), and
+        // while a window shows its simulator.
+        if (rt.guest && rt.simulator.watched) return this.guestLater(rt);
         if (rt.guest && Date.now() - rt.lastLent < (this.o.guestIdleMs ?? GUEST_IDLE_MS)) return;
         // A watch (a pull request) goes on with no window open: it wakes the session when there's news.
         if (!rt.idle || rt.scheduled || rt.watching) return this.unloadLater(id);
@@ -1294,11 +1297,6 @@ export class Engine {
         const rt = this.runtimes.get(id);
         // Only when one runs: otherwise the delete goes on in the same tick, as before.
         if (rt?.compactingWhileIdle) await rt.yieldIdleCompaction();
-        // One a server's session is lent tools through has no file to put in the trash: it's closed, and gone.
-        if (rt?.guest && !rt.session.messages.length && rt.idle) {
-            this.goneGuests.add(id);
-            return void (await this.unload(rt));
-        }
         if (rt && !rt.idle) throw new RpcError("This session is still working (a response, queued messages, a question, or shells or tasks running). Stop it first, then delete it.", "busy");
         const store = readStore();
         const flags: SessionFlags = { pinned: !!store.pinned?.includes(id), archived: !!store.archived?.includes(id), settled: !!store.settled?.includes(id) };
@@ -1310,9 +1308,6 @@ export class Engine {
                     this.runtimes.delete(id);
                     clearTimeout(this.unloadTimers.get(id));
                     this.unloadTimers.delete(id);
-                    // One a server's session was lent tools through (and that the user wrote in, so it has a file):
-                    // the session there gets a new one for its next call, not this one back.
-                    if (rt.guest) this.guestGone(rt);
                     await rt.close().catch(() => undefined);
                 }
                 trashSession(id, flags);
@@ -1861,9 +1856,8 @@ export class Engine {
 
     /**
      * A session on one of this machine's servers calls a tool this machine lends. It runs in a session of this
-     * machine's own, one per session there, named for it: that's where the user is asked (under this machine's mode
-     * and rules), where the simulator shows, and where what was run is noted. What's answered is read on the server,
-     * so it speaks of this machine as "your Mac".
+     * machine's own, one per session there (guestFor), under this machine's mode and rules. What's answered is read
+     * on the server, so it speaks of this machine as "your Mac".
      */
     private async lend(name: string, call: LentCall, signal: AbortSignal): Promise<LentResult> {
         const tool = OWN_SIMULATOR_TOOLS.find((t) => t.name === call.tool);
@@ -1872,32 +1866,88 @@ export class Engine {
         if (!/^[\w.-]{1,120}$/.test(call.session.id)) return { text: "That call isn't one your Mac takes.", isError: true };
         // Only so many a minute, those that only read counted apart from those that act (and may each ask the user).
         if (!this.lentMay(name, isReadOnly(tool, call.input) ? "read" : "act")) return { text: "That's more simulator calls in a minute than your Mac takes from one machine. Wait a little, then go on.", isError: true };
-        const key = `${name}\0${call.session.id}`;
-        let opening = this.guests.get(key);
-        if (!opening) {
-            // A session here for each session there that's using it, but not without end.
-            if ([...this.guests.keys()].filter((k) => k.startsWith(`${name}\0`)).length >= MAX_GUESTS) return { text: `Your Mac already has ${MAX_GUESTS} sessions open for sessions on this machine. They close by themselves a while after they're last used.`, isError: true };
-            opening = (async () => {
-                const folder = join(cavvyHome(), "guests", name);
-                mkdirSync(folder, { recursive: true });
-                const rt = await this.createSession(folder);
-                // Listed though nothing was ever said in it: it's where the user answers, and sees what was done.
-                rt.guestOf = name;
-                // Named for where it's from, in words that are this machine's own: the server's title is its to choose.
-                rt.rename(cleanTitle(`${name}: ${(await import("../servers/ssh")).printable(call.session.title, 80) || "a session"}`));
-                // Said to the windows now: a session that only reads the screen never asks, and would otherwise not be seen.
-                this.sessionChanged(rt);
-                return rt;
-            })();
-            this.guests.set(key, opening);
-            opening.catch(() => this.guests.get(key) === opening && this.guests.delete(key));
-        }
+        const opening = this.guestFor(name, call.session);
+        if (!opening) return { text: `Your Mac's Simulator is already in use by ${MAX_GUESTS} sessions on this machine. Each is let go a while after it last used it.`, isError: true };
         const rt = await opening;
+        // What the session there is called now, for what the user is told of it.
+        const title = await lentTitle(call.session.title);
+        if (rt.guestSession && rt.guestSession.title !== title) rt.guestSession = { id: call.session.id, title };
         try {
             return await rt.lend(tool, call.input, signal);
         } finally {
             this.guestLater(rt);
         }
+    }
+
+    /**
+     * The session here that a session on a server is lent tools through, made when there's none: one per session
+     * there. It's never listed: its simulator and what it asks show in the session there, in this machine's windows
+     * (offers.session, lentChanged). Undefined when the server has as many as it gets.
+     */
+    private guestFor(name: string, session: { id: string; title: string }): Promise<Runtime> | undefined {
+        const key = `${name}\0${session.id}`;
+        let opening = this.guests.get(key);
+        if (opening) return opening;
+        // A session here for each session there that's using it, but not without end.
+        if ([...this.guests.keys()].filter((k) => k.startsWith(`${name}\0`)).length >= MAX_GUESTS) return undefined;
+        opening = (async () => {
+            const folder = join(cavvyHome(), "guests", name);
+            mkdirSync(folder, { recursive: true });
+            const title = await lentTitle(session.title);
+            const rt = await this.createSession(folder);
+            rt.guestOf = name;
+            rt.guestSession = { id: session.id, title };
+            rt.lastLent = Date.now();
+            this.guestLater(rt);
+            this.lentChanged(rt);
+            return rt;
+        })();
+        this.guests.set(key, opening);
+        opening.catch(() => this.guests.get(key) === opening && this.guests.delete(key));
+        return opening;
+    }
+
+    /** What this machine has for a server's session that's lent its tools: `rt`, the session here for it, when there is one. */
+    private lentSession(rt?: Runtime): LentSession {
+        return {
+            offered: simulatorsToLend(loadSettings(homedir(), { trusted: false })),
+            ...(rt ? { id: rt.id } : {}),
+            // Said to be this machine's: they show in a session that runs on another.
+            asks: (rt?.asks ?? []).map((i) => (i.kind === "permission" && !i.where ? { ...i, where: "On this Mac" } : i)),
+        };
+    }
+
+    /**
+     * A session that lends to one on a server began, asks, or was answered: this machine's windows that are on that
+     * server hear of it, for the session there.
+     */
+    private lentChanged(rt: Runtime, gone = false) {
+        const name = rt.guestOf;
+        const at = rt.guestSession;
+        if (name === undefined || !at) return;
+        const lent = this.lentSession(gone ? undefined : rt);
+        for (const c of this.clients) if (c.machine === name) c.send({ type: "offers.session", name, sessionId: at.id, lent });
+    }
+
+    /**
+     * What a session that lends to one on a server has to tell the user (it asks to be allowed something here): told
+     * as the session there, by one window. Only so often (LENT_PER_MINUTE): a server gone wrong can't ring the user
+     * without end.
+     */
+    private notifyLent(rt: Runtime, name: string, kind: "done" | "permission" | "question" | "plan" | "error", body: string) {
+        this.lentChanged(rt);
+        if (!this.lentMay(name, "told")) {
+            // Said once that there's more, so the user isn't left waiting on a session that never rang. The count
+            // starts again when the user answers one (guestAnswered): what's limited is asking unanswered.
+            const at = this.lentAt.get(name)!;
+            if (Date.now() - (at.summed ?? 0) < 60_000) return;
+            at.summed = Date.now();
+            body = `More from ${name} is waiting for you.`;
+        }
+        // A window that's on that server if there is one (the session is in it), else one that shows the other machines.
+        const to = [...this.clients].find((c) => c.machine === name && c.watching) ?? this.oneWatching();
+        to?.send({ type: "servers.notify", name, sessionId: rt.guestSession?.id ?? "", kind, title: rt.guestSession?.title ?? name, body, lent: true });
+        void fireHooks(rt.settings(), "Notification", { session_id: rt.id, message: `Cavvy: ${body}`, kind, notification_type: kind }, rt.ws.cwd, () => {});
     }
 
     private guestTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -1917,20 +1967,15 @@ export class Engine {
     }
 
     /**
-     * A session a server's session was lent tools through is over (closed after sitting unused, or deleted): nothing
-     * was ever said in it, so there's no file of it, and it's gone from the list. The next call from that session
-     * there gets a new one.
+     * A session a server's session was lent tools through is over (closed after sitting unused): nothing was ever
+     * said in it, so there's no file of it. The next call from that session there gets a new one.
      */
     private guestGone(rt: Runtime) {
         clearTimeout(this.guestTimers.get(rt.id));
         this.guestTimers.delete(rt.id);
         for (const [key, opening] of this.guests) void opening.then((g) => g === rt && this.guests.get(key) === opening && this.guests.delete(key), () => undefined);
-        // One the user wrote in has a file like any session, and stays listed as one.
-        if (!rt.session.messages.length) this.broadcast({ type: "sessions.remove", id: rt.id });
+        this.lentChanged(rt, true);
     }
-
-    /** Sessions of that kind deleted since this Cavvy started: there's nothing of them to bring back. */
-    private goneGuests = new Set<string>();
 
     private serverLinks?: import("../servers/manager").ServerLinks;
     /** The window a server's progress is told to: the one that last asked for something slow of it. */
@@ -2717,7 +2762,6 @@ export class Engine {
                 return null;
             case "session.restore": {
                 const id = checkId(p.id);
-                if (this.goneGuests.has(id)) throw new RpcError("That session can't be brought back.", "invalid");
                 while (this.closing.has(id)) await this.afterClosing(id);
                 const flags = restoreSession(id, this.removing.size ? (cwd) => {
                     if (!cwd || [...this.removing].some((dir) => within(dir)(cwd))) throw new RpcError("This session's worktree is being removed. Wait for removal to finish before restoring it.", "busy");
@@ -2819,6 +2863,21 @@ export class Engine {
                 const kinds = (Array.isArray(p.kinds) ? p.kinds : []).filter((k: unknown): k is Lendable => LENDABLE.includes(k as Lendable));
                 this.setLender(client, kinds);
                 return null;
+            }
+            case "offers.session": {
+                // Asked by this machine's own windows: a server's Cavvy lends nothing.
+                if (this.o.away) throw new RpcError("This machine lends nothing.", "unsupported");
+                const name = str(p.name, "name");
+                const sessionId = str(p.sessionId, "sessionId");
+                if (!/^[\w.-]{1,120}$/.test(sessionId)) throw new RpcError("That isn't a session's id.", "invalid");
+                if (!(await this.servers(client)).list().some((s) => s.name === name)) throw new RpcError(`No server is called ${name}.`, "invalid");
+                let opening = this.guests.get(`${name}\0${sessionId}`);
+                // The user opened the session's Simulator themselves: there's one to show from then on.
+                if (!opening && p.open === true && simulatorsToLend(loadSettings(homedir(), { trusted: false }))) {
+                    opening = this.guestFor(name, { id: sessionId, title: optStr(p.title) ?? "" });
+                    if (!opening) throw new RpcError(`This Mac's Simulator is already in use by ${MAX_GUESTS} sessions on ${name}.`, "busy");
+                }
+                return this.lentSession(await opening?.catch(() => undefined));
             }
             case "offers.result": {
                 const call = this.lentCalls.get(str(p.callId, "callId"));

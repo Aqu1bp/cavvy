@@ -1,7 +1,8 @@
 // A server's sessions using the simulators of the user's own machine (src/tools/lent.ts, Engine.borrow and
 // Engine.lend, src/servers/watch.ts), for real against the pretend server (test/helpers/fake-ssh.ts), with simctl
 // faked on this machine: the call travels there and back, runs through this machine's own checks in a session of
-// its own, and ends plainly when the user says no or this machine goes away.
+// its own that's never listed (what it asks is shown, and told, as the session's there), and ends plainly when the
+// user says no or this machine goes away.
 
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "fs";
@@ -24,7 +25,7 @@ const { stopRemote } = await import("../src/servers/service");
 const simctl = await import("../src/simulator/simctl");
 const { resetSimulators } = await import("../src/simulator/session");
 import type { BuildSource } from "../src/servers/build";
-import type { MachineOverview, SessionSnapshot } from "../src/server/protocol";
+import type { Interaction, LentSession, MachineOverview, SessionSnapshot } from "../src/server/protocol";
 
 const mock = startMockLlm({ delayMs: 0 });
 const models = { providers: JSON.stringify({ custom: [{ id: "mock", name: "Mock", baseUrl: mock.url, requiresKey: false }] }), settings: JSON.stringify({ model: "mock:mock-opus", smallModel: "mock:mock-haiku", notifyAfterSeconds: 0 }) };
@@ -140,15 +141,21 @@ async function answer(w: Window, id: string, choice: "yes" | "no", seen = new Se
 
 const lastTurn = async (w: Window, id: string) => ((await w.call("session.open", { id })) as SessionSnapshot).turns.at(-1)!;
 const textOf = (turn: SessionSnapshot["turns"][number]) => turn.blocks.map((b) => (b.t === "text" ? b.text : "")).join("\n");
-/** This machine's session that a server's session is lent tools through. */
-const known = new Set<string>();
-/** The one made since the last was taken: each session there gets its own here. */
-const guest = () => here.events.find((e) => e.type === "sessions.upsert" && e.session.title.startsWith("box: ") && !known.has(e.session.id))?.session as { id: string; title: string } | undefined;
-async function nextGuest(): Promise<{ id: string; title: string }> {
-    await until("this machine's session for it", () => Boolean(guest()));
-    const g = guest()!;
-    known.add(g.id);
-    return g;
+/** What this machine has for a session on the server, as its windows on that server were last told. */
+const told = (session: string) => here.events.findLast((e) => e.type === "offers.session" && e.name === "box" && e.sessionId === session)?.lent as LentSession | undefined;
+/** The same, asked for. */
+const lentTo = (session: string) => here.call("offers.session", { name: "box", sessionId: session }) as Promise<LentSession>;
+/** The next thing this machine asks its user for a session on the server, answered here. */
+async function answerLent(session: string, choice: "yes" | "no", seen = new Set<string>()): Promise<Interaction> {
+    let lent: LentSession | undefined;
+    await until(`this machine to ask for ${session}`, async () => {
+        lent = await lentTo(session);
+        return lent.asks.some((i) => !seen.has(i.id));
+    });
+    const asked = lent!.asks.find((i) => !seen.has(i.id))!;
+    seen.add(asked.id);
+    await here.call("session.respond", { id: lent!.id, interactionId: asked.id, response: { kind: "permission", choice } });
+    return asked;
 }
 
 let there: { url: string; token: string };
@@ -166,17 +173,23 @@ test("a server with no simulators is lent this machine's: its sessions have the 
     await expect(here.call("offers.set", { kinds: ["simulator"] })).rejects.toThrow("This machine isn't lent tools.");
 });
 
-test("a call from a session there runs here, after this machine's own asking, in a session named for it; the result goes back", async () => {
+test("a call from a session there runs here, after this machine's own asking, shown and told as that session's; the result goes back", async () => {
     const id = (await remote.call("session.create", { cwd: tempDir("cavvy-lend-proj-") })).state.id as string;
     await remote.call("session.send", { id, text: "simulator please" });
     // The server's own asking first (it starts in Manual here), then this machine's.
     expect((await answer(remote, id, "yes")).kind).toBe("permission");
-    const mineId = (await nextGuest()).id;
-    // Named for the server and the session there (the title the mock model gives any such session).
-    expect(here.events.findLast((e) => e.type === "sessions.upsert" && e.session.id === mineId).session.title).toBe("box: Check the app in the simulator");
     expect(ran.some((a) => a[2] === "boot")).toBe(false);
-    const asked = await answer(here, mineId, "yes");
+    // This machine's asking is its windows' to show, in the session there, and says whose it is.
+    const asked = await answerLent(id, "yes");
     expect(JSON.stringify(asked)).toContain("SimulatorControl(boot)");
+    expect(asked.kind === "permission" && asked.where).toBe("On this Mac");
+    const mineId = told(id)!.id!;
+    // It's told as the session there, by its name (the title the mock model gives any such session), by this machine.
+    const rang = here.events.find((e) => e.type === "servers.notify" && e.lent);
+    expect([rang.name, rang.sessionId, rang.kind, rang.title]).toEqual(["box", id, "permission", "Check the app in the simulator"]);
+    // The session here that it runs in is never one of this machine's own to list.
+    expect(here.events.some((e) => (e.type === "sessions.upsert" && e.session.id === mineId) || (e.type === "notify" && e.sessionId === mineId))).toBe(false);
+    expect(((await here.call("sessions.list", { limit: 200 })) as { id: string }[]).some((x) => x.id === mineId)).toBe(false);
     await until("the turn there to end", async () => (await lastTurn(remote, id)).status === "done");
     // It ran here: this machine's simctl was asked about this machine's device, which the server knows nothing of,
     // and the server's model read what this machine said.
@@ -187,11 +200,9 @@ test("a call from a session there runs here, after this machine's own asking, in
     const result = turn.blocks.find((b) => b.t === "tool") as { name: string; output?: string };
     expect([result.name, Boolean(result.output)]).toEqual(["SimulatorControl", true]);
     expect(textOf(turn)).toContain("I couldn't find Settings on the screen: ");
-    // And it's noted here, in the session it ran in.
-    const mine = (await here.call("session.open", { id: mineId })) as SessionSnapshot;
-    expect(JSON.stringify(mine.turns)).toContain("SimulatorControl(boot)");
-    // Long after, with no window on it here: the same session there is still lent through the same session here.
-    await here.call("session.close", { id: mineId }).catch(() => undefined);
+    // Answered: nothing waits here any more.
+    await until("the asking to be over", () => told(id)!.asks.length === 0);
+    // Long after: the same session there is still lent through the same session here.
     await Bun.sleep(1500);
     const before = ran.filter((a) => a[2] === "bootstatus").length;
     await remote.call("session.send", { id, text: "simulator once again" });
@@ -199,7 +210,7 @@ test("a call from a session there runs here, after this machine's own asking, in
     // It ran here again (allowed for this session the first time, on both machines, as the tool is anywhere),
     // and no second session was made here for it.
     expect(ran.filter((a) => a[2] === "bootstatus").length).toBe(before + 1);
-    expect(guest()).toBeUndefined();
+    expect((await lentTo(id)).id).toBe(mineId);
 });
 
 test("the user's no here is what the session there is told; this machine going away ends a call that waits", async () => {
@@ -207,22 +218,22 @@ test("the user's no here is what the session there is told; this machine going a
     const id = (await remote.call("session.create", { cwd: tempDir("cavvy-lend-proj-") })).state.id as string;
     await remote.call("session.send", { id, text: "simulator again" });
     await answer(remote, id, "yes");
-    await answer(here, (await nextGuest()).id, "no", seen);
+    await answerLent(id, "no", seen);
     await until("the turn there to end", async () => (await lastTurn(remote, id)).status === "done");
     expect(JSON.stringify(await lastTurn(remote, id))).toContain("declined");
 
     const second = (await remote.call("session.create", { cwd: tempDir("cavvy-lend-proj-") })).state.id as string;
     await remote.call("session.send", { id: second, text: "simulator once more" });
     await answer(remote, second, "yes");
-    const waits = (await nextGuest()).id;
     // While this machine's question waits, its Cavvy stops listening to the server (as when it quits): only that
     // connection goes, so what the session there is told can still be read through the window's own.
-    await until("the question here", async () => ((await here.call("session.open", { id: waits })) as SessionSnapshot).state.interactions.length > 0);
+    await until("the question here", async () => (await lentTo(second)).asks.length > 0);
     (mine.engine as any).serverLinks.watches.get("box").stop();
     await until("the turn there to end", async () => (await lastTurn(remote, second)).status === "done");
     expect(JSON.stringify(await lastTurn(remote, second))).toContain("went away before it answered");
     // And the question here is withdrawn: nobody waits for its answer.
-    await until("the question here to go", async () => ((await here.call("session.open", { id: waits })) as SessionSnapshot).state.interactions.length === 0);
+    await until("the question here to go", async () => (await lentTo(second)).asks.length === 0);
+    expect(told(second)!.asks).toEqual([]);
     remote.ws.close();
 });
 
@@ -257,33 +268,52 @@ test("only what's lent, in bounds: no other tool, no file of this machine's open
     const refused = answers.filter((a) => a.text.startsWith("That's more simulator calls in a minute"));
     expect(refused.length).toBeGreaterThanOrEqual(5);
     expect(answers.filter((a) => !a.isError).length).toBeGreaterThan(100);
-    // All for one session there: one session here, however many came at once.
-    const rows = () => new Set(here.events.filter((e) => e.type === "sessions.upsert" && e.session.title === "box: limits").map((e) => e.session.id));
-    // Shown to the window though it never asked anything (every call here only read, or was refused).
-    await until("its session here to be shown", () => rows().size > 0);
-    expect(rows().size).toBe(1);
+    // All for one session there: one session here, however many came at once, and the windows on the server know
+    // of it though it never asked anything (every call here only read, or was refused).
+    const ids = () => new Set(here.events.filter((e) => e.type === "offers.session" && e.sessionId === "20261113-000000-aaaaaa" && e.lent.id).map((e) => e.lent.id));
+    await until("its session here to be known", () => ids().size > 0);
+    expect(ids().size).toBe(1);
 });
 
-test("the session here that a session there is lent through can be deleted, and goes by itself once it has sat unused", async () => {
-    const id = (session: string) => here.events.findLast((e) => e.type === "sessions.upsert" && e.session.title === `box: ${session}`)?.session.id as string | undefined;
+test("the session here that a session there is lent through goes by itself once it has sat unused, and the next call gets another", async () => {
     const call = (session: string) => (mine.engine as any).lend("box", { tool: "SimulatorSnapshot", input: {}, session: { id: session, title: session } }, new AbortController().signal);
     // The test before used up this minute's calls for the server: a new minute.
     (mine.engine as any).lentAt.clear();
     await call("one");
-    await until("its session here", () => Boolean(id("one")));
-    const first = id("one")!;
-    // Nothing was ever said in it, so there's no file to put in the trash: deleting it just closes it.
-    await here.call("session.delete", { id: first });
-    expect(here.events.some((e) => e.type === "sessions.remove" && e.id === first)).toBe(true);
-    expect(((await here.call("sessions.list", { limit: 200 })) as { id: string }[]).some((x) => x.id === first)).toBe(false);
+    await until("its session here", () => Boolean(told("one")?.id));
+    const first = told("one")!.id!;
+    // Unused for a while (four seconds here): gone, and the windows on the server are told there's none.
+    await until("it to be closed", () => told("one")!.id === undefined, 15_000);
+    expect(mine.engine.runtimes.has(first)).toBe(false);
+    expect(await lentTo("one")).toEqual({ offered: true, asks: [] });
     // The session there goes on being lent to, through a new one here.
-    here.events.length = 0;
     await call("one");
-    await until("another session here", () => Boolean(id("one")) && id("one") !== first);
-    const second = id("one")!;
-    // Unused for a while (four seconds here), with no window on it: gone, without being asked to.
-    await until("it to be closed", () => here.events.some((e) => e.type === "sessions.remove" && e.id === second), 15_000);
-    expect(mine.engine.runtimes.has(second)).toBe(false);
+    await until("another session here", () => Boolean(told("one")?.id));
+    expect(told("one")!.id).not.toBe(first);
+});
+
+test("the user opens a session's Simulator in a window before its agent used it: this machine has one for it from then on, and shows it", async () => {
+    (mine.engine as any).lentAt.clear();
+    // Nothing is made for a session that's only looked at.
+    expect(await lentTo("by-hand")).toEqual({ offered: true, asks: [] });
+    const opened = (await here.call("offers.session", { name: "box", sessionId: "by-hand", title: "By hand", open: true })) as LentSession;
+    expect(typeof opened.id).toBe("string");
+    expect((await lentTo("by-hand")).id).toBe(opened.id);
+    // The pane asks this machine about it by that id, as it would about a session here.
+    const state = await here.call("simulator.state", { id: opened.id });
+    expect([state.status, state.devices.map((d: { udid: string }) => d.udid)]).toEqual(["off", ["AAAA"]]);
+    // What the agent there does next is done on the same one.
+    await (mine.engine as any).lend("box", { tool: "SimulatorControl", input: { action: "list" }, session: { id: "by-hand", title: "By hand" } }, new AbortController().signal);
+    expect((await lentTo("by-hand")).id).toBe(opened.id);
+    // Only for the user's own servers, and sessions that could be ones.
+    await expect(here.call("offers.session", { name: "nowhere", sessionId: "by-hand" })).rejects.toThrow("No server is called nowhere.");
+    await expect(here.call("offers.session", { name: "box", sessionId: "../x" })).rejects.toThrow("That isn't a session's id.");
+    // A server's own Cavvy lends nothing.
+    const at = await here.call("servers.connect", { name: "box" });
+    const onIt = new Window(at.url, at.token);
+    expect(await onIt.opened.promise).toBe(true);
+    await expect(onIt.call("offers.session", { name: "box", sessionId: "by-hand" })).rejects.toThrow("This machine lends nothing.");
+    onIt.ws.close();
 });
 
 test("a call this machine can't take now is answered, not left waiting: over four at once, or too long", async () => {
@@ -415,12 +445,15 @@ test("the Simulator turned off on the Mac while it's connected: the session ther
 test("asks from one server ring the user a few times a minute, then once more to say there are others", async () => {
     (mine.engine as any).lentAt.clear();
     await lendHere("SimulatorControl", { action: "list" }, "20261113-000000-bbbbbb");
-    const guestRt = [...mine.engine.runtimes.values()].find((r: any) => r.guestOf === "box" && r.title === "box: limits")!;
+    const guestRt = [...mine.engine.runtimes.values()].find((r: any) => r.guestOf === "box" && r.guestSession?.id === "20261113-000000-bbbbbb")!;
     here.events.length = 0;
     for (let i = 0; i < 10; i++) mine.engine.notify(guestRt as never, "permission", `Wants to tap ${i}`);
-    await until("them to arrive", () => here.events.filter((e) => e.type === "notify").length >= 7);
+    await until("them to arrive", () => here.events.filter((e) => e.type === "servers.notify").length >= 7);
     await Bun.sleep(200);
-    const rang = () => here.events.filter((e) => e.type === "notify").map((e) => e.body);
+    // Each told as the session there.
+    expect(new Set(here.events.filter((e) => e.type === "servers.notify").map((e) => [e.name, e.sessionId, e.title, e.lent].join())).size).toBe(1);
+    expect(here.events.find((e) => e.type === "servers.notify")).toMatchObject({ name: "box", sessionId: "20261113-000000-bbbbbb", title: "limits", lent: true });
+    const rang = () => here.events.filter((e) => e.type === "servers.notify").map((e) => e.body);
     expect(rang()).toEqual(["Wants to tap 0", "Wants to tap 1", "Wants to tap 2", "Wants to tap 3", "Wants to tap 4", "Wants to tap 5", "More from box is waiting for you."]);
     // The user answers one (they're there): what the server's sessions ask next rings again, from the start.
     here.events.length = 0;
@@ -428,26 +461,4 @@ test("asks from one server ring the user a few times a minute, then once more to
     mine.engine.notify(guestRt as never, "permission", "Wants to tap again");
     await until("it to ring", () => rang().length === 1);
     expect(rang()).toEqual(["Wants to tap again"]);
-});
-
-test("a session here that the user wrote in is deleted like any other, and the session there gets a new one for its next call", async () => {
-    (mine.engine as any).lentAt.clear();
-    const lendTyped = () => lendHere("SimulatorControl", { action: "list" }, "20261113-000000-cccccc");
-    const id = () => here.events.findLast((e) => e.type === "sessions.upsert" && e.session.title === "box: limits" && e.session.id !== undefined)?.session.id as string;
-    here.events.length = 0;
-    await lendTyped();
-    await until("its session here", () => Boolean(id()));
-    const first = id();
-    await here.call("session.open", { id: first });
-    await here.call("session.send", { id: first, text: "say hi" });
-    await until("the user's own turn there to end", async () => ((await here.call("session.open", { id: first })) as SessionSnapshot).turns.at(-1)?.status === "done");
-    await here.call("session.close", { id: first }).catch(() => undefined);
-    await here.call("session.delete", { id: first });
-    // It had a file, so it went to the trash like any session, and nothing still points at it.
-    expect(mine.engine.runtimes.has(first)).toBe(false);
-    here.events.length = 0;
-    await lendTyped();
-    await until("another session here", () => Boolean(id()) && id() !== first);
-    expect(((await here.call("sessions.list", { limit: 200 })) as { id: string }[]).some((x) => x.id === first)).toBe(false);
-    await here.call("session.restore", { id: first });
 });

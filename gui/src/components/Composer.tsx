@@ -3,7 +3,7 @@ import { isMod, mod } from "../lib/platform";
 import { ArrowUp, CornerDownRight, Database, FileText, Folder, ListEnd, Maximize2, Minimize2, Paperclip, Slash, Sparkles, SquareTerminal } from "lucide-solid";
 import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } from "@shared/protocol";
 import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
-import { interrupt, send, setMode } from "../state/actions";
+import { far, interrupt, send, setMode } from "../state/actions";
 import { prefs } from "../state/prefs";
 import { comparePicks, setComparePicks, focusComposer, modePickerOpen, modelPickerOpen, setModePickerOpen, setModelPickerOpen, setReview, settingsTab, columnHeight, glideDock, shellLayout } from "../state/ui";
 import { keymap, matchKey, shortcut, shortcutHint, withShortcut } from "../state/keybindings";
@@ -682,6 +682,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 if (e.dataTransfer?.files) void addFiles(e.dataTransfer.files);
             }}
         >
+            <Show when={far.asks?.(p.sessionId ?? "")}>{(a) => <InteractionTab sessionId={a().id} items={a().items} />}</Show>
             <Show when={p.sessionId && interactions().length}>
                 <InteractionTab sessionId={p.sessionId!} items={interactions()} />
             </Show>

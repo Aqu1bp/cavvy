@@ -7,8 +7,8 @@ import { Check, ChevronDown, House, Power, Smartphone, Tablet } from "lucide-sol
 import type { SimulatorCommand, SimulatorDevice, SimulatorInput } from "@shared/protocol";
 import type { SimulatorImageFrame } from "@shared/browser-wire";
 import type { SessionHandle } from "../state/app";
-import { app, reportError, rpc } from "../state/app";
-import { adoptSimulatorState, loadSimulatorState, setSimulatorShown, simulatorState } from "../state/simulator";
+import { app, reportError } from "../state/app";
+import { adoptSimulatorState, loadSimulatorState, setSimulatorShown, sim, simulatorState } from "../state/simulator";
 import { settingsTab } from "../state/ui";
 import { AGENT_ACTIVE_MS, cornerRadius, deviceDetail, paneNote, placeScreen, screenFraction, takenNote, WHEEL_JUMP, wheelPaced, WHEEL_SERIES_MS, wheelStart, wheelSwipesAgain, wheelTurn, type Rect, type Size, type WheelSwipe } from "../lib/simulator";
 import { Menu } from "./ui/Menu";
@@ -19,7 +19,7 @@ const WHEEL_IDLE_MS = 120;
 
 export function SimulatorPane(p: { handle: SessionHandle }) {
     const id = () => p.handle.id;
-    const stream = rpc.browserStream();
+    const stream = sim.stream(id);
     const [connected, setConnected] = createSignal(stream.state === "open");
     const state = () => simulatorState(id());
     const device = () => state()?.device;
