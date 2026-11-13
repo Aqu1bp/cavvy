@@ -47,16 +47,18 @@ test("a page that wasn't loaded for a switch asks for nothing, and the picture g
     // where it stands where it stood before the switch, the picture stays over it alone until its content is in.
     expect(preload).toContain('const PANEL = "aside.panel";');
     expect(preload).toContain('const PANEL_BUSY = `${PANEL} [aria-busy="true"]`;');
-    expect(read("gui/src/components/RightPanel.tsx")).toContain('<aside class="panel"');
-    expect(read("gui/src/components/RightPanel.tsx")).toContain('<div class="blank" aria-busy="true">');
+    // (However else that markup changes: what's needed is an aside of class panel, and aria-busy="true" in it.)
+    expect(read("gui/src/components/RightPanel.tsx")).toMatch(/<aside\b[^>]*\bclass="panel\b/);
+    expect(read("gui/src/components/RightPanel.tsx")).toMatch(/<div\b[^>]*\baria-busy="true"/);
     expect(preload).toContain('sessionStorage.setItem(HELD, place(document.querySelector(PANEL)) || "1");');
     expect(preload).toMatch(/if \(!panel \|\| !panelWas \|\| place\(panel\) !== panelWas \|\| !document\.querySelector\(PANEL_BUSY\)\) return end\(\);\s+up = "panel";/);
     expect(preload).toMatch(/img\.style\.clipPath = `inset\(\$\{r\.top\}px \$\{innerWidth - r\.right\}px \$\{innerHeight - r\.bottom\}px \$\{r\.left\}px\)`;\s+img\.style\.pointerEvents = "none";\s+hide\(false\);\s+clearTimeout\(timer\);\s+timer = setTimeout\(end, PANEL_MS\);/);
-    expect(preload).toContain('if (up === "panel") return void (document.querySelector(PANEL_BUSY) || soon(end));');
+    expect(preload).toContain('if (up === "panel") return void ((document.querySelector(PANEL_BUSY) && place(document.querySelector(PANEL)) === panelWas) || soon(end));');
+    expect(preload).toContain('addEventListener("resize", end, { once: true });');
     // Nothing slides into place under the picture (a panel that was open would be seen sliding in again), and what
     // changes after it moves as ever.
     expect(preload).toContain('const STILL = "*,*::before,*::after{transition:none!important}";');
-    expect(preload).toMatch(/for \(const a of document\.getAnimations\(\)\) \{\s+try \{\s+if \(a\.effect\?\.getComputedTiming\(\)\.endTime !== Infinity\) a\.finish\(\);/);
+    expect(preload).toMatch(/for \(const a of document\.getAnimations\(\)\) \{\s+try \{\s+if \(a\.timeline === document\.timeline && a\.effect\?\.getComputedTiming\(\)\.endTime !== Infinity\) a\.finish\(\);/);
     expect(preload).toMatch(/img\.remove\(\);\s+\/\/[^\n]*\n\s+requestAnimationFrame\(\(\) => still\.remove\(\)\);/);
     expect(preload).toContain("let timer = setTimeout(end, HELD_MS);");
     // The page says so through the same call as on any load, and after a second whatever it has: the picture's own

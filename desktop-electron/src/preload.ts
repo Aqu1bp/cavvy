@@ -84,10 +84,11 @@ function showHeld() {
     /** The page is ready: it's shown, all but a side panel still fetching, which keeps its part of the picture. */
     const reveal = () => {
         if (up !== "all") return;
-        // What was fading or sliding in under the picture (a row joining the list) is where it was going.
+        // What was fading or sliding in under the picture (a row joining the list) is where it was going. Not what
+        // runs for ever, nor what follows scrolling and not the clock (finished, it would never follow it again).
         for (const a of document.getAnimations()) {
             try {
-                if (a.effect?.getComputedTiming().endTime !== Infinity) a.finish();
+                if (a.timeline === document.timeline && a.effect?.getComputedTiming().endTime !== Infinity) a.finish();
             } catch {}
         }
         const panel = document.querySelector(PANEL);
@@ -99,13 +100,16 @@ function showHeld() {
         hide(false);
         clearTimeout(timer);
         timer = setTimeout(end, PANEL_MS);
+        // A window that changes size takes the panel from under it.
+        addEventListener("resize", end, { once: true });
     };
     // Two frames on: what was just put in the page is laid out and drawn under the picture first.
     const soon = (then: () => void) => requestAnimationFrame(() => requestAnimationFrame(then));
     let ready = false;
     let revealing = false;
     const settled = () => {
-        if (up === "panel") return void (document.querySelector(PANEL_BUSY) || soon(end));
+        // Over the panel alone: until its content is in, or the panel is no longer where the picture has it.
+        if (up === "panel") return void ((document.querySelector(PANEL_BUSY) && place(document.querySelector(PANEL)) === panelWas) || soon(end));
         if (revealing || !(ready || document.querySelector(ASKS))) return;
         revealing = true;
         soon(reveal);
