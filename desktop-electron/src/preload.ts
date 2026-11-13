@@ -10,11 +10,13 @@ import { contextBridge, ipcRenderer } from "electron";
  */
 const HELD = "cavvy.held";
 /**
- * What the new page shows when it's ready: the conversation of the session it was sent to, else the new-session
- * screen; or that the machine can't be reached. (It shows other things on its way there: the screen for a new
- * session before the session opens, a cover while it connects. Those aren't it.)
+ * What the new page shows when it's ready: the conversation of the session it was sent to (or that it couldn't be
+ * opened), else the new-session screen once the machine has said what it has (its sessions, projects and models);
+ * or that the machine can't be reached, or has a question first (gui/src/components/Servers.tsx MachineCover). (It
+ * shows other things on its way there: the screen for a new session before the session opens or the machine has
+ * answered, a cover while it connects. Those aren't it.)
  */
-const READY = { session: ".turn, .server-over", home: ".home, .server-over" };
+const READY = { session: '.turn, .session-opening [role="alert"], .server-asks', home: ".home:not([aria-busy]), .server-asks" };
 /** How long the picture stays when nothing of those comes. */
 const HELD_MS = 1500;
 
@@ -35,8 +37,9 @@ function showHeld() {
     img.decoding = "sync";
     img.src = picture;
     img.style.cssText = "position:fixed;inset:0;width:100vw;height:100vh;z-index:2147483647";
-    // The page under it isn't drawn meanwhile: where the window is glass, it would show through the picture.
-    const hide = (on: boolean) => document.getElementById("root")?.style.setProperty("visibility", on ? "hidden" : "");
+    // The page under it isn't drawn meanwhile: where the window is glass, it would show through the picture. (Not
+    // drawn, but there: the message box takes the keyboard as it does on any load, which a hidden one couldn't.)
+    const hide = (on: boolean) => document.getElementById("root")?.style.setProperty("opacity", on ? "0" : "");
     let over = false;
     const end = () => {
         if (over) return;
@@ -52,7 +55,7 @@ function showHeld() {
         // Two frames on: what was just put in the page is laid out and drawn under the picture first.
         if (document.querySelector(ready)) requestAnimationFrame(() => requestAnimationFrame(end));
     });
-    watch.observe(document, { childList: true, subtree: true });
+    watch.observe(document, { childList: true, subtree: true, attributeFilter: ["aria-busy"] });
     const timer = setTimeout(end, HELD_MS);
 }
 showHeld();
@@ -60,9 +63,18 @@ showHeld();
 contextBridge.exposeInMainWorld("cavvyDesktop", {
     /** Loads the window again, keeping its picture on screen until the new page is ready (showHeld). */
     reloadHeld: () => {
+        // Where the window opens there, as it's written now: the page goes on living while the picture is taken, and
+        // what it does meanwhile (another session opened) isn't where the window was sent.
+        const NAVIGATION = "cavvy.navigation";
+        let sent: string | null | undefined;
+        try {
+            sent = sessionStorage.getItem(NAVIGATION);
+        } catch {}
         const go = () => {
             try {
                 sessionStorage.setItem(HELD, "1");
+                if (sent === null) sessionStorage.removeItem(NAVIGATION);
+                else if (sent !== undefined) sessionStorage.setItem(NAVIGATION, sent);
             } catch {}
             location.reload();
         };

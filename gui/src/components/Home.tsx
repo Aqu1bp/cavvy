@@ -180,7 +180,7 @@ export function Home() {
     );
 
     return (
-        <div class="home" classList={{ instant, glide: glide() }} onScroll={(e) => setFollowing(e.currentTarget.scrollTop <= 0)}>
+        <div class="home" aria-busy={!app.sessionsLoaded || undefined} classList={{ instant, glide: glide() }} onScroll={(e) => setFollowing(e.currentTarget.scrollTop <= 0)}>
             <div
                 class="home-col"
                 style={{ "--column-h": columnHeight(), "--cli-rows": app.homeCwd ? cliRows() : 0, "--cli-on": app.homeCwd && cliOn() ? 1 : 0, "--home-cards": cards() }}

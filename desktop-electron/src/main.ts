@@ -352,6 +352,8 @@ function testWindowCommands() {
 
 /** The window's picture from just before it loaded again, and how long it's worth showing. */
 let held: { picture: string; at: number } | undefined;
+/** Counts pictures asked for and given: one that's ready only after the page it was for has asked is nobody's. */
+let holding = 0;
 const HELD_MS = 5000;
 
 const fromGui = (e: IpcMainEvent | IpcMainInvokeEvent) => win !== undefined && e.sender === win.webContents && e.senderFrame?.url.startsWith(`${PAGE_ORIGIN}/`) === true;
@@ -363,14 +365,16 @@ function bridge() {
     // the page that comes to keep on screen until its own is ready. Kept a few seconds, given once.
     ipcMain.handle("hold_frame", async (e) => {
         if (!fromGui(e) || !win) return;
-        const shot = await win.webContents.capturePage();
-        held = shot.isEmpty() ? undefined : { picture: shot.toDataURL(), at: Date.now() };
-    });
-    // Asked by the preload of the page that's loading, before it has a frame to its name (fromGui can't tell yet):
-    // the picture never leaves the preload, and only the main window has one.
-    ipcMain.on("held_frame", (e) => {
-        e.returnValue = win !== undefined && e.sender === win.webContents && held && Date.now() - held.at < HELD_MS ? held.picture : null;
         held = undefined;
+        const mine = ++holding;
+        const shot = await win.webContents.capturePage();
+        if (mine === holding && !shot.isEmpty()) held = { picture: shot.toDataURL(), at: Date.now() };
+    });
+    // Asked by the preload of the page that's loading. The picture never leaves the preload.
+    ipcMain.on("held_frame", (e) => {
+        e.returnValue = fromGui(e) && held && Date.now() - held.at < HELD_MS ? held.picture : null;
+        held = undefined;
+        holding++;
     });
     ipcMain.on("focus_window", (e) => fromGui(e) && raiseWindow());
     ipcMain.handle("pick_folder", async (e, o: { defaultPath?: string; title?: string }) => {
