@@ -306,9 +306,12 @@ function General() {
                 <Row title="Notifications" desc="When a session needs you or finishes while you're elsewhere.">
                     <Toggle label="Notifications" checked={prefs.notifications} onChange={(v) => setPrefs("notifications", v)} />
                 </Row>
-                <Row title="Allow bypass mode" desc="Lets sessions run everything without asking. Only for sandboxes and containers.">
-                    <Toggle tone="danger" label="Allow bypass mode" checked={Boolean(s().allowBypass)} onChange={(v) => (v ? setConfirmBypass(true) : void update({ allowBypass: false }))} />
-                </Row>
+                {/* On one of the user's servers Bypass can always be chosen: there's nothing to allow. */}
+                <Show when={!s().bypassAlways}>
+                    <Row title="Allow bypass mode" desc="Lets sessions run everything without asking. Only for sandboxes and containers.">
+                        <Toggle tone="danger" label="Allow bypass mode" checked={Boolean(s().allowBypass)} onChange={(v) => (v ? setConfirmBypass(true) : void update({ allowBypass: false }))} />
+                    </Row>
+                </Show>
             </Section>
             <ConfirmDialog
                 open={confirmBypass()}

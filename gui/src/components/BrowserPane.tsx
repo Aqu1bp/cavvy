@@ -9,7 +9,7 @@ import type { SessionHandle } from "../state/app";
 import { app, reportError, rpc } from "../state/app";
 import { adoptBrowserState, browserState, loadBrowserState, setBrowserShown, type BrowserFrame } from "../state/browser";
 import { panelHold, settingsTab } from "../state/ui";
-import { electron } from "../lib/platform";
+import { electron, machine } from "../lib/platform";
 import type { Follow } from "../lib/follow-box";
 import { addressOf, currentTab, isPasteKey, isReleaseKey, keyInput, mouseInput, pagePoint, paneSize, paneStatus, placeFrame, resized, tabLabel, wheelInput, wheelPixels, type Point, type Size } from "../lib/browser";
 import type { BrowserImageFrame } from "@shared/browser-wire";
@@ -19,7 +19,8 @@ import { Spinner } from "./ui/bits";
  * In the Electron desktop app the page isn't pictures: the tab is a real Chromium view in the window, which the app
  * lays over the pane's page box (placed below), and the person uses it directly. The bar, tabs and notes stay here.
  */
-const native = electron !== undefined;
+// The desktop app shows this computer's pages in views of its own; a server's are pictures sent from there, as in a browser.
+const native = electron !== undefined && !machine;
 
 /** The pane's size is sent this long after it stops changing (dragging the panel's edge resizes it every frame). */
 const RESIZE_MS = 120;

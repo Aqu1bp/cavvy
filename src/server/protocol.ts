@@ -1482,6 +1482,8 @@ export interface GuiSettings {
     /** The Simulator tools and pane (false turns them off; true, the default, is stored as unset). */
     simulator?: boolean;
     allowBypass?: boolean;
+    /** Bypass can always be chosen here (one of the user's servers): the switch that allows it has nothing to do. */
+    bypassAlways?: boolean;
     /** A message sent while a turn runs: steer it (default) or wait for it to end. */
     followUpBehavior?: FollowUpMode;
     /** "Open files with": an id from the server's editor list (src/server/editors.ts). */
@@ -1623,7 +1625,72 @@ export type SimulatorCommand = "select" | "boot" | "shutdown" | "take_control";
 // ---------------------------------------------------------------------------
 // Events
 
+// Servers: what the calls below hand back (src/servers/manager.ts makes them).
+
+/** A server as a window lists it. */
+export interface ServerSummary {
+    name: string;
+    destination: string;
+    /** Connected to from this Cavvy right now. */
+    connected: boolean;
+}
+
+/** Why something on a server didn't happen, in words for the user: what, ssh's own line, and what to do. */
+export interface ServerProblem {
+    message: string;
+    detail?: string;
+    fix?: string;
+}
+
+/** A host key this machine hasn't seen: shown, and saved only if the user says so (`servers.trust`). */
+export interface UnknownHost {
+    host: string;
+    fingerprints: string[];
+}
+
+export type ConnectResult =
+    /** Where a window reaches the server's Cavvy, and what signs it in there. */
+    | { status: "connected"; url: string; token: string }
+    | { status: "unknown-host"; unknown: UnknownHost }
+    /** The Cavvy there speaks another version of the protocol than this one: `servers.update` brings it level. */
+    | { status: "other-version" }
+    /** Cavvy there was stopped on purpose, and this was a connection trying again by itself (`retry`): asked for by the user, it's started. */
+    | { status: "stopped" }
+    | { status: "failed"; problem: ServerProblem };
+
+export type AddResult =
+    /** `copy`: what the one-time copy would carry. `left`: what it won't ("2 MCP servers"), said even when there's nothing to copy. */
+    | { status: "added"; name: string; note?: string; copy?: { what: string }; left?: string }
+    | { status: "unknown-host"; unknown: UnknownHost }
+    | { status: "failed"; problem: ServerProblem };
+
+export type UpdateResult =
+    | { status: "updated"; note?: string }
+    /** Sessions there are working or waiting: updating stops them, so it's asked (`force`). */
+    | { status: "busy"; working: number; waiting: number }
+    | { status: "unknown-host"; unknown: UnknownHost }
+    | { status: "failed"; problem: ServerProblem };
+
+/** What a server has for agents, and what it lacks, as a window shows it. */
+export interface ServerCheck {
+    running: boolean;
+    /** Runs the same build as this Cavvy. */
+    current: boolean;
+    clis: { id: string; product: string; installed: boolean; signedIn?: boolean; on?: boolean; install: string }[];
+    git: boolean;
+    gh: { installed: boolean; signedIn?: boolean };
+    browser: boolean;
+    /** Starts again by itself after the server restarts; when not, the command that makes it so. */
+    service: boolean;
+    lingerFix?: string;
+}
+
+
 export type ServerEvent =
+    /** A step of what's being done to a server (servers.add, servers.update, servers.connect), for the window that asked. */
+    | { type: "servers.progress"; name: string; text: string; percent?: number }
+    /** A server this Cavvy is connected to came back, is being reached again, or is gone (to every window). */
+    | { type: "servers.link"; name: string; state: "connected" | "reconnecting" | "stopped"; problem?: ServerProblem }
     /** A session's browser changed: its tabs, who drives them, or whether it runs (sent to the windows that have the session open). */
     | { type: "browser.state"; sessionId: string; state: BrowserState }
     /**
@@ -1729,6 +1796,21 @@ export interface HelloResult {
 }
 
 export interface Methods {
+    // Servers: other machines this Cavvy runs on, reached over SSH (src/servers/manager.ts). Not offered by a
+    // server's own Cavvy. A call that needs the user's word says so in its result; `trust` carries the answer to
+    // an unknown host's key back: the fingerprints that were shown.
+    "servers.list": { params: Record<string, never>; result: { servers: ServerSummary[] } };
+    "servers.add": { params: { name: string; destination: string; port?: number; identityFile?: string; trust?: string[] }; result: AddResult };
+    "servers.copy": { params: { name: string }; result: { took: string; left?: string } };
+    "servers.check": { params: { name: string }; result: ServerCheck };
+    /** `retry`: the window's connection trying again by itself. `renew`: the sign-in it was last given opened nothing. */
+    "servers.connect": { params: { name: string; trust?: string[]; retry?: boolean; renew?: boolean }; result: ConnectResult };
+    "servers.update": { params: { name: string; force?: boolean; trust?: string[] }; result: UpdateResult };
+    "servers.disconnect": { params: { name: string }; result: null };
+    "servers.stop": { params: { name: string }; result: null };
+    "servers.remove": { params: { name: string }; result: null };
+    /** Undoes a `servers.remove` made since this Cavvy started. */
+    "servers.restore": { params: { name: string }; result: null };
     "terminal.open": { params: { id: string; cwd: string; cols: number; rows: number; login?: { provider: string; accountId: string } }; result: { id: string; cwd: string } };
     "terminal.write": { params: { id: string; data: string }; result: null };
     /** The window has drawn this many characters of the terminal's output (flow control). */

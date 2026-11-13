@@ -16,6 +16,7 @@ import { ServerError, type ServerEntry } from "./store";
 import { hostOf, printable, remoteSh, ssh, shQuote } from "./ssh";
 import { BUILD_ID, REMOTE_DIR, type ServerFacts } from "./remote";
 import { NOT_RUNNING, type HostCheck, type HostStatus } from "./host";
+import { PERMISSION_MODES } from "../permissions/modes";
 
 /**
  * The unit. `mixed`: stopping it asks Cavvy alone to stop, which closes its
@@ -316,6 +317,8 @@ export function readCheck(text: string | undefined): HostCheck | undefined {
         gh: { installed: gh.installed === true, signedIn: flag(gh.signedIn) },
         browser: c.browser === true,
         sandbox: typeof c.sandbox === "string" ? printable(c.sandbox, 40) : undefined,
+        sandboxOn: flag(c.sandboxOn),
+        mode: PERMISSION_MODES.find((m) => m === c.mode),
         memMb: count(c.memMb),
     };
 }
