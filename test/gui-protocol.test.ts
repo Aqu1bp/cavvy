@@ -4,7 +4,7 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { join } from "path";
-import { readFileSync } from "fs";
+import { mkdirSync, readFileSync } from "fs";
 import { isolate, tempDir } from "./helpers/isolate";
 
 const iso = isolate();
@@ -764,6 +764,39 @@ describe("engine", () => {
         const client = { subs: new Set<string>(), send: () => {} };
         const got = (await engine.handle(client as never, "models.list", {})) as { models: { id: string }[] }[];
         expect(got.flatMap((p) => p.models.map((m) => m.id))).toEqual(["claude-new"]);
+        await engine.stop();
+    });
+
+    test("a session nothing was saved of (only a ! command ran) is listed while it's open, and said to be gone once it's closed", async () => {
+        const cwd = join(tempDir(), "proj-bang");
+        mkdirSync(cwd, { recursive: true });
+        const engine = new Engine({ listModels: async () => [], unloadAfterMs: 50 });
+        const events: { type: string; session?: SessionSummary; id?: string }[] = [];
+        const client = { subs: new Set<string>(), send: (e: { type: string }) => void events.push(e) };
+        engine.clients.add(client as never);
+        const id = ((await engine.handle(client as never, "session.create", { cwd })) as { state: { id: string } }).state.id;
+        await engine.handle(client as never, "session.send", { id, text: "!echo saved-nothing" });
+        const until = async (ok: () => boolean) => {
+            for (const end = Date.now() + 10_000; Date.now() < end && !ok(); ) await Bun.sleep(20);
+        };
+        // Listed: the window that ran it has a row for it.
+        await until(() => events.some((e) => e.type === "sessions.upsert" && e.session!.id === id && e.session!.status === "idle"));
+        expect(events.some((e) => e.type === "sessions.upsert" && e.session!.id === id)).toBe(true);
+        expect(events.some((e) => e.type === "sessions.remove")).toBe(false);
+        // The window leaves it: with no file to open it from again, its row goes everywhere it's listed.
+        await engine.handle(client as never, "session.close", { id });
+        await until(() => events.some((e) => e.type === "sessions.remove" && e.id === id));
+        expect(events.filter((e) => e.type === "sessions.remove").map((e) => e.id)).toEqual([id]);
+        expect(((await engine.handle(client as never, "sessions.list", {})) as SessionSummary[]).some((x) => x.id === id)).toBe(false);
+        // One with something saved stays listed when it's closed.
+        const keptIn = join(tempDir(), "proj-kept");
+        mkdirSync(keptIn, { recursive: true });
+        const kept = Session.create(keptIn);
+        kept.push({ role: "user", content: [{ type: "text", text: "keep me" }], meta: { kind: "prompt" } });
+        await engine.handle(client as never, "session.open", { id: kept.meta.id });
+        await engine.handle(client as never, "session.close", { id: kept.meta.id });
+        await Bun.sleep(300);
+        expect(events.filter((e) => e.type === "sessions.remove").map((e) => e.id)).toEqual([id]);
         await engine.stop();
     });
 
