@@ -13,7 +13,7 @@ import { fetchGitChanges, type GitView } from "../state/changes";
 import { openInEditor, openReview, openWorktreeReview } from "../state/actions";
 import { findReveal, setViewedImage } from "../state/ui";
 import { imagesReady, promptImages, type PromptImage } from "../state/images";
-import { ActivityGroup, groupBlocks, Thinking, type Item } from "./blocks/Activity";
+import { ActivityGroup, groupBlocks, Thinking, WorkRun, type Item } from "./blocks/Activity";
 import { Counts } from "./blocks/DiffView";
 import { Markdown } from "./blocks/Markdown";
 import { CopyButton, Spinner } from "./ui/bits";
@@ -670,7 +670,10 @@ function TurnViewContent(p: TurnViewProps) {
         >
             <Show when={showWork()}>
                 <div class={`worklog ${folding() ? "leaving" : ""}`}>
-                    <Index each={(seg() as { items: Item[] }).items ?? []}>{(it) => renderItem(it)}</Index>
+                    {/* One quiet line for the run, opening into its steps' rows. */}
+                    <WorkRun items={(seg() as { items: Item[] }).items ?? []} hideLive={live()}>
+                        <Index each={(seg() as { items: Item[] }).items ?? []}>{(it) => renderItem(it)}</Index>
+                    </WorkRun>
                 </div>
             </Show>
         </Show>

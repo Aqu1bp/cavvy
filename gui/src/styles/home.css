@@ -241,34 +241,16 @@
 }
 
 /* ---- Before the first message: trusting the folder, connecting a model ----
-   Shaped like the request cards (composer.css .ask.glass), with their head and buttons. */
-.hcard.glass {
-    padding: calc(14 * var(--sp)) calc(14 * var(--sp)) calc(12 * var(--sp)) calc(16 * var(--sp));
-    border-radius: calc(20 * var(--sp));
+   Shaped like the request cards (composer.css .ask), with their question and buttons. */
+.hcard {
+    padding: calc(16 * var(--sp)) calc(16 * var(--sp)) calc(14 * var(--sp)) calc(18 * var(--sp));
+    border-radius: calc(18 * var(--sp));
     animation: ask-rise 460ms var(--spring);
 }
 
-.hcard.glass.trust {
-    box-shadow:
-        0 0 0 1px color-mix(in srgb, var(--warn) 32%, transparent),
-        inset 0 1px 0 var(--ctl-hi),
-        var(--ctl-shadow);
-}
-
-.hcard.glass.connect {
-    box-shadow:
-        0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent),
-        inset 0 1px 0 var(--ctl-hi),
-        var(--ctl-shadow);
-}
-
-.hcard.connect .ask-ic {
-    color: var(--accent);
-}
-
 .hcard p {
-    margin: calc(6 * var(--sp)) 0 0 calc(24 * var(--sp));
-    font-size: 0.893rem;
+    margin: calc(4 * var(--sp)) 0 0;
+    font-size: 0.929rem;
     line-height: 1.5;
     color: var(--fg-3);
 }

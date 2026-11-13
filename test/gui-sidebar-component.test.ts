@@ -539,7 +539,7 @@ const key = (f: ReturnType<typeof fixture>, k: string, extra: Record<string, unk
 const hitOf = (f: ReturnType<typeof fixture>, id: string) => f.nodes.findLast((n) => ["card-hit", "slim-hit"].includes(n.props.class) && n.props.title?.startsWith(`Session ${id}\n`));
 const rowOf = (f: ReturnType<typeof fixture>, id: string) => f.nodes.findLast((n) => n.props["data-session-id"] === id && /^(card|slim) /.test(String(n.props.class)));
 // The last bar made is the one showing (one shows while two or more are selected).
-const bar = (f: ReturnType<typeof fixture>) => f.nodes.findLast((n) => n.props.class === "rail-sel glass");
+const bar = (f: ReturnType<typeof fixture>) => f.nodes.findLast((n) => n.props.class === "rail-sel card-surface");
 const barButtons = (f: ReturnType<typeof fixture>) => [...new Set(f.descendants(bar(f)).filter((n) => n.tag === "button"))].map((n) => n.props["aria-label"]).sort();
 
 for (const view of ["date", "project"]) {

@@ -385,13 +385,14 @@ function TerminalScreen(p: { tab: Tab; visible: boolean; onClose: (terminal: str
         }
     };
     onMount(() => {
-        term = new Terminal({ fontFamily: '"JetBrains Mono Variable", monospace', fontSize: terminalFontSize(prefs.fontSize), cursorBlink: true, scrollback: 5000, allowProposedApi: false });
+        term = new Terminal({ fontFamily: '"JetBrains Mono Variable", monospace', fontSize: terminalFontSize(prefs.fontSize), cursorBlink: true, scrollback: 5000, allowProposedApi: false, allowTransparency: true });
         fit = new FitAddon();
         term.loadAddon(fit);
         term.open(container);
         const theme = () => {
             const style = getComputedStyle(container);
-            term.options.theme = { background: style.getPropertyValue("--term-bg").trim(), foreground: style.getPropertyValue("--fg").trim(), cursor: style.getPropertyValue("--fg").trim(), selectionBackground: "#80808060" };
+            // No ground of its own: the panel's tint over the window's glass shows through (terminal.css).
+            term.options.theme = { background: "rgba(0, 0, 0, 0)", foreground: style.getPropertyValue("--fg").trim(), cursor: style.getPropertyValue("--fg").trim(), selectionBackground: "#80808060" };
         };
         theme();
         const themeObserver = new MutationObserver(theme);

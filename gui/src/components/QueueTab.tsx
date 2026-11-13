@@ -224,7 +224,7 @@ export function QueueTab(p: { sessionId: string; state: SessionState; dequeue: (
     const sorting = () => sort() !== undefined;
 
     return (
-        <div class="uq-tray glass">
+        <div class="uq-tray card-surface">
             <div
                 ref={list}
                 class={`uq-list ${sorting() && sort()!.phase !== "wait" ? "sorting" : ""} ${sort()?.phase === "wait" ? "still" : ""}`}

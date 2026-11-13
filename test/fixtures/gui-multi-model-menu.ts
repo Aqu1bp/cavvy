@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { createEffect, createSignal, onCleanup } from "../../gui/node_modules/solid-js/dist/solid.js";
 import { all, component, node, renderer, text, type Node } from "../helpers/gui-render";
 import { menuIndex, menuTypeahead, mountMenu } from "../../gui/src/lib/menu";
+import { effortKey, effortLevels, effortOf, takesEffort } from "../../gui/src/lib/effort";
 import { meterOf } from "../../gui/src/lib/limits";
 import { tokens } from "../../gui/src/lib/format";
 import { planLimitKey } from "../../src/server/protocol";
@@ -90,6 +91,8 @@ function picker(available = true, more: { groups?: any[]; providers?: any[]; lim
     const models = ["Alpha", "Bravo", "Charlie", "Delta", "Echo"].map((name) => ({ ref: `mock:${name}`, id: name, name, provider: "mock" }));
     const ModelPicker = component(source("ModelPicker"), "ModelPicker", {
         Menu, menuIndex, menuTypeahead, comparePicks, setComparePicks, planLimitKey, meterOf, nearLimit, tokens, now: () => 0,
+        // The effort of the model in use, under the list (none of these models takes one).
+        takesEffort, effortLevels, effortOf, effortKey, setEffort: async () => true, setFastMode() {},
         app: { models: [{ provider: "mock", providerName: "Mock", models }, ...(more.groups ?? [])], providers: more.providers ?? [], limits: more.limits ?? {} },
         sendsAccountPick, setAccount: (provider: string, id: string) => accountPicks.push(`${provider}:${id}`),
         prefs: { favoriteModels: [] }, setPrefs() {}, handleFor() {}, refreshModels() {},

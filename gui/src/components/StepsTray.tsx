@@ -35,7 +35,7 @@ export function StepsTray(p: { sessionId: string; view: SessionView }) {
     return (
         <Show when={shown()}>
             <div class="steps-slot">
-                <div class="steps-tray glass" classList={{ open: open() }}>
+                <div class="steps-tray" classList={{ open: open(), glass: open(), "card-surface": !open() }}>
                     <div class="st-list" inert={!open()}>
                         <div>
                             <ul ref={list} id={listId} aria-label={`Steps: ${line().done} of ${line().total} done`}>

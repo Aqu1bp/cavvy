@@ -25,7 +25,7 @@ test("the title bar's content is centred on the line at both densities", () => {
     const padding = decl(css("header.css"), ".header", "padding")!;
     // padding-top: max(0px, 2 * (L - win-pad) - header-h): with align-items: center the content's
     // centre is (h + padding-top) / 2 below the bar's top, which is win-pad below the window's.
-    expect(padding).toBe("max(0px, 2 * (var(--top-line) - var(--win-pad, 8px)) - var(--header-h)) 9px 0 20px");
+    expect(padding).toBe("max(0px, 2 * (var(--top-line) - var(--win-pad, 8px)) - var(--header-h)) 12px 0 24px");
     for (const selector of [":root", '[data-density="compact"]']) {
         const h = px(decl(tokens, selector, "--header-h"));
         const top = Math.max(0, 2 * (line - winPad) - h);
@@ -53,9 +53,9 @@ test("a maximized terminal's toolbar sits on the line, clear of the traffic ligh
     for (const selector of [".app.tauri.os-macos.rail-off .terminal-panel.max .terminal-toolbar", '.app.tauri.os-macos[data-rail="overlay"] .terminal-panel.max .terminal-toolbar']) {
         expect({ selector, left: decl(term, selector, "padding-left") }).toEqual({ selector, left: titleBar });
     }
-    // The lights end 78px from the window's left (header.css). Over the sheet, it has no frame (shell.css): it starts
-    // win-pad in, 0 there, and the buttons 92px less that in from it.
-    const frameless = px(decl(css("shell.css"), ".app.rail-off", "--win-pad"));
+    // The lights end 78px from the window's left (header.css). The work has no frame (shell.css): it starts
+    // win-pad in, 0, and the buttons 92px less that in from it.
+    expect(winPad).toBe(0);
     expect(titleBar).toBe("calc(92px - var(--win-pad, 8px))");
-    expect(frameless + (92 - frameless)).toBeGreaterThan(78);
+    expect(winPad + (92 - winPad)).toBeGreaterThan(78);
 });

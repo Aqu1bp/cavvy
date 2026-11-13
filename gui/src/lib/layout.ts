@@ -1,13 +1,13 @@
 // The window's responsive rules (design/glass, app.js `layout()` and `fitFloat()`), as pure
 // functions of the window's size. The shell (App.tsx) feeds them and applies the result.
 //
-// The window: the rail on the glass at the left, then one sheet inset 8px from the window's
-// edges. The sheet holds the conversation, the inspector beside it, and the terminal under both.
+// The window is one pane of glass: the rail at the left, then the work beside it, edge to edge
+// ("the sheet": the conversation, the inspector beside it, and the terminal under both).
 
 /** The rail docks beside the sheet from this window width; narrower, it's a drawer over it. */
 export const RAIL_DOCK_MIN = 900;
-/** The sheet's inset from the window's edges, while the rail is docked beside it. */
-export const WINDOW_PAD = 8;
+/** The sheet's inset from the window's edges: none (shell.css, --win-pad). */
+export const WINDOW_PAD = 0;
 /** A docked inspector leaves the conversation at least this wide; otherwise it floats over it. */
 export const CONVERSATION_MIN = 480;
 /** A floating inspector's top, clear of the title bar, and its gap to what's under it. */
@@ -35,8 +35,8 @@ export function railMode(windowWidth: number): RailMode {
 }
 
 /**
- * The sheet's size. Beside a docked, showing rail: the window less the rail and its inset on the other three edges.
- * With no rail beside it (hidden, or a drawer over it), the sheet is the whole window (shell.css sets --win-pad to 0).
+ * The sheet's size. Beside a docked, showing rail: the window less the rail.
+ * With no rail beside it (hidden, or a drawer over it), the sheet is the whole window.
  */
 export function sheetSize(win: Size, railDocked: boolean, railWidth: number): Size {
     if (!railDocked) return { w: win.w, h: win.h };

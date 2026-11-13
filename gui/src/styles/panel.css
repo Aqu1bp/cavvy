@@ -184,26 +184,24 @@
 
 .insp .btn.ghost,
 .insp .btn.secondary {
-    color: var(--fg-2);
-    background: var(--ctl-strong);
-    box-shadow: inset 0 0 0 0.5px var(--ctl-stroke), 0 1px 1px var(--line);
+    color: var(--fg);
+    background: var(--press);
+    box-shadow: none;
 }
 
 .insp .btn.ghost:hover:not(:disabled),
 .insp .btn.secondary:hover:not(:disabled) {
-    color: var(--fg);
-    background: var(--ctl-strong);
+    background: color-mix(in srgb, var(--fg) 15%, transparent);
 }
 
 .insp .btn.primary {
-    background: var(--accent);
-    color: var(--accent-ink);
-    box-shadow: 0 4px 12px -4px color-mix(in srgb, var(--accent) 60%, transparent);
+    background: var(--ink);
+    color: var(--ink-fg);
+    box-shadow: none;
 }
 
 .insp .btn.primary:hover:not(:disabled) {
-    background: var(--accent);
-    filter: brightness(1.06);
+    background: var(--ink-hover);
 }
 
 .insp .btn:disabled {

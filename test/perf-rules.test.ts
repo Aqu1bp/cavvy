@@ -100,12 +100,23 @@ test("what animates for good changes on the stream clock's grid, or the window i
     }
 });
 
-test("a blur doesn't come back over what's following the end of a reply", () => {
-    // Most of what a streaming reply cost the GPU: base.css says why.
+test("a blur doesn't come back over the end of a reply", () => {
+    // Most of what a streaming reply cost the GPU. The dock's pieces and the title bar have no blur at all now,
+    // following the end or not: they're cards on the window's glass, and the conversation fades out before it
+    // reaches them (stage.css).
     const css = read("gui/src/styles/base.css");
-    expect(css).toMatch(/\[data-following\] :is\([^{]*\.composer-box[^{]*\)\.glass \{[^}]*backdrop-filter: none/);
-    const header = read("gui/src/styles/header.css");
-    expect(header.slice(header.indexOf(".header::before"), header.indexOf("}", header.indexOf(".header::before")))).not.toContain("backdrop-filter");
+    const card = css.slice(css.indexOf("\n.card-surface {"), css.indexOf("}", css.indexOf("\n.card-surface {")));
+    expect(card).toContain("background: var(--card)");
+    expect(card).not.toContain("backdrop-filter");
+    expect(read("gui/src/components/Composer.tsx")).toContain('class="composer-box card-surface"');
+    expect(read("gui/src/components/InteractionDock.tsx")).toContain("class={`ask card-surface itab");
+    for (const file of ["composer.css", "stage.css", "header.css", "transcript.css"]) {
+        const sheet = read(`gui/src/styles/${file}`);
+        for (const m of sheet.matchAll(/([^{}]+)\{([^}]*backdrop-filter[^}]*)\}/g)) {
+            if (/backdrop-filter: none/.test(m[2]!)) continue;
+            expect(`${file}: ${m[1]!.trim()}`).not.toMatch(/\.(composer-box|ask|uq-tray|cap|header)(?![\w-])/);
+        }
+    }
 });
 
 test("the server ships on the Bun that's tested, and not on 1.3", () => {

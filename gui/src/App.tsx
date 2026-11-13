@@ -24,7 +24,7 @@ import { AgentView } from "./components/Agents";
 import { ReviewRail, RightPanel } from "./components/RightPanel";
 import { ReviewPane } from "./components/ReviewPane";
 import { TerminalPanel } from "./components/TerminalPanel";
-import { following, openFind, terminalOpen, setTerminalOpen } from "./state/ui";
+import { openFind, terminalOpen, setTerminalOpen } from "./state/ui";
 import { Home } from "./components/Home";
 import { CommandPalette } from "./components/CommandPalette";
 import { SettingsNav, SettingsPage } from "./components/Settings";
@@ -513,7 +513,6 @@ export function App() {
                     <div
                         class="sheet"
                         inert={drawerOpen()}
-                        data-following={following() ? "" : undefined}
                         style={{
                             "--insp-col": inspOpen() && layout().inspector.mode === "dock" ? `${layout().inspector.width}px` : "0px",
                             "--term-h": `${layout().terminal.height}px`,

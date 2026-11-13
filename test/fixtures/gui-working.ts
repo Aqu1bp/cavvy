@@ -25,6 +25,8 @@ const scope = {
     // Each state here is a moment of its own, long after the last: the line moves on at once (its dwell is gui-fast-pacing's).
     dwellLeft: () => 0,
     ActivityGroup: stub, Markdown: stub, CopyButton: stub, Spinner: stub, Thinking: stub, Notice: stub,
+    // The run's line (Activity.tsx): here just what it opens into, the steps' rows.
+    WorkRun: (p: any) => p.children,
     // A running command opens to its row's block (Activity.tsx), kept in the rows' folds.
     LiveCommandBody: (p: any) => { const n = node("cmd-body"); n.props.class = "cmd-body"; solid.createRenderEffect(() => (n.text = String(p.tool.progress ?? ""))); return n; },
     useCardFolds: () => folds,

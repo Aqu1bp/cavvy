@@ -75,4 +75,4 @@ const fixture = (name: string) =>
 
 fixture("EffortSlider: the knob at the value, a dot per level, hover grows the one a click would pick, applies on click, drag and keys");
 fixture("EffortSlider: a secondary or middle press changes nothing and starts no drag");
-fixture("EffortPicker: a change the server refuses goes back to the level in force, and picking it again sends again (in a session and on Home)");
+fixture("the model picker's effort: a change the server refuses goes back to the level in force, and picking it again sends again (in a session and on Home)");

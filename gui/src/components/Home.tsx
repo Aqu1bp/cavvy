@@ -4,10 +4,10 @@
 // little above the middle of the column (home.css).
 
 import { createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js";
-import { ChevronDown, Folder, FolderGit2, FolderOpen, KeyRound, Plug, ShieldAlert } from "lucide-solid";
+import { ChevronDown, Folder, FolderGit2, FolderOpen, KeyRound } from "lucide-solid";
 import { app, refreshProjects, reportError, rpc } from "../state/app";
 import { chooseProject, connectCli, openProject, trustAndContinue } from "../state/actions";
-import { columnHeight, requestComposerFocus, setFollowing, setSettingsTab, shellLayout } from "../state/ui";
+import { columnHeight, requestComposerFocus, setSettingsTab, shellLayout } from "../state/ui";
 import { sp } from "../state/prefs";
 import { ago, basename, tildify } from "../lib/format";
 import { isWindowShown } from "../lib/platform";
@@ -96,9 +96,6 @@ export function Home() {
     };
     onCleanup(() => clearTimeout(glideTimer));
 
-    // Nothing passes behind the glass here until the column scrolls: the sheet shows through, as at a reply's end (base.css).
-    onMount(() => setFollowing(true));
-    onCleanup(() => setFollowing(false));
 
     const togglePicker = (e: MouseEvent) => {
         setPickerAnchor(e.currentTarget as HTMLElement);
@@ -157,7 +154,7 @@ export function Home() {
     );
 
     return (
-        <div class="home" classList={{ instant, glide: glide() }} onScroll={(e) => setFollowing(e.currentTarget.scrollTop <= 0)}>
+        <div class="home" classList={{ instant, glide: glide() }}>
             <div
                 class="home-col"
                 style={{ "--column-h": columnHeight(), "--cli-rows": app.homeCwd ? cliRows() : 0, "--cli-on": app.homeCwd && cliOn() ? 1 : 0, "--home-cards": cards() }}
@@ -199,9 +196,8 @@ export function Home() {
 
                     {/* What comes before the first message, shaped like the request cards: trusting the folder, connecting a model. */}
                     <Show when={needsTrust().length}>
-                        <div class="hcard glass trust" role="group" aria-label="Trust this folder">
+                        <div class="hcard card-surface trust" role="group" aria-label="Trust this folder">
                             <div class="ask-h">
-                                <span class="ask-ic"><ShieldAlert size={16} /></span>
                                 <span class="ask-title">Do you trust this folder?</span>
                             </div>
                             <p>
@@ -210,11 +206,12 @@ export function Home() {
                                 ) that can run commands on this computer.
                             </p>
                             <div class="ask-row">
-                                <button class="pbtn" onClick={async () => { await trustAndContinue(app.homeCwd!, false); void refetch(); }}>
-                                    Open without them
-                                </button>
                                 <button class="pbtn primary" onClick={async () => { await trustAndContinue(app.homeCwd!, true); void refetch(); void refreshProjects(); }}>
                                     Trust this folder
+                                </button>
+                                <span class="grow" />
+                                <button class="pbtn quiet" onClick={async () => { await trustAndContinue(app.homeCwd!, false); void refetch(); }}>
+                                    Open without them
                                 </button>
                             </div>
                         </div>
@@ -222,27 +219,26 @@ export function Home() {
 
                     {/* Nothing in it runs by itself, but its edits are checked for errors only once it's trusted. */}
                     <Show when={!needsTrust().length && askTrust()}>
-                        <div class="hcard glass trust" role="group" aria-label="Trust this folder">
+                        <div class="hcard card-surface trust" role="group" aria-label="Trust this folder">
                             <div class="ask-h">
-                                <span class="ask-ic"><ShieldAlert size={16} /></span>
                                 <span class="ask-title">Do you trust this folder?</span>
                             </div>
                             <p>Edits are checked for errors only in folders you trust, as that runs the project's own tools.</p>
                             <div class="ask-row">
-                                <button class="pbtn" onClick={async () => { await trustAndContinue(app.homeCwd!, false); void refetch(); }}>
-                                    Not now
-                                </button>
                                 <button class="pbtn primary" onClick={async () => { await trustAndContinue(app.homeCwd!, true); void refetch(); void refreshProjects(); }}>
                                     Trust this folder
+                                </button>
+                                <span class="grow" />
+                                <button class="pbtn quiet" onClick={async () => { await trustAndContinue(app.homeCwd!, false); void refetch(); }}>
+                                    Not now
                                 </button>
                             </div>
                         </div>
                     </Show>
 
                     <Show when={noModel()}>
-                        <div class="hcard glass connect" role="group" aria-label="Connect a model">
+                        <div class="hcard card-surface connect" role="group" aria-label="Connect a model">
                             <div class="ask-h">
-                                <span class="ask-ic"><Plug size={16} /></span>
                                 <span class="ask-title">Connect a model to start</span>
                             </div>
                             <p>

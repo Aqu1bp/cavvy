@@ -62,8 +62,9 @@ test("the bubble's styles: at the right, as wide as its text, its actions over t
     expect(decl(t, ".user-row", "align-self")).toBe("flex-end");
     expect(decl(t, ".user-row", "max-width")).toBe("min(82%, 600 * var(--sp))");
     expect(decl(t, ".user-row", "position")).toBe("relative");
-    expect(decl(t, ".user-row > .user-bubble", "border-radius")).toBe("calc(20 * var(--sp)) calc(20 * var(--sp)) calc(6 * var(--sp)) calc(20 * var(--sp))");
-    expect(decl(t, ".user-row > .user-bubble.short", "border-radius")).toBe("calc(18 * var(--sp)) calc(18 * var(--sp)) calc(6 * var(--sp)) calc(18 * var(--sp))");
+    // A card like the others: one radius all round, whatever its length.
+    expect(decl(t, ".user-bubble", "border-radius")).toBe("var(--r-card)");
+    expect(decl(t, ".user-row > .user-bubble", "border-radius")).toBeUndefined();
     expect(decl(t, ".user-bubble", "background")).toBe("var(--bubble)");
     // Absolutely placed under the bubble: showing them moves nothing.
     expect(decl(t, ".user-actions", "position")).toBe("absolute");
@@ -78,6 +79,7 @@ test("the bubble's styles: at the right, as wide as its text, its actions over t
 
 test("--bubble is a token in both themes", () => {
     const tokens = css("tokens.css");
-    expect(decl(tokens, '[data-theme="light"]', "--bubble")).toMatch(/^#[0-9a-f]{6}$/);
-    expect(decl(tokens, '[data-theme="dark"]', "--bubble")).toMatch(/^#[0-9a-f]{6}$/);
+    // A fill laid on the window's glass, so see-through.
+    expect(decl(tokens, '[data-theme="light"]', "--bubble")).toMatch(/^rgba\(255, 255, 255, 0\.\d+\)$/);
+    expect(decl(tokens, '[data-theme="dark"]', "--bubble")).toMatch(/^rgba\(255, 255, 255, 0\.\d+\)$/);
 });

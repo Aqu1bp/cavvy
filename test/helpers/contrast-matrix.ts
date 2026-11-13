@@ -1,80 +1,65 @@
-// Actual text/surface combinations used by the GUI. Keep layers bottom first:
-// palette rows sit on dialogs, MCP cards on raised surfaces, and Changes
-// selections/hover states on the inspector rather than on the window canvas.
+// Actual text/surface combinations used by the GUI. Keep layers bottom first.
+//
+// The whole window is glass: --win-tint over whatever the desktop shows through. There is no single worst
+// case for a translucent tint (white behind it hurts light text, black hurts dark text), so the reference
+// desktop is a mid grey, #808080. With a Window tint, its wash lies over --win-tint: see washes().
+// Everything else is laid over that: cards, wells inside cards, rows hovered and pressed, what floats.
 import { cascade, contrast, parseRules, resolveColor, stack, type Root } from "./contrast";
 
 export const AA = 4.5;
-// "--sheet > --hover" also covers the lighter half-strength hover rows once used.
-export const PANELS = ["--sheet", "--insp-bg", "--raised", "--sheet > --ctl-strong", "--sheet > --hover"];
-export const ROWS = [
-    "--insp-bg > --hover",
-    "--sheet-2",
-    "--raised > --hover",
-    "--raised > --accent-soft",
-    "--sheet > --ctl-strong > --hover",
+/** The window's glass over the reference desktop. */
+export const GLASS_GROUND = "#808080 > --win-tint";
+const G = GLASS_GROUND;
+const on = (...layers: string[]) => [G, ...layers].join(" > ");
+/** Straight on the glass (the rail, the title bar, the conversation's text), and its rows hovered and open. */
+export const GLASS = [G, on("--hover"), on("--rail-hover"), on("--rail-sel"), on("--sheet-2"), on("--term-bg")];
+/** Cards on the glass (a run of steps, a request, the composer), what you said, grouped settings, and rows in them. */
+export const CARDS = [
+    on("--card"), on("--card", "--hover"), on("--bubble"),
+    on("--group"), on("--group", "--hover"), on("--raised"), on("--raised", "--hover"), on("--raised", "--accent-soft"),
 ];
-export const CODE = ["--sheet-2"];
-export const DIFF_CODE = [...CODE, "--sheet-2 > --add-bg", "--sheet-2 > --del-bg"];
-const NEUTRAL = [...PANELS, ...ROWS];
-const status = (soft: string) => [...PANELS, ...ROWS, `--sheet > ${soft}`, `--raised > ${soft}`];
-const diff = (kind: "add" | "del") => [
-    ...PANELS, ...ROWS,
-    `--sheet-2 > --${kind}-bg`,
-    `--sheet-2 > color-mix(in srgb, var(--${kind}-bg-strong) 70%, var(--sheet-2))`,
-];
-/** The redesign's sheet and what sits on it. Glass controls and menus (--ctl, --ctl-strong) are measured over the sheet. */
-export const SHEET = [
-    "--sheet", "--sheet-2", "--insp-bg", "--term-bg", "--group", "--seg-on",
-    "--sheet > --hover", "--sheet-2 > --hover", "--group > --hover", "--insp-bg > --hover",
-    "--sheet > --ctl", "--sheet > --ctl-strong", "--sheet > --ctl-strong > --hover", "--sheet-2 > --ctl-strong",
-];
-/**
- * The rail sits on the window glass, not the sheet: --win-tint over whatever
- * the desktop shows through. There is no single worst case for a translucent
- * tint (white behind it hurts light text, black hurts dark text), so the
- * reference desktop is a mid grey, #808080. With a Window tint, its wash lies
- * over --win-tint: see washes().
- */
-export const GLASS = [
-    "#808080 > --win-tint", "#808080 > --win-tint > --rail-hover", "#808080 > --win-tint > --rail-sel",
+/** Code and diffs: a well in a card or on the glass, and the opaque one a full diff uses. */
+export const CODE = [on("--card", "--well"), on("--well"), "--well-solid"];
+export const DIFF_CODE = [...CODE, ...["--add-bg", "--del-bg"].flatMap((tint) => [on("--card", "--well", tint), `--well-solid > ${tint}`])];
+/** What floats for a moment (menus, popovers, dialogs, toasts), the drawer rail, and the window's opaque stand-in. */
+export const FLOATING = [
+    on("--ctl"), on("--ctl", "--hover"), on("--ctl-strong"), on("--ctl-strong", "--hover"),
     "#808080 > --rail-float", "#808080 > --rail-float > --rail-hover", "#808080 > --rail-float > --rail-sel",
+    "--sheet", "--sheet > --hover",
 ];
-const SHEET_CODE = ["--sheet", "--sheet-2", "--insp-bg", "--term-bg", "--sheet > --add-bg", "--sheet > --del-bg", "--term-bg > --add-bg", "--term-bg > --del-bg"];
+const NEUTRAL = [...GLASS, ...CARDS, ...CODE, ...FLOATING];
+const status = (soft: string) => [...GLASS, ...CARDS, ...FLOATING, on(soft), on("--card", soft)];
+const diff = (kind: "add" | "del") => [
+    ...GLASS, ...CARDS,
+    on("--card", "--well", `--${kind}-bg`), `--well-solid > --${kind}-bg`,
+    `--well-solid > color-mix(in srgb, var(--${kind}-bg-strong) 70%, transparent)`,
+];
 const SHIKI = ["foreground", "token-keyword", "token-string", "token-string-expression", "token-comment", "token-function", "token-constant", "token-parameter", "token-punctuation", "token-link"];
 
-/** Token/expression and the opaque surface or composited layers behind it. */
+/** Token/expression and the composited layers behind it. */
 export const TEXT: [string, string[]][] = [
-    ["--fg", [...NEUTRAL, "--sheet > --find", "--sheet-2 > --find", "--raised > --find", "--raised > --hover > --find"]],
+    // A row or a button held down is there for a moment: its words, not every colour that can sit in one.
+    ["--fg", [...NEUTRAL, on("--press"), on("--card", "--press"), on("--find"), on("--card", "--find"), on("--find-cur")]],
     ["--fg-2", NEUTRAL],
     ["--fg-3", NEUTRAL],
-    ["--accent-text", [...PANELS, ...ROWS.slice(0, 2)]],
+    ["--rail-fg", [...GLASS, ...FLOATING]],
+    ["--rail-fg-2", [...GLASS, ...FLOATING]],
+    ["--accent-text", [...GLASS, ...CARDS, ...FLOATING]],
+    ["--accent-ink", ["--accent", "--accent-hover"]],
+    // The one filled control, and a destructive button's words.
+    ["--ink-fg", ["--ink", "--ink-hover"]],
     ["--sheet", ["--danger"]],
     ["--ok", status("--ok-soft")],
-    ["--warn", status("--warn-soft")],
+    ["--warn", [...status("--warn-soft"), on("--warn-bg"), on("--card", "--warn-bg")]],
     ["--danger", status("--danger-soft")],
-    ["--shell", [...PANELS, "--insp-bg > color-mix(in srgb, var(--shell) 14%, transparent)", "color-mix(in srgb, var(--shell) 8%, var(--sheet-2))"]],
-    ["--auto", ["--sheet", "--sheet > --auto-soft"]],
+    ["--shell", [...GLASS, ...CARDS, on("color-mix(in srgb, var(--shell) 14%, transparent)")]],
+    ["--auto", [G, on("--card"), on("--auto-soft")]],
     ["--add-fg", diff("add")],
     ["--del-fg", diff("del")],
-    ...SHIKI.map((name): [string, string[]] => [`--shiki-${name}`, [...DIFF_CODE, ...SHEET_CODE]]),
-
-    // The redesign's sheet, glass controls and rail.
-    ["--fg", [...SHEET, "--sheet > --press", "--sheet > --find", "--sheet-2 > --find", "--sheet > --find-cur"]],
-    ["--fg-2", SHEET],
-    ["--fg-3", SHEET],
-    ["--accent-text", SHEET],
-    ["--accent-ink", ["--accent", "--accent-hover"]],
-    ["--rail-fg", GLASS],
-    ["--rail-fg-2", GLASS],
-    ["--ok", [...SHEET, "--sheet > color-mix(in srgb, var(--ok) 12%, transparent)"]],
-    ["--warn", [...SHEET, "--sheet > --warn-bg", "--sheet-2 > --warn-bg"]],
-    ["--danger", [...SHEET, "--sheet > color-mix(in srgb, var(--danger) 12%, transparent)"]],
-    ["--add-fg", ["--sheet > --add-bg", "--sheet-2 > --add-bg", "--term-bg > --add-bg", "--sheet > --add-bg-strong"]],
-    ["--del-fg", ["--sheet > --del-bg", "--sheet-2 > --del-bg", "--term-bg > --del-bg", "--sheet > --del-bg-strong"]],
-    // What you said: your words in the bubble (a shell line's is tinted), quieter once archived,
-    // and its "Show more" and comment headings; the attachment pills under the same fill.
-    ["--fg", ["--bubble", "color-mix(in srgb, var(--ok) 7%, var(--bubble))"]],
-    ["--fg-2", ["--bubble", "color-mix(in srgb, var(--ok) 7%, var(--bubble))"]],
+    ...SHIKI.map((name): [string, string[]] => [`--shiki-${name}`, DIFF_CODE]),
+    // What you said: your words in the bubble (a shell line's is tinted).
+    ["--fg", [on("--bubble", "color-mix(in srgb, var(--ok) 7%, transparent)")]],
+    ["--fg-2", [on("--bubble", "color-mix(in srgb, var(--ok) 7%, transparent)")]],
 ];
 
 /** Every declared theme and its actual light/dark scheme. */

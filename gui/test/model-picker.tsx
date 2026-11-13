@@ -60,12 +60,12 @@ export async function checkModelPicker(root: HTMLElement) {
     const inPanel = <T extends HTMLElement = HTMLElement>(selector: string) => [...(panel()?.querySelectorAll<T>(selector) ?? [])];
     const rows = () => inPanel(".mr");
     const row = (name: string) => rows().find((r) => r.querySelector(".mr-name")?.textContent === name)!;
-    // A filter by its name, after its mark (a provider without one has a monogram: "MO" for Mock).
-    const filter = (name: string) => inPanel(".mp-filters [role='tab']").find((t) => t.lastElementChild?.textContent === name)!;
-    // A subscription's account in the heading: one button naming the session's, which opens a short list of them (each
-    // by its name, and a plan near its limit), then "Add account".
-    const acctButton = () => panel()?.querySelector<HTMLButtonElement>(".mp-h .mp-acct-btn");
-    const list = () => panel()?.querySelector<HTMLElement>(".mp-h .mp-acct-menu");
+    // A filter by its name: plain words, no mark.
+    const filter = (name: string) => inPanel(".mp-filters [role='tab']").find((t) => t.textContent?.trim() === name)!;
+    // A subscription's account, at the end of the filters' row: one button naming the session's, which opens a short
+    // list of them (each by its name, and a plan near its limit), then "Add account".
+    const acctButton = () => panel()?.querySelector<HTMLButtonElement>(".mp-bar .mp-acct-btn");
+    const list = () => panel()?.querySelector<HTMLElement>(".mp-bar .mp-acct-menu");
     const named = (b: Element) => b.querySelector(".truncate")?.textContent;
     const items = () => inPanel<HTMLButtonElement>(".mp-acct-menu [role='menuitemradio']");
     const item = (name: string) => items().find((b) => named(b) === name)!;
@@ -107,11 +107,12 @@ export async function checkModelPicker(root: HTMLElement) {
         // It opens highlighted (the keyboard's place), and that neutral fill is the only one.
         check(current.classList.contains("sel") && bg(current) !== bg(plain), "the picker opens with the current model highlighted");
         const neutral = bg(current);
-        // The filters have no mark for the current model's provider: only the open filter's fill, and the label for screen readers.
+        // The filters have no mark for the current model's provider: only the open filter's brighter words, and the label for screen readers.
         const filterCurrent = filter("Claude Code");
         check(/current model/.test(filterCurrent.getAttribute("aria-label") ?? ""), "screen readers hear which provider has the current model");
         check(!panel()!.querySelector(".mp-filters .bar, .mp-filters .mp-f-cur, .mp-filters .mp-f.cur"), "the filters have no current-provider marker");
-        check([...filterCurrent.children].every((c) => c.matches(".provider-icon, .provider-mono") || (c.matches("span") && c.textContent === "Claude Code")), `the current provider's pill holds only its mark and name (${filterCurrent.innerHTML.slice(0, 200)})`);
+        check(!filterCurrent.children.length && filterCurrent.textContent?.trim() === "Claude Code", `a filter is its name alone, no mark and no pill (${filterCurrent.innerHTML.slice(0, 200)})`);
+        check(bg(filterCurrent) === "rgba(0, 0, 0, 0)", "the open filter has no fill");
 
         // The keyboard highlight is apart from the current model: both shown at once, and different.
         const down = new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true });
@@ -138,16 +139,16 @@ export async function checkModelPicker(root: HTMLElement) {
         type("haiku-4-5");
         await settle();
         const found = rows()[0]?.closest(".mp-group");
-        check(rows().length === 1 && rows()[0]!.querySelector(".mr-name")?.textContent === "Haiku 4.5" && found?.getAttribute("aria-label") === "Claude Code" && found.querySelector(".mp-h b")?.textContent === "Claude Code", `search by id finds the model (${rows().map((r) => r.textContent).join(" | ")})`);
+        check(rows().length === 1 && rows()[0]!.querySelector(".mr-name")?.textContent === "Haiku 4.5" && found?.getAttribute("aria-label") === "Claude Code" && found.querySelector(".mp-h")?.textContent === "Claude Code", `search by id finds the model (${rows().map((r) => r.textContent).join(" | ")})`);
         type("");
         await settle();
 
-        // Another provider's list open: its filter has the neutral fill; the current model's provider looks like any other.
+        // Another provider's list open: its filter's words are the bright ones; the current model's provider looks like any other.
         const filterMock = filter("Mock");
         const filterFavorites = filter("Favorites");
         filterMock.click();
         await settle(200);
-        check(filterMock.classList.contains("on") && filterMock.getAttribute("aria-selected") === "true" && bg(filterMock) !== "rgba(0, 0, 0, 0)" && rows().length === 2, "the open filter has a neutral fill, and the list is its provider's alone");
+        check(filterMock.classList.contains("on") && filterMock.getAttribute("aria-selected") === "true" && getComputedStyle(filterMock).color !== getComputedStyle(filterFavorites).color && rows().length === 2, "the open filter's words are brighter than the others', and the list is its provider's alone");
         check(row("local-7b"), "a model with no name goes by its id");
         check(!filterCurrent.classList.contains("on") && bg(filterCurrent) === bg(filterFavorites) && getComputedStyle(filterCurrent).color === getComputedStyle(filterFavorites).color, "the current model's provider has no mark while another list is open");
         filterCurrent.click();

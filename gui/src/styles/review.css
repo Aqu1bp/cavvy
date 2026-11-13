@@ -297,7 +297,8 @@
     margin-bottom: calc(10 * var(--sp));
     border: 1px solid var(--line);
     border-radius: calc(10 * var(--sp));
-    background: linear-gradient(var(--sheet-2), var(--sheet-2)), var(--insp-bg);
+    /* Opaque, like the diff in it: its header and gutters cover what scrolls under them. */
+    background: var(--well-solid);
 }
 
 .rf-h {
@@ -310,7 +311,7 @@
     height: calc(38 * var(--sp));
     padding: 0 calc(6 * var(--sp));
     border-radius: calc(9 * var(--sp)) calc(9 * var(--sp)) 0 0;
-    background: var(--insp-bg);
+    background: var(--well-solid);
     box-shadow: 0 1px 0 var(--line);
     font-size: 0.893rem;
     transition: border-radius 220ms var(--ease);

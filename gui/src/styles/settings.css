@@ -54,7 +54,7 @@
 }
 
 .navi.on {
-    background: var(--sheet-2);
+    background: var(--rail-sel);
     color: var(--fg);
 }
 
@@ -62,23 +62,21 @@
 
 /* Lines up with the icon column of the rows above. */
 
-/* ---- Settings pages (the mockup's "Settings") -----------------------------
-   A centred column on the sheet; a header that stays while the page scrolls;
-   settings in grouped rounded lists: title and description on the left, the
+/* ---- Settings pages -------------------------------------------------------
+   A centred column on the window's glass; a header that stays while the page
+   scrolls; settings in grouped cards: title and description on the left, the
    control on the right. */
 
 .settings-page {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    background: var(--sheet);
 }
 
-/* Opening Settings: the page fades and rises in, the mockup's 280ms
-   whatever Settings → Panel animations says. It mounts once per opening,
-   so switching sections doesn't replay it; closing is instant, as in the
-   mockup. (Its content, over the page's own opaque sheet, which hides
-   the session kept under it from the first frame.) */
+/* Opening Settings: the page fades and rises in, 280ms whatever
+   Settings → Panel animations says. It mounts once per opening, so switching
+   sections doesn't replay it; closing is instant. (The session kept under it
+   isn't drawn while it's covered: shell.css.) */
 .settings-page > .set-in {
     animation: settings-in 280ms var(--ease);
 }
@@ -115,8 +113,19 @@
     min-height: var(--header-h);
     padding-top: calc(12 * var(--sp));
     margin-bottom: calc(10 * var(--sp));
-    background: var(--sheet);
-    box-shadow: 0 10px 12px -12px var(--sheet);
+}
+
+/* What scrolls under the heading goes soft behind it: there's no ground on the glass to hide it under. Its own
+   layer, so the blur's lower edge can fade without the heading fading with it. */
+.set-top::before {
+    content: "";
+    position: absolute;
+    inset: 0 calc(-28 * var(--sp)) calc(-10 * var(--sp));
+    z-index: -1;
+    -webkit-backdrop-filter: blur(22px);
+    backdrop-filter: blur(22px);
+    mask-image: linear-gradient(#000 70%, transparent);
+    pointer-events: none;
 }
 
 .set-top h2 {

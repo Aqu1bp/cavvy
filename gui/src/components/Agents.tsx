@@ -159,8 +159,7 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
             </TitleBar>
             <div class="stage">
                 <div class="transcript-wrap">
-                    <div class="transcript-fade" />
-                    <section class="transcript" aria-label="Sub-agent transcript">
+                    <section class="transcript" aria-label="Sub-agent transcript" style={{ "--dock-h": `${dockH()}px` }}>
                         <div class="transcript-col agent-col">
                             <div class="from-parent">
                                 <span class="from-parent-label">
@@ -227,7 +226,7 @@ export function AgentView(p: { handle: SessionHandle; agent: AgentRun }) {
                         <Show when={asks().length}>
                             <InteractionTab sessionId={p.handle.id} items={asks()} />
                         </Show>
-                        <div class="agent-bar glass" role="status">
+                        <div class="agent-bar card-surface" role="status">
                             <span class="av">
                                 <AgentMark provider={provider()} />
                                 <span class={`nd st-${a().status}`} />

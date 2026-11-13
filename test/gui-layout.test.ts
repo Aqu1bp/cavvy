@@ -3,7 +3,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import {
     clampInspectorWidth, clampTerminalHeight, closesOnShrink, coversComposer, coversConversation, docksInPlace, floatBottom, floatShort, inspectorMode, railMode,
-    requestCloses, reviewWidth, sheetSize, terminalHeight, windowLayout,
+    requestCloses, reviewWidth, sheetSize, terminalHeight, WINDOW_PAD, windowLayout,
 } from "../gui/src/lib/layout";
 
 const base = {
@@ -22,29 +22,30 @@ test("the rail docks from a 900px window and is a drawer below it", () => {
     expect(windowLayout({ ...base, railOpen: true, rail: false }).railShown).toBe(false);
 });
 
-test("beside a docked rail the sheet is the window less the rail and its 8px inset; with no rail beside it, the whole window", () => {
-    expect(sheetSize({ w: 1360, h: 880 }, true, 260)).toEqual({ w: 1092, h: 864 });
-    // The rail hidden, or a drawer over the sheet: shell.css takes the inset away (--win-pad: 0px).
+test("beside a docked rail the sheet is the window less the rail, edge to edge; with no rail beside it, the whole window", () => {
+    expect(sheetSize({ w: 1360, h: 880 }, true, 260)).toEqual({ w: 1100, h: 880 });
+    // The rail hidden, or a drawer over the sheet.
     expect(sheetSize({ w: 1360, h: 880 }, false, 260)).toEqual({ w: 1360, h: 880 });
     expect(windowLayout({ ...base, win: { w: 720, h: 480 } }).sheet).toEqual({ w: 720, h: 480 });
     expect(windowLayout({ ...base, rail: false }).sheet).toEqual({ w: 1360, h: 880 });
 });
 
-test("the model's inset is the one shell.css draws: 8px beside the rail, none without it", () => {
+test("the model's inset is the one shell.css draws: none, the window being one pane", () => {
     const shell = readFileSync(join(import.meta.dir, "../gui/src/styles/shell.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-    expect(shell).toMatch(/\.app \{\s*--win-pad: 8px;/);
-    expect(shell).toMatch(/\.app\.rail-off,\s*\.app\[data-rail="overlay"\] \{\s*--win-pad: 0px;/);
+    expect(shell).toMatch(/\.app \{\s*--win-pad: 0px;/);
+    expect(shell.match(/--win-pad:/g)).toHaveLength(1);
+    expect(WINDOW_PAD).toBe(0);
 });
 
 test("the inspector docks while the conversation keeps 480px, else floats", () => {
     expect(inspectorMode(840, 360)).toBe("dock");
     expect(inspectorMode(839, 360)).toBe("float");
-    // 1024 wide with the rail: 756px of sheet, so a 360px panel floats.
+    // 1024 wide with the rail: 764px of sheet, so a 360px panel floats.
     expect(windowLayout({ ...base, win: { w: 1024, h: 700 }, panel: true }).inspector.mode).toBe("float");
     expect(windowLayout({ ...base, panel: true }).inspector).toMatchObject({ open: true, mode: "dock", width: 360 });
     // Hiding the rail can give it room to dock.
-    expect(windowLayout({ ...base, win: { w: 1100, h: 700 }, panel: true }).inspector.mode).toBe("float");
-    expect(windowLayout({ ...base, win: { w: 1100, h: 700 }, panel: true, rail: false }).inspector.mode).toBe("dock");
+    expect(windowLayout({ ...base, win: { w: 1090, h: 700 }, panel: true }).inspector.mode).toBe("float");
+    expect(windowLayout({ ...base, win: { w: 1090, h: 700 }, panel: true, rail: false }).inspector.mode).toBe("dock");
 });
 
 test("the diff reader widens the inspector: 55% of the sheet up to 860px, 68% up to 1120px side by side", () => {
@@ -64,12 +65,12 @@ test("the diff reader widens the inspector: 55% of the sheet up to 860px, 68% up
     expect(reviewWidth(900, 1300, false)).toBe(820);
     expect(reviewWidth(1000, 2000, false)).toBe(1000);
     // At 1360×880 the default (720) docks at what's left beside 480px of conversation.
-    expect(windowLayout({ ...base, review: true }).inspector).toMatchObject({ open: true, width: 612, mode: "dock" });
-    expect(windowLayout({ ...base, review: true, reviewBase: 420 }).inspector).toMatchObject({ width: 601, mode: "dock" });
-    // Side by side it needs 743px there, so it can't dock: it fills the sheet.
-    expect(windowLayout({ ...base, review: true, split: true }).inspector).toMatchObject({ width: 743, mode: "fill" });
+    expect(windowLayout({ ...base, review: true }).inspector).toMatchObject({ open: true, width: 620, mode: "dock" });
+    expect(windowLayout({ ...base, review: true, reviewBase: 420 }).inspector).toMatchObject({ width: 605, mode: "dock" });
+    // Side by side it needs 748px there, so it can't dock: it fills the sheet.
+    expect(windowLayout({ ...base, review: true, split: true }).inspector).toMatchObject({ width: 748, mode: "fill" });
     // 1024 wide: 55% of the sheet, too wide to dock.
-    expect(windowLayout({ ...base, win: { w: 1024, h: 700 }, review: true }).inspector).toMatchObject({ width: 416, mode: "fill" });
+    expect(windowLayout({ ...base, win: { w: 1024, h: 700 }, review: true }).inspector).toMatchObject({ width: 420, mode: "fill" });
 });
 
 test("a diff reader that can't dock fills the sheet; the side panel floats", () => {
@@ -82,7 +83,7 @@ test("a diff reader that can't dock fills the sheet; the side panel floats", () 
     expect(windowLayout({ ...mid, review: true }).inspector).toMatchObject({ open: true, mode: "fill", short: false, bottom: 148 });
     expect(windowLayout({ ...mid, panel: true, review: true }).inspector.mode).toBe("fill");
     // It covers the conversation rather than taking a column from it.
-    expect(windowLayout({ ...mid, review: true }).column.w).toBe(756);
+    expect(windowLayout({ ...mid, review: true }).column.w).toBe(764);
     // 720×480 with the terminal: short, so it takes the height down to the terminal's row.
     const small = { ...base, win: { w: 720, h: 480 }, terminalShown: true };
     expect(windowLayout({ ...small, panel: true }).inspector).toMatchObject({ mode: "float", short: true, bottom: 188 });
@@ -125,7 +126,7 @@ test("the inspector's resizer goes from 280px as wide as keeps it docked, so a b
     expect(clampInspectorWidth(500, 600)).toBe(280);
     // A wide one saved on a bigger window narrows with this one, down to 620px; then it's held there (and floats).
     expect(windowLayout({ ...base, win: { w: 1900, h: 880 }, inspectorWidth: 1100, panel: true }).inspector).toMatchObject({ width: 1100, mode: "dock" });
-    expect(windowLayout({ ...base, win: { w: 1500, h: 880 }, inspectorWidth: 1100, panel: true }).inspector).toMatchObject({ width: 752, mode: "dock" });
+    expect(windowLayout({ ...base, win: { w: 1500, h: 880 }, inspectorWidth: 1100, panel: true }).inspector).toMatchObject({ width: 760, mode: "dock" });
     expect(windowLayout({ ...base, inspectorWidth: 2000, panel: true }).inspector.width).toBe(620);
     // Dragged as far as it goes on a sheet of fractional width, it still docks (rounded up, it floated and closed).
     expect(clampInspectorWidth(2000, 1091.5)).toBe(611);
@@ -144,7 +145,7 @@ test("the terminal keeps the conversation 300px and is at least 120px; maximized
     expect(clampTerminalHeight(40, 864)).toBe(120);
     expect(clampTerminalHeight(300, 300)).toBe(120);
     const shown = windowLayout({ ...base, terminalShown: true, terminalMax: true });
-    expect(shown.terminal).toEqual({ shown: true, height: 864, maximized: true, most: 564 });
+    expect(shown.terminal).toEqual({ shown: true, height: 880, maximized: true, most: 580 });
     // Hidden, it takes no row, maximized or not.
     expect(windowLayout({ ...base, terminalMax: true }).terminal).toMatchObject({ height: 0, maximized: false });
 });
@@ -201,9 +202,9 @@ test("a request arriving closes a short floating inspector once, not one opened 
 });
 
 test("an open, floating inspector that now fits docks where it is; any other change leaves it to its column", () => {
-    // 1100 wide: beside the rail the sheet leaves a 360px panel 472px of conversation (it floats); with the rail
-    // hidden, 740px (it docks).
-    const mid = { ...base, win: { w: 1100, h: 750 }, panel: true };
+    // 1090 wide: beside the rail the sheet leaves a 360px panel 470px of conversation (it floats); with the rail
+    // hidden, 730px (it docks).
+    const mid = { ...base, win: { w: 1090, h: 750 }, panel: true };
     const [floating, docked] = [windowLayout(mid), windowLayout({ ...mid, rail: false })];
     expect([floating.inspector.mode, docked.inspector.mode]).toEqual(["float", "dock"]);
     expect(docksInPlace(floating, docked)).toBe(true);

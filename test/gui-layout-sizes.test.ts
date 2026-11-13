@@ -115,7 +115,7 @@ test("what's in the rail fills a track of the rail's own width: the sidebar, and
 
 test("the inspector's content fills a track of the inspector's own width, less the hairline (docked), or its box (floating)", () => {
     expect(decl(".insp", "display")).toBe("grid");
-    expect(decl(".insp", "grid-template-columns")).toBe("calc(var(--insp-w) - 0.5px)");
+    expect(decl(".insp", "grid-template-columns")).toBe("calc(var(--insp-w) - 1px)");
     expect(decl('[data-inspmode="float"] .insp', "grid-template-columns")).toBe("minmax(0, 1fr)");
     // The content sizes itself by nothing else.
     expect(decl(".insp > :not(.insp-resizer)", "width")).toBeUndefined();
@@ -128,11 +128,16 @@ test("the composer dock's measured height reaches the transcript (SessionView, r
     expect({ code: result.exitCode, output: result.stderr.toString() }).toMatchObject({ code: 0 });
 });
 
-test("the transcript's end and the Latest pill have the composer dock's height set on them", () => {
+test("the transcript, its end and the Latest pill have the composer dock's height set on them", () => {
     const transcript = read("components/Transcript.tsx");
     expect(transcript).toMatch(/<div class="transcript-end" style=\{\{ "--dock-h": dock\(\) \}\} \/>/);
-    // The pill and the fade it sits on, each for itself; the pill also has the width a floating panel covers.
+    // The pill, for itself; it also has the width a floating panel covers.
     expect(transcript).toMatch(/<button class="jump glass" style=\{\{ "--dock-h": dock\(\), "--over": floatOver\(\) \}\}/);
-    expect(transcript).toMatch(/<div class="jump-shelf" style=\{\{ "--dock-h": dock\(\) \}\}/);
-    expect(read("components/Agents.tsx")).toMatch(/<div class="transcript-end" style=\{\{ "--dock-h": `\$\{dockH\(\)\}px` \}\} \/>/);
+    // The scroller, which fades the conversation out where the dock starts (stage.css): there is no fade laid over it.
+    expect(transcript).toMatch(/<div class="transcript" ref=\{scroller\} style=\{\{ "--dock-h": dock\(\) \}\}/);
+    expect(transcript).not.toContain("jump-shelf");
+    const agents = read("components/Agents.tsx");
+    expect(agents).toMatch(/<div class="transcript-end" style=\{\{ "--dock-h": `\$\{dockH\(\)\}px` \}\} \/>/);
+    expect(agents).toMatch(/<section class="transcript" aria-label="Sub-agent transcript" style=\{\{ "--dock-h": `\$\{dockH\(\)\}px` \}\}>/);
+    expect(read("styles/stage.css")).toMatch(/\.stage \.transcript \{[^}]*mask-image: linear-gradient\([^;]*var\(--dock-h\)/);
 });

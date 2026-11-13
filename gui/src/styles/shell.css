@@ -1,17 +1,18 @@
 /* ---- Window ----------------------------------------------------------
-   design/glass: the window is glass. The rail sits straight on it; one
-   opaque sheet, inset 8px, holds the work: the conversation | the
-   inspector, and the terminal as a bottom row under both. Controls float
-   over the sheet as small glass pieces.
+   The window is one pane of glass, edge to edge, and everything is laid
+   straight on it: the rail | the conversation | the inspector, with a
+   hairline between them, and the terminal as a bottom row under the last
+   two. Nothing is inset and nothing is opaque: what groups things is a card
+   (base.css), not a surface under them.
 
    Containers other areas build in (lib/layout.ts keeps their sizes):
-     .app      the window. data-rail: docked (beside the sheet) or overlay
+     .app      the window. data-rail: docked (beside the work) or overlay
                (a drawer over it, below 900px), always set; .rail-off while
                the sidebar preference hides a docked rail; data-railopen
                (the drawer), data-insp, data-inspmode (dock|float|fill),
                data-inspshort, data-term, data-tmax, data-settings
      .win-rail the rail column (Sidebar, or SettingsNav in Settings)
-     .sheet    the sheet's grid
+     .sheet    the grid of the work: conversation | inspector over terminal
      .main     the conversation column. data-narrow, data-short: the widths
                and heights it's within (lib/layout.ts, COLUMN_NARROW/SHORT)
      .insp     the inspector column (RightPanel, or ReviewPane)
@@ -58,8 +59,10 @@
     initial-value: 0px;
 }
 
+/* --win-pad: how far the work is inset from the window's edges. Nothing is now; what lines up with the
+   traffic lights (the title bar, the rail's top row) still works it out from this. */
 .app {
-    --win-pad: 8px;
+    --win-pad: 0px;
     position: relative;
     display: flex;
     height: 100%;
@@ -83,26 +86,6 @@
 [data-rail="overlay"] .win {
     grid-template-columns: 0 minmax(0, 1fr);
     padding-left: var(--win-pad);
-}
-
-/* Just the conversation (the rail hidden, or a drawer over it below 900px): no band of the window's glass framing
-   the sheet. The glass is the rail's ground; with no rail beside it, it was only a coloured edge. The sheet meets the
-   window's edges, its corners the window's own on macOS (square where the window is: a browser, other systems).
-   Whatever lines up with the lights from --win-pad (the title bar, the drawer's top line) follows. */
-.app.rail-off,
-.app[data-rail="overlay"] {
-    --win-pad: 0px;
-}
-
-.rail-off .sheet,
-[data-rail="overlay"] .sheet {
-    border-radius: 0;
-    box-shadow: none;
-}
-
-.app.tauri.os-macos.rail-off .sheet,
-.app.tauri.os-macos[data-rail="overlay"] .sheet {
-    border-radius: var(--r-window);
 }
 
 /* The window moves by its edges: this lies under the rail and the sheet, so
@@ -136,6 +119,20 @@
     min-width: 0;
 }
 
+/* The hairline between the rail and the work. The rail's own, so it goes with it. */
+.win-rail::after {
+    content: "";
+    grid-area: 1 / 1;
+    justify-self: end;
+    width: 1px;
+    background: var(--line);
+    pointer-events: none;
+}
+
+[data-rail="overlay"] .win-rail::after {
+    display: none;
+}
+
 .win-rail > .keep > * {
     flex: 1;
     min-width: 0;
@@ -156,6 +153,13 @@
    "Latest" pill at 25) paints over the settings page (z-index 6) while it's covered. */
 .main > .keep {
     isolation: isolate;
+}
+
+/* The settings page is glass like the rest, so what it covers isn't drawn under it. Opacity, not
+   visibility: it isn't inherited, so nothing inside is restyled (lib/cover.ts), and a layer at 0 isn't drawn. */
+.main > .keep[data-covered],
+.insp[data-covered] {
+    opacity: 0;
 }
 
 /* The rail shows through the settings sections (both are on the window's glass): hidden outright. It's small. */
@@ -179,8 +183,7 @@
     pointer-events: auto;
 }
 
-/* The settings page is opaque: the session needs no restyling under it (lib/cover.ts). Under the
-   reconnecting banners (z-index 7), over the session's own layers. */
+/* Under the reconnecting banners (z-index 7), over the session's own layers. */
 .main > .settings-host {
     z-index: 6;
 }
@@ -252,9 +255,6 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr) var(--insp-col);
     grid-template-rows: minmax(0, 1fr) var(--term-h);
-    background: var(--sheet);
-    border-radius: var(--r-sheet);
-    box-shadow: var(--sheet-shadow);
     overflow: hidden;
     transition: grid-template-columns var(--dur-panel) var(--ease), grid-template-rows var(--dur-panel) var(--ease);
 }
@@ -304,13 +304,12 @@
     grid-column: 2;
     position: relative;
     display: grid;
-    grid-template-columns: calc(var(--insp-w) - 0.5px);
+    grid-template-columns: calc(var(--insp-w) - 1px);
     grid-template-rows: minmax(0, 1fr);
     min-width: 0;
     min-height: 0;
     overflow: hidden;
-    background: var(--insp-bg);
-    border-left: 0.5px solid var(--line);
+    border-left: 1px solid var(--line);
 }
 
 [data-insp="off"][data-inspmode="dock"] .insp {
@@ -333,7 +332,10 @@
     width: min(var(--insp-w), calc(100% - 16 * var(--sp)));
     grid-template-columns: minmax(0, 1fr);
     border-left: 0;
-    border-radius: calc(12 * var(--sp));
+    border-radius: var(--r-card);
+    background: var(--ctl-strong);
+    -webkit-backdrop-filter: blur(30px) saturate(1.6);
+    backdrop-filter: blur(30px) saturate(1.6);
     box-shadow: var(--pop-shadow);
     transform: translateX(calc(100% + 16px));
     transition: transform var(--dur-panel) var(--ease), bottom var(--dur-panel) var(--ease);
@@ -365,8 +367,9 @@
     bottom: var(--insp-bottom);
     grid-template-columns: minmax(0, 1fr);
     border-left: 0;
-    border-radius: calc(12 * var(--sp));
-    box-shadow: var(--pop-shadow);
+    border-radius: var(--r-card);
+    background: var(--card);
+    box-shadow: inset 0 0 0 0.5px var(--card-stroke);
     transition: bottom var(--dur-panel) var(--ease);
     animation: rise var(--dur-panel) var(--ease);
 }

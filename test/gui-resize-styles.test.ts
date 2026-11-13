@@ -33,8 +33,8 @@ test("the composer dock's height doesn't inherit: only the transcript's boxes th
     const at = (selector: string, property: string) => stage.findLast((r) => r.selectors.includes(selector) && r.decls.has(property))?.decls.get(property);
     expect(at("@property --dock-h", "inherits")).toBe("false");
     expect(at("@property --dock-h", "syntax")).toBe('"<length>"');
-    // Set on the boxes that read it (Transcript.tsx, Agents.tsx; "Latest" and the fade it sits on), not passed down from .stage.
+    // Set on the boxes that read it (Transcript.tsx, Agents.tsx: the scroller, which fades out where the dock starts, its end, and "Latest"), not passed down from .stage.
     const users = readdirSync(join(gui, "styles")).flatMap((f) => parseRules(read(`styles/${f}`)).filter((r) => [...r.decls.values()].some((v) => v.includes("var(--dock-h)"))).flatMap((r) => r.selectors));
-    expect(new Set(users)).toEqual(new Set([".transcript-end", ".jump", ".jump-shelf"]));
+    expect(new Set(users)).toEqual(new Set([".transcript-end", ".jump", ".stage .transcript"]));
 });
 

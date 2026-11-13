@@ -272,11 +272,13 @@ test("with no folder Home asks for one, and the strip has no prefixes", () => {
 test("the trust card lists the folder's files and keeps both answers", async () => {
     const h = home({ needsTrust: [".mcp.json", ".claude/settings.json"] });
     const card = byClass(h.tree, "div", "trust")[0]!;
-    expect(card.props.class).toBe("hcard glass trust");
+    expect(card.props.class).toBe("hcard card-surface trust");
     expect(text(byClass(card, "span", "ask-title"))).toBe("Do you trust this folder?");
     expect(elements(card, "code").map(text)).toEqual([".mcp.json", ".claude/settings.json"]);
-    const [skip, trust] = elements(byClass(card, "div", "ask-row"), "button");
-    expect([text(skip), text(trust)]).toEqual(["Open without them", "Trust this folder"]);
+    // The answer that goes ahead first, filled; the way out at the far end.
+    const [trust, skip] = elements(byClass(card, "div", "ask-row"), "button");
+    expect([text(trust), text(skip)]).toEqual(["Trust this folder", "Open without them"]);
+    expect(skip!.props.class).toBe("pbtn quiet");
     expect(trust!.props.class).toBe("pbtn primary");
     await skip!.props.onClick();
     await trust!.props.onClick();
@@ -321,8 +323,8 @@ test("a folder with nothing to protect, not yet trusted, is asked about once: tr
     const card = byClass(h.tree, "div", "trust")[0]!;
     expect(text(byClass(card, "span", "ask-title"))).toBe("Do you trust this folder?");
     expect(text(card)).toContain("Edits are checked for errors only in folders you trust");
-    const [later, trust] = elements(byClass(card, "div", "ask-row"), "button");
-    expect([text(later), text(trust)]).toEqual(["Not now", "Trust this folder"]);
+    const [trust, later] = elements(byClass(card, "div", "ask-row"), "button");
+    expect([text(trust), text(later)]).toEqual(["Trust this folder", "Not now"]);
     await later!.props.onClick();
     await trust!.props.onClick();
     expect(h.trusts).toEqual([["/work/cavvy", false], ["/work/cavvy", true]]);
@@ -410,7 +412,7 @@ function meter(home: boolean, used?: number, sessionId?: string) {
     return { tree, trigger: elements(tree, "button")[0] };
 }
 
-test("on Home the ring gives way to the limit pill, which opens the same card; a session keeps its ring", () => {
+test("Home shows only the limit pill, which opens the same card; a session has its context in words", () => {
     // A new session has no context: below 80% Home shows nothing there.
     expect(meter(true, 60).trigger).toBeUndefined();
     const pill = meter(true, 94);
@@ -422,9 +424,10 @@ test("on Home the ring gives way to the limit pill, which opens the same card; a
     expect(pill.trigger!.props["aria-label"]).toBe("Claude subscription · Default usage: 5-hour 94%");
     expect(pill.trigger!.props["aria-haspopup"]).toBe("dialog");
     expect(elements(pill.tree, "Popover")).toHaveLength(1);
-    // A session's composer: the ring, at any usage.
-    const ring = meter(false, 94, "s1");
-    expect(ring.trigger!.props.class).toStartWith("ctx-btn");
-    expect(elements(ring.trigger, "Ring")).toHaveLength(1);
-    expect(elements(meter(false, 10, "s1").trigger, "Ring")).toHaveLength(1);
+    // A session's composer: the context in words, at any plan usage (no ring, no pill).
+    const words = meter(false, 94, "s1");
+    expect(words.trigger!.props.class).toStartWith("ctx-btn");
+    expect(elements(words.trigger, "Gauge")).toHaveLength(0);
+    expect(text(words.trigger)).toMatch(/context$|^Context$/);
+    expect(text(meter(false, 10, "s1").trigger)).toMatch(/context$|^Context$/);
 });

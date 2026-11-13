@@ -39,7 +39,7 @@ function mount(options: { plan?: number; reached?: boolean; unknown?: boolean; h
         rpc: { call: (...args: any[]) => { calls.push(args); return args[0] === "accounts.list" ? pending.promise : Promise.resolve(); } },
         now: () => timestamp, planLimitKey, limitAlternatives, meterOf, windowLine, contextView, cost, tokens,
         reportError: (error: unknown) => errors.push(error), toast: (message: string) => notices.push(message), setSettingsTab: (tab: string) => { settingsTab = tab; },
-        document: doc, Popover, Ring, Gauge: () => null, renderer: domRenderer,
+        document: doc, Popover, Ring, Gauge: () => null, renderer: domRenderer, sp: (n: number) => n,
     });
     const dispose = renderer.render(() => Meter({ sessionId: options.home ? undefined : "session", provider: "cli" }), root);
     const wire = () => all(root).forEach((n: any) => {
@@ -48,11 +48,15 @@ function mount(options: { plan?: number; reached?: boolean; unknown?: boolean; h
     });
     wire();
     const trigger = () => all(root).find(n => n.props["aria-haspopup"] === "dialog")!;
-    const button = (label: string) => all(root).find(n => n.tag === "button" && text(n) === label)!;
+    // A row of the card by its word (Usage has the session's figures after it).
+    const button = (label: string) => all(root).find(n => n.tag === "button" && text(n).startsWith(label))!;
     const show = () => { setOpen(true); wire(); };
     const escape = () => listeners.get("keydown")!({ key: "Escape", stopPropagation() {} });
-    const stroke = () => all(root).filter(n => n.tag === "circle")[1]!.props;
-    return { root, calls, errors, notices, pending, setCatalog, setState, state, setLimits, trigger, button, show, open, setOpen, escape, stroke, wire, doc, dispose, settingsTab: () => settingsTab };
+    /** How the words under the composer are toned: normal, warning or danger. */
+    const tone = () => /\btone-(\w+)/.exec(trigger().props.class)?.[1];
+    /** How far the card's bar is filled. */
+    const filled = () => all(root).find(n => n.tag === "i" && n.parent?.props.class?.startsWith("cx-bar"))?.props.style.width;
+    return { root, calls, errors, notices, pending, setCatalog, setState, state, setLimits, trigger, button, show, open, setOpen, escape, tone, filled, wire, doc, dispose, settingsTab: () => settingsTab };
 }
 
 test("API context-only control, compaction, spend, busy state, and usage navigation", () => {
@@ -60,12 +64,15 @@ test("API context-only control, compaction, spend, busy state, and usage navigat
     try {
         expect(all(m.root).filter(n => n.tag === "button")).toHaveLength(1);
         expect(m.trigger().props["aria-label"]).toBe("Context: 25% used");
-        // The ring has its percentage inside.
-        expect(text(m.trigger())).toBe("25");
+        // In words, under the composer.
+        expect(text(m.trigger())).toBe("25% context");
         m.show();
-        expect(text(m.root)).toContain("Context25%50k of 200k");
+        // The card grows out of the words: what to do on top, then what the context holds beside the words themselves.
+        expect(text(m.root)).toContain("Compact now50k of 200k25% context");
         expect(text(m.root)).not.toContain("Limit reached");
-        expect(text(m.root)).toContain("1.0k in, 200 out, $1.25");
+        // The card is the context alone: what the session has used is Settings → Usage's.
+        expect(text(m.root)).not.toContain(" in, ");
+        expect(all(m.root).filter(n => n.tag === "button" && text(n).startsWith("Usage"))).toHaveLength(0);
         // Unavailable, not disabled, while a reply runs: its tooltip still says why, and a click does nothing.
         m.setState({ ...m.state(), busy: true });
         expect(m.button("Compact now").props["aria-disabled"]).toBe(true);
@@ -79,16 +86,14 @@ test("API context-only control, compaction, spend, busy state, and usage navigat
         m.button("Compact now").props.onClick();
         expect(m.calls).toEqual([["session.compact", { id: "session" }]]);
         expect(m.open()).toBe(false);
-        m.show(); m.button("Usage").props.onClick();
-        expect(m.settingsTab()).toBe("usage");
     } finally { m.dispose(); }
 });
 
-test("plan usage short of a limit leaves the ring to the context (the rail's footer shows it)", () => {
+test("plan usage short of a limit leaves the words to the context (the rail's footer shows it)", () => {
     for (const plan of [85, 95]) {
         const m = mount({ plan });
         try {
-            expect(m.stroke().stroke).toBe("var(--fg-2)");
+            expect(m.tone()).toBe("normal");
             expect(m.trigger().props["aria-label"]).toBe("Context: 25% used");
             m.show();
             expect(text(m.root)).not.toContain("5-hour");
@@ -96,28 +101,28 @@ test("plan usage short of a limit leaves the ring to the context (the rail's foo
     }
 });
 
-test("the ring is the context; its tone follows the context alone", () => {
+test("the words are the context; their tone follows the context alone", () => {
     const m = mount({ plan: 80 });
     try {
         expect(all(m.root).filter(n => n.tag === "button")).toHaveLength(1);
-        expect(m.stroke().stroke).toBe("var(--fg-2)");
+        expect(m.tone()).toBe("normal");
         m.show();
         expect(all(m.root).filter(n => n.tag === "h3").map(text)).toEqual(["Context"]);
         m.setState({ ...m.state(), contextTokens: 150000 });
-        expect(m.stroke().stroke).toBe("var(--warn)");
+        expect(m.tone()).toBe("warning");
         m.setState({ ...m.state(), contextTokens: 180000 });
-        expect(m.stroke().stroke).toBe("var(--danger)");
-        const circumference = 2 * Math.PI * (26 - 2.5) / 2;
-        expect(m.stroke()["stroke-dasharray"]).toBe(`${circumference * 0.9} ${circumference}`);
+        expect(m.tone()).toBe("danger");
+        expect(text(m.trigger())).toBe("90% context");
+        expect(m.filled()).toBe("90%");
     } finally { m.dispose(); }
 });
 
 for (const reached of [false, true]) test(`unknown size stays empty${reached ? ", red once a limit is reached" : " and neutral"}; shared /context signal opens the same card`, () => {
     const m = mount({ unknown: true, reached, plan: reached ? 100 : undefined });
     try {
-        expect(m.stroke().stroke).toBe(reached ? "var(--danger)" : "var(--fg-2)");
-        expect(m.stroke()["stroke-dasharray"]).toStartWith("0 ");
-        expect(text(m.trigger())).toBe("");
+        expect(m.tone()).toBe(reached ? "danger" : "normal");
+        // No share to say yet: the word alone.
+        expect(text(m.trigger())).toBe("Context");
         expect(m.trigger().props["aria-label"]).toContain("size not known yet");
         if (reached) expect(m.trigger().props["aria-label"]).toContain("Pro · Default usage:");
         m.show();
@@ -244,7 +249,7 @@ test("context is measured to where it compacts, and the numbers say where that c
         const numbers = () => all(m.root).find(n => n.tag === "span" && n.props.title !== undefined && text(n).includes(" of "))!;
         expect(numbers().props.title).toBe("CLI decides when to compact. The model holds up to 200k.");
         m.setState({ ...m.state(), compactAt: 100_000 });
-        expect(text(m.root)).toContain("Context50%50k of 100k");
+        expect(text(m.root)).toContain("50k of 100k50% context");
         expect(m.trigger().props["aria-label"]).toBe("Context: 50% used");
         expect(numbers().props.title).toBe("CLI compacts at 100k, your auto-compact setting. The model holds up to 200k.");
         // A setting past the model's window: the window wins.

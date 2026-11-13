@@ -1,4 +1,4 @@
-/* ---- Terminal: the sheet's bottom row, under the conversation and the inspector ---- */
+/* ---- Terminal: the bottom row, under the conversation and the inspector: a darker pane of the same glass ---- */
 
 .terminal-panel {
     grid-row: 2;
@@ -7,7 +7,7 @@
     flex-direction: column;
     min-height: 0;
     background: var(--term-bg);
-    border-top: 0.5px solid var(--line);
+    border-top: 1px solid var(--line);
     overflow: hidden;
 }
 
@@ -114,9 +114,8 @@
 }
 
 .terminal-tab.on {
-    background: var(--sheet);
+    background: var(--press);
     color: var(--fg);
-    box-shadow: 0 0 0 0.5px var(--line);
 }
 
 .terminal-tab > button[role="tab"] {
@@ -176,9 +175,9 @@
     height: 100%;
 }
 
-/* xterm paints its viewport black under the last row; it's the panel's own colour here. */
+/* xterm paints its viewport black under the last row; here it has no ground, like its rows (TerminalPanel.tsx). */
 .terminal-emulator .xterm .xterm-viewport {
-    background-color: var(--term-bg);
+    background-color: transparent !important;
 }
 
 .terminal-message {

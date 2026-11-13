@@ -1,11 +1,12 @@
-// The session rail, straight on the window glass. Sessions still in play are
-// two-line rows: how it's doing, what it's about, when; then its branch (and
-// project, when the list isn't grouped by project). Ones you've settled fold
-// into a one-line list at the bottom; sending to one brings it back. The ones
-// waiting on you are pinned above them all, under Needs you, until answered.
+// The session rail, straight on the window glass. Every session is one line:
+// a dot that says how it's doing, what it's about, and when it last moved.
+// Where it is (project, branch) is in its tooltip, and in the title bar once
+// it's open. Ones you've settled fold into a list at the bottom, without a
+// dot; sending to one brings it back. The ones waiting on you are pinned above
+// them all, under Needs you, with what they ask, until answered.
 
-import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack } from "solid-js";
-import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronsUpDown, ChevronUp, CircleAlert, Download, Folder, FolderPlus, Hand, Layers, ListFilter, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
+import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
+import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronsUpDown, ChevronUp, Download, FolderPlus, Layers, ListFilter, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
 import { activate, app, handleFor, isUnread, refreshSessions, reportError } from "../state/app";
 import { createUpdateAction } from "./UpdateAction";
@@ -202,36 +203,42 @@ function rowLabel(s: SessionSummary, unread: boolean, picked = false): string {
 }
 
 /**
- * The right end of a row, the one place it says how it's doing: a check while it's picked, an amber dot while it
- * needs you, a ring while it works, a mark when it stopped on an error; else when it last moved (a dot when unread).
+ * The start of a row, the one place it says how it's doing: a check while it's picked, an amber dot while it needs
+ * you, a ring while it works, a red dot when it stopped on an error, a solid dot when it finished unread, a pin when
+ * pinned. Otherwise a faint dot while it's in play, and nothing once it's settled (`quiet`): the titles still start
+ * at one edge.
  */
-function RowEnd(p: { s: SessionSummary; unread: boolean; picked?: boolean }) {
+function RowLead(p: { s: SessionSummary; unread: boolean; picked?: boolean; quiet?: boolean }) {
     const word = () => sessionStatus(p.s, now())?.text;
     return (
-        <Switch
-            fallback={
-                <>
-                    <Show when={p.unread}>
-                        <span class="unread-dot" />
-                    </Show>
-                    <span class="when">{(now(), since(p.s.updatedAt))}</span>
-                </>
-            }
-        >
-            <Match when={p.picked}>
-                <span class="st pick" aria-hidden="true"><Check size={12} stroke-width={3} /></span>
-            </Match>
-            <Match when={p.s.status === "waiting"}>
-                <span class="wait-dot" title={word()} />
-            </Match>
-            <Match when={p.s.status === "running"}>
-                <span class="spin-ring" title={word()} />
-            </Match>
-            <Match when={p.s.status === "error"}>
-                <span class="st error" title={word()}><CircleAlert size={14} /></span>
-            </Match>
-        </Switch>
+        <span class="lead" aria-hidden="true">
+            <Switch fallback={<Show when={!p.quiet}><span class="idle-dot" /></Show>}>
+                <Match when={p.picked}>
+                    <span class="st pick"><Check size={10} stroke-width={3.4} /></span>
+                </Match>
+                <Match when={p.s.status === "waiting"}>
+                    <span class="wait-dot" title={word()} />
+                </Match>
+                <Match when={p.s.status === "running"}>
+                    <span class="spin-ring" title={word()} />
+                </Match>
+                <Match when={p.s.status === "error"}>
+                    <span class="err-dot" title={word()} />
+                </Match>
+                <Match when={p.unread}>
+                    <span class="unread-dot" />
+                </Match>
+                <Match when={p.s.pinned}>
+                    <Pin size={11} class="lead-pin" />
+                </Match>
+            </Switch>
+        </span>
     );
+}
+
+/** The end of a row: when it last moved ("2m", "1h", "3d"). */
+function RowEnd(p: { s: SessionSummary }) {
+    return <span class="when">{(now(), since(p.s.updatedAt))}</span>;
 }
 
 /** A plan's mark inside a ring, filled as far as its fullest window: all the way at a limit, not at all before a report. */
@@ -386,8 +393,9 @@ function NeedsRow(p: { s: SessionSummary; hold: (id: string, held: boolean) => v
     return (
         <div ref={el} data-needs-id={p.s.id} class={`needs-row card ${waiting() ? "waiting" : ""} ${current() ? "cur" : ""} ${menu() ? "menu-open" : ""} ${r.editing() ? "renaming" : ""}`} onContextMenu={contextMenu} onKeyDown={contextKey}>
             <button class="card-hit needs-hit" onClick={() => p.pick.open(p.s.id)} aria-current={current() ? "page" : undefined} aria-label={`${title()}, ${needsRowLine(p.s)}`} title={`${p.s.title}: ${needsRowLine(p.s)}`}>
+                <RowLead s={p.s} unread={unread()} />
                 <span class="t"><Show when={!r.editing()}>{title()}</Show></span>
-                <span class="end"><RowEnd s={p.s} unread={unread()} /></span>
+                <span class="end"><RowEnd s={p.s} /></span>
                 <span class="m"><span class="truncate">{needsRowLine(p.s)}</span></span>
             </button>
             <Show when={r.editing()}>
@@ -398,7 +406,7 @@ function NeedsRow(p: { s: SessionSummary; hold: (id: string, held: boolean) => v
     );
 }
 
-function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) => void; grouped: boolean; pick: RailPick }) {
+function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) => void; pick: RailPick }) {
     const r = useRename(() => p.s);
     const { menu, setMenu, contextMenu, contextKey, toggleMenu, returnFocus } = useRowMenu(() => more);
     const id = p.s.id;
@@ -409,11 +417,10 @@ function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) =
     const current = () => app.activeId === p.s.id;
     const unread = () => isUnread(p.s) && !current();
     const waiting = () => p.s.status === "waiting";
-    const provider = () => modelOf(p.s)?.split(":")[0];
     // Working in the background: it's fine, it can recede.
     const recede = () => p.s.status === "running" && !current();
-    // Grouped by project, the heading names it; listed by date, the row does.
-    const where = () => [p.grouped ? undefined : p.s.projectName, usualBranch(branchOf(p.s)) ? undefined : branchOf(p.s)].filter(Boolean).join(" · ") || p.s.projectName;
+    // Where it is, for the tooltip: its project, and its branch when it isn't the usual one.
+    const where = () => [p.s.projectName, usualBranch(branchOf(p.s)) ? undefined : branchOf(p.s)].filter(Boolean).join(" · ");
     const picked = () => p.pick.picked(p.s.id);
     return (
         <div
@@ -422,26 +429,14 @@ function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) =
             class={`card ${current() ? "cur" : ""} ${picked() ? "picked" : ""} ${recede() ? "rec" : ""} ${unread() ? "unread" : ""} ${waiting() ? "waiting" : ""} ${menu() ? "menu-open" : ""} ${r.editing() ? "renaming" : ""}`}
             onContextMenu={contextMenu} onKeyDown={contextKey}
         >
-            <button class="card-hit" onClick={(e) => p.pick.click(e, p.s.id)} onDblClick={(e) => !e.shiftKey && !e.metaKey && !e.ctrlKey && r.setEditing(true)} aria-current={current() ? "page" : undefined} aria-label={rowLabel(p.s, unread(), picked())} title={`${p.s.title}\n${p.s.cwd}`}>
+            <button class="card-hit" onClick={(e) => p.pick.click(e, p.s.id)} onDblClick={(e) => !e.shiftKey && !e.metaKey && !e.ctrlKey && r.setEditing(true)} aria-current={current() ? "page" : undefined} aria-label={rowLabel(p.s, unread(), picked())} title={`${p.s.title}\n${p.s.cwd}\n${where()}`}>
+                <RowLead s={p.s} unread={unread()} picked={picked()} />
                 <span class="t">
                     {/* A run's sessions all start from one prompt (the group's label): each says which model it is. */}
                     <Show when={!r.editing()}>{p.s.run ? p.s.run.modelName : p.s.title}</Show>
                 </span>
                 <span class="end">
-                    <RowEnd s={p.s} unread={unread()} picked={picked()} />
-                </span>
-                <span class="m">
-                    <Show when={p.s.pinned}>
-                        <Pin size={11} class="card-pin" />
-                    </Show>
-                    <span class="truncate">{where()}</span>
-                    <Show when={provider()}>
-                        {(id) => (
-                            <span class="card-model" title={modelOf(p.s)}>
-                                <ProviderIcon id={id()} name={app.models.find((g) => g.provider === id())?.providerName} size={12} />
-                            </span>
-                        )}
-                    </Show>
+                    <RowEnd s={p.s} />
                 </span>
             </button>
             <span class="sess-acts">
@@ -489,14 +484,12 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
                     aria-label={rowLabel(p.s, unread(), picked())}
                     title={`${p.s.title}\n${p.s.cwd}\nUpdated ${(now(), ago(p.s.updatedAt))}`}
                 >
+                    <RowLead s={p.s} unread={unread()} picked={picked()} quiet />
                     <span class="truncate">{p.s.run ? `${p.s.run.modelName} · ${p.s.title}` : p.s.title}</span>
-                    <Show when={p.s.pinned}>
-                        <Pin size={11} class="slim-pin" />
-                    </Show>
                 </button>
                 <span class="slim-end">
                     <span class="t">
-                        <RowEnd s={p.s} unread={unread()} picked={picked()} />
+                        <RowEnd s={p.s} />
                     </span>
                     <span class="slim-acts">
                         <button class="hb sm" title={p.s.pinned ? "Unpin" : "Pin"} aria-label={p.s.pinned ? "Unpin" : "Pin"} onClick={() => void pin(p.s.id, !p.s.pinned)}>
@@ -523,7 +516,7 @@ function SessionRow(p: { s: SessionSummary; hold: (id: string, held: boolean) =>
 function SelectionBar(p: { count: number; plan: BulkPlan; act: (what: "settle" | "archive" | "delete") => void; clear: () => void; onKeyDown: (e: KeyboardEvent) => void }) {
     const n = () => sessionCount(p.count);
     return (
-        <div class="rail-sel glass" role="toolbar" aria-label={`${n()} selected`} onKeyDown={p.onKeyDown}>
+        <div class="rail-sel card-surface" role="toolbar" aria-label={`${n()} selected`} onKeyDown={p.onKeyDown}>
             <span class="rail-sel-n">{p.count} selected</span>
             <Show when={p.plan.settle.length}>
                 <button class="hb" title={withShortcut(`Settle ${sessionCount(p.plan.settle.length)}`, "sidebar:settleSelected")} aria-label={`Settle ${sessionCount(p.plan.settle.length)}`} onClick={() => p.act("settle")}>
@@ -557,26 +550,26 @@ function SelectionBar(p: { count: number; plan: BulkPlan; act: (what: "settle" |
 }
 
 /**
- * The top line, level with the traffic lights (macOS): the app's mark just right
- * of them, then hide the rail and start a session, at the rail's far end. Shared
- * with the Settings rail. The mark is the rail's: hidden with it, it goes too.
+ * The top line, level with the traffic lights (macOS): the app's mark where there are none, and at the rail's far
+ * end its few tools (`tools`: open a project, how the list is shown) and the button that hides it. Shared with the
+ * Settings rail.
  */
-export function SidebarTop() {
+export function SidebarTop(p: { tools?: JSX.Element }) {
     return (
         <div class="side-top">
-            <Logo size={20} variant="brand" />
+            <Show when={!(isDesktop && os === "macos")}>
+                <Logo size={20} variant="brand" />
+            </Show>
             <span class="grow" />
+            {p.tools}
             <button class="hb" title={withShortcut("Hide sidebar", "app:toggleSidebar")} aria-label="Hide sidebar" onClick={toggleSidebar}>
                 <PanelLeft size={16} />
-            </button>
-            <button class="hb" title={withShortcut("New session", "app:newSession")} aria-label="New session" onClick={() => (setSettingsTab(undefined), newSession(app.homeCwd))}>
-                <SquarePen size={16} />
             </button>
         </div>
     );
 }
 
-export function SidebarFrame(p: { children: any; class?: string }) {
+export function SidebarFrame(p: { children: any; class?: string; tools?: JSX.Element }) {
     const onResize = (e: PointerEvent) => {
         const dragStart = e.clientX;
         const widthStart = prefs.sidebarWidth;
@@ -603,7 +596,7 @@ export function SidebarFrame(p: { children: any; class?: string }) {
     };
     return (
         <aside class={`sidebar ${isDesktop && os === "macos" ? "traffic" : ""} ${p.class ?? ""}`} aria-label="Sessions">
-            <SidebarTop />
+            <SidebarTop tools={p.tools} />
             {p.children}
             <div class="resize-handle" onPointerDown={onResize} onDblClick={() => setPrefs("sidebarWidth", 260)} />
         </aside>
@@ -632,8 +625,6 @@ export function Sidebar() {
     const animations = new Set<Animation>();
     const all = createMemo(() => [...app.sessions, ...app.archived]);
     const sessions = createMemo(() => new Map(all().map((s) => [s.id, s])));
-    // Grouped by project, a row needn't name its project: the heading above it does.
-    const grouped = () => prefs.groupBy === "project" && !showArchived();
     const settledCount = () => app.sessions.filter((s) => s.settled).length;
     // Providers by the sessions that used them, most recent first: the plan used last leads when no session is open.
     const recent = createMemo(() => [...new Set([...app.sessions].sort((a, b) => b.updatedAt - a.updatedAt).map((s) => modelOf(s)?.split(":")[0]).filter((p): p is string => Boolean(p)))]);
@@ -872,62 +863,72 @@ export function Sidebar() {
     };
 
     return (
-        <SidebarFrame>
-            <div class="side-tools">
-                <button class="side-search" title={withShortcut("Search sessions, messages and actions", "app:commandPalette")} onClick={() => setPaletteOpen(true)}>
-                    <Search size={14} />
-                    <span>Search</span>
+        <SidebarFrame
+            tools={
+                <>
+                    <button
+                        class="hb"
+                        title="Open project…"
+                        aria-label="Open project"
+                        onClick={async () => {
+                            const path = await chooseProject();
+                            if (path) void openProject(path);
+                        }}
+                    >
+                        <FolderPlus size={16} />
+                    </button>
+                    <button ref={viewBtn} class={`hb ${viewOpen() ? "on" : ""}`} title="View options" aria-label="View options" aria-haspopup="menu" aria-expanded={viewOpen()} onClick={() => setViewOpen(!viewOpen())}>
+                        <ListFilter size={16} />
+                    </button>
+                    <Menu label="View options" open={viewOpen()} anchor={() => viewBtn} onClose={() => setViewOpen(false)} align="end" width={220}>
+                        <div class="menu-head">Group</div>
+                        <button role="menuitemradio" aria-checked={prefs.groupBy === "date"} class="menu-item compact" onClick={() => (setPrefs("groupBy", "date"), setViewOpen(false))}>
+                            <span class="menu-label">By date</span>
+                            <Show when={prefs.groupBy === "date"}>
+                                <Check size={14} class="menu-check" />
+                            </Show>
+                        </button>
+                        <button role="menuitemradio" aria-checked={prefs.groupBy === "project"} class="menu-item compact" onClick={() => (setPrefs("groupBy", "project"), setViewOpen(false))}>
+                            <span class="menu-label">By project</span>
+                            <Show when={prefs.groupBy === "project"}>
+                                <Check size={14} class="menu-check" />
+                            </Show>
+                        </button>
+                        <Show when={prefs.groupBy === "project" && !showArchived()}>
+                            <div class="menu-sep" />
+                            <Show when={projectsInPlay().some((c) => !prefs.collapsedProjects.includes(c))}>
+                                <button role="menuitem" class="menu-item compact" onClick={() => (setViewOpen(false), setFolded([...new Set([...prefs.collapsedProjects, ...projectsInPlay()])]))}>
+                                    <ChevronsDownUp size={14} /> Collapse all projects
+                                </button>
+                            </Show>
+                            <Show when={prefs.collapsedProjects.length}>
+                                <button role="menuitem" class="menu-item compact" onClick={() => (setViewOpen(false), setFolded([]))}>
+                                    <ChevronsUpDown size={14} /> Expand all projects
+                                </button>
+                            </Show>
+                        </Show>
+                        <div class="menu-sep" />
+                        <button role="menuitem" class="menu-item compact" onClick={() => (setShowArchived(!showArchived()), setViewOpen(false))}>
+                            <Archive size={14} /> {showArchived() ? "Show active sessions" : `Show archived (${app.archived.length})`}
+                        </button>
+                        <button role="menuitem" class="menu-item compact" onClick={() => (setViewOpen(false), setDeletedOpen(true))}>
+                            <Trash2 size={14} /> Recently deleted
+                        </button>
+                    </Menu>
+                </>
+            }
+        >
+            <div class="side-nav">
+                <button class="nav-row" title={withShortcut("New session", "app:newSession")} onClick={() => (setSettingsTab(undefined), newSession(app.homeCwd))}>
+                    <SquarePen size={16} />
+                    <span class="truncate">New session</span>
+                    <Show when={shortcut("app:newSession")}>{(k) => <span class="side-kbd">{keyText(k())}</span>}</Show>
+                </button>
+                <button class="nav-row side-search" title={withShortcut("Search sessions, messages and actions", "app:commandPalette")} onClick={() => setPaletteOpen(true)}>
+                    <Search size={16} />
+                    <span class="truncate">Search</span>
                     <Show when={shortcut("app:commandPalette")}>{(k) => <span class="side-kbd">{keyText(k())}</span>}</Show>
                 </button>
-                <button ref={viewBtn} class={`hb ${viewOpen() ? "on" : ""}`} title="View options" aria-label="View options" aria-haspopup="menu" aria-expanded={viewOpen()} onClick={() => setViewOpen(!viewOpen())}>
-                    <ListFilter size={16} />
-                </button>
-                <button
-                    class="hb"
-                    title="Open project…"
-                    aria-label="Open project"
-                    onClick={async () => {
-                        const path = await chooseProject();
-                        if (path) void openProject(path);
-                    }}
-                >
-                    <FolderPlus size={16} />
-                </button>
-                <Menu label="View options" open={viewOpen()} anchor={() => viewBtn} onClose={() => setViewOpen(false)} align="end" width={220}>
-                    <div class="menu-head">Group</div>
-                    <button role="menuitemradio" aria-checked={prefs.groupBy === "date"} class="menu-item compact" onClick={() => (setPrefs("groupBy", "date"), setViewOpen(false))}>
-                        <span class="menu-label">By date</span>
-                        <Show when={prefs.groupBy === "date"}>
-                            <Check size={14} class="menu-check" />
-                        </Show>
-                    </button>
-                    <button role="menuitemradio" aria-checked={prefs.groupBy === "project"} class="menu-item compact" onClick={() => (setPrefs("groupBy", "project"), setViewOpen(false))}>
-                        <span class="menu-label">By project</span>
-                        <Show when={prefs.groupBy === "project"}>
-                            <Check size={14} class="menu-check" />
-                        </Show>
-                    </button>
-                    <Show when={prefs.groupBy === "project" && !showArchived()}>
-                        <div class="menu-sep" />
-                        <Show when={projectsInPlay().some((c) => !prefs.collapsedProjects.includes(c))}>
-                            <button role="menuitem" class="menu-item compact" onClick={() => (setViewOpen(false), setFolded([...new Set([...prefs.collapsedProjects, ...projectsInPlay()])]))}>
-                                <ChevronsDownUp size={14} /> Collapse all projects
-                            </button>
-                        </Show>
-                        <Show when={prefs.collapsedProjects.length}>
-                            <button role="menuitem" class="menu-item compact" onClick={() => (setViewOpen(false), setFolded([]))}>
-                                <ChevronsUpDown size={14} /> Expand all projects
-                            </button>
-                        </Show>
-                    </Show>
-                    <div class="menu-sep" />
-                    <button role="menuitem" class="menu-item compact" onClick={() => (setShowArchived(!showArchived()), setViewOpen(false))}>
-                        <Archive size={14} /> {showArchived() ? "Show active sessions" : `Show archived (${app.archived.length})`}
-                    </button>
-                    <button role="menuitem" class="menu-item compact" onClick={() => (setViewOpen(false), setDeletedOpen(true))}>
-                        <Trash2 size={14} /> Recently deleted
-                    </button>
-                </Menu>
             </div>
 
             <nav ref={listEl} class="side-list" aria-label="Session list" onKeyDown={onRailKey}
@@ -941,7 +942,7 @@ export function Sidebar() {
                         const group = () => entry() as Extract<SidebarEntry, { kind: "needs" }>;
                         const members = () => group().ids.filter((id) => sessions().has(id));
                         return <div class="needs-g" data-session-row={key} role="group" aria-label={`Needs you: ${sessionCount(members().length)}`}>
-                            <div class="shelf needs-head"><Hand size={14} /><span>Needs you</span><span class="n">{members().length}</span></div>
+                            <div class="shelf needs-head"><span>Needs you</span><span class="n">{members().length}</span></div>
                             <For each={members()}>{(id) => <Show when={sessions().get(id)}>{(s) => <NeedsRow s={s()} hold={hold} pick={pick} />}</Show>}</For>
                         </div>;
                     }
@@ -951,13 +952,13 @@ export function Sidebar() {
                         const run = () => sessions().get(members()[0]!)?.run;
                         return <div class="run-group" data-session-row={key} role="group" aria-label={`${members().length} models: ${run()?.label ?? ""}`}>
                             <div class="run-head" title={run()?.label}>
-                                <Layers size={12} /><span class="truncate">{run()?.label}</span><span class="run-count">{members().length}</span>
+                                <Layers size={13} /><span class="truncate">{run()?.label}</span><span class="run-count">{members().length}</span>
                             </div>
                             <For each={members()}>{(id) => {
                                 const s = () => sessions().get(id)!;
                                 return <Show when={s()}>
                                     <Show when={!group().row} fallback={<SessionRow s={s()} hold={hold} pick={pick} />}>
-                                        <SessionCard s={s()} hold={hold} grouped={grouped()} pick={pick} />
+                                        <SessionCard s={s()} hold={hold} pick={pick} />
                                     </Show>
                                 </Show>;
                             }}</For>
@@ -968,7 +969,7 @@ export function Sidebar() {
                         return <div data-session-row={key}>
                             <Show when={s()}>
                                 <Show when={entry().kind === "card"} fallback={<SessionRow s={s()} hold={hold} pick={pick} />}>
-                                    <SessionCard s={s()} hold={hold} grouped={grouped()} pick={pick} />
+                                    <SessionCard s={s()} hold={hold} pick={pick} />
                                 </Show>
                             </Show>
                         </div>;
@@ -980,7 +981,7 @@ export function Sidebar() {
                         const needsYou = () => !open() && (group().ids ?? []).some((id) => sessions().get(id)?.status === "waiting");
                         return <div class={`shelf project-head ${open() ? "" : "folded"}`}>
                             <button class="shelf-toggle" aria-expanded={open()} title={group().cwd} onClick={() => toggleFold(group().cwd)}>
-                                <Folder size={14} /><span class="truncate">{group().name}</span>
+                                <span class="truncate">{group().name}</span>
                                 <Show when={needsYou()}><span class="wait-dot" title="A session here needs you" /></Show>
                                 <span class="n">{counts().get(key)}</span>
                                 <ChevronUp size={14} class={`settled-chev ${open() ? "" : "closed"}`} />
@@ -990,11 +991,11 @@ export function Sidebar() {
                     }
                     if (kind === "day") return <div class="day-head">{(entry() as Extract<SidebarEntry, { kind: "day" }>).label}</div>;
                     if (kind === "settled") return <button class="shelf settled-head" aria-expanded={prefs.settledOpen} onClick={() => { allowLayout(); setPrefs("settledOpen", !prefs.settledOpen); }}>
-                        <CheckCheck size={14} /><span>Settled</span><span class="n">{settledCount()}</span><ChevronUp size={14} class={`settled-chev ${prefs.settledOpen ? "" : "closed"}`} />
+                        <span>Settled</span><span class="n">{settledCount()}</span><ChevronUp size={14} class={`settled-chev ${prefs.settledOpen ? "" : "closed"}`} />
                     </button>;
-                    if (kind === "archived") return <div class="shelf"><Archive size={14} /><span>Archived</span><span class="n">{app.archived.length}</span><button class="shelf-btn" onClick={() => { allowLayout(); setShowArchived(false); }}>Done</button></div>;
+                    if (kind === "archived") return <div class="shelf"><span>Archived</span><span class="n">{app.archived.length}</span><button class="shelf-btn" onClick={() => { allowLayout(); setShowArchived(false); }}>Done</button></div>;
                     const more = () => entry() as Extract<SidebarEntry, { kind: "more" }>;
-                    return <button class="slim more" onClick={() => showMore(more().page)}><Plus size={14} /><span>Show {Math.min(PAGE, more().remaining)} more</span></button>;
+                    return <button class="slim more" onClick={() => showMore(more().page)}><span class="lead" aria-hidden="true" /><span>Show {Math.min(PAGE, more().remaining)} more</span></button>;
                 }}</For>
                 <Show when={app.sessionsError || !all().length || (showArchived() && !sidebarIds(layout()).length)}>
                     <div class="side-empty">

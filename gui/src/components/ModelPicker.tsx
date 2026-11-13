@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, Show } from "solid-js";
-import { Check, ChevronDown, CircleAlert, Layers, Plus, RefreshCw, Search, Settings2, Star, Zap } from "lucide-solid";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Layers, Plus, RefreshCw, Search, Settings2, Star, Zap } from "lucide-solid";
 import { planLimitKey, type AccountInfo, type EffortLevel, type ModelSummary } from "@shared/protocol";
 import { app, handleFor, refreshModels, toast } from "../state/app";
 import { setEffort, setModel, setFastMode, setAccount } from "../state/actions";
@@ -83,8 +83,22 @@ const MAX_COMPARE = 4;
 const COMPARE_ON = "Each model gets a new worktree. Uncommitted changes aren't carried over.";
 const COMPARE_OFF = "Send one prompt to 2–4 models, each in a worktree of its own";
 
-export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentRef?: string; compare?: CompareOption }) {
+const FAST_TIP = "Faster replies from the same model, at higher usage or cost.";
+const FAST_BUSY = "Change speed after this response finishes";
+
+/**
+ * The model, and how hard it thinks, in one control: "Opus 5.5 xhigh". Its popover opens on what's changed most:
+ * the effort, as a slider, under the model's name (with fast mode's bolt beside it, where the model has it). The
+ * name opens the models in the popover's place: search, one provider's list or the favourites, a subscription's
+ * account. A model with neither effort nor fast mode opens straight on the models. `effort`, `fast`: the session's,
+ * or the next one's. `busy`: a reply is under way, when speed can't change.
+ */
+export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentRef?: string; compare?: CompareOption; effort?: EffortLevel; fast?: boolean; busy?: boolean }) {
     let anchor: HTMLButtonElement | undefined;
+    let sliderEl: HTMLDivElement | undefined;
+    let modelRow: HTMLButtonElement | undefined;
+    /** What the popover shows: the effort of the model in use, or the models. */
+    const [view, setView] = createSignal<"effort" | "models">("models");
     let input: HTMLInputElement | undefined;
     let list: HTMLDivElement | undefined;
     let filtersEl: HTMLDivElement | undefined;
@@ -110,6 +124,44 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     const showAccounts = (provider = currentProvider()) => !!accountInfo(provider) && (accountChoices(provider).length > 1 || missingAccount(provider));
     const accountName = (provider = currentProvider()) => accountChoices(provider).find((a) => a.id === selectedAccount(provider))?.name ?? "Removed account";
 
+    // ---- Effort and speed, of the model in use ----
+    const reasoning = () => takesEffort(currentModel());
+    const fastOk = () => Boolean(currentModel()?.supportsFastMode);
+    const fastOn = () => fastOk() && Boolean(p.fast);
+    const levels = () => effortLevels(currentModel());
+    // Shown at once while the server takes it, so stepping through the levels doesn't lag behind the keys.
+    const [effort, setShownEffort] = createSignal(p.effort);
+    createEffect(on(() => p.effort, (e) => setShownEffort(() => e)));
+    let effortPicks = 0;
+    const pickEffort = (id: EffortLevel) => {
+        if (id === effort()) return;
+        setShownEffort(() => id);
+        const n = ++effortPicks;
+        // Refused (disconnected, say): back to the level in force, so picking it again sends again.
+        void setEffort(id).then((ok) => {
+            if (!ok && n === effortPicks) setShownEffort(() => p.effort);
+        });
+    };
+    /** There's something to set besides the model itself: the popover opens on that. */
+    const hasEffortView = () => (reasoning() || fastOk()) && !multi();
+    /** To the models, in the popover's place; `seed`: what was typed to get there, into the search. */
+    const toModels = (seed = "") => {
+        setView("models");
+        setQ(seed);
+        setSel(seed ? 0 : Math.max(0, rows().findIndex((r) => r.m.ref === currentRef())));
+        requestAnimationFrame(() => {
+            input?.focus();
+            list?.querySelector(".mr.sel")?.scrollIntoView({ block: "nearest" });
+            measureFilters();
+        });
+    };
+    const toEffort = () => {
+        setView("effort");
+        requestAnimationFrame(() => (sliderEl?.isConnected ? sliderEl : modelRow)?.focus());
+    };
+    /** The level on the chip, as it's named everywhere it's set: "xhigh". None chosen: the provider's own, unsaid. */
+    const effortWord = () => (reasoning() ? effortOf(effort())?.id : undefined);
+
     // Providers with something to pick, or an error worth seeing.
     const groups = createMemo(() =>
         app.models
@@ -119,7 +171,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
     const providerName = (id: string) => app.models.find((g) => g.provider === id)?.providerName ?? id;
     // The panel's height (px at text size 14) for every model listed at once, which a search can show: the search
     // box, filters and foot, then a heading and its rows for each provider. Between Popover's least and most.
-    const fit = createMemo(() => Math.max(240, Math.min(380, 128 + groups().reduce((n, g) => n + 32 + Math.max(1, g.models.length) * 35, 0))));
+    const fit = createMemo(() => Math.max(200, Math.min(440, 100 + (p.compare ? 40 : 0) + groups().reduce((n, g) => n + (groups().length > 1 ? 26 : 0) + Math.max(1, g.models.length) * 35, 0))));
     /** The model and whose it is: Claude Code's Opus and the Anthropic API's both read "Opus 5.5" on the chip. */
     const chipName = () => {
         const name = currentModel()?.name ?? currentRef() ?? "Model";
@@ -212,6 +264,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
             (open) => {
                 setAcctOpen(false);
                 if (!open) return;
+                setView(hasEffortView() ? "effort" : "models");
                 setQ("");
                 // Start where the current model lives.
                 const provider = currentProvider();
@@ -252,6 +305,20 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
             return;
         }
         const target = e.target as HTMLElement;
+        if (view() === "effort") {
+            // The slider: ← → step and pick, Home and End jump, 1–n pick one; Enter is done. (The panel takes the keys
+            // before the slider sees them, as it keeps focus inside: it moves it here.)
+            if (target === sliderEl) {
+                if (e.key === "Enter") return void (e.preventDefault(), p.setOpen(false));
+                const i = effortKey(e, levels().findIndex((l) => l.id === effort()), levels().length);
+                if (i !== undefined) return void (e.preventDefault(), pickEffort(levels()[i]!.id));
+            }
+            // ↑ ↓ between the model's row and the slider; → on the row, or typing anywhere, goes to the models.
+            if (e.key === "ArrowUp" || e.key === "ArrowDown") return void (e.preventDefault(), (target === sliderEl ? modelRow : sliderEl ?? modelRow)?.focus());
+            if (e.key === "ArrowRight" && target === modelRow) return void (e.preventDefault(), toModels());
+            if (e.key.length === 1 && e.key !== " " && !/^[1-9]$/.test(e.key) && !e.metaKey && !e.ctrlKey && !e.altKey) return void (e.preventDefault(), toModels(e.key));
+            return;
+        }
         const tab = target.closest<HTMLElement>('[role="tab"]');
         if (tab && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) {
             e.preventDefault();
@@ -428,39 +495,32 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
         );
     };
 
-    /** A list's heading: the provider's mark and name, a note on its list, and its accounts. */
-    const heading = (s: Section, searching: boolean) => {
-        const g = () => groups().find((x) => x.provider === s.provider);
-        return (
-            <div class="mp-h" aria-hidden={searching ? "true" : undefined}>
-                <Show when={s.provider} fallback={<Star size={13} class="mp-h-star" />}>
-                    {(id) => <ProviderIcon id={id()} name={s.name} size={14} />}
-                </Show>
-                <b class="truncate">{s.name}</b>
-                <Show when={!searching && g()?.status === "cached"}>
-                    <span class="mp-note" title="The provider didn't answer; this is the last list it gave">
-                        cached
-                    </span>
-                </Show>
-                <Show when={!searching && g()?.status === "error" && g()!.models.length}>
-                    <span class="mp-note tone-err truncate" title={g()!.error}>
-                        {g()!.error ?? "unavailable"}
-                    </span>
-                </Show>
-                <span class="grow" />
-                <Show when={!searching && s.provider === acctProvider() && s.provider}>{(id) => accounts(id())}</Show>
-            </div>
-        );
-    };
+    /** Searching, each provider's matches under its name: a quiet label. */
+    const heading = (s: Section) => (
+        <div class="mp-h" aria-hidden="true">
+            <span class="truncate">{s.name}</span>
+        </div>
+    );
 
     return (
         <>
             {/* Keep the trigger mounted when Compare changes so Menu can restore focus. */}
-            <button ref={anchor} class={`pick model ${multi() ? "on" : ""} ${p.open ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={multi() ? picks().map((r) => resolve(undefined, r)?.name ?? r).join(", ") || "Pick 2 to 4 models" : withShortcut(showAccounts() ? `${chipName()} · ${accountName()}` : chipName(), "chat:modelPicker")}>
+            <button ref={anchor} class={`pick model ${multi() ? "on" : ""} ${p.open ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={multi() ? picks().map((r) => resolve(undefined, r)?.name ?? r).join(", ") || "Pick 2 to 4 models" : withShortcut([chipName(), showAccounts() ? accountName() : undefined, reasoning() && effortOf(effort()) ? `${effortOf(effort())!.label} effort` : undefined, fastOn() ? "fast mode" : undefined].filter(Boolean).join(" · "), "chat:modelPicker")}>
                 <Show when={multi()} fallback={
                     <>
                         <Show when={currentProvider()}>{(id) => <ProviderIcon id={id()} name={providerName(id())} size={15} />}</Show>
+                        {/* Fast mode: its bolt before the name. */}
+                        <Show when={fastOn()}>
+                            <span class="fz" aria-hidden="true">
+                                <Zap size={13} stroke-width={2} />
+                            </span>
+                        </Show>
                         <span class="truncate">{chipModel()}</span>
+                        {/* How hard it thinks, after its name, a step quieter: "Opus 5.5 xhigh". */}
+                        <Show when={effortWord()}>{(w) => <span class="lbl pick-eff">{w()}<span class="sr-only"> effort</span></span>}</Show>
+                        <Show when={fastOn()}>
+                            <span class="sr-only">, fast mode on</span>
+                        </Show>
                         {/* The icon is hidden from assistive tech, so the provider is named for it here. */}
                         <Show when={currentProvider()}>{(id) => <span class="sr-only">, {providerName(id())}</span>}</Show>
                         <Show when={showAccounts()}><span class="pick-acct truncate"> · {accountName()}</span></Show>
@@ -475,6 +535,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                 label="Choose a model"
                 kind="dialog"
                 initialFocus={() => {
+                    if (view() === "effort") return sliderEl?.isConnected ? sliderEl : modelRow;
                     // The session's account was removed (#410): it opens on that CLI's accounts, to pick another.
                     const provider = currentProvider();
                     if (!provider || acctProvider() !== provider || !missingAccount(provider) || !acctEl) return input;
@@ -482,67 +543,98 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                     return acctEl.querySelector<HTMLElement>(".mp-acct-it") ?? input;
                 }}
                 onKeyDown={onKey}
-                // Escape closes the accounts list first, back to its button.
-                onEscape={() => acctOpen() && (openAccounts(false, true), true)}
+                // Escape closes the accounts list first, back to its button; then the models, back to the effort they were opened from.
+                onEscape={() => (acctOpen() ? (openAccounts(false, true), true) : view() === "models" && hasEffortView() ? (toEffort(), true) : false)}
                 open={p.open}
                 anchor={() => anchor}
                 onClose={() => p.setOpen(false)}
                 placement={p.placement ?? "top"}
-                width={340}
-                maxHeight={380}
-                minHeight={240}
-                class="mp"
+                width={view() === "effort" ? 288 : 340}
+                maxHeight={440}
+                minHeight={view() === "effort" ? 0 : 200}
+                class={`mp ${view() === "effort" ? "mp-effort" : ""}`}
                 exit
             >
+                <Show when={view() === "effort"}>
+                    {/* The model in use and how hard it thinks; its name opens the models. Fast mode's bolt beside it. */}
+                    <div class="mpe">
+                        <div class="mpe-h">
+                            <Show when={fastOk()}>
+                                <button class={`mpe-fast ${fastOn() ? "on" : ""}`} aria-pressed={fastOn()} aria-label="Fast mode" disabled={p.busy} title={p.busy ? FAST_BUSY : FAST_TIP} onClick={() => void setFastMode(!p.fast)}>
+                                    <Zap size={15} stroke-width={2} />
+                                </button>
+                            </Show>
+                            <button ref={modelRow} class="mpe-model" title="Change model" aria-label={`${chipName()}. Change model`} onClick={() => toModels()}>
+                                <span class="mpe-name truncate">{chipModel()}</span>
+                                <Show when={reasoning()}>
+                                    <span class="mpe-eff">{effortOf(effort())?.id ?? "default"}</span>
+                                </Show>
+                                <ChevronRight size={14} class="chev" />
+                            </button>
+                        </div>
+                        <Show when={reasoning()}>
+                            <EffortSlider ref={(el) => (sliderEl = el)} levels={levels()} value={effort()} onChange={pickEffort} />
+                        </Show>
+                    </div>
+                </Show>
+                <Show when={view() === "models"}>
                 {/* A click anywhere else in the picker closes the accounts list. */}
                 <div class="mp-wrap" style={{ "--mp-fit": fit() }} onPointerDown={(e) => acctOpen() && !acctEl?.contains(e.target as Node) && setAcctOpen(false)}>
                     <div class="mp-search">
-                        <Search size={14} />
+                        {/* Back to the effort, where the picker opened on it. */}
+                        <Show when={hasEffortView()} fallback={<Search size={14} />}>
+                            <button class="hb sm mp-back" title="Back" aria-label="Back to effort" onClick={toEffort}>
+                                <ChevronLeft size={15} />
+                            </button>
+                        </Show>
                         <input ref={input} role="combobox" aria-expanded="true" aria-controls={listId} aria-autocomplete="list" aria-activedescendant={rows()[sel()] ? `${listId}-${sel()}` : undefined} value={q()} onInput={(e) => (setQ(e.currentTarget.value), setSel(0))} placeholder="Search models…" aria-label="Search models" spellcheck={false} />
                         <button class="hb sm" title="Refresh model lists" aria-label="Refresh model lists" onClick={() => void refreshModels(true)} disabled={app.modelsLoading}>
                             <Show when={app.modelsLoading} fallback={<RefreshCw size={13} />}>
                                 <Spinner size={13} />
                             </Show>
                         </button>
-                    </div>
-                    {/* Each provider by mark and name, so nothing hides behind a tooltip. A wheel scrolls them sideways. */}
-                    <div
-                        class={`mp-filters ${edges()}`}
-                        ref={filtersEl}
-                        role="tablist"
-                        aria-label="Providers"
-                        onScroll={measureFilters}
-                        onWheel={(e) => {
-                            if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
-                            e.currentTarget.scrollLeft += e.deltaY;
-                            e.preventDefault();
-                        }}
-                    >
-                        <button class={`mp-f ${filter() === FAVORITES && !q() ? "on" : ""}`} role="tab" aria-selected={filter() === FAVORITES} onClick={(e) => (show(FAVORITES), e.detail && input?.focus())}>
-                            <Star size={13} class="mp-f-star" />
-                            <span>Favorites</span>
+                        <button class="hb sm" title="Providers…" aria-label="Set up providers" onClick={() => (p.setOpen(false), setSettingsTab("providers"))}>
+                            <Settings2 size={13} />
                         </button>
-                        <For each={groups()}>
-                            {(g) => (
-                                <button
-                                    class={`mp-f ${filter() === g.provider && !q() ? "on" : ""} ${g.status === "error" ? "err" : ""}`}
-                                    role="tab"
-                                    aria-selected={filter() === g.provider}
-                                    // No mark on the filter (the composer's button already names the model); screen readers still hear it.
-                                    aria-label={g.provider === currentProvider() ? `${g.providerName}, current model` : undefined}
-                                    title={g.status === "error" ? (g.error ?? "Couldn't list this provider's models") : undefined}
-                                    onClick={(e) => (show(g.provider), e.detail && input?.focus())}
-                                >
-                                    <ProviderIcon id={g.provider} name={g.providerName} size={14} />
-                                    <span>{g.providerName}</span>
-                                </button>
-                            )}
-                        </For>
                     </div>
-                    {/* Rebuilt only when the list changes, so the accounts list (and focus in it) survives an update. */}
-                    <Show when={!q() && sections()[0]?.key} keyed>
-                        {(key) => heading({ key, name: key === FAVORITES ? "Favorites" : providerName(key), provider: key === FAVORITES ? undefined : key, rows: [] }, false)}
-                    </Show>
+                    {/* Whose models are listed: the favourites or one provider's, as plain words (a wheel scrolls them sideways).
+                        At the row's end, the listed provider's account, where it's a subscription with accounts. */}
+                    <div class="mp-bar">
+                        <div
+                            class={`mp-filters ${edges()}`}
+                            ref={filtersEl}
+                            role="tablist"
+                            aria-label="Providers"
+                            onScroll={measureFilters}
+                            onWheel={(e) => {
+                                if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+                                e.currentTarget.scrollLeft += e.deltaY;
+                                e.preventDefault();
+                            }}
+                        >
+                            <button class={`mp-f ${filter() === FAVORITES && !q() ? "on" : ""}`} role="tab" aria-selected={filter() === FAVORITES} onClick={(e) => (show(FAVORITES), e.detail && input?.focus())}>
+                                Favorites
+                            </button>
+                            <For each={groups()}>
+                                {(g) => (
+                                    <button
+                                        class={`mp-f ${filter() === g.provider && !q() ? "on" : ""} ${g.status === "error" ? "err" : ""}`}
+                                        role="tab"
+                                        aria-selected={filter() === g.provider}
+                                        aria-label={g.provider === currentProvider() ? `${g.providerName}, current model` : undefined}
+                                        title={g.status === "error" ? (g.error ?? "Couldn't list this provider's models") : g.status === "cached" ? "The provider didn't answer; this is the last list it gave" : undefined}
+                                        onClick={(e) => (show(g.provider), e.detail && input?.focus())}
+                                    >
+                                        {g.providerName}
+                                    </button>
+                                )}
+                            </For>
+                        </div>
+                        {/* Rebuilt only when the list changes, so the accounts list (and focus in it) survives an update. */}
+                        <Show when={acctProvider()} keyed>
+                            {(id) => accounts(id)}
+                        </Show>
+                    </div>
                     <Show when={acctProvider() && missingAccount(acctProvider())}>
                         <div class="mp-acct-note">
                             <CircleAlert size={13} />
@@ -572,7 +664,7 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                                 <For each={sections()}>
                                     {(s) => (
                                         <div class="mp-group" role="group" aria-label={s.name}>
-                                            {heading(s, true)}
+                                            {heading(s)}
                                             <For each={s.rows}>{rowView}</For>
                                         </div>
                                     )}
@@ -583,23 +675,13 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                     <Show when={multi()}>
                         <div class="mp-cmp-note">{COMPARE_ON}</div>
                     </Show>
-                    <div class="mp-foot">
-                        <button
-                            class="mp-link"
-                            onClick={() => {
-                                p.setOpen(false);
-                                setSettingsTab("providers");
-                            }}
-                        >
-                            <Settings2 size={13} /> Providers…
-                        </button>
-                        <Show when={p.compare}>
-                            {(c) => (
-                                // The wrapper carries the reason: a disabled button shows no tooltip of its own.
+                    <Show when={p.compare}>
+                        {(c) => (
+                            <div class="mp-foot">
+                                {/* The wrapper carries the reason: a disabled button shows no tooltip of its own. */}
                                 <span class="mp-cmp-wrap" title={!c().available ? c().why : multi() ? COMPARE_ON : COMPARE_OFF}>
                                     <button class={`mp-cmp ${multi() ? "on" : ""}`} role="switch" aria-checked={multi()} disabled={!c().available} onClick={toggleCompare}>
-                                        <Layers size={13} />
-                                        Compare
+                                        Compare models
                                         <Show when={multi()}>
                                             <span class="mp-cmp-n">{picks().length} picked</span>
                                         </Show>
@@ -609,21 +691,13 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                                         </Show>
                                     </button>
                                 </span>
-                            )}
-                        </Show>
-                    </div>
+                            </div>
+                        )}
+                    </Show>
                 </div>
+                </Show>
             </Menu>
         </>
-    );
-}
-
-/** Effort as a glyph: five bars, filled up to the level (1 low … 5 max; 0 none chosen). */
-export function EffortGlyph(p: { level: number }) {
-    return (
-        <span class="eg" aria-hidden="true">
-            <For each={[1, 2, 3, 4, 5]}>{(i) => <i class={i <= p.level ? "on" : ""} style={{ height: `calc(${2 + i * 2} * var(--sp))` }} />}</For>
-        </span>
     );
 }
 
@@ -702,98 +776,5 @@ export function EffortSlider(p: { levels: Effort[]; value?: EffortLevel; onChang
             </span>
             <span ref={thumb} class="es-thumb" aria-hidden="true" />
         </div>
-    );
-}
-
-const FAST_TIP = "Faster replies from the same model, at higher usage or cost.";
-const FAST_BUSY = "Change speed after this response finishes";
-
-/**
- * Reasoning effort (and fast mode, where the model has it) in one picker: the
- * level glyph, with a filled ⚡ before it while fast mode is on. Its popover
- * names the level, has the "⚡ Fast" pill beside it, and the slider.
- */
-export function EffortPicker(p: ComposerMenu & { current?: ModelSummary; currentRef?: string; effort?: EffortLevel; fast?: boolean; busy?: boolean }) {
-    let anchor: HTMLButtonElement | undefined;
-    let bars: HTMLDivElement | undefined;
-    let fastBtn: HTMLButtonElement | undefined;
-    const model = createMemo(() => resolve(p.current, p.current?.ref ?? p.currentRef));
-    const reasoning = () => takesEffort(model());
-    const fastOk = () => Boolean(model()?.supportsFastMode);
-    const fastOn = () => fastOk() && Boolean(p.fast);
-    const levels = () => effortLevels(model());
-    // Shown at once while the server takes it, so a drag across the bars doesn't lag behind the pointer.
-    const [shown, setShown] = createSignal(p.effort);
-    createEffect(on(() => p.effort, (e) => setShown(() => e)));
-    let picks = 0;
-    const pick = (id: EffortLevel) => {
-        setShown(() => id);
-        const n = ++picks;
-        // Refused (disconnected, say): back to the level the session has, so picking it again sends again.
-        void setEffort(id).then((ok) => {
-            if (!ok && n === picks) setShown(() => p.effort);
-        });
-    };
-    const label = () => (reasoning() ? (effortOf(shown())?.label ?? "Default") : fastOn() ? "Fast" : "Standard");
-    return (
-        <Show when={reasoning() || fastOk()}>
-            <button ref={anchor} class={`pick effort ${p.open ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={p.open} onClick={() => p.setOpen(!p.open)} title={reasoning() ? `Reasoning effort: ${label()}${fastOn() ? ", fast mode on" : ""}` : `Speed: ${label()}`}>
-                <Show when={fastOn()}>
-                    <span class="fz" aria-hidden="true">
-                        <Zap size={13} stroke-width={2} />
-                    </span>
-                </Show>
-                <Show when={reasoning()} fallback={<Show when={!fastOn()}><Zap size={14} /></Show>}>
-                    <EffortGlyph level={effortOf(shown())?.lv ?? 0} />
-                </Show>
-                <span class="lbl">{label()}</span>
-                <Show when={fastOn()}>
-                    <span class="sr-only">, fast mode on</span>
-                </Show>
-                <ChevronDown size={13} class="chev" />
-            </button>
-            <Menu
-                label={reasoning() ? "Reasoning effort" : "Speed"}
-                kind="dialog"
-                open={p.open}
-                anchor={() => anchor}
-                onClose={() => p.setOpen(false)}
-                placement={p.placement ?? "top"}
-                width={264}
-                class="effort-pop"
-                initialFocus={() => (bars?.isConnected ? bars : fastBtn)}
-                onKeyDown={(e) => {
-                    // The panel takes the keys before the bars see them (it keeps focus inside), so it moves them here.
-                    if (!bars?.isConnected || e.target !== bars) return;
-                    if (e.key === "Enter") {
-                        e.preventDefault();
-                        p.setOpen(false);
-                        return;
-                    }
-                    const i = effortKey(e, levels().findIndex((l) => l.id === shown()), levels().length);
-                    if (i === undefined) return;
-                    e.preventDefault();
-                    const l = levels()[i];
-                    if (l && l.id !== shown()) pick(l.id);
-                }}
-            >
-                <div class="ep-h">
-                    <b>{label()}</b>
-                    <Show when={fastOk()}>
-                        <button ref={fastBtn} class={`ep-fast ${fastOn() ? "on" : ""}`} aria-pressed={fastOn()} disabled={p.busy} title={p.busy ? FAST_BUSY : FAST_TIP} onClick={() => void setFastMode(!p.fast)}>
-                            <Zap size={12} stroke-width={2.25} />
-                            Fast
-                        </button>
-                    </Show>
-                </div>
-                <Show when={reasoning()}>
-                    <div class="ep-ends" aria-hidden="true">
-                        <span>Quick</span>
-                        <span>Thorough</span>
-                    </div>
-                    <EffortSlider ref={(e) => (bars = e)} levels={levels()} value={shown()} onChange={pick} />
-                </Show>
-            </Menu>
-        </Show>
     );
 }

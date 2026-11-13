@@ -30,7 +30,7 @@ export function nextMode(m: PermissionModeId, bypass: boolean): PermissionModeId
 
 const BYPASS_OFF = "Turn on “Allow bypass mode” in Settings first.";
 
-/** Grey but Plan, in the accent, and Bypass, in red: the two worth noticing. */
+/** Words alone, on the button and in its menu. Grey but Plan, in the accent, and Bypass, in red: the two worth noticing. */
 export function ModePicker(p: ComposerMenu & { mode: PermissionModeId; bypassAllowed: boolean; /** The model has no reviewer for auto mode. */ autoAsks?: boolean }) {
     let anchor: HTMLButtonElement | undefined;
     const describe = (m: PermissionModeId) => (m === "auto" && p.autoAsks ? AUTO_WITHOUT_REVIEWER : MODE_LABELS[m].description);
@@ -44,8 +44,7 @@ export function ModePicker(p: ComposerMenu & { mode: PermissionModeId; bypassAll
                 onClick={() => p.setOpen(!p.open)}
                 title={`Permission mode: ${MODE_LABELS[p.mode].label} (⇧Tab cycles)`}
             >
-                <ModeIcon mode={p.mode} size={14} />
-                <span class="lbl">{MODE_LABELS[p.mode].label}</span>
+                <span>{MODE_LABELS[p.mode].label}</span>
                 <ChevronDown size={13} class="chev" />
             </button>
             <Menu label="Permission mode" open={p.open} anchor={() => anchor} onClose={() => p.setOpen(false)} placement={p.placement ?? "top"} width={340}>
@@ -69,9 +68,6 @@ export function ModePicker(p: ComposerMenu & { mode: PermissionModeId; bypassAll
                                         void setMode(m);
                                     }}
                                 >
-                                    <span class="menu-ico">
-                                        <ModeIcon mode={m} size={15} />
-                                    </span>
                                     <span class="menu-text">
                                         <span class="menu-label">{MODE_LABELS[m].label}</span>
                                         {/* Off, what turns it on matters more than what it does. */}

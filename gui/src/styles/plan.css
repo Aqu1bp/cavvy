@@ -20,7 +20,7 @@
     margin: 0 calc(14 * var(--sp)) calc(-2 * var(--sp));
 }
 
-.steps-tray.glass {
+.steps-tray {
     position: absolute;
     left: 0;
     right: 0;
@@ -205,7 +205,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .steps-tray.glass {
+    .steps-tray {
         animation: none;
     }
 
@@ -273,15 +273,9 @@
     color: var(--fg-2);
 }
 
-.pc-p::after {
-    content: "";
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    height: calc(36 * var(--sp));
-    background: linear-gradient(transparent, var(--sheet));
-    pointer-events: none;
+/* Its last lines fade out: the card says there's more to read. */
+.pc-p {
+    mask-image: linear-gradient(#000 calc(100% - 36 * var(--sp)), transparent);
 }
 
 .pc-f {

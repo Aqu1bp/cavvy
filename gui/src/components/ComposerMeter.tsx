@@ -1,15 +1,14 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, onCleanup, Show } from "solid-js";
 import { planLimitKey, type AccountInfo, type PlanLimits } from "@shared/protocol";
 import { app, handleFor, reportError, rpc, toast } from "../state/app";
-import { contextCardOpen, setContextCardOpen, setSettingsTab } from "../state/ui";
+import { contextCardOpen, setContextCardOpen } from "../state/ui";
 import { now } from "../lib/clock";
 import { Gauge } from "lucide-solid";
 import { limitAlternatives, meterOf, windowLine, type Meter, type MeterWindow } from "../lib/limits";
 import { contextView } from "../lib/context";
-import { cost, tokens } from "../lib/format";
-import { Ring } from "./ui/bits";
+import { tokens } from "../lib/format";
 import { Popover } from "./ui/Popover";
-
+import { sp } from "../state/prefs";
 /**
  * Home's limit pill: the plan's fullest window once it's at 80% or more, or a limit is reached ("94%",
  * "5-hour"). Below that Home shows nothing there: a new session has no context to put in a ring.
@@ -106,6 +105,19 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
     const reachedWindow = () => meter()?.windows.find((w) => w.reached);
     const busy = () => !state() || Boolean(state()?.busy && !state()?.activity?.idle);
     const near = createMemo(() => (p.home ? nearLimit(meter(), limits(), now()) : undefined));
+    /** In a session the card opens over the words, which stay in it as its last line; Home's pill gets an ordinary card above it. */
+    const over = () => !p.home;
+    const width = () => (meter()?.reached ? 280 : 244);
+    /**
+     * Where the card goes so that its last line's words lie exactly on the ones that opened it: its right and bottom
+     * edges are the words' own, out by its padding (15 across, 7 down: composer.css .ctx-card.over and .cx-info).
+     * Popover puts a card's bottom edge 6px above the point it's given, and its left edge on it.
+     */
+    const point = createMemo(() => {
+        if (!open() || !over() || !btn?.getBoundingClientRect) return undefined;
+        const r = btn.getBoundingClientRect();
+        return { x: r.right + sp(15) - sp(width()), y: r.bottom + sp(7) + 6 };
+    });
     const cancelClose = () => clearTimeout(closeTimer);
     const show = () => { cancelClose(); setOpen(true); };
     const close = () => {
@@ -153,10 +165,9 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
             >
                 <Show
                     when={near()}
-                    fallback={<>
-                        <span class="ctx-ring" aria-hidden="true"><Ring value={urgency()} size={26} stroke={2.5} neutral tone={tone()} /></span>
-                        <span class="ctx-num num" aria-hidden="true">{shownPct()}</span>
-                    </>}
+                    // A small ring and the share beside it, as quiet as the pickers' words: "◔ 25%".
+                    // Under the composer, in words: "4% context".
+                    fallback={<span class="ctx-num num" aria-hidden="true">{shownPct() === undefined ? "Context" : `${shownPct()}% context`}</span>}
                 >
                     {(n) => <>
                         <Gauge size={14} stroke-width={2} aria-hidden="true" />
@@ -165,7 +176,7 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
                     </>}
                 </Show>
             </button>
-            <Popover open={open()} anchor={() => btn} onClose={close} placement="top" align="end" width={280} class="ctx-card">
+            <Popover open={open()} anchor={() => btn} point={point()} onClose={close} placement="top" align="end" width={width()} class={`ctx-card ${over() ? "over" : ""}`}>
                 <div ref={panel} id={panelId} class="cx" role="dialog" aria-label="Context and session" tabIndex={-1}
                     onMouseEnter={cancelClose} onMouseLeave={hide} onFocusIn={cancelClose} onFocusOut={hide}>
                     {/* A reached limit stops this session, so it's the one plan state said here, with the accounts to switch to. */}
@@ -184,33 +195,46 @@ export function ComposerMeter(p: { provider?: string; sessionId?: string; home?:
                             </div>
                         </section>
                     </Show>
-                    <div class="cx-head">
-                        <h3>Context</h3>
-                        <Show when={view().pct !== undefined}><span class={`cx-pct num ${ctxTone()}`}>{Math.round(view().pct! * 100)}%</span></Show>
-                    </div>
-                    <Show when={view().pct !== undefined}>
-                        <div class={`cx-bar ${ctxTone()}`} aria-hidden="true"><i style={{ width: `${Math.max(0, Math.min(100, view().pct! * 100))}%` }} /></div>
-                    </Show>
-                    <div class="cx-line">
-                        <span class="num" title={view().pct !== undefined ? fullWhy() : undefined}>{state() ? view().line : "Send a message to measure it"}{view().pct !== undefined && autoOff() ? ", auto-compact off" : ""}</span>
-                        {/* Unavailable, not disabled: its tooltip still says why, to the pointer and the keyboard. */}
-                        <button class="cx-link" aria-disabled={busy() || undefined} title={!state() ? "Available in a session" : busy() ? "Available when the reply finishes" : "Summarize earlier turns to free up room"} onClick={() => {
+                    {/* In a session the card grows out of the words that opened it: they stay where they are, as its last
+                        line, with what the context holds beside them, the bar over that, and the one thing to do on top.
+                        (What the session has used is Settings → Usage's.) Unavailable, not disabled: Compact now's
+                        tooltip still says why, to the pointer and the keyboard. */}
+                    <Show
+                        when={over()}
+                        fallback={<>
+                            {/* From Home's limit pill: an ordinary card over it, the context first. */}
+                            <div class="cx-info">
+                                <div class="cx-head">
+                                    <h3>Context</h3>
+                                </div>
+                                <div class="cx-note">{state() ? view().line : "Send a message to measure it"}</div>
+                            </div>
+                            <div class="menu-sep" />
+                            <button class="menu-item compact" aria-disabled={busy() || undefined} title={!state() ? "Available in a session" : busy() ? "Available when the reply finishes" : "Summarize earlier turns to free up room"} onClick={() => {
                             if (busy() || !p.sessionId) return;
                             close();
                             void rpc.call("session.compact", { id: p.sessionId }).catch(reportError);
                         }}>Compact now</button>
-                    </div>
-                    <div class="cx-foot">
-                        <span class="num">
-                            <Show when={state()} fallback="No session yet">
-                                {tokens(state()?.tokensIn ?? 0)} in, {tokens(state()?.tokensOut ?? 0)} out
-                                <Show when={(state()?.cost ?? 0) > 0}>
-                                    <span title={state()?.costUnknown ? "Leaves out models with no known price" : undefined}>, {cost(state()?.cost ?? 0, state()?.costUnknown)}</span>
-                                </Show>
+                        </>}
+                    >
+                        <h3 class="sr-only">Context</h3>
+                        <button class="menu-item compact" aria-disabled={busy() || undefined} title={!state() ? "Available in a session" : busy() ? "Available when the reply finishes" : "Summarize earlier turns to free up room"} onClick={() => {
+                            if (busy() || !p.sessionId) return;
+                            close();
+                            void rpc.call("session.compact", { id: p.sessionId }).catch(reportError);
+                        }}>Compact now</button>
+                        <div class="menu-sep" />
+                        <div class="cx-info">
+                            <Show when={view().pct !== undefined}>
+                                <div class={`cx-bar ${ctxTone()}`} aria-hidden="true"><i style={{ width: `${Math.max(0, Math.min(100, view().pct! * 100))}%` }} /></div>
                             </Show>
-                        </span>
-                        <button class="cx-link" onClick={() => { close(); setSettingsTab("usage"); }}>Usage</button>
-                    </div>
+                            <div class="cx-foot">
+                                <span class="cx-of num" title={view().pct !== undefined ? fullWhy() : undefined}>{view().line}{view().pct !== undefined && autoOff() ? ", auto-compact off" : ""}</span>
+                                {/* The words that opened it, where they were: pressing them again closes it. */}
+                                <button class={`cx-words num ${ctxTone()}`} tabIndex={-1} aria-label="Close" onClick={close}>{shownPct() === undefined ? "Context" : `${shownPct()}% context`}</button>
+                            </div>
+                        </div>
+                    </Show>
                 </div>
             </Popover>
         </Show>

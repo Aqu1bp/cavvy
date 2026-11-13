@@ -53,7 +53,7 @@ export function NeedsYou(p: { waiting: SessionSummary[] }) {
         <>
             <button
                 ref={btn}
-                class="needs glass"
+                class="needs"
                 title={needsLine(p.waiting)}
                 aria-label={needsLine(p.waiting)}
                 aria-haspopup={one() ? undefined : "menu"}
@@ -208,7 +208,7 @@ export function Header(p: { handle?: SessionHandle; title?: string }) {
             end={
                 <>
                     <Show when={st()}>{(s) => <RunSwitcher id={s().id} />}</Show>
-                    <div class="cap glass">
+                    <div class="cap">
                         <Show when={p.handle}>{(h) => <ChangesChip handle={h()} />}</Show>
                         <Show when={st()?.cwd}>
                             {(cwd) => (

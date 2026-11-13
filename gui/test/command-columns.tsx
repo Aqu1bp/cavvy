@@ -1,4 +1,4 @@
-// Real-browser layout: a run of command rows in a work log lines up its right-hand parts in columns.
+// Real-browser layout: a run of command rows, opened, lines up its right-hand parts in columns.
 import { render } from "solid-js/web";
 import type { ToolBlock } from "@shared/protocol";
 import { ActivityGroup } from "../src/components/blocks/Activity";
@@ -30,8 +30,11 @@ const rows: ToolBlock[] = [
 export async function checkCommandColumns(target: HTMLElement) {
     const box = target.appendChild(document.createElement("div"));
     box.className = "worklog";
+    // The rows of an opened run, in its card (Activity.tsx WorkRun): the columns are the card's.
+    const card = box.appendChild(document.createElement("div"));
+    card.className = "run-rows";
     const html = document.documentElement.style;
-    const dispose = render(() => rows.map((t) => <ActivityGroup tools={[t]} steps={[t]} card="command" turnRunning={false} flat />), box);
+    const dispose = render(() => rows.map((t) => <ActivityGroup tools={[t]} steps={[t]} card="command" turnRunning={false} flat />), card);
     try {
         for (const scale of [12 / 14, 1, 18 / 14]) {
             for (const width of [720, 460]) {
