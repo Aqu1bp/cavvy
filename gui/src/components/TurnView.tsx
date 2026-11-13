@@ -558,12 +558,20 @@ const END_TEXT: Partial<Record<Turn["status"], string>> = {
  * How a stopped turn's line reads. A command it started can outlast it (Codex leaves one running; any CLI's
  * background command does): then "nothing after this point ran" isn't so, and the line says what is.
  */
+/**
+ * How a command's row ends when its turn ended and it didn't: what the row says first (src/backends/codex-live.ts,
+ * which leaves one running). It stays in the conversation, so it tells later that the turn's command outlived it.
+ */
+const LEFT_RUNNING = "Still running in the background";
+
 function stoppedText(turn: Turn, state: SessionState): string {
     const calls = new Set(turn.blocks.flatMap((b) => (b.t === "tool" ? [b.id] : [])));
-    const left = (state.backgroundTasks ?? []).filter((t) => t.kind === "shell" && (t.turnId === turn.id || (t.toolUseId !== undefined && calls.has(t.toolUseId))));
+    const left = (state.backgroundTasks ?? []).filter((t) => t.kind === "shell" && t.toolUseId !== undefined && calls.has(t.toolUseId));
     if (left.some((t) => t.status === "running")) return "Stopped. A command it started is still running.";
-    // Ended by itself after the stop (not by the user's Stop, nor before it).
-    if (left.some((t) => (t.status === "done" || t.status === "failed") && turn.endedAt !== undefined && (t.endedAt ?? 0) > turn.endedAt)) return "Stopped. A command it started ran on to its end.";
+    // It ran on past the stop, however it ended since (by itself, by the user's Stop, with Cavvy). The list of what
+    // ran is only kept a while: the command's own row says so for good (LEFT_RUNNING).
+    const after = left.some((t) => turn.endedAt !== undefined && (t.endedAt ?? 0) > turn.endedAt);
+    if (after || turn.blocks.some((b) => b.t === "tool" && b.output?.startsWith(LEFT_RUNNING))) return "Stopped. A command it started ran on after that.";
     return END_TEXT.aborted!;
 }
 

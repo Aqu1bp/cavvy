@@ -184,9 +184,23 @@ try {
         return said;
     };
     assert.ok(ran({ toolUseId: "call-1", status: "running" }).includes("Stopped. A command it started is still running."));
-    assert.ok(ran({ turnId: "left", status: "done", endedAt: 5000 }).includes("Stopped. A command it started ran on to its end."));
-    // Stopped by the user, ended before the turn did, or another turn's: as before.
-    for (const task of [{ toolUseId: "call-1", status: "stopped", endedAt: 5000 }, { toolUseId: "call-1", status: "done", endedAt: 1150 }, { toolUseId: "other", turnId: "another", status: "running" }]) {
+    // Once it has ended, however it did (by itself, by the user's Stop, with Cavvy): it ran on past the stop.
+    for (const task of [{ toolUseId: "call-1", status: "done", endedAt: 5000 }, { toolUseId: "call-1", status: "stopped", endedAt: 5000 }, { toolUseId: "call-1", status: "stopped", lost: true, endedAt: 9000 }]) {
+        assert.ok(ran(task).includes("Stopped. A command it started ran on after that."), JSON.stringify(task));
+    }
+    // Ended before the turn did, or another turn's: as before.
+    for (const task of [{ toolUseId: "call-1", status: "done", endedAt: 1150 }, { toolUseId: "other", status: "running" }]) {
         assert.ok(ran(task).includes("Stopped. Nothing after this point ran."), JSON.stringify(task));
     }
+    // With the list of what ran since cleared (or the session opened again), the command's own row still says it.
+    const kept = node("root");
+    const disposeKept = renderer.render(() => TurnView({
+        turn: { id: "kept", status: "aborted", archived: true, startedAt: 1000, endedAt: 1200, prompt: { text: "sleep" }, blocks: [{ t: "tool", id: "call-2", name: "Bash", title: "Bash", status: "done", input: {}, output: "Still running in the background (process 41). Cavvy lists it under Background, and Codex is told when it finishes." }] },
+        state: { ...state(), busy: false }, last: true,
+    } as never), kept);
+    assert.ok(text(all(kept).filter((n) => hasClass(n, "end-note"))[0]!).includes("Stopped. A command it started ran on after that."));
+    disposeKept();
+    // Those are the words Codex's row ends with: if they change there, they change here.
+    assert.ok(readFileSync(new URL("../../src/backends/codex-live.ts", import.meta.url), "utf8").includes("`Still running in the background (process "));
+    assert.ok(source.includes('const LEFT_RUNNING = "Still running in the background";'));
 } finally { dispose(); }
