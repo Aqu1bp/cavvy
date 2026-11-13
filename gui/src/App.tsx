@@ -2,11 +2,11 @@ import { RenderBoundary } from "./components/ui/ErrorBoundary";
 import { batch, createEffect, createMemo, createSignal, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
 import { PlugZap } from "lucide-solid";
 import { ErrorCards } from "./components/ErrorCards";
-import { activate, app, attentionCount, handleFor, restoreActiveSession, rpc, type SessionHandle } from "./state/app";
-import { cycleSession, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
+import { activate, app, attentionCount, connNote, handleFor, restoreActiveSession, rpc, serversUi, type SessionHandle } from "./state/app";
+import { cycleSession, far, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
 import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, reviewSplit, setAgentFocus, setDockHeight, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
-import { isDesktop, isElectron, isTauri, os, windowCommand } from "./lib/platform";
+import { isDesktop, isElectron, isTauri, machine, os, windowCommand } from "./lib/platform";
 import { installWindowDrag } from "./lib/window-drag";
 import { FloatingBrowser } from "./components/FloatingBrowser";
 import { canStop } from "./lib/session-status";
@@ -41,6 +41,8 @@ import { ImageViewer } from "./components/ImageViewer";
 import { Logo, Spinner } from "./components/ui/bits";
 
 function Disconnected() {
+    // On a server, what's being reached is that server, through this computer's own Cavvy.
+    if (machine) return <div class="splash" ref={(el) => void serversUi().then((m) => m.mountCover(el, () => rpc.reconnectNow()), reportError)} />;
     return (
         <div class="splash">
             <Switch
@@ -173,7 +175,7 @@ const INSPECTOR_KEY = "cavvy.inspectorWidth";
  * of them): loaded only there, as the app starts, well before anything can open a tab.
  */
 const [HostLayer, setHostLayer] = createSignal<() => JSX.Element>();
-if (isElectron) void import("./components/BrowserHostLayer").then((m) => setHostLayer(() => m.BrowserHostLayer), reportError);
+if (isElectron && !machine) void import("./components/BrowserHostLayer").then((m) => setHostLayer(() => m.BrowserHostLayer), reportError);
 
 /** The transitions running on these elements (the first found for each selector) of the properties `moves` says. */
 function moving(selectors: string[], moves: (property: string) => boolean): Animation[] {
@@ -288,7 +290,7 @@ function Reconnecting() {
         <>
             <Show when={app.conn !== "open"}>
                 <div class="banner" role="status">
-                    <Spinner size={12} /> Not connected · Reconnecting…
+                    <Spinner size={12} /> {connNote() ?? "Not connected"} · Reconnecting…
                     <button class="link-btn" onClick={() => rpc.reconnectNow()}>
                         Reconnect now
                     </button>
@@ -407,7 +409,9 @@ export function App() {
                 if (review()) return e.preventDefault(), setReview(undefined);
             }
             // And otherwise interrupts a working session.
-            if (action === "app:interrupt" && canStop(active()?.view.state) && !active()?.view.state.interactions.length) {
+            // Not while it asks something, its own or what this computer asks for it (a session on a server: lib/lent.ts):
+            // Esc is the card's then.
+            if (action === "app:interrupt" && canStop(active()?.view.state) && !active()?.view.state.interactions.length && !(app.activeId && far.asks?.(app.activeId))) {
                 e.preventDefault();
                 interrupt();
             }
@@ -478,6 +482,7 @@ export function App() {
     return (
         <div
             class={`app ${isDesktop ? `tauri os-${os}${isElectron ? " electron" : ""}` : "browser"} ${prefs.sidebar ? "" : "rail-off"}`}
+            data-machine={machine}
             data-rail={layout().railMode === "overlay" ? "overlay" : "docked"}
             data-railopen={layout().railMode === "overlay" && layout().railShown ? "on" : "off"}
             data-insp={inspOpen() ? "on" : "off"}
@@ -607,7 +612,7 @@ export function App() {
             <RunSheet />
             <CommitDialog />
             <ImageViewer />
-            <Show when={isElectron && HostLayer()} keyed>
+            <Show when={isElectron && !machine && HostLayer()} keyed>
                 {(Layer) => <Layer />}
             </Show>
             {/* Errors' last resort: shows only when none of the places above is on screen (ErrorCards.tsx). */}

@@ -185,6 +185,8 @@ const CODEX: AgentCliDef = {
         product: "Codex",
         install: "Install the Codex CLI (npm install -g @openai/codex)",
         signIn: "codex login",
+        // `codex login` waits for the browser on a port of its own machine, and says to use this where there's none.
+        signInAway: "codex login --device-auth",
         signOut: "codex logout",
     },
     protocol: "codex-app-server",

@@ -3029,6 +3029,15 @@ export class Agent {
      * Cavvy runs: validation, read-only agents, PreToolUse hooks, rules and mode, the reviewer, the user, the
      * sandbox, PostToolUse hooks. The backend's own event for the call is what the transcript shows.
      */
+    /**
+     * A call of one of this machine's tools that another of the user's machines asked for (Engine.lend): through the
+     * same checks as a call a CLI makes of a tool Cavvy serves, which are this machine's own (its rules, its mode,
+     * its user).
+     */
+    runLent(tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal): Promise<ServerToolResult> {
+        return this.runServed(tool, input, signal);
+    }
+
     private async runServed(tool: Tool<any>, input: Record<string, unknown>, signal: AbortSignal, callId?: string): Promise<ServerToolResult> {
         // Only the main agent can be woken, so a sub-agent gets no Monitor (Cavvy's sub-agents don't either). Nor can its stop end the main turn.
         if (tool.name === "Monitor" && callId && (await this.fromBackendSubagent(callId))) return { text: "Monitor isn't available to sub-agents: only the main agent can be woken by one.", isError: true };
@@ -3870,6 +3879,7 @@ export class Agent {
                 browser: this.state.browser,
                 // And its device, the session's.
                 simulator: this.state.simulator,
+                lends: this.state.lends,
             },
             host: {
                 emit: (e) => {

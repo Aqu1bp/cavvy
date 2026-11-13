@@ -611,7 +611,7 @@ test("the app looks at who holds the keyboard as each thing the agent does goes 
     expect(host).toContain("if (!tab.wc.isDestroyed() && tab.wc.focusedFrame && Date.now() - since < STRAY_WAIT_MS) return this.sendStray(tab, since);");
     // Kept for as long as the pages' layer is up, which only the desktop app loads.
     expect(readFileSync(join(import.meta.dir, "../gui/src/components/BrowserHostLayer.tsx"), "utf8")).toContain("onCleanup(keepFocus(electron!));");
-    expect(readFileSync(join(import.meta.dir, "../gui/src/App.tsx"), "utf8")).toContain('if (isElectron) void import("./components/BrowserHostLayer")');
+    expect(readFileSync(join(import.meta.dir, "../gui/src/App.tsx"), "utf8")).toContain('if (isElectron && !machine) void import("./components/BrowserHostLayer")');
 });
 
 test("keys a page took for the agent go to the page the person is typing in, if it has the keyboard again", () => {

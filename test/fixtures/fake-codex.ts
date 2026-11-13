@@ -36,7 +36,9 @@
 //                     did, #310); the answer is logged (childAsked), and it ends the sub-agent's turn: completed once
 //                     approved, else interrupted (as Codex does)
 // FAKE_SCENARIO=hang   the turn runs a foreground command (FAKE_HANG_PHASE=tool, default) or streams text
-//                     (FAKE_HANG_PHASE=stream) until interrupted (or FAKE_HANG_MS, default 10000)
+//                     (FAKE_HANG_PHASE=stream) until interrupted (or FAKE_HANG_MS, default 10000); FAKE_HANG_ASK=1: it asks
+//                     about the command first, and the command then runs on past its turn, named only by
+//                     thread/backgroundTerminals/list (FAKE_HANG_START_MS after the answer, default 30)
 // FAKE_ENV_FILE       a JSON file of FAKE_* settings, read again with every message: a test changes them between
 //                     turns of one live app-server as it would between per-turn ones (only those read per turn)
 // FAKE_CRASH_FILE     exits (code 3) as soon as this file exists (and removes it): a crash on demand
@@ -82,6 +84,8 @@
 // FAKE_FAIL_TURN_START_AT=n  the nth turn/start fails (no turn starts)
 // FAKE_TERMINATE_LATE  1: a terminated command had finished by itself (terminated: false); fail: failed by itself;
 //                     after: not terminated, gone from the list, and its own end (a failure) comes after the answer
+//                     refuse-once: the first terminate isn't done (terminated: false) and the command goes on;
+//                     refuse-then-ends: the same, and it finishes by itself 400 ms later
 // FAKE_WHOLE_TURN_AT=n  the nth turn/start's turn runs to its end before turn/start answers
 // FAKE_CHILD_REPORT   a bgagent sub-agent's last answer, said as it ends
 // FAKE_STARTED_FIRST=1  a turn's turn/started goes out before turn/start's answer
@@ -136,6 +140,7 @@ if (argv[0] !== "app-server") {
     console.error("fake codex: only app-server");
     process.exit(2);
 }
+let refusedOnce = false;
 if (process.env.FAKE_HANG_INIT === "1") process.on("SIGTERM", () => log({ ignored: "SIGTERM" }));
 
 /** The project's own config, if it trusts the project (and wasn't told not to). */
@@ -512,9 +517,34 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
     if (scenario === "hang") {
         // Works until interrupted: in a foreground command (tool), or streaming its answer (stream).
         const stream = process.env.FAKE_HANG_PHASE === "stream";
-        const cmd = { type: "commandExecution", id: `hang-${turnId}`, command: "/bin/zsh -lc 'sleep 60'", cwd, status: "inProgress", commandActions: [{ type: "unknown", command: "sleep 60" }], aggregatedOutput: null, exitCode: null };
+        // FAKE_HANG_ASK=1: a command it asks about first, as Codex 0.167 runs one: its item never says which process
+        // it is, and it runs on when its turn ends (stopped, or over after FAKE_HANG_MS) with no item/completed. Only
+        // thread/backgroundTerminals/list has it, by the item's id.
+        const asks = !stream && process.env.FAKE_HANG_ASK === "1";
+        const cmd = { type: "commandExecution", id: `hang-${turnId}`, command: "/bin/zsh -lc 'sleep 60'", cwd, status: "inProgress", commandActions: [{ type: "unknown", command: "sleep 60" }], aggregatedOutput: null, exitCode: null, ...(asks ? { processId: null, source: "agent" } : {}) };
         if (!stream) notify("item/started", { threadId, turnId, item: cmd });
         else notify("item/started", { threadId, turnId, item: { type: "agentMessage", id: `stream-${turnId}`, text: "" } });
+        if (asks) {
+            const d = (await serverRequest("item/commandExecution/requestApproval", { threadId, turnId, itemId: cmd.id, command: cmd.command, cwd, commandActions: cmd.commandActions, availableDecisions: ["accept", "decline", "cancel"] }))?.decision;
+            if (d !== "accept") {
+                notify("item/completed", { threadId, turnId, item: { ...cmd, status: "declined" } });
+                return finish(t.interrupted ? "interrupted" : "completed");
+            }
+            // It starts a moment after the answer.
+            for (const starts = Date.now() + Number(process.env.FAKE_HANG_START_MS ?? 30); Date.now() < starts && !t.interrupted; ) await Bun.sleep(10);
+            const start = () => {
+                const processId = String(++processSeq);
+                terminals.set(processId, { threadId, turnId, item: { ...cmd, processId, source: "unifiedExecStartup" } });
+                log({ terminalStarted: { processId, itemId: cmd.id } });
+            };
+            // Stopped before it started: nothing runs, and nothing is said of the command. FAKE_HANG_LATE=<ms>: it
+            // starts all the same, that long after the turn is over (seen when the stop lands as it's being started).
+            if (t.interrupted) {
+                if (process.env.FAKE_HANG_LATE) setTimeout(start, Number(process.env.FAKE_HANG_LATE));
+                return finish("interrupted");
+            }
+            start();
+        }
         const until = Date.now() + Number(process.env.FAKE_HANG_MS ?? 10000);
         let woken = false;
         const wake = new Promise<void>((r) => (t.wake = () => ((woken = true), r())));
@@ -528,6 +558,7 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
             }
         }
         log({ hangEnded: { turnId, interrupted: t.interrupted } });
+        if (asks) return finish(t.interrupted ? "interrupted" : "completed");
         if (!stream) notify("item/completed", { threadId, turnId, item: { ...cmd, status: t.interrupted ? "failed" : "completed", exitCode: t.interrupted ? -1 : 0, aggregatedOutput: "" } });
         else notify("item/completed", { threadId, turnId, item: { type: "agentMessage", id: `stream-${turnId}`, text: "more more" } });
         return finish(t.interrupted ? "interrupted" : "completed");
@@ -1003,6 +1034,14 @@ async function handle(m: any) {
             if (!experimental) return fail(`${m.method} requires experimentalApi capability`);
             const pid = String(p.processId);
             if (!terminals.has(pid)) return reply({ terminated: false });
+            // =refuse (the first time only: FAKE_TERMINATE_LATE=refuse-once): it won't end it, and it goes on.
+            if ((process.env.FAKE_TERMINATE_LATE === "refuse-once" || process.env.FAKE_TERMINATE_LATE === "refuse-then-ends") && !refusedOnce) {
+                refusedOnce = true;
+                log({ refusedToTerminate: pid });
+                // =refuse-then-ends: and it finishes by itself a little later.
+                if (process.env.FAKE_TERMINATE_LATE === "refuse-then-ends") setTimeout(() => endTerminal(pid, "completed", 0, "ran on\n"), 400);
+                return reply({ terminated: false });
+            }
             log({ terminated: pid });
             // It had just finished by itself (=fail: failed by itself, exit code 1).
             if (process.env.FAKE_TERMINATE_LATE === "1" || process.env.FAKE_TERMINATE_LATE === "fail") {

@@ -4,7 +4,8 @@ import { childEnv } from "../util/env";
 import { extraArgs, requireCli } from "./cli";
 import { agentCli } from "./defs";
 
-export function loginCommand(provider: string, id = "default"): { argv: string[]; env: Record<string, string> } {
+/** `away`: the person's browser is on another machine than this one (a server), so the CLI can't open it. */
+export function loginCommand(provider: string, id = "default", o: { away?: boolean } = {}): { argv: string[]; env: Record<string, string> } {
     const def = agentCli(provider);
     // One without accounts (an ACP agent) signs in its default only.
     if (!def || def.account || id !== "default") accountProvider(provider);
@@ -12,17 +13,27 @@ export function loginCommand(provider: string, id = "default"): { argv: string[]
     const cli = def!.cli;
     return {
         // Its sign-in command's arguments ("claude auth login": auth login).
-        argv: [requireCli(provider, cli), ...extraArgs(provider), ...cli.signIn.split(" ").slice(1)],
+        argv: [requireCli(provider, cli), ...extraArgs(provider), ...((o.away && cli.signInAway) || cli.signIn).split(" ").slice(1)],
         env: { ...childEnv(), ...env },
     };
 }
 
+/** This Cavvy runs on a server (src/servers/host.ts): whoever reads its advice is at another machine. */
+let onServer = false;
+export function signInsOnServer(on = true): void {
+    onServer = on;
+}
+
 /**
  * How to sign in again. The CLI's own command, run in an ordinary shell, signs in
- * Default's folder, so a named account is pointed to its own login instead.
+ * Default's folder, so a named account is pointed to its own login instead. On a server it says where: "a
+ * terminal" reads as one on the machine in front of the person, which signs nothing in there, and the command is
+ * the one that works with their browser elsewhere.
  */
 export function signInAdvice(provider: string, id = "default"): string {
-    if (id === "default") return `In a terminal, run \`${agentCli(provider)?.cli.signIn ?? provider}\`, then try again.`;
+    const cli = agentCli(provider)?.cli;
+    if (id === "default" && onServer) return `On this server, run \`${cli?.signInAway ?? cli?.signIn ?? provider}\`, then try again.`;
+    if (id === "default") return `In a terminal, run \`${cli?.signIn ?? provider}\`, then try again.`;
     let name = id;
     try { name = listAccounts(provider).find((a) => a.id === id)?.name ?? id; } catch {}
     return `Sign in to the ${name} account with \`/login ${provider} ${id}\` in the terminal app, or its Sign in button under Settings → Providers, then try again.`;

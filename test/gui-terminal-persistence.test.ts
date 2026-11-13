@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { TerminalClosures, parseTabs, restoreTabs, type SavedTabs } from "../gui/src/lib/terminal";
+import { TerminalClosures, parseTabs, restoreTabs, tabsKey, type SavedTabs } from "../gui/src/lib/terminal";
 import type { Rpc } from "../gui/src/lib/rpc";
 import { isTerminalReply } from "../src/server/terminal-reply";
 
@@ -421,4 +421,10 @@ test("the terminal holds back the first key of a chord for the terminal toggle, 
         m.dispose();
         kb.applyKeybindingsFile({ path: "/k.json" });
     }
+});
+
+test("a window keeps each machine's terminal tabs apart: back from a server, this computer's are the ones it had", () => {
+    expect(tabsKey(undefined)).toBe("cavvy.terminals");
+    expect(tabsKey("box")).toBe("cavvy.terminals.box");
+    expect(tabsKey("box")).not.toBe(tabsKey("lab"));
 });
