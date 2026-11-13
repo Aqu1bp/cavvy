@@ -447,8 +447,9 @@ export class Runtime {
         this.toolState.browser.onChange(() => this.engine.sendBrowser(this.id, this.browser.state()));
         // So does the simulator, so the window hears when the agent starts or uses one (it starts nothing until then).
         this.toolState.simulator = new SimulatorSession({ settings: () => this.settings() });
-        // Tools this machine hasn't got and another of the user's machines lends it (its Mac's simulators).
-        this.toolState.lends = { call: (tool, input, signal) => engine.borrow(this, tool, input, signal) };
+        // On a server: tools it hasn't got and another of the user's machines lends it (its Mac's simulators). Kept for
+        // as long as the session, so a call made after the Mac has left is told that, not that there are no simulators.
+        if (engine.away) this.toolState.lends = { call: (tool, input, signal) => engine.borrow(this, tool, input, signal) };
         this.toolState.simulator.onChange(() => this.engine.sendSimulator(this.id, this.simulator.state()));
         this.toolState.secrets!.onChange(() => this.setState({ secrets: this.toolState.secrets!.names() }));
         this.schedules = new SessionSchedules({

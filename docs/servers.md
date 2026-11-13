@@ -67,10 +67,10 @@ A server has no iOS simulators. Your Mac has, and while the desktop app is open 
 
 A call is checked twice: on the server by its own mode and rules, as any tool there, and then on your Mac by your Mac's. Each session on a server that uses the Simulator gets a session on your Mac named for it (`box: Fix the login screen`). That's where you're asked, where the Simulator pane shows the device, and where each call is listed.
 
-- In Manual on your Mac, starting a device or acting on one asks first, with a notification if the window isn't in front. **Allow once** asks again next time; allowing it for the session doesn't.
+- In Manual on your Mac, starting a device or acting on one asks first, with a notification if the window isn't in front (a few a minute from one server at most, then one saying there's more). **Allow once** asks again next time; allowing it for the session doesn't.
 - In Auto or Bypass on your Mac, these calls run without asking.
 - Reading the screen and listing devices never ask, in any mode: a session on a server can see whatever simulator is running on your Mac.
-- Your Mac's deny rules apply. A server can't have a `file:` address opened there.
+- Your Mac's deny rules apply, and `open_url` won't open a `file:` address there for a server.
 
 A screenshot comes back to the server and is kept there, so the chat on the server shows it.
 

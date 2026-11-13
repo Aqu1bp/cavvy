@@ -389,8 +389,9 @@ export const SIMULATOR_TOOL_HEADINGS: Record<string, string> = {
  * goes there. What it names (an app's path) is the other machine's, so it's checked there, not here.
  */
 function lendable(tool: Tool<any>): Tool<any> {
-    // Only where another machine's are lent: a Mac whose own Xcode turns out not to be usable says that, as before.
-    const far = (ctx: Pick<ToolContext, "state">) => (!simulatorsLikely() && lent("simulator") ? ctx.state.lends : undefined);
+    // A session has `lends` only on a server (Runtime): a Mac whose own Xcode turns out not to be usable has none, and
+    // says what's wrong with it, as before.
+    const far = (ctx: Pick<ToolContext, "state">) => (simulatorsLikely() ? undefined : ctx.state.lends);
     const { run, validate } = tool;
     return {
         ...tool,

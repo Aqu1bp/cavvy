@@ -406,6 +406,11 @@ export class Engine {
     /** The desktop app updating itself from main: only the installed app does. */
     private readonly updates = new AppUpdates({ emit: (info) => this.broadcast({ type: "app.update", info }) });
 
+    /** This Cavvy is a server's (others reach it): it's the one that may be lent what it hasn't got (borrow). */
+    get away(): boolean {
+        return Boolean(this.o.away);
+    }
+
     constructor(private o: EngineOptions = {}) {
         this.fallbackModel = o.fallbackModel;
         this.terminals = new Terminals({ graceMs: o.terminalGraceMs });
@@ -545,7 +550,15 @@ export class Engine {
         const title = this.notifyTitle(rt);
         // What a server's session asks through this machine is told only so often (LENT_PER_MINUTE): the session
         // still shows as waiting, but a server gone wrong can't ring the user without end.
-        if (rt.guestOf !== undefined && !this.lentMay(rt.guestOf, "told")) return this.sessionChanged(rt);
+        if (rt.guestOf !== undefined && !this.lentMay(rt.guestOf, "told")) {
+            // Said once that there's more, so the user isn't left waiting on a session that never rang.
+            const at = this.lentAt.get(rt.guestOf)!;
+            if (Date.now() - (at.summed ?? 0) >= 60_000) {
+                at.summed = Date.now();
+                this.broadcast({ type: "notify", sessionId: rt.id, kind, title, body: `More from ${rt.guestOf} is waiting for you.` });
+            }
+            return this.sessionChanged(rt);
+        }
         this.broadcast({ type: "notify", sessionId: rt.id, kind, title, body });
         // No window is on this computer, only windows on servers: one of those says it, as it would another machine's.
         const windows = [...this.clients].filter((c) => c.watching);
@@ -1283,7 +1296,10 @@ export class Engine {
         // Only when one runs: otherwise the delete goes on in the same tick, as before.
         if (rt?.compactingWhileIdle) await rt.yieldIdleCompaction();
         // One a server's session is lent tools through has no file to put in the trash: it's closed, and gone.
-        if (rt?.guest && rt.idle) return void (await this.unload(rt));
+        if (rt?.guest && !rt.session.messages.length && rt.idle) {
+            this.goneGuests.add(id);
+            return void (await this.unload(rt));
+        }
         if (rt && !rt.idle) throw new RpcError("This session is still working (a response, queued messages, a question, or shells or tasks running). Stop it first, then delete it.", "busy");
         const store = readStore();
         const flags: SessionFlags = { pinned: !!store.pinned?.includes(id), archived: !!store.archived?.includes(id), settled: !!store.settled?.includes(id) };
@@ -1819,7 +1835,7 @@ export class Engine {
     /** On the user's own machine: the local session each session on a server is lent tools through, by server and session. */
     private guests = new Map<string, Promise<Runtime>>();
     /** When each server's sessions were last lent a call that only reads, and one that acts, and when one of them last had the user told it asks (LENT_PER_MINUTE). */
-    private lentAt = new Map<string, { read: number[]; act: number[]; told: number[] }>();
+    private lentAt = new Map<string, { read: number[]; act: number[]; told: number[]; summed?: number }>();
 
     /** Whether one more of this sort may be let through for this server now; counted when it may. */
     private lentMay(name: string, sort: "read" | "act" | "told"): boolean {
@@ -1898,8 +1914,12 @@ export class Engine {
         clearTimeout(this.guestTimers.get(rt.id));
         this.guestTimers.delete(rt.id);
         for (const [key, opening] of this.guests) void opening.then((g) => g === rt && this.guests.get(key) === opening && this.guests.delete(key), () => undefined);
-        this.broadcast({ type: "sessions.remove", id: rt.id });
+        // One the user wrote in has a file like any session, and stays listed as one.
+        if (!rt.session.messages.length) this.broadcast({ type: "sessions.remove", id: rt.id });
     }
+
+    /** Sessions of that kind deleted since this Cavvy started: there's nothing of them to bring back. */
+    private goneGuests = new Set<string>();
 
     private serverLinks?: import("../servers/manager").ServerLinks;
     /** The window a server's progress is told to: the one that last asked for something slow of it. */
@@ -2685,6 +2705,7 @@ export class Engine {
                 return null;
             case "session.restore": {
                 const id = checkId(p.id);
+                if (this.goneGuests.has(id)) throw new RpcError("That session only showed what a server did on this Mac. Nothing of it was kept.", "invalid");
                 while (this.closing.has(id)) await this.afterClosing(id);
                 const flags = restoreSession(id, this.removing.size ? (cwd) => {
                     if (!cwd || [...this.removing].some((dir) => within(dir)(cwd))) throw new RpcError("This session's worktree is being removed. Wait for removal to finish before restoring it.", "busy");

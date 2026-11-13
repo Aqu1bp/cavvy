@@ -267,8 +267,9 @@ export class MachineWatch {
                 // sessions there stop being offered what can't run.
                 const kinds = this.o.lends?.() ?? [];
                 if (!kinds.length) {
-                    ws.send(JSON.stringify({ id: next++, method: "offers.set", params: { kinds } }));
-                    return answer({ text: "Your Mac's Simulator isn't available now: it's turned off in Cavvy's settings there, or Xcode isn't set up.", isError: true });
+                    // The answer first: saying nothing is lent ends every call this machine still has there.
+                    answer({ text: "Your Mac's Simulator isn't available now: it's turned off in Cavvy's settings there, or Xcode isn't set up.", isError: true });
+                    return void ws.send(JSON.stringify({ id: next++, method: "offers.set", params: { kinds } }));
                 }
                 const stop = new AbortController();
                 lending.set(callId, stop);

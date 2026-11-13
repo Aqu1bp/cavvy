@@ -347,7 +347,77 @@ test("two of the user's machines can lend to one server: one leaving doesn't tak
         expect(a.events.map((e) => e.type)).toEqual(["offers.call"]);
         engine.dropClient(a as never);
         expect(lent("simulator")).toBe(false);
+        // With nobody lending any more, a call says what to do about it (a CLI there keeps its tools for as long as it runs).
+        expect((await engine.borrow({ id: "s1", title: "t", firstPrompt: () => undefined, ws: { cwd: "/srv/app" } } as never, "SimulatorSnapshot", {}, new AbortController().signal)).content).toStartWith("This runs on your Mac, and Cavvy there isn't connected to this machine right now.");
     } finally {
         await engine.stop();
     }
+});
+
+test("on a machine with no simulators, a session that's lent to sends its call to the lender; one that isn't runs it here", async () => {
+    const { SIMULATOR_TOOLS } = await import("../src/tools/simulator-tools");
+    const list = SIMULATOR_TOOLS.find((t) => t.name === "SimulatorControl")!;
+    const ctx = (state: object) => ({ state: { cwd: "/tmp", projectRoot: "/tmp", ...state }, settings: {}, signal: new AbortController().signal }) as never;
+    simctl.setAvailability({ ok: false, error: "Simulators need macOS." });
+    try {
+        // A server's session (it has `lends`), whether or not a Mac is connected just now: the lender's answer, or the engine's word that none is there.
+        expect(await list.run({ action: "list" }, ctx({ lends: { call: async (tool: string) => ({ content: `from the lender: ${tool}` }) } }))).toEqual({ content: "from the lender: SimulatorControl" });
+        // A session of this machine's own (no `lends`): it runs here, whatever comes of that (the faked simctl
+        // answers; a Mac whose Xcode isn't usable says so), with not a word about another machine.
+        expect((await list.run({ action: "list" }, ctx({}))).content).toStartWith("Simulators:");
+    } finally {
+        simctl.setAvailability({ ok: true, developerDir: "/Applications/Xcode.app/Contents/Developer" });
+    }
+});
+
+test("the Simulator turned off on the Mac while it's connected: the session there is told that, not that the Mac went away", async () => {
+    const { Engine } = await import("../src/server/engine");
+    const { MachineWatch } = await import("../src/servers/watch");
+    const { lent } = await import("../src/tools/lent");
+    const engine = new Engine({ away: true });
+    // A server's Cavvy, as far as a connection to it goes: its messages handed to the engine.
+    const srv = Bun.serve<{ client: any }, never>({
+        port: 0,
+        fetch: (req, s) => (s.upgrade(req, { data: { client: undefined } }) ? undefined : new Response("no")),
+        websocket: {
+            open(ws) {
+                ws.data.client = { subs: new Set(), send: (ev: unknown) => void ws.send(JSON.stringify({ event: ev })) };
+                engine.clients.add(ws.data.client);
+            },
+            async message(ws, raw) {
+                const m = JSON.parse(String(raw));
+                if (m.method === "sessions.list") return void ws.send(JSON.stringify({ id: m.id, result: [] }));
+                ws.send(JSON.stringify({ id: m.id, result: (await engine.handle(ws.data.client, m.method, m.params).catch(() => null)) ?? null }));
+            },
+            close: (ws) => engine.dropClient(ws.data.client),
+        },
+    });
+    let kinds = ["simulator"];
+    const watch = new MachineWatch("box", { reach: async () => ({ status: "connected", url: `ws://127.0.0.1:${srv.port}/ws`, token: "t" }), changed: () => {}, notice: () => {}, lends: () => kinds, lend: async () => ({ text: "ran" }) });
+    watch.start();
+    try {
+        await until("the Mac to be lending", () => lent("simulator"));
+        kinds = [];
+        const told = await engine.borrow({ id: "s1", title: "t", firstPrompt: () => undefined, ws: { cwd: "/srv/app" } } as never, "SimulatorSnapshot", {}, new AbortController().signal);
+        expect(told).toEqual({ content: "Your Mac's Simulator isn't available now: it's turned off in Cavvy's settings there, or Xcode isn't set up.", isError: true });
+        // And the server's sessions stop being offered what can't run.
+        await until("the tools to be taken away", () => !lent("simulator"));
+    } finally {
+        watch.stop();
+        void srv.stop(true);
+        await engine.stop();
+    }
+});
+
+test("asks from one server ring the user a few times a minute, then once more to say there are others", async () => {
+    (mine.engine as any).lentAt.clear();
+    await lendHere("SimulatorControl", { action: "list" }, "20261113-000000-bbbbbb");
+    const guestRt = [...mine.engine.runtimes.values()].find((r: any) => r.guestOf === "box" && r.title === "box: limits")!;
+    here.events.length = 0;
+    for (let i = 0; i < 10; i++) mine.engine.notify(guestRt as never, "permission", `Wants to tap ${i}`);
+    // An ordinary session of this machine's own isn't counted with them.
+    await until("them to arrive", () => here.events.filter((e) => e.type === "notify").length >= 7);
+    await Bun.sleep(200);
+    const rang = here.events.filter((e) => e.type === "notify").map((e) => e.body);
+    expect(rang).toEqual(["Wants to tap 0", "Wants to tap 1", "Wants to tap 2", "Wants to tap 3", "Wants to tap 4", "Wants to tap 5", "More from box is waiting for you."]);
 });
