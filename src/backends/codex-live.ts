@@ -487,7 +487,8 @@ export class CodexLiveConnection extends CodexTurn {
 
     /**
      * Interrupt a turn: it and its sub-agents' turns (turn/interrupt), and the goal pauses, as the user's stop
-     * always paused it. Codex goes on running, and so do its background terminals.
+     * always paused it. Codex goes on running, and so do the background terminals of earlier turns; what this turn
+     * was running ends with it (closeTurnItems).
      */
     async interruptTurn(ref: string): Promise<void> {
         liveDebug("codex", "interrupt", { thread: this.threadId, ref });
@@ -1060,6 +1061,14 @@ export class CodexLiveConnection extends CodexTurn {
             if (it.sub) continue;
             if (it.name === "Bash" && it.processId) {
                 const term: Terminal = { itemId: id, threadId: this.threadId!, processId: it.processId, command: String(it.input.command ?? ""), startedAt: it.started };
+                // The user's stop ends what its turn was running, as it ended the turn: the conversation says it was
+                // interrupted, and nothing of it is left going unasked. (A turn that ends by itself leaves its
+                // command running: the model meant it to.)
+                if (interrupted && this.aborted && this.terminalsApi) {
+                    this.endItem(id, it, "Interrupted by user", true);
+                    void this.endWithTurn(term);
+                    continue;
+                }
                 this.terminals.set(id, term);
                 fresh.push(term);
                 this.endItem(id, it, `Still running in the background (process ${it.processId}). ${APP_TITLE} lists it under Background, and Codex is told when it finishes.`, false, undefined, false, false);
@@ -1156,6 +1165,26 @@ export class CodexLiveConnection extends CodexTurn {
             }
         };
         for (const ms of [300, 1500]) setTimeout(() => void look(), ms).unref?.();
+    }
+
+    /**
+     * Ends a command with the turn the user stopped. One Codex won't end (it refuses, or can't be asked) is a
+     * background command after all: listed as running, where it can be stopped, and its end is no news.
+     */
+    private async endWithTurn(term: Terminal) {
+        liveDebug("codex", "ending a stopped turn's command", { thread: term.threadId, item: term.itemId, processId: term.processId });
+        const r: any = await this.rpc.request("thread/backgroundTerminals/terminate", { threadId: term.threadId, processId: term.processId }).catch((e) => {
+            if (/experimentalApi/i.test((e as Error).message)) this.terminalsApi = false;
+            return undefined;
+        });
+        if (r && r.terminated !== false) return;
+        // Not ended by that: gone by itself meanwhile, or still going.
+        const listed = await this.listTerminals(term.threadId);
+        if (listed && !listed.has(term.processId)) return;
+        term.stopping = true;
+        term.answer = "refused";
+        this.terminals.set(term.itemId, term);
+        this.reportTerminal(term, "running");
     }
 
     /** The command just allowed starts a moment later (measured: 20 to 45 ms); one slow to start is asked after again. */
