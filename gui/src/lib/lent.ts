@@ -15,7 +15,7 @@ import { machine } from "./platform";
 import type { Rpc } from "./rpc";
 import { far } from "../state/actions";
 import { app, others, rpc, upsertSession } from "../state/app";
-import { adoptSimulatorState, sim } from "../state/simulator";
+import { adoptSimulatorState, loadSimulatorState, sim } from "../state/simulator";
 
 /** What this computer has for each session of this window's server, by the session's id there. */
 const [lent, setLent] = createStore<Record<string, LentSession | undefined>>({});
@@ -72,10 +72,11 @@ if (home && machine) {
         if (lent[s.id]) said.set(s.id, s);
         return lent[s.id]?.asks.length && s.status !== "waiting" ? { ...s, status: "waiting", waitingKind: "permission" } : s;
     };
-    /** Its row in the list, as it stands now. */
+    /** Its row in the list, as it stands now. One that's no longer listed (deleted meanwhile) isn't put back. */
     const row = (session: string) => {
-        const s = said.get(session) ?? app.sessions.find((x) => x.id === session);
-        if (s) upsertSession(others.shown!(s));
+        const listed = app.sessions.find((x) => x.id === session) ?? app.archived.find((x) => x.id === session);
+        if (!listed) return void said.delete(session);
+        upsertSession(others.shown!(said.get(session) ?? listed));
     };
     h.onEvent((e) => {
         if (e.type === "offers.session" && e.name === machine) {
@@ -96,19 +97,25 @@ if (home && machine) {
     const again = () => {
         const id = app.activeId;
         if (!id || h.state !== "open" || ownSimulators) return;
-        void ask(h, id)
-            .then((l) => (row(id), lentState(h, l)))
-            .then((s) => adoptSimulatorState(id, s), () => undefined);
+        void ask(h, id).then(() => row(id), () => undefined);
     };
     /** Every session of this server that this computer asks something for now: their rows say so, whichever is open. */
     const asking = () =>
         void h.call("offers.asking", { name: machine! }).then((list) => {
+            const asking = new Set(list.map((a) => a.sessionId));
+            // Answered, or given up, while this window wasn't listening: those rows no longer wait.
+            for (const session of Object.keys(lent)) {
+                if (asking.has(session) || !lent[session]?.asks.length) continue;
+                setLent(session, "asks", []);
+                row(session);
+            }
             for (const a of list) {
                 took(a.sessionId, a.lent);
                 row(a.sessionId);
             }
         }, () => undefined);
     createRoot(() => createEffect(on(() => app.activeId, again)));
-    h.onState((s) => s === "open" && (again(), asking()));
+    // And the session on screen's simulator, as this computer has it now.
+    h.onState((s) => s === "open" && (again(), asking(), app.activeId && void loadSimulatorState(app.activeId).catch(() => undefined)));
     if (h.state === "open") asking();
 }
