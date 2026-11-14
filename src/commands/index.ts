@@ -1382,7 +1382,7 @@ async function queueCommand(app: App) {
 }
 
 async function stashCommand(app: App) {
-    if (!app.editor.stashes.length) return app.notice(`Nothing is stashed. ${app.keys.label("chat:stash") ?? "The stash key"} puts the prompt away, to send something else first.`);
+    if (!app.editor.stashes.length) return app.notice(`Nothing is stashed. ${app.keys.label("chat:stash") ?? "The stash key"} puts the prompt away, for later.`);
     const items = () => app.editor.stashes.map((text, i): SelectItem<number> => ({ label: truncate(text || "(images)", 70), value: i }));
     const d = new SelectDialog<number>({
         title: "Stashed prompts",

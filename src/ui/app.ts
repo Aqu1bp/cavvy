@@ -2140,7 +2140,7 @@ export class App {
         }
     }
 
-    /** The stash key: the prompt is put away (with its ! or # mode) on top of the others; with nothing typed, the newest comes back. */
+    /** The stash key: the prompt is put away (with its ! or # mode) on top of the others; with nothing typed, the newest comes back. Nothing else brings one back: not a send. */
     private stash() {
         const e = this.editor;
         if (e.isEmpty) return this.takeStash(0);
@@ -2149,7 +2149,7 @@ export class App {
         this.inputMode = "prompt";
         this.menuHiddenFor = undefined;
         this.showHelp = false;
-        this.flash = first ? { text: `Stashed · comes back after you send, or with ${this.keys.label("chat:stash") ?? "the stash key"}`, until: Date.now() + 3000 } : undefined;
+        this.flash = first ? { text: `Stashed · ${this.keys.label("chat:stash") ?? "the stash key"} on an empty prompt brings it back`, until: Date.now() + 3000 } : undefined;
     }
 
     /** A stashed prompt back in the box, in the mode it was typed in (`i`: which, newest first). What's in the box is stashed in its place. */
@@ -2160,13 +2160,6 @@ export class App {
         this.menuHiddenFor = undefined;
         this.showHelp = false;
         this.flash = undefined;
-    }
-
-    /** A prompt went out and the box is free: the newest stashed one comes back. Never over something typed since. */
-    private unstash() {
-        if (!this.editor.stashes.length || !this.editor.isEmpty || this.inputMode !== "prompt") return;
-        this.takeStash(0);
-        this.renderLive();
     }
 
     private escapeKey() {
@@ -2476,16 +2469,11 @@ export class App {
         this.editor.clear();
         this.inputMode = "prompt";
         this.showHelp = false;
-        // /stash is about the stashed prompts themselves: none comes back for it.
-        const keepsStash = mode === "prompt" && /^\/stash(\s|$)/.test(text);
-        // Images still being read can hand the prompt back (settleImages): the stashed one waits for that.
-        if (!pending.length && !keepsStash) this.unstash();
         this.renderLive();
         if (mode === "bash") return this.runBashMode(text);
         if (mode === "memory") return this.addMemory(text);
         if (pending.length) {
             if (!(await this.settleImages(draft!, pending))) return;
-            if (!keepsStash) this.unstash();
             // Images that never came leave nothing to send when they were all there was.
             if (!plainText(draft!.text).trim() && !imagesIn(draft!.text, draft!.attachments).length) return;
         }

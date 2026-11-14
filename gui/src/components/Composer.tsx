@@ -463,7 +463,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     };
     /** The stash key: the prompt is put away, on top of the others; with nothing written, the newest comes back. */
     const stashKey = () => {
-        // A send under way clears what it sent: put away meanwhile, that prompt would come back after it went.
+        // A send under way clears what it sent: put away meanwhile, that prompt would stay stashed after it went.
         if (sending()) return;
         const done = text().trim() || attachments().length ? draft.pushStash() : draft.takeStash();
         if (done === "full") toast("Stash is full", "warn");

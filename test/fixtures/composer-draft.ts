@@ -250,46 +250,28 @@ assert.deepEqual(stashKept.stashes().map((d) => d.text), ["in the box", "", "sec
 assert.equal(stashKept.takeStash({ text: "long prompt", attachments: files }), false);
 stashKept.dispose();
 
-// Sent, the box takes the newest stashed prompt back (text and files), one per send.
+// A send never brings one back: the box is left empty, and they wait until they're asked for.
 const sentWith = mount("stash-send");
 sentWith.setText("older");
 sentWith.pushStash();
-sentWith.setText("comes back");
+sentWith.setText("stays stashed");
 sentWith.setAttachments([image]);
 sentWith.pushStash();
 sentWith.setText("goes first");
 const first = sentWith.capture();
 sentWith.clearSent(first);
-assert.equal(sentWith.text(), "comes back");
-assert.deepEqual(sentWith.attachments(), [image]);
-assert.deepEqual(sentWith.stashes().map((d) => d.text), ["older"]);
-// The same send confirmed again (accepted, then done) finds a newer draft: nothing more comes back.
-sentWith.pushStash();
-sentWith.clearSent(first);
 assert.equal(sentWith.text(), "");
-assert.deepEqual(sentWith.stashes().map((d) => d.text), ["comes back", "older"]);
+assert.deepEqual(sentWith.attachments(), []);
+assert.deepEqual(sentWith.stashes(), [{ text: "stays stashed", attachments: [image] }, { text: "older", attachments: [] }]);
+// Nor a local command, which leaves its files in the box.
+sentWith.setText("/context");
+sentWith.setAttachments([image]);
+sentWith.clearSent(sentWith.capture(), true);
+assert.equal(sentWith.text(), "");
+assert.equal(sentWith.stashes().length, 2);
 sentWith.dispose();
 
-// Typed while it was sending: that stays in the box, and the stash waits.
-const typedSince = mount("stash-typed");
-typedSince.setText("stashed");
-typedSince.pushStash();
-typedSince.setText("sending");
-const sending = typedSince.capture();
-typedSince.setText("sending, and more");
-typedSince.clearSent(sending);
-assert.equal(typedSince.text(), "sending, and more");
-assert.deepEqual(typedSince.stashes().map((d) => d.text), ["stashed"]);
-// A failed send clears nothing, so nothing comes back either; a local command leaves its files in the box, so the stash waits too.
-typedSince.setText("/context");
-typedSince.setAttachments([image]);
-typedSince.clearSent(typedSince.capture(), true);
-assert.equal(typedSince.text(), "");
-assert.deepEqual(typedSince.attachments(), [image]);
-assert.deepEqual(typedSince.stashes().map((d) => d.text), ["stashed"]);
-typedSince.dispose();
-
-// Home is gone by the time its send has opened the session: its stash is in the box when it's next shown.
+// Home is gone by the time its send has opened the session: its stash is still stashed when it's next shown.
 const stashHome = mount("stash-home");
 stashHome.setText("for the next session");
 stashHome.pushStash();
@@ -298,8 +280,8 @@ const homeSend = stashHome.capture();
 stashHome.dispose();
 stashHome.clearSent(homeSend);
 const homeAgain = mount("stash-home");
-assert.equal(homeAgain.text(), "for the next session");
-assert.deepEqual(homeAgain.stashes(), []);
+assert.equal(homeAgain.text(), "");
+assert.deepEqual(homeAgain.stashes().map((d) => d.text), ["for the next session"]);
 homeAgain.dispose();
 
 // Discarded, one is gone; Undo puts it back where it was in the list, whatever was stashed meanwhile.

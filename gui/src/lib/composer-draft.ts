@@ -48,7 +48,6 @@ export function createComposerDraft(key: () => string, wasDeleted: (key: string)
         stashChanges();
         return wasDeleted(key()) ? [] : stashesOf(key());
     });
-    /** In the box, whether or not this composer still shows it (Home is gone once its send opens the session). */
     const putDraft = (k: string, d: Draft) => {
         if (filled(d)) composerDrafts.set(k, d);
         else composerDrafts.delete(k);
@@ -82,27 +81,16 @@ export function createComposerDraft(key: () => string, wasDeleted: (key: string)
     const clearSent = (submitted: ReturnType<typeof capture>, keepAttachments = false) => {
         // Local commands never send the files, so leave them ready for the next message.
         const cleared = keepAttachments ? { text: "", attachments: submitted.draft.attachments } : empty();
-        let emptied = false;
         // Opening a new session can unmount Home before its successful send returns.
         if (composerDrafts.get(submitted.key) === submitted.draft) {
             if (cleared.attachments.length) composerDrafts.set(submitted.key, cleared);
             else composerDrafts.delete(submitted.key);
             composerStorage.setDraft(submitted.key, "");
-            emptied = true;
         }
         // Each edit replaces the draft, so a late retry cannot clear newer typing or attachments.
         if (holds(submitted)) {
             setDraft(cleared);
             composerStorage.setDraft(submitted.key, "");
-            emptied = true;
-        }
-        // The box this send left free takes the newest stashed prompt back. Never over something newer in it.
-        if (emptied && !filled(cleared) && !wasDeleted(submitted.key)) {
-            const [back, ...rest] = stashesOf(submitted.key);
-            if (back) {
-                putStashes(submitted.key, rest);
-                putDraft(submitted.key, back);
-            }
         }
         // Successful sends must be removed even if the window closes before the debounce.
         composerStorage.flush();

@@ -322,18 +322,24 @@ describe("the stash key", () => {
         return stripAnsi(live.at(-1)!.join("\n"));
     };
 
-    test("puts the prompt away with its mode, and it comes back once the next one is sent", async () => {
+    test("puts the prompt away with its mode, and it stays put through sends until it's asked for", async () => {
         const { app, a, press } = testApp();
         a.submitText = async () => {};
-        a.runBashMode = async () => {};
         press("!", "ls -la", "\x13");
         expect(app.editor.text).toBe("");
         expect(a.inputMode).toBe("prompt");
         // What's put away is said above the prompt, as it was typed.
         expect(shown(a)).toContain("⏷ stashed (ctrl+s): !ls -la");
-        expect(stripAnsi(a.footer(160))).toContain("Stashed · comes back after you send, or with ctrl+s");
-        press("quick question", "\r");
-        await Bun.sleep(0);
+        expect(stripAnsi(a.footer(160))).toContain("Stashed · ctrl+s on an empty prompt brings it back");
+        // A prompt, a command, and a prompt waiting on its images all go out without bringing it back.
+        press("quick question", "\r", "/help", "\r");
+        a.attachWaitMs = 5;
+        press("with an image ");
+        a.preparing.set(app.editor.reserveImage(), new Promise(() => {}));
+        await a.submit();
+        expect(app.editor.text).toBe("");
+        expect(app.editor.stashes).toEqual(["!ls -la"]);
+        press("\x13");
         expect(app.editor.text).toBe("ls -la");
         expect(a.inputMode).toBe("bash");
         expect(app.editor.stashes).toEqual([]);
@@ -361,7 +367,7 @@ describe("the stash key", () => {
         await runCommand(app, "/stash");
         expect(text()).toContain("Nothing is stashed. ctrl+s puts the prompt away");
         press("oldest", "\x13", "!", "ls", "\x13", "newest", "\x13");
-        // Typed and sent like any command: that isn't a prompt going out, so none of them comes back for it.
+        // Typed and sent like any command.
         press("/stash", "\r");
         for (let i = 0; i < 50 && !a.dialogs.length; i++) await Bun.sleep(5);
         expect(app.editor.text).toBe("");
@@ -389,25 +395,6 @@ describe("the stash key", () => {
         await again;
         expect(app.editor.stashes).toEqual([]);
         expect(a.dialogs).toHaveLength(0);
-    });
-
-    test("a prompt waiting on its images: the stash comes back once it goes, never over something typed since or a prompt handed back", async () => {
-        for (const how of ["sent", "typed since", "cancelled"] as const) {
-            const { app, a, press } = testApp();
-            a.submitText = async () => {};
-            a.attachWaitMs = 5;
-            press("keep me", "\x13", "send me ");
-            a.preparing.set(app.editor.reserveImage(), new Promise(() => {}));
-            const submit = a.submit();
-            // Still stashed while the images are read: Esc there hands the prompt back to the box.
-            expect(app.editor.text).toBe("");
-            expect(app.editor.stashes).toEqual(["keep me"]);
-            if (how === "typed since") app.editor.insert("typed since");
-            if (how === "cancelled") a.pendingSubmit.cancel();
-            await submit;
-            expect(app.editor.text).toStartWith(how === "sent" ? "keep me" : how === "typed since" ? "typed since" : "send me ");
-            expect(app.editor.stashes).toEqual(how === "sent" ? [] : ["keep me"]);
-        }
     });
 
     test("unbound, the key is gone from the help and the stashed line", () => {
