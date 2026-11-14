@@ -1,0 +1,174 @@
+/* ---- Settings → Appearance → Theme (ThemeGallery.tsx) ---- */
+.tg-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(calc(136 * var(--sp)), 1fr));
+    gap: calc(14 * var(--sp)) calc(12 * var(--sp));
+    padding: calc(14 * var(--sp));
+}
+
+.tg-tile {
+    position: relative;
+    min-width: 0;
+}
+
+.tg-pick {
+    display: flex;
+    flex-direction: column;
+    gap: calc(7 * var(--sp));
+    width: 100%;
+    font-size: 0.929rem;
+    font-weight: 500;
+    color: var(--fg-2);
+    text-align: left;
+}
+
+.tg-tile.on .tg-pick {
+    color: var(--fg);
+}
+
+.tg-pick:disabled {
+    cursor: default;
+    opacity: 0.55;
+}
+
+.tg-pv {
+    position: relative;
+    display: grid;
+    place-items: center;
+    aspect-ratio: 16 / 10;
+    border-radius: calc(10 * var(--sp));
+    overflow: hidden;
+    color: var(--fg-3);
+    box-shadow: 0 0 0 0.5px var(--line);
+    transition: box-shadow 200ms;
+}
+
+.tg-tile:not(.on) .tg-pick:hover:not(:disabled) .tg-pv {
+    box-shadow: 0 0 0 0.5px var(--fg-4);
+}
+
+.tg-tile.on .tg-pv {
+    box-shadow: 0 0 0 2px var(--accent);
+}
+
+.tg-make .tg-pv {
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+    background: var(--sheet-2);
+}
+
+.tg-err {
+    margin-top: calc(-5 * var(--sp));
+    font-size: 0.786rem;
+    font-weight: 400;
+    color: var(--danger);
+}
+
+.tg-name {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+/* The window in miniature: the scene (or the app's own backdrop), the rail, and a few lines and the composer. */
+.tg-face {
+    position: absolute;
+    inset: 0;
+    background: var(--sheet);
+}
+
+.tg-face[data-theme] {
+    background: var(--backdrop);
+}
+
+.tg-scene {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+}
+
+.tg-stage {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 1600px;
+    height: 1000px;
+    transform-origin: 0 0;
+}
+
+.tg-stage > img {
+    position: absolute;
+    display: block;
+}
+
+.tg-ui {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    grid-template-columns: 26% 1fr;
+}
+
+.tg-ui i {
+    border-right: 0.5px solid var(--line);
+    background: linear-gradient(var(--rail-sel), var(--rail-sel)) calc(4 * var(--sp)) calc(14 * var(--sp)) / calc(100% - 8 * var(--sp)) calc(6 * var(--sp)) no-repeat;
+}
+
+.tg-ui u {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: calc(4 * var(--sp));
+    padding: calc(8 * var(--sp)) 18%;
+}
+
+.tg-ui b {
+    height: calc(3 * var(--sp));
+    border-radius: 2px;
+    background: var(--fg-3);
+    opacity: 0.7;
+}
+
+.tg-ui b + b {
+    width: 70%;
+}
+
+.tg-ui s {
+    height: calc(12 * var(--sp));
+    margin-top: calc(3 * var(--sp));
+    border-radius: calc(5 * var(--sp));
+    background: var(--card);
+    box-shadow: inset 0 0 0 0.5px var(--card-stroke);
+}
+
+.tg-kind {
+    position: absolute;
+    top: calc(5 * var(--sp));
+    right: calc(5 * var(--sp));
+    display: grid;
+    place-items: center;
+    width: calc(16 * var(--sp));
+    height: calc(16 * var(--sp));
+    border-radius: 50%;
+    color: var(--fg-2);
+    background: var(--ctl-strong);
+}
+
+.tg-del {
+    position: absolute;
+    top: calc(-6 * var(--sp));
+    right: calc(-6 * var(--sp));
+    display: grid;
+    place-items: center;
+    width: calc(20 * var(--sp));
+    height: calc(20 * var(--sp));
+    border-radius: 50%;
+    color: var(--fg-2);
+    background: var(--ctl-strong);
+    box-shadow: var(--ctl-shadow);
+    opacity: 0;
+    transition: opacity var(--dur-fast);
+}
+
+.tg-tile:hover .tg-del,
+.tg-del:focus-visible {
+    opacity: 1;
+}

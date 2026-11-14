@@ -1,10 +1,10 @@
-// What an agent that made a theme gets to see of it (theme_set): the window as it shows it, at rest and not working,
+// What an agent that made a theme gets to see of it (theme_set): the window as it shows it, mid-motion and not working,
 // with the veil over the scene and the app sketched where it sits, in the theme's own colours. Made-up text and
 // sessions only: nothing of the user's is drawn.
 
 import type { Look } from "../../../src/themes/format";
 import { STAGE } from "../../../src/themes/format";
-import { drawLayers, loadLayers } from "./theme-draw";
+import { drawLayers, loadLayers, poseAtPhase } from "./theme-draw";
 
 /** The picture's scale from the stage: 1200 × 750. */
 const K = 4 / 3;
@@ -40,7 +40,8 @@ export async function themePicture(look: Look, vars: Record<string, string>, vei
     const { images } = await loadLayers(layers);
     ctx.fillStyle = look.colors.background;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    drawLayers(ctx, layers, images, K, (l) => l.when !== "working");
+    // Half way through its motion, where things that fade in at the ends of their loop are showing.
+    drawLayers(ctx, layers, images, K, (l) => l.when !== "working", poseAtPhase(0.5));
     if (veil && layers.length) {
         const map = new Image();
         map.src = veil;

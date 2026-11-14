@@ -2,13 +2,13 @@
 // window's text at WCAG AA, the veil over a scene is enough wherever text can sit, a scene moves only on the
 // compositor and on the window's 50 ms grid, and the tools save, show and explain.
 
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { BUILTINS } from "../src/themes/builtin";
 import { contrast, mix, over, parseHex, type Rgb } from "../src/themes/color";
-import { checkTheme, lookFor, onlyScheme, svgProblem, type Theme } from "../src/themes/format";
+import { checkTheme, lookFor, onlyScheme, svgProblem, withNamespace, type Theme } from "../src/themes/format";
 import { palette, veilFor, veilMap, WINDOW_TEXT } from "../src/themes/palette";
 import { listThemes, removeTheme, restoreTheme, saveTheme } from "../src/themes/store";
 import { STEP_MS } from "../gui/src/lib/stream-clock";
@@ -68,6 +68,30 @@ describe("checking a theme", () => {
         expect(svgProblem('<svg><rect fill="url(#g)"/><use href="#a"/><image href="data:image/png;base64,AA"/></svg>')).toBeUndefined();
     });
 
+    test("an SVG that would animate itself is refused: an image runs it every frame, out of the window's reach", () => {
+        for (const svg of [
+            '<svg><rect><animate attributeName="x" dur="1s" repeatCount="indefinite"/></rect></svg>',
+            '<svg><rect><set attributeName="fill" to="#fff"/></rect></svg>',
+            '<svg><g><s:animateTransform type="rotate"/></g></svg>',
+            "<svg><style>@keyframes a{to{opacity:0}} rect{animation:a 1s infinite}</style><rect/></svg>",
+            '<svg><rect style="transition: opacity 1s"/></svg>',
+            "<svg><style>rect{\\61nimation:a 1s}</style><rect/></svg>",
+        ]) expect(svgProblem(svg)).toBeDefined();
+    });
+
+    test("a crafted SVG can't keep the check busy (each check is a scan, not a pattern that backtracks)", () => {
+        const comments = "<!--a-->".repeat(60) + "<x></svg>";
+        const tags = "<svg ".repeat(24_000);
+        const started = performance.now();
+        expect(svgProblem(comments)).toContain("isn't one <svg>");
+        withNamespace(tags);
+        checkTheme(minimal({ dark: { colors: { background: "#101418", text: "#eef2f6" }, layers: [{ svg: tags }] } }));
+        expect(performance.now() - started).toBeLessThan(500);
+        // Comments before the root are still fine.
+        expect(svgProblem("<?xml version=\"1.0\"?><!-- a --><!-- b --><svg viewBox='0 0 1 1'></svg>")).toBeUndefined();
+        expect(withNamespace("<!-- <svg> --><svg viewBox='0 0 1 1'></svg>")).toBe('<!-- <svg> --><svg xmlns="http://www.w3.org/2000/svg" viewBox=\'0 0 1 1\'></svg>');
+    });
+
     test("keyframes timed with at must start at 0, end at 1 and go forward", () => {
         const motion = (keyframes: unknown[]) => minimal({ dark: { colors: { background: "#101418", text: "#eef2f6" }, layers: [{ svg: SVG, motion: { duration: 4, keyframes } }] } });
         expect(checkTheme(motion([{ at: 0 }, { at: 1 }])).problems).toEqual([]);
@@ -101,6 +125,30 @@ describe("a theme's palette", () => {
                 }
             }
         }
+    });
+
+    test("in any look the check lets through, the window's text reads as shown (rounded to hex), with room to spare on a scene", () => {
+        let seed = 7;
+        const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+        const hex = () => `#${Array.from({ length: 3 }, () => Math.floor(rand() * 256).toString(16).padStart(2, "0")).join("")}`;
+        let tried = 0;
+        while (tried < 1500) {
+            const scheme = rand() < 0.5 ? "light" : "dark";
+            const look = { colors: { background: hex(), text: hex(), accent: hex() } };
+            if (checkTheme({ name: "R", [scheme]: look }).problems.length) continue;
+            tried++;
+            const p = palette(look, scheme);
+            for (const name of WINDOW_TEXT) {
+                const v = p.vars[name];
+                if (v) expect(`${look.colors.background}/${look.colors.text}/${name}: ${contrast(parseHex(v), p.background) >= 4.5}`).toEndWith("true");
+            }
+            // A scene of the background's own colour needs no veil.
+            expect(veilFor(p.text, p.background, [p.background])).toBe(0);
+            expect(contrast(parseHex(p.vars["--accent-ink"]!), parseHex(look.colors.accent))).toBeGreaterThanOrEqual(4.5);
+        }
+        // The look that once needed a 96% veil over its own background.
+        const p = palette({ colors: { background: "#98ca27", text: "#1f4134" } }, "light");
+        expect(veilFor(p.text, p.background, [p.background])).toBe(0);
     });
 
     test("moves a status colour that wouldn't read toward the text, keeping its hue as far as it can", () => {
@@ -165,6 +213,17 @@ describe("the veil over a scene", () => {
 });
 
 describe("a scene's motion", () => {
+    test("the veil is measured at every keyframe and through the loop, not only at rest", async () => {
+        const { phases, poseAtPhase } = await import("../gui/src/lib/theme-draw");
+        const fade = { svg: SVG, motion: { duration: 10, keyframes: [{ at: 0, opacity: 0 }, { at: 0.05, opacity: 1 }, { at: 0.9, opacity: 1 }, { at: 1, opacity: 0 }] } };
+        const at = phases([{ svg: SVG }, fade]);
+        expect(at).toContain(0.05);
+        expect(at).toContain(0.5);
+        expect(Math.max(...at.map((t) => poseAtPhase(t)(fade).opacity))).toBe(1);
+        expect(phases([{ svg: SVG }])).toEqual([0]);
+        expect(phases(Array.from({ length: 40 }, (_, i) => ({ svg: SVG, motion: { duration: 5, keyframes: [{ at: 0 }, { at: (i + 1) / 50 }, { at: 1 }] } }))).length).toBeLessThanOrEqual(16);
+    });
+
     test("is transform and opacity only, in whole steps of the window's grid, from a start on it", () => {
         for (const duration of [0.5, 1.6, 3.2, 7, 13.7, 240]) {
             const a = layerAnimation({ duration, keyframes: [{ x: -10 }, { x: 10, opacity: 0.5 }], delay: -3.33 }, "t");
@@ -226,7 +285,15 @@ describe("the theme files", () => {
 
 describe("the theme tools", () => {
     const home = mkdtempSync(join(tmpdir(), "cavvy-home-"));
-    process.env.CAVVY_HOME = home;
+    const was = process.env.CAVVY_HOME;
+    beforeAll(() => {
+        process.env.CAVVY_HOME = home;
+    });
+    afterAll(() => {
+        if (was === undefined) delete process.env.CAVVY_HOME;
+        else process.env.CAVVY_HOME = was;
+        rmSync(home, { recursive: true, force: true });
+    });
 
     async function tools() {
         return import("../src/themes/tools");
@@ -294,14 +361,37 @@ describe("the theme tools", () => {
         expect(existsSync(join(home, "themes", "later.json"))).toBe(true);
     });
 
-    test("ThemeList names the built-ins and the user's own, and says how to make one; with an id, its JSON", async () => {
+    test("ThemeList names the built-ins and the user's own, and says how to make one", async () => {
         const { themeList } = await tools();
+        saveTheme("listed", checkTheme(minimal({ name: "Listed" })).theme!, join(home, "themes"));
         const all = (await themeList({})).text;
         for (const b of BUILTINS) expect(all).toContain(`- ${b.id}: ${b.name}`);
-        expect(all).toContain("- night: Test (dark)");
+        expect(all).toContain("- listed: Listed (dark)");
         expect(all).toContain("How to make a Cavvy theme");
-        const one = await themeList({ id: "meadow" });
-        expect(checkTheme(JSON.parse(one.text)).problems).toEqual([]);
+    });
+
+    test("a theme's JSON comes without its long layers, which can be read one at a time or reused by reference", async () => {
+        const { themeList, themeSet } = await tools();
+        const full = await BUILTINS.find((b) => b.id === "night-rain")!.load();
+        const one = (await themeList({ id: "night-rain" })).text;
+        expect(one.length).toBeLessThan(15_000);
+        const short = JSON.parse(one) as Theme;
+        expect(short.dark!.colors).toEqual(full.dark!.colors);
+        const long = full.dark!.layers!.findIndex((l) => l.svg.length > 1500);
+        expect(short.dark!.layers![long]!.svg).toContain(`"night-rain:dark:${long}"`);
+        expect((await themeList({ id: "night-rain", layer: `dark.${long}` })).text).toBe(full.dark!.layers![long]!.svg);
+        expect((await themeList({ id: "night-rain", layer: "dark.99" })).isError).toBe(true);
+        // Night Rain in purple: its colours changed, its layers reused as they are, one moved.
+        const ui = { showTheme: async () => ({ sent: 1, report: { request: "r", shown: true, scheme: "dark" as const } }) };
+        const layers = full.dark!.layers!.map((_, i) => ({ copy: `night-rain:dark:${i}`, ...(i === long ? { x: 40 } : {}) }));
+        const r = await themeSet({ id: "purple-rain", theme: { name: "Purple Rain", dark: { colors: { background: "#140c1f", text: "#efe8f8", accent: "#b48cff" }, layers } } }, { ui });
+        expect(r.isError).toBeUndefined();
+        const saved = JSON.parse(readFileSync(join(home, "themes", "purple-rain.json"), "utf8")) as Theme;
+        expect(saved.dark!.layers![0]!.svg).toBe(full.dark!.layers![0]!.svg);
+        expect(saved.dark!.layers![long]!.x).toBe(40);
+        const bad = await themeSet({ id: "bad-copy", theme: { name: "B", dark: { colors: { background: "#101418", text: "#eef2f6" }, layers: [{ copy: "nope:dark:0" }, { copy: "night-rain" }] } } }, { ui });
+        expect(bad.text).toContain("layers[0].copy");
+        expect(bad.text).toContain("layers[1].copy must be");
     });
 });
 

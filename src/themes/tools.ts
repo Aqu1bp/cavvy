@@ -26,7 +26,7 @@ Cavvy works out every other colour (dimmer text, cards, lines, popovers, diff an
 
 Layer = { "svg": "<svg …>…</svg>", "x": 0, "y": 0, "width": ${STAGE.width}, "height": ${STAGE.height}, "opacity": 1, "origin": [0.5, 0.5], "motion": Motion, "when": "working" }
 - Layers sit on a ${STAGE.width} × ${STAGE.height} stage scaled to cover the window (the edges are cropped when the window's shape differs; a 1440 × 900 window shows it all). x, y, width and height are in stage units; the default is the whole stage. A box may reach past the stage (a rain sheet taller than it, a cloud drifting in from off the edge). origin is the point rotate and scale turn about, as fractions of the box: [0.5, 1] is the middle of its bottom edge.
-- Each svg is a still picture, drawn as an image: no scripts, no external links or fonts, no CSS or SMIL animation (it won't move). Gradients, paths, patterns, masks and filters are fine; <text> works in the system's fonts, though words behind a conversation distract. Give it a viewBox; preserveAspectRatio="none" makes it fill its box exactly.
+- Each svg is a still picture, drawn as an image: no scripts, no external links or fonts, no CSS or SMIL animation (<animate>, @keyframes and transitions are refused: move layers with motion). Gradients, paths, patterns, masks and filters are fine; <text> works in the system's fonts, though words behind a conversation distract. Give it a viewBox; preserveAspectRatio="none" makes it fill its box exactly.
 - An svg with a filter (a blur, a glow) is drawn at its own size and then scaled, so it goes soft when its box is bigger than its width and height: give it width and height near its box, and keep crisp shapes in a layer of their own, without the filter.
 - Make the first layer a full-stage picture that doesn't move (sky, walls, ground). Make each moving thing its own small layer with a box just big enough for it: the compositor moves it without redrawing anything. Every moving layer holds its picture in graphics memory for as long as the theme shows, so a few full-stage moving layers are fine and dozens are not: group small things that move together into one layer.
 - Up to ${LIMITS.layers} layers, ${LIMITS.svg} characters per svg, ${LIMITS.total} in all.
@@ -46,7 +46,7 @@ Making it look good
 - Choose the background from the scene's own colours, and an accent that belongs to it.
 - Give it depth: two or three planes moving at different speeds (far slow, near faster).
 
-theme_set saves it under an id (lowercase letters, digits and hyphens) and shows it at once. Saving again under the same id replaces it, and the window changes as you go: show a first version early, then refine it. To start from an existing theme, theme_list with its id gives its JSON.`;
+theme_set saves it under an id (lowercase letters, digits and hyphens) and shows it at once. Saving again under the same id replaces it, and the window changes as you go: show a first version early, then refine it. To start from an existing theme (built in or the user's), theme_list with its id gives its JSON, long layers left out; theme_list with id and layer ("dark.3") gives one layer's SVG. To reuse a layer without writing it out, give { "copy": "<id>:<light or dark>:<index>" } in its place, with any other layer keys to change (x, opacity, motion…): "night-rain:dark:4".`;
 
 const served = (text: string) => text.replaceAll("ThemeList", "theme_list").replaceAll("ThemeSet", "theme_set");
 
@@ -59,12 +59,78 @@ async function themeById(id: string): Promise<{ theme?: Theme; problems?: string
     return e.theme ? { theme: e.theme } : { problems: e.problems };
 }
 
+/** An SVG longer than this is left out of a theme's JSON (ThemeList with an id), with how to get it: a theme can run to 150,000 characters. */
+const SHORT_SVG = 1500;
+
+/** "dark.3" or "dark:3": a look and a layer's index in it. */
+function layerRef(ref: string): { scheme: "light" | "dark"; index: number } | undefined {
+    const m = /^(light|dark)[.:](\d{1,3})$/.exec(ref.trim());
+    return m ? { scheme: m[1] as "light" | "dark", index: Number(m[2]) } : undefined;
+}
+
+/** The theme's JSON with its long SVGs left out, each replaced by a note saying how to read it or reuse it. */
+function abbreviated(id: string, theme: Theme): string {
+    const short = { ...theme } as Record<string, unknown>;
+    for (const scheme of ["light", "dark"] as const) {
+        const look = theme[scheme];
+        if (!look?.layers) continue;
+        short[scheme] = {
+            ...look,
+            layers: look.layers.map((l, i) => (l.svg.length > SHORT_SVG ? { ...l, svg: `(${l.svg.length} characters: ThemeList with id "${id}" and layer "${scheme}.${i}" gives it; in ThemeSet, {"copy": "${id}:${scheme}:${i}"} reuses the layer)` } : l)),
+        };
+    }
+    return JSON.stringify(short);
+}
+
+/**
+ * The theme with each layer given as {"copy": "<id>:<look>:<index>", …} replaced by that layer of that theme, the
+ * other keys given laid over it: so an agent can reuse a long layer without writing it out again.
+ */
+async function withCopies(raw: unknown): Promise<{ theme: unknown; problems: string[] }> {
+    const problems: string[] = [];
+    if (!raw || typeof raw !== "object") return { theme: raw, problems };
+    const out = { ...(raw as Record<string, unknown>) };
+    const themes = new Map<string, Theme | undefined>();
+    for (const scheme of ["light", "dark"] as const) {
+        const look = out[scheme] as Record<string, unknown> | undefined;
+        if (!look || typeof look !== "object" || !Array.isArray(look.layers)) continue;
+        const layers: unknown[] = [];
+        for (const [i, l] of look.layers.entries()) {
+            const copy = l && typeof l === "object" ? (l as Record<string, unknown>).copy : undefined;
+            if (copy === undefined) {
+                layers.push(l);
+                continue;
+            }
+            const m = typeof copy === "string" ? /^([a-z0-9][a-z0-9-]{0,47}):(light|dark):(\d{1,3})$/.exec(copy.trim()) : null;
+            if (!m) {
+                problems.push(`${scheme}.layers[${i}].copy must be "<theme id>:<light or dark>:<layer index>", like "night-rain:dark:4"`);
+                continue;
+            }
+            if (!themes.has(m[1]!)) themes.set(m[1]!, (await themeById(m[1]!)).theme);
+            const from = themes.get(m[1]!)?.[m[2] as "light" | "dark"]?.layers?.[Number(m[3])];
+            if (!from) {
+                problems.push(`${scheme}.layers[${i}].copy: "${copy}" isn't a layer of a theme there is`);
+                continue;
+            }
+            const { copy: _, ...rest } = l as Record<string, unknown>;
+            layers.push({ ...from, ...rest });
+        }
+        out[scheme] = { ...look, layers };
+    }
+    return { theme: out, problems };
+}
+
 export async function themeList(input: Record<string, unknown>): Promise<{ text: string; isError?: boolean }> {
     if (typeof input.id === "string" && input.id.trim()) {
         const id = input.id.trim();
         if (!ID.test(id)) return { text: `No theme "${id}". ThemeList with no id lists them.`, isError: true };
         const { theme, problems } = await themeById(id);
-        if (theme) return { text: JSON.stringify(theme) };
+        if (theme && typeof input.layer === "string" && input.layer.trim()) {
+            const ref = layerRef(input.layer);
+            const layer = ref && theme[ref.scheme]?.layers?.[ref.index];
+            return layer ? { text: layer.svg } : { text: `"${id}" has no layer "${input.layer}": give it as "dark.0", "light.2" and so on.`, isError: true };
+        }
+        if (theme) return { text: abbreviated(id, theme) };
         return { text: problems?.[0]?.startsWith("can't be read") ? `No theme "${id}". ThemeList with no id lists them.` : `The theme file "${id}" doesn't check out:\n- ${problems?.join("\n- ")}`, isError: true };
     }
     const mine = listThemes();
@@ -123,7 +189,9 @@ export async function themeSet(input: Record<string, unknown>, ctx: Pick<ToolCon
                 return { text: `theme isn't JSON: ${(e as Error).message}`, isError: true };
             }
         }
-        const checked = checkTheme(raw);
+        const copies = await withCopies(raw);
+        if (copies.problems.length) return { text: `Not saved. To fix:\n- ${copies.problems.join("\n- ")}`, isError: true };
+        const checked = checkTheme(copies.theme);
         if (!checked.theme) return { text: `Not saved. To fix:\n- ${checked.problems.join("\n- ")}`, isError: true };
         theme = checked.theme;
         path = saveTheme(id, theme);
@@ -136,7 +204,7 @@ export async function themeSet(input: Record<string, unknown>, ctx: Pick<ToolCon
     const r = await show(id, entry);
     const only = onlyScheme(theme);
     const picture = r.report?.shown ? r.report.picture : undefined;
-    const text = outcome(theme.name, r, path) + (only && r.report?.shown ? ` It has a ${only} look only, so the window is ${only} while it shows.` : "") + (picture ? "\n\nThe picture is the window with it on, at rest and not working, the app sketched over it with made-up text. Check the text reads, the middle stays calm and the scene looks as you meant; then refine and set it again." : "");
+    const text = outcome(theme.name, r, path) + (only && r.report?.shown ? ` It has a ${only} look only, so the window is ${only} while it shows.` : "") + (picture ? "\n\nThe picture is the window with it on, mid-motion and not working, the app sketched over it with made-up text. Check the text reads, the middle stays calm and the scene looks as you meant; then refine and set it again." : "");
     return { text, summary: theme.name, ...(picture ? { picture } : {}) };
 }
 
@@ -150,7 +218,13 @@ const asResult = (r: { text: string; isError?: boolean; summary?: string; pictur
 const LIST_DESCRIPTION = "List Cavvy's themes (built in, and the user's own), with how to make one; with an id, that theme's JSON. Call it before making or changing a theme.";
 const SET_DESCRIPTION = `Change how Cavvy's window looks: show a theme by id, or make one by giving its JSON as theme (saved under id, replacing one of the user's own of that id), or id "none" to turn the theme off. ThemeList gives the format; read it first. Answers how it came out in the window, or what to fix.`;
 
-const LIST_SCHEMA = { type: "object", properties: { id: { type: "string", description: "A theme's id, for its JSON." } } };
+const LIST_SCHEMA = {
+    type: "object",
+    properties: {
+        id: { type: "string", description: "A theme's id, for its JSON (long layers left out)." },
+        layer: { type: "string", description: 'With id: one layer\'s SVG, as "dark.0", "light.2" and so on.' },
+    },
+};
 const SET_SCHEMA = {
     type: "object",
     properties: {
@@ -160,7 +234,7 @@ const SET_SCHEMA = {
     required: ["id"],
 };
 
-export const ThemeListTool: Tool<{ id?: string }> = {
+export const ThemeListTool: Tool<{ id?: string; layer?: string }> = {
     name: "ThemeList",
     description: LIST_DESCRIPTION,
     parameters: LIST_SCHEMA,

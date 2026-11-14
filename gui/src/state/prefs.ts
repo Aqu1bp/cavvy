@@ -38,6 +38,9 @@ const bootForced = () => {
 };
 export const [forcedScheme, setForcedScheme] = createSignal<"light" | "dark" | undefined>(bootForced());
 
+/** What Settings needs to know of the theme showing (state/theme.ts sets it): kept here so Settings doesn't load the theme code. */
+export const [themeTraits, setThemeTraits] = createSignal<{ name: string; scened: boolean; accent: boolean } | undefined>(undefined);
+
 /** The scheme the window's own setting asks for, whatever a theme makes it. */
 export function chosenScheme(): "light" | "dark" {
     return prefs.scheme === "system" ? (systemDark() ? "dark" : "light") : prefs.scheme;

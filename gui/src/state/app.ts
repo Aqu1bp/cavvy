@@ -781,6 +781,8 @@ function recheckUpdate() {
 async function themeApplied(id: string | null, entry: ThemeEntry | undefined, request: string) {
     const m = await import("./theme");
     if (entry) m.addThemeEntry(entry);
+    // One of the user's own, shown by id in a window that hasn't had the list yet: the list first, or it can't show.
+    else if (id && !m.listKnown()) await refreshThemes().catch(() => undefined);
     m.applyTheme(id ?? undefined);
     const still = !prefs.themeMotion || matchMedia("(prefers-reduced-motion: reduce)").matches;
     const drawn = id ? await m.whenDrawn(id) : undefined;
@@ -793,10 +795,10 @@ async function themeApplied(id: string | null, entry: ThemeEntry | undefined, re
 
 /** The user's themes, from the server: read when a window connects, kept up to date by themes.changed. */
 export async function refreshThemes() {
-    const list = await rpc.call("themes.list", {});
-    // Nothing to load when no theme is chosen and the gallery isn't open: the list is asked for again when it opens.
     const m = await import("./theme");
-    m.setThemeEntries(list);
+    // A window on a server: this device's own theme, not the server's list (themes are per device).
+    if (machine) return void m.setThemeEntries(m.localThemes());
+    m.setThemeEntries(await rpc.call("themes.list", {}));
 }
 
 let keybindingsLoaded = false;
@@ -959,9 +961,12 @@ function onEvent(ev: ServerEvent) {
             keybindingsChanged(ev.keybindings);
             return;
         case "themes.changed":
+            // A server's own themes: a window on it shows this device's (refreshThemes).
+            if (machine) return;
             void import("./theme").then((m) => {
                 const { problem, id } = m.setThemeEntries(ev.themes);
-                if (problem && id) toast(`${m.themeName(id)} has a problem: ${problem}`, "warn");
+                // What's wrong is on its tile in Settings → Appearance; the window keeps its last good look meanwhile.
+                if (problem && id) toast(`${m.themeName(id)} has an error`, "warn", { label: "Show", run: () => void setSettingsTab("appearance") });
             });
             return;
         case "theme.apply":

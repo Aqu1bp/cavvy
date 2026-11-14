@@ -8,9 +8,29 @@ import type { ThemeEntry } from "@shared/protocol";
 import { builtin, BUILTINS } from "../../../src/themes/builtin";
 import { lookFor, onlyScheme, type Look, type Scheme, type Theme } from "../../../src/themes/format";
 import { palette, type Palette } from "../../../src/themes/palette";
-import { chosenScheme, prefs, setForcedScheme, setPrefs } from "./prefs";
+import { chosenScheme, prefs, setForcedScheme, setPrefs, setThemeTraits } from "./prefs";
+import { machine } from "../lib/platform";
 
 const CACHE = "cavvy.theme";
+/**
+ * The user's own theme showing, whole: a window on a server is the same page with the same preferences, but asks
+ * that server for its lists, which doesn't have this device's themes. It shows this copy instead (themes are per
+ * device). Read only there, so a start here doesn't pay for parsing it.
+ */
+const MINE = "cavvy.theme.mine";
+
+/** In a window on a server: this device's own theme as the window here last showed it. */
+export function localThemes(): ThemeEntry[] {
+    try {
+        const v = JSON.parse(localStorage.getItem(MINE) ?? "null") as ThemeEntry | null;
+        return v?.id && v.theme ? [v] : [];
+    } catch {
+        return [];
+    }
+}
+
+/** Whether the server's list has come (a user theme can't be shown before it has). */
+export const listKnown = () => entries() !== undefined;
 
 /** The user's themes as the server last listed them; undefined until it has. */
 const [entries, setEntries] = createSignal<ThemeEntry[] | undefined>(undefined);
@@ -102,8 +122,12 @@ export function setThemeEntries(list: ThemeEntry[]) {
     const after = list.find((e) => e.id === id);
     batch(() => {
         setEntries(list);
-        // Deleted outside the window: nothing to show. One that doesn't check out keeps its last good look (resolve).
-        if (id && !builtin(id) && !after && !lastGood.has(id)) setPrefs("themeId", undefined);
+        // Deleted (here, in another window, by hand or by an agent): nothing to show. One that's there but doesn't
+        // check out keeps its last good look (resolve).
+        if (id && !builtin(id) && !after) {
+            lastGood.delete(id);
+            setPrefs("themeId", undefined);
+        }
     });
     return { problem: after?.problems && JSON.stringify(after.problems) !== JSON.stringify(before?.problems) ? after.problems[0] : undefined, id };
 }
@@ -114,14 +138,25 @@ export function addThemeEntry(entry: ThemeEntry) {
     setEntries([...list.filter((e) => e.id !== entry.id), entry].sort((a, b) => a.id.localeCompare(b.id)));
 }
 
+/** A user theme's last version that checked out, while its file doesn't: what its tile shows. */
+export const keptTheme = (id: string) => lastGood.get(id);
+
 /** The name a theme goes by, for what the window says. */
 export function themeName(id: string): string {
     return loaded()[id]?.name ?? builtin(id)?.name ?? entries()?.find((e) => e.id === id)?.theme?.name ?? lastGood.get(id)?.name ?? id;
 }
 
 createRoot(() => {
-    // The palette on <html>: written once per change, and the names no longer set taken away.
-    let applied: string[] = [];
+    // The palette on <html>: written once per change, and the names no longer set taken away. At first, the names
+    // theme-boot.js set from the cache: a theme gone since the last start takes its colours with it.
+    let applied: string[] = (() => {
+        try {
+            const v = JSON.parse(localStorage.getItem(CACHE) ?? "null") as { vars?: Record<string, Record<string, string> | undefined> } | null;
+            return [...new Set([...Object.keys(v?.vars?.light ?? {}), ...Object.keys(v?.vars?.dark ?? {})])];
+        } catch {
+            return [];
+        }
+    })();
     const root = document.documentElement;
     createEffect(() => {
         const c = current();
@@ -133,14 +168,22 @@ createRoot(() => {
         applied = Object.keys(vars);
         if (s) root.dataset.themed = s.look.layers?.length ? "scene" : "colors";
         else delete root.dataset.themed;
+        setThemeTraits(s ? { name: s.theme.name, scened: Boolean(s.look.layers?.length), accent: Boolean(s.look.colors.accent) } : undefined);
         const only = c.state === "ready" ? onlyScheme(c.theme) : undefined;
         if (only) root.dataset.themeOnly = only;
         else delete root.dataset.themeOnly;
         setForcedScheme(only);
         // For the next start's first paint (theme-boot.js): the palette for each scheme the theme has.
         try {
-            if (c.state !== "ready") localStorage.removeItem(CACHE);
-            else {
+            if (c.state !== "ready") {
+                localStorage.removeItem(CACHE);
+                if (!machine) localStorage.removeItem(MINE);
+            } else {
+                // Kept whole for a window on a server; written only when it's another theme or a new version of it.
+                if (!machine && !builtin(c.id)) {
+                    const mine = JSON.stringify({ id: c.id, theme: c.theme });
+                    if (localStorage.getItem(MINE) !== mine) localStorage.setItem(MINE, mine);
+                } else if (!machine) localStorage.removeItem(MINE);
                 const o = { high: prefs.contrast === "high", glass: prefs.glass };
                 const forScheme = (sch: Scheme) => (c.theme[sch] ? palette(c.theme[sch]!, sch, o).vars : undefined);
                 localStorage.setItem(CACHE, JSON.stringify({ id: c.id, only, scened: Boolean(s?.look.layers?.length), vars: { light: forScheme("light"), dark: forScheme("dark") } }));

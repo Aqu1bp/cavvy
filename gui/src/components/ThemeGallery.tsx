@@ -11,9 +11,11 @@ import { layerAnimation, restPose, transformOf } from "../lib/theme-motion";
 import { refreshThemes, reportError, rpc, toast } from "../state/app";
 import { newSession } from "../state/actions";
 import { chosenScheme, prefs } from "../state/prefs";
-import { applyTheme, builtinTheme, loadAllBuiltins, userThemes } from "../state/theme";
+import { applyTheme, builtinTheme, keptTheme, loadAllBuiltins, themeName, userThemes } from "../state/theme";
 import { setHomeDraft, setSettingsTab } from "../state/ui";
 import { svgUrl } from "../lib/theme-draw";
+import { machine } from "../lib/platform";
+import "../styles/theme-gallery.css";
 
 /** What Make one puts in a new session's composer. */
 const ASK = "Make me a Cavvy theme: ";
@@ -98,8 +100,11 @@ function Tile(p: { id?: string; name: string; theme?: Theme; problem?: string; o
                     </Show>
                 </span>
                 <span class="tg-name">{p.name}</span>
+                <Show when={p.problem}>
+                    <span class="tg-err">Has an error</span>
+                </Show>
             </button>
-            <Show when={p.own}>
+            <Show when={p.onDelete}>
                 <button class="tg-del" aria-label={`Delete ${p.name}`} title="Delete" onClick={() => p.onDelete?.()}>
                     <X size={11} />
                 </button>
@@ -137,7 +142,7 @@ export function ThemeGallery(): JSX.Element {
         <div class="tg-grid" role="group" aria-label="Theme">
                 <Tile name="None" />
                 <For each={BUILTINS}>{(b) => <Tile id={b.id} name={b.name} theme={builtinTheme(b.id)} />}</For>
-                <For each={userThemes()}>{(e) => <Tile id={e.id} name={e.theme?.name ?? e.id} theme={e.theme} problem={e.problems?.[0]} own onDelete={() => void remove(e.id, e.theme?.name ?? e.id)} />}</For>
+                <For each={userThemes()}>{(e) => <Tile id={e.id} name={e.theme?.name ?? themeName(e.id)} theme={e.theme ?? keptTheme(e.id)} problem={e.problems?.[0]} own onDelete={machine ? undefined : () => void remove(e.id, e.theme?.name ?? themeName(e.id))} />}</For>
                 <div class="tg-tile">
                     <button
                         class="tg-pick tg-make"

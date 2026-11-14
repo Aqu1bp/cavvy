@@ -105,23 +105,54 @@ export interface Checked {
 
 const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 
+/** Where the root <svg> tag starts, past an XML declaration and comments, or -1. A scan, not a pattern: a pattern over repeated comments backtracks for ages on a crafted file. */
+function rootAt(t: string): number {
+    let i = 0;
+    const skip = () => {
+        while (i < t.length && /\s/.test(t[i]!)) i++;
+    };
+    skip();
+    if (t.startsWith("<?xml", i)) {
+        const end = t.indexOf(">", i);
+        if (end < 0) return -1;
+        i = end + 1;
+        skip();
+    }
+    while (t.startsWith("<!--", i)) {
+        const end = t.indexOf("-->", i + 4);
+        if (end < 0) return -1;
+        i = end + 3;
+        skip();
+    }
+    return /^<svg[\s>]/i.test(t.slice(i, i + 5)) ? i : -1;
+}
+
 /** Why an SVG can't be a layer, or undefined. It's drawn as an image either way: these are told so nothing is silently missing. */
 export function svgProblem(svg: string): string | undefined {
     const t = svg.trim();
-    if (!/^(<\?xml[^>]*>\s*)?(<!--[\s\S]*?-->\s*)*<svg[\s>]/i.test(t) || !/<\/svg>\s*$/i.test(t)) return "isn't one <svg>…</svg> document";
+    if (rootAt(t) < 0 || !/<\/svg>\s*$/i.test(t)) return "isn't one <svg>…</svg> document";
     if (/<script[\s/>]/i.test(t)) return "has a <script>, which an image never runs";
     if (/<foreignObject[\s/>]/i.test(t)) return "has a <foreignObject>, which isn't drawn";
     if (/\son[a-z]+\s*=/i.test(t)) return "has an event handler attribute, which an image never runs";
     if (/(?:href|src)\s*=\s*["']\s*(?!#|data:)/i.test(t)) return "links to something outside itself, which an image can't load: use #ids or data: URLs";
     if (/url\(\s*["']?\s*(?!#|data:)/i.test(t)) return "has a url() outside itself, which an image can't load: use url(#id)";
     if (/@import/i.test(t)) return "has an @import, which an image can't load";
+    // An image runs these on its own, every frame and out of the window's reach: motion goes in the layer's "motion".
+    if (/<(?:[\w-]+:)?(?:animate\w*|set|discard)[\s/>]/i.test(t)) return "animates itself (<animate>, <set>): move the layer with \"motion\" instead";
+    if (/@keyframes|animation|transition/i.test(t)) return "animates itself with CSS: move the layer with \"motion\" instead";
+    // CSS escapes could spell either of the above.
+    if (/\\[0-9a-f]/i.test(t)) return "has a CSS escape (\\ and a hex digit), which a layer doesn't need";
     return undefined;
 }
 
 /** The SVG with the namespace it needs to be drawn as an image. */
 export function withNamespace(svg: string): string {
     const t = svg.trim();
-    return /<svg[^>]*\sxmlns\s*=/i.test(t) ? t : t.replace(/<svg(?=[\s>])/i, '<svg xmlns="http://www.w3.org/2000/svg"');
+    const at = rootAt(t);
+    if (at < 0) return t;
+    const end = t.indexOf(">", at);
+    const tag = t.slice(at, end < 0 ? t.length : end);
+    return /\sxmlns\s*=/i.test(tag) ? t : `${t.slice(0, at)}<svg xmlns="http://www.w3.org/2000/svg"${t.slice(at + 4)}`;
 }
 
 function checkMotion(m: unknown, at: string, problems: string[]): Motion | undefined {
@@ -167,8 +198,9 @@ function checkLayer(l: unknown, at: string, problems: string[]): Layer | undefin
     if (!l || typeof l !== "object") return void problems.push(`${at} must be an object`), undefined;
     const o = l as Record<string, unknown>;
     if (typeof o.svg !== "string" || !o.svg.trim()) return void problems.push(`${at}.svg must be an SVG document`), undefined;
+    // Too long: said, and not looked into further.
     if (o.svg.length > LIMITS.svg) problems.push(`${at}.svg is ${o.svg.length} characters; at most ${LIMITS.svg}`);
-    const bad = svgProblem(o.svg);
+    const bad = o.svg.length > LIMITS.svg ? undefined : svgProblem(o.svg);
     if (bad) problems.push(`${at}.svg ${bad}`);
     const layer: Layer = { svg: withNamespace(o.svg) };
     for (const [key, min, max] of [["x", -3200, 4800], ["y", -3200, 4200], ["width", 1, 6400], ["height", 1, 6400], ["opacity", 0, 1]] as const) {

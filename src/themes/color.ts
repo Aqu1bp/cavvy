@@ -66,10 +66,12 @@ export const BLACK: Rgb = { r: 0, g: 0, b: 0 };
  * hue as it can. `toward` is the theme's text colour: the one that's sure to read.
  */
 export function reach(c: Rgb, bg: Rgb, ratio: number, toward: Rgb): Rgb {
-    if (contrast(c, bg) >= ratio) return c;
+    // Judged as it will be shown: rounded to a hex colour, which can take a hair off the ratio.
+    const shown = (x: Rgb) => parseHex(toHex(x));
+    if (contrast(shown(c), bg) >= ratio) return shown(c);
     for (let k = 0.02; k <= 1; k += 0.02) {
-        const m = mix(toward, c, k);
+        const m = shown(mix(toward, c, k));
         if (contrast(m, bg) >= ratio) return m;
     }
-    return toward;
+    return shown(toward);
 }

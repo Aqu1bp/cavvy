@@ -10,8 +10,7 @@ import { reconcile } from "solid-js/store";
 import { now } from "../lib/clock";
 import { updateView } from "../lib/app-update";
 import { connectCli, editors, refreshEditors } from "../state/actions";
-import { ACCENTS, CHAT_WIDTHS, forcedScheme, prefs, PREF_DEFAULTS, setPrefs, type AccentId, type Scheme } from "../state/prefs";
-import { shown as themeShown } from "../state/theme";
+import { ACCENTS, CHAT_WIDTHS, forcedScheme, prefs, PREF_DEFAULTS, setPrefs, themeTraits, type AccentId, type Scheme } from "../state/prefs";
 
 /** Settings → Appearance → Theme: loaded when Appearance first opens. */
 const ThemeGallery = lazy(() => import("./ThemeGallery").then((m) => ({ default: m.ThemeGallery })));
@@ -391,8 +390,8 @@ function Appearance() {
     const accent = () => prefs.accent ?? "blue";
     const pickAccent = (id: AccentId) => setPrefs("accent", id === "blue" ? undefined : id);
     // What a theme sets, the settings for it step aside for: the window's glass and tint under a scene, the accent it chooses.
-    const scened = () => Boolean(themeShown()?.look.layers?.length);
-    const themeAccent = () => Boolean(themeShown()?.look.colors.accent);
+    const scened = () => Boolean(themeTraits()?.scened);
+    const themeAccent = () => Boolean(themeTraits()?.accent);
     return (
         <div class="ap">
             <Group>Theme</Group>
@@ -415,7 +414,7 @@ function Appearance() {
                     <SchemeTile id="dark" label="Dark" />
                 </div>
                 <Show when={forcedScheme()}>
-                    <p class="ap-note">{`${themeShown()?.theme.name ?? "This theme"} is ${forcedScheme()} only.`}</p>
+                    <p class="ap-note">{`${themeTraits()?.name ?? "This theme"} is ${forcedScheme()} only.`}</p>
                 </Show>
             </div>
 

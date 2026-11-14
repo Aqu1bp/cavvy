@@ -10,6 +10,11 @@ import type { Look, Scheme } from "./format";
 
 /** What text must reach on the window. */
 const AA = 4.5;
+/**
+ * What text that lies straight on a scene reaches on the plain background: a margin over AA, so a scene a little
+ * off the background's tone needs a little veil, not all of it.
+ */
+const ON_SCENE = AA + 0.5;
 
 /** The scheme's own colours for what a theme doesn't choose: tokens.css's values. */
 const KEPT: Record<Scheme, Record<string, string>> = {
@@ -122,15 +127,19 @@ export function palette(look: Look, scheme: Scheme, o: PaletteOptions = {}): Pal
     };
     const text: Rgb[] = [T, fg2, fg3];
     for (const [name, value] of Object.entries(KEPT[scheme])) {
-        const c = reach(parseHex(value), B, AA, T);
+        const c = reach(parseHex(value), B, (WINDOW_TEXT as readonly string[]).includes(name) ? ON_SCENE : AA, T);
         vars[name] = toHex(c);
         if (name === "--ok" || name === "--warn" || name === "--danger") text.push(c);
     }
     if (look.colors.accent) {
         const A = parseHex(look.colors.accent);
         vars["--accent"] = toHex(A);
-        vars["--accent-ink"] = contrast(WHITE, A) >= contrast(parseHex("#0b0b10"), A) ? "#ffffff" : "#0b0b10";
-        const accentText = reach(mix(A, T, dark ? 0.55 : 0.68), B, AA, T);
+        // Near-black where it reads, else pure black: a mid-tone accent can leave both white and near-black under AA.
+        const nearBlack = parseHex("#0b0b10");
+        const w = contrast(WHITE, A);
+        const n = contrast(nearBlack, A);
+        vars["--accent-ink"] = w >= AA && w >= n ? "#ffffff" : n >= AA ? "#0b0b10" : w >= AA ? "#ffffff" : "#000000";
+        const accentText = reach(mix(A, T, dark ? 0.55 : 0.68), B, ON_SCENE, T);
         vars["--accent-text"] = toHex(accentText);
         text.push(accentText);
     }

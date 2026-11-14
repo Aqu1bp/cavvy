@@ -9,10 +9,11 @@ import { STAGE } from "../../../src/themes/format";
 import { veilMap, WINDOW_TEXT } from "../../../src/themes/palette";
 import { parseHex, rgba, type Rgb } from "../../../src/themes/color";
 import { layerAnimation, restPose, transformOf } from "../lib/theme-motion";
-import { boxOf, drawLayers, loadLayers, svgUrl } from "../lib/theme-draw";
+import { boxOf, drawLayers, loadLayers, phases, poseAtPhase, svgUrl } from "../lib/theme-draw";
 import { app } from "../state/app";
 import { prefs } from "../state/prefs";
 import { drawnTheme, sceneKey, shown, type Shown } from "../state/theme";
+import "../styles/theme-backdrop.css";
 
 /** How a scene was measured: its veil as an image to stretch over the stage, how much it covers on average and at most, and the layers that couldn't be drawn. */
 interface Measured {
@@ -28,9 +29,10 @@ const COLS = 16;
 const ROWS = 10;
 
 /**
- * Draws the scene small, at rest, and finds how much of the background must lie over it for the window's text to
- * read (the layers that couldn't be drawn are left out, and said). Each layer's image is decoded on the way, so the
- * scene shows whole when it shows.
+ * Draws the scene small and finds how much of the background must lie over it for the window's text to read: in each
+ * part of the window, the most any pose of its motion needs (a drop falling, a twinkle at its peak), so moving things
+ * never pass behind text unveiled. The layers that couldn't be drawn are left out, and said. Each layer's image is
+ * decoded on the way, so the scene shows whole when it shows.
  */
 async function measure(key: string, look: Look, s: Shown): Promise<Measured> {
     const known = veils.get(key);
@@ -43,28 +45,33 @@ async function measure(key: string, look: Look, s: Shown): Promise<Measured> {
     const layers = look.layers ?? [];
     const { images, failed } = await loadLayers(layers);
     const background = parseHex(look.colors.background);
-    let pixels: Rgb[] = [];
-    if (ctx) {
-        ctx.fillStyle = look.colors.background;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        drawLayers(ctx, layers, images, k);
-        try {
-            const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-            for (let i = 0; i < data.length; i += 4) pixels.push({ r: data[i]!, g: data[i + 1]!, b: data[i + 2]! });
-        } catch {
-            // A picture the canvas may not read back: measured as the worst case below.
-            pixels = [];
-        }
-    }
     const text = WINDOW_TEXT.map((name) => s.palette.vars[name]).filter((v): v is string => typeof v === "string" && v.startsWith("#")).map(parseHex);
     const floor = look.veil ?? 0;
+    let cells: number[] | undefined;
+    if (ctx) {
+        try {
+            for (const t of phases(layers)) {
+                ctx.globalAlpha = 1;
+                ctx.fillStyle = look.colors.background;
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                drawLayers(ctx, layers, images, k, undefined, poseAtPhase(t));
+                const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+                const pixels: Rgb[] = [];
+                for (let i = 0; i < data.length; i += 4) pixels.push({ r: data[i]!, g: data[i + 1]!, b: data[i + 2]! });
+                const these = veilMap(text, background, pixels, canvas.width, canvas.height, COLS, ROWS, floor);
+                cells = cells ? cells.map((a, i) => Math.max(a, these[i]!)) : these;
+            }
+        } catch {
+            // A picture the canvas may not read back: measured as the worst case below.
+            cells = undefined;
+        }
+    }
     let out: Measured;
-    if (!pixels.length) {
+    if (!cells) {
         // A picture the canvas couldn't read back: covered as much as a worst case needs.
         const v = Math.max(floor, 0.86);
         out = { mean: v, most: v, failed };
     } else {
-        const cells = veilMap(text, background, pixels, canvas.width, canvas.height, COLS, ROWS, floor);
         const map = document.createElement("canvas");
         map.width = COLS;
         map.height = ROWS;
@@ -76,7 +83,8 @@ async function measure(key: string, look: Look, s: Shown): Promise<Measured> {
                 m.fillRect(i % COLS, Math.floor(i / COLS), 1, 1);
             });
         }
-        out = { map: map.toDataURL(), mean: Math.round((cells.reduce((n, a) => n + a, 0) / cells.length) * 100) / 100, most: Math.max(...cells), failed };
+        const all = cells;
+        out = { map: map.toDataURL(), mean: Math.round((all.reduce((n, a) => n + a, 0) / all.length) * 100) / 100, most: Math.max(...all), failed };
     }
     veils.set(key, out);
     return out;
@@ -181,15 +189,25 @@ export function ThemeBackdrop(): JSX.Element {
             const list = scenes();
             const top = list.at(-1);
             if (c && top?.key === c.key && !top.leaving()) return;
-            for (const x of list) x.leave();
-            if (!c) return void dropLeft();
+            if (!c) {
+                for (const x of list) x.leave();
+                return void dropLeft();
+            }
+            // The ones under it stay until it has drawn (drawn below), so the window never shows no scene between two.
             const [leaving, setLeaving] = createSignal(false);
             setScenes([...list.filter((x) => x.key !== c.key), { key: c.key, shown: c.shown, leaving, leave: () => setLeaving(true) }]);
         });
     });
-    // Once the newest has drawn, the ones under it go after its fade.
+    // Once the newest has drawn and faded in over them (theme-backdrop.css: 500 ms), the ones under it go.
     const drawn = (key: string) => {
-        if (scenes().at(-1)?.key === key) dropLeft();
+        if (scenes().at(-1)?.key !== key) return;
+        setTimeout(() => {
+            const list = scenes();
+            const at = list.findIndex((x) => x.key === key);
+            if (at < 0) return;
+            for (const x of list.slice(0, at)) x.leave();
+            dropLeft();
+        }, 500);
     };
     // The stage covers the window: scaled to the larger of the two fits.
     onMount(() => {
