@@ -50,6 +50,11 @@ const { setupTiming } = await import("../src/servers/agent-setup");
 const { ownKnownHosts } = await import("../src/servers/ssh");
 const { checkedCloud, getServer, listServers } = await import("../src/servers/store");
 const { ServerAddTool, ServerKeyTool, ServerRemoveTool, serverServerTools } = await import("../src/tools/server-tools");
+const { PermissionChecker } = await import("../src/permissions/checker");
+const { sandboxPolicy } = await import("../src/permissions/sandbox");
+const { BashTool } = await import("../src/tools/bash");
+const { ReadTool } = await import("../src/tools/file-tools");
+const { GrepTool } = await import("../src/tools/search-tools");
 import type { BuildSource } from "../src/servers/build";
 import type { ConfirmInteraction, ServerEvent, SessionSnapshot, SessionState, SignInInteraction, Turn } from "../src/server/protocol";
 import type { ServerSetup } from "../src/tools/server-tools";
@@ -115,6 +120,20 @@ describe("the keys Cavvy makes for a new server", () => {
         expect(existsSync(made.userDataFile)).toBe(false);
         expect(readFileSync(ownKnownHosts(), "utf-8")).not.toMatch(/^203\.0\.113\.9 /m);
         expect(() => expectHostKey("never-made", "x.example")).toThrow("No key was made");
+    });
+
+    test("agents are kept from the key as from Cavvy's other credentials: file tools refused in every mode, a command that names it asked about", () => {
+        const cwd = tempDir("cavvy-agent-setup-fence-");
+        const checker = new PermissionChecker(() => ({}) as any, cwd);
+        const key = join(serverKeysDir(), "aws-mumbai");
+        for (const mode of ["default", "acceptEdits", "auto", "bypassPermissions"] as const) {
+            expect(checker.check(ReadTool, { file_path: key }, mode, cwd)).toMatchObject({ behavior: "deny", reason: "Access to Cavvy credential store is blocked." });
+            expect(checker.check(GrepTool, { pattern: "PRIVATE", path: serverKeysDir() }, mode, cwd).behavior).toBe("deny");
+        }
+        for (const mode of ["default", "acceptEdits"] as const) expect(checker.check(BashTool, { command: `cat ${key}` }, mode, cwd)).toMatchObject({ behavior: "ask", reason: expect.stringContaining("Cavvy credential store") });
+        // Auto mode's sandbox can't read or list the folder.
+        const policy = sandboxPolicy([cwd], { cavvyHome: iso.home });
+        expect(policy.unreadable.some((p: string) => p.endsWith("/server-keys"))).toBe(true);
     });
 
     test("the script signs in the image's own user, and installs what agents use after the sign-in works", () => {

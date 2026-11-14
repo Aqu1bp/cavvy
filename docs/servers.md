@@ -37,6 +37,33 @@ What can go wrong, and what you see:
 | It can't run Cavvy | `Cavvy can't run on <host>:` and why (not Linux, the processor, musl, no room). |
 | The copy arrived changed, or doesn't start there | It says so, and nothing is installed. |
 
+## Having an agent set one up
+
+You can ask an agent, in the desktop app or the terminal app on your own machine: "add a VPS from AWS for me", "set me up a small server on Hetzner", "add my box at dev@box.example", "delete aws-mumbai". The agent does what differs by provider, with the provider's own CLI. Cavvy does what an agent shouldn't hold: the SSH key, the server's identity, and your yes.
+
+Creating one goes like this:
+
+1. **The provider's sign-in.** If its CLI is signed out, you get the [sign-in card](sign-in.md).
+2. **The price.** `Create a server for $12/month?`, with its name, where it runs, its size and its system. **Create** goes ahead, **Change…** lets you say what you'd rather have, **Cancel** creates nothing. This is asked in every permission mode, Bypass included: no mode, rule or reviewer answers it for you.
+3. **The server is created and added.** There's no key to pick and no `Trust this host?`: Cavvy made a key for it and gave the server its identity before it started, so it knows the server's fingerprint in advance. The steps show in the conversation.
+4. **Its sign-ins.** `Sign in on aws-mumbai?` lists Claude Code, Codex and GitHub: what's signed in says as whom, the rest have **Sign in**. **Later** leaves them; the server is added either way.
+
+The server is then in your list like any other, with what it costs beside it (`cavvy servers` shows it too).
+
+- **A server you already have** is added the same way, without steps 1 and 2. Cavvy connects with its own connection, which reads your SSH config and keys; an agent's shell often can't. If this machine hasn't seen the server's key, you're shown it: **Trust** or **Cancel**. In a mode that asks, you're asked before it's added.
+- **Deleting one** an agent created: `Delete aws-mumbai?` shows where it is, what it costs and the commands that will run. On **Delete**, Cavvy runs them, and then forgets the server and its keys. If the provider's CLI is signed out you're asked to sign in, and it goes on. If a command fails, the server stays in your list and the agent says what the provider answered. This too is asked in every mode.
+- **Removing one from the list yourself** (the bin, or `cavvy servers remove`) only forgets it here, as for any server. A rented machine keeps running and costing: Cavvy says so, and `cavvy servers remove` prints the commands that delete it.
+
+What Cavvy does on the new machine, through the start-up script it hands the provider (cloud-init's user data):
+
+- installs the key Cavvy signs in with, for the image's own login user (`ubuntu`, `admin`, `ec2-user`; `root` where there's none), and the server's SSH identity;
+- turns password logins off;
+- installs `git`, the GitHub CLI, Node with Codex, and Claude Code. If one of those fails, the server is still added, and Cavvy says what's missing.
+
+The key stays in `~/.cavvy/server-keys` on your machine, guarded like Cavvy's other credentials: agents' file tools are refused there in every mode, a shell command that names it asks first (not in Bypass, where nothing asks), and Auto mode's sandbox can't read or list it. The start-up script holds the server's private host key, so it's deleted once the server is added. The teardown commands are recorded when the server is added and are plain words for the provider's own CLI (`aws`, `gcloud`, `az`, `doctl`, `hcloud`, …, or one you have a [sign-in](sign-in.md#your-own) for): no shell reads them.
+
+An agent on a server can't do any of this: servers are set up from your own machine.
+
 ## Working there
 
 `cavvy --server <name>[:<folder>]` runs the terminal app on the server over SSH, in that folder (your home there without one). Everything after it goes to that Cavvy: `-c`, `-r <id>`, `-p "…"`, `auth add`. If the connection drops, that terminal app ends with it, and Cavvy says `Connection to <name> lost.` and how to continue the session (`-c`); the session is saved as it goes. A server can take a long while to notice a connection that went without a word (a laptop closing), and the terminal app there runs on meanwhile: the next `cavvy --server` to that server from this machine ends it first, so the session can be continued.

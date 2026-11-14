@@ -81,6 +81,8 @@ The same card comes up without an agent asking, wherever Cavvy used to say "run 
 - **A turn that stops because its CLI is signed out** (Claude Code, Codex), or because `gcloud` can't get a token for a Vertex model. The message says what's signed out, the card offers to fix it, and once it's signed in the agent carries on with what you asked. Later leaves it above the message box.
 - **Pull requests.** `CreatePullRequest`, `GitPush` and `WatchPullRequest` ask when GitHub turns out signed out, then go on. A pull request being watched waits for the sign-in rather than giving up; the agent isn't woken for it. In the desktop app, **Push and open pull request** shows **Sign in to GitHub** in place of the pull request's fields.
 
+- **A server just added by an agent.** `Sign in on aws-mumbai?` lists what agents there use (Claude Code, Codex, GitHub), each with its own **Sign in**; what's already signed in says as whom. See [servers](servers.md#having-an-agent-set-one-up).
+
 Where there's nothing to show (the CLI says it's signed in though the service refused it, or it isn't installed), you get the old message with the command.
 
 ## What goes where

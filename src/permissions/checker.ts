@@ -813,11 +813,12 @@ function storeFiles(settings = false): string[] {
 }
 
 /**
- * Cavvy's own private folders, in each of homes(): accounts/ (private whether or not any account is registered), and
- * server/, through which a machine signs in to the Cavvy this one runs for others (src/servers/host.ts).
+ * Cavvy's own private folders, in each of homes(): accounts/ (private whether or not any account is registered),
+ * server/, through which a machine signs in to the Cavvy this one runs for others (src/servers/host.ts), and
+ * server-keys/, the keys Cavvy signs in to its servers with (src/servers/keys.ts).
  */
 function cavvyAccounts(): string[] {
-    return homes().flatMap((h) => [join(h, "accounts"), join(h, "server")]);
+    return homes().flatMap((h) => [join(h, "accounts"), join(h, "server"), join(h, "server-keys")]);
 }
 
 /** An approval as the reviewer hears it: the exact action and what it granted, nothing model-written. */
