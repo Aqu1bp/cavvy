@@ -19,7 +19,7 @@
 
 /* ---- Menus and popovers --------------------------------------------- */
 
-/* base.css still carries the pre-glass .popover/.menu-* rules; these load later and replace them. */
+/* base.css keeps only what these don't set (position, overflow, the hover fill). */
 .popover {
     z-index: 60;
     border-radius: calc(16 * var(--sp));

@@ -26,8 +26,8 @@ function at(value: string | undefined, size: number): string {
 const KEY: [file: string, selector: string, property: string, at14: string][] = [
     ["base.css", ".hb", "height", "28px"],
     ["base.css", ".btn", "height", "32px"],
-    ["base.css", ".menu-item", "padding", "6px 8px"],
-    ["base.css", '.toggle.on .toggle-knob', "transform", "translateX(15px)"],
+    ["overlays.css", ".menu-item", "padding", "7px 10px"],
+    ["overlays.css", ".toggle.on .toggle-knob", "transform", "translateX(16px)"],
     ["sidebar.css", ".nav-row", "height", "32px"],
     ["sidebar.css", ".card-hit", "min-height", "32px"],
     ["composer.css", ".send", "width", "32px"],

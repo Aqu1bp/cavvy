@@ -386,10 +386,6 @@ h3 {
     min-width: 0;
 }
 
-.btn:active:not(:disabled) {
-    transform: translateY(0.5px);
-}
-
 .btn.sm {
     height: calc(28 * var(--sp));
     padding: 0 calc(10 * var(--sp));
@@ -678,67 +674,22 @@ input[type="range"] {
 }
 
 .toggle {
-    width: calc(36 * var(--sp));
-    height: calc(21 * var(--sp));
-    border-radius: calc(999 * var(--sp));
-    background: var(--line-strong);
     position: relative;
-    transition: background 200ms;
     flex: none;
-}
-
-.toggle.on {
-    background: var(--accent);
 }
 
 .toggle-knob {
     position: absolute;
-    top: calc(2 * var(--sp));
-    left: calc(2 * var(--sp));
-    width: calc(17 * var(--sp));
-    height: calc(17 * var(--sp));
     border-radius: 50%;
     background: #fff;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
-    transition: transform 200ms var(--ease-out);
-}
-
-.toggle.on .toggle-knob {
-    transform: translateX(calc(15 * var(--sp)));
-}
-
-.segmented {
-    display: inline-flex;
-    background: var(--hover);
-    border-radius: var(--radius-md);
-    padding: calc(2 * var(--sp));
-    gap: calc(2 * var(--sp));
 }
 
 .segmented button {
-    height: calc(28 * var(--sp));
-    padding: 0 calc(12 * var(--sp));
-    border-radius: calc(8 * var(--sp));
-    font-size: 0.857rem;
-    font-weight: 540;
-    color: var(--fg-2);
     display: inline-flex;
     align-items: center;
     gap: calc(6 * var(--sp));
     white-space: nowrap;
-    transition: background var(--dur-fast), color var(--dur-fast);
-}
-
-.segmented.seg-sm button {
-    height: calc(24 * var(--sp));
-    padding: 0 calc(9 * var(--sp));
-    font-size: 0.8rem;
-}
-
-.segmented button.on {
-    background: var(--raised);
-    color: var(--fg);
-    box-shadow: var(--shadow-sm), 0 0 0 1px var(--line);
 }
 
 .segmented button:hover:not(.on) {
@@ -776,127 +727,17 @@ input[type="range"] {
     flex: none;
 }
 
-/* ---- Menus (in popovers) ---- */
+/* ---- Menus (in popovers): what overlays.css, which styles them, doesn't set ---- */
 
 .popover {
     position: fixed;
-    z-index: 60;
-    background: var(--ctl-strong);
-    -webkit-backdrop-filter: blur(16px) saturate(1.08);
-    backdrop-filter: blur(16px) saturate(1.08);
-    border-radius: calc(10 * var(--sp));
-    box-shadow: var(--pop-shadow);
-    padding: calc(4 * var(--sp));
     overflow: auto;
-    color: var(--fg);
-    animation: pop var(--dur-panel) var(--ease-out);
-    transform-origin: top left;
-}
-
-.popover[data-side="top"] {
-    transform-origin: bottom left;
-}
-
-.menu-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: calc(8 * var(--sp));
-    padding: calc(6 * var(--sp)) calc(8 * var(--sp)) calc(4 * var(--sp));
-    font-size: 0.857rem;
-    font-weight: 500;
-    color: var(--fg-2);
-}
-
-.menu-item {
-    display: flex;
-    align-items: flex-start;
-    gap: calc(10 * var(--sp));
-    width: 100%;
-    padding: calc(6 * var(--sp)) calc(8 * var(--sp));
-    border-radius: calc(6 * var(--sp));
-    text-align: left;
-    color: var(--fg);
-    min-width: 0;
-    font-size: 0.964rem;
-    font-weight: 500;
-}
-
-.menu-item.compact {
-    align-items: center;
-    padding: calc(6 * var(--sp)) calc(8 * var(--sp));
-}
-
-.menu-item > svg:first-child {
-    margin-top: calc(2 * var(--sp));
-}
-
-.menu-item.compact > svg:first-child {
-    margin-top: 0;
-}
-
-.menu-item svg {
-    flex: none;
-    color: var(--fg-2);
-}
-
-.menu-item.danger,
-.menu-item.danger svg {
-    color: var(--danger);
 }
 
 .menu-item:hover:not(:disabled),
 .menu-item:focus-visible:not(:disabled),
 .menu-item.sel {
     background: var(--hover);
-}
-
-.menu-item.current,
-.menu-item.on {
-    background: var(--sheet-2);
-}
-
-.menu-item:disabled {
-    opacity: 0.45;
-}
-
-.menu-text {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-    flex: 1;
-}
-
-.menu-label {
-    font-weight: 500;
-}
-
-.menu-desc {
-    font-size: 0.857rem;
-    color: var(--fg-2);
-    line-height: calc(16 * var(--sp));
-    font-weight: 400;
-    margin-top: calc(2 * var(--sp));
-}
-
-/* What's chosen: a check in the text's own colour. */
-.menu-check {
-    margin-left: auto;
-    color: var(--fg) !important;
-}
-
-.menu-sep {
-    height: 1px;
-    background: var(--line);
-    margin: calc(4 * var(--sp)) calc(-4 * var(--sp));
-}
-
-.menu-note {
-    padding: calc(6 * var(--sp)) calc(10 * var(--sp));
-    font-size: 0.8rem;
-    color: var(--fg-3);
-    overflow: hidden;
-    text-overflow: ellipsis;
 }
 
 /* Text fields show focus with their own border or container, not an outline. */
