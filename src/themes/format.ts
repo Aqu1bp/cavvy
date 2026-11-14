@@ -143,7 +143,8 @@ export function svgProblem(svg: string): string | undefined {
     if (/@import/i.test(t)) return "has an @import, which an image can't load";
     // An image runs these on its own, every frame and out of the window's reach: motion goes in the layer's "motion".
     if (new RegExp(`<${PREFIX}(?:animate\\w*|set|discard)[\\s/>]`, "i").test(t)) return "animates itself (<animate>, <set>): move the layer with \"motion\" instead";
-    if (embedsMoving(t)) return "has an SVG, GIF or animated image inside it, which animates itself: draw it in the layer";
+    const embedded = embedsMoving(t);
+    if (embedded) return embedded;
     for (const css of styles(t)) {
         // An escape can spell any word in CSS.
         if (css.includes("\\")) return "has a backslash in its CSS, which a layer doesn't need";
@@ -160,10 +161,16 @@ const PREFIX = `(?:[^\\s<>/:="'&]+:)?`;
  * Whether an image embedded in the SVG (a data: URL anywhere: href, url()) can animate: an SVG by its type, and by
  * its bytes a GIF, an animated PNG, WebP or AVIF, whatever type the URL claims (the browser goes by the bytes).
  */
-function embedsMoving(t: string): boolean {
-    for (const m of t.matchAll(/data:([^,"'()]{0,200}),([^"'()]*)/gi)) {
+function embedsMoving(t: string): string | undefined {
+    const moving = "has an SVG, GIF or animated image inside it, which animates itself: draw it in the layer";
+    // The type and its parameters are read up to 200 characters (a scan that can't run long); a longer one is refused.
+    for (const m of t.matchAll(/data:([^,"'()]{0,201})(?:,([^"'()]*))?/gi)) {
+        if (m[1]!.length > 200 || m[2] === undefined) {
+            if (m[1]!.length > 200) return "has a data: URL with a type over 200 characters";
+            continue;
+        }
         const meta = percentDecoded(m[1]!).toLowerCase();
-        if (meta.includes("svg")) return true;
+        if (meta.includes("svg")) return moving;
         let bytes: string;
         try {
             bytes = meta.includes(";base64") ? atob(percentDecoded(m[2]!).replace(/\s+/g, "")) : percentDecoded(m[2]!);
@@ -171,12 +178,12 @@ function embedsMoving(t: string): boolean {
             continue; // not base64: the browser can't decode it either
         }
         const head = bytes.slice(0, 64);
-        if (head.startsWith("GIF8") || head.trimStart().startsWith("<")) return true;
-        if (head.startsWith("\x89PNG") && bytes.includes("acTL")) return true;
-        if (head.startsWith("RIFF") && head.slice(8, 12) === "WEBP" && bytes.includes("ANIM")) return true;
-        if (/^....ftyp(?:avis|msf1)/.test(head)) return true;
+        if (head.startsWith("GIF8") || head.trimStart().startsWith("<")) return moving;
+        if (head.startsWith("\x89PNG") && bytes.includes("acTL")) return moving;
+        if (head.startsWith("RIFF") && head.slice(8, 12) === "WEBP" && bytes.includes("ANIM")) return moving;
+        if (/^....ftyp(?:avis|msf1)/.test(head)) return moving;
     }
-    return false;
+    return undefined;
 }
 
 /** %XX escapes as the bytes (characters 0–255) they stand for. */
@@ -337,13 +344,9 @@ export function checkTheme(raw: unknown): Checked {
     const dark = checkLook(o.dark, "dark", problems);
     if (o.light === undefined && o.dark === undefined) problems.push("a theme needs a light look, a dark look or both");
     for (const key of Object.keys(o)) if (!["name", "light", "dark", "$schema"].includes(key)) problems.push(`the theme has "${key}": a theme takes name, light and dark`);
-    // As the agent wrote them (before the namespace Cavvy adds), so the count is one it can check.
-    const written = (look: unknown) => {
-        const layers = look && typeof look === "object" ? (look as { layers?: unknown }).layers : undefined;
-        return Array.isArray(layers) ? layers.reduce((n: number, l) => n + (l && typeof l === "object" && typeof (l as { svg?: unknown }).svg === "string" ? ((l as { svg: string }).svg.trim().length) : 0), 0) : 0;
-    };
-    const size = written(o.light) + written(o.dark);
-    if (size > LIMITS.total) problems.push(`the layers' SVG comes to ${size} characters; at most ${LIMITS.total}`);
+    // As saved, with the namespace Cavvy adds to each (so a theme read back from its file counts the same).
+    const size = [light, dark].flatMap((l) => l?.layers ?? []).reduce((n, l) => n + l.svg.length, 0);
+    if (size > LIMITS.total) problems.push(`the layers' SVG comes to ${size} characters, with the xmlns Cavvy adds to each; at most ${LIMITS.total}`);
     if (problems.length) return { problems };
     return { theme: { name: (o.name as string).trim(), ...(light ? { light } : {}), ...(dark ? { dark } : {}) }, problems };
 }

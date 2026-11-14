@@ -577,8 +577,17 @@ export class Engine {
      * Shows a theme (null: none) in this machine's windows, and answers how it came out in the first to draw it:
      * undefined when there's no window, `{ sent }` alone when none answered in time.
      */
+    /** This machine's windows: the ones that show a theme. */
+    private themeWindowClients() {
+        return [...this.clients].filter((c) => c.machine === undefined && c.window !== undefined);
+    }
+
+    themeWindows(): number {
+        return this.themeWindowClients().length;
+    }
+
     async showTheme(id: string | null, entry?: ThemeEntry, replaced?: ThemeReplaced, waitMs = 8000): Promise<{ sent: number; report?: ThemeReport }> {
-        const windows = [...this.clients].filter((c) => c.machine === undefined && c.window !== undefined);
+        const windows = this.themeWindowClients();
         if (!windows.length) return { sent: 0 };
         const request = randomUUID();
         const report = new Promise<ThemeReport | undefined>((done) => {

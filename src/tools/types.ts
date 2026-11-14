@@ -162,6 +162,8 @@ export interface UiBridge {
      * Missing where there are none to show it in (a server's session, the terminal): no theme tools are offered then.
      */
     showTheme?(id: string | null, entry?: ThemeEntry, replaced?: ThemeReplaced): Promise<{ sent: number; report?: ThemeReport }>;
+    /** How many of this machine's windows would show a theme now. */
+    themeWindows?(): number;
 }
 
 export interface ToolContext {

@@ -99,6 +99,7 @@ describe("checking a theme", () => {
             `<svg><image href="data:image/png;base64,${btoa("\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x08acTL\0\0\0\x02")}"/></svg>`,
             `<svg><image href="data:image/webp;base64,${btoa("RIFF\0\0\0\0WEBPVP8X\0\0\0\0ANIM")}"/></svg>`,
             '<svg><image href="data:image%2Fsvg+xml,%3Csvg%3E%3C/svg%3E"/></svg>',
+            `<svg><image href="data:image/png;name=${"x".repeat(201)};base64,R0lGODlhAQABAAAAACw="/></svg>`,
         ]) expect(svgProblem(svg)).toBeDefined();
     });
 
@@ -465,6 +466,32 @@ describe("the theme tools", () => {
         expect(fresh.text).not.toContain("replaced");
         // A long id is told it's too long.
         expect((await themeSet({ id: "a".repeat(49) }, { ui })).text).toContain("at most 48");
+        // Another session saving over this one's theme: the user gets Undo for that too.
+        const other = { showTheme: ui.showTheme };
+        const second = await themeSet({ id: "brand-new", theme: theme("Another Session's") }, { ui: other });
+        expect(second.text).toContain('It replaced "New"');
+        // With no window to undo it in, the user's theme stays.
+        writeFileSync(file, mine);
+        const blind = await themeSet({ id: "handmade", theme: theme("Agent Version 3") }, { ui: { ...ui, themeWindows: () => 0 } });
+        expect(blind.isError).toBe(true);
+        expect(blind.text).toContain("another id");
+        expect(readFileSync(file, "utf8")).toBe(mine);
+    });
+
+    test("a theme near the size limit counts the same saved as sent, so it doesn't break when read back", () => {
+        const theme = (n: number) => minimal({ dark: { colors: { background: "#101418", text: "#eef2f6" }, layers: Array.from({ length: 8 }, () => ({ svg: `<svg viewBox="0 0 1 1"><desc>${"x".repeat(n)}</desc></svg>` })) } });
+        // Just under, namespace and all: saved, and reads back whole.
+        const under = checkTheme(theme(99_900));
+        expect(under.theme).toBeDefined();
+        const dir = mkdtempSync(join(tmpdir(), "themes-size-"));
+        try {
+            saveTheme("big", under.theme!, dir);
+            expect(listThemes(dir)[0]!.problems).toBeUndefined();
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+        // Over once the namespace is counted: refused, saying so.
+        expect(checkTheme(theme(99_960)).problems.join()).toContain("xmlns");
     });
 
     test("the guide names the tools as the agent has them", async () => {

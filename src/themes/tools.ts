@@ -178,15 +178,21 @@ function outcome(name: string | undefined, shown: Awaited<ReturnType<NonNullable
 }
 
 /**
- * What the theme tools last saved under each id, as its file's text: saving over that again (an agent refining its
- * theme) is quiet; saving over anything else (one the user made, or changed since) offers the user Undo.
+ * What each session's theme tools last saved under each id, as its file's text, by the session's ui: saving over
+ * that again (the agent refining its theme) is quiet; saving over anything else (one the user made or changed since,
+ * or another session's) offers the user Undo.
  */
-const lastSaved = new Map<string, string>();
+const lastSaved = new WeakMap<object, Map<string, string>>();
+const savedBy = (ui: object) => {
+    let m = lastSaved.get(ui);
+    if (!m) lastSaved.set(ui, (m = new Map()));
+    return m;
+};
 
-/** The theme saved under `id` before, when saving `next` there replaces something an agent didn't just write. */
-function replacing(id: string, next: string): ThemeReplaced | undefined {
+/** The theme saved under `id` before, when saving `next` there replaces something this session didn't just write. */
+function replacing(id: string, next: string, mine: Map<string, string>): ThemeReplaced | undefined {
     const before = themeFileText(id);
-    if (before === undefined || before === next || before === lastSaved.get(id)) return undefined;
+    if (before === undefined || before === next || before === mine.get(id)) return undefined;
     let name = id;
     try {
         const n = (JSON.parse(before) as { name?: unknown }).name;
@@ -226,9 +232,13 @@ export async function themeSet(input: Record<string, unknown>, ctx: Pick<ToolCon
         if (!checked.theme || copies.problems.length) return { text: `Not saved. To fix:\n- ${problems.join("\n- ")}`, isError: true };
         theme = checked.theme;
         const text = themeText(theme);
-        replaced = replacing(id, text);
+        const mine = savedBy(ctx.ui);
+        replaced = replacing(id, text, mine);
+        // With no window, nothing could offer Undo: the user's theme stays.
+        if (replaced && ctx.ui.themeWindows?.() === 0)
+            return { text: `"${id}" holds the user's theme "${replaced.name}", and no Cavvy window is open to undo replacing it: save yours under another id.`, isError: true };
         path = saveTheme(id, theme);
-        lastSaved.set(id, text);
+        mine.set(id, text);
         entry = { id, theme };
     } else {
         const found = await themeById(id);

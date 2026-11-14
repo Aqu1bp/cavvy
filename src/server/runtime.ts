@@ -1672,7 +1672,7 @@ export class Runtime {
                     askSignIn: (req, then) => this.askSignIn(req, then),
                     confirm: (req, signal) => this.confirm(req, signal),
                     // Themes show in this machine's windows: a server's sessions have none of their own.
-                    ...(onServer() ? {} : { showTheme: (id: string | null, entry?: ThemeEntry, replaced?: ThemeReplaced) => this.engine.showTheme(id, entry, replaced) }),
+                    ...(onServer() ? {} : { showTheme: (id: string | null, entry?: ThemeEntry, replaced?: ThemeReplaced) => this.engine.showTheme(id, entry, replaced), themeWindows: () => this.engine.themeWindows() }),
                 },
                 drainQueued: (record, admit, id) => this.drainQueued(record, admit, id),
                 drainWaiting: (record) => this.drainWaiting(record),

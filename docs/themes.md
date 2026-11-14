@@ -42,4 +42,4 @@ The full guide an agent reads is `THEME_GUIDE` in `src/themes/tools.ts`.
 
 ## Files
 
-Themes are JSON files in `~/.cavvy/themes`. Cavvy watches the folder, so a theme edited by hand or by any tool shows at once. If an edit breaks the theme that's showing, a toast says so, the window keeps its last good version, and its tile in Settings says what's wrong when you point at it. Deleting a theme from the gallery offers Undo, and so does an agent saving over a theme you made or changed. The chosen theme is per device (it's a window preference) and the window shows its colours from the first paint.
+Themes are JSON files in `~/.cavvy/themes`. Cavvy watches the folder, so a theme edited by hand or by any tool shows at once. If an edit breaks the theme that's showing, a toast says so, the window keeps its last good version, and its tile in Settings says what's wrong when you point at it. Deleting a theme from the gallery offers Undo, and so does an agent saving over a theme you made or changed (with no window open to undo it in, an agent can't). The chosen theme is per device (it's a window preference) and the window shows its colours from the first paint.
