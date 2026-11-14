@@ -5,9 +5,9 @@
 // modules are loaded here with import(), so they see the isolated CAVVY_HOME. It registers its own cleanup.
 
 import { afterAll, afterEach } from "bun:test";
-import { chmodSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { stopLiveCodex } from "./fake-env";
+import { stopLiveCodex, fakeLog } from "./fake-env";
 import { tempDir } from "./isolate";
 
 export type Cli = "claude-code" | "codex";
@@ -91,7 +91,7 @@ export async function switchKit(iso: { home: string; cleanup: () => void }) {
         const cwd = realpathSync(createDemoProject(tempDir("switch-gaps-proj-"), { git: false }));
         let rt = await engine.createSession(cwd, { mode: "bypassPermissions" });
         await rt.ready;
-        const lines = (): any[] => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+        const lines = (): any[] => fakeLog(log);
         // Told apart by what they were started as: Codex's processes are app-servers (its sign-in is `login`), Claude
         // Code's are the rest but its sign-in checks (`auth`). Not one-offs either (Claude Code's without a session; Codex's
         // are ephemeral threads, left out below). Both fakes log their cwd, so that doesn't tell them apart.

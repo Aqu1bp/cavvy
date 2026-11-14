@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
+import { fakeLog } from "./helpers/fake-env";
 import type { BackendTurn } from "../src/backends/types";
 
 const iso = isolate();
@@ -26,7 +27,7 @@ for (const [provider, fixture] of [["claude-code", "fake-claude.ts"], ["codex", 
 const def = (provider: string) => BUILTIN_PROVIDERS.find((p) => p.id === provider)!;
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 /** The fake CLIs' process starts (FAKE_LOG). */
-const launches = (): { argv: string[] }[] => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((line) => line.argv) : []);
+const launches = (): { argv: string[] }[] => fakeLog(log).filter((line) => line.argv);
 async function until(done: () => boolean, what: string) {
     const end = Date.now() + 10_000;
     while (!done()) {

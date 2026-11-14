@@ -4,9 +4,10 @@
 // both; Claude Code drops a mid-turn document block (a PDF) without a word.
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "fs";
+import { readFileSync } from "fs";
 import { join } from "path";
 import { tempDir } from "./helpers/isolate";
+import { fakeLog } from "./helpers/fake-env";
 
 type Frame = { t: number; dir: "in" | "out" | "note"; frame: any };
 const capture = (name: string): Frame[] =>
@@ -85,7 +86,7 @@ describe("the fake Claude Code does what the real one did", () => {
             await Bun.sleep(150);
             p.stdin.write(JSON.stringify(steer!.frame) + "\n");
             await p.stdin.flush();
-            const lines = () => (existsSync(logFile) ? readFileSync(logFile, "utf-8").trim().split("\n").map((l) => JSON.parse(l)) : []);
+            const lines = () => fakeLog(logFile);
             for (let k = 0; k < 200 && !lines().some((l) => l.foldedBeforeResult); k++) await Bun.sleep(20);
             return lines();
         } finally {

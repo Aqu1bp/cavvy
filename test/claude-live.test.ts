@@ -5,9 +5,10 @@
 // Esc stops only the answer. Nothing here runs the real CLI.
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { chmodSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
+import { fakeLog } from "./helpers/fake-env";
 
 const { cleanup } = isolate();
 const registry = await import("../src/providers/registry");
@@ -66,7 +67,7 @@ afterEach(async () => {
 });
 
 function logLines(): any[] {
-    return existsSync(LOG) ? readFileSync(LOG, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
+    return fakeLog(LOG);
 }
 const starts = () => logLines().filter((l) => l.argv && l.argv[0] !== "auth");
 const received = () => logLines().flatMap((l) => (l.received ? [l.received] : []));

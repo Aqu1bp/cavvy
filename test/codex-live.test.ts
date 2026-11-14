@@ -8,7 +8,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
-import { fakeEnvFile, stopLiveCodex } from "./helpers/fake-env";
+import { fakeEnvFile, stopLiveCodex, fakeLog } from "./helpers/fake-env";
 
 const iso = isolate();
 const registry = await import("../src/providers/registry");
@@ -57,7 +57,7 @@ afterAll(() => {
     for (const k of Object.keys(process.env)) if (k.startsWith("FAKE_")) delete process.env[k];
 });
 
-const logLines = (): any[] => (existsSync(LOG) ? readFileSync(LOG, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+const logLines = (): any[] => fakeLog(LOG);
 const received = () => logLines().flatMap((l) => (l.received ? [l.received] : []));
 const calls = (method: string) => received().filter((m) => m.method === method).map((m) => m.params);
 /** Each app-server started: its pid. */

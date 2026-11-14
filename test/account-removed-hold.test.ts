@@ -4,9 +4,10 @@
 // the terminal's App, with the fake `claude` and `codex` (test/fixtures), live and with a process per run.
 
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
+import { fakeLog } from "./helpers/fake-env";
 import type { SessionSnapshot } from "../src/server/protocol";
 
 const iso = isolate();
@@ -56,15 +57,13 @@ async function until(done: () => boolean, what: string, ms = 20_000) {
 
 /** The prompts the fake CLIs were sent that say `tag`. */
 function sent(tag: string): number {
-    if (!existsSync(log)) return 0;
-    return readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l))
+    return fakeLog(log)
         // Not the title Codex is asked for, in a one-off thread of its own.
         .filter((l) => l.received && (l.received.type === "user" || (l.received.method === "turn/start" && l.received.params?.threadId !== "thr-oneoff")) && JSON.stringify(l.received).includes(tag)).length;
 }
 /** The prompt the CLIs were last sent, as JSON. */
 function lastSent(): string {
-    if (!existsSync(log)) return "";
-    const prompts = readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((l) => l.received?.type === "user" || l.received?.method === "turn/start");
+    const prompts = fakeLog(log).filter((l) => l.received?.type === "user" || l.received?.method === "turn/start");
     return JSON.stringify(prompts.at(-1)?.received ?? "");
 }
 /** The user messages in the session that say `tag`. */

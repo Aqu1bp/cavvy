@@ -20,6 +20,7 @@ const { rewindTargets } = await import("../src/agent/checkpoints");
 const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/registry");
 const { forgetClient } = await import("../src/providers/models");
 import type { CliSessionsList, SessionSnapshot, Turn } from "../src/server/protocol";
+import { fakeLog } from "./helpers/fake-env";
 
 const CLAUDE = process.env.CLAUDE_CONFIG_DIR!;
 const CODEX = process.env.CODEX_HOME!;
@@ -85,7 +86,7 @@ async function engine() {
 }
 
 function logLines(): any[] {
-    return existsSync(LOG) ? readFileSync(LOG, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
+    return fakeLog(LOG);
 }
 const received = () => logLines().flatMap((l) => (l.received ? [l.received] : []));
 /** The argv of each `claude` run for a turn (not the ones listing models). */

@@ -7,7 +7,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
-import { stopLiveCodex } from "./helpers/fake-env";
+import { stopLiveCodex, fakeLog } from "./helpers/fake-env";
 
 const { cleanup } = isolate();
 const registry = await import("../src/providers/registry");
@@ -142,7 +142,7 @@ afterEach(async () => {
 });
 
 function logLines(): any[] {
-    return existsSync(LOG) ? readFileSync(LOG, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
+    return fakeLog(LOG);
 }
 const starts = () => logLines().filter((l) => l.argv);
 const received = () => logLines().flatMap((l) => (l.received ? [l.received] : []));

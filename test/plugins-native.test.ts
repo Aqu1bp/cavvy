@@ -5,6 +5,7 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
+import { fakeLog } from "./helpers/fake-env";
 
 const { cleanup } = isolate();
 const registry = await import("../src/providers/registry");
@@ -45,7 +46,7 @@ function write(file: string, data: unknown) {
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, typeof data === "string" ? data : JSON.stringify(data, null, 2));
 }
-const starts = () => (existsSync(LOG) ? readFileSync(LOG, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []).filter((l) => l.argv);
+const starts = () => fakeLog(LOG).filter((l) => l.argv);
 const pluginDirs = (argv: string[]) => argv.flatMap((a, i) => (a === "--plugin-dir" ? [argv[i + 1]!] : []));
 
 let cwd: string;
@@ -113,7 +114,7 @@ async function runAgent(provider: "claude-code" | "codex", o: { readOnly?: boole
     });
     await agent.run([{ type: "text", text: "go" }], { signal: new AbortController().signal });
 }
-const threadMcp = () => (existsSync(LOG) ? readFileSync(LOG, "utf-8").trim().split("\n").map((l) => JSON.parse(l)) : []).find((l) => "threadMcp" in l)?.threadMcp;
+const threadMcp = () => fakeLog(LOG).find((l) => "threadMcp" in l)?.threadMcp;
 
 describe("Claude Code loads the plugins itself", () => {
     test("each enabled plugin's folder goes to it, with a manifest naming it as Cavvy does", async () => {

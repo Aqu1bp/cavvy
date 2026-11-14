@@ -3,7 +3,7 @@
 // session closing leaves it queued (on disk too) or in the composer, image and all, and it reaches Codex once.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 
@@ -13,6 +13,7 @@ const { saveAgentConfig, removeAgentConfig } = await import("../src/providers/re
 const { closeTiming } = await import("../src/server/runtime");
 const { loadQueue } = await import("../src/agent/queue-store");
 import type { SessionSnapshot } from "../src/server/protocol";
+import { fakeLog } from "./helpers/fake-env";
 
 mkdirSync(iso.home, { recursive: true });
 writeFileSync(join(iso.home, "settings.json"), JSON.stringify({}));
@@ -61,7 +62,7 @@ async function cleanup(engine: { stop(): Promise<void> }) {
 
 const received = (): any[] => {
     const f = process.env.FAKE_LOG!;
-    return existsSync(f) ? readFileSync(f, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)).flatMap((l) => (l.received?.method ? [l.received] : [])) : [];
+    return fakeLog(f).flatMap((l) => (l.received?.method ? [l.received] : []));
 };
 // Not the session's title, which Codex is asked for in a one-off thread of its own.
 const turnStarts = () => received().filter((m) => m.method === "turn/start" && m.params?.threadId !== "thr-oneoff").map((m) => m.params);
