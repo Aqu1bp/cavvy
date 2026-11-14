@@ -214,16 +214,6 @@ for (const lifecycle of ["mounted", "disposed", "replaced"] as const) {
 }
 
 // ---- The stash key
-/** What's stashed, without when. */
-const plain = (list: { text: string; attachments: unknown[] }[]) => list.map(({ text, attachments }) => ({ text, attachments }));
-// Each is stamped with when it was put away, and what's brought back is a draft again, without it.
-const stamped = createRoot((dispose) => ({ ...createComposerDraft(() => "stash-time", undefined, () => 1234), dispose }));
-stamped.setText("timed");
-stamped.pushStash();
-assert.deepEqual(stamped.stashes(), [{ text: "timed", attachments: [], at: 1234 }]);
-stamped.takeStash();
-assert.deepEqual(stamped.capture().draft, { text: "timed", attachments: [] });
-stamped.dispose();
 // Put away, the prompt leaves the box with its files; brought back, both return.
 const stashing = mount("stash");
 assert.equal(stashing.pushStash(), false);
@@ -233,7 +223,7 @@ stashing.setAttachments(files);
 assert.equal(stashing.pushStash(), true);
 assert.equal(stashing.text(), "");
 assert.deepEqual(stashing.attachments(), []);
-assert.deepEqual(plain(stashing.stashes()), [{ text: "long prompt", attachments: files }]);
+assert.deepEqual(stashing.stashes(), [{ text: "long prompt", attachments: files }]);
 assert.equal(stashing.takeStash(), true);
 assert.equal(stashing.text(), "long prompt");
 assert.deepEqual(stashing.attachments(), files);
@@ -249,7 +239,7 @@ assert.deepEqual(stashing.stashes().map((d) => d.text), ["", "second", "long pro
 stashing.dispose();
 const stashKept = mount("stash");
 assert.equal(stashKept.text(), "in the box");
-assert.deepEqual(plain(stashKept.stashes()), [{ text: "", attachments: [image] }, { text: "second", attachments: [] }, { text: "long prompt", attachments: files }]);
+assert.deepEqual(stashKept.stashes(), [{ text: "", attachments: [image] }, { text: "second", attachments: [] }, { text: "long prompt", attachments: files }]);
 assert.deepEqual(mount("stash-other").stashes(), []);
 // One picked from the list comes back, and what was in the box is stashed in its place, as the newest.
 assert.equal(stashKept.takeStash(stashKept.stashes()[2]), true);
@@ -257,7 +247,7 @@ assert.equal(stashKept.text(), "long prompt");
 assert.deepEqual(stashKept.attachments(), files);
 assert.deepEqual(stashKept.stashes().map((d) => d.text), ["in the box", "", "second"]);
 // One that's no longer there is not brought back twice.
-assert.equal(stashKept.takeStash({ text: "long prompt", attachments: files, at: 0 }), false);
+assert.equal(stashKept.takeStash({ text: "long prompt", attachments: files }), false);
 stashKept.dispose();
 
 // A send never brings one back: the box is left empty, and they wait until they're asked for.
@@ -272,7 +262,7 @@ const first = sentWith.capture();
 sentWith.clearSent(first);
 assert.equal(sentWith.text(), "");
 assert.deepEqual(sentWith.attachments(), []);
-assert.deepEqual(plain(sentWith.stashes()), [{ text: "stays stashed", attachments: [image] }, { text: "older", attachments: [] }]);
+assert.deepEqual(sentWith.stashes(), [{ text: "stays stashed", attachments: [image] }, { text: "older", attachments: [] }]);
 // Nor a local command, which leaves its files in the box.
 sentWith.setText("/context");
 sentWith.setAttachments([image]);
@@ -305,7 +295,7 @@ const undo = dropping.dropStash(dropping.stashes()[1]!)!;
 assert.deepEqual(dropping.stashes().map((d) => d.text), ["newest", "oldest"]);
 assert.equal(dropping.text(), "");
 undo();
-assert.deepEqual(plain(dropping.stashes()), [{ text: "newest", attachments: [] }, { text: "thrown away", attachments: [image] }, { text: "oldest", attachments: [] }]);
+assert.deepEqual(dropping.stashes(), [{ text: "newest", attachments: [] }, { text: "thrown away", attachments: [image] }, { text: "oldest", attachments: [] }]);
 undo();
 assert.equal(dropping.stashes().length, 3);
 const undoLate = dropping.dropStash(dropping.stashes()[1]!)!;
@@ -313,7 +303,7 @@ dropping.setText("stashed since");
 dropping.pushStash();
 undoLate();
 assert.deepEqual(dropping.stashes().map((d) => d.text), ["stashed since", "thrown away", "newest", "oldest"]);
-assert.equal(dropping.dropStash({ text: "never stashed", attachments: [], at: 0 }), undefined);
+assert.equal(dropping.dropStash({ text: "never stashed", attachments: [] }), undefined);
 dropping.dispose();
 
 // It keeps so many and no more: the prompt stays in the box, until one is brought back or thrown away.
@@ -376,12 +366,12 @@ stashReload.setAttachments(files);
 stashReload.pushStash();
 stashReload.setAttachments([image]);
 stashReload.pushStash();
-assert.deepEqual(composerStorage.stashes("stash-reload").map((st) => st.text), ["stashed across a reload"]);
+assert.deepEqual(composerStorage.stashes("stash-reload"), ["stashed across a reload"]);
 assert.equal(composerStorage.draft("stash-reload"), "");
 stashReload.dispose();
 composerStashes.clear();
 const stashReloaded = mount("stash-reload");
-assert.deepEqual(plain(stashReloaded.stashes()), [{ text: "stashed across a reload", attachments: [] }]);
+assert.deepEqual(stashReloaded.stashes(), [{ text: "stashed across a reload", attachments: [] }]);
 stashReloaded.dispose();
 
 // Reload drops attachments, but restores the persisted text synchronously.

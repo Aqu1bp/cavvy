@@ -298,13 +298,6 @@
     flex: 1;
 }
 
-.stash-when {
-    flex: none;
-    font-size: 0.857rem;
-    color: var(--fg-3);
-    font-variant-numeric: tabular-nums;
-}
-
 .stash-drop {
     display: grid;
     flex: none;

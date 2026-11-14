@@ -4,9 +4,13 @@
 
 import { createEffect, createSignal, createUniqueId, For, onCleanup, Show } from "solid-js";
 import { Archive, ChevronDown, FileText, Paperclip, X } from "lucide-solid";
-import type { Stashed } from "../lib/composer-draft";
-import { now } from "../lib/clock";
-import { ago, plural } from "../lib/format";
+import type { Attachment } from "../lib/attachments";
+import { plural } from "../lib/format";
+
+interface Stashed {
+    text: string;
+    attachments: Attachment[];
+}
 
 /** Its first line with something on it: a row's worth. */
 const firstLine = (text: string) => text.trim().split("\n", 1)[0]!.trim();
@@ -78,7 +82,6 @@ export function StashTray(p: { items: Stashed[]; /** The message box: where the 
                                             <Paperclip size={12} /> {item.attachments.length}
                                         </span>
                                     </Show>
-                                    <span class="stash-when">{(now(), ago(item.at))}</span>
                                 </button>
                                 <button class="stash-drop" tabIndex={-1} title="Discard" aria-label={`Discard: ${said(item)}`} onMouseDown={keepFocus} onClick={() => p.onDiscard(item)}>
                                     <X size={14} />
