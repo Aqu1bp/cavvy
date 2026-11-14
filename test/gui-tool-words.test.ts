@@ -49,7 +49,9 @@ test("Cavvy's own tools are said by what they do, however they were called: neve
     }
     expect(runningVerb(call({ name: "mcp__cavvy__server_key", status: "running", input: { name: "aws-mumbai" } }))).toBe("Preparing server");
     expect(toolLabel(call({ name: "mcp__cavvy__server_remove", input: { name: "aws-mumbai" } }))).toEqual({ verb: "Remove server", arg: "aws-mumbai" });
-    expect(toolLabel(call({ name: "mcp__cavvy__request_sign_in", input: { target: "gh" } }))).toEqual({ verb: "Ask to sign in", arg: "gh" });
+    expect(toolLabel(call({ name: "mcp__cavvy__request_sign_in", input: { target: "gh" } }))).toEqual({ verb: "Ask to sign in to", arg: "GitHub" });
+    expect(toolLabel(call({ name: "RequestSignIn", input: { target: "fly" } }))).toEqual({ verb: "Ask to sign in to", arg: "fly" });
+    expect(runningVerb(call({ name: "RequestSignIn", status: "running", input: { target: "aws" } }))).toBe("Checking the sign-in to");
     expect(runningVerb(call({ name: "mcp__cavvy__request_secret", status: "running", input: { name: "NPM_TOKEN" } }))).toBe("Asking for a secret");
     expect(runningVerb(call({ name: "mcp__cavvy__start_session", status: "running", input: { prompt: "Fix the build\nand push" } }))).toBe("Starting session");
     expect(toolLabel(call({ name: "mcp__cavvy__start_session", input: { prompt: "Fix the build\nand push" } })).arg).toBe("Fix the build");

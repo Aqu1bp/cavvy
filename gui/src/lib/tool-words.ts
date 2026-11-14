@@ -142,6 +142,9 @@ export function toolKind(name: string): string {
 
 type Words = { verb: string; running: string; arg?: string };
 
+/** The sign-ins Cavvy knows, as the cards name them; one of the user's own is said by what the agent called it. */
+const SIGN_IN_NAMES: Record<string, string> = { gh: "GitHub", github: "GitHub", aws: "AWS", gcloud: "Google Cloud", claude: "Claude Code", codex: "Codex" };
+
 /** An action on a page or the simulator, done and under way. */
 const ACTS: Record<string, [string, string]> = {
     click: ["Click", "Clicking"],
@@ -200,6 +203,8 @@ function ownWords(t: ToolBlock): Words | undefined {
     const s = (k: string) => (typeof i[k] === "string" && i[k] ? (i[k] as string) : undefined);
     const kind = toolKind(t.name);
     const cavvy = t.agent ? undefined : CAVVY[kind];
+    // To what, by its name ("GitHub", not the "gh" the agent passes).
+    if (cavvy && kind === "RequestSignIn" && s("target")) return { verb: "Ask to sign in to", running: "Checking the sign-in to", arg: SIGN_IN_NAMES[s("target")!.toLowerCase()] ?? s("target") };
     if (cavvy) return { verb: cavvy[0], running: cavvy[1], arg: cavvy[2] ? s(cavvy[2])?.split("\n")[0] : undefined };
     // One with words under its own name (WatchPullRequest), called through Cavvy's server.
     if (kind !== t.name && VERBS[kind]) return { verb: VERBS[kind]!, running: RUNNING[kind] ?? VERBS[kind]!, arg: splitTitle(t.title).arg };

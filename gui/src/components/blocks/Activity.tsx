@@ -161,7 +161,8 @@ function oneCall(t: ToolBlock): string {
     const path = String(t.input?.file_path ?? t.input?.notebook_path ?? "");
     if (path && EDIT_TOOLS.has(t.name)) return `${t.name === "Write" && t.diff?.status === "added" ? "Created" : "Edited"} ${short(path)}`;
     const { verb, arg } = toolLabel(t);
-    return arg ? `${verb} ${arg}` : verb;
+    // A search for tools is that and no more here: which ones is a list of other steps' names.
+    return arg && t.name !== "ToolSearch" ? `${verb} ${arg}` : verb;
 }
 
 /**

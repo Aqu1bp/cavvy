@@ -2,7 +2,7 @@
 // Esc there did nothing for the card (and, for a card another machine asks, stopped the whole turn).
 import { expect, test } from "bun:test";
 import { readFileSync } from "fs";
-import { cardsKey, putOffSignIn, signInMark, typingIn } from "../gui/src/lib/card-keys";
+import { cardsKey, putOffSignIn, signInCardFor, signInMark, typingIn } from "../gui/src/lib/card-keys";
 
 test("a put-off sign-in to one service shows that service's mark; several, or one without a mark, a key", () => {
     expect(signInMark("sign-in::gh")).toBe("github");
@@ -48,4 +48,20 @@ test("typed anywhere else, no key is the card's: a terminal, another field, the 
         expect(typingIn(at)).toBe(true);
         for (const key of ["1", "Escape"]) expect(cardsKey(key, at)).toBe(false);
     }
+});
+
+test("a put-off sign-in's row gives way only to its own card: the other rows stay while another sign-in is up", () => {
+    // GitHub's card here: GitHub's row goes, AWS's stays, and so does GitHub's on a server.
+    expect(signInCardFor("sign-in::gh", { target: "gh" })).toBe(true);
+    expect(signInCardFor("sign-in::aws", { target: "gh" })).toBe(false);
+    expect(signInCardFor("sign-in:box:gh", { target: "gh" })).toBe(false);
+    expect(signInCardFor("sign-in:box:gh", { target: "gh", machine: "Box" })).toBe(true);
+    // An agent CLI's account is part of where, not of the machine's name.
+    expect(signInCardFor("sign-in:box/work:claude", { target: "claude", machine: "box" })).toBe(true);
+    // A card for several answers for a row that waits on some of them, not for one that waits on more.
+    const list = { rows: [{ target: "gh" }, { target: "aws" }] };
+    expect(signInCardFor("sign-in::aws,gh", list)).toBe(true);
+    expect(signInCardFor("sign-in::gh", list)).toBe(true);
+    expect(signInCardFor("sign-in::aws,gcloud", list)).toBe(false);
+    expect(signInCardFor("sign-in::gh", {})).toBe(false);
 });

@@ -20,6 +20,19 @@ export function signInMark(watchId: string): string | undefined {
     return targets.length === 1 ? ({ gh: "github", claude: "claude-code", codex: "codex" } as Record<string, string>)[targets[0]!] : undefined;
 }
 
+/**
+ * Whether the sign-in card that's up is the one for a put-off sign-in (the watch's id, "sign-in:box:gh"): the same
+ * machine, and everything the row waits on. Its row isn't shown beside its own card; the other rows stay.
+ */
+export function signInCardFor(watchId: string, card: { machine?: string; target?: string; rows?: { target: string }[] }): boolean {
+    const rest = watchId.replace(/^sign-in:/, "");
+    const at = rest.lastIndexOf(":");
+    // The machine, without the account an agent CLI's sign-in is for ("box/work").
+    const on = rest.slice(0, Math.max(at, 0)).split("/")[0]!;
+    const asked = card.rows?.length ? card.rows.map((r) => r.target) : card.target ? [card.target] : [];
+    return on === (card.machine?.toLowerCase() ?? "") && rest.slice(at + 1).split(",").every((t) => asked.includes(t));
+}
+
 type Focused = Pick<HTMLElement, "tagName" | "isContentEditable" | "closest"> & { value?: string };
 
 /**
