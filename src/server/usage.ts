@@ -63,7 +63,9 @@ export async function usageSummary(days: UsageDays, now = Date.now(), limits: Pl
         const recorded = r.unknown || (source === "api" && r.cost > 0);
         v.cost = recorded ? r.cost : estimate.usd;
         v.unknown = r.unknown || (estimate.unknown && !r.cost);
-        if (!recorded && v.cost > 0 && info?.pricingEstimated) v.estimated = true;
+        // Priced by Cavvy (now, or when the turn was saved) from a family's latest: the "~" in Usage. Not a provider's own figure.
+        const guessed = (provider === "claude-code" || provider === "anthropic") && info?.pricingEstimated;
+        if (guessed && !r.unknown && v.cost > 0 && typeof r.usage.cost !== "number") v.estimated = true;
         v.planEquivalent = source === "api" ? 0 : v.cost;
         if (parts && !r.unknown) {
             const sum = parts.input + parts.output + parts.cacheRead + parts.cacheWrite + parts.webSearch;

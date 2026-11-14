@@ -45,7 +45,7 @@ export function axisTicks(series: Pick<UsageBucket, "at">[], hourly: boolean): {
     });
 }
 
-export interface AccountTotal extends Pick<UsageTotals, "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "cost" | "unknown"> {
+export interface AccountTotal extends Pick<UsageTotals, "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "cost" | "unknown" | "estimated"> {
     source: UsageSource;
     provider: string;
     providerName: string;
@@ -60,6 +60,7 @@ export function byAccount(rows: UsageAccountRow[]): AccountTotal[] {
         const a = out.get(key) ?? { source: r.source, provider: r.provider, providerName: r.providerName, accountId: r.accountId, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cost: 0, unknown: false };
         a.inputTokens += r.inputTokens; a.outputTokens += r.outputTokens; a.cacheReadTokens += r.cacheReadTokens; a.cacheWriteTokens += r.cacheWriteTokens;
         a.cost += r.cost; a.unknown ||= r.unknown;
+        if (r.estimated) a.estimated = true;
         out.set(key, a);
     }
     return [...out.values()];

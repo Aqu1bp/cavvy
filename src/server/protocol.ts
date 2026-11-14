@@ -1227,6 +1227,8 @@ export interface UsageRow {
     planEquivalent: number;
     /** Some of it had no known price: cost leaves that out (it isn't free). */
     unknown: boolean;
+    /** UsageTotals.estimated. */
+    estimated?: boolean;
 }
 
 export type UsageSource = "claude-code" | "codex" | "api";

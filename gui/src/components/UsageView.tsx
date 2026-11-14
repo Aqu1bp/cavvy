@@ -67,7 +67,7 @@ type Metric = "cost" | "tokens";
 const SHORT: Record<UsageSource, string> = { "claude-code": "Claude Code", codex: "Codex", api: "API" };
 const amount = (r: Pick<UsageTotals, "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "cost">, m: Metric) => (m === "tokens" ? processed(r) : r.cost);
 /** A cost as a figure: "$X+" when part of it had no price, "—" when none did, "~$X" when part is at a guessed price. Never "$0" for unpriced usage. */
-const costFigure = (r: { cost: number; unknown: boolean; estimated?: boolean }) => (r.unknown ? (r.cost > 0 ? `${usd(r.cost)}+` : "—") : `${r.estimated ? "~" : ""}${usd(r.cost)}`);
+const costFigure = (r: { cost: number; unknown: boolean; estimated?: boolean }) => (r.unknown && !r.cost ? "—" : `${r.estimated ? "~" : ""}${usd(r.cost)}${r.unknown ? "+" : ""}`);
 const figure = (r: Parameters<typeof amount>[0] & { unknown: boolean }, m: Metric) => (m === "tokens" ? tokens(processed(r)) : costFigure(r));
 /** The CLIs report plans in lower case ("max"). */
 const planLabel = (plan?: string) => (plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : undefined);

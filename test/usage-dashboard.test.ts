@@ -59,6 +59,15 @@ test("Claude Code usage of a model newer than Cavvy's table is priced like its f
     rmSync(join(claude, "projects"), { recursive: true });
 });
 
+test("an API session's cost saved from a guessed price is marked estimated; a provider's own figure isn't", async () => {
+    write(join(iso.home, "projects/p/api-new.jsonl"), cavvyLine("anthropic:claude-opus-6", 0.5)
+        + JSON.stringify({ t: "usage", at: now - 1000, model: "anthropic:claude-opus-7", cost: 0.5, usage: { inputTokens: 100, outputTokens: 10, cost: 0.5 } }) + "\n");
+    const s = await usageSummary(1, now);
+    expect(s.rows.find(r => r.model === "claude-opus-6")).toMatchObject({ cost: 0.5, estimated: true });
+    expect(s.rows.find(r => r.model === "claude-opus-7")!.estimated).toBeUndefined();
+    rmSync(join(iso.home, "projects/p/api-new.jsonl"));
+});
+
 test("cached Anthropic metadata cannot retain stale static prices", async () => {
     const { resolveModelInfo, cachedListings } = await import("../src/providers/models");
     write(join(iso.home, "cache/models.json"), JSON.stringify({ version: 3, providers: { anthropic: { fetchedAt: now, fp: "test", models: [
