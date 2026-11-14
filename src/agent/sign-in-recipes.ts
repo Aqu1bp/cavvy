@@ -214,9 +214,11 @@ const STREAMS = /[0-9]*[<>]&[0-9-]|&>>?/g;
  * A shell command's parts, each with the program it runs: its first word (after `;`, `&&`, `|`, a newline, an
  * opening bracket), past variables set for it and wrappers such as sudo. `piped`: it reads the part before it.
  */
-function partsOf(command: string): { program: string; piped: boolean; prints: boolean }[] {
-    const pieces = command.replace(STREAMS, " ").split(/(\|\||&&|\|&|[;&|\n(`])/);
-    const parts: { program: string; piped: boolean; prints: boolean }[] = [];
+function partsOf(command: string): { program: string; piped: boolean; prints: boolean; filters: boolean }[] {
+    // A quoted word is one word, whatever is in it (`grep -E "error|fail"`): not one that runs something (`"$(cat f)"`).
+    const quoted = /'[^']*'|"(?:[^"\\$`]|\\.)*"/g;
+    const pieces = command.replace(STREAMS, " ").replace(quoted, "Q").split(/(\|\||&&|\|&|[;&|\n(`])/);
+    const parts: { program: string; piped: boolean; prints: boolean; filters: boolean }[] = [];
     for (let k = 0; k < pieces.length; k += 2) {
         const words = pieces[k]!.trim().split(/\s+/);
         let i = 0;
@@ -225,13 +227,26 @@ function partsOf(command: string): { program: string; piped: boolean; prints: bo
         const word = (words[i] ?? "").replace(/^[$"']+|["']+$/g, "");
         const before = pieces[k - 1];
         const program = word.slice(word.lastIndexOf("/") + 1);
-        if (word) parts.push({ program, piped: before === "|" || before === "|&", prints: program === "git" && words.slice(i + 1).some((w) => GIT_PRINTS.has(w)) });
+        const piped = before === "|" || before === "|&";
+        const rest = words.slice(i + 1);
+        // Its pattern or script given as an option (`grep -e'x' NOTES.md`, `sed -e s/a/b/ f`): any other plain word is a file.
+        const inOption = rest.some((w) => /^-[ef]|^--(?:regexp|file|expression)\b/.test(w));
+        // Plain words after it, past options, their numbers (`tail -n 5`) and the word such an option takes (`grep -e error`).
+        const plain = rest.filter((w, k) => w && !w.startsWith("-") && !/^\d+$/.test(w) && !(k > 0 && /^(?:-[ef]|--(?:regexp|file|expression))$/.test(rest[k - 1]!))).length;
+        if (word) parts.push({ program, piped, prints: program === "git" && rest.some((w) => GIT_PRINTS.has(w)), filters: piped && plain <= (inOption ? 0 : (FILTERS[program] ?? -1)) });
     }
     return parts;
 }
 
 /** Shell words that print nothing of another program's: beside a CLI in a command, the output is still the CLI's. */
 const QUIET = new Set(["echo", "printf", "true", "false", ":", "exit", "cd", "pushd", "popd", "set", "export", "unset", "sleep", "wait", "test", "["]);
+
+/**
+ * Programs that, fed by a pipe, only pass on or cut down what came in (`xargs grep` reads files of its own), with
+ * how many plain words each may be given before it reads a file instead: none (`cat NOTES.md`), or its pattern or
+ * script (`grep error`; `grep error log.txt` reads the file).
+ */
+const FILTERS: Record<string, number> = { tail: 0, head: 0, cat: 0, sort: 0, uniq: 0, wc: 0, cut: 0, less: 0, more: 0, column: 0, fold: 0, nl: 0, grep: 1, egrep: 1, fgrep: 1, rg: 1, sed: 1, awk: 1, jq: 1, tr: 2, tee: 9 };
 
 /**
  * Whether a shell command's status may not be its CLI's own: a command after it, or a pipe (`git push 2>&1; echo
@@ -257,7 +272,7 @@ export function signedOutIn(output: string, recipes: readonly SignInRecipe[], co
     for (const r of recipes) {
         const own = r.commands ?? [r.id];
         if (!r.signedOut?.length || !parts.some((p) => own.includes(p.program))) continue;
-        if (!failed && !parts.every((p) => (p.piped || own.includes(p.program) || QUIET.has(p.program)) && !p.prints)) continue;
+        if (!failed && !parts.every((p) => (p.filters || own.includes(p.program) || QUIET.has(p.program)) && !p.prints)) continue;
         let res = matchers.get(r);
         if (!res) {
             res = r.signedOut.flatMap((p) => { try { return [new RegExp(p)]; } catch { return []; } });

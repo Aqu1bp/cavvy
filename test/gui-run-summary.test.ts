@@ -48,6 +48,9 @@ test("one step alone says what it was", () => {
     // A sign-in by its name, not the id the agent passes.
     expect(summarize([tool("mcp__cavvy__request_sign_in", { target: "gh" })])).toBe("Ask to sign in to GitHub");
     expect(summarize([tool("RequestSignIn", { target: "fly" })])).toBe("Ask to sign in to fly");
+    // A command that was never run isn't "Ran"; one that ran and failed is.
+    expect(summarize([tool("Bash", { command: "ls" }, { status: "error", summary: "Not run", title: "Bash(ls)" })])).not.toMatch(/^Ran/);
+    expect(summarize([tool("Bash", { command: "false" }, { status: "error", output: "Exit code: 1" })])).toBe("Ran `false`");
     // A read that failed isn't "Read 1 file".
     expect(summarize([tool("Read", { file_path: "/a.ts" }, { status: "error", title: "Read(/a.ts)" })])).toBe("Read /a.ts");
 });

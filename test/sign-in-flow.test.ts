@@ -535,6 +535,19 @@ describe("the pieces", () => {
         expect(worked("git grep -n 'auth login' | head")).toBeUndefined();
         expect(worked("git show HEAD:NOTES.md; echo done")).toBeUndefined();
         expect(worked("git -C repo log --format=%B | cat")).toBeUndefined();
+        // Fed by a pipe, only a filter of what came in counts: xargs runs a program on files of its own.
+        expect(worked("git ls-files | xargs grep -n 'gh auth login'")).toBeUndefined();
+        expect(worked("gh pr list 2>&1 | grep -i error | head -3")).toBe("gh");
+        expect(worked("gh pr list 2>&1 | tail -n 5")).toBe("gh");
+        // A pipe inside quotes isn't a pipe.
+        expect(worked('gh pr list 2>&1 | grep -E "error|not logged"')).toBe("gh");
+        // Given a file, a filter reads the file, not what was piped in.
+        expect(worked("git status --short | cat NOTES.md")).toBeUndefined();
+        expect(worked("git status --short | grep login NOTES.md")).toBeUndefined();
+        expect(worked("git status --short | grep -e'gh auth login' NOTES.md")).toBeUndefined();
+        expect(worked("gh pr list 2>&1 | grep -e error")).toBe("gh");
+        // Quotes that run something are still looked into.
+        expect(worked('echo "$(cat NOTES.md)"; git status --short')).toBeUndefined();
         // Run under a time limit, it's still the CLI's own.
         expect(worked('timeout 30 gh pr view 2>&1; echo "exit=$?"')).toBe("gh");
         expect(signedOutIn(quoted, SIGN_IN_RECIPES, "timeout -k 2 30s gh pr view")?.id).toBe("gh");

@@ -39,18 +39,27 @@ export interface BoundedRun {
  */
 export async function runBounded(argv: string[], o: { cwd: string; env: Record<string, string>; stdin?: string; timeoutMs: number; signal?: AbortSignal }): Promise<BoundedRun> {
     const proc = Bun.spawn(argv, { cwd: o.cwd, env: o.env, stdin: o.stdin === undefined ? "ignore" : Buffer.from(o.stdin), stdout: "pipe", stderr: "pipe", detached: true });
+    /** Signals the group; false when nothing of it is left. */
     const group = (sig: NodeJS.Signals) => {
         try {
             process.kill(-proc.pid, sig);
+            return true;
         } catch {
-            // Nothing of it is left.
+            return false;
         }
     };
     track(proc.pid);
     let force: ReturnType<typeof setTimeout> | undefined;
     const end = () => {
-        group("SIGTERM");
-        force ??= setTimeout(() => group("SIGKILL"), KILL_AFTER_MS);
+        // Nothing left (it exited and left nothing running, the usual case): no signal is owed later, when its
+        // number could be another program's.
+        if (!group("SIGTERM")) return void live.delete(proc.pid);
+        // Tracked until then: if Cavvy exits first, the exit hook ends the group.
+        force ??= setTimeout(() => {
+            group("SIGKILL");
+            live.delete(proc.pid);
+        }, KILL_AFTER_MS);
+        force.unref?.();
     };
     const timer = setTimeout(end, o.timeoutMs);
     o.signal?.addEventListener("abort", end, { once: true });
@@ -81,14 +90,13 @@ export async function runBounded(argv: string[], o: { cwd: string; env: Record<s
         await Promise.race([Promise.all([out, err]), new Promise((r) => { drain = setTimeout(r, DRAIN_MS); })]);
         clearTimeout(drain);
         for (const r of readers) void r.cancel().catch(() => {});
-        // What it left running goes too: one such per status check would add up.
-        group("SIGTERM");
+        // What it left running goes too (asked, then made to): one such per status check would add up.
+        end();
         return { code, out: (await out) + (await err) };
     } finally {
         clearTimeout(timer);
         o.signal?.removeEventListener("abort", end);
-        live.delete(proc.pid);
-        // Still to come, when it was ended: the group is made to go, whatever became of its first process.
-        force?.unref?.();
+        // Not left tracked for good, whatever happened above: only a group still to be made to go stays.
+        if (!force) live.delete(proc.pid);
     }
 }

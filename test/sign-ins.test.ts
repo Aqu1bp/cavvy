@@ -130,10 +130,15 @@ describe("a request", () => {
     test("two calls for the same sign-in share one card; interrupting one leaves it for the other", async () => {
         const x = session();
         const stop = new AbortController();
-        const first = x.s.request(ask(), stop.signal);
+        // Each call is told when its card is up: the first once the check is over, the one that joins at once.
+        const told: string[] = [];
+        const first = x.s.request(ask(), stop.signal, () => told.push("first"));
+        expect(told).toEqual([]);
         const id = await x.card("ask");
-        const second = x.s.request(ask("Acme"), never);
+        expect(told).toEqual(["first"]);
+        const second = x.s.request(ask("Acme"), never, () => told.push("second"));
         await Bun.sleep(60);
+        expect(told).toEqual(["first", "second"]);
         expect(x.cards.size).toBe(1);
         stop.abort();
         expect((await first).text).toBe("Not signed in to Acme: the request was interrupted.");

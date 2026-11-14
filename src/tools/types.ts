@@ -164,6 +164,8 @@ export interface ToolContext {
     mode: () => PermissionMode;
     setMode: (m: PermissionMode) => void;
     /** Streams live progress text (e.g. command output) to the UI. */
+    /** This call's own id, where it has one: what it shows is on that call's row, not on another of the same tool. */
+    callId?: string;
     onProgress?: (text: string) => void;
     ui: UiBridge;
     /** Runs a sub-agent (Task tool), on `model` (provider:model) when given. */

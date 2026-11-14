@@ -3387,6 +3387,7 @@ export class Agent {
 
     private toolContext(callId: string, signal: AbortSignal, sandbox?: Sandbox): ToolContext {
         return {
+            callId: callId || undefined,
             sandbox,
             state: this.state,
             settings: this.o.settings(),

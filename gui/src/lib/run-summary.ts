@@ -47,7 +47,7 @@ export function summarize(tools: ToolBlock[]): string {
             continue;
         }
         const kind = toolKind(t.name);
-        if (t.status === "error" && (kind !== "Bash" || (!one && !ran(t)))) {
+        if (t.status === "error" && (kind !== "Bash" || !ran(t))) {
             if (one) misc.push(said(t));
             else failed++;
             continue;

@@ -50,3 +50,12 @@ test("stopped, it ends at once; and something it leaves running by itself isn't 
     for (let i = 0; i < 40 && alive(leftover); i++) await Bun.sleep(50);
     expect(alive(leftover)).toBe(false);
 });
+
+test("something it leaves running that won't be asked to end is made to", async () => {
+    // Ignores the polite signal: ended a moment later all the same.
+    const stubborn = script("stubborn", `(trap '' TERM; sleep 30) &\necho $! > ${join(dir, "stubborn.pid")}\necho done`);
+    expect(await runBounded([stubborn], { cwd: dir, env, timeoutMs: 60_000 })).toEqual({ code: 0, out: "done\n" });
+    const left = Number(await Bun.file(join(dir, "stubborn.pid")).text());
+    for (let i = 0; i < 100 && alive(left); i++) await Bun.sleep(50);
+    expect(alive(left)).toBe(false);
+});

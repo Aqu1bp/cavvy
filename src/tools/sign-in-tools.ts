@@ -56,7 +56,7 @@ export const RequestSignInTool: Tool<Input> = {
         const bad = inputError(input as Record<string, unknown>);
         if (bad) return { content: bad, isError: true };
         if (!ctx.ui.requestSignIn) return { content: NOBODY, isError: true };
-        const r = await ctx.ui.requestSignIn(request(input, "RequestSignIn"), ctx.signal);
+        const r = await ctx.ui.requestSignIn({ ...request(input, "RequestSignIn"), callId: ctx.callId }, ctx.signal);
         return { content: r.text, isError: r.isError, display: { summary: r.summary } };
     },
 };

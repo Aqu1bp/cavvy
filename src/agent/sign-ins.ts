@@ -22,6 +22,8 @@ export interface SignInRequest {
     waitMs?: number;
     /** The tool the model called, for what it's told to call again. */
     tool?: string;
+    /** That call's id, where it has one: two calls in one reply each wait on their own card. */
+    callId?: string;
 }
 
 export interface SignInAnswer {
@@ -83,6 +85,8 @@ interface Active {
     /** Calls in a turn still waiting on it. */
     holders: number;
     shown: boolean;
+    /** Told when the card first shows: the calls that asked while it was still being checked. */
+    onShown: (() => void)[];
 }
 
 interface Later {
@@ -147,7 +151,8 @@ export class SessionSignIns {
     constructor(private o: SessionSignInsOptions) {}
 
     /** A sign-in a tool asked for: waits for the user, and answers with what the model is told. */
-    async request(req: SignInRequest, signal: AbortSignal): Promise<SignInAnswer> {
+    /** `onCard`: called once the card this request waits on is up (at once, when it joins one that is). */
+    async request(req: SignInRequest, signal: AbortSignal, onCard?: () => void): Promise<SignInAnswer> {
         const tool = req.tool ?? "RequestSignIn";
         let machine: SignInMachine;
         try {
@@ -158,6 +163,7 @@ export class SessionSignIns {
         if (signal.aborted) return { ...signInReport({ end: "stopped", results: [] }, machine.where, tool), text: "The request to sign in was interrupted.", signedIn: false };
         const wants = this.wants(req.targets);
         const a = this.open(req, wants, machine);
+        if (onCard) a.shown ? onCard() : a.onShown.push(onCard);
         const run = this.held(a, wants, signal);
         let timer: ReturnType<typeof setTimeout> | undefined;
         const limit = req.waitMs ? new Promise<"waiting">((r) => { timer = setTimeout(() => r("waiting"), req.waitMs); }) : undefined;
@@ -312,7 +318,7 @@ export class SessionSignIns {
     private start(on: string, wants: SignInWant[], machine: SignInMachine, asked = false): Active {
         const id = this.o.newId();
         const stop = new AbortController();
-        const entry: Active = { stop, kept: false, key: this.key(on, wants), on, targets: wants.map((w) => w.target), holders: 0, shown: false, flow: undefined as unknown as SignInFlow, run: undefined as unknown as Promise<SignInOutcome> };
+        const entry: Active = { stop, kept: false, key: this.key(on, wants), on, targets: wants.map((w) => w.target), holders: 0, shown: false, onShown: [], flow: undefined as unknown as SignInFlow, run: undefined as unknown as Promise<SignInOutcome> };
         if (this.disposed) stop.abort();
         entry.flow = new SignInFlow({
             wants,
@@ -323,6 +329,7 @@ export class SessionSignIns {
             show: (view) => {
                 entry.shown = true;
                 this.o.cards.show(id, machine.name ? { ...view, machine: machine.name } : view, entry.kept);
+                for (const told of entry.onShown.splice(0)) told();
             },
             save: this.o.save ? (w) => this.keep(w) : undefined,
         });
