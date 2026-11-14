@@ -114,6 +114,10 @@ const FRAME_RULES: Record<string, RegExp> = {
     "sidebar.css": /^(\.side-top( \.hb)?|\.resize-handle(\.left)?)$/,
     "terminal.css": /^(\.terminal-resize|\.app\.tauri\.os-macos(\.rail-off|\[data-rail="overlay"\]) \.terminal-panel\.max \.terminal-toolbar)$/,
     "overlays.css": /^\.find-bar\.glass$/,
+    // A theme's stage: 1600 × 1000 units, the coordinates its layers are placed in, scaled whole to cover the window
+    // or a tile (--tb-scale, the tile's own scale). No text sits on it.
+    "theme-backdrop.css": /^\.tb-stage$/,
+    "theme-gallery.css": /^\.tg-stage$/,
 };
 
 /** The px lengths in a value outside var() (a fallback there is another property's default). */

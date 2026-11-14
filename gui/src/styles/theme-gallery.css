@@ -122,7 +122,7 @@
 
 .tg-ui b {
     height: calc(3 * var(--sp));
-    border-radius: 2px;
+    border-radius: calc(2 * var(--sp));
     background: var(--fg-3);
     opacity: 0.7;
 }
