@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
-import { isMod, mod } from "../lib/platform";
+import { isMod, machine, mod } from "../lib/platform";
 import { ArrowUp, CornerDownRight, Database, FileText, Folder, ListEnd, Maximize2, Minimize2, Slash, Sparkles, SquareTerminal, Plus, X } from "lucide-solid";
 import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } from "@shared/protocol";
 import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
@@ -791,7 +791,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                             {(w) => (
                                 <div class="queue goal-tab" role="status">
                                     <div class="goal-row">
-                                        <span class="goal-text truncate">{w.label}</span>
+                                        {/* A session on a server doesn't know what this machine calls it: the window does. */}
+                                        <span class="goal-text truncate">{machine && !w.label.includes(" on ") ? `${w.label} on ${machine}` : w.label}</span>
                                         <button class="pbtn sm" onClick={() => void rpc.call("session.signIn", { id: p.sessionId!, watchId: w.id }).catch(reportError)}>
                                             Sign in
                                         </button>
