@@ -12,13 +12,14 @@ const image = await readAttachment(new File([new Uint8Array([137, 80, 78, 71])],
 assert.equal(image.kind, "image");
 const textFile = await readAttachment(new File(["first line\nsecond line\n"], "notes.txt"), []);
 const pdf = await readAttachment(new File(["%PDF-1.7\n"], "document.pdf"), []);
-const refused = await readAttachment(new File([new Uint8Array([0])], "binary.bin"), []);
+const binary = await readAttachment(new File([new Uint8Array([0])], "binary.bin"), []);
 const longText = "a line of pasted text\n".repeat(100);
 assert.equal(isLongPaste(longText), true);
 const paste = pastedText(longText, []);
 assert.equal(textFile.kind, "text");
 assert.equal(pdf.kind, "pdf");
-assert.equal(refused.kind, "refused");
+// Not text, a PDF or an image: attached as it is, to be saved beside the session.
+assert.equal(binary.kind, "file");
 assert.equal(paste.kind, "text");
 assert.ok(paste.kind === "text" && paste.pasted);
 const files = [image, textFile, pdf, paste];
@@ -153,11 +154,11 @@ assert.equal(composerDrafts.get("deleted-session")?.text, "after undo");
 // Unsent files retain their contents and chip metadata when switching sessions.
 const withFiles = mount("files");
 withFiles.setText("review these");
-withFiles.setAttachments([...files, refused]);
+withFiles.setAttachments([...files, binary]);
 withFiles.dispose();
 const keptFiles = mount("files");
 assert.equal(keptFiles.text(), "review these");
-assert.deepEqual(keptFiles.attachments(), [...files, refused]);
+assert.deepEqual(keptFiles.attachments(), [...files, binary]);
 keptFiles.setAttachments(files);
 const fileSubmission = keptFiles.capture();
 // A refused send never clears the draft, including after it is saved and reopened.
@@ -195,7 +196,7 @@ for (const lifecycle of ["mounted", "disposed", "replaced"] as const) {
     const key = `local-${lifecycle}`;
     const draft = mount(key);
     draft.setText("/context");
-    draft.setAttachments([...files, refused]);
+    draft.setAttachments([...files, binary]);
     const submitted = draft.capture();
     if (lifecycle !== "mounted") draft.dispose();
     const replacement = lifecycle === "replaced" ? mount(key) : undefined;
@@ -204,12 +205,12 @@ for (const lifecycle of ["mounted", "disposed", "replaced"] as const) {
     draft.clearSent(submitted, true);
     if (lifecycle === "mounted") {
         assert.equal(draft.text(), "");
-        assert.deepEqual(draft.attachments(), [...files, refused]);
+        assert.deepEqual(draft.attachments(), [...files, binary]);
         draft.dispose();
     }
     const reopened = mount(key);
     assert.equal(reopened.text(), lifecycle === "replaced" ? "newer message" : "");
-    assert.deepEqual(reopened.attachments(), [...files, refused]);
+    assert.deepEqual(reopened.attachments(), [...files, binary]);
     reopened.dispose();
 }
 
