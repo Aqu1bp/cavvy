@@ -5,12 +5,14 @@
 
 import { childEnv } from "../util/env";
 import { SIGN_IN_COLS, terminalAnswers } from "../agent/sign-in-host";
+import { localSignInHost } from "../agent/sign-in-host";
 import type { SignInHost, SignInProcess } from "../agent/sign-in";
+import type { SignInMachine } from "../agent/sign-ins";
 import type { SignInRecipe } from "../agent/sign-in-recipes";
 import { agentCli } from "../backends/defs";
 import { REMOTE_CURRENT } from "./remote";
 import { remoteSh, shQuote, ssh, sshCommandArgv, sshTunnelArgv } from "./ssh";
-import type { ServerEntry } from "./store";
+import { getServer, listServers, type ServerEntry } from "./store";
 
 /** Exit code of the wrapper when the program isn't on the server. */
 const MISSING = 127;
@@ -99,4 +101,22 @@ async function listening(port: number): Promise<boolean> {
         await Bun.sleep(100);
     }
     return false;
+}
+
+const HERE = /^(this|here|local|localhost|this (mac|machine|computer|server))$/i;
+
+/**
+ * Where a sign-in an agent asked for happens: this machine, or one of the user's servers by its name here. Throws
+ * what the agent is told when it can't be that one. `away`: this Cavvy runs on a server (the person's browser is
+ * elsewhere, and it reaches no other machine of theirs). `signedIn`: what this machine does with a new sign-in.
+ */
+export function signInMachine(name: string | undefined, o: { away: boolean; account?: string; signedIn?: (recipe: SignInRecipe, account: string) => Promise<void> }): SignInMachine {
+    if (!name || HERE.test(name)) return { host: localSignInHost({ away: o.away, account: o.account, signedIn: o.signedIn }), where: o.away ? "this server" : undefined };
+    if (o.away) throw new Error("From a server, only this server can be signed in: leave machine out.");
+    const entry = getServer(name.toLowerCase());
+    if (!entry) {
+        const known = listServers().map((s) => s.name);
+        throw new Error(known.length ? `No server is called "${name}". The user's servers: ${known.join(", ")}. Leave machine out for this machine.` : `No server is called "${name}": the user has added none. Leave machine out for this machine.`);
+    }
+    return { host: serverSignInHost(entry), name: entry.name, where: entry.name };
 }

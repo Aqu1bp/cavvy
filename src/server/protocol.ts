@@ -552,8 +552,10 @@ export interface SignInInteraction {
     ran?: boolean;
     /** May be kept for next time (a sign-in Cavvy didn't know). */
     canSave?: boolean;
-    /** The CLI's own words on why it didn't work, with Try again. */
+    /** The CLI's own words on why it didn't work. */
     error?: string;
+    /** The sign-in command ended without signing in: Try again starts it over. Without it, an error is about what was just entered, and the field still takes another. */
+    ended?: boolean;
     /** Something is running that the card waits for (checking, sending the code). */
     busy?: boolean;
     /** Came from a list: Back returns to it. */

@@ -135,8 +135,11 @@ const words = (command: string) => command.split(" ").filter(Boolean);
  * What a failed command said, short enough for a card: its last lines, without what the user typed (`hide`) and
  * without the lines the card already showed (`shown`: the code, the link).
  */
-function said(output: string, hide: string[] = [], shown: (string | undefined)[] = []): string {
-    const all = plain(output).split("\n").map((l) => l.trim()).filter((l) => l && !shown.some((x) => x && l.includes(x)));
+function said(output: string, hide: string[] = [], shown: (string | undefined)[] = [], prompt?: string): string {
+    let text = plain(output);
+    // Its prompt, printed again before what it has to say, isn't part of that.
+    if (prompt) try { text = text.replace(new RegExp(prompt, "gi"), "\n"); } catch {}
+    const all = text.split("\n").map((l) => l.trim()).filter((l) => l && !shown.some((x) => x && l.includes(x)));
     // A line that echoes what was typed (the prompt it was typed at) says nothing more; if that's all there is, the value is blanked.
     const without = all.filter((l) => !hide.some((h) => h && l.includes(h)));
     const lines = without.length ? without : all.map((l) => hide.reduce((t, h) => (h ? t.split(h).join("•••") : t), l));
@@ -194,6 +197,9 @@ export class SignInFlow {
     /** Counts runs of a sign-in command: what an older one reports is ignored. */
     private run_ = 0;
     private output = "";
+    /** How much of the output the card has already shown or answered (the link, the code, what was pasted): what comes after is why it failed. */
+    private heardTo = 0;
+    private complaint: ReturnType<typeof setTimeout> | undefined;
     private screen: SmallScreen | undefined;
     private forwarded: { close(): void } | undefined;
     private timer: ReturnType<typeof setTimeout> | undefined;
@@ -247,7 +253,7 @@ export class SignInFlow {
                 return;
             }
             case "start":
-                if (e && (this.view.step === "ask" || this.view.error)) void this.start(e);
+                if (e && (this.view.step === "ask" || this.view.ended)) void this.start(e);
                 return;
             case "retry":
                 if (e) void this.start(e);
@@ -274,6 +280,7 @@ export class SignInFlow {
                 if (this.view.step === "token" && e) void this.token(e, a.value.trim());
                 else if (this.view.step === "paste" && this.proc) {
                     this.sent.push(a.value.trim());
+                    this.heardTo = this.output.length;
                     this.proc.write(`${a.value.trim()}\r`);
                     this.set({ busy: true, error: undefined });
                 }
@@ -376,6 +383,7 @@ export class SignInFlow {
         this.stopCommand();
         const run = ++this.run_;
         this.output = "";
+        this.heardTo = 0;
         this.answered.clear();
         this.sent = [];
         this.startedAt = this.now();
@@ -387,7 +395,7 @@ export class SignInFlow {
                 if (!this.o.host.forward || !way.port) throw new Error("This sign-in needs its page to reach the server, which can't be set up from here.");
                 this.forwarded = await this.o.host.forward(way.port);
             } catch (err) {
-                if (run === this.run_) this.set({ busy: undefined, error: err instanceof Error ? err.message : String(err) });
+                if (run === this.run_) this.set({ busy: undefined, ended: true, error: err instanceof Error ? err.message : String(err) });
                 return;
             }
             if (run !== this.run_ || this.over) return this.forwarded?.close();
@@ -398,7 +406,7 @@ export class SignInFlow {
             // Only a sign-in for a browser on this machine opens it itself (one typed at prompts may too): the card opens the others.
             proc = this.o.host.start(r, words(way.run), { opens: way.flow === "browser" || (way.flow === "typed" && !this.o.host.away), onData: (text) => run === this.run_ && this.heard(e, way, text) });
         } catch (err) {
-            this.set({ busy: undefined, error: err instanceof Error ? err.message : String(err) });
+            this.set({ busy: undefined, ended: true, error: err instanceof Error ? err.message : String(err) });
             return;
         }
         this.proc = proc;
@@ -414,12 +422,26 @@ export class SignInFlow {
             this.set({ term: this.screen.text() });
             return;
         }
-        this.output = (this.output + text).slice(-16_000);
+        this.output += text;
+        if (this.output.length > 16_000) {
+            this.heardTo = Math.max(0, this.heardTo - (this.output.length - 16_000));
+            this.output = this.output.slice(-16_000);
+        }
         const out = plain(this.output);
         for (const a of r.answers ?? []) {
             if (this.answered.has(a.when) || !first(a.when, out)) continue;
             this.answered.add(a.when);
             this.proc?.write(a.send);
+        }
+        // After a pasted code, a command that says something and carries on (it wants another) isn't going to exit: what it said goes under the field.
+        if (way.flow === "paste" && this.view.step === "paste" && this.view.busy && this.sent.length) {
+            if (this.complaint) clearTimeout(this.complaint);
+            this.complaint = setTimeout(() => {
+                this.complaint = undefined;
+                if (this.over || !this.proc || this.view.step !== "paste" || !this.view.busy) return;
+                const why = said(this.output.slice(this.heardTo), this.sent, [this.view.url], r.reads?.prompt);
+                if (why) this.set({ busy: undefined, error: why });
+            }, 1200);
         }
         const url = first(r.reads?.url ?? "(https://\\S+)", out)?.replace(/[)\].,'"]+$/, "");
         const patch: Partial<SignInView> = {};
@@ -433,7 +455,11 @@ export class SignInFlow {
             // The browser is on another machine: nothing opened the page, so the card offers to.
             Object.assign(patch, { busy: undefined, open: way.flow === "callback" || this.o.host.away ? true : undefined });
         }
-        if (Object.keys(patch).length) this.set(patch);
+        if (Object.keys(patch).length) {
+            // Everything up to here is what the card now shows.
+            if (patch.step || patch.url || patch.code) this.heardTo = this.output.length;
+            this.set(patch);
+        }
     }
 
     private async exited(e: Entry, way: SignInWay, code: number) {
@@ -451,8 +477,14 @@ export class SignInFlow {
         }
         const out = plain(this.output);
         const expired = way.flow === "device" && this.view.step === "code" && (Boolean(first(r.reads?.expired, out.slice(out.indexOf(this.view.code ?? "") + 1))) || this.now() - this.startedAt > CODE_LIFE_MS);
+        if (this.complaint) clearTimeout(this.complaint);
         if (expired) this.set({ expired: true, busy: undefined, error: undefined });
-        else this.set({ busy: undefined, error: said(this.screen ? this.screen.text() : this.output, this.sent, [this.view.code, this.view.url]) || "The sign-in ended without signing in." });
+        else {
+            // What it said after what the card showed; all of it, if it said nothing more.
+            const shown = [this.view.code, this.view.url];
+            const why = this.screen ? said(this.screen.text(), this.sent) : said(this.output.slice(this.heardTo), this.sent, shown, r.reads?.prompt) || said(this.output, this.sent, shown, r.reads?.prompt);
+            this.set({ busy: undefined, ended: true, error: why || "The sign-in ended without signing in." });
+        }
     }
 
     private async token(e: Entry, value: string) {
@@ -467,7 +499,8 @@ export class SignInFlow {
             e.state = "in";
             return void this.signedIn(e);
         }
-        this.set({ busy: undefined, error: said(res.out, [value]) || "That token didn't sign in." });
+        // Its first line: what follows is its advice to sign in some other way.
+        this.set({ busy: undefined, error: (said(res.out, [value]) || "That token didn't sign in.").split("\n")[0] });
     }
 
     private async signedIn(e: Entry) {
@@ -517,6 +550,8 @@ export class SignInFlow {
 
     private stopCommand() {
         this.run_++;
+        if (this.complaint) clearTimeout(this.complaint);
+        this.complaint = undefined;
         this.proc?.kill();
         this.proc = undefined;
         this.forwarded?.close();

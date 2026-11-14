@@ -45,7 +45,8 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
     };
     // The server it's on: named by the session, or the one this window is on.
     const where = () => it().machine ?? windowMachine;
-    const failed = () => Boolean(it().error) && it().step !== "token";
+    // The sign-in command gave up: only starting over is left. (An error without that is about what was just entered.)
+    const failed = () => Boolean(it().ended);
     const open = () => it().url && void openExternal(it().url!);
     const openTerminal = () => {
         if (terminalActions.signIn?.(p.sessionId, p.it.id)) void send({ action: "ran" });

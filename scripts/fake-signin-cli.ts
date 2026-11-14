@@ -14,7 +14,7 @@
 //
 // This module must not import anything from src (tests load it before their isolation).
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 
 const SCRIPT = `#!/bin/sh
@@ -100,7 +100,8 @@ export function fakeSignInCli(dir: string): FakeSignInCli {
     process.env.ACME_HOME = home;
     const f = (name: string) => join(home, name);
     const reset = () => {
-        for (const n of ["approve", "approve.auto", "expire", "refuse", "state", "log", "setup"]) rmSync(f(n), { force: true });
+        // Every pretend service's state (state-<service>), and what the tests left to steer a sign-in.
+        for (const n of readdirSync(home)) if (n.startsWith("state") || ["approve", "approve.auto", "expire", "refuse", "log", "setup"].includes(n)) rmSync(f(n), { force: true });
     };
     return {
         bin,

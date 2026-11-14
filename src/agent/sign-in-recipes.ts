@@ -47,8 +47,8 @@ export interface SignInRecipe {
     /** Set for its commands. */
     env?: Record<string, string>;
     /**
-     * Patterns over what the sign-in prints: the first group of `url` and `code`; `prompt` when it's waiting for the
-     * pasted code; `expired` when the code is no longer good.
+     * Patterns over what the sign-in prints: the first group of `url` and `code`; `prompt`, the whole of what it
+     * prints when it's waiting for the pasted code; `expired` when the code is no longer good.
      */
     reads?: { url?: string; code?: string; prompt?: string; expired?: string };
     /** What to answer when it asks something on the way ("Press Enter"): the first pattern found, once each. */
@@ -88,7 +88,7 @@ export const SIGN_IN_RECIPES: readonly SignInRecipe[] = [
         status: { run: "aws sts get-caller-identity --query Account --output text", signedIn: "^\\d{12}\\s*$", who: "\\d{8}(\\d{4})" },
         here: { flow: "browser", run: "aws login" },
         away: { flow: "paste", run: "aws login --remote" },
-        reads: { url: "(https://\\S+)", prompt: "authorization code" },
+        reads: { url: "(https://\\S+)", prompt: "Enter the authorization code[^:]*:" },
         signedOut: ["Unable to locate credentials", "ExpiredToken", "Your session has expired", "aws login"],
     },
     {
@@ -98,7 +98,7 @@ export const SIGN_IN_RECIPES: readonly SignInRecipe[] = [
         status: { run: "gcloud auth list --filter=status:ACTIVE --format=value(account)", signedIn: "\\S+@\\S+", who: "(\\S+@\\S+)" },
         here: { flow: "browser", run: "gcloud auth login" },
         away: { flow: "paste", run: "gcloud auth login --no-launch-browser" },
-        reads: { url: "(https://accounts\\.google\\.com/\\S+)", prompt: "verification code" },
+        reads: { url: "(https://accounts\\.google\\.com/\\S+)", prompt: "enter the verification code[^:]*:" },
         signedOut: ["You do not currently have an active account selected", "Reauthentication required", "gcloud auth login"],
     },
     {
@@ -109,7 +109,7 @@ export const SIGN_IN_RECIPES: readonly SignInRecipe[] = [
         status: { run: "claude auth status", signedIn: "\"loggedIn\":\\s*true", who: "\"email\":\\s*\"([^\"]+)\"" },
         here: { flow: "browser", run: "claude auth login" },
         away: { flow: "paste", run: "claude auth login" },
-        reads: { url: "(https://\\S+)", prompt: "Paste code" },
+        reads: { url: "(https://\\S+)", prompt: "Paste code here[^>]*>" },
     },
     {
         id: "codex",

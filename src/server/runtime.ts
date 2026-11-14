@@ -30,11 +30,9 @@ import { expandCommand, pluginCommandFor, slashCommand } from "../commands/custo
 import { addPermissionRule, updateSettings, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { MODE_INFO, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { onServer } from "../servers/role";
-import { getServer, listServers } from "../servers/store";
-import { serverSignInHost } from "../servers/sign-in-host";
-import { localSignInHost } from "../agent/sign-in-host";
+import { signInMachine } from "../servers/sign-in-host";
 import { signInRecipes } from "../agent/sign-in-recipes";
-import { SessionSignIns, signInAction, signInAsks, type SignInAnswer, type SignInMachine, type SignInRequest } from "../agent/sign-ins";
+import { SessionSignIns, signInAction, signInAsks, type SignInAnswer, type SignInRequest } from "../agent/sign-ins";
 import { PermissionChecker } from "../permissions/checker";
 import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "../permissions/classifier";
 import { toolPath } from "../permissions/rules";
@@ -2772,7 +2770,7 @@ export class Runtime {
 
     private readonly signIns: SessionSignIns = new SessionSignIns({
         recipes: () => signInRecipes(this.settings().signIns),
-        machine: (name, account) => this.signInMachine(name, account),
+        machine: (name, account) => signInMachine(name, { away: this.engine.away, account, signedIn: (recipe, acct) => (recipe.provider ? this.engine.cliSignedIn(recipe.provider, acct) : Promise.resolve()) }),
         newId: () => this.newId(),
         wakes: () => this.toolState.wakes,
         watchers: () => this.toolState.watchers,
@@ -2789,21 +2787,6 @@ export class Runtime {
             hide: (id) => this.settle(id, undefined),
         },
     });
-
-    /** Where a sign-in an agent asked for happens: this machine, or one of the user's servers by its name here. */
-    private signInMachine(name: string | undefined, account?: string): SignInMachine {
-        const away = this.engine.away;
-        const here = !name || /^(this|here|local|localhost|this (mac|machine|computer|server))$/i.test(name);
-        if (here) return { host: localSignInHost({ away, account, signedIn: (recipe, acct) => (recipe.provider ? this.engine.cliSignedIn(recipe.provider, acct) : Promise.resolve()) }), where: away ? "this server" : undefined };
-        // A server reaches no other machine of the user's: its sign-ins are its own.
-        if (away) throw new Error("From a server, only this server can be signed in: leave machine out.");
-        const entry = getServer(name.toLowerCase());
-        if (!entry) {
-            const known = listServers().map((s) => s.name);
-            throw new Error(known.length ? `No server is called "${name}". The user's servers: ${known.join(", ")}. Leave machine out for this machine.` : `No server is called "${name}": the user has added none. Leave machine out for this machine.`);
-        }
-        return { host: serverSignInHost(entry), name: entry.name, where: entry.name };
-    }
 
     forgetSecret(name: string) {
         if (!this.toolState.secrets?.forget(name)) throw new RpcError("This session doesn't hold a secret by that name.", "not_found");

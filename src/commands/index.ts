@@ -1571,7 +1571,7 @@ function offered(s: { tools: unknown[]; resources?: unknown[]; templates?: unkno
 }
 
 /** Open a link in the user's browser; the link is printed too, for when this can't. */
-function openInBrowser(url: string) {
+export function openInBrowser(url: string) {
     if (!isWebUrl(url)) return;
     // Not cmd /c start: cmd would take the URL's & as a command separator.
     const argv = process.platform === "darwin" ? ["open", url] : process.platform === "win32" ? ["rundll32", "url.dll,FileProtocolHandler", url] : ["xdg-open", url];
@@ -2160,6 +2160,7 @@ const BUILTIN: Command[] = [
     { name: "loop", description: "Run a prompt now and then every interval (default 10m); /loop stop stops it", args: "[interval] <prompt>", whileBusy: true, run: (app, args) => loopCommand(app, args) },
     { name: "schedules", description: "This session's schedules: pause, resume, run now or delete", args: "[pause|resume|delete|run <id>]", run: schedulesCommand },
     { name: "secrets", description: "List the secrets this session holds (names only), or forget one", args: "[forget NAME]", whileBusy: true, run: secretsCommand },
+    { name: "sign-in", description: "Go back to a sign-in you put off", args: "[which]", whileBusy: true, run: (app, args) => { const no = app.resumeSignIn(args.trim() || undefined); if (no) app.notice(no); } },
     { name: "add-dir", description: "Allow working in another directory", args: "<path>", run: addDirCommand },
     { name: "doctor", description: "Check the installation and providers", run: doctorCommand },
     { name: "exit", aliases: ["quit", "q"], description: "Exit", whileBusy: true, noEcho: true, run: (app) => app.exit(0) },

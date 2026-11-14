@@ -45,7 +45,7 @@ import { resetToolState, rewindTargets } from "../agent/checkpoints";
 import { buildSystemPrompt } from "../agent/system-prompt";
 import { addMemoryNote } from "../agent/memory";
 import type { Effort, Settings } from "../config/settings";
-import { loadSettings, loadScope, addPermissionRule, onConfigWarning } from "../config/settings";
+import { loadSettings, loadScope, addPermissionRule, onConfigWarning, updateSettings } from "../config/settings";
 import { APP_NAME, APP_TITLE, APP_VERSION } from "../config/paths";
 import { MODE_INFO, nextMode, type PermissionMode } from "../permissions/modes";
 import { PermissionChecker } from "../permissions/checker";
@@ -67,7 +67,7 @@ import { attachmentsNote } from "../providers/files";
 import { configuredProviders, storageDescription } from "../auth/credentials";
 import { findCli } from "../backends/cli";
 import { AGENT_CLIS, agentCli } from "../backends/defs";
-import { commandList, commandRefusesImages, runCommand } from "../commands/index";
+import { commandList, commandRefusesImages, openInBrowser, runCommand } from "../commands/index";
 import { loadCustomCommands, type CustomCommand } from "../commands/custom";
 import { loadSkills, skillMentions, withSkills, type Skill } from "../agent/skills";
 import { cliRunsSkills } from "../backends/native-skills";
@@ -78,6 +78,11 @@ import { displayPath } from "../util/files";
 import { redact } from "../util/redact";
 import { SESSION_VAR } from "../util/session-processes";
 import { SecretStore, secretValueError } from "../agent/secrets";
+import { SessionSignIns, type SignInAnswer, type SignInRequest } from "../agent/sign-ins";
+import { signInRecipes } from "../agent/sign-in-recipes";
+import { signInMachine } from "../servers/sign-in-host";
+import { onServer } from "../servers/role";
+import { SignInDialog } from "./sign-in-dialog";
 import { planLimitKey } from "../server/protocol";
 import { mergeLimits } from "../backends/limits";
 import { steersMidTurn } from "../backends/defs";
@@ -443,6 +448,8 @@ export class App {
         this.goal?.dispose();
         this.idleCompact.disarm();
         this.abort?.abort();
+        this.signIns.dispose();
+        this.dropSignIns();
         stopWatchers(this.toolState);
         this.toolState.wakes?.dispose();
         if (this.backgroundTimer) clearInterval(this.backgroundTimer);
@@ -918,6 +925,7 @@ export class App {
                     askQuestion: (q, opts, multi) => this.askQuestion(q, opts, multi),
                     approvePlan: (plan) => this.approvePlan(plan),
                     requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),
+                    requestSignIn: (req, signal) => this.requestSignIn(req, signal),
                 },
                 drainQueued: (_record, admit) => this.drainQueued(admit),
                 unsteered: (steers) => this.unsteered(steers.flatMap((s) => s.texts), steers.map((s) => s.id)),
@@ -983,6 +991,7 @@ export class App {
         this.session = Session.create(this.cwd);
         prev.release();
         this.bindBackground();
+        this.dropSignIns();
         stopWatchers(this.toolState);
         this.toolState.wakes?.clear();
         this.toolState.fileState.clear();
@@ -1013,6 +1022,7 @@ export class App {
         if (prev) this.leaveBackground(prev);
         prev?.release();
         this.bindBackground();
+        this.dropSignIns();
         stopWatchers(this.toolState);
         this.toolState.wakes?.clear();
         resetToolState(this.toolState, this.session.messages);
@@ -1898,6 +1908,63 @@ export class App {
         signal.addEventListener("abort", withdraw, { once: true });
         const value = await this.showDialog(d).finally(() => signal.removeEventListener("abort", withdraw));
         return signal.aborted ? undefined : value;
+    }
+
+    /** A sign-in Cavvy runs (RequestSignIn): its prompt changes in place as the sign-in goes, and closes when it's over. */
+    private requestSignIn(req: SignInRequest, signal: AbortSignal): Promise<SignInAnswer> {
+        return this.signIns.request(req, signal);
+    }
+
+    private signInDialogs = new Map<string, SignInDialog>();
+    private signIns = this.newSignIns();
+
+    private newSignIns(): SessionSignIns {
+        const away = onServer();
+        let ids = 0;
+        return new SessionSignIns({
+            recipes: () => signInRecipes(this.settings.signIns),
+            // An agent CLI signed in here has models to offer.
+            machine: (name, account) => signInMachine(name, { away, account, signedIn: async (recipe) => { if (recipe.provider) await this.refreshListings(true).catch(() => undefined); } }),
+            newId: () => `signin-${++ids}`,
+            wakes: () => this.toolState.wakes,
+            watchers: () => this.toolState.watchers,
+            save: (recipe) => {
+                updateSettings("user", this.cwd, (s) => { s.signIns = [...(Array.isArray(s.signIns) ? s.signIns : []).filter((r) => (r as { id?: unknown })?.id !== recipe.id), recipe]; });
+                this.reloadSettings();
+            },
+            cards: {
+                show: (id, view) => {
+                    let d = this.signInDialogs.get(id);
+                    if (!d) {
+                        const dialog = (d = new SignInDialog({ act: (a) => this.signIns.act(id, a), open: away ? undefined : (url) => openInBrowser(url), where: away ? "on this server" : undefined }));
+                        this.signInDialogs.set(id, dialog);
+                        void this.notifier.notify("question");
+                        void this.showDialog(dialog);
+                    }
+                    d.update(view);
+                    this.renderLive();
+                },
+                hide: (id) => {
+                    this.signInDialogs.get(id)?.close();
+                    this.signInDialogs.delete(id);
+                },
+            },
+        });
+    }
+
+    /** /sign-in: back to a sign-in that was put off (the one named, or the only one). */
+    resumeSignIn(which?: string): string | undefined {
+        const waiting = [...(this.toolState.watchers?.values() ?? [])].filter((w) => w.kind === "sign-in");
+        if (!waiting.length) return "No sign-in is waiting.";
+        const w = which ? waiting.find((x) => x.label.toLowerCase().includes(which.toLowerCase())) : waiting.length === 1 ? waiting[0] : undefined;
+        if (!w) return `Which one? ${waiting.map((x) => x.label.replace(/^Sign in to /, "")).join(", ")}`;
+        return this.signIns.reopen(w.id) ? undefined : "That sign-in is no longer waiting.";
+    }
+
+    /** The session changed under the terminal (/new, /resume): its sign-ins go with it. */
+    private dropSignIns() {
+        this.signIns.dispose();
+        this.signIns = this.newSignIns();
     }
 
     /** How what MCP servers ask for (forms, sampling) reaches the user outside a tool call: @-mentions, prompts. */
@@ -3245,7 +3312,10 @@ export class App {
             const due = sched.list().some((j) => j.due);
             parts.push(theme.accent(`⏱ ${sched.size}`) + (due ? " due" : next ? ` next ${shortTime(next)}` : " paused"));
         }
-        const watches = [...(this.toolState.watchers?.values() ?? [])];
+        const waiting = [...(this.toolState.watchers?.values() ?? [])];
+        const signIns = waiting.filter((w) => w.kind === "sign-in");
+        if (signIns.length) parts.push(theme.warning(signIns.length === 1 ? `${signIns[0]!.label.replace(/^Sign in to /, "")} signed out · /sign-in` : `${signIns.length} sign-ins waiting · /sign-in`));
+        const watches = waiting.filter((w) => w.kind !== "sign-in");
         if (watches.length) {
             const bad = watches.some((w) => /failing|conflicts/.test(w.detail ?? ""));
             const text = `↻ watching ${watches.length === 1 ? watches[0]!.label.replace(/ in .*$/, "") : `${watches.length} ${watches.every((w) => w.kind === "pull-request") ? "PRs" : "watches"}`}`;
