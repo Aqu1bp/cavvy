@@ -37,9 +37,21 @@ export function commandParts(command: string): string[] {
     return parts;
 }
 
-/** A command's first step, short: its first command (commandParts) up to a pipe, an && or a `;`. */
+/** A command's first step, short: its first command (commandParts) up to a pipe, an &&, an || or a `;` outside quotes. */
 export function firstStep(command: string): string | undefined {
-    return commandParts(command)[0]?.split(/\s*;\s+|\s+(?:&&|\|\|?)\s+/)[0] || undefined;
+    const first = commandParts(command)[0];
+    if (!first) return undefined;
+    let quote = "";
+    for (let i = 0; i < first.length; i++) {
+        const c = first[i]!;
+        if (quote) {
+            if (c === "\\" && quote === '"') i++;
+            else if (c === quote) quote = "";
+        } else if (c === "\\") i++;
+        else if (c === "'" || c === '"') quote = c;
+        else if (c === ";" || c === "|" || (c === "&" && first[i + 1] === "&")) return first.slice(0, i).trim() || undefined;
+    }
+    return first;
 }
 
 /** What the live line says of a command under way after its label: nothing when its description is the label, else its first step. */

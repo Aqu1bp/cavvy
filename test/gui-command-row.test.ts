@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { commandCut, commandLabel, commandMeta, exitCode, highlightShell, outputLines, passTally, taskOf, type ShellToken } from "../gui/src/lib/command-row";
+import { commandCut, commandLabel, commandMeta, exitCode, firstStep, highlightShell, outputLines, passTally, taskOf, type ShellToken } from "../gui/src/lib/command-row";
 
 // A command's row (gui/src/lib/command-row.ts): its command highlighted when it's opened, and what the row says
 // folded (its exit code, a test run's tally, its summary). Activity.tsx draws from these; find.ts counts the same words.
@@ -35,6 +35,17 @@ test("a heredoc's body is one kind, whole, up to its end word; what follows is a
     // <<- and an unquoted end word too; an end word that's only part of a line doesn't end it.
     expect(kinds(highlightShell("cat <<-END\nnot END\n\tEND\nls"), "hd")).toEqual(["not END", "\tEND"]);
     expect(kinds(highlightShell("cat <<-END\nnot END\n\tEND\nls"), "f")).toEqual(["cat", "ls"]);
+});
+
+test("a command's first step ends at a pipe, &&, || or ; outside quotes, with or without spaces", () => {
+    expect(firstStep("cd '/repo' && bun test | tee out")).toBe("bun test");
+    expect(firstStep("echo a;echo b")).toBe("echo a");
+    expect(firstStep("echo a|cat")).toBe("echo a");
+    expect(firstStep("a||b")).toBe("a");
+    expect(firstStep("echo 'a && b' | cat")).toBe("echo 'a && b'");
+    expect(firstStep('grep -n "x|y;z" f.ts')).toBe('grep -n "x|y;z" f.ts');
+    expect(firstStep("ls 2>&1 | head")).toBe("ls 2>&1");
+    expect(firstStep("")).toBeUndefined();
 });
 
 test("the exit code is the last one the output or summary says, in Cavvy's words or Codex's", () => {
