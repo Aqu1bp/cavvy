@@ -284,11 +284,13 @@ function checkLayer(l: unknown, at: string, problems: string[]): Layer | undefin
     if (!l || typeof l !== "object") return void problems.push(`${at} must be an object`), undefined;
     const o = l as Record<string, unknown>;
     if (typeof o.svg !== "string" || !o.svg.trim()) return void problems.push(`${at}.svg must be an SVG document`), undefined;
-    // Too long: said, and not looked into further.
-    if (o.svg.length > LIMITS.svg) problems.push(`${at}.svg is ${o.svg.length} characters; at most ${LIMITS.svg}`);
-    const bad = o.svg.length > LIMITS.svg ? undefined : svgProblem(o.svg);
+    // Counted as saved, with the namespace Cavvy adds (as the file is read back). Too long: said, and not looked into further.
+    const saved = withNamespace(o.svg);
+    const long = saved.length > LIMITS.svg;
+    if (long) problems.push(`${at}.svg is ${saved.length} characters, with the xmlns Cavvy adds; at most ${LIMITS.svg}`);
+    const bad = long ? undefined : svgProblem(o.svg);
     if (bad) problems.push(`${at}.svg ${bad}`);
-    const layer: Layer = { svg: withNamespace(o.svg) };
+    const layer: Layer = { svg: saved };
     for (const [key, min, max] of [["x", -3200, 4800], ["y", -3200, 4200], ["width", 1, 6400], ["height", 1, 6400], ["opacity", 0, 1]] as const) {
         if (o[key] === undefined) continue;
         if (!num(o[key]) || (o[key] as number) < min || (o[key] as number) > max) problems.push(`${at}.${key} must be ${min}–${max}`);

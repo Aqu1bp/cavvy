@@ -492,6 +492,18 @@ describe("the theme tools", () => {
         }
         // Over once the namespace is counted: refused, saying so.
         expect(checkTheme(theme(99_960)).problems.join()).toContain("xmlns");
+        // One layer at the per-layer limit as sent: the same.
+        const one = (n: number) => minimal({ dark: { colors: { background: "#101418", text: "#eef2f6" }, layers: [{ svg: `<svg viewBox="0 0 1 1"><desc>${"x".repeat(n)}</desc></svg>` }] } });
+        expect(checkTheme(one(120_000 - 42)).problems.join()).toContain("with the xmlns");
+        const fits = checkTheme(one(120_000 - 42 - 40));
+        expect(fits.theme).toBeDefined();
+        const dir2 = mkdtempSync(join(tmpdir(), "themes-size-"));
+        try {
+            saveTheme("one", fits.theme!, dir2);
+            expect(listThemes(dir2)[0]!.problems).toBeUndefined();
+        } finally {
+            rmSync(dir2, { recursive: true, force: true });
+        }
     });
 
     test("the guide names the tools as the agent has them", async () => {
