@@ -81,14 +81,23 @@ export function serverSignInHost(e: ServerEntry): SignInHost {
             // An agent CLI signed in there is turned on in the Cavvy there, so its models are offered (as `cavvy servers login` does).
             if (recipe.provider) await ssh(e, remoteSh(`exec "${REMOTE_CURRENT}" host login "$1" </dev/null`, [recipe.provider]), { timeoutMs: 60_000 }).catch(() => undefined);
         },
-        async forward(port) {
-            // The page calls this port on the machine with the browser: the same number here, taken to the server's.
-            const proc = Bun.spawn(sshTunnelArgv(e, port, port), { stdin: "ignore", stdout: "ignore", stderr: "pipe", env: childEnv() });
-            const up = await Promise.race([proc.exited.then(() => false), listening(port)]);
-            if (!up) throw new Error((await new Response(proc.stderr).text().catch(() => "")).trim().split("\n").pop() || `Port ${port} couldn't be forwarded.`);
-            return { close: () => proc.kill() };
-        },
+        forward: (port) => forwardPort(e, port),
     };
+}
+
+/**
+ * Brings one of a server's ports to this machine, under the same number: a sign-in's page ends by calling it on
+ * the machine with the browser. Open until closed. Throws ssh's own words when it can't (the port is taken here).
+ */
+export async function forwardPort(e: ServerEntry, port: number): Promise<{ close(): void }> {
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error(`Port ${port} can't be forwarded.`);
+    const proc = Bun.spawn(sshTunnelArgv(e, port, port), { stdin: "ignore", stdout: "ignore", stderr: "pipe", env: childEnv() });
+    const up = await Promise.race([proc.exited.then(() => false), listening(port)]);
+    if (!up) {
+        proc.kill();
+        throw new Error((await new Response(proc.stderr).text().catch(() => "")).trim().split("\n").pop() || `Port ${port} couldn't be forwarded.`);
+    }
+    return { close: () => proc.kill() };
 }
 
 /** Resolves true once something answers on the local port, or false after a few seconds. */

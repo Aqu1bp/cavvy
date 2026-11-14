@@ -30,7 +30,6 @@ import { expandCommand, pluginCommandFor, slashCommand } from "../commands/custo
 import { addPermissionRule, updateSettings, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { MODE_INFO, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { onServer } from "../servers/role";
-import { signInMachine } from "../servers/sign-in-host";
 import { signInRecipes } from "../agent/sign-in-recipes";
 import { SessionSignIns, signInAction, signInAsks, type SignInAnswer, type SignInRequest } from "../agent/sign-ins";
 import { PermissionChecker } from "../permissions/checker";
@@ -2770,8 +2769,11 @@ export class Runtime {
 
     private readonly signIns: SessionSignIns = new SessionSignIns({
         recipes: () => signInRecipes(this.settings().signIns),
-        machine: (name, account) => signInMachine(name, { away: this.engine.away, account, signedIn: (recipe, acct) => (recipe.provider ? this.engine.cliSignedIn(recipe.provider, acct) : Promise.resolve()) }),
+        // Loaded with the first sign-in: what reaches a server isn't needed to start.
+        machine: async (name, account) => (await import("../servers/sign-in-host")).signInMachine(name, { away: this.engine.away, account, signedIn: (recipe, acct) => (recipe.provider ? this.engine.cliSignedIn(recipe.provider, acct) : Promise.resolve()) }),
         newId: () => this.newId(),
+        // On a server, the window is on the user's own machine: it brings a sign-in's port over.
+        windowForwards: () => this.engine.away,
         wakes: () => this.toolState.wakes,
         watchers: () => this.toolState.watchers,
         save: (recipe) => updateSettings("user", this.ws.cwd, (s) => { s.signIns = [...(Array.isArray(s.signIns) ? s.signIns : []).filter((r) => (r as { id?: unknown })?.id !== recipe.id), recipe]; }),

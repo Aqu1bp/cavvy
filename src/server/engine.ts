@@ -1302,9 +1302,20 @@ export class Engine {
         this.unloadTimers.set(id, t);
     }
 
+    /** Ports of a server brought here for a window's sign-in card (servers.forward): closed with the card, or with the window. */
+    private forwards = new Map<string, { opening: Promise<{ close(): void }>; clients: Set<EngineClient> }>();
+
+    private unforward(client: EngineClient, key: string) {
+        const f = this.forwards.get(key);
+        if (!f?.clients.delete(client) || f.clients.size) return;
+        this.forwards.delete(key);
+        void f.opening.then((x) => x.close(), () => undefined);
+    }
+
     /** A window went away (closed, reloading, or lost its connection). Its terminals wait a while for it to come back. */
     dropClient(client: EngineClient) {
         this.clients.delete(client);
+        for (const key of [...this.forwards.keys()]) this.unforward(client, key);
         if (this.lenders.has(client) || [...this.lentCalls.values()].some((c) => c.client === client)) this.setLender(client, [], true);
         for (const [name, asker] of this.serverAskers) if (asker === client) this.serverAskers.delete(name);
         this.terminals.drop(client);
@@ -3046,6 +3057,32 @@ export class Engine {
                 return await (await this.servers(client)).remove(str(p.name, "name"));
             case "servers.restore":
                 (await this.servers(client)).restore(str(p.name, "name"));
+                return null;
+            case "servers.forward": {
+                if (this.o.away) throw new RpcError("Servers are managed from your own machine.", "unsupported");
+                const entry = (await import("../servers/store")).getServer(str(p.name, "name"));
+                if (!entry) throw new RpcError(`No server is called ${p.name}.`, "invalid");
+                const key = `${entry.name}:${Number(p.port)}`;
+                // One per port, however many windows show the card: each holds it until it lets go or goes.
+                let f = this.forwards.get(key);
+                if (!f) {
+                    const opening = (await import("../servers/sign-in-host")).forwardPort(entry, Number(p.port));
+                    f = { opening, clients: new Set() };
+                    this.forwards.set(key, f);
+                    opening.catch(() => this.forwards.get(key) === f && this.forwards.delete(key));
+                }
+                f.clients.add(client);
+                try {
+                    await f.opening;
+                } catch (e) {
+                    throw new RpcError(e instanceof Error ? e.message : String(e), "failed");
+                }
+                // The window went while it opened.
+                if (!this.clients.has(client)) this.unforward(client, key);
+                return null;
+            }
+            case "servers.unforward":
+                this.unforward(client, `${str(p.name, "name")}:${Number(p.port)}`);
                 return null;
             case "providers.removeKey": {
                 const id = str(p.provider, "provider");

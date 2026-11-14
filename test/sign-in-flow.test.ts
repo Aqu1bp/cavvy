@@ -247,6 +247,72 @@ describe("on a server, where the person's browser is elsewhere", () => {
     });
 });
 
+describe("a sign-in whose page calls the CLI's own machine, from a browser on another", () => {
+    const recipe = acmeRecipe("browser", { away: { flow: "callback", run: "acme login --browser", port: 18765 } }) as SignInRecipe;
+    const run = (o: { forward?: (port: number) => Promise<{ close(): void }>; windowForwards?: boolean }) => {
+        const views: SignInView[] = [];
+        const f = new SignInFlow({ wants: [{ target: "acme", recipe }], host: { ...localSignInHost({ away: true }), forward: o.forward }, windowForwards: o.windowForwards, show: (v) => views.push(v), pollMs: 60 });
+        const done = f.run();
+        const until = async (ok: (v: SignInView) => boolean, what: string) => {
+            const end = Date.now() + 8000;
+            while (Date.now() < end) {
+                if (views.length && ok(views[views.length - 1]!)) return views[views.length - 1]!;
+                await Bun.sleep(15);
+            }
+            throw new Error(`never showed ${what}; last: ${JSON.stringify(views[views.length - 1])}`);
+        };
+        return { f, views, done, until };
+    };
+
+    test("the port is brought over first, the card offers the link, and the port is let go when it's over", async () => {
+        const log: string[] = [];
+        const x = run({ forward: async (port) => (log.push(`open ${port}`), { close: () => void log.push(`close ${port}`) }) });
+        await x.until((v) => v.step === "ask", "the question");
+        x.f.act({ action: "start" });
+        const wait = await x.until((v) => v.step === "browser" && Boolean(v.url), "the link");
+        // Nothing opened the page: the card does.
+        expect(wait.open).toBe(true);
+        expect(log).toEqual(["open 18765"]);
+        // The CLI was kept from opening a browser where there's none to see.
+        expect(acme.log()).toMatch(/browser=.*true/);
+        acme.approve();
+        expect((await x.done).end).toBe("done");
+        expect(log).toEqual(["open 18765", "close 18765"]);
+    });
+
+    test("where only the window can bring it over, the card asks, and waits for its word", async () => {
+        const x = run({ windowForwards: true });
+        await x.until((v) => v.step === "ask", "the question");
+        x.f.act({ action: "start" });
+        const asked = await x.until((v) => v.forward === 18765, "the ask for the port");
+        expect(asked.url).toBeUndefined();
+        x.f.act({ action: "port" });
+        await x.until((v) => v.step === "browser" && Boolean(v.url) && v.open === true, "the link");
+        acme.approve();
+        expect((await x.done).end).toBe("done");
+        // Let go of once it's over.
+        expect(x.views.some((v, i) => i > x.views.indexOf(asked) && v.forward === undefined)).toBe(true);
+    });
+
+    test("a window that can't, or no way at all: said in the card, with Try again", async () => {
+        const a = run({ windowForwards: true });
+        await a.until((v) => v.step === "ask", "the question");
+        a.f.act({ action: "start" });
+        await a.until((v) => v.forward === 18765, "the ask for the port");
+        a.f.act({ action: "port", error: "bind [127.0.0.1]:18765: Address already in use" });
+        expect(await a.until((v) => Boolean(v.error), "the error")).toMatchObject({ ended: true, error: "bind [127.0.0.1]:18765: Address already in use" });
+        a.f.act({ action: "later" });
+        await a.done;
+
+        const b = run({});
+        await b.until((v) => v.step === "ask", "the question");
+        b.f.act({ action: "start" });
+        expect((await b.until((v) => Boolean(v.error), "the error")).error).toContain("can't be set up from here");
+        b.f.act({ action: "later" });
+        await b.done;
+    });
+});
+
 describe("several at once (a new server's sign-ins)", () => {
     const other: SignInRecipe = { id: "beta", name: "Beta", status: { run: "acme-not-here status" }, here: { flow: "device", run: "acme-not-here login" } };
 

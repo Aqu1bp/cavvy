@@ -80,7 +80,6 @@ import { SESSION_VAR } from "../util/session-processes";
 import { SecretStore, secretValueError } from "../agent/secrets";
 import { SessionSignIns, type SignInAnswer, type SignInRequest } from "../agent/sign-ins";
 import { signInRecipes } from "../agent/sign-in-recipes";
-import { signInMachine } from "../servers/sign-in-host";
 import { onServer } from "../servers/role";
 import { SignInDialog } from "./sign-in-dialog";
 import { planLimitKey } from "../server/protocol";
@@ -1924,7 +1923,7 @@ export class App {
         return new SessionSignIns({
             recipes: () => signInRecipes(this.settings.signIns),
             // An agent CLI signed in here has models to offer.
-            machine: (name, account) => signInMachine(name, { away, account, signedIn: async (recipe) => { if (recipe.provider) await this.refreshListings(true).catch(() => undefined); } }),
+            machine: async (name, account) => (await import("../servers/sign-in-host")).signInMachine(name, { away, account, signedIn: async (recipe) => { if (recipe.provider) await this.refreshListings(true).catch(() => undefined); } }),
             newId: () => `signin-${++ids}`,
             wakes: () => this.toolState.wakes,
             watchers: () => this.toolState.watchers,

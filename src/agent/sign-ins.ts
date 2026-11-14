@@ -49,13 +49,15 @@ export interface SignInCards {
 export interface SessionSignInsOptions {
     recipes(): SignInRecipe[];
     /** The machine an agent named, or this one. Throws what the agent is told when it can't be that one. */
-    machine(name: string | undefined, account?: string): SignInMachine;
+    machine(name: string | undefined, account?: string): SignInMachine | Promise<SignInMachine>;
     cards: SignInCards;
     wakes?(): WakeQueue | undefined;
     watchers?(): Map<string, Watcher> | undefined;
     /** Keeps a sign-in Cavvy didn't know, as the user's own. */
     save?(recipe: SignInRecipe): void;
     newId(): string;
+    /** Windows on this session can bring a port over for a sign-in's card (it runs on a server the user reaches from another machine). */
+    windowForwards?(): boolean;
     /** How often one that was put off is looked at again, and for how long. */
     laterPollMs?: number;
     laterForMs?: number;
@@ -99,7 +101,7 @@ export function signInAsks(i: { name?: string; machine?: string; rows?: unknown[
     return i.step === "list" || !i.name ? `Sign in${on}` : `Sign in to ${i.name}${on}`;
 }
 
-const ACTIONS = ["start", "token", "back", "later", "retry", "ran", "pick", "submit", "keys", "done"];
+const ACTIONS = ["start", "token", "back", "later", "retry", "ran", "pick", "submit", "keys", "done", "port"];
 
 /** A step from a window, checked: only what a card can send. */
 export function signInAction(r: unknown): SignInAction {
@@ -114,6 +116,7 @@ export function signInAction(r: unknown): SignInAction {
         return { action: x.action, value: x.value };
     }
     if (x.action === "done") return { action: "done", save: x.save === true };
+    if (x.action === "port") return { action: "port", ...(typeof x.error === "string" && x.error ? { error: x.error.slice(0, 300) } : {}) };
     return { action: x.action as "start" | "token" | "back" | "later" | "retry" | "ran" };
 }
 
@@ -131,10 +134,11 @@ export class SessionSignIns {
         const tool = req.tool ?? "RequestSignIn";
         let machine: SignInMachine;
         try {
-            machine = this.o.machine(req.machine, req.account);
+            machine = await this.o.machine(req.machine, req.account);
         } catch (e) {
             return { text: e instanceof Error ? e.message : String(e), isError: true, summary: "Can't sign in", signedIn: false };
         }
+        if (signal.aborted) return { ...signInReport({ end: "stopped", results: [] }, machine.where, tool), text: "The request to sign in was interrupted.", signedIn: false };
         const wants = this.wants(req.targets);
         const id = this.o.newId();
         const run = this.start(id, wants, machine, signal);
@@ -162,7 +166,7 @@ export class SessionSignIns {
     async ask(req: SignInRequest, then?: () => void): Promise<boolean> {
         let machine: SignInMachine;
         try {
-            machine = this.o.machine(req.machine, req.account);
+            machine = await this.o.machine(req.machine, req.account);
         } catch {
             return false;
         }
@@ -255,6 +259,7 @@ export class SessionSignIns {
             wants,
             host: machine.host,
             pollMs: this.o.pollMs,
+            windowForwards: this.o.windowForwards?.(),
             asked,
             show: (view) => this.o.cards.show(id, machine.name ? { ...view, machine: machine.name } : view, entry.kept),
             save: this.o.save ? (w) => this.keep(w) : undefined,

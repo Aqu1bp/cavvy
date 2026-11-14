@@ -538,6 +538,11 @@ export interface SignInInteraction {
     /** One line under the question, where the risk is real ("Agents there can push as you"). */
     warning?: string;
     canToken?: boolean;
+    /**
+     * The page ends by calling this port on the CLI's machine, which isn't the one with the browser: the window brings
+     * it over (servers.forward) and says so (action "port") before the link is offered.
+     */
+    forward?: number;
     url?: string;
     /** `url` without its scheme and query, to show ("github.com/login/device"). */
     site?: string;
@@ -570,7 +575,9 @@ export type SignInAction =
     /** Typed at the CLI's prompt. */
     | { action: "keys"; value: string }
     /** The user says they've run the command; `save` keeps it for next time. */
-    | { action: "done"; save?: boolean };
+    | { action: "done"; save?: boolean }
+    /** The window brought the card's `forward` port over, or couldn't (`error`). */
+    | { action: "port"; error?: string };
 
 export type Interaction = (PermissionInteraction | QuestionInteraction | PlanInteraction | SecretInteraction | SignInInteraction) & {
     /** When it was asked (ms since the epoch): how long it's been waiting, whenever the session is opened. */
@@ -1982,6 +1989,9 @@ export interface Methods {
     "servers.remove": { params: { name: string }; result: null };
     /** Undoes a `servers.remove` made since this Cavvy started. */
     "servers.restore": { params: { name: string }; result: null };
+    /** Brings a server's port to this machine under the same number, for a sign-in whose page calls it; until `servers.unforward` or the window goes. */
+    "servers.forward": { params: { name: string; port: number }; result: null };
+    "servers.unforward": { params: { name: string; port: number }; result: null };
     "terminal.open": { params: { id: string; cwd: string; cols: number; rows: number; login?: { provider: string; accountId: string }; /** A sign-in card's command, typed into the new shell for the user to run. */ signIn?: { session: string; interaction: string } }; result: { id: string; cwd: string } };
     "terminal.write": { params: { id: string; data: string }; result: null };
     /** The window has drawn this many characters of the terminal's output (flow control). */

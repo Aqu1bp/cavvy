@@ -8,6 +8,7 @@ import { Check, ExternalLink, SquareTerminal } from "lucide-solid";
 import type { SignInAction, SignInInteraction } from "@shared/protocol";
 import { respond } from "../state/actions";
 import { machine as windowMachine, openExternal } from "../lib/platform";
+import { home } from "../lib/machines";
 import { terminalActions } from "../state/ui";
 import { Head, mayFocus, useKeys } from "./InteractionDock";
 import { CopyButton, Spinner } from "./ui/bits";
@@ -67,6 +68,19 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
         if (i.step === "command" && i.ran && i.canSave) return () => void send({ action: "done", save: true });
         return undefined;
     };
+    // Its page calls back on the server: this window, on the user's own machine, brings that port over for as long as the card asks.
+    createEffect(on(() => it().forward, (port) => {
+        if (!port) return;
+        if (!windowMachine || !home) return void send({ action: "port", error: "Open this session in the desktop app to finish signing in." });
+        const far = home;
+        const name = windowMachine;
+        let asking = true;
+        far.call("servers.forward", { name, port }).then(() => asking && send({ action: "port" }), (e: Error) => asking && send({ action: "port", error: e.message }));
+        onCleanup(() => {
+            asking = false;
+            void far.call("servers.unforward", { name, port }).catch(() => undefined);
+        });
+    }));
     useKeys((k) => {
         if (k === "Escape") return void send({ action: "later" }), true;
         const act = k === "1" ? primary() : k === "2" ? second() : undefined;

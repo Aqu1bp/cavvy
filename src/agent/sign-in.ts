@@ -64,6 +64,8 @@ export interface SignInFlowOptions {
     show(view: SignInView): void;
     /** Keeps a sign-in Cavvy didn't know as the user's own. Left out: not offered. */
     save?(want: SignInWant): void;
+    /** The windows showing the card can bring a port of this machine to the user's (the card's `forward`): used where the host has no way of its own. */
+    windowForwards?: boolean;
     /** The user already said to sign in (they came back to one they'd put off): the card starts past its question. */
     asked?: boolean;
     /** How often the status is checked while the card is up. */
@@ -302,6 +304,9 @@ export class SignInFlow {
             case "ran":
                 if (this.view.step === "command") this.set({ ran: true });
                 return;
+            case "port":
+                this.ported?.(a.error);
+                return;
             case "done":
                 if (this.view.step !== "command" || !e) return;
                 if (a.save && this.view.canSave) this.o.save?.(e);
@@ -403,8 +408,10 @@ export class SignInFlow {
         this.set({ ...base, busy: way.flow === "typed" ? undefined : true, term: way.flow === "typed" ? "" : undefined });
         if (way.flow === "callback") {
             try {
-                if (!this.o.host.forward || !way.port) throw new Error("This sign-in needs its page to reach the server, which can't be set up from here.");
-                this.forwarded = await this.o.host.forward(way.port);
+                if (!way.port) throw new Error("This sign-in doesn't say which port its page calls.");
+                if (this.o.host.forward) this.forwarded = await this.o.host.forward(way.port);
+                else if (this.o.windowForwards) this.forwarded = await this.byWindow(way.port);
+                else throw new Error("This sign-in needs its page to reach the server, which can't be set up from here.");
             } catch (err) {
                 if (run === this.run_) this.set({ busy: undefined, ended: true, error: err instanceof Error ? err.message : String(err) });
                 return;
@@ -559,8 +566,25 @@ export class SignInFlow {
         this.watch();
     }
 
+    private ported: ((error?: string) => void) | undefined;
+
+    /** Asks the window to bring the port over, and waits for its word. The window lets go of it when the card stops asking. */
+    private byWindow(port: number): Promise<{ close(): void }> {
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => this.ported?.("No window answered to bring the sign-in's port over."), 30_000);
+            this.ported = (error) => {
+                clearTimeout(timer);
+                this.ported = undefined;
+                if (error) reject(new Error(error));
+                else resolve({ close: () => this.set({ forward: undefined }) });
+            };
+            this.set({ forward: port });
+        });
+    }
+
     private stopCommand() {
         this.run_++;
+        this.ported?.("Stopped.");
         if (this.complaint) clearTimeout(this.complaint);
         this.complaint = undefined;
         this.proc?.kill();
