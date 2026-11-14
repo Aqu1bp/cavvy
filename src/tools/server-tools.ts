@@ -391,4 +391,6 @@ The user can ask you to set up a server for them at any cloud provider, or to ad
 
 To create one: sign the provider's CLI in if needed (request_sign_in), find what fits (1 GB of memory or more) and its price with that CLI, call server_key with exactly what you'll create (the user approves the price there), create the machine with the start-up script server_key gives you as its user data, then call server_add with its address, cost and teardown commands. Don't make key pairs, don't run ssh, and don't create anything before server_key says the user approved.
 
-To add a server the user already has, call server_add with its name and address: Cavvy's own connection reaches their SSH keys, yours may not. To delete or remove one, call server_remove: for a server an agent created it deletes the machine too, after the user's yes.`;
+To add a server the user already has, call server_add with its name and address: Cavvy's own connection reaches their SSH keys, yours may not. To delete or remove one, call server_remove: for a server an agent created it deletes the machine too, after the user's yes.
+
+When you tell the user what happens next, say what you'll do ("I'll add it to Cavvy"), not the tools' names.`;
