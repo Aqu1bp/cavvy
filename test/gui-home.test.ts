@@ -321,26 +321,28 @@ test("a short column shows fewer terminal rows, down to none, and a card in a na
     expect(rows({ height: 700, needsTrust: [".mcp.json"], width: 500 })).toBe(2);
 });
 
-test("a folder with nothing to protect, not yet trusted, is asked about in the strip, by the folder: trusting it turns on checking edits", async () => {
-    const untrusted = (h: ReturnType<typeof home>) => byClass(h.strip, "button", "strip-ctl").find((b) => text(b) === "Not trusted");
+test("a folder with nothing to protect, not yet trusted, is asked about in a bar on the composer, by name: trusting it turns on checking edits", async () => {
+    const bar = (h: ReturnType<typeof home>) => byClass(h.tree, "div", "home-tab")[0];
     const h = home({ askTrust: true });
     expect(byClass(h.tree, "div", "trust")).toEqual([]);
-    const ctl = untrusted(h)!;
-    expect(ctl.props.title).toBe("Edits get checked for errors only in folders you trust");
-    expect(ctl.props["aria-haspopup"]).toBe("menu");
-    const menu = elements(h.tree, "Menu").find((m) => m.props.label === "Trust this folder")!;
-    expect(text(byClass(menu, "div", "menu-head"))).toBe("Trust cavvy?");
-    const [trust, later] = byClass(menu, "button", "menu-item");
-    expect([text(trust), text(later)]).toEqual(["Trust", "Not now"]);
+    const tab = bar(h)!;
+    expect(tab.props["aria-label"]).toBe("Trust this folder");
+    expect(text(tab)).toContain("Trust cavvy?");
+    const [later, trust] = byClass(tab, "button", "strip-ctl");
+    expect([text(later), text(trust)]).toEqual(["Not now", "Trust"]);
+    // Not in the strip under the composer, where the folder and its branch are.
+    expect(text(h.strip)).not.toContain("trust");
     later!.props.onClick();
     trust!.props.onClick();
     expect(h.trusts).toEqual([["/work/cavvy", false], ["/work/cavvy", true]]);
     // Trusted, or never asked: nothing.
-    expect(untrusted(home())).toBeUndefined();
-    // Settings that can run commands are asked about by name, in the card: not in the strip as well.
+    expect(bar(home())).toBeUndefined();
+    // No model yet: connecting one comes first.
+    expect(bar(home({ askTrust: true, models: [{ models: [] }] }))).toBeUndefined();
+    // Settings that can run commands are asked about by name, in the card: not in the bar as well.
     const settings = home({ askTrust: true, needsTrust: [".mcp.json"] });
     expect(byClass(settings.tree, "div", "trust").length).toBe(1);
-    expect(untrusted(settings)).toBeUndefined();
+    expect(bar(settings)).toBeUndefined();
 });
 
 test("Home shows the error cards above the trust and connect cards", () => {

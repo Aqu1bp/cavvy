@@ -80,12 +80,13 @@ export function Home() {
     const noModel = () => Boolean(app.modelsLoaded && app.models.every((g) => !g.models.length));
     const needsTrust = () => info()?.needsTrust ?? [];
     const askTrust = () => Boolean(info()?.askTrust);
-    // The card for a folder whose settings run commands; the row of ways to connect a model is a third of one.
+    // Only the edits' checks wait on it, so it's asked in a bar on the composer's top edge, not a card; and only once
+    // there's a model to make edits (the ways to connect one take that place first).
+    const askHere = () => Boolean(app.homeCwd && !needsTrust().length && askTrust() && !noModel());
+    // The card for a folder whose settings run commands; the row of ways to connect a model is a third of one. The bar
+    // takes the question's room, not the column's (home.css), so the composer stays put when it goes.
     const cards = () => (needsTrust().length ? 1 : 0) + (noModel() ? 1 / 3 : 0);
-    const [trustOpen, setTrustOpen] = createSignal(false);
-    const [trustAnchor, setTrustAnchor] = createSignal<HTMLElement>();
     const trust = async (yes: boolean) => {
-        setTrustOpen(false);
         await trustAndContinue(app.homeCwd!, yes);
         void refetch();
         if (yes) void refreshProjects();
@@ -166,14 +167,6 @@ export function Home() {
             <Show when={app.homeCwd && info()?.git}>
                 <WorktreePicker cwd={app.homeCwd!} branch={info()?.branch} />
             </Show>
-            {/* Only the edits' checks wait on it, so it's asked here, quietly, by the folder it's about. */}
-            <Show when={app.homeCwd && !needsTrust().length && askTrust()}>
-                <button ref={setTrustAnchor} class="strip-ctl" title="Edits get checked for errors only in folders you trust" aria-haspopup="menu" aria-expanded={trustOpen()} onClick={() => setTrustOpen(!trustOpen())}>
-                    <Shield size={14} class="ic" />
-                    <span class="truncate">Not trusted</span>
-                    <ChevronDown size={12} stroke-width={2} class="chv" />
-                </button>
-            </Show>
             <span class="grow" />
             <Show when={app.homeCwd}>
                 <span class="strip-hints">
@@ -200,20 +193,10 @@ export function Home() {
         <div class="home" classList={{ instant, glide: glide() }}>
             <div
                 class="home-col"
+                classList={{ asking: askHere() }}
                 style={{ "--column-h": columnHeight(), "--cli-rows": app.homeCwd ? cliRows() : 0, "--cli-on": app.homeCwd && cliOn() ? 1 : 0, "--home-cards": cards() }}
             >
                 <h1 class="home-q">{!app.homeCwd ? "Choose a project to start" : noModel() ? "Connect a model to start" : "What should we work on?"}</h1>
-                <Menu label="Trust this folder" open={trustOpen()} anchor={trustAnchor} onClose={() => setTrustOpen(false)} width={280}>
-                    <div class="menu-head">Trust {basename(app.homeCwd ?? "")}?</div>
-                    <div class="menu-note">Edits get checked for errors only in folders you trust.</div>
-                    <div class="menu-sep" />
-                    <button role="menuitem" class="menu-item" onClick={() => void trust(true)}>
-                        <span class="menu-label">Trust</span>
-                    </button>
-                    <button role="menuitem" class="menu-item" onClick={() => void trust(false)}>
-                        <span class="menu-label">Not now</span>
-                    </button>
-                </Menu>
                 <Menu label="Recent projects" open={pickerOpen()} anchor={pickerAnchor} onClose={() => setPickerOpen(false)} width={420}>
                     <div class="menu-head">Recent projects</div>
                     <For each={app.projects} fallback={<div class="menu-note">No projects yet.</div>}>
@@ -290,6 +273,22 @@ export function Home() {
                             <button class="strip-ctl" title="Anthropic, OpenAI, Gemini and more, in Settings" onClick={() => setSettingsTab("providers")}>
                                 <KeyRound size={15} class="ic" />
                                 API key
+                            </button>
+                        </div>
+                    </Show>
+
+                    <Show when={askHere()}>
+                        <div class="composer-strip home-tab" role="group" aria-label="Trust this folder">
+                            <Shield size={14} class="ic" />
+                            <span class="truncate">
+                                Trust {basename(app.homeCwd ?? "")}? <span class="note">Edits get checked for errors only in folders you trust.</span>
+                            </span>
+                            <span class="grow" />
+                            <button class="strip-ctl" onClick={() => void trust(false)}>
+                                Not now
+                            </button>
+                            <button class="strip-ctl yes" onClick={() => void trust(true)}>
+                                Trust
                             </button>
                         </div>
                     </Show>

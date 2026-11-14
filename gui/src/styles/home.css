@@ -260,6 +260,57 @@
     padding: 0 calc(11 * var(--sp));
 }
 
+/* Trusting the folder, when only the edits' checks wait on it: the strip turned over, standing on the card's top edge
+   (not under it, where the glass would show it). It takes no room in the column: the question moves up for it, so
+   the composer doesn't move when it goes. With error cards above the composer, it stands in line under them. */
+.composer-strip.home-tab {
+    gap: calc(6 * var(--sp));
+    height: calc(38 * var(--sp));
+    margin: calc(-38 * var(--sp)) calc(22 * var(--sp)) calc(-8 * var(--sp));
+    padding: 0 calc(6 * var(--sp)) 0 calc(14 * var(--sp));
+    border-radius: calc(16 * var(--sp)) calc(16 * var(--sp)) 0 0;
+    box-shadow:
+        inset 0 0.5px 0 var(--line),
+        inset 0.5px 0 0 var(--line),
+        inset -0.5px 0 0 var(--line);
+    animation-name: home-tab;
+}
+
+.feedback:has(.error-cards:not(.empty)) + .home-tab {
+    margin-top: 0;
+}
+
+.home-q {
+    transition: translate 320ms var(--ease);
+}
+
+.asking .home-q {
+    translate: 0 calc(-38 * var(--sp));
+}
+
+.home-tab .ic,
+.home-tab .note {
+    flex: none;
+    color: var(--fg-3);
+}
+
+.home-tab .strip-ctl {
+    flex: none;
+    padding: 0 calc(10 * var(--sp));
+}
+
+.home-tab .yes {
+    color: var(--fg);
+    background: var(--hover);
+}
+
+@keyframes home-tab {
+    from {
+        opacity: 0;
+        transform: translateY(calc(10 * var(--sp)));
+    }
+}
+
 /* The trust card: shaped like the request cards (composer.css .ask), with their question and buttons. */
 .hcard {
     padding: calc(16 * var(--sp)) calc(16 * var(--sp)) calc(14 * var(--sp)) calc(18 * var(--sp));
