@@ -51,6 +51,7 @@ import { WholeTurnsOnly } from "../backends/one-off";
 import { SessionBackground } from "../agent/background";
 import { getProvider, resolveBaseUrl } from "../providers/registry";
 import { agentCli, steersMidTurn, type AttachmentKind } from "../backends/defs";
+import { IMAGE_KEY, imageKey, keepImages, readKept, toolImagesDir } from "./tool-images";
 import { claudeCompactAt, cliCompactSetting, cavvyCompactAt, modelKeys } from "../backends/compact-at";
 import { account, accountSwitch, removedAccount, removedAccountNote, switchHow } from "../providers/accounts";
 import { attachmentsNote, readsPdf } from "../providers/files";
@@ -2130,14 +2131,18 @@ export class Runtime {
         if (title) Object.assign(patch, { title, input: trimInput(call.input) });
         if (/^The user declined/.test(result.content)) patch.status = "denied";
         if (d?.summary) patch.summary = d.summary;
-        if (result.images?.length) patch.images = result.images.length;
+        if (result.images?.length) {
+            patch.images = result.images.length;
+            const keys = this.keepToolImages(result.images);
+            if (keys.length) patch.imageKeys = keys;
+        }
         // A new file (Write says "Wrote", an Edit with an empty old_string "Created"): no "before" side.
         if (d?.diff) patch.diff = fileDiff(d.diff.path, d.diff.before === "" && /^(Created|Wrote)\b/.test(d.summary ?? "") ? null : d.diff.before, d.diff.after);
         if (d?.diagnostics) patch.diagnostics = redactedReport(d.diagnostics);
         this.patchBlock(call.id, patch, this.toolTurn.get(call.id));
         this.noteShell(call, d?.summary);
         const b = this.blockIn(this.toolTurn.get(call.id), call.id) as ToolBlock | undefined;
-        this.ui.write({ t: "tool", id: call.id, summary: patch.summary, diff: patch.diff, diagnostics: patch.diagnostics, durationMs, approval: b?.approval, sandboxed: b?.sandboxed, images: patch.images, job: b?.job, at: Date.now() });
+        this.ui.write({ t: "tool", id: call.id, summary: patch.summary, diff: patch.diff, diagnostics: patch.diagnostics, durationMs, approval: b?.approval, sandboxed: b?.sandboxed, images: patch.images, imageKeys: patch.imageKeys, job: b?.job, at: Date.now() });
         if (call.name === "TodoWrite") this.setState({ todos: this.toolState.todos.map((t) => ({ ...t })) });
         // A Task's result is its sub-agent's report (a delegated task's comes when it settles), and so is a Skill's
         // that ran as its own agent (Claude Code may say it ended first, with no report) unless it failed or was declined:
@@ -2306,6 +2311,11 @@ export class Runtime {
                 if (d?.summary) patch.summary = d.summary;
                 if (d?.diff) patch.diff = fileDiff(d.diff.path, d.diff.before === "" && /^(Created|Wrote)\b/.test(d.summary ?? "") ? null : d.diff.before, d.diff.after);
                 if (d?.diagnostics) patch.diagnostics = redactedReport(d.diagnostics);
+                if (e.result.images?.length) {
+                    patch.images = e.result.images.length;
+                    const keys = this.keepToolImages(e.result.images);
+                    if (keys.length) patch.imageKeys = keys;
+                }
                 this.op({ op: "agent.block.patch", id, blockId: e.call.id, patch });
                 this.noteShell(e.call, d?.summary);
                 // Its own sub-agent's call: the result is that one's report, as a Task's (or a Skill's) in a turn is (one still working only says it started).
@@ -4132,6 +4142,32 @@ export class Runtime {
         const out = find(this.session.messages) ?? readSegments(this.session.path).reduce<string | undefined>((hit, seg) => hit ?? find(seg.messages), undefined);
         if (out === undefined) throw new Error("That output is no longer in the conversation.");
         return redact(out);
+    }
+
+    /** Keeps a result's images for its row (tool-images.ts); none when they can't be kept. */
+    private keepToolImages(images: readonly ImagePart[]): string[] {
+        try {
+            return keepImages(toolImagesDir(this.session.path, this.id), images);
+        } catch {
+            return [];
+        }
+    }
+
+    /** An image a call's result brought, by its key: kept, else from the transcript (a session from the terminal). */
+    toolImage(key: string): { mediaType: string; data: string } {
+        if (!IMAGE_KEY.test(key)) throw new RpcError("That isn't an image key.", "invalid");
+        const kept = readKept(toolImagesDir(this.session.path, this.id), key);
+        if (kept) return kept;
+        const find = (messages: Message[]) => {
+            for (const m of messages) {
+                if (m.role !== "user") continue;
+                for (const p of m.content) if (p.type === "tool_result") for (const i of p.images ?? []) if (imageKey(i) === key) return { mediaType: i.mediaType, data: i.data };
+            }
+            return undefined;
+        };
+        const found = find(this.session.messages) ?? readSegments(this.session.path).reduce<{ mediaType: string; data: string } | undefined>((hit, seg) => hit ?? find(seg.messages), undefined);
+        if (!found) throw new RpcError("That image is no longer kept.", "not_found");
+        return found;
     }
 
     /** The images of the prompt at `pos` (Turn.pos), from before a compaction too. */

@@ -1747,13 +1747,13 @@
 }
 
 /* A row without one keeps its place, so every row's result ends at the same edge. */
-.tool-head:not(:has(> .row-open))::after {
+.tool-head:not(:has(> .row-open, > .tool-thumb))::after {
     content: "";
     flex: none;
     width: calc(24 * var(--sp));
 }
 
-.steps .tool-head:not(:has(> .row-open))::after {
+.steps .tool-head:not(:has(> .row-open, > .tool-thumb))::after {
     margin-right: calc(8 * var(--sp));
 }
 
@@ -1767,6 +1767,98 @@
 
 .link-btn.tool-open {
     margin-bottom: calc(6 * var(--sp));
+}
+
+/* What the model looked at (an image it read, a screenshot it took), at its row's end: the viewer a click away. */
+.tool-thumb {
+    flex: none;
+    width: calc(36 * var(--sp));
+    height: calc(24 * var(--sp));
+    margin-left: calc(6 * var(--sp));
+    padding: 0;
+    border-radius: calc(5 * var(--sp));
+    overflow: hidden;
+    cursor: zoom-in;
+    box-shadow: 0 0 0 0.5px var(--line);
+    transition: transform 160ms var(--ease);
+}
+
+.tool-thumb:hover {
+    transform: scale(1.06);
+}
+
+.tool-thumb img,
+.tool-image-full img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.steps .tool-thumb {
+    margin-right: calc(8 * var(--sp));
+}
+
+/* A run's: at the far right of its line (beside it, not in it: the line is a button). */
+.run.looked {
+    position: relative;
+}
+
+.run-thumbs {
+    position: absolute;
+    top: calc(2 * var(--sp));
+    right: 0;
+    display: flex;
+    gap: calc(4 * var(--sp));
+}
+
+.run-thumbs .tool-thumb {
+    margin: 0;
+}
+
+/* Open, the run shows the image itself: the thumbnail would say it twice. */
+.run.open > .run-thumbs {
+    display: none;
+}
+
+.run.looked > .run-h {
+    max-width: calc(100% - 130 * var(--sp));
+}
+
+/* Opened, the image itself, as large as the row allows. */
+.tool-images.under {
+    padding: calc(2 * var(--sp)) var(--row-x, 0) calc(10 * var(--sp)) calc(var(--row-x, 0px) + var(--row-ic, 0px) + var(--row-gap, 0px));
+    grid-column: 1 / -1;
+}
+
+.tool-images {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: calc(8 * var(--sp));
+}
+
+.tool-image-full {
+    max-width: 100%;
+    padding: 0;
+    border-radius: calc(10 * var(--sp));
+    overflow: hidden;
+    cursor: zoom-in;
+    box-shadow: 0 0 0 0.5px var(--line);
+}
+
+.tool-image-full img {
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: calc(420 * var(--sp));
+    object-fit: contain;
+}
+
+.tool-thumb:focus-visible,
+.tool-image-full:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
 }
 
 /* Opened: the call's details, under its row. */

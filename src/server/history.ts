@@ -4,6 +4,7 @@
 // keep (diffs, summaries, timings, and the steps of turns Claude Code or Codex
 // answered, which the transcript keeps as text), in ui/<session>.jsonl next to it.
 
+import { imageKey } from "./tool-images";
 import { createHash } from "crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
@@ -105,7 +106,7 @@ export interface UiState {
 export type AgentHead = { [K in keyof Omit<AgentRun, "blocks">]?: AgentRun[K] | null };
 
 export type UiRecord =
-    | { t: "tool"; id: string; summary?: string; diff?: FileDiff; diagnostics?: ToolBlock["diagnostics"]; durationMs?: number; approval?: string; sandboxed?: boolean; images?: number; job?: ToolBlock["job"]; at?: number }
+    | { t: "tool"; id: string; summary?: string; diff?: FileDiff; diagnostics?: ToolBlock["diagnostics"]; durationMs?: number; approval?: string; sandboxed?: boolean; images?: number; imageKeys?: string[]; job?: ToolBlock["job"]; at?: number }
     /** A turn's start (no `end`) begins its record afresh; its end adds to it, and so does its prompt's promptKey once that's in the history. */
     | { t: "turn"; seg: number; index: number; at: number; end?: number; status?: TurnStatus; prompt?: string }
     | { t: "pending-turn"; text: string; at: number }
@@ -715,6 +716,8 @@ function applyResult(b: ToolBlock | undefined, p: ToolResultPart, ui: UiLog) {
     if (rec?.approval) b.approval = rec.approval;
     if (rec?.sandboxed !== undefined) b.sandboxed = rec.sandboxed;
     if (p.images?.length || rec?.images) b.images = p.images?.length ?? rec?.images;
+    const keys = rec?.imageKeys ?? p.images?.flatMap((i) => imageKey(i) ?? []);
+    if (keys?.length) b.imageKeys = keys;
     if (rec?.job) b.job = rec.job;
     if (rec?.diagnostics) b.diagnostics = rec.diagnostics;
 }

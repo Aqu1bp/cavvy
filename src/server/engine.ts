@@ -2788,6 +2788,8 @@ export class Engine {
                 return { output: this.runtime(p.id).toolOutput(str(p.toolId, "toolId")) };
             case "session.promptImages":
                 return { images: this.runtime(p.id).promptImages(num(p.seg, -1), num(p.index, -1)) };
+            case "session.toolImage":
+                return this.runtime(p.id).toolImage(text(p.key, "key", 40));
             case "session.schedule": {
                 const action = p.action;
                 if (action !== "pause" && action !== "resume" && action !== "run" && action !== "delete") throw new RpcError("action must be pause, resume, run or delete", "invalid");
