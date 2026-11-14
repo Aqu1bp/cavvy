@@ -1,4 +1,4 @@
-import { splitSessions } from "./split";
+import { splitSessions, setSplitSessions } from "./split";
 // The GUI's state: the connection, the sidebar's sessions, models, providers
 // and projects, and every open session's timeline (kept current from the
 // server's ops, applied once per frame).
@@ -848,6 +848,12 @@ const seenBeforeDelete = new Map<string, number>();
 
 /** A session deleted (here, in another window, or while this one was away): out of the lists, its handle and draft dropped, and off the screen. */
 export function forgetSession(id: string) {
+    const pair = splitSessions();
+    if (pair?.includes(id)) {
+        const remaining = pair.find((other) => other !== id);
+        setSplitSessions(undefined);
+        if (app.activeId === id && remaining) void activate(remaining);
+    }
     deleted.set(id, Symbol());
     setSessionPresenceVersion((v) => v + 1);
     if (jumpTarget()?.sessionId === id) setJumpTarget(undefined);
