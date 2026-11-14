@@ -260,13 +260,13 @@ describe("a sign-in Cavvy didn't know", () => {
         expect(offeredCommandError("fly", "")).toContain("command must be");
     });
 
-    test("remembered, it's a recipe of the user's that Cavvy runs next time, going by its exit", async () => {
+    test("remembered, it's a recipe of the user's that Cavvy runs next time; with no status command it's never reported as signed in", async () => {
         const x = session();
         const first = x.s.request({ targets: [{ target: "acme2", command: "acme2 login --typed" }] }, never);
         const id = await x.card("command");
         x.s.act(id, { action: "ran" });
         x.s.act(id, { action: "done", save: true });
-        expect((await first).text).toBe("The user says they signed in to acme2. Cavvy couldn't check: try what needed it.");
+        expect((await first).text).toBe("The sign-in to acme2 was done, but Cavvy has no way to check it. Try what needed it.");
         expect(x.saved).toEqual([{ id: "acme2", name: "acme2", status: { run: "" }, here: { flow: "typed", run: "acme2 login --typed" } }]);
     });
 });

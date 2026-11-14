@@ -153,7 +153,7 @@ export function recipeError(r: unknown): string | undefined {
     return undefined;
 }
 
-/** A user's recipe as stored, with only the fields a recipe has. Without a status command, the sign-in's own exit says whether it worked. */
+/** A user's recipe as stored, with only the fields a recipe has. Without a status command nothing can say it's signed in: the agent is told the sign-in ran, unchecked. */
 function own(r: Record<string, any>): SignInRecipe {
     const way = (w: any): SignInWay => ({ flow: w.flow, run: w.run, ...(w.port ? { port: w.port } : {}) });
     return {

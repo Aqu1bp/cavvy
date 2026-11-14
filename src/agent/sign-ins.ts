@@ -281,7 +281,7 @@ export class SessionSignIns {
         });
     }
 
-    /** A command the user ran themselves, kept as a recipe: Cavvy runs it next time, in the card, and goes by its exit. */
+    /** A command the user ran themselves, kept as a recipe: Cavvy runs it next time, in the card. It has no status command, so it's never reported as signed in, only as done. */
     private keep(w: SignInWant) {
         if (!w.command || offeredCommandError(w.target, w.command)) return;
         const id = w.target.toLowerCase();

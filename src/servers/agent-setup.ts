@@ -13,7 +13,7 @@ import { redact } from "../util/redact";
 import { expectHostKey, forgetScript, forgetServerKey, madeKey, makeServerKey, serverKeysDir } from "./keys";
 import type { ServerLinks } from "./manager";
 import { hostOf, ssh, SshError } from "./ssh";
-import { getServer, listServers, ServerError, type ServerEntry } from "./store";
+import { getServer, listServers, saveServer, ServerError, type ServerEntry } from "./store";
 
 /** How long a machine just created gets to start and run its start-up script, and how often it's tried. */
 export const setupTiming = {
@@ -142,15 +142,24 @@ export function serverSetup(o: { links(): Promise<ServerLinks>; settings(): Sett
             const entry = getServer(name);
             if (!entry) throw new ServerError(`No server is called ${name}.`);
             const recipes = signInRecipes(o.settings().signIns);
-            for (const argv of entry.cloud?.teardown ?? []) {
+            const left = [...(entry.cloud?.teardown ?? [])];
+            while (left.length) {
+                const argv = left[0]!;
                 progress(argv.join(" "));
                 let r = await runTeardown(argv, signal);
                 if (r.missing) throw new ServerError(`\`${argv[0]}\` isn't installed on this machine, so \`${argv.join(" ")}\` didn't run. Nothing was deleted by it.`);
                 // Its CLI is signed out: the user is asked, and the same command goes again.
                 const out = r.code !== 0 && !signal.aborted ? signedOutIn(r.out, recipes) : undefined;
-                if (out && (await signIn(out.id))) r = await runTeardown(argv, signal);
+                if (out) {
+                    if (!(await signIn(out.id))) throw new ServerError(`${out.name} isn't signed in on this machine, so \`${argv.join(" ")}\` didn't run. Call ServerRemove again once it is.`);
+                    r = await runTeardown(argv, signal);
+                }
                 if (signal.aborted) throw new ServerError("Stopped part way: check what's left with the provider's CLI.");
                 if (r.code !== 0) throw new ServerError(`\`${argv.join(" ")}\` failed:\n${tail(r.out) || `exit ${r.code}`}`);
+                // Done for good: a later try starts after it, not at a resource that's no longer there.
+                left.shift();
+                const { teardown: _, ...rest } = entry.cloud!;
+                saveServer({ ...entry, cloud: left.length ? { ...rest, teardown: left } : rest });
             }
             await (await o.links()).remove(name);
             // The machine is gone, so its keys are of no use. (One that's only forgotten keeps them: it can be put back.)

@@ -336,7 +336,7 @@ describe("a sign-in in a GUI session", () => {
         await c.card(id, "command", (i) => i.ran === true);
         await step(c, id, card.id, { action: "done" });
         await c.until(id, done, "the turn's end");
-        expect(texts(lastTurn(c.view(id)))).toContain("The user says they signed in to zzcli. Cavvy couldn't check");
+        expect(texts(lastTurn(c.view(id)))).toContain("The sign-in to zzcli was done, but Cavvy has no way to check it.");
         // A stale card's id opens a plain terminal: nothing is typed for it.
         await c.call("terminal.open", { id: "signin-term-2", cwd, cols: 100, rows: 20, signIn: { session: id, interaction: card.id } });
         await c.call("terminal.arm", { id: "signin-term-2" }).catch(() => undefined);

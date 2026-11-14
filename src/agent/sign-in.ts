@@ -39,7 +39,7 @@ export interface SignInHost {
 export interface SignInResult {
     target: string;
     name: string;
-    /** in: signed in. out: not. none: its CLI isn't installed. unverified: the user says so, nothing could check. unknown: no recipe, and no command to offer. */
+    /** in: its status check says so. out: not. none: its CLI isn't installed. unverified: the sign-in was done (the user says so, or its command ran to its end) and nothing could check. unknown: no recipe, and no command to offer. */
     state: "in" | "out" | "none" | "unverified" | "unknown";
     who?: string;
     /** Cavvy can tell when it's signed in later (it has a status command): put off, the agent is told when that happens. */
@@ -488,11 +488,11 @@ export class SignInFlow {
         this.forwarded = undefined;
         if (this.over) return;
         const r = e.recipe!;
-        // Without a status command, the sign-in's own exit is all there is to go by.
+        // Only a status check says "signed in". Without one, a sign-in that ran to its end is passed on as that, unchecked.
         const ok = r.status.run ? await this.refresh(e) : code === 0;
         if (this.over || this.current !== e) return;
         if (ok) {
-            e.state = "in";
+            e.state = r.status.run ? "in" : "unverified";
             return void this.signedIn(e);
         }
         const out = plain(this.output);
@@ -516,7 +516,7 @@ export class SignInFlow {
         const ok = r.status.run ? await this.refresh(e) : res.code === 0;
         if (this.over || this.current !== e) return;
         if (ok) {
-            e.state = "in";
+            e.state = r.status.run ? "in" : "unverified";
             return void this.signedIn(e);
         }
         // Its first line: what follows is its advice to sign in some other way.
@@ -622,7 +622,7 @@ export function signInReport(o: SignInOutcome, where: string | undefined, tool: 
             case "in":
                 return `Signed in to ${r.name}${on}${r.who ? ` as ${r.who}` : ""}.`;
             case "unverified":
-                return `The user says they signed in to ${r.name}${on}. Cavvy couldn't check: try what needed it.`;
+                return `The sign-in to ${r.name}${on} was done, but Cavvy has no way to check it. Try what needed it.`;
             case "none":
                 return `${r.name} isn't installed${on}: its command wasn't found. Install it first, then ask again.`;
             case "unknown":

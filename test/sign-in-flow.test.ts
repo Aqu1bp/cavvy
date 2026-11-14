@@ -146,6 +146,30 @@ describe("a sign-in's card, for each kind", () => {
         expect(saved).toHaveLength(1);
     });
 
+    test("without a status command nothing is ever called signed in: a sign-in that ran to its end is passed on unchecked, one that failed is shown", async () => {
+        const unchecked = { ...acmeRecipe("typed"), status: { run: "" } };
+        const x = flow(unchecked);
+        await x.until((v) => v.step === "ask", "the question");
+        x.f.act({ action: "start" });
+        await x.until((v) => /Username: $/.test(v.term ?? ""), "the name prompt");
+        x.f.act({ action: "keys", value: "octo\r" });
+        await x.until((v) => /Password: $/.test(v.term ?? ""), "the password prompt");
+        x.f.act({ action: "keys", value: "hunter22\r" });
+        const o = await x.done;
+        expect(o.end).toBe("done");
+        expect(state(o)).toBe("unverified");
+        expect(signInReport(o, undefined, "RequestSignIn")).toMatchObject({ text: "The sign-in to Acme was done, but Cavvy has no way to check it. Try what needed it.", summary: "Signed in" });
+
+        acme.reset();
+        const y = flow({ ...unchecked, token: { run: "acme login --token" } });
+        await y.until((v) => v.step === "ask", "the question");
+        y.f.act({ action: "token" });
+        y.f.act({ action: "submit", value: "wrong-token-999" });
+        expect((await y.until((v) => Boolean(v.error), "the error")).error).toContain("Bad credentials");
+        y.f.act({ action: "submit", value: "good-token-123" });
+        expect(state(await y.done)).toBe("unverified");
+    });
+
     test("no recipe and no command: nothing to show", async () => {
         const x = flow(undefined);
         const o = await x.done;

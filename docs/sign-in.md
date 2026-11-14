@@ -33,7 +33,7 @@ In the terminal app the same thing is a prompt: `Sign in to GitHub? ` with `ente
 
 `gh` (GitHub), `aws`, `gcloud` (Google Cloud), `claude` (Claude Code) and `codex`, on this machine and on a server.
 
-For anything else, the agent can offer the CLI's own sign-in command. The card then shows it with **Open in terminal**, which opens a terminal with the command typed in for you to run; Cavvy doesn't run it. **Done** tells the agent you've signed in (Cavvy can't check). **Done, and remember** also saves it as a sign-in of your own, so next time it runs in the card.
+For anything else, the agent can offer the CLI's own sign-in command. The card then shows it with **Open in terminal**, which opens a terminal with the command typed in for you to run; Cavvy doesn't run it. **Done** tells the agent the sign-in was done (Cavvy can't check). **Done, and remember** also saves it as a sign-in of your own, so next time it runs in the card; add a `status` command to it in your settings and Cavvy can check it too.
 
 ### Your own
 
@@ -55,7 +55,7 @@ For anything else, the agent can offer the CLI's own sign-in command. The card t
 }
 ```
 
-- `status.run` is how to tell: signed in when it exits with 0, or, with `signedIn`, when its output matches that pattern. `who` is a pattern whose first group is the account. Without a status command, Cavvy goes by whether the sign-in command itself succeeded, and can't notice a sign-in made elsewhere.
+- `status.run` is how to tell: signed in when it exits with 0, or, with `signedIn`, when its output matches that pattern. `who` is a pattern whose first group is the account. Without a status command Cavvy can't check: the agent is told the sign-in was done, not that it's signed in, and a sign-in made elsewhere isn't noticed.
 - `here` is the sign-in on a machine with your browser: its `flow` (`browser`, `device`, `paste`, `callback`, `token` or `typed`) and the command. `away` is the same for a server, where your browser is elsewhere; without it, `here` is used there too unless it's `browser`. A `callback` names the `port` its page calls.
 - `reads` are patterns over what the sign-in prints: `url`, `code`, `prompt` (it's waiting for the pasted code), `expired`.
 - `answers` reply to questions on the way: `[{ "when": "Press Enter", "send": "\r" }]`.

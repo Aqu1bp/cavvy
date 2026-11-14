@@ -272,6 +272,22 @@ describe("the tools, by themselves", () => {
         expect((await ServerRemoveTool.run({ name: "nope" }, ctx({ servers: s }).c)).content).toBe("No server is called nope. The user's servers: aws-mumbai, box.");
     });
 
+    test("the sign-ins asked for inside a call have a limit of their own, so the call answers before an agent CLI gives up on it", async () => {
+        const asked: any[] = [];
+        const ui = { requestSignIn: async (req: any) => (asked.push(req), { text: "The user hasn't signed in yet.", summary: "Still waiting", signedIn: false }) };
+        const add = ctx({ servers: servers() });
+        Object.assign(add.c.ui, ui);
+        const r = await ServerAddTool.run({ name: "box", address: "dev@box.example" }, add.c);
+        expect(asked[0]).toMatchObject({ machine: "box", waitMs: 20 * 60_000, targets: [{ target: "claude" }, { target: "codex" }, { target: "gh" }] });
+        // The server is added whatever becomes of its sign-ins.
+        expect(r.content).toContain("box is one of the user's servers now.");
+        expect(r.content).toContain("The user hasn't signed in yet.");
+        const remove = ctx({ servers: servers({ get: async () => ({ destination: "a@b" }), remove: async (_n, o) => void (await o.signIn("aws")) }), confirm: () => "yes" });
+        Object.assign(remove.c.ui, ui);
+        await ServerRemoveTool.run({ name: "box" }, remove.c);
+        expect(asked[1]).toMatchObject({ targets: [{ target: "aws" }], waitMs: 20 * 60_000 });
+    });
+
     test("served to Claude Code and Codex under their own names", () => {
         const tools = serverServerTools(async () => ({ text: "Call ServerAdd next, after RequestSignIn." }));
         expect(tools.map((t) => t.name)).toEqual(["server_key", "server_add", "server_remove"]);
@@ -499,6 +515,43 @@ describe("from a window, with an agent doing it", () => {
         expect(listServers().map((s) => s.name)).toEqual(["box"]);
         expect(c.events.filter((e) => e.type === "servers.changed").at(-1)).toMatchObject({ count: 1 });
         c.ws.close();
+    });
+
+    test("a teardown that stops part way goes on from there next time, not from a resource that's already gone", async () => {
+        const { serverSetup } = await import("../src/servers/agent-setup");
+        const { ServerLinks } = await import("../src/servers/manager");
+        const { saveServer } = await import("../src/servers/store");
+        const links = new ServerLinks();
+        const setup = serverSetup({ links: async () => links, settings: () => ({}) });
+        // This test's own pretend CLI; the one the other tests use is put back at its end.
+        const usual = readFileSync(join(mine, "aws"), "utf-8");
+        saveServer({ ...getServer("box")!, name: "two-step", cloud: { provider: "AWS Lightsail", teardown: [["aws", "lightsail", "delete-instance", "--instance-name", "two-step"], ["aws", "lightsail", "release-static-ip", "--static-ip-name", "two-step-ip"]] } });
+        // The pretend CLI: the instance deletes once (a second try would find nothing), the address is refused at first.
+        writeFileSync(join(mine, "aws"), `#!/bin/sh
+d=${JSON.stringify(cloud)}
+echo "$*" >> "$d/calls2"
+case "$1 $2" in
+"lightsail delete-instance") [ -e "$d/gone" ] && { echo "An error occurred (NotFoundException): The Instance does not exist"; exit 254; }; touch "$d/gone"; exit 0 ;;
+"lightsail release-static-ip") [ -e "$d/allow-ip" ] || { echo "An error occurred (ServiceException): try again later"; exit 254; }; exit 0 ;;
+esac
+exit 0
+`);
+        const o = { signal: new AbortController().signal, progress: () => undefined, signIn: async () => false };
+        await expect(setup.remove("two-step", o)).rejects.toThrow("release-static-ip --static-ip-name two-step-ip` failed");
+        // What's done is done: only what's left is recorded.
+        expect(getServer("two-step")!.cloud!.teardown).toEqual([["aws", "lightsail", "release-static-ip", "--static-ip-name", "two-step-ip"]]);
+        writeFileSync(join(cloud, "allow-ip"), "");
+        await setup.remove("two-step", o);
+        expect(getServer("two-step")).toBeUndefined();
+        expect(readFileSync(join(cloud, "calls2"), "utf-8").trim().split("\n")).toEqual(["lightsail delete-instance --instance-name two-step", "lightsail release-static-ip --static-ip-name two-step-ip", "lightsail release-static-ip --static-ip-name two-step-ip"]);
+        // A provider CLI that's signed out, and a user who doesn't sign in: said as that, with nothing deleted.
+        saveServer({ ...getServer("box")!, name: "signed-out", cloud: { provider: "AWS", teardown: [["aws", "ec2", "terminate-instances"]] } });
+        writeFileSync(join(mine, "aws"), `#!/bin/sh\necho "aws: [ERROR]: Unable to locate credentials."\nexit 253\n`);
+        await expect(setup.remove("signed-out", o)).rejects.toThrow("AWS isn't signed in on this machine, so `aws ec2 terminate-instances` didn't run. Call ServerRemove again once it is.");
+        expect(getServer("signed-out")).toBeDefined();
+        const { removeServer } = await import("../src/servers/store");
+        removeServer("signed-out");
+        writeFileSync(join(mine, "aws"), usual);
     });
 
     test("a teardown that fails leaves the server listed, with the provider's own words", async () => {

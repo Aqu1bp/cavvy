@@ -45,6 +45,13 @@ const WORD = /^[A-Za-z0-9_@%+=:,./-]{1,200}$/;
 /** The CLIs a teardown command may be: the providers' own. One of the user's sign-ins (settings) counts too. */
 export const PROVIDER_CLIS = ["aws", "gcloud", "az", "doctl", "hcloud", "linode-cli", "vultr-cli", "scw", "oci", "fly", "flyctl", "upctl", "exo", "ibmcloud", "civo", "yc", "ovhcloud"];
 
+/**
+ * How long a sign-in asked for inside one of these calls waits before the call answers "still waiting" (its card
+ * stays, and the agent hears when the user is done): an agent CLI gives a call about an hour, and the rest of the
+ * call takes its share of that.
+ */
+const SIGN_IN_WAIT_MS = 20 * 60_000;
+
 const fail = (content: string): ToolResult => ({ content, isError: true });
 const line = (v: unknown) => typeof v === "string" && LINE.test(v.trim());
 
@@ -226,7 +233,7 @@ export const ServerAddTool: Tool<AddInput> = {
         } else out.push("The user's settings, memory, skills and commands weren't copied there. Offer it; ServerAdd with copy_settings: true on this name does it.");
         // Its sign-ins, in one card: each is the user's to do, and none is needed for the server to be listed.
         if (ctx.ui.requestSignIn && !ctx.signal.aborted) {
-            const r = await ctx.ui.requestSignIn({ targets: [{ target: "claude" }, { target: "codex" }, { target: "gh" }], machine: i.name, tool }, ctx.signal);
+            const r = await ctx.ui.requestSignIn({ targets: [{ target: "claude" }, { target: "codex" }, { target: "gh" }], machine: i.name, tool, waitMs: SIGN_IN_WAIT_MS }, ctx.signal);
             out.push(r.text);
         }
         return { content: out.join("\n"), display: { summary: `Added ${i.name}` } };
@@ -276,7 +283,7 @@ export const ServerRemoveTool: Tool<{ name: string }> = {
             await servers.remove(i.name, {
                 signal: ctx.signal,
                 progress: (text) => ctx.onProgress?.(`${text}\n`),
-                signIn: async (target) => Boolean(ctx.ui.requestSignIn && (await ctx.ui.requestSignIn({ targets: [{ target }], tool: ctx.signInTool ?? "RequestSignIn" }, ctx.signal)).signedIn),
+                signIn: async (target) => Boolean(ctx.ui.requestSignIn && (await ctx.ui.requestSignIn({ targets: [{ target }], tool: ctx.signInTool ?? "RequestSignIn", waitMs: SIGN_IN_WAIT_MS }, ctx.signal)).signedIn),
             });
         } catch (e) {
             return fail(`${i.name} wasn't removed: ${e instanceof Error ? e.message : String(e)}\nIt's still listed${teardown.length ? ", and whatever of it still exists still costs money. Say so" : ""}.`);
