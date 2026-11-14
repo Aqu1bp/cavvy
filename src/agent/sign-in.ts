@@ -70,8 +70,11 @@ export interface SignInFlowOptions {
     windowForwards?: boolean;
     /** The user already said to sign in (they came back to one they'd put off): the card starts past its question. */
     asked?: boolean;
-    /** How often the status is checked while the card is up. */
+    /** How often the status is checked while the card is up and the user is at it. */
     pollMs?: number;
+    /** How often once nothing has been done in the card for `quickForMs`. */
+    idlePollMs?: number;
+    quickForMs?: number;
     now?: () => number;
 }
 
@@ -226,11 +229,17 @@ export class SignInFlow {
     private over = false;
     private readonly done: Promise<SignInOutcome>;
     private readonly pollMs: number;
+    private readonly idlePollMs: number;
+    private readonly quickForMs: number;
+    /** When the card came up, or the user last did something in it. */
+    private touched = 0;
     private readonly now: () => number;
 
     constructor(private o: SignInFlowOptions) {
         this.entries = o.wants.map((w) => ({ ...w, name: w.recipe?.name ?? w.target, state: w.recipe || w.command ? "out" : "unknown" }));
         this.pollMs = o.pollMs ?? (o.host.far ? 15_000 : o.host.away ? 5000 : 2500);
+        this.idlePollMs = o.idlePollMs ?? Math.max(this.pollMs, o.host.far || o.host.away ? 60_000 : 30_000);
+        this.quickForMs = o.quickForMs ?? 2 * 60_000;
         this.now = o.now ?? Date.now;
         this.done = new Promise((resolve) => { this.finish = resolve; });
     }
@@ -246,6 +255,9 @@ export class SignInFlow {
         signal?.addEventListener("abort", stop, { once: true });
         try {
             await Promise.all(this.entries.map((e) => this.refresh(e)));
+            // Already signed in: what makes the sign-in usable (git told to use it) may still be missing, so that runs all the same.
+            if (!signal?.aborted) await Promise.all(this.entries.filter((e) => e.state === "in" && e.recipe?.then).map((e) => this.o.host.run(e.recipe!, words(e.recipe!.then!), { timeoutMs: 30_000 }).catch(() => undefined)));
+            this.touched = this.now();
             if (signal?.aborted) this.end("stopped");
             else if (!this.entries.some((e) => e.state === "out")) this.end("done");
             else if (this.entries.length === 1) this.open(this.entries[0]!, this.o.asked);
@@ -259,6 +271,7 @@ export class SignInFlow {
     /** A step the user took in the card. Throws what the card should say when it can't be taken. */
     act(a: SignInAction) {
         if (this.over) return;
+        this.touched = this.now();
         const e = this.current;
         switch (a.action) {
             case "pick": {
@@ -531,12 +544,17 @@ export class SignInFlow {
         this.finishing = e;
         this.stopCommand();
         try {
-            if (e.recipe?.then) await this.o.host.run(e.recipe, words(e.recipe.then), { timeoutMs: 30_000 }).catch(() => undefined);
-            if (e.recipe) await this.o.host.signedIn?.(e.recipe).catch(() => undefined);
+            await this.wrapUp(e);
         } finally {
             this.finishing = undefined;
         }
         this.next();
+    }
+
+    /** What follows a sign-in, however it was done: the recipe's own next step, and the machine's (Cavvy there turns the CLI on). */
+    private async wrapUp(e: Entry) {
+        if (e.recipe?.then) await this.o.host.run(e.recipe, words(e.recipe.then), { timeoutMs: 30_000 }).catch(() => undefined);
+        if (e.recipe) await this.o.host.signedIn?.(e.recipe).catch(() => undefined);
     }
 
     /** One is settled: back to the list while others wait, or the end. */
@@ -549,7 +567,8 @@ export class SignInFlow {
 
     /**
      * Looks again every so often while the card is up: signing in some other way (a terminal of the user's own)
-     * closes the card like signing in through it.
+     * closes the card like signing in through it. Often while the user is at it; a card left sitting (one can stay
+     * up for hours) is looked at far less, since each look runs the CLI.
      */
     private watch() {
         if (this.timer) clearTimeout(this.timer);
@@ -557,7 +576,7 @@ export class SignInFlow {
         this.timer = setTimeout(() => {
             this.timer = undefined;
             void this.look();
-        }, this.pollMs);
+        }, this.now() - this.touched < this.quickForMs ? this.pollMs : this.idlePollMs);
         (this.timer as { unref?: () => void }).unref?.();
     }
 
@@ -565,14 +584,22 @@ export class SignInFlow {
         if (this.over || this.checking) return;
         const run = this.run_;
         const watched = this.current ? [this.current] : this.entries.filter((e) => e.state === "out");
-        this.checking = Promise.all(watched.map((e) => this.refresh(e))).then((l) => l.some(Boolean));
+        let turned: Entry[] = [];
+        this.checking = Promise.all(watched.map((e) => this.refresh(e))).then((l) => {
+            turned = watched.filter((_, i) => l[i]);
+            return l.some(Boolean);
+        });
         const changed = await this.checking.catch(() => false);
         this.checking = undefined;
         if (this.over) return;
         if (changed && this.current && watched[0] === this.current && run === this.run_ && this.current.state === "in") return void this.signedIn(this.current);
         if (changed && !this.current) {
-            if (this.entries.some((e) => e.state === "out")) this.set({ rows: this.rows() });
-            else return this.end("done");
+            // Signed in some other way while the list was up: wrapped up like one signed in through the card.
+            await Promise.all(turned.map((e) => this.wrapUp(e)));
+            if (this.over) return;
+            if (!this.entries.some((e) => e.state === "out")) return this.end("done");
+            // One the user picked meanwhile has its own card up.
+            if (!this.current) this.set({ rows: this.rows() });
         }
         this.watch();
     }

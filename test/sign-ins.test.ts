@@ -35,7 +35,7 @@ afterAll(() => iso.cleanup());
 beforeEach(() => acme.reset());
 
 /** A session's sign-ins with `acme` as its only recipe, the cards it showed, and what would wake its agent. */
-function session(recipe: Record<string, unknown> = acmeRecipe("device"), o: { machine?: (name?: string) => never } = {}) {
+function session(recipe: Record<string, unknown> = acmeRecipe("device"), o: { machine?: (name?: string) => never; laterForMs?: number; laterSlowPollMs?: number } = {}) {
     const cards = new Map<string, SignInView & { machine?: string }>();
     const shown: string[] = [];
     const wakes = new WakeQueue({ coalesceMs: 0 });
@@ -51,6 +51,8 @@ function session(recipe: Record<string, unknown> = acmeRecipe("device"), o: { ma
         save: (r) => void saved.push(r),
         pollMs: 40,
         laterPollMs: 60,
+        laterForMs: o.laterForMs,
+        laterSlowPollMs: o.laterSlowPollMs,
         cards: {
             show: (id, view) => {
                 cards.set(id, view);
@@ -108,6 +110,7 @@ describe("a request", () => {
         expect((await x.s.request(ask("acme-cloud"), never)).signedIn).toBe(true);
         const no = await x.s.request(ask("nope", { tool: "request_sign_in" }), never);
         expect(no.isError).toBe(true);
+        expect(no.signedIn).toBe(false);
         expect(no.text).toBe('Cavvy has no sign-in for "nope". Call request_sign_in again with `command` set to its sign-in command: the user is shown it and runs it themselves.');
     });
 
@@ -115,6 +118,32 @@ describe("a request", () => {
         const x = session(undefined, { machine: () => { throw new Error('No server is called "mars".'); } });
         expect(await x.s.request(ask("acme", { machine: "mars" }), never)).toEqual({ text: 'No server is called "mars".', isError: true, summary: "Can't sign in", signedIn: false });
         expect(x.shown).toEqual([]);
+    });
+
+    test("its CLI isn't installed: that isn't signed in (a push isn't tried again on it)", async () => {
+        const x = session({ ...acmeRecipe("device"), status: { run: "acme-not-here status" } });
+        const a = await x.s.request(ask(), never);
+        expect(a).toMatchObject({ signedIn: false, isError: true, summary: "Can't sign in" });
+        expect(a.text).toContain("isn't installed");
+    });
+
+    test("two calls for the same sign-in share one card; interrupting one leaves it for the other", async () => {
+        const x = session();
+        const stop = new AbortController();
+        const first = x.s.request(ask(), stop.signal);
+        const id = await x.card("ask");
+        const second = x.s.request(ask("Acme"), never);
+        await Bun.sleep(60);
+        expect(x.cards.size).toBe(1);
+        stop.abort();
+        expect((await first).text).toBe("Not signed in to Acme: the request was interrupted.");
+        expect(x.cards.size).toBe(1);
+        x.s.act(id, { action: "start" });
+        await x.card("code");
+        acme.approve("both@example.com");
+        expect((await second).text).toBe("Signed in to Acme as both@example.com.");
+        expect(x.cards.size).toBe(0);
+        expect(x.wakes.size).toBe(0);
     });
 
     test("the turn is interrupted: the card goes with it, and nothing is left waiting", async () => {
@@ -182,6 +211,70 @@ describe("Later", () => {
         expect(x.watchers.size).toBe(0);
         acme.signIn("me@example.com");
         await Bun.sleep(200);
+        expect(x.wakes.size).toBe(0);
+    });
+
+    test("everything that waits on one sign-in hears of it: one card, one row, each follow-up and the agent's wake", async () => {
+        const x = session();
+        const heard: string[] = [];
+        const a = x.s.ask(ask(), (ok) => void heard.push(`a:${ok}`));
+        const id = await x.card("ask");
+        // A second pull request's watch, and the agent's own request, while the card is up.
+        const b = x.s.ask(ask(), (ok) => void heard.push(`b:${ok}`));
+        const c = x.s.request(ask(), never);
+        await Bun.sleep(60);
+        expect(x.cards.size).toBe(1);
+        x.s.act(id, { action: "later" });
+        expect([await a, await b]).toEqual(["later", "later"]);
+        expect((await c).text).toContain("the user chose Later");
+        expect(x.watchers.info().map((w) => w.id)).toEqual(["sign-in::acme"]);
+        acme.signIn("me@example.com");
+        const wakes = await x.woken();
+        expect(heard).toEqual(["a:true", "b:true"]);
+        expect(wakes.length).toBe(1);
+        expect(wakes[0]!.text).toContain("Signed in to Acme as me@example.com.");
+        expect(x.watchers.size).toBe(0);
+    });
+
+    test("dismissed: what waited on it hears that, so a watch doesn't sit there for good", async () => {
+        const x = session();
+        const heard: boolean[] = [];
+        const a = x.s.ask(ask(), (ok) => void heard.push(ok));
+        x.s.act(await x.card("ask"), { action: "later" });
+        expect(await a).toBe("later");
+        x.watchers.get("sign-in::acme")!.stop();
+        expect(heard).toEqual([false]);
+        expect(x.watchers.size).toBe(0);
+    });
+
+    test("it's still looked at for as long as it's listed: signing in hours later wakes the agent all the same", async () => {
+        const x = session(undefined, { laterForMs: 80, laterSlowPollMs: 120 });
+        const answer = x.s.request(ask(), never);
+        x.s.act(await x.card("ask"), { action: "later" });
+        await answer;
+        // Well past the time it's looked at often.
+        await Bun.sleep(400);
+        expect(x.watchers.size).toBe(1);
+        expect(x.wakes.size).toBe(0);
+        acme.signIn("late@example.com");
+        const [wake] = await x.woken();
+        expect(wake!.text).toContain("Signed in to Acme as late@example.com.");
+        expect(x.watchers.size).toBe(0);
+    });
+
+    test("asked again and signed in through the new card: the row goes, and the agent isn't woken for what it was just told", async () => {
+        const x = session();
+        const first = x.s.request(ask(), never);
+        x.s.act(await x.card("ask"), { action: "later" });
+        await first;
+        expect(x.watchers.size).toBe(1);
+        const again = x.s.request(ask(), never);
+        x.s.act(await x.card("ask"), { action: "start" });
+        await x.card("code");
+        acme.approve("again@example.com");
+        expect((await again).signedIn).toBe(true);
+        expect(x.watchers.size).toBe(0);
+        await Bun.sleep(150);
         expect(x.wakes.size).toBe(0);
     });
 
@@ -337,9 +430,11 @@ describe("the tool", () => {
 
 describe("a failed command that says something is signed out", () => {
     test("the hint names the tool as the agent knows it, and the target", () => {
-        expect(signInHint("You are not logged into any GitHub hosts. To log in, run: gh auth login", SIGN_IN_RECIPES, "RequestSignIn")).toBe('GitHub isn\'t signed in. Ask the user to sign in: call RequestSignIn with target "gh", then run this again.');
-        expect(signInHint("Unable to locate credentials", SIGN_IN_RECIPES, "request_sign_in")).toContain('call request_sign_in with target "aws"');
-        expect(signInHint("all good", SIGN_IN_RECIPES, "RequestSignIn")).toBeUndefined();
+        expect(signInHint("gh pr view", "You are not logged into any GitHub hosts. To log in, run: gh auth login", SIGN_IN_RECIPES, "RequestSignIn")).toBe('GitHub isn\'t signed in. Ask the user to sign in: call RequestSignIn with target "gh", then run this again.');
+        expect(signInHint("aws s3 ls", "Unable to locate credentials", SIGN_IN_RECIPES, "request_sign_in")).toContain('call request_sign_in with target "aws"');
+        expect(signInHint("gh pr view", "all good", SIGN_IN_RECIPES, "RequestSignIn")).toBeUndefined();
+        // A failed command that isn't GitHub's, whose output only quotes the advice.
+        expect(signInHint("bun test ./test/git-tools.test.ts", "You are not logged into any GitHub hosts. To log in, run: gh auth login", SIGN_IN_RECIPES, "RequestSignIn")).toBeUndefined();
     });
 
     const bash = (command: string, signInTool?: "RequestSignIn" | "request_sign_in", signIns: unknown[] = [acmeRecipe("device")]) => {

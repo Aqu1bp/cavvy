@@ -475,7 +475,7 @@ export interface PrWatchOptions {
      * GitHub turned out signed out: asks the user to sign in (the card). "later": they put it off, and `resume` is
      * called if they sign in after all. Left out, or "cannot": the watch ends, and the agent is told why.
      */
-    signIn?: (resume: () => void) => Promise<"signed-in" | "later" | "cannot">;
+    signIn?: (heard: (signedIn: boolean) => void) => Promise<"signed-in" | "later" | "cannot">;
     now?: () => number;
 }
 
@@ -601,16 +601,18 @@ export class PrWatch {
     private async waitForSignIn(err: PrReadError) {
         this.signedOut = true;
         this.onChange?.();
-        const resume = () => {
+        const heard = (signedIn: boolean) => {
             if (this.stopped || !this.signedOut) return;
+            // Put off, then dismissed: nobody is going to sign in for it, so it ends as with no one to ask.
+            if (!signedIn) return this.failed(err);
             this.signedOut = false;
             this.onChange?.();
             this.schedule(0);
         };
-        const r = await this.o.signIn!(resume).catch(() => "cannot" as const);
+        const r = await this.o.signIn!(heard).catch(() => "cannot" as const);
         if (this.stopped) return;
-        if (r === "signed-in") return resume();
-        // Put off: it stays, reading nothing, until `resume`.
+        if (r === "signed-in") return heard(true);
+        // Put off: it stays, reading nothing, until it hears.
         if (r === "later") return;
         // Nothing could be shown (it says it's signed in, yet reading failed): as without anyone to ask.
         this.failed(err);

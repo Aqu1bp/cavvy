@@ -3092,6 +3092,9 @@ export class Engine {
                 if (this.o.away) throw new RpcError("Servers are managed from your own machine.", "unsupported");
                 const entry = (await import("../servers/store")).getServer(str(p.name, "name"));
                 if (!entry) throw new RpcError(`No server is called ${p.name}.`, "invalid");
+                // The card is the server's word. Which port this machine listens on is this machine's: only the one a sign-in of the user's own here says its page calls.
+                const known = findRecipe(str(p.target, "target"), signInRecipes(loadSettings(homedir(), { trusted: false }).signIns));
+                if (![known?.here, known?.away].some((w) => w?.flow === "callback" && w.port === Number(p.port))) throw new RpcError("This machine has no sign-in that uses that port. Add the sign-in to Cavvy's settings here too.", "invalid");
                 const key = `${entry.name}:${Number(p.port)}`;
                 // One per port, however many windows show the card: each holds it until it lets go or goes.
                 let f = this.forwards.get(key);

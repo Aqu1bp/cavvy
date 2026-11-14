@@ -58,8 +58,14 @@ export interface SignInRecipe {
     then?: string;
     /** One line for the card when it's on a server: what agents there can then do. */
     warning?: string;
-    /** In any command's output: this isn't signed in (the agent is then told to ask). */
+    /**
+     * What a failed command of its own prints when it isn't signed in (the agent is then told to ask). Patterns,
+     * matched as written. Only looked for when the command ran one of `commands`: text that merely mentions a
+     * login command (a test's output, a README) says nothing about this machine.
+     */
     signedOut?: string[];
+    /** The programs whose failures are looked at (its id, when left out). */
+    commands?: string[];
     /** One of the agent CLIs (src/backends/defs.ts): its own path, options and account are used. */
     provider?: string;
 }
@@ -80,7 +86,8 @@ export const SIGN_IN_RECIPES: readonly SignInRecipe[] = [
         reads: { code: CODE, url: "(https://github\\.com/login/device)", expired: "expired|timed out" },
         then: "gh auth setup-git --hostname github.com",
         warning: "Agents there can push as you",
-        signedOut: ["not logged into any GitHub hosts", "gh auth login", "could not read Username for 'https://github\\.com", "Authentication failed for 'https://github\\.com"],
+        signedOut: ["not logged into any GitHub hosts", "(?:[Rr]un|authenticating with):?\\s+gh auth login", "could not read Username for 'https://github\\.com", "Authentication failed for 'https://github\\.com"],
+        commands: ["gh", "git"],
     },
     {
         id: "aws",
@@ -92,7 +99,7 @@ export const SIGN_IN_RECIPES: readonly SignInRecipe[] = [
         reads: { url: "(https://\\S*signin\\.\\S+)", prompt: "Enter the authorization code[^:]*:" },
         // With no region configured it asks for one first: the one it offers is taken.
         answers: [{ when: "AWS Region \\[[^\\]]*\\]:", send: "\r" }],
-        signedOut: ["Unable to locate credentials", "ExpiredToken", "Your session has expired", "aws login"],
+        signedOut: ["Unable to locate credentials", "\\(ExpiredToken(?:Exception)?\\)", "aws login"],
     },
     {
         id: "gcloud",
@@ -148,6 +155,7 @@ export function recipeError(r: unknown): string | undefined {
     if (x.then !== undefined && !command(x.then)) return `${x.id}: then must be a command`;
     for (const k of ["url", "code", "prompt", "expired"]) if (x.reads?.[k] !== undefined && !pattern(x.reads[k])) return `${x.id}: reads.${k} isn't a pattern`;
     if (x.signedOut !== undefined && (!Array.isArray(x.signedOut) || !x.signedOut.every(pattern))) return `${x.id}: signedOut must be patterns`;
+    if (x.commands !== undefined && (!Array.isArray(x.commands) || !x.commands.every((c: unknown) => typeof c === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/.test(c)))) return `${x.id}: commands must be program names`;
     if (x.answers !== undefined && (!Array.isArray(x.answers) || !x.answers.every((a: any) => a && pattern(a.when) && typeof a.send === "string" && a.send.length <= 100))) return `${x.id}: answers need when and send`;
     if (x.env !== undefined && (!x.env || typeof x.env !== "object" || !Object.entries(x.env).every(([k, v]) => /^[A-Z_][A-Z0-9_]*$/.test(k) && typeof v === "string"))) return `${x.id}: env must be variables`;
     return undefined;
@@ -169,6 +177,7 @@ function own(r: Record<string, any>): SignInRecipe {
         ...(r.then ? { then: r.then } : {}),
         ...(typeof r.warning === "string" && r.warning.trim() ? { warning: r.warning.trim().slice(0, 80) } : {}),
         ...(r.signedOut ? { signedOut: [...r.signedOut] } : {}),
+        ...(r.commands ? { commands: [...r.commands] } : {}),
     };
 }
 
@@ -179,7 +188,8 @@ export function signInRecipes(mine: unknown): SignInRecipe[] {
         if (recipeError(r)) continue;
         const built = out.get(r.id);
         // One of the agent CLIs stays tied to it, whatever the user's entry says.
-        out.set(r.id, { ...own(r), ...(built?.provider ? { provider: built.provider } : {}) });
+        const mine = own(r);
+        out.set(r.id, { ...mine, ...(built?.provider ? { provider: built.provider } : {}), ...(built?.commands && !mine.commands ? { commands: built.commands } : {}) });
     }
     return [...out.values()];
 }
@@ -192,17 +202,23 @@ export function findRecipe(target: string, recipes: readonly SignInRecipe[]): Si
 
 const matchers = new WeakMap<SignInRecipe, RegExp[]>();
 
+/** The programs a shell command names: each word's last path part, without what a shell puts around it. */
+function programsIn(command: string): Set<string> {
+    return new Set(command.split(/[\s;&|()<>`'"=$]+/).map((w) => w.slice(w.lastIndexOf("/") + 1)).filter(Boolean));
+}
+
 /**
- * The recipe a command's output says is signed out, if any. Only output that failed is looked at, and only its
- * first and last parts: these lines come at an edge.
+ * The recipe a failed command's output says is signed out, if any. `command`: what was run. Only a recipe whose own
+ * program the command ran is considered, and only the output's first and last parts: these lines come at an edge.
  */
-export function signedOutIn(output: string, recipes: readonly SignInRecipe[]): SignInRecipe | undefined {
+export function signedOutIn(output: string, recipes: readonly SignInRecipe[], command: string): SignInRecipe | undefined {
     const text = output.length > 8000 ? `${output.slice(0, 4000)}\n${output.slice(-4000)}` : output;
+    const ran = programsIn(command);
     for (const r of recipes) {
-        if (!r.signedOut?.length) continue;
+        if (!r.signedOut?.length || !(r.commands ?? [r.id]).some((c) => ran.has(c))) continue;
         let res = matchers.get(r);
         if (!res) {
-            res = r.signedOut.flatMap((p) => { try { return [new RegExp(p, "i")]; } catch { return []; } });
+            res = r.signedOut.flatMap((p) => { try { return [new RegExp(p)]; } catch { return []; } });
             matchers.set(r, res);
         }
         if (res.some((re) => re.test(text))) return r;

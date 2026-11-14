@@ -4,7 +4,7 @@
 // the keys and the start-up script, the tools on their own, and the whole thing from a window.
 
 import { afterAll, afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 import { fakeSsh } from "./helpers/fake-ssh";
@@ -45,7 +45,7 @@ process.env.PATH = `${mine}:${process.env.PATH}`;
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { startServer } = await import("../src/server/server");
 const { applyOp } = await import("../src/server/timeline");
-const { expectHostKey, forgetServerKey, madeKey, makeServerKey, serverKeysDir, startupScript } = await import("../src/servers/keys");
+const { expectHostKey, forgetScript, forgetServerKey, freshKey, knownHostLines, madeKey, makeServerKey, serverKeysDir, setKnownHostLines, startupScript } = await import("../src/servers/keys");
 const { setupTiming } = await import("../src/servers/agent-setup");
 const { ownKnownHosts } = await import("../src/servers/ssh");
 const { checkedCloud, getServer, listServers } = await import("../src/servers/store");
@@ -122,6 +122,33 @@ describe("the keys Cavvy makes for a new server", () => {
         expect(() => expectHostKey("never-made", "x.example")).toThrow("No key was made");
     });
 
+    test("a key counts as a machine being created only while its start-up script is still to do its part, and lately", async () => {
+        expect(freshKey("keys-three")).toBe(false);
+        await makeServerKey("keys-three");
+        expect(freshKey("keys-three")).toBe(true);
+        // Approved long ago, and no machine came of it: adding that name now is adding a server like any other.
+        const long = new Date(Date.now() - 7 * 3_600_000);
+        utimesSync(join(serverKeysDir(), "keys-three.script"), long, long);
+        expect(freshKey("keys-three")).toBe(false);
+        // Added (the script is done with): the key stays for the server, as no sign of a new machine.
+        await makeServerKey("keys-three");
+        forgetScript("keys-three");
+        expect(madeKey("keys-three")).toBeDefined();
+        expect(freshKey("keys-three")).toBe(false);
+        forgetServerKey("keys-three");
+    });
+
+    test("what Cavvy's list held for an address can be put back", () => {
+        writeFileSync(ownKnownHosts(), "a.example ssh-ed25519 AAAAa\n[b.example]:2222 ssh-ed25519 AAAAb\n");
+        expect(knownHostLines("a.example")).toEqual(["a.example ssh-ed25519 AAAAa"]);
+        expect(knownHostLines("b.example", 2222)).toEqual(["[b.example]:2222 ssh-ed25519 AAAAb"]);
+        expect(knownHostLines("b.example")).toEqual([]);
+        setKnownHostLines("a.example", undefined, []);
+        expect(readFileSync(ownKnownHosts(), "utf-8")).toBe("[b.example]:2222 ssh-ed25519 AAAAb\n");
+        setKnownHostLines("a.example", undefined, ["a.example ssh-ed25519 AAAAa"]);
+        expect(readFileSync(ownKnownHosts(), "utf-8")).toBe("[b.example]:2222 ssh-ed25519 AAAAb\na.example ssh-ed25519 AAAAa\n");
+    });
+
     test("agents are kept from the key as from Cavvy's other credentials: file tools refused in every mode, a command that names it asked about", () => {
         const cwd = tempDir("cavvy-agent-setup-fence-");
         const checker = new PermissionChecker(() => ({}) as any, cwd);
@@ -164,12 +191,12 @@ describe("the tools, by themselves", () => {
         remove: async () => undefined,
         ...over,
     });
-    const ctx = (o: { servers?: ServerSetup | null; confirm?: (req: ConfirmRequest) => "yes" | "other" | "no"; mode?: string; signIns?: unknown[] } = {}) => {
+    const ctx = (o: { servers?: ServerSetup | null; confirm?: (req: ConfirmRequest) => "yes" | "other" | "no"; mode?: string; signIns?: unknown[]; signal?: AbortSignal } = {}) => {
         const asked: ConfirmRequest[] = [];
         const c = {
             state: { servers: o.servers === null ? undefined : (o.servers ?? servers()) },
             settings: { signIns: o.signIns },
-            signal: new AbortController().signal,
+            signal: o.signal ?? new AbortController().signal,
             mode: () => o.mode ?? "bypassPermissions",
             ui: { confirm: o.confirm ? async (req: ConfirmRequest) => (asked.push(req), o.confirm!(req)) : undefined },
         } as unknown as ToolContext;
@@ -221,7 +248,15 @@ describe("the tools, by themselves", () => {
         expect(v({ ...base, address: "dev@box.example; id" })).toContain("address must be");
         // A sign-in of the user's own names another provider's CLI.
         expect(v({ ...base, provider: "Acme", teardown: ["acme delete box"] })).toContain("starts with the provider's own CLI");
-        expect(v({ ...base, provider: "Acme", teardown: ["acme delete box"] }, [{ id: "acme", name: "Acme", here: { flow: "token", run: "acme login" } }])).toBeUndefined();
+        const acme = { id: "acme", name: "Acme", here: { flow: "token", run: "acme login" } };
+        expect(v({ ...base, provider: "Acme", teardown: ["acme delete box"] }, [{ ...acme, status: { run: "acme whoami" } }])).toBeUndefined();
+        // One kept from a card (an agent offered its command, and nothing checks it) isn't one the user wrote.
+        expect(v({ ...base, provider: "Acme", teardown: ["acme delete box"] }, [acme])).toContain("starts with the provider's own CLI");
+        // Never GitHub's CLI or an agent CLI, whatever the settings hold for them: those don't delete servers.
+        const gh = { id: "gh", name: "GitHub", here: { flow: "device", run: "gh auth login" }, status: { run: "gh auth status" } };
+        for (const c of ["gh repo delete acme/app --yes", "claude -p hello", "codex exec hello"]) expect(v({ ...base, provider: "AWS", teardown: [c] }, [gh])).toContain("starts with the provider's own CLI");
+        // What's deleted is in the command the user is shown, not in a file that can change after.
+        for (const w of ["--cli-input-json file:///tmp/x.json", "--cli-input-yaml x", "--parameters @/tmp/x.json", "--parameters=@x.json", "--flags-file=/tmp/f", "--user-data fileb:///tmp/x"]) expect(v({ ...base, provider: "AWS", teardown: [`aws ec2 terminate-instances ${w}`] })).toContain("can't be in a teardown command");
 
         const added: unknown[] = [];
         const s = servers({ add: async (spec) => (added.push(spec), { lacks: ["git"] }) });
@@ -249,6 +284,15 @@ describe("the tools, by themselves", () => {
         // A failure after the machine exists says it still costs money.
         const failing = servers({ hasKey: async () => true, add: async () => { throw new Error("it didn't let Cavvy in"); } });
         expect((await ServerAddTool.run({ name: "aws-mumbai", address: "ubuntu@203.0.113.7" }, ctx({ servers: failing }).c)).content).toContain("still costs money");
+        // So does an interruption: the agent that stops there still has to say so.
+        const stopped = new AbortController();
+        stopped.abort();
+        const cut = await ServerAddTool.run({ name: "aws-mumbai", address: "ubuntu@203.0.113.7" }, ctx({ servers: failing, signal: stopped.signal }).c);
+        expect(cut.content).toContain("Interrupted while adding aws-mumbai. It wasn't added.");
+        expect(cut.content).toContain("still costs money: tell the user");
+        // One of the user's own that was interrupted costs nothing new.
+        const theirs = servers({ add: async () => { throw new Error("Stopped."); } });
+        expect((await ServerAddTool.run({ name: "box", address: "dev@box.example" }, ctx({ servers: theirs, signal: stopped.signal }).c)).content).toBe("Interrupted while adding box. It wasn't added.");
     });
 
     test("ServerRemove shows what will be deleted and the commands, and does nothing on Cancel", async () => {
@@ -537,7 +581,10 @@ esac
 exit 0
 `);
         const o = { signal: new AbortController().signal, progress: () => undefined, signIn: async () => false };
-        await expect(setup.remove("two-step", o)).rejects.toThrow("release-static-ip --static-ip-name two-step-ip` failed");
+        const failed = await setup.remove("two-step", o).then(() => "", (e: Error) => e.message);
+        expect(failed).toContain("release-static-ip --static-ip-name two-step-ip` failed");
+        // The way out when what's left is already gone.
+        expect(failed).toContain("they can forget two-step in Servers, which deletes nothing");
         // What's done is done: only what's left is recorded.
         expect(getServer("two-step")!.cloud!.teardown).toEqual([["aws", "lightsail", "release-static-ip", "--static-ip-name", "two-step-ip"]]);
         writeFileSync(join(cloud, "allow-ip"), "");
@@ -552,6 +599,74 @@ exit 0
         const { removeServer } = await import("../src/servers/store");
         removeServer("signed-out");
         writeFileSync(join(mine, "aws"), usual);
+    });
+
+    test("a step that finished as the teardown was interrupted is done: the next try doesn't run it again", async () => {
+        const { serverSetup } = await import("../src/servers/agent-setup");
+        const { ServerLinks } = await import("../src/servers/manager");
+        const { saveServer } = await import("../src/servers/store");
+        const setup = serverSetup({ links: async () => new ServerLinks(), settings: () => ({}) });
+        const usual = readFileSync(join(mine, "aws"), "utf-8");
+        saveServer({ ...getServer("box")!, name: "cut-short", cloud: { provider: "AWS Lightsail", teardown: [["aws", "lightsail", "delete-instance", "--instance-name", "cut-short"], ["aws", "lightsail", "release-static-ip", "--static-ip-name", "cut-short-ip"]] } });
+        // The pretend CLI finishes its delete whatever it's told meanwhile, as a request already sent does.
+        writeFileSync(join(mine, "aws"), `#!/bin/sh\ntrap '' TERM\nsleep 0.4\nexit 0\n`);
+        try {
+            const stop = new AbortController();
+            setTimeout(() => stop.abort(), 100);
+            await expect(setup.remove("cut-short", { signal: stop.signal, progress: () => undefined, signIn: async () => false })).rejects.toThrow("Stopped part way");
+            expect(getServer("cut-short")!.cloud!.teardown).toEqual([["aws", "lightsail", "release-static-ip", "--static-ip-name", "cut-short-ip"]]);
+        } finally {
+            writeFileSync(join(mine, "aws"), usual);
+            (await import("../src/servers/store")).removeServer("cut-short");
+        }
+    });
+
+    test("what's run at the end is still only what a teardown may be", async () => {
+        const { serverSetup } = await import("../src/servers/agent-setup");
+        const { ServerLinks } = await import("../src/servers/manager");
+        const { removeServer, saveServer } = await import("../src/servers/store");
+        const setup = serverSetup({ links: async () => new ServerLinks(), settings: () => ({}) });
+        const o = { signal: new AbortController().signal, progress: () => undefined, signIn: async () => false };
+        const calls = () => (existsSync(join(cloud, "calls")) ? readFileSync(join(cloud, "calls"), "utf-8") : "");
+        const before = calls();
+        // A record from before the rule, or one changed by hand.
+        for (const teardown of [[["gh", "repo", "delete", "acme/app", "--yes"]], [["aws", "lightsail", "delete-instance", "--instance-name", "odd"], ["aws", "ec2", "terminate-instances", "--cli-input-json", "file:///tmp/x.json"]]]) {
+            saveServer({ ...getServer("box")!, name: "odd", cloud: { provider: "AWS", teardown } });
+            await expect(setup.remove("odd", o)).rejects.toThrow("Nothing was deleted.");
+            expect(getServer("odd")).toBeDefined();
+            removeServer("odd");
+        }
+        // Not even the ones before it in the list ran.
+        expect(calls()).toBe(before);
+    });
+
+    test("a machine an agent made can't take the address of a server the user has, and an add that fails puts back what Cavvy knew of the address", async () => {
+        const { serverSetup } = await import("../src/servers/agent-setup");
+        const { ServerLinks } = await import("../src/servers/manager");
+        const { hostOf } = await import("../src/servers/ssh");
+        const setup = serverSetup({ links: async () => new ServerLinks(), settings: () => ({}) });
+        const o = { signal: new AbortController().signal, progress: () => undefined, trust: async () => false };
+        const box = getServer("box")!;
+        const made = await makeServerKey("twin");
+        const known = () => (existsSync(ownKnownHosts()) ? readFileSync(ownKnownHosts(), "utf-8") : "");
+        const before = known();
+        await expect(setup.add({ name: "twin", address: `ubuntu@${hostOf(box)}`, port: box.port }, o)).rejects.toThrow("is the address of box, one of the user's servers already");
+        expect(known()).toBe(before);
+        // A machine that never shows the identity made for it: the address keeps what it had.
+        writeFileSync(ownKnownHosts(), `${before}203.0.113.50 ssh-ed25519 AAAAbefore\n`);
+        fake.restoreHostKey();
+        const timing = { ...setupTiming };
+        Object.assign(setupTiming, { readyMs: 300, everyMs: 50 });
+        try {
+            await expect(setup.add({ name: "twin", address: "ubuntu@203.0.113.50" }, o)).rejects.toThrow("didn't let Cavvy in");
+        } finally {
+            Object.assign(setupTiming, timing);
+        }
+        expect(known()).toContain("203.0.113.50 ssh-ed25519 AAAAbefore");
+        expect(known()).not.toContain(made.hostPublicKey.split(" ")[1]!);
+        expect(getServer("twin")).toBeUndefined();
+        forgetServerKey("twin", "203.0.113.50");
+        writeFileSync(ownKnownHosts(), before);
     });
 
     test("a teardown that fails leaves the server listed, with the provider's own words", async () => {

@@ -644,7 +644,9 @@ export class Runtime {
     private schedulable(): boolean {
         // A goal between its turns (checking, retrying, waiting on background work) goes first: scheduled prompts wait for it.
         // Nor while the session's CLI account is gone (#410): they run once the user picks another.
-        return !this.closed && (!this.busy || this.idleCompacting) && !this.pending.size && !this.switching && !this.committing && !this.queued.length && !this.goal.pending() && Boolean(this.agent) && !this.needsAccount();
+        // A sign-in's card left up for the user isn't a turn waiting on them: as a wake does, a scheduled prompt runs beside it.
+        const asking = [...this.pending.keys()].some((id) => !this.signIns.kept(id));
+        return !this.closed && (!this.busy || this.idleCompacting) && !asking && !this.switching && !this.committing && !this.queued.length && !this.goal.pending() && Boolean(this.agent) && !this.needsAccount();
     }
 
     private runScheduled(prompt: string, job: ScheduledJob, label: string): Promise<unknown> {
@@ -2781,7 +2783,7 @@ export class Runtime {
     }
 
     /** A sign-in one of Cavvy's own features needs for this session: the same card, with no tool call behind it. */
-    askSignIn(req: SignInRequest, then?: () => void): Promise<"signed-in" | "later" | "cannot"> {
+    askSignIn(req: SignInRequest, then?: (signedIn: boolean) => void): Promise<"signed-in" | "later" | "cannot"> {
         return this.signIns.ask(req, then);
     }
 
@@ -2792,10 +2794,11 @@ export class Runtime {
      */
     private offerSignIn(out: { target: string; account: string; advice: string }) {
         const name = findRecipe(out.target, signInRecipes(this.settings().signIns))?.name ?? out.target;
-        const carryOn = () => this.toolState.wakes?.push({ source: "sign-in", label: `Signed in to ${name}`, text: `The user has now signed in to ${name}. Your last turn stopped because it wasn't signed in: carry on with what they asked.` });
+        // Dismissed instead: nothing to carry on with, and the user knows.
+        const carryOn = (signedIn: boolean) => signedIn && this.toolState.wakes?.push({ source: "sign-in", label: `Signed in to ${name}`, text: `The user has now signed in to ${name}. Your last turn stopped because it wasn't signed in: carry on with what they asked.` });
         void this.signIns.ask({ targets: [{ target: out.target }], account: out.account }, carryOn).then((r) => {
             if (this.closed) return;
-            if (r === "signed-in") carryOn();
+            if (r === "signed-in") carryOn(true);
             else if (r === "cannot") this.notice(out.advice, "warn");
         });
     }

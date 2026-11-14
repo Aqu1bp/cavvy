@@ -61,26 +61,38 @@ export interface SessionSignInsOptions {
     /** How often one that was put off is looked at again, and for how long. */
     laterPollMs?: number;
     laterForMs?: number;
+    /** How often after that, for as long as it's listed. */
+    laterSlowPollMs?: number;
     pollMs?: number;
 }
 
 interface Active {
     flow: SignInFlow;
     stop: AbortController;
+    /** It stays when the turn ends: nothing in a turn is all that waits on it. */
     kept: boolean;
     /** The one put off that this card is for. */
     later?: string;
+    /** The machine, account and services it's for: a second request for the same joins this card. */
+    key: string;
+    run: Promise<SignInOutcome>;
+    /** Calls in a turn still waiting on it. */
+    holders: number;
+    shown: boolean;
 }
 
 interface Later {
     id: string;
+    key: string;
     wants: SignInWant[];
     machine: SignInMachine;
-    request: SignInRequest;
     timer?: ReturnType<typeof setTimeout>;
+    /** Until then it's looked at often; after, now and then, for as long as it's listed. */
     until: number;
-    /** Called when it's signed in, in place of waking the agent (a feature of Cavvy's own asked). */
-    then?: () => void;
+    /** Cavvy's own features that wait on it: each hears whether it was signed in (true) or the user dismissed it (false). */
+    thens: ((signedIn: boolean) => void)[];
+    /** The agent asked for it too: it's woken when it's signed in. */
+    wake: boolean;
 }
 
 const SHELL = /[;&|<>`$(){}\\\n\r"']/;
@@ -140,32 +152,34 @@ export class SessionSignIns {
         }
         if (signal.aborted) return { ...signInReport({ end: "stopped", results: [] }, machine.where, tool), text: "The request to sign in was interrupted.", signedIn: false };
         const wants = this.wants(req.targets);
-        const id = this.o.newId();
-        const run = this.start(id, wants, machine, signal);
+        const a = this.open(req, wants, machine);
+        const run = this.held(a, wants, signal);
         let timer: ReturnType<typeof setTimeout> | undefined;
         const limit = req.waitMs ? new Promise<"waiting">((r) => { timer = setTimeout(() => r("waiting"), req.waitMs); }) : undefined;
         const o = await (limit ? Promise.race([run, limit]) : run);
         if (timer) clearTimeout(timer);
         if (o === "waiting") {
             // The card stays for the user, whatever becomes of the turn; the agent hears when it's over.
-            const a = this.active.get(id);
-            if (a) a.kept = true;
-            void run.then((end) => this.settled(end, wants, machine, req));
+            a.kept = true;
+            void a.run.then((end) => this.settled(end, wants, machine, req));
             const what = names(wants.map((w) => ({ name: w.recipe?.name ?? w.target })));
             return { text: `The user hasn't signed in to ${what}${machine.where ? ` on ${machine.where}` : ""} yet; the request is still in front of them. End your turn now, saying what's waiting on it. Cavvy tells you when they've signed in: don't ask again or check in the meantime.`, summary: "Still waiting", signedIn: false };
         }
         if (o.end === "later") this.putOff(o, wants, machine, req);
+        // The agent has its answer here: whoever else waited on the same sign-in hears too, and it isn't woken for it.
+        else if (o.end === "done") this.heard(req, o, false);
         const r = signInReport(o, machine.where, tool);
-        return { ...r, signedIn: o.end === "done" };
+        return { ...r, signedIn: o.end === "done" && o.results.every((x) => x.state === "in" || x.state === "unverified") };
     }
 
     /**
      * A sign-in one of Cavvy's own features needs (a push that found GitHub signed out, a turn that stopped on a
      * signed-out CLI): the card, with no tool call behind it. "signed-in": the user did, in the card. "later": they
-     * put it off, and `then` runs if they sign in after all. "cannot": there was nothing to show (it already says
-     * it's signed in, its CLI isn't installed, or Cavvy has no sign-in for it).
+     * put it off, and `then` hears how that ends: true once they've signed in after all, false if they dismiss it.
+     * "cannot": there was nothing to show (it already says it's signed in, its CLI isn't installed, or Cavvy has
+     * no sign-in for it).
      */
-    async ask(req: SignInRequest, then?: () => void): Promise<"signed-in" | "later" | "cannot"> {
+    async ask(req: SignInRequest, then?: (signedIn: boolean) => void): Promise<"signed-in" | "later" | "cannot"> {
         let machine: SignInMachine;
         try {
             machine = await this.o.machine(req.machine, req.account);
@@ -173,14 +187,16 @@ export class SessionSignIns {
             return "cannot";
         }
         const wants = this.wants(req.targets);
-        const id = this.o.newId();
-        let shown = false;
-        const o = await this.start(id, wants, machine, undefined, false, () => { shown = true; });
+        const a = this.open(req, wants, machine);
+        a.kept = true;
+        const o = await a.run;
         if (o.end === "later") {
             this.putOff(o, wants, machine, req, then ?? (() => undefined));
             return "later";
         }
-        return shown && o.end === "done" && o.results.every((r) => r.state === "in" || r.state === "unverified") ? "signed-in" : "cannot";
+        if (!a.shown || o.end !== "done" || !o.results.every((r) => r.state === "in" || r.state === "unverified")) return "cannot";
+        this.heard(req, o, a.holders <= 0);
+        return "signed-in";
     }
 
     /** The user's step in a card. Throws what the card should say when it can't be taken. */
@@ -207,39 +223,40 @@ export class SessionSignIns {
         const l = this.later.get(laterId);
         if (!l || this.disposed) return false;
         // One card for it at a time.
-        if ([...this.active.values()].some((a) => a.later === laterId)) return true;
-        const id = this.o.newId();
-        const run = this.start(id, l.wants, l.machine, undefined, true);
-        const a = this.active.get(id);
-        if (a) a.later = laterId;
-        void run.then((o) => {
-            if (o.end === "done") this.signedInLater(l, o);
+        if ([...this.active.values()].some((a) => a.later === laterId || a.key === l.key)) return true;
+        const a = this.start(l.key, l.wants, l.machine, true);
+        a.later = laterId;
+        a.kept = true;
+        void a.run.then((o) => {
+            // A call that joined this card has its answer already: the agent isn't woken as well.
+            if (o.end === "done") this.signedInLater(l, o, a.holders <= 0);
             else if (this.later.has(laterId)) this.poll(l);
         });
         return true;
     }
 
-    /** Stops looking at one that was put off (the user dismissed it). */
+    /** The user dismissed one that was put off: it's no longer looked at, and what waited on it hears that. */
     drop(laterId: string) {
         const l = this.later.get(laterId);
         if (!l) return;
-        if (l.timer) clearTimeout(l.timer);
-        this.later.delete(laterId);
-        for (const [id, a] of this.active) if (a.later === laterId) this.stop(id);
-        const watchers = this.o.watchers?.();
-        if (watchers?.has(laterId)) watchers.delete(laterId);
+        this.forget(l);
+        if (!this.disposed) for (const then of l.thens) then(false);
     }
 
     /** The session is closing: every card and everything put off goes. */
     dispose() {
         this.disposed = true;
-        for (const id of [...this.active.keys()]) this.stop(id);
+        for (const a of [...this.active.values()]) a.stop.abort();
         for (const l of this.later.values()) if (l.timer) clearTimeout(l.timer);
         this.later.clear();
     }
 
-    private stop(id: string) {
-        this.active.get(id)?.stop.abort();
+    private forget(l: Later) {
+        if (l.timer) clearTimeout(l.timer);
+        this.later.delete(l.id);
+        for (const a of this.active.values()) if (a.later === l.id) a.stop.abort();
+        const watchers = this.o.watchers?.();
+        if (watchers?.has(l.id)) watchers.delete(l.id);
     }
 
     private wants(targets: SignInRequest["targets"]): SignInWant[] {
@@ -254,13 +271,26 @@ export class SessionSignIns {
         });
     }
 
-    private start(id: string, wants: SignInWant[], machine: SignInMachine, signal: AbortSignal | undefined, asked = false, onShow?: () => void): Promise<SignInOutcome> {
+    /** The machine and account a request is for, as its key says them. */
+    private on(req: SignInRequest): string {
+        return `${req.machine?.toLowerCase() ?? ""}${req.account ? `/${req.account}` : ""}`;
+    }
+
+    private key(req: SignInRequest, wants: SignInWant[]): string {
+        return `${this.on(req)}:${wants.map((w) => w.target).sort().join(",")}`;
+    }
+
+    /** The card for a request: the one already up for the same sign-in, or a new one. */
+    private open(req: SignInRequest, wants: SignInWant[], machine: SignInMachine): Active {
+        const key = this.key(req, wants);
+        return [...this.active.values()].find((a) => a.key === key) ?? this.start(key, wants, machine);
+    }
+
+    private start(key: string, wants: SignInWant[], machine: SignInMachine, asked = false): Active {
+        const id = this.o.newId();
         const stop = new AbortController();
-        const entry: Active = { stop, kept: !signal, flow: undefined as unknown as SignInFlow };
-        // A turn that's interrupted takes its card with it, unless the card has since been left for the user.
-        const interrupted = () => { if (!entry.kept) stop.abort(); };
-        signal?.addEventListener("abort", interrupted, { once: true });
-        if (signal?.aborted || this.disposed) stop.abort();
+        const entry: Active = { stop, kept: false, key, holders: 0, shown: false, flow: undefined as unknown as SignInFlow, run: undefined as unknown as Promise<SignInOutcome> };
+        if (this.disposed) stop.abort();
         entry.flow = new SignInFlow({
             wants,
             host: machine.host,
@@ -268,16 +298,36 @@ export class SessionSignIns {
             windowForwards: this.o.windowForwards?.(),
             asked,
             show: (view) => {
-                onShow?.();
+                entry.shown = true;
                 this.o.cards.show(id, machine.name ? { ...view, machine: machine.name } : view, entry.kept);
             },
             save: this.o.save ? (w) => this.keep(w) : undefined,
         });
         this.active.set(id, entry);
-        return entry.flow.run(stop.signal).finally(() => {
-            signal?.removeEventListener("abort", interrupted);
+        entry.run = entry.flow.run(stop.signal).finally(() => {
             this.active.delete(id);
             this.o.cards.hide(id);
+        });
+        return entry;
+    }
+
+    /**
+     * A call in a turn waiting on a card. Interrupted, it stops waiting; the card goes with it unless another call
+     * waits on it too, or it has been left for the user.
+     */
+    private held(a: Active, wants: SignInWant[], signal: AbortSignal): Promise<SignInOutcome> {
+        a.holders++;
+        return new Promise((resolve) => {
+            const interrupted = () => {
+                a.holders--;
+                if (!a.kept && a.holders <= 0) return a.stop.abort();
+                resolve({ end: "stopped", results: wants.map((w) => ({ target: w.target, name: w.recipe?.name ?? w.target, state: w.recipe || w.command ? "out" : "unknown" })) });
+            };
+            signal.addEventListener("abort", interrupted, { once: true });
+            void a.run.then((o) => {
+                signal.removeEventListener("abort", interrupted);
+                resolve(o);
+            });
         });
     }
 
@@ -293,45 +343,64 @@ export class SessionSignIns {
     private settled(o: SignInOutcome, wants: SignInWant[], machine: SignInMachine, req: SignInRequest) {
         if (this.disposed || o.end === "stopped") return;
         if (o.end === "later") return this.putOff(o, wants, machine, req);
+        this.heard(req, o, false);
         this.wake(o, machine);
     }
 
-    private putOff(o: SignInOutcome, wants: SignInWant[], machine: SignInMachine, req: SignInRequest, then?: () => void) {
+    /** Put off: listed with what the session watches. `then`: a feature of Cavvy's own waits on it; without one, the agent does. */
+    private putOff(o: SignInOutcome, wants: SignInWant[], machine: SignInMachine, req: SignInRequest, then?: (signedIn: boolean) => void) {
         if (this.disposed) return;
         // Only what can be checked later: one Cavvy has no status command for would never be seen to change.
         const left = wants.filter((w) => w.recipe?.status.run && o.results.some((r) => r.target === w.target && r.state === "out"));
         if (!left.length) return;
-        const id = `sign-in:${req.machine?.toLowerCase() ?? ""}:${left.map((w) => w.target).sort().join(",")}`;
-        if (this.later.has(id)) return;
-        const l: Later = { id, wants: left, machine, request: req, until: Date.now() + (this.o.laterForMs ?? 2 * 3_600_000), then };
-        this.later.set(id, l);
-        const label = `Sign in to ${names(left.map((w) => ({ name: w.recipe!.name })))}${machine.name ? ` on ${machine.name}` : ""}`;
-        this.o.watchers?.()?.set(id, { id, kind: "sign-in", label, stop: () => this.drop(id) });
-        this.poll(l);
+        const key = this.key(req, left);
+        const id = `sign-in:${key}`;
+        let l = this.later.get(id);
+        if (!l) {
+            l = { id, key, wants: left, machine, until: Date.now() + (this.o.laterForMs ?? 2 * 3_600_000), thens: [], wake: false };
+            this.later.set(id, l);
+            const label = `Sign in to ${names(left.map((w) => ({ name: w.recipe!.name })))}${machine.name ? ` on ${machine.name}` : ""}`;
+            this.o.watchers?.()?.set(id, { id, kind: "sign-in", label, stop: () => this.drop(id) });
+            this.poll(l);
+        }
+        // One row, however many wait on it: each of them hears.
+        if (then) l.thens.push(then);
+        else l.wake = true;
     }
 
-    /** Looks, now and then, whether one that was put off has been signed in some other way. */
+    /**
+     * Looks, now and then, whether one that was put off has been signed in some other way: for as long as it's
+     * listed, less often once it has been a while.
+     */
     private poll(l: Later) {
         if (l.timer) clearTimeout(l.timer);
-        if (this.disposed || !this.later.has(l.id) || Date.now() > l.until) return;
+        if (this.disposed || !this.later.has(l.id)) return;
+        const every = Date.now() > l.until ? (this.o.laterSlowPollMs ?? 10 * 60_000) : (this.o.laterPollMs ?? (l.machine.name || l.machine.host.away ? 120_000 : 60_000));
         l.timer = setTimeout(async () => {
             l.timer = undefined;
             // Not while its card is up: that looks for itself.
             if ([...this.active.values()].some((a) => a.later === l.id)) return;
             const now = await Promise.all(l.wants.map(async (w) => ({ target: w.target, name: w.recipe!.name, ...(await signInStatus(l.machine.host, w.recipe!)) })));
             if (this.disposed || !this.later.has(l.id)) return;
-            if (now.every((r) => r.state === "in")) this.signedInLater(l, { end: "done", results: now });
+            if (now.every((r) => r.state === "in")) this.signedInLater(l, { end: "done", results: now }, true);
             else this.poll(l);
-        }, this.o.laterPollMs ?? (l.machine.name || l.machine.host.away ? 120_000 : 60_000));
+        }, every);
         (l.timer as { unref?: () => void }).unref?.();
     }
 
-    private signedInLater(l: Later, o: SignInOutcome) {
+    /** A card ended signed in: whatever was put off for the same sign-in is over too. `wake`: the agent hasn't heard yet. */
+    private heard(req: SignInRequest, o: SignInOutcome, wake: boolean) {
+        const on = `${this.on(req)}:`;
+        for (const l of [...this.later.values()]) {
+            if (l.key.startsWith(on) && l.wants.every((w) => o.results.some((r) => r.target === w.target && r.state === "in"))) this.signedInLater(l, { end: "done", results: o.results.filter((r) => l.wants.some((w) => w.target === r.target)) }, wake);
+        }
+    }
+
+    private signedInLater(l: Later, o: SignInOutcome, wake: boolean) {
         if (!this.later.has(l.id)) return;
-        const then = l.then;
-        this.drop(l.id);
-        if (then) then();
-        else this.wake(o, l.machine);
+        this.forget(l);
+        for (const then of l.thens) then(true);
+        if (l.wake && wake) this.wake(o, l.machine);
     }
 
     private wake(o: SignInOutcome, machine: SignInMachine) {

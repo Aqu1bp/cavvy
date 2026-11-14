@@ -407,7 +407,7 @@ describe("the watch", () => {
             let signedIn = false;
             const wakes = new WakeQueue({ coalesceMs: 60_000 });
             const ended: string[] = [];
-            const asked: (() => void)[] = [];
+            const asked: ((signedIn: boolean) => void)[] = [];
             const { gh, calls } = fakeGh(() => (signedIn ? { out: graphql() } : { err: "HTTP 401: Bad credentials", code: 1 }));
             const w = new PrWatch({ repo: "acme/app", number: 12, gh, wakes, snapshot: parseSnapshot("acme/app", graphql()), onEnd: (r) => ended.push(r), signIn: async (resume) => {
                 asked.push(resume);
@@ -430,7 +430,7 @@ describe("the watch", () => {
             expect(x.calls).toHaveLength(1);
             // Signed in later: it reads again, and carries on as before.
             x.signIn();
-            x.asked[0]!();
+            x.asked[0]!(true);
             // The watch never polls sooner than a second after it's told to.
             await Bun.sleep(1150);
             expect(x.calls.length).toBeGreaterThan(1);
@@ -463,13 +463,32 @@ describe("the watch", () => {
             x.wakes.dispose();
         });
 
+        test("put off, then dismissed: it ends as with nobody to ask, and the agent hears why", async () => {
+            const x = asking("later");
+            await x.w.poll();
+            await settle();
+            expect(x.ended).toEqual([]);
+            x.asked[0]!(false);
+            await settle();
+            expect(x.ended).toHaveLength(1);
+            expect(x.w.active).toBe(false);
+            const [wake] = x.wakes.pending();
+            expect(wake!.label).toBe("PR #12: stopped watching");
+            expect(wake!.text).toContain("GitHub isn't signed in");
+            // Hearing twice changes nothing.
+            x.asked[0]!(true);
+            await settle();
+            expect(x.calls).toHaveLength(1);
+            x.wakes.dispose();
+        });
+
         test("stopped while it waits: a late sign-in starts nothing", async () => {
             const x = asking("later");
             await x.w.poll();
             await settle();
             x.w.stop();
             x.signIn();
-            x.asked[0]!();
+            x.asked[0]!(true);
             await settle();
             expect(x.calls).toHaveLength(1);
             x.wakes.dispose();

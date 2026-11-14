@@ -154,7 +154,7 @@ export interface UiBridge {
      * The same card for something that runs outside a turn (a pull request's watch that found GitHub signed out):
      * "later" when the user put it off, and `then` runs if they sign in after all.
      */
-    askSignIn?(req: SignInRequest, then?: () => void): Promise<"signed-in" | "later" | "cannot">;
+    askSignIn?(req: SignInRequest, then?: (signedIn: boolean) => void): Promise<"signed-in" | "later" | "cannot">;
 }
 
 export interface ToolContext {

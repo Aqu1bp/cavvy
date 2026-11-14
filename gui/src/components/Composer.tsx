@@ -21,6 +21,7 @@ import { ReviewCommentChips } from "./ReviewCommentChips";
 import { splitComments, takesComments, withComments } from "../lib/review-comments";
 import { fitComposerBar } from "../lib/composer-fit";
 import { plural } from "../lib/format";
+import { signInPressed } from "../lib/card-keys";
 import { aroundOf, newCommentId, reviewComments } from "../state/review-comments";
 import { blockedBy, fromWire, isLongPaste, pastedText, readAttachment } from "../lib/attachments";
 import { createLifetimeGuard } from "../lib/lifetime";
@@ -833,7 +834,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                                     <div class="goal-row">
                                         {/* A session on a server doesn't know what this machine calls it: the window does. */}
                                         <span class="goal-text truncate">{machine && !w.label.includes(" on ") ? `${w.label} on ${machine}` : w.label}</span>
-                                        <button class="pbtn sm" onClick={() => void rpc.call("session.signIn", { id: p.sessionId!, watchId: w.id }).catch(reportError)}>
+                                        <button class="pbtn sm" onClick={() => { signInPressed.at = Date.now(); void rpc.call("session.signIn", { id: p.sessionId!, watchId: w.id }).catch(reportError); }}>
                                             Sign in
                                         </button>
                                         <button class="hb sm" title="Dismiss" aria-label={`Dismiss: ${w.label}`} onClick={() => void rpc.call("session.stopWatch", { id: p.sessionId!, watchId: w.id }).catch(reportError)}>

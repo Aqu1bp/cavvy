@@ -55,6 +55,14 @@ describe("a sign-in's card, for each kind", () => {
         expect(x.views).toEqual([]);
     });
 
+    test("already signed in: what makes the sign-in usable still runs (git may not have been told to use it)", async () => {
+        acme.signIn("me@example.com");
+        const x = flow(acmeRecipe("device", { then: "acme setup" }));
+        expect((await x.done).end).toBe("done");
+        expect(x.views).toEqual([]);
+        expect(acme.ranSetup()).toBe(true);
+    });
+
     test("a device code: the question, then the code and where to enter it, then done by itself", async () => {
         const x = flow(acmeRecipe("device", { then: "acme setup" }));
         expect(await x.until((v) => v.step === "ask", "the question")).toEqual({ step: "ask", target: "acme", name: "Acme" });
@@ -253,6 +261,34 @@ describe("what the user does instead of finishing", () => {
     });
 });
 
+describe("how often a card looks whether it's signed in", () => {
+    test("often while the user is at it, far less once it's left sitting, and often again when they come back", async () => {
+        const real = localSignInHost({ away: false });
+        let checks = 0;
+        let shown = false;
+        const host: typeof real = { ...real, run: (r, w, o) => { checks++; return real.run(r, w, o); } };
+        const f = new SignInFlow({ wants: [{ target: "acme", recipe: acmeRecipe("device") as SignInRecipe }], host, show: () => void (shown = true), pollMs: 25, quickForMs: 250, idlePollMs: 60_000 });
+        const stop = new AbortController();
+        const done = f.run(stop.signal);
+        const end = Date.now() + 8000;
+        while (!shown && Date.now() < end) await Bun.sleep(10);
+        // Past the time it counts as "at it", with room for a look that was under way.
+        await Bun.sleep(900);
+        const sitting = checks;
+        // The first look, and several while the card was new.
+        expect(sitting).toBeGreaterThan(2);
+        await Bun.sleep(500);
+        expect(checks).toBe(sitting);
+        // Anything the user does in the card. (The idle look is still a minute off: the next press's own run looks.)
+        f.act({ action: "start" });
+        const more = Date.now() + 8000;
+        while (checks === sitting && Date.now() < more) await Bun.sleep(20);
+        expect(checks).toBeGreaterThan(sitting);
+        stop.abort();
+        await done;
+    });
+});
+
 describe("on a server, where the person's browser is elsewhere", () => {
     test("the recipe's other command is used, and its warning shown", async () => {
         const recipe = acmeRecipe("browser", { away: { flow: "device", run: "acme login --device" }, warning: "Agents there can push as you" });
@@ -375,6 +411,19 @@ describe("several at once (a new server's sign-ins)", () => {
         expect(o.end).toBe("done");
         expect(x.views).toEqual([]);
     });
+
+    test("one signed in some other way while the list is up is wrapped up like one signed in through the card", async () => {
+        const never = acmeRecipe("device", { id: "acme-token", name: "Acme tokens", status: { run: "acme status", signedIn: "never-matches" } }) as SignInRecipe;
+        const x = flow(undefined, { wants: [{ target: "acme", recipe: acmeRecipe("device", { then: "acme setup" }) as SignInRecipe }, { target: "acme-token", recipe: never }] });
+        await x.until((v) => v.step === "list", "the list");
+        expect(acme.ranSetup()).toBe(false);
+        acme.signIn("elsewhere@example.com");
+        const after = await x.until((v) => v.step === "list" && v.rows?.[0]?.state === "in", "the list, one done");
+        expect(after.rows![0]).toMatchObject({ target: "acme", who: "elsewhere@example.com" });
+        expect(acme.ranSetup()).toBe(true);
+        x.abort.abort();
+        await x.done;
+    });
 });
 
 describe("the pieces", () => {
@@ -412,10 +461,29 @@ describe("the pieces", () => {
     });
 
     test("a command's output that says it's signed out names the recipe", () => {
-        expect(signedOutIn("You are not logged into any GitHub hosts. To log in, run: gh auth login", SIGN_IN_RECIPES)?.id).toBe("gh");
-        expect(signedOutIn("fatal: could not read Username for 'https://github.com': terminal prompts disabled", SIGN_IN_RECIPES)?.id).toBe("gh");
-        expect(signedOutIn("aws: [ERROR]: An error occurred (NoCredentials): Unable to locate credentials.", SIGN_IN_RECIPES)?.id).toBe("aws");
-        expect(signedOutIn("ERROR: (gcloud.auth.print-access-token) You do not currently have an active account selected.", SIGN_IN_RECIPES)?.id).toBe("gcloud");
-        expect(signedOutIn("everything is fine", SIGN_IN_RECIPES)).toBeUndefined();
+        expect(signedOutIn("You are not logged into any GitHub hosts. To log in, run: gh auth login", SIGN_IN_RECIPES, "gh pr view 12")?.id).toBe("gh");
+        expect(signedOutIn("To get started with GitHub CLI, please run:  gh auth login", SIGN_IN_RECIPES, "cd repo && /opt/homebrew/bin/gh pr list")?.id).toBe("gh");
+        expect(signedOutIn("fatal: could not read Username for 'https://github.com': terminal prompts disabled", SIGN_IN_RECIPES, "git push -u origin work")?.id).toBe("gh");
+        expect(signedOutIn("aws: [ERROR]: An error occurred (NoCredentials): Unable to locate credentials.", SIGN_IN_RECIPES, "aws s3 ls")?.id).toBe("aws");
+        expect(signedOutIn("An error occurred (ExpiredToken) when calling the GetCallerIdentity operation", SIGN_IN_RECIPES, "aws sts get-caller-identity")?.id).toBe("aws");
+        expect(signedOutIn("ERROR: (gcloud.auth.print-access-token) You do not currently have an active account selected.", SIGN_IN_RECIPES, "gcloud auth print-access-token")?.id).toBe("gcloud");
+        expect(signedOutIn("everything is fine", SIGN_IN_RECIPES, "gh pr view")).toBeUndefined();
+    });
+
+    test("text that only mentions a login command says nothing: the failed command has to be that CLI's own", () => {
+        // A failing test whose output quotes the advice (this repository's own tests do).
+        const quoted = 'error: expect(received).toBe(expected)\nExpected: "Run gh auth login in a terminal."\nYou are not logged into any GitHub hosts. To log in, run: gh auth login';
+        expect(signedOutIn(quoted, SIGN_IN_RECIPES, "bun test ./test/git-publish.test.ts")).toBeUndefined();
+        expect(signedOutIn("Unable to locate credentials", SIGN_IN_RECIPES, "cat docs/aws.md")).toBeUndefined();
+        expect(signedOutIn("see gcloud auth login", SIGN_IN_RECIPES, "grep -r login docs")).toBeUndefined();
+        // A file named after the CLI isn't the CLI.
+        expect(signedOutIn(quoted, SIGN_IN_RECIPES, "cat notes/gh-setup.md")).toBeUndefined();
+        // The CLI's own command, mentioning the login command in passing (a README it printed), isn't its sign-out message.
+        expect(signedOutIn("docs: gh auth login signs you in", SIGN_IN_RECIPES, "gh repo view --web")).toBeUndefined();
+        // The user's own: its id is its program unless it says otherwise.
+        const mine = signInRecipes([{ ...acmeRecipe("device"), commands: ["acme", "acmectl"] }]);
+        expect(signedOutIn("Not logged in. Run: acme login", mine, "acmectl deploy")?.id).toBe("acme");
+        expect(signedOutIn("Not logged in. Run: acme login", mine, "make deploy")).toBeUndefined();
+        expect(recipeError({ ...acmeRecipe("device"), commands: ["acme; rm"] })).toContain("commands must be program names");
     });
 });

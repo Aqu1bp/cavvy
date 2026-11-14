@@ -1,6 +1,9 @@
 // Whose a key is while a card waits for an answer (components/InteractionDock.tsx): its number keys and Esc work
 // while nothing is typed elsewhere.
 
+/** When the user last pressed Sign in here (in a card, or on one put off): a window only brings a port over for a sign-in started in it. */
+export const signInPressed = { at: 0 };
+
 type Focused = Pick<HTMLElement, "tagName" | "isContentEditable" | "closest"> & { value?: string };
 
 /**

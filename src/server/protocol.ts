@@ -2020,8 +2020,8 @@ export interface Methods {
     "servers.remove": { params: { name: string }; result: null };
     /** Undoes a `servers.remove` made since this Cavvy started. */
     "servers.restore": { params: { name: string }; result: null };
-    /** Brings a server's port to this machine under the same number, for a sign-in whose page calls it; until `servers.unforward` or the window goes. */
-    "servers.forward": { params: { name: string; port: number }; result: null };
+    /** Brings a server's port to this machine under the same number, for a sign-in whose page calls it (`target`: the sign-in, which this machine must know with that port); until `servers.unforward` or the window goes. */
+    "servers.forward": { params: { name: string; port: number; target: string }; result: null };
     "servers.unforward": { params: { name: string; port: number }; result: null };
     "terminal.open": { params: { id: string; cwd: string; cols: number; rows: number; login?: { provider: string; accountId: string }; /** A sign-in card's command, typed into the new shell for the user to run. */ signIn?: { session: string; interaction: string } }; result: { id: string; cwd: string } };
     "terminal.write": { params: { id: string; data: string }; result: null };

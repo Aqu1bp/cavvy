@@ -9,7 +9,7 @@
 // (it has to: that's how the server gets it), in a file the provider's CLI is
 // given; it's deleted once the server is added.
 
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { cavvyHome } from "../config/paths";
@@ -125,8 +125,41 @@ export function madeKey(name: string): { identityFile: string; hostPublicKey: st
     return { identityFile: keyFile(name), hostPublicKey: readFileSync(`${hostKeyFile(name)}.pub`, "utf-8").trim() };
 }
 
+/** How long after its key was made a server counts as just created (still starting, the user's Create still standing). */
+const FRESH_MS = 6 * 3_600_000;
+
+/**
+ * Whether the key made for `name` is for a machine being created now: its start-up script hasn't done its part
+ * yet (the note of it goes when the server is added), and it was made lately. A key left from long ago, or one
+ * kept for a server that was forgotten, is no sign of that.
+ */
+export function freshKey(name: string): boolean {
+    if (!madeKey(name)) return false;
+    try {
+        return Date.now() - statSync(scriptNote(name)).mtimeMs < FRESH_MS;
+    } catch {
+        return false;
+    }
+}
+
 /** `host` as known_hosts names it (with its port, when that isn't 22). */
 const knownName = (host: string, port?: number) => (port && port !== 22 ? `[${host}]:${port}` : host);
+
+/** What Cavvy's own list holds for that address. */
+export function knownHostLines(host: string, port?: number): string[] {
+    const file = ownKnownHosts();
+    const named = knownName(host, port);
+    return (existsSync(file) ? readFileSync(file, "utf-8") : "").split("\n").filter((l) => l.trim() && l.split(/\s+/)[0] === named);
+}
+
+/** Puts back what the list held for that address (nothing, if it held nothing), in place of what it holds now. */
+export function setKnownHostLines(host: string, port: number | undefined, lines: string[]) {
+    const file = ownKnownHosts();
+    if (!existsSync(file)) return;
+    const named = knownName(host, port);
+    const kept = readFileSync(file, "utf-8").split("\n").filter((l) => l.trim() && l.split(/\s+/)[0] !== named);
+    writeFileSync(file, [...kept, ...lines].length ? [...kept, ...lines].join("\n") + "\n" : "", { mode: 0o600 });
+}
 
 /**
  * Records the host key made for `name` as the one `host` must show, in Cavvy's own list (the only one its

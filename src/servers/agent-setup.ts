@@ -7,10 +7,10 @@
 import { homedir } from "os";
 import { signedOutIn, signInRecipes } from "../agent/sign-in-recipes";
 import type { Settings } from "../config/settings";
-import type { ServerSetup } from "../tools/server-tools";
+import { teardownCommandError, type ServerSetup } from "../tools/server-tools";
 import { childEnv } from "../util/env";
 import { redact } from "../util/redact";
-import { expectHostKey, forgetScript, forgetServerKey, madeKey, makeServerKey, serverKeysDir } from "./keys";
+import { expectHostKey, forgetScript, forgetServerKey, freshKey, knownHostLines, madeKey, makeServerKey, serverKeysDir, setKnownHostLines } from "./keys";
 import type { ServerLinks } from "./manager";
 import { hostOf, ssh, SshError } from "./ssh";
 import { getServer, listServers, saveServer, ServerError, type ServerEntry } from "./store";
@@ -101,28 +101,41 @@ export function serverSetup(o: { links(): Promise<ServerLinks>; settings(): Sett
             if (getServer(name)) throw new ServerError(`There's already a server named ${name}.`);
             return { userDataFile: (await makeServerKey(name)).userDataFile };
         },
-        hasKey: async (name) => Boolean(madeKey(name)) && !getServer(name),
+        hasKey: async (name) => freshKey(name) && !getServer(name),
         async add(spec, { signal, progress, trust }) {
             const links = await o.links();
             const key = getServer(spec.name) ? undefined : madeKey(spec.name);
+            // Just created: it's still starting. (A key from before, for one forgotten and now put back, signs in at once.)
+            const fresh = Boolean(key) && freshKey(spec.name);
             let draft: { name: string; destination: string; port?: number; identityFile?: string; knownHostsFile?: string; cloud?: ServerEntry["cloud"] } = { name: spec.name, destination: spec.address, port: spec.port, cloud: spec.cloud };
-            if (key) {
-                // The identity made for it is the only one this address may show: no question to ask.
-                const host = spec.address.slice(spec.address.lastIndexOf("@") + 1);
-                draft = { ...draft, identityFile: key.identityFile, knownHostsFile: expectHostKey(spec.name, host, spec.port) };
-                await ready({ ...draft, addedAt: "" } as ServerEntry, signal, progress);
+            const host = spec.address.slice(spec.address.lastIndexOf("@") + 1);
+            // What Cavvy's list said that address shows, to put back if this doesn't work out.
+            const had = key ? knownHostLines(host, spec.port) : [];
+            let r: Awaited<ReturnType<ServerLinks["add"]>>;
+            try {
+                if (key) {
+                    // The address is the agent's word: one that's another server's would have that server refused as changed.
+                    const taken = listServers().find((s) => s.name !== spec.name && hostOf(s) === host && (s.port ?? 22) === (spec.port ?? 22));
+                    if (taken) throw new ServerError(`${host} is the address of ${taken.name}, one of the user's servers already.`);
+                    // The identity made for it is the only one this address may show: no question to ask.
+                    draft = { ...draft, identityFile: key.identityFile, knownHostsFile: expectHostKey(spec.name, host, spec.port) };
+                    if (fresh) await ready({ ...draft, addedAt: "" } as ServerEntry, signal, progress);
+                }
+                r = await links.add(draft, undefined, progress);
+                if (r.status === "unknown-host") {
+                    if (!(await trust(r.unknown.host, r.unknown.fingerprints))) throw new ServerError(`The user didn't trust ${r.unknown.host}'s key.`);
+                    r = await links.add(draft, links.trust(spec.name, r.unknown.fingerprints), progress);
+                }
+                if (r.status === "unknown-host") throw new ServerError(`${r.unknown.host} showed another key than the one the user trusted.`);
+                if (r.status === "failed") throw new ServerError([r.problem.message, r.problem.detail, r.problem.fix].filter(Boolean).join(" "));
+            } catch (e) {
+                if (draft.knownHostsFile) setKnownHostLines(host, spec.port, had);
+                throw e;
             }
-            let r = await links.add(draft, undefined, progress);
-            if (r.status === "unknown-host") {
-                if (!(await trust(r.unknown.host, r.unknown.fingerprints))) throw new ServerError(`The user didn't trust ${r.unknown.host}'s key.`);
-                r = await links.add(draft, links.trust(spec.name, r.unknown.fingerprints), progress);
-            }
-            if (r.status === "unknown-host") throw new ServerError(`${r.unknown.host} showed another key than the one the user trusted.`);
-            if (r.status === "failed") throw new ServerError([r.problem.message, r.problem.detail, r.problem.fix].filter(Boolean).join(" "));
             // The start-up script did its part: it holds a private key, so it goes.
             forgetScript(spec.name);
             const entry = getServer(spec.name)!;
-            if (key) await settled(entry, signal, progress);
+            if (fresh) await settled(entry, signal, progress);
             const lacks: string[] = [];
             try {
                 const c = await links.check(spec.name);
@@ -143,23 +156,30 @@ export function serverSetup(o: { links(): Promise<ServerLinks>; settings(): Sett
             if (!entry) throw new ServerError(`No server is called ${name}.`);
             const recipes = signInRecipes(o.settings().signIns);
             const left = [...(entry.cloud?.teardown ?? [])];
+            // As when they were recorded: what's run is still only what may be.
+            for (const argv of left) {
+                const no = teardownCommandError(argv, o.settings().signIns);
+                if (no) throw new ServerError(`${no} Nothing was deleted.`);
+            }
             while (left.length) {
                 const argv = left[0]!;
                 progress(argv.join(" "));
                 let r = await runTeardown(argv, signal);
                 if (r.missing) throw new ServerError(`\`${argv[0]}\` isn't installed on this machine, so \`${argv.join(" ")}\` didn't run. Nothing was deleted by it.`);
                 // Its CLI is signed out: the user is asked, and the same command goes again.
-                const out = r.code !== 0 && !signal.aborted ? signedOutIn(r.out, recipes) : undefined;
+                const out = r.code !== 0 && !signal.aborted ? signedOutIn(r.out, recipes, argv[0]!) : undefined;
                 if (out) {
                     if (!(await signIn(out.id))) throw new ServerError(`${out.name} isn't signed in on this machine, so \`${argv.join(" ")}\` didn't run. Call ServerRemove again once it is.`);
                     r = await runTeardown(argv, signal);
                 }
+                if (r.code === 0) {
+                    // Done for good, whatever happens next (an interruption too): a later try starts after it, not at a resource that's no longer there.
+                    left.shift();
+                    const { teardown: _, ...rest } = entry.cloud!;
+                    saveServer({ ...entry, cloud: left.length ? { ...rest, teardown: left } : rest });
+                }
                 if (signal.aborted) throw new ServerError("Stopped part way: check what's left with the provider's CLI.");
-                if (r.code !== 0) throw new ServerError(`\`${argv.join(" ")}\` failed:\n${tail(r.out) || `exit ${r.code}`}`);
-                // Done for good: a later try starts after it, not at a resource that's no longer there.
-                left.shift();
-                const { teardown: _, ...rest } = entry.cloud!;
-                saveServer({ ...entry, cloud: left.length ? { ...rest, teardown: left } : rest });
+                if (r.code !== 0) throw new ServerError(`\`${argv.join(" ")}\` failed:\n${tail(r.out) || `exit ${r.code}`}\nIf what it deletes is already gone, tell the user: they can forget ${name} in Servers, which deletes nothing.`);
             }
             await (await o.links()).remove(name);
             // The machine is gone, so its keys are of no use. (One that's only forgotten keeps them: it can be put back.)

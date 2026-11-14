@@ -7,7 +7,7 @@
 // ~/.ssh or the provider's credentials.
 
 import type { ServerTool, ServerToolResult } from "../mcp/server";
-import { signInRecipes } from "../agent/sign-in-recipes";
+import { SIGN_IN_RECIPES, signInRecipes } from "../agent/sign-in-recipes";
 import type { Tool, ToolContext, ToolResult } from "./types";
 
 /** A rented machine's details: as src/servers/store.ts keeps them. */
@@ -24,7 +24,7 @@ export interface ServerSetup {
     names(): Promise<string[]>;
     /** Makes the key Cavvy signs in with and the server's own identity, and the start-up script that installs both. */
     makeKey(name: string): Promise<{ userDataFile: string }>;
-    /** Whether a key was made for a server of that name (ServerKey, approved). */
+    /** Whether a key was made just now for a server of that name (ServerKey, approved), which isn't added yet. */
     hasKey(name: string): Promise<boolean>;
     /**
      * Connects, puts Cavvy there and starts it. With a key made for it, it waits for the new machine to come up and
@@ -42,7 +42,7 @@ const LINE = /^[^\0-\x1f\x7f]{1,80}$/;
 const ADDRESS = /^[A-Za-z0-9_][A-Za-z0-9_.@:%+[\]-]{0,252}$/;
 const WORD = /^[A-Za-z0-9_@%+=:,./-]{1,200}$/;
 
-/** The CLIs a teardown command may be: the providers' own. One of the user's sign-ins (settings) counts too. */
+/** The CLIs a teardown command may be: the providers' own. One the user wrote a sign-in for (settings, with its status command) counts too. */
 export const PROVIDER_CLIS = ["aws", "gcloud", "az", "doctl", "hcloud", "linode-cli", "vultr-cli", "scw", "oci", "fly", "flyctl", "upctl", "exo", "ibmcloud", "civo", "yc", "ovhcloud"];
 
 /**
@@ -55,15 +55,32 @@ const SIGN_IN_WAIT_MS = 20 * 60_000;
 const fail = (content: string): ToolResult => ({ content, isError: true });
 const line = (v: unknown) => typeof v === "string" && LINE.test(v.trim());
 
+/** A word that has the CLI take what it does from somewhere else: the user is shown the command, and that's all it may be. */
+const ELSEWHERE = /(?:^|=)@|file:\/\/|fileb:\/\/|^--?(?:cli-input-[a-z]+|flags-file)\b/i;
+
+/**
+ * Why Cavvy won't run `words` as a teardown command, or undefined. Checked when it's recorded and again when it's
+ * run. Its program is a provider's CLI, or one the user wrote a sign-in for in their settings: never one of
+ * Cavvy's built-in sign-ins (GitHub's CLI and the agent CLIs aren't what deletes a server).
+ */
+export function teardownCommandError(words: string[], mine: unknown): string | undefined {
+    const text = words.join(" ");
+    if (!words.length || words.length > 40 || !words.every((w) => WORD.test(w))) return `"${text.slice(0, 60)}" can't be a teardown command: plain words only, no quotes, pipes, variables or several commands.`;
+    const built = new Set(SIGN_IN_RECIPES.map((r) => r.id));
+    const own = signInRecipes(mine).filter((r) => !built.has(r.id) && r.status.run).map((r) => r.id);
+    if (![...PROVIDER_CLIS, ...own].includes(words[0]!)) return `A teardown command starts with the provider's own CLI (${PROVIDER_CLIS.slice(0, 6).join(", ")}, …), not "${words[0]}".`;
+    const bad = words.slice(1).find((w) => ELSEWHERE.test(w));
+    if (bad) return `"${bad.slice(0, 40)}" can't be in a teardown command: name what's deleted in the command itself, not in a file or another place it's read from.`;
+    return undefined;
+}
+
 function teardownError(list: unknown, ctx: { settings: ToolContext["settings"] }): string | undefined {
     if (list === undefined) return undefined;
     if (!Array.isArray(list) || !list.length || list.length > 8) return "teardown must list the provider CLI's commands that delete the server and what was made with it (1 to 8).";
-    const programs = new Set([...PROVIDER_CLIS, ...signInRecipes(ctx.settings.signIns).map((r) => r.id)]);
     for (const c of list) {
         if (typeof c !== "string" || !c.trim()) return "Each teardown command is text.";
-        const words = c.trim().split(/\s+/);
-        if (words.length > 40 || !words.every((w) => WORD.test(w))) return `"${c.slice(0, 60)}" can't be a teardown command: plain words only, no quotes, pipes, variables or several commands.`;
-        if (!programs.has(words[0]!)) return `A teardown command starts with the provider's own CLI (${PROVIDER_CLIS.slice(0, 6).join(", ")}, …), not "${words[0]}".`;
+        const no = teardownCommandError(c.trim().split(/\s+/), ctx.settings.signIns);
+        if (no) return no;
     }
     return undefined;
 }
@@ -218,7 +235,8 @@ export const ServerAddTool: Tool<AddInput> = {
                 },
             );
         } catch (e) {
-            if (ctx.signal.aborted) return fail(`Interrupted while adding ${i.name}. It wasn't added.`);
+            // Said either way: an interrupted agent that never mentions it leaves the user paying for a machine they can't see.
+            if (ctx.signal.aborted) return fail(`Interrupted while adding ${i.name}. It wasn't added.${made ? "\nThe machine you created is still there and still costs money: tell the user, and call ServerAdd again to finish or delete it with the provider's CLI." : ""}`);
             return fail(`${i.name} wasn't added: ${e instanceof Error ? e.message : String(e)}${made ? "\nThe machine you created is still there and still costs money: fix what's wrong and call ServerAdd again, or delete it with the provider's CLI and tell the user." : ""}`);
         }
         const out = [`${i.name} is one of the user's servers now${cloud?.cost ? ` (${cloud.cost})` : ""}. Sessions there run without asking (Bypass).${added.note ? ` ${added.note}` : ""}`];

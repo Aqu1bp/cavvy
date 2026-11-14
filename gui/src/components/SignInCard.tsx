@@ -9,6 +9,7 @@ import type { ConfirmInteraction, SignInAction, SignInInteraction } from "@share
 import { respond } from "../state/actions";
 import { machine as windowMachine, openExternal } from "../lib/platform";
 import { home } from "../lib/machines";
+import { signInPressed } from "../lib/card-keys";
 import { terminalActions } from "../state/ui";
 import { Head, mayFocus, useKeys } from "./InteractionDock";
 import { CopyButton, Spinner } from "./ui/bits";
@@ -37,6 +38,7 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
     const it = () => p.it;
     const [sending, setSending] = createSignal(false);
     const send = async (a: SignInAction) => {
+        if (a.action === "start" || a.action === "retry" || a.action === "pick") signInPressed.at = Date.now();
         setSending(true);
         try {
             return await respond(p.sessionId, p.it.id, { kind: "signin", ...a });
@@ -70,12 +72,14 @@ export default function SignInCard(p: { sessionId: string; it: SignInInteraction
     };
     // Its page calls back on the server: this window, on the user's own machine, brings that port over for as long as the card asks.
     createEffect(on(() => it().forward, (port) => {
-        if (!port) return;
+        const target = it().target;
+        // Only for a sign-in the user started in this window just now: a card can't have this machine listen by itself.
+        if (!port || !target || Date.now() - signInPressed.at > 60_000) return;
         if (!windowMachine || !home) return void send({ action: "port", error: "Open this session in the desktop app to finish signing in." });
         const far = home;
         const name = windowMachine;
         let asking = true;
-        far.call("servers.forward", { name, port }).then(() => asking && send({ action: "port" }), (e: Error) => asking && send({ action: "port", error: e.message }));
+        far.call("servers.forward", { name, port, target }).then(() => asking && send({ action: "port" }), (e: Error) => asking && send({ action: "port", error: e.message }));
         onCleanup(() => {
             asking = false;
             void far.call("servers.unforward", { name, port }).catch(() => undefined);

@@ -316,6 +316,36 @@ describe("a sign-in in a GUI session", () => {
         c.close();
     });
 
+    test("a card left up for the user doesn't hold the session's scheduled prompts back", async () => {
+        const c = await client();
+        const id = await c.open({ cwd: project() });
+        await c.call("session.send", { id, text: "schedule the tests" });
+        await c.until(id, (v) => done(v) && v.state.schedules.length === 1, "the schedule");
+        const asked = c.call<string>("session.askSignIn", { id, target: "acme" });
+        const ask = await c.card(id, "ask");
+        // Due now, with the card still up: it runs beside it, as a wake does.
+        await c.call("session.schedule", { id, scheduleId: c.view(id).state.schedules[0]!.id, action: "run" });
+        await c.until(id, (v) => v.turns.length === 2 && done(v), "the scheduled turn");
+        expect(c.view(id).state.interactions.map((i) => i.id)).toEqual([ask.id]);
+        await step(c, id, ask.id, { action: "later" });
+        expect(await asked).toBe("later");
+        c.close();
+    });
+
+    test("this machine brings a port over only for a sign-in of its own that names it: a card can't have it listen anywhere", async () => {
+        const { saveServer, removeServer } = await import("../src/servers/store");
+        saveServer({ name: "far", destination: "dev@far.example", addedAt: new Date().toISOString() });
+        const c = await client();
+        try {
+            // No sign-in here calls a port: GitHub's doesn't, nor the user's own device-code one.
+            for (const target of ["gh", "acme", "nope"]) await expect(c.call("servers.forward", { name: "far", port: 8085, target })).rejects.toThrow("This machine has no sign-in that uses that port.");
+            await expect(c.call("servers.forward", { name: "far", port: 8085 })).rejects.toThrow();
+        } finally {
+            removeServer("far");
+            c.close();
+        }
+    });
+
     test("a sign-in Cavvy doesn't know: the command is typed into a terminal for the user, not run, and Done is their word", async () => {
         const c = await client();
         const cwd = project();

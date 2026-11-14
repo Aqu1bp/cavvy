@@ -1992,9 +1992,9 @@ export class App {
     /** The turn stopped on something signed out: its prompt, and once it's signed in the agent carries on (as the GUI does). */
     private offerSignIn(out: { target: string; account: string; advice: string }) {
         const name = findRecipe(out.target, signInRecipes(this.settings.signIns))?.name ?? out.target;
-        const carryOn = () => this.toolState.wakes?.push({ source: "sign-in", label: `Signed in to ${name}`, text: `The user has now signed in to ${name}. Your last turn stopped because it wasn't signed in: carry on with what they asked.` });
+        const carryOn = (signedIn: boolean) => signedIn && this.toolState.wakes?.push({ source: "sign-in", label: `Signed in to ${name}`, text: `The user has now signed in to ${name}. Your last turn stopped because it wasn't signed in: carry on with what they asked.` });
         void this.signIns.ask({ targets: [{ target: out.target }], account: out.account }, carryOn).then((r) => {
-            if (r === "signed-in") carryOn();
+            if (r === "signed-in") carryOn(true);
             else if (r === "cannot") this.notice(out.advice, "warn");
         });
     }
