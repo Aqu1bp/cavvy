@@ -4,10 +4,11 @@
 // saves it to ~/.cavvy/themes, shows it in this machine's windows and says how it came out.
 
 import type { ServerTool, ServerToolResult } from "../mcp/server";
+import type { ThemeReplaced } from "../server/protocol";
 import type { Tool, ToolContext, ToolResult } from "../tools/types";
 import { BUILTINS, builtin, BUILTIN_IDS } from "./builtin";
 import { checkTheme, ID, LIMITS, onlyScheme, STAGE, type Theme, type ThemeEntry } from "./format";
-import { listThemes, readThemeFile, saveTheme } from "./store";
+import { listThemes, readThemeFile, saveTheme, themeFileText, themeText } from "./store";
 
 export const THEME_TOOL_NAMES = ["ThemeList", "ThemeSet"];
 export const THEME_SERVER_TOOLS = ["theme_list", "theme_set"];
@@ -42,11 +43,11 @@ Keyframe = { "at": 0–1, "x": 0, "y": 0, "rotate": 0, "scale": 1, "opacity": 1 
 
 Making it look good
 - The conversation runs down the middle of the window, the session list down the left (about the first 280 units) and an optional panel down the right. Keep the middle calm and low in contrast; put the interest at the edges, the corners, the top and the bottom.
-- Cavvy lays the background colour over the scene, in each part as much as the text there needs to read; theme_set says how much and sends a picture of the window with the theme on. Look at it and refine. A scene close to the background in lightness keeps that low and the art visible: a dark look with a dark scene and a few bright accents, a light look with a pale scene.
+- Cavvy lays the background colour over the scene, in each part as much as the text there needs to read; ThemeSet says how much and sends a picture of the window with the theme on. Look at it and refine. A scene close to the background in lightness keeps that low and the art visible: a dark look with a dark scene and a few bright accents, a light look with a pale scene.
 - Choose the background from the scene's own colours, and an accent that belongs to it.
 - Give it depth: two or three planes moving at different speeds (far slow, near faster).
 
-theme_set saves it under an id (lowercase letters, digits and hyphens) and shows it at once. Saving again under the same id replaces it, and the window changes as you go: show a first version early, then refine it. To start from an existing theme (built in or the user's), theme_list with its id gives its JSON, long layers left out; theme_list with id and layer ("dark.3") gives one layer's SVG. To reuse a layer without writing it out, give { "copy": "<id>:<light or dark>:<index>" } in its place, with any other layer keys to change (x, opacity, motion…): "night-rain:dark:4".`;
+ThemeSet saves it under an id (lowercase letters, digits and hyphens) and shows it at once. Saving again under the same id replaces it, and the window changes as you go: show a first version early, then refine it. To start from an existing theme (built in or the user's), ThemeList with its id gives its JSON, long layers left out; ThemeList with id and layer ("dark.3") gives one layer's SVG. To reuse a layer without writing it out, give { "copy": "<id>:<light or dark>:<index>" } in its place, with any other layer keys to change (x, opacity, motion…): "night-rain:dark:4".`;
 
 const served = (text: string) => text.replaceAll("ThemeList", "theme_list").replaceAll("ThemeSet", "theme_set");
 
@@ -176,6 +177,26 @@ function outcome(name: string | undefined, shown: Awaited<ReturnType<NonNullable
     return parts.join(" ");
 }
 
+/**
+ * What the theme tools last saved under each id, as its file's text: saving over that again (an agent refining its
+ * theme) is quiet; saving over anything else (one the user made, or changed since) offers the user Undo.
+ */
+const lastSaved = new Map<string, string>();
+
+/** The theme saved under `id` before, when saving `next` there replaces something an agent didn't just write. */
+function replacing(id: string, next: string): ThemeReplaced | undefined {
+    const before = themeFileText(id);
+    if (before === undefined || before === next || before === lastSaved.get(id)) return undefined;
+    let name = id;
+    try {
+        const n = (JSON.parse(before) as { name?: unknown }).name;
+        if (typeof n === "string" && n.trim()) name = n.trim().slice(0, 80);
+    } catch {
+        // not JSON: known by its id
+    }
+    return { name, text: before };
+}
+
 export async function themeSet(input: Record<string, unknown>, ctx: Pick<ToolContext, "ui">): Promise<{ text: string; isError?: boolean; summary?: string; picture?: string }> {
     const show = ctx.ui.showTheme?.bind(ctx.ui);
     if (!show) return { text: "Themes show in Cavvy's window on the user's own computer; this session can't set one.", isError: true };
@@ -184,10 +205,11 @@ export async function themeSet(input: Record<string, unknown>, ctx: Pick<ToolCon
         const r = await show(null);
         return { text: r.sent ? "The theme is off." : "No Cavvy window is open.", summary: "Theme off" };
     }
-    if (!ID.test(id)) return { text: 'id must be lowercase letters, digits and hyphens (like "tokyo-rain"), or "none" to turn the theme off.', isError: true };
+    if (!ID.test(id)) return { text: id.length > 48 ? "id must be at most 48 characters." : 'id must be lowercase letters, digits and hyphens (like "tokyo-rain"), or "none" to turn the theme off.', isError: true };
     let theme: Theme;
     let entry: ThemeEntry | undefined;
     let path: string | undefined;
+    let replaced: ThemeReplaced | undefined;
     if (input.theme !== undefined && input.theme !== null) {
         if (BUILTIN_IDS.has(id)) return { text: `"${id}" is a built-in theme: save yours under another id. ThemeList with id "${id}" gives its JSON to start from.`, isError: true };
         let raw = input.theme;
@@ -203,17 +225,21 @@ export async function themeSet(input: Record<string, unknown>, ctx: Pick<ToolCon
         const problems = [...copies.problems, ...checked.problems];
         if (!checked.theme || copies.problems.length) return { text: `Not saved. To fix:\n- ${problems.join("\n- ")}`, isError: true };
         theme = checked.theme;
+        const text = themeText(theme);
+        replaced = replacing(id, text);
         path = saveTheme(id, theme);
+        lastSaved.set(id, text);
         entry = { id, theme };
     } else {
         const found = await themeById(id);
         if (!found.theme) return { text: found.problems?.[0]?.startsWith("can't be read") ? `No theme "${id}": give its JSON as theme to make it. ThemeList lists the ones there are.` : `The theme file "${id}" doesn't check out:\n- ${found.problems?.join("\n- ")}`, isError: true };
         theme = found.theme;
     }
-    const r = await show(id, entry);
+    const r = await show(id, entry, replaced);
     const only = onlyScheme(theme);
     const picture = r.report?.shown ? r.report.picture : undefined;
-    const text = outcome(theme.name, r, path) + (only && r.report?.shown ? ` It has a ${only} look only, so the window is ${only} while it shows.` : "") + (picture ? "\n\nThe picture is the window with it on, mid-motion and not working, the app sketched over it with made-up text. Check the text reads, the middle stays calm and the scene looks as you meant; then refine and set it again." : "");
+    const over = replaced ? ` It replaced "${replaced.name}", which was saved under "${id}"${r.sent ? "; the window offers the user Undo" : ""}.` : "";
+    const text = outcome(theme.name, r, path) + over + (only && r.report?.shown ? ` It has a ${only} look only, so the window is ${only} while it shows.` : "") + (picture ? "\n\nThe picture is the window with it on, mid-motion and not working, the app sketched over it with made-up text. Check the text reads, the middle stays calm and the scene looks as you meant; then refine and set it again." : "");
     return { text, summary: theme.name, ...(picture ? { picture } : {}) };
 }
 

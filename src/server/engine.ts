@@ -116,6 +116,7 @@ import type {
 import { ensureKeybindingsFile, keybindingsPath, readKeybindings, watchKeybindings } from "../keybindings/file";
 import { listThemes, removeTheme, restoreTheme, watchThemes } from "../themes/store";
 import type { ThemeEntry } from "../themes/format";
+import type { ThemeReplaced } from "./protocol";
 import { listPlugins } from "../plugins/install";
 import { pluginLogo } from "../plugins/logos";
 import { runPluginCli } from "../plugins/cli";
@@ -576,7 +577,7 @@ export class Engine {
      * Shows a theme (null: none) in this machine's windows, and answers how it came out in the first to draw it:
      * undefined when there's no window, `{ sent }` alone when none answered in time.
      */
-    async showTheme(id: string | null, entry?: ThemeEntry, waitMs = 8000): Promise<{ sent: number; report?: ThemeReport }> {
+    async showTheme(id: string | null, entry?: ThemeEntry, replaced?: ThemeReplaced, waitMs = 8000): Promise<{ sent: number; report?: ThemeReport }> {
         const windows = [...this.clients].filter((c) => c.machine === undefined && c.window !== undefined);
         if (!windows.length) return { sent: 0 };
         const request = randomUUID();
@@ -591,7 +592,7 @@ export class Engine {
                 done(r);
             });
         });
-        for (const c of windows) c.send({ type: "theme.apply", id, ...(entry ? { entry } : {}), request });
+        for (const c of windows) c.send({ type: "theme.apply", id, ...(entry ? { entry } : {}), ...(replaced ? { replaced } : {}), request });
         return { sent: windows.length, report: await report };
     }
 
@@ -2658,7 +2659,7 @@ export class Engine {
             case "themes.remove":
                 return { text: removeTheme(str(p.id, "id")) };
             case "themes.restore":
-                restoreTheme(str(p.id, "id"), str(p.text, "text"));
+                restoreTheme(str(p.id, "id"), str(p.text, "text"), undefined, p.replace === true);
                 return null;
             case "themes.report": {
                 const r = p as unknown as ThemeReport;

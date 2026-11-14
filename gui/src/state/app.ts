@@ -5,7 +5,7 @@
 import { batch, createEffect, createRoot, createSignal } from "solid-js";
 import { createStore, produce, reconcile, type SetStoreFunction } from "solid-js/store";
 import { planLimitKey, type PlanLimits } from "@shared/protocol";
-import type { ThemeEntry, ThemeReport } from "@shared/protocol";
+import type { ThemeEntry, ThemeReplaced, ThemeReport } from "@shared/protocol";
 import type { AppUpdateInfo, GuiSettings, HelloResult, PermissionModeId, ProjectInfo, ProviderInfo, ProviderModels, ServerEvent, SessionOp, SessionSnapshot, SessionSummary, WireFile } from "@shared/protocol";
 import { applyOp, fromWireLimits, fromWireState, type SessionView } from "@shared/timeline";
 import { Rpc, RpcError, type ConnectionState } from "../lib/rpc";
@@ -778,8 +778,14 @@ function recheckUpdate() {
 }
 
 /** An agent showed a theme (or none): shown here, and how it came out told back to it. */
-async function themeApplied(id: string | null, entry: ThemeEntry | undefined, request: string) {
+async function themeApplied(id: string | null, entry: ThemeEntry | undefined, request: string, replaced?: ThemeReplaced) {
     const m = await import("./theme");
+    // An agent saved over one of the user's themes: the old one comes back with Undo.
+    if (id && replaced)
+        toast(`Replaced ${replaced.name}`, "info", {
+            label: "Undo",
+            run: () => void rpc.call("themes.restore", { id, text: replaced.text, replace: true }).then(() => refreshThemes()).catch(reportError),
+        });
     if (entry) m.addThemeEntry(entry);
     // One of the user's own, shown by id in a window that hasn't had the list yet: the list first, or it can't show.
     else if (id && !m.listKnown()) await refreshThemes().catch(() => undefined);
@@ -791,6 +797,18 @@ async function themeApplied(id: string | null, entry: ThemeEntry | undefined, re
     const picture = drawn && s ? await import("../lib/theme-picture").then((p) => p.themePicture(s.look, s.palette.vars, drawn.map)).catch(() => undefined) : undefined;
     const report: ThemeReport = id ? (drawn ? { request, shown: true, scheme: drawn.scheme, ...(drawn.veil !== undefined ? { veil: drawn.veil } : {}), ...(drawn.veilMost !== undefined ? { veilMost: drawn.veilMost } : {}), failed: drawn.failed, still, ...(picture ? { picture } : {}) } : { request, shown: false }) : { request, shown: true };
     await rpc.call("themes.report", report).catch(() => undefined);
+}
+
+/** Settings → Appearance, scrolled to a theme's tile: the gallery mounts a moment after the tab opens. */
+function showThemeTile(id: string) {
+    setSettingsTab("appearance");
+    let tries = 0;
+    const find = () => {
+        const tile = document.querySelector<HTMLElement>(`.tg-tile[data-id="${CSS.escape(id)}"]`);
+        if (tile) tile.scrollIntoView({ block: "center" });
+        else if (++tries < 60) requestAnimationFrame(find);
+    };
+    requestAnimationFrame(find);
 }
 
 /** The user's themes, from the server: read when a window connects, kept up to date by themes.changed. */
@@ -966,11 +984,11 @@ function onEvent(ev: ServerEvent) {
             void import("./theme").then((m) => {
                 const { problem, id } = m.setThemeEntries(ev.themes);
                 // What's wrong is on its tile in Settings → Appearance; the window keeps its last good look meanwhile.
-                if (problem && id) toast(`${m.themeName(id)} has an error`, "warn", { label: "Show", run: () => void setSettingsTab("appearance") });
+                if (problem && id) toast(`${m.themeName(id)} has an error`, "warn", { label: "Show", run: () => showThemeTile(id) });
             });
             return;
         case "theme.apply":
-            void themeApplied(ev.id, ev.entry, ev.request);
+            void themeApplied(ev.id, ev.entry, ev.request, ev.replaced);
             return;
         case "app.update":
             setApp("update", reconcile(ev.info));

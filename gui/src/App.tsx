@@ -12,6 +12,9 @@ import { FloatingBrowser } from "./components/FloatingBrowser";
 
 /** Loaded with the first theme chosen: a window with none carries none of it. */
 const ThemeBackdrop = lazy(() => import("./components/ThemeBackdrop").then((m) => ({ default: m.ThemeBackdrop })));
+/** Whether a theme has been chosen since the window started: from then on the scene stays, empty while none is. */
+let themed = false;
+const sceneWanted = () => (themed ||= Boolean(prefs.themeId));
 import { canStop } from "./lib/session-status";
 import { actionOf, setEnterSends } from "./state/keybindings";
 import { clampInspectorWidth, closesOnShrink, columnSteps, docksInPlace, heldSizes, requestCloses, tracks, COLUMN_NARROW, COLUMN_SHORT, INSPECTOR_DEFAULT, INSPECTOR_MOVES, windowLayout } from "./lib/layout";
@@ -510,8 +513,8 @@ export function App() {
             data-tmax={layout().terminal.maximized ? "on" : "off"}
             data-settings={settingsTab() ? "on" : "off"}
         >
-            {/* A theme's scene, behind everything: loaded only when a theme is chosen. */}
-            <Show when={prefs.themeId}>
+            {/* A theme's scene, behind everything: loaded only once a theme is chosen, and kept so the last one fades out when it's turned off. */}
+            <Show when={sceneWanted()}>
                 <ThemeBackdrop />
             </Show>
             <Show when={app.conn === "open" || app.hello} fallback={<Disconnected />}>

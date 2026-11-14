@@ -26,7 +26,7 @@
     color: var(--fg);
 }
 
-.tg-pick:disabled {
+.tg-pick[aria-disabled="true"] {
     cursor: default;
     opacity: 0.55;
 }
@@ -43,7 +43,7 @@
     transition: box-shadow 200ms;
 }
 
-.tg-tile:not(.on) .tg-pick:hover:not(:disabled) .tg-pv {
+.tg-tile:not(.on) .tg-pick:hover:not([aria-disabled="true"]) .tg-pv {
     box-shadow: 0 0 0 0.5px var(--fg-4);
 }
 

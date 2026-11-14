@@ -48,14 +48,31 @@ export function listThemes(dir = themesDir()): ThemeEntry[] {
         .map((id) => (BUILTIN_IDS.has(id) ? { id, problems: [`has the id of a built-in theme; rename the file`] } : readThemeFile(id, dir)));
 }
 
-/** Writes a checked theme under its id, all at once: a window watching never reads half a file. */
-export function saveTheme(id: string, theme: Theme, dir = themesDir()): string {
+/** A theme as its file holds it. */
+export const themeText = (theme: Theme) => `${JSON.stringify(theme, null, 2)}\n`;
+
+/** A theme file's text as it is, or undefined when there's none (or it can't be read). */
+export function themeFileText(id: string, dir = themesDir()): string | undefined {
+    try {
+        return readFileSync(join(dir, `${id}.json`), "utf8");
+    } catch {
+        return undefined;
+    }
+}
+
+/** Writes a theme file whole, all at once: a window watching never reads half a file. */
+function writeWhole(id: string, text: string, dir: string): string {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const path = join(dir, `${id}.json`);
     const temp = join(dir, `.${id}.${process.pid}.tmp`);
-    writeFileSync(temp, `${JSON.stringify(theme, null, 2)}\n`, { mode: 0o600 });
+    writeFileSync(temp, text, { mode: 0o600 });
     renameSync(temp, path);
     return path;
+}
+
+/** Writes a checked theme under its id. */
+export function saveTheme(id: string, theme: Theme, dir = themesDir()): string {
+    return writeWhole(id, themeText(theme), dir);
 }
 
 /** Deletes a theme's file; answers what it held, for Undo, or undefined when there was none. */
@@ -68,9 +85,10 @@ export function removeTheme(id: string, dir = themesDir()): string | undefined {
     return text;
 }
 
-/** Puts back what removeTheme answered. */
-export function restoreTheme(id: string, text: string, dir = themesDir()): void {
-    if (!ID.test(id)) throw new Error("not a theme id");
+/** Puts back what removeTheme answered, or (`replace`) what an agent's theme replaced. */
+export function restoreTheme(id: string, text: string, dir = themesDir(), replace = false): void {
+    if (!ID.test(id) || BUILTIN_IDS.has(id)) throw new Error("not a theme id");
+    if (replace) return void writeWhole(id, text, dir);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     writeFileSync(join(dir, `${id}.json`), text, { flag: "wx", mode: 0o600 });
 }

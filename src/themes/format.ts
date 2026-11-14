@@ -142,8 +142,8 @@ export function svgProblem(svg: string): string | undefined {
     if (/url\(\s*["']?\s*(?!#|data:)/i.test(t)) return "has a url() outside itself, which an image can't load: use url(#id)";
     if (/@import/i.test(t)) return "has an @import, which an image can't load";
     // An image runs these on its own, every frame and out of the window's reach: motion goes in the layer's "motion".
-    if (/<(?:[\w-]+:)?(?:animate\w*|set|discard)[\s/>]/i.test(t)) return "animates itself (<animate>, <set>): move the layer with \"motion\" instead";
-    if (/data:\s*image\/(?:svg|gif)/i.test(t)) return "has an SVG or GIF inside it, which may animate itself: draw it in the layer";
+    if (new RegExp(`<${PREFIX}(?:animate\\w*|set|discard)[\\s/>]`, "i").test(t)) return "animates itself (<animate>, <set>): move the layer with \"motion\" instead";
+    if (embedsMoving(t)) return "has an SVG, GIF or animated image inside it, which animates itself: draw it in the layer";
     for (const css of styles(t)) {
         // An escape can spell any word in CSS.
         if (css.includes("\\")) return "has a backslash in its CSS, which a layer doesn't need";
@@ -153,9 +153,41 @@ export function svgProblem(svg: string): string | undefined {
     return undefined;
 }
 
+/** An element's namespace prefix, if it has one: any name XML allows, which is more than \w. */
+const PREFIX = `(?:[^\\s<>/:="'&]+:)?`;
+
+/**
+ * Whether an image embedded in the SVG (a data: URL anywhere: href, url()) can animate: an SVG by its type, and by
+ * its bytes a GIF, an animated PNG, WebP or AVIF, whatever type the URL claims (the browser goes by the bytes).
+ */
+function embedsMoving(t: string): boolean {
+    for (const m of t.matchAll(/data:([^,"'()]{0,200}),([^"'()]*)/gi)) {
+        const meta = percentDecoded(m[1]!).toLowerCase();
+        if (meta.includes("svg")) return true;
+        let bytes: string;
+        try {
+            bytes = meta.includes(";base64") ? atob(percentDecoded(m[2]!).replace(/\s+/g, "")) : percentDecoded(m[2]!);
+        } catch {
+            continue; // not base64: the browser can't decode it either
+        }
+        const head = bytes.slice(0, 64);
+        if (head.startsWith("GIF8") || head.trimStart().startsWith("<")) return true;
+        if (head.startsWith("\x89PNG") && bytes.includes("acTL")) return true;
+        if (head.startsWith("RIFF") && head.slice(8, 12) === "WEBP" && bytes.includes("ANIM")) return true;
+        if (/^....ftyp(?:avis|msf1)/.test(head)) return true;
+    }
+    return false;
+}
+
+/** %XX escapes as the bytes (characters 0–255) they stand for. */
+function percentDecoded(s: string): string {
+    return s.replace(/%([0-9a-f]{2})/gi, (_, h: string) => String.fromCharCode(parseInt(h, 16)));
+}
+
 /** The text with XML character references (&#97; &#x61;) as the characters they stand for. */
 function decodeRefs(t: string): string {
-    return t.replace(/&#(?:x([0-9a-f]{1,6})|([0-9]{1,7}));/gi, (ref, hex: string | undefined, dec: string | undefined) => {
+    // Any number of leading zeros, as the parser reads them.
+    return t.replace(/&#(?:x0*([0-9a-f]{1,6})|0*([0-9]{1,7}));/gi, (ref, hex: string | undefined, dec: string | undefined) => {
         const code = hex ? parseInt(hex, 16) : Number(dec);
         return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : ref;
     });
@@ -164,8 +196,8 @@ function decodeRefs(t: string): string {
 /** The CSS in an SVG: each <style> element's text and each style="…" attribute's value. Linear in the text. */
 function styles(t: string): string[] {
     const out: string[] = [];
-    const open = /<(?:[\w-]+:)?style(?=[\s>/])/gi;
-    const close = /<\/(?:[\w-]+:)?style\s*>/gi;
+    const open = new RegExp(`<${PREFIX}style(?=[\\s>/])`, "gi");
+    const close = new RegExp(`<\\/${PREFIX}style\\s*>`, "gi");
     let m: RegExpExecArray | null;
     while ((m = open.exec(t))) {
         close.lastIndex = open.lastIndex;
@@ -305,7 +337,12 @@ export function checkTheme(raw: unknown): Checked {
     const dark = checkLook(o.dark, "dark", problems);
     if (o.light === undefined && o.dark === undefined) problems.push("a theme needs a light look, a dark look or both");
     for (const key of Object.keys(o)) if (!["name", "light", "dark", "$schema"].includes(key)) problems.push(`the theme has "${key}": a theme takes name, light and dark`);
-    const size = [light, dark].flatMap((l) => l?.layers ?? []).reduce((n, l) => n + l.svg.length, 0);
+    // As the agent wrote them (before the namespace Cavvy adds), so the count is one it can check.
+    const written = (look: unknown) => {
+        const layers = look && typeof look === "object" ? (look as { layers?: unknown }).layers : undefined;
+        return Array.isArray(layers) ? layers.reduce((n: number, l) => n + (l && typeof l === "object" && typeof (l as { svg?: unknown }).svg === "string" ? ((l as { svg: string }).svg.trim().length) : 0), 0) : 0;
+    };
+    const size = written(o.light) + written(o.dark);
     if (size > LIMITS.total) problems.push(`the layers' SVG comes to ${size} characters; at most ${LIMITS.total}`);
     if (problems.length) return { problems };
     return { theme: { name: (o.name as string).trim(), ...(light ? { light } : {}), ...(dark ? { dark } : {}) }, problems };

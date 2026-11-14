@@ -89,10 +89,11 @@ function Tile(p: { id?: string; name: string; theme?: Theme; problem?: string; o
     const shown = createMemo(() => (p.theme ? lookFor(p.theme, chosenScheme()) : undefined));
     const only = () => (p.theme ? onlyScheme(p.theme) : undefined);
     return (
-        <div class="tg-tile" classList={{ on: on(), broken: Boolean(p.problem) }} onPointerEnter={() => setHover(true)} onPointerLeave={() => setHover(false)}>
-            <button class="tg-pick" aria-pressed={on()} disabled={Boolean(p.problem)} title={p.problem} onClick={() => applyTheme(p.id)}>
+        <div class="tg-tile" data-id={p.id} classList={{ on: on(), broken: Boolean(p.problem) }} onPointerEnter={() => setHover(true)} onPointerLeave={() => setHover(false)}>
+            {/* A broken one can't be picked but can be reached, by pointer and keyboard alike, to read what's wrong. */}
+            <button class="tg-pick" aria-pressed={on()} aria-disabled={p.problem ? true : undefined} title={p.problem} onClick={() => !p.problem && applyTheme(p.id)}>
                 <span class="tg-pv">
-                    <Face look={shown()?.look} scheme={shown()?.scheme ?? chosenScheme()} moving={hover()} />
+                    <Face look={shown()?.look} scheme={shown()?.scheme ?? chosenScheme()} moving={hover() && prefs.themeMotion} />
                     <Show when={only()}>
                         <span class="tg-kind" title={only() === "dark" ? "Dark only" : "Light only"}>
                             {only() === "dark" ? <Moon size={10} /> : <Sun size={10} />}
@@ -113,7 +114,12 @@ function Tile(p: { id?: string; name: string; theme?: Theme; problem?: string; o
     );
 }
 
+/** When the last delete was: a second click within a double-click's time lands on the tile that moved under it. */
+let deletedAt = 0;
+
 async function remove(id: string, name: string) {
+    if (performance.now() - deletedAt < 600) return;
+    deletedAt = performance.now();
     const wasOn = prefs.themeId === id;
     try {
         const { text } = await rpc.call("themes.remove", { id });

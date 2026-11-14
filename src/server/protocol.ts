@@ -1938,7 +1938,7 @@ export type ServerEvent =
      * An agent asked to show a theme (or none, null). `entry`: the one it just saved, ahead of the folder's watch.
      * The window answers with themes.report under `request` once it's drawn it.
      */
-    | { type: "theme.apply"; id: string | null; entry?: ThemeEntry; request: string }
+    | { type: "theme.apply"; id: string | null; entry?: ThemeEntry; request: string; replaced?: ThemeReplaced }
     /** The desktop app's update state changed: a check finished, an update started, moved on or ended. */
     | { type: "app.update"; info: AppUpdateInfo };
 
@@ -1980,6 +1980,12 @@ export interface KeybindingsFile {
 }
 
 export type { ThemeEntry };
+
+/** A theme of the user's an agent's theme was saved over (theme.apply): its name, and its file's text for Undo. */
+export interface ThemeReplaced {
+    name: string;
+    text: string;
+}
 
 /** How a theme came out in a window, for the agent that asked for it (theme.apply). */
 export interface ThemeReport {
@@ -2122,7 +2128,7 @@ export interface Methods {
     /** Deletes one; answers what its file held, for Undo. */
     "themes.remove": { params: { id: string }; result: { text?: string } };
     /** Puts back a deleted one (Undo). */
-    "themes.restore": { params: { id: string; text: string }; result: null };
+    "themes.restore": { params: { id: string; text: string; replace?: boolean }; result: null };
     /** A window's answer to theme.apply. */
     "themes.report": { params: ThemeReport; result: null };
     /** Creates the keybindings file from the template when there's none; true when it did. */

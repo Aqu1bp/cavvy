@@ -87,11 +87,25 @@ describe("checking a theme", () => {
             '<svg><image href="data:image/svg+xml,%3Csvg%3E%3C/svg%3E"/></svg>',
             '<!DOCTYPE svg [<!ENTITY a "animation">]><svg><rect style="&a;:x 1s"/></svg>',
             '<?xml-stylesheet href="data:text/css,rect{animation:a 1s}"?><svg><rect/></svg>',
+            // Prefixes \w doesn't cover, references with leading zeros, animated images under another type.
+            '<svg xmlns:s.v="http://www.w3.org/2000/svg"><rect><s.v:animate attributeName="x" dur="1s"/></rect></svg>',
+            "<svg><rect><\u00e9:animate attributeName='x' dur='1s'/></rect></svg>",
+            "<svg><\u00e9:style>@keyframes a{to{opacity:0}}</\u00e9:style></svg>",
+            "<svg><style>@k&#00000101;yframes a{to{opacity:0}}</style></svg>",
+            '<svg><rect style="anim&#00000097;tion: a 1s"/></svg>',
+            '<svg><rect style="anim&#x00000061;tion: a 1s"/></svg>',
+            '<svg><image href="data:image/png;base64,R0lGODlhAQABAAAAACw="/></svg>',
+            '<svg><image href="data:;base64,R0lGODlhAQABAAAAACw="/></svg>',
+            `<svg><image href="data:image/png;base64,${btoa("\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x08acTL\0\0\0\x02")}"/></svg>`,
+            `<svg><image href="data:image/webp;base64,${btoa("RIFF\0\0\0\0WEBPVP8X\0\0\0\0ANIM")}"/></svg>`,
+            '<svg><image href="data:image%2Fsvg+xml,%3Csvg%3E%3C/svg%3E"/></svg>',
         ]) expect(svgProblem(svg)).toBeDefined();
     });
 
     test("words that only look like animation are fine outside CSS", () => {
         for (const svg of [
+            `<svg><image href="data:image/png;base64,${btoa("\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01IDAT")}"/></svg>`,
+            '<svg xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="#a"/></svg>',
             '<svg><defs><radialGradient id="transition-glow"/></defs><rect class="animation" fill="url(#transition-glow)"/></svg>',
             "<svg><text x='10' y='20'>Animation: transition</text></svg>",
             "<svg><style>.transition-glow{fill:#fff}</style><rect class='transition-glow'/></svg>",
@@ -104,7 +118,7 @@ describe("checking a theme", () => {
         const started = performance.now();
         expect(svgProblem(comments)).toContain("isn't one <svg>");
         withNamespace(tags);
-        for (const body of ["<style>".repeat(17_000), "<style>/*".repeat(13_000), ' style="'.repeat(14_000), "&#x61".repeat(24_000)]) svgProblem(`<svg>${body}</svg>`);
+        for (const body of ["data:".repeat(24_000), "<a".repeat(60_000), "&#0000".repeat(20_000), "<style>".repeat(17_000), "<style>/*".repeat(13_000), ' style="'.repeat(14_000), "&#x61".repeat(24_000)]) svgProblem(`<svg>${body}</svg>`);
         checkTheme(minimal({ dark: { colors: { background: "#101418", text: "#eef2f6" }, layers: [{ svg: tags }] } }));
         expect(performance.now() - started).toBeLessThan(500);
         // Comments before the root are still fine.
@@ -425,6 +439,43 @@ describe("the theme tools", () => {
         for (const b of BUILTINS) expect(all).toContain(`- ${b.id}: ${b.name}`);
         expect(all).toContain("- listed: Listed (dark)");
         expect(all).toContain("How to make a Cavvy theme");
+    });
+
+    test("saving over a theme the user made says so and hands the window the old one for Undo; refining its own doesn't", async () => {
+        const { themeSet } = await tools();
+        const calls: unknown[][] = [];
+        const ui = { showTheme: async (...a: unknown[]) => (calls.push(a), { sent: 1, report: { request: "r", shown: true, scheme: "dark" as const } }) };
+        const file = join(home, "themes", "handmade.json");
+        const mine = JSON.stringify({ name: "My Handmade", dark: { colors: { background: "#101418", text: "#eef2f6" } } });
+        writeFileSync(file, mine);
+        const theme = (name: string) => ({ name, dark: { colors: { background: "#140c1f", text: "#efe8f8" } } });
+        const first = await themeSet({ id: "handmade", theme: theme("Agent Version") }, { ui });
+        expect(first.text).toContain('It replaced "My Handmade"');
+        expect(first.text).toContain("Undo");
+        expect(calls[0]![2]).toEqual({ name: "My Handmade", text: mine });
+        // The agent refining what it saved: quiet.
+        const again = await themeSet({ id: "handmade", theme: theme("Agent Version 2") }, { ui });
+        expect(again.text).not.toContain("replaced");
+        expect(calls[1]![2]).toBeUndefined();
+        // Undo puts the user's back, over the agent's.
+        restoreTheme("handmade", mine, join(home, "themes"), true);
+        expect(readFileSync(file, "utf8")).toBe(mine);
+        // A new theme replaces nothing.
+        const fresh = await themeSet({ id: "brand-new", theme: theme("New") }, { ui });
+        expect(fresh.text).not.toContain("replaced");
+        // A long id is told it's too long.
+        expect((await themeSet({ id: "a".repeat(49) }, { ui })).text).toContain("at most 48");
+    });
+
+    test("the guide names the tools as the agent has them", async () => {
+        const { themeList, themeServerTools } = await import("../src/themes/tools");
+        const api = (await themeList({})).text;
+        expect(api).not.toMatch(/theme_set|theme_list/);
+        expect(api).toContain("ThemeSet");
+        const list = themeServerTools(async (_tool, input) => ({ text: (await themeList(input)).text })).find((t) => t.name === "theme_list")!;
+        const served = (await list.call({}, { signal: new AbortController().signal, meta: {} })).text;
+        expect(served).not.toMatch(/ThemeSet|ThemeList/);
+        expect(served).toContain("theme_set");
     });
 
     test("a theme's JSON comes without its long layers, which can be read one at a time or reused by reference", async () => {

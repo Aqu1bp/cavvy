@@ -7,6 +7,7 @@ import { NO_SCHEDULES, SessionSchedules, type ScheduleAction } from "../agent/sc
 import { CRON_TOOLS, jobLine } from "../agent/schedule-tools";
 import { THEME_TOOLS } from "../themes/tools";
 import type { ThemeEntry } from "../themes/format";
+import type { ThemeReplaced } from "./protocol";
 import { SESSION_TOOLS } from "../tools/session-tools";
 import { appPeers } from "./session-peers";
 import type { ScheduledJob } from "../agent/schedule";
@@ -1671,7 +1672,7 @@ export class Runtime {
                     askSignIn: (req, then) => this.askSignIn(req, then),
                     confirm: (req, signal) => this.confirm(req, signal),
                     // Themes show in this machine's windows: a server's sessions have none of their own.
-                    ...(onServer() ? {} : { showTheme: (id: string | null, entry?: ThemeEntry) => this.engine.showTheme(id, entry) }),
+                    ...(onServer() ? {} : { showTheme: (id: string | null, entry?: ThemeEntry, replaced?: ThemeReplaced) => this.engine.showTheme(id, entry, replaced) }),
                 },
                 drainQueued: (record, admit, id) => this.drainQueued(record, admit, id),
                 drainWaiting: (record) => this.drainWaiting(record),
