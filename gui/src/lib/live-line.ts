@@ -27,6 +27,8 @@ export interface LiveLineState {
     jobSince?: number;
     /** When this state began (ms), when it's known; else the line counts from when it first showed it. */
     since?: number;
+    /** A running call that may say what it's at: when it does, that is the line (stepOf). */
+    steps?: ToolBlock;
     /** A running command's call: the line opens to it on a click, the block its row opens to (LiveLine.tsx). */
     opens?: ToolBlock;
     /** The call it's about, for find. */
@@ -97,9 +99,16 @@ function latestLine(text: string): string | undefined {
     return undefined;
 }
 
-/** The step a running call last said it's at: its last line, without the dots of something under way. */
-function step(t: ToolBlock): string | undefined {
-    const last = t.progress?.trimEnd().split("\n").pop()?.replace(/\x1b\[[0-9;]*m/g, "").replace(/(?:…|\.\.\.)$/, "").trim();
+/** Calls whose argument is words, not code: a question, a search, the tools looked for. */
+const WORDS = new Set(["AskUserQuestion", "WebSearch", "web_search", "ToolSearch"]);
+
+/**
+ * The step a running call last said it's at ("Waiting for box to start", "Installing Codex"): its last line, without
+ * the dots of something under way. Where there is one it is the line, and nothing beside it: one line, one thing
+ * going on (LiveLine.tsx reads it, for the one call the line is about).
+ */
+export function stepOf(t: ToolBlock | undefined): string | undefined {
+    const last = t?.progress?.trimEnd().split("\n").pop()?.replace(/\x1b\[[0-9;]*m/g, "").replace(/(?:…|\.\.\.)$/, "").trim();
     return last ? (last.length > 80 ? `${last.slice(0, 79)}…` : last) : undefined;
 }
 
@@ -123,12 +132,9 @@ function toolState(t: ToolBlock): LiveLineState {
         const label = t.status === "queued" ? runningVerb(t) : wait ? "Waiting" : (description ?? "Running");
         return { ...base, label, detail: liveCommand(t), mono: true, meta: wait ? `of ${turnDuration(wait * 1000)}` : undefined, opens: t.status === "running" ? t : undefined };
     }
-    // A call that says what it's at (a server being set up: "Waiting for box to start", "Installing Codex") is that, and
-    // nothing beside it: one line, one thing going on.
-    const at = t.status === "running" && t.name !== "Task" && !t.agent ? step(t) : undefined;
-    if (at) return { ...base, label: at, title: arg };
-    // A search's query is words, not code.
-    return { ...base, label: runningVerb(t), detail: arg, mono: !t.agent && t.name !== "AskUserQuestion" && t.name !== "WebSearch", title: arg };
+    // A search's query is words, not code. A call that may say what it's at (a server being set up) is handed over
+    // for that: its steps aren't read here, where reading them would have every one redo this over the whole turn.
+    return { ...base, label: runningVerb(t), detail: arg, mono: !t.agent && !WORDS.has(t.name), steps: t.status === "running" && t.name !== "Task" && t.name !== "Agent" && !t.agent ? t : undefined, title: arg };
 }
 
 /**

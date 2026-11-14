@@ -30,11 +30,14 @@ test("an action names what it acted on, from what the browser said, never by its
     expect(toolLabel(call({ name: "BrowserAct", title: "BrowserAct(press Enter)", input: { action: "press", key: "Enter" } }))).toEqual({ verb: "Press", arg: "Enter" });
 });
 
-test("another server's tool is said by its own name in words, and under way by its server, never mcp__…", () => {
+test("another server's tool is said by what it does, under way too; its server where it has nothing else to show, never mcp__…", () => {
     const issue = call({ name: "mcp__github__create_issue", title: "mcp__github__create_issue", status: "running" });
-    expect(toolLabel(issue).verb).toBe("Create issue");
-    expect(runningVerb(issue)).toBe("Using github");
-    expect(runningVerb({ ...issue, status: "streaming" })).toBe("Using github");
+    expect(toolLabel(issue)).toEqual({ verb: "Create issue", arg: "github" });
+    expect(runningVerb(issue)).toBe("Create issue");
+    expect(runningVerb({ ...issue, status: "streaming" })).toBe("Create issue");
+    // With something it's about, that; and once it's done its server isn't said beside it.
+    expect(toolLabel(call({ name: "mcp__github__create_issue", title: "Create issue(Fix login)", status: "running" }))).toEqual({ verb: "Create issue", arg: "Fix login" });
+    expect(toolLabel(call({ name: "mcp__claude_ai_Gmail__search_threads", title: "mcp__claude_ai_Gmail__search_threads", status: "ok" }))).toEqual({ verb: "Search threads", arg: undefined });
 });
 
 test("Cavvy's own tools are said by what they do, however they were called: never \"Using cavvy\"", () => {
@@ -55,8 +58,8 @@ test("Cavvy's own tools are said by what they do, however they were called: neve
     // One nothing here knows yet: its own name in words, still never the app's.
     const odd = call({ name: "mcp__cavvy__tidy_things", title: "mcp__cavvy__tidy_things", status: "running" });
     expect(runningVerb(odd)).toBe("Tidy things");
-    // Another server's is still said under way by its server.
-    expect(runningVerb(call({ name: "mcp__github__create_issue", title: "mcp__github__create_issue", status: "running" }))).toBe("Using github");
+    // Simulator and browser words stay their own.
+    expect(runningVerb(call({ name: "mcp__cavvy__simulator_act", status: "running", input: {} }))).toBe("Acting on the screen");
 });
 
 test("a result that only repeats the row isn't shown; a failure's always is", () => {
@@ -78,18 +81,38 @@ test("the same call made again right after is counted in one row; a failure, or 
 test("a tool with no words of its own is said by its name in words, never as the tool spells it", () => {
     // Claude Code's ToolSearch showed as a row labelled "ToolSearch".
     const search = call({ name: "ToolSearch", title: "ToolSearch(select:Monitor)", input: { query: "select:Monitor" } });
-    expect(toolLabel(search)).toEqual({ verb: "Find tools", arg: "select:Monitor" });
+    // What it looked for, in words: the tools it named, as what they do; a search, as it was typed.
+    expect(toolLabel(search)).toEqual({ verb: "Find tools", arg: "Monitor" });
+    expect(toolLabel(call({ name: "ToolSearch", title: "ToolSearch", input: { query: "select:mcp__cavvy__server_key,mcp__cavvy__server_add,mcp__cavvy__request_sign_in,mcp__github__create_issue,TaskOutput" } })).arg).toBe("Prepare server, Add server, Ask to sign in, Create issue, Check task");
+    expect(toolLabel(call({ name: "ToolSearch", title: "ToolSearch", input: { query: "notebook jupyter" } })).arg).toBe("notebook jupyter");
     expect(runningVerb({ ...search, status: "running" })).toBe("Finding tools");
     expect(runningVerb({ ...search, status: "queued" })).toBe("Then find tools");
-    // One nothing here knows: its name, as words.
-    const other = call({ name: "TaskOutput", title: "TaskOutput(b1)" });
-    expect(toolLabel(other)).toEqual({ verb: "Task output", arg: "b1" });
-    expect(runningVerb({ ...other, status: "running" })).toBe("Running task output");
-    expect(runningVerb({ ...other, status: "streaming" })).toBe("Preparing task output");
-    expect(runningVerb({ ...other, status: "queued" })).toBe("Then task output");
-    expect(toolLabel(call({ name: "LSP", title: "LSP" })).verb).toBe("LSP");
-    // After another word, a name in capitals stays as it is, and a tool with a verb says what it's doing in its own.
-    expect(runningVerb(call({ name: "LSP", title: "LSP", status: "running" }))).toBe("Running LSP");
+    // The agent CLIs' own tools are said as what they do, arriving and under way alike.
+    const task = call({ name: "TaskOutput", title: "TaskOutput(b1)" });
+    expect(toolLabel(task)).toEqual({ verb: "Check task", arg: "b1" });
+    expect(runningVerb({ ...task, status: "running" })).toBe("Checking task");
+    expect(runningVerb({ ...task, status: "streaming" })).toBe("Checking task");
+    expect(runningVerb({ ...task, status: "queued" })).toBe("Then check task");
+    expect(runningVerb(call({ name: "apply_patch", status: "running" }))).toBe("Editing");
+    expect(runningVerb(call({ name: "CronCreate", status: "running" }))).toBe("Scheduling");
+    expect(runningVerb(call({ name: "Agent", status: "streaming" }))).toBe("Starting agent");
+    expect(runningVerb(call({ name: "Agent", status: "running" }))).toBe("Agent working");
+    expect(toolLabel(call({ name: "LSP", title: "LSP" })).verb).toBe("Look up code");
+    // Arriving, a call is about to be what it does: never "Preparing read", "Preparing open pull request".
+    expect(runningVerb(call({ name: "Read", status: "streaming" }))).toBe("Reading");
+    expect(runningVerb(call({ name: "CreatePullRequest", status: "streaming" }))).toBe("Opening pull request");
+    // A question or a plan isn't waiting on the user until it's written.
+    expect(runningVerb(call({ name: "AskUserQuestion", status: "streaming" }))).toBe("Writing a question");
+    expect(runningVerb(call({ name: "ExitPlanMode", status: "streaming" }))).toBe("Writing the plan");
+    // One nothing here knows: its name, as words, however it's spelled.
+    const other = call({ name: "FrobnicateThings", title: "FrobnicateThings(b1)" });
+    expect(toolLabel(other)).toEqual({ verb: "Frobnicate things", arg: "b1" });
+    expect(runningVerb({ ...other, status: "running" })).toBe("Running frobnicate things");
+    expect(runningVerb({ ...other, status: "streaming" })).toBe("Preparing frobnicate things");
+    expect(runningVerb({ ...other, status: "queued" })).toBe("Then frobnicate things");
+    expect(toolLabel(call({ name: "do_the_thing", title: "do_the_thing" })).verb).toBe("Do the thing");
+    // After another word, a name in capitals stays as it is.
+    expect(runningVerb(call({ name: "MCPAuth", title: "MCPAuth", status: "running" }))).toBe("Running MCPAuth");
     expect(runningVerb(call({ name: "KillShell", status: "running" }))).toBe("Stopping");
     expect(runningVerb(call({ name: "UnwatchPullRequest", status: "running" }))).toBe("Ending the watch");
     expect(runningVerb({ ...search, status: "streaming" })).toBe("Finding tools");
