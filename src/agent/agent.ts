@@ -72,7 +72,7 @@ import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./s
 import { WATCH_INSTRUCTIONS, watchServerTools } from "../tools/git-tools";
 import { SIGN_IN_INSTRUCTIONS, signInServerTools, signInToolTitle } from "../tools/sign-in-tools";
 import { nativeServerCall, SERVER_INSTRUCTIONS, SERVER_TOOL_NAMES, servedServerName, serverServerTools } from "../tools/server-tools";
-import { signedOutIn, signInRecipes } from "./sign-in-recipes";
+import { findRecipe, signedOutIn, signInRecipes, statusMasked } from "./sign-in-recipes";
 import { signInAdvised } from "../backends/account-login";
 import { MONITOR_INSTRUCTIONS, monitorServerTools, nativeMonitorCall, stoppedMonitorNote } from "../tools/monitor";
 import { BROWSER_INSTRUCTIONS, BrowserNavigateTool, browserServerTools, nativeBrowserCall, servedBrowserName } from "../tools/browser-tools";
@@ -2276,6 +2276,8 @@ export class Agent {
         if (adopt && (!backend.adoptsTurns || adopt.provider !== this.model.provider)) return this.cannotAdopt(adopt);
         // A wake while the backend works is offered to it as a message the user queued is (Codex steers with it at once).
         const stopWaking = this.o.isSubagent ? undefined : this.state.wakes?.onReady(() => this.queueChanged());
+        // A message of the user's own: what it runs into is pointed out afresh, whatever was pointed out or put off before.
+        if (!woken) this.signInPointed.clear();
         try {
             return await this.runBackendTurn(backend, parts, signal, woken, adopt?.ref);
         } finally {
@@ -2896,7 +2898,7 @@ export class Agent {
         const now = Date.now();
         if (now - (this.signInPointed.get(recipe.id) ?? 0) < 10 * 60_000) return;
         this.signInPointed.set(recipe.id, now);
-        this.state.wakes.push({ source: "sign-in", key: `sign-in-hint:${recipe.id}`, label: `${recipe.name} isn't signed in`, text: `A command just failed because ${recipe.name} isn't signed in. Ask the user to sign in: call request_sign_in with target "${recipe.id}", then run the command again. Don't tell them to run a login command themselves.` });
+        this.state.wakes.push({ source: "sign-in", key: `sign-in-hint:${recipe.id}`, label: `${recipe.name} isn't signed in`, text: `A command just said ${recipe.name} isn't signed in. Ask the user to sign in: call request_sign_in with target "${recipe.id}", then run the command again. Don't tell them to run a login command themselves.` });
     }
 
     /**
@@ -2910,8 +2912,14 @@ export class Agent {
         if (e.type === "tool_end") this.backendRequestAt = Date.now();
         e = redactBackendEvent(e);
         this.noteServedCall(e, this.servedMain);
-        // A command of the CLI's own that failed saying something isn't signed in: Cavvy can't add to what its model read, so the pointer follows as news.
-        if (e.type === "tool_end" && e.call.name === "Bash" && e.result.isError) this.pointToSignIn((e.call.input as { command?: unknown } | undefined)?.command, e.result.content);
+        // A command of the CLI's own whose output says something isn't signed in: Cavvy can't add to what its model read, so the pointer follows as news.
+        // Whether or not the call counts as failed: agents end a command with `; echo "exit=$?"` or pipe it into tail, and its status is then the last word's.
+        // Once it has asked in this turn, the answer stands for the turn: a command that fails the same way again isn't a reason to ask again.
+        if (e.type === "tool_end" && e.call.name === `mcp__${MCP_SERVER_NAME}__request_sign_in`) {
+            const asked = findRecipe(String((e.call.input as { target?: unknown } | undefined)?.target ?? ""), signInRecipes(this.o.settings().signIns));
+            if (asked) this.signInPointed.set(asked.id, Date.now());
+        }
+        if (e.type === "tool_end" && e.call.name === "Bash" && (e.result.isError || statusMasked(String((e.call.input as { command?: unknown } | undefined)?.command ?? "")))) this.pointToSignIn((e.call.input as { command?: unknown } | undefined)?.command, e.result.content);
         // Cavvy's own tools it served (Monitor for Codex) show as those tools.
         if ((e.type === "tool_start" || e.type === "tool_end") && e.call.name.startsWith(`mcp__${MCP_SERVER_NAME}__`)) {
             const served = e.call.name.slice(`mcp__${MCP_SERVER_NAME}__`.length);

@@ -306,7 +306,7 @@ describe("Later", () => {
         const answer = x.s.request({ targets: [{ target: "fly", command: "fly auth login" }] }, never);
         x.s.act(await x.card("command"), { action: "later" });
         const a = await answer;
-        expect(a.text).toBe("Not signed in to fly: the user chose Later. Carry on with what doesn't need it and say what's left. Don't ask again unless they bring it up.");
+        expect(a.text).toBe("Not signed in to fly: the user chose Later. Carry on with what doesn't need it and say what's left. Don't ask again in this turn. When something they ask for later needs it, ask then: don't tell them to run a login command.");
         expect(x.watchers.size).toBe(0);
     });
 });
@@ -476,6 +476,19 @@ describe("a failed command that says something is signed out", () => {
     test("not for an agent that can't ask (a sub-agent, a -p run), nor for a command that worked", async () => {
         expect((await bash("acme status")).content).not.toContain("Ask the user to sign in");
         expect((await bash("echo 'Not logged in. Run: acme login'", "RequestSignIn")).content).not.toContain("Ask the user to sign in");
+    });
+
+    test("a command whose status isn't the CLI's own still gets it: agents end one with an echo, or pipe it", async () => {
+        // What Claude Code ran for "push this branch": the push failed, and the command as a whole didn't.
+        const echoed = await bash('acme status 2>&1; echo "exit=$?"', "RequestSignIn");
+        expect(echoed.isError).toBeFalsy();
+        expect(echoed.content).toContain("exit=1");
+        expect(echoed.content).toContain('Acme isn\'t signed in. Ask the user to sign in: call RequestSignIn with target "acme"');
+        expect((await bash("acme status | tail -n 5", "RequestSignIn")).content).toContain("Ask the user to sign in");
+        expect((await bash("cd . && acme status || true", "RequestSignIn")).content).toContain("Ask the user to sign in");
+        // The CLI's name among another program's words isn't the CLI running.
+        expect((await bash("echo 'Not logged in. Run: acme login' | cat", "RequestSignIn")).content).not.toContain("Ask the user to sign in");
+        expect((await bash("printf 'Not logged in. Run: acme login\\n'; echo acme", "RequestSignIn")).content).not.toContain("Ask the user to sign in");
     });
 });
 

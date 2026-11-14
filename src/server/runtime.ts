@@ -4418,7 +4418,7 @@ export class Runtime {
         if (!w) throw new RpcError("That watch has already ended.", "not_found");
         w.stop();
         this.toolState.watchers!.delete(watchId);
-        if (w.kind === "sign-in") this.agent?.addReminder(`The user dismissed the request: ${w.label}. Don't ask for it again unless they bring it up.`);
+        if (w.kind === "sign-in") this.agent?.addReminder(`The user dismissed the request: ${w.label}. Don't bring it up by yourself. When something they ask for needs that sign-in, ask for it then, with the sign-in tool.`);
         else this.agent?.addReminder(`The user stopped watching ${w.label}. Don't watch it again unless they ask.`);
     }
 

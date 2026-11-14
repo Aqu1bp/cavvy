@@ -31,7 +31,7 @@ const DESCRIPTION = `Asks the user to sign in to a CLI or service when something
 - machine is the name of one of the user's servers, to sign in there. Leave it out for the machine this session runs on.
 - The call waits until the user is done, then you carry on in the same turn (run the push again, and so on). You get back "signed in" and as whom, or that it isn't; never codes, tokens or what the sign-in printed.
 - If it's already signed in, you're told so at once and the user sees nothing.
-- If the user chooses Later, do what doesn't need the sign-in and say what's left. Cavvy tells you when they sign in; don't ask again unless they bring it up.
+- If the user chooses Later, do what doesn't need the sign-in and say what's left. Cavvy tells you when they sign in. Don't ask again in the same turn; when something they ask for later needs it, ask then.
 - If you're told the request is still waiting, end your turn: Cavvy tells you when they've signed in.
 - command is only for a CLI Cavvy says it has no sign-in for: that CLI's own sign-in command ("fly auth login"), starting with the target. The user is shown it and runs it themselves.
 - Not for API keys or passwords a command reads from its environment: that's RequestSecret.`;

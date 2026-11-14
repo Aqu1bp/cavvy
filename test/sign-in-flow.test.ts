@@ -12,7 +12,7 @@ process.env.PATH = `${acme.bin}:${process.env.PATH}`;
 
 const { SignInFlow, SmallScreen, plain, siteOf, signInReport } = await import("../src/agent/sign-in");
 const { localSignInHost } = await import("../src/agent/sign-in-host");
-const { findRecipe, recipeError, signInRecipes, signedOutIn, SIGN_IN_RECIPES } = await import("../src/agent/sign-in-recipes");
+const { findRecipe, recipeError, signInRecipes, signedOutIn, statusMasked, SIGN_IN_RECIPES } = await import("../src/agent/sign-in-recipes");
 import type { SignInView, SignInOutcome } from "../src/agent/sign-in";
 import type { SignInRecipe } from "../src/agent/sign-in-recipes";
 
@@ -509,6 +509,14 @@ describe("the pieces", () => {
         expect(signedOutIn(quoted, SIGN_IN_RECIPES, "bun test ./test/git-publish.test.ts")).toBeUndefined();
         expect(signedOutIn("Unable to locate credentials", SIGN_IN_RECIPES, "cat docs/aws.md")).toBeUndefined();
         expect(signedOutIn("see gcloud auth login", SIGN_IN_RECIPES, "grep -r login docs")).toBeUndefined();
+        // Nor does naming the CLI among another program's words: only where the command runs it.
+        expect(signedOutIn(quoted, SIGN_IN_RECIPES, 'grep -rn "gh auth login" docs')).toBeUndefined();
+        expect(signedOutIn(quoted, SIGN_IN_RECIPES, "echo gh; cat notes.md")).toBeUndefined();
+        expect(signedOutIn(quoted, SIGN_IN_RECIPES, 'GH_PROMPT_DISABLED=1 gh pr view 2>&1; echo "exit=$?"')?.id).toBe("gh");
+        expect(signedOutIn(quoted, SIGN_IN_RECIPES, "cd repo && sudo -E git push")?.id).toBe("gh");
+        expect(statusMasked('git push -u origin master 2>&1; echo "exit=$?"')).toBe(true);
+        expect(statusMasked("gh pr view | tail")).toBe(true);
+        expect(statusMasked("git push -u origin master 2>&1")).toBe(false);
         // A file named after the CLI isn't the CLI.
         expect(signedOutIn(quoted, SIGN_IN_RECIPES, "cat notes/gh-setup.md")).toBeUndefined();
         // The CLI's own command, mentioning the login command in passing (a README it printed), isn't its sign-out message.

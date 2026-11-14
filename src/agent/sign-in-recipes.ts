@@ -202,13 +202,35 @@ export function findRecipe(target: string, recipes: readonly SignInRecipe[]): Si
 
 const matchers = new WeakMap<SignInRecipe, RegExp[]>();
 
-/** The programs a shell command names: each word's last path part, without what a shell puts around it. */
+const WRAPPERS = new Set(["sudo", "env", "command", "exec", "time", "nohup", "nice", "builtin"]);
+
+/**
+ * The programs a shell command runs: the first word of each of its parts (after `;`, `&&`, `|`, a newline, an
+ * opening bracket), past variables set for it and wrappers such as sudo. A CLI's name among another program's
+ * arguments (`grep -r "gh auth login" docs`) isn't that CLI running.
+ */
 function programsIn(command: string): Set<string> {
-    return new Set(command.split(/[\s;&|()<>`'"=$]+/).map((w) => w.slice(w.lastIndexOf("/") + 1)).filter(Boolean));
+    const ran = new Set<string>();
+    for (const part of command.split(/[;&|\n(`]+/)) {
+        const words = part.trim().split(/\s+/);
+        let i = 0;
+        while (i < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]!) || WRAPPERS.has(words[i]!) || (i > 0 && words[i]!.startsWith("-")))) i++;
+        const word = (words[i] ?? "").replace(/^[$"']+|["']+$/g, "");
+        if (word) ran.add(word.slice(word.lastIndexOf("/") + 1));
+    }
+    return ran;
 }
 
 /**
- * The recipe a failed command's output says is signed out, if any. `command`: what was run. Only a recipe whose own
+ * Whether a shell command's status may not be its CLI's own: several commands, or a pipe (`git push 2>&1; echo
+ * "exit=$?"`, `gh pr view | tail`). What such a command printed is looked at even when it counts as having worked.
+ */
+export function statusMasked(command: string): boolean {
+    return /[;|&\n]/.test(command.replace(/[0-9]?>&[0-9-]/g, ""));
+}
+
+/**
+ * The recipe a command's output says is signed out, if any. `command`: what was run (the caller decides whether it failed, or may have: `statusMasked`). Only a recipe whose own
  * program the command ran is considered, and only the output's first and last parts: these lines come at an edge.
  */
 export function signedOutIn(output: string, recipes: readonly SignInRecipe[], command: string): SignInRecipe | undefined {

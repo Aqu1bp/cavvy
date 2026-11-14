@@ -670,7 +670,7 @@ export function signInReport(o: SignInOutcome, where: string | undefined, tool: 
             case "unknown":
                 return `Cavvy has no sign-in for "${r.target}". Call ${tool} again with \`command\` set to its sign-in command: the user is shown it and runs it themselves.`;
             default:
-                return o.end === "stopped" ? `Not signed in to ${r.name}${on}: the request was interrupted.` : `Not signed in to ${r.name}${on}: the user chose Later. Carry on with what doesn't need it and say what's left${r.watched ? "; Cavvy tells you when they sign in" : ""}. Don't ask again unless they bring it up.`;
+                return o.end === "stopped" ? `Not signed in to ${r.name}${on}: the request was interrupted.` : `Not signed in to ${r.name}${on}: the user chose Later. Carry on with what doesn't need it and say what's left${r.watched ? "; Cavvy tells you when they sign in" : ""}. Don't ask again in this turn. When something they ask for later needs it, ask then: don't tell them to run a login command.`;
         }
     });
     const left = o.results.filter((r) => r.state !== "in" && r.state !== "unverified");
