@@ -123,9 +123,10 @@ function readCache(): CacheFile {
     for (const [provider, entry] of Object.entries(c.providers)) {
         if (getProvider(provider)?.kind !== "anthropic") continue;
         for (const model of entry.models) {
-            if (!anthropicPricing(model.id)) continue;
+            const known = anthropicPricing(model.id);
+            if (!known) continue;
             const t = anthropicTraits(model.id);
-            Object.assign(model, { pricing: t.pricing, pricingLong: t.pricingLong, longContextThreshold: t.longContextThreshold });
+            Object.assign(model, { pricing: t.pricing, pricingLong: t.pricingLong, longContextThreshold: t.longContextThreshold, pricingEstimated: known.estimated || undefined });
         }
     }
     // Older Anthropic cache entries stored only native API effort levels.
@@ -312,6 +313,7 @@ export function resolveModelInfo(ref: string): ModelInfo | undefined {
             pricing: t.pricing,
             pricingLong: t.pricingLong,
             longContextThreshold: t.longContextThreshold,
+            ...(anthropicPricing(parsed.id)?.estimated ? { pricingEstimated: true } : {}),
             ...apiFastModeInfo(def.id, parsed.id, resolveBaseUrl(def)),
             supportsTools: true,
             supportsImages: true,

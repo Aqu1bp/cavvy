@@ -1229,6 +1229,8 @@ export interface UsageRow {
     planEquivalent: number;
     /** Some of it had no known price: cost leaves that out (it isn't free). */
     unknown: boolean;
+    /** UsageTotals.estimated. */
+    estimated?: boolean;
 }
 
 export type UsageSource = "claude-code" | "codex" | "api";
@@ -1236,6 +1238,8 @@ export interface UsageCostTypes { input: number; cacheRead: number; cacheWrite: 
 export interface UsageTotals {
     inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number;
     cost: number; planEquivalent: number; unknown: boolean;
+    /** Part of the cost is at a guessed price: a newer model, priced like its family's latest Cavvy knows. */
+    estimated?: boolean;
     costByType: UsageCostTypes; cacheSavings: number;
 }
 export interface UsageSourceRow extends UsageTotals { source: UsageSource; label: string; sessions: number }

@@ -2402,7 +2402,7 @@ export class Agent {
                 if (this.o.mode.get() !== m) this.o.mode.set(m);
             },
             usage: (u, o) => this.recordBackendUsage(u, o),
-            context: (tokens) => this.recordBackendContext(tokens),
+            context: (tokens, window) => this.recordBackendContext(tokens, window),
             // An adopted turn's move of its place carries what it wasn't sent, in the same line (adoptedUnsent).
             sessionId: (id) => this.session.setBackendSession(provider, id, this.session.messages.length, place, this.adoptedUnsent?.provider === provider ? this.adoptedUnsent.text : undefined),
             limits: (limits, partial) => this.emitFromBackend({ type: "limits", limits, partial }),
@@ -2924,7 +2924,8 @@ export class Agent {
     private backendRequestAt?: number;
 
     /** The backend's context while it works: shown now, with nothing counted (its usage comes at the end of the turn). */
-    private recordBackendContext(tokens: number) {
+    private recordBackendContext(tokens: number, window?: number) {
+        if (window && !this.model.contextWindow) this.model.contextWindow = window;
         if (!tokens || tokens === this.contextTokens) return;
         this.contextTokens = tokens;
         this.emit({ type: "usage", usage: { inputTokens: 0, outputTokens: 0 }, cost: { usd: 0, estimated: false, unknown: false }, contextTokens: tokens });
@@ -2934,7 +2935,8 @@ export class Agent {
         if (usage.inputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0) > 0) this.modelTookPrompt = true;
         const cost = costOf(usage, this.model);
         this.session.recordUsage(modelRef(this.model), usage, cost.usd, cost.unknown);
-        if (o.contextWindow && !this.model.contextWindow) this.model.contextWindow = o.contextWindow;
+        // The backend's own figure, over one Cavvy had from the model's name.
+        if (o.contextWindow) this.model.contextWindow = o.contextWindow;
         if (o.contextTokens) this.contextTokens = o.contextTokens;
         this.noteCache(usage, this.backendRequestAt ?? Date.now());
         this.lastUsageTotal = this.session.messages.length;

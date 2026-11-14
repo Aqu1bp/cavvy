@@ -25,7 +25,7 @@ import {
     type StreamEvent,
     type Usage,
 } from "./types";
-import { anthropicTraits, ANTHROPIC_FALLBACK_MODELS, ANTHROPIC_THINKING_BUDGETS, ANTHROPIC_BUDGET_EFFORTS } from "./anthropic-models";
+import { anthropicPricing, anthropicTraits, ANTHROPIC_FALLBACK_MODELS, ANTHROPIC_THINKING_BUDGETS, ANTHROPIC_BUDGET_EFFORTS } from "./anthropic-models";
 import type { Effort } from "../config/settings";
 import { plainErrorText } from "../util/html";
 import { fileAsText, fitRequest, readsPdf } from "./files";
@@ -44,6 +44,9 @@ export function sanitizeToolId(id: string): string {
     const clean = id.replace(/[^a-zA-Z0-9_-]/g, "_");
     return clean.length ? clean.slice(0, 64) : "tool";
 }
+
+/** A price the catalog doesn't list for this model (a guess, or its family's latest): shown with "~". */
+const priceGuessed = (id: string) => (anthropicPricing(id)?.estimated === false ? {} : { pricingEstimated: true });
 
 export class AnthropicProvider implements ProviderClient {
     private client: Anthropic;
@@ -87,6 +90,7 @@ export class AnthropicProvider implements ProviderClient {
                     pricing: t.pricing,
                     pricingLong: t.pricingLong,
                     longContextThreshold: t.longContextThreshold,
+                    ...priceGuessed(m.id),
                     ...apiFastModeInfo(this.def.id, m.id, resolveBaseUrl(this.def)),
                     supportsTools: true,
                     supportsImages: caps ? caps.image_input.supported : true,
@@ -119,6 +123,7 @@ export class AnthropicProvider implements ProviderClient {
             pricing: t.pricing,
             pricingLong: t.pricingLong,
             longContextThreshold: t.longContextThreshold,
+            ...priceGuessed(id),
             supportsTools: true,
             supportsImages: true,
             supportsReasoning: t.adaptive || !!t.budget,

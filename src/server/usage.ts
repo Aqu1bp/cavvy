@@ -21,6 +21,7 @@ function empty(): UsageTotals {
 function add(a: UsageTotals, b: UsageTotals) {
     for (const k of ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "cost", "planEquivalent", "cacheSavings"] as const) a[k] += b[k];
     a.unknown ||= b.unknown;
+    if (b.estimated) a.estimated = true;
     for (const k of ["input", "cacheRead", "cacheWrite", "output", "unallocated"] as const) a.costByType[k] += b.costByType[k];
 }
 const labels: Record<Source, string> = { "claude-code": "Claude Code plan", codex: "Codex plan", api: "API providers" };
@@ -48,8 +49,8 @@ export async function usageSummary(days: UsageDays, now = Date.now(), limits: Pl
             // alias without a recorded resolution has no historical evidence;
             // do not silently price it as today's default model.
             if (provider === "claude-code" || provider === "anthropic") {
-                const pricing = anthropicPricing(id);
-                models.set(key, pricing ? { ...resolveModelInfo(`anthropic:${id}`), provider: "anthropic", id, pricing } : undefined);
+                const known = anthropicPricing(id);
+                models.set(key, known ? { ...resolveModelInfo(`anthropic:${id}`), provider: "anthropic", id, pricing: known.pricing, pricingEstimated: known.estimated || undefined } : undefined);
             } else models.set(key, resolveModelInfo(`${provider === "codex" ? "openai" : provider}:${id}`));
         }
         return models.get(key);
@@ -59,8 +60,12 @@ export async function usageSummary(days: UsageDays, now = Date.now(), limits: Pl
         const info = modelInfo(provider, id);
         const parts = usageCostParts(r.usage, info);
         const estimate = costOf(r.usage, info);
-        v.cost = r.unknown ? r.cost : source === "api" && r.cost > 0 ? r.cost : estimate.usd;
+        const recorded = r.unknown || (source === "api" && r.cost > 0);
+        v.cost = recorded ? r.cost : estimate.usd;
         v.unknown = r.unknown || (estimate.unknown && !r.cost);
+        // Priced by Cavvy (now, or when the turn was saved) from a family's latest: the "~" in Usage. Not a provider's own figure.
+        const guessed = (provider === "claude-code" || provider === "anthropic") && info?.pricingEstimated;
+        if (guessed && !r.unknown && v.cost > 0 && typeof r.usage.cost !== "number") v.estimated = true;
         v.planEquivalent = source === "api" ? 0 : v.cost;
         if (parts && !r.unknown) {
             const sum = parts.input + parts.output + parts.cacheRead + parts.cacheWrite + parts.webSearch;
