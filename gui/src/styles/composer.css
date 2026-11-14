@@ -1352,7 +1352,7 @@ button.att-card:hover {
     color: var(--danger);
 }
 
-/* Home: the plan's limit in place of the ring, only once it's close (ComposerMeter nearLimit). Opens the same card. */
+/* Home: the plan's limit in place of the ring, only once it's close (ComposerMeter nearLimit). Just status: no card. */
 .ctx-limit {
     display: inline-flex;
     align-items: center;
@@ -1367,7 +1367,7 @@ button.att-card:hover {
     white-space: nowrap;
     color: var(--warn);
     background: var(--warn-bg);
-    transition: filter 140ms;
+    cursor: default;
 }
 
 .ctx-limit b {
@@ -1376,11 +1376,6 @@ button.att-card:hover {
 
 .ctx-limit svg {
     flex: none;
-}
-
-.ctx-limit:hover,
-.ctx-limit.open {
-    filter: brightness(1.08);
 }
 
 .send {
