@@ -13,6 +13,7 @@ import { ModelPicker, type CompareOption } from "./ModelPicker";
 import { startRun } from "./RunSheet";
 import { ModePicker, nextMode } from "./ModePicker";
 import { InteractionTab } from "./InteractionDock";
+import { ProviderIcon } from "./ui/ProviderIcon";
 import { ScheduleTab } from "./ScheduleTab";
 import { GoalTab } from "./GoalTab";
 import { ComposerMeter } from "./ComposerMeter";
@@ -21,7 +22,7 @@ import { ReviewCommentChips } from "./ReviewCommentChips";
 import { splitComments, takesComments, withComments } from "../lib/review-comments";
 import { fitComposerBar } from "../lib/composer-fit";
 import { plural } from "../lib/format";
-import { putOffSignIn, signInPressed } from "../lib/card-keys";
+import { putOffSignIn, signInMark, signInPressed } from "../lib/card-keys";
 import { aroundOf, newCommentId, reviewComments } from "../state/review-comments";
 import { blockedBy, fromWire, isLongPaste, pastedText, readAttachment } from "../lib/attachments";
 import { createLifetimeGuard } from "../lib/lifetime";
@@ -835,7 +836,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                                     const what = putOffSignIn(w.label, machine);
                                     return (
                                         <div class="si-later-row" title={w.label}>
-                                            <KeyRound size={14} class="si-later-icon" />
+                                            {/* The service's own mark where there is one; a key for the rest (and for several at once). */}
+                                            <Show when={signInMark(w.id)} fallback={<KeyRound size={14} class="si-later-icon" />}>
+                                                {(mark) => <ProviderIcon id={mark()} size={15} class="si-later-icon" />}
+                                            </Show>
                                             <span class="si-later-what truncate">
                                                 {what.name}
                                                 <span class="si-later-why">

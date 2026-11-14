@@ -2,7 +2,16 @@
 // Esc there did nothing for the card (and, for a card another machine asks, stopped the whole turn).
 import { expect, test } from "bun:test";
 import { readFileSync } from "fs";
-import { cardsKey, putOffSignIn, typingIn } from "../gui/src/lib/card-keys";
+import { cardsKey, putOffSignIn, signInMark, typingIn } from "../gui/src/lib/card-keys";
+
+test("a put-off sign-in to one service shows that service's mark; several, or one without a mark, a key", () => {
+    expect(signInMark("sign-in::gh")).toBe("github");
+    expect(signInMark("sign-in:aws-mumbai:gh")).toBe("github");
+    expect(signInMark("sign-in:box:claude")).toBe("claude-code");
+    expect(signInMark("sign-in::codex")).toBe("codex");
+    expect(signInMark("sign-in::aws")).toBeUndefined();
+    expect(signInMark("sign-in:box:claude,codex,gh")).toBeUndefined();
+});
 
 test("a put-off sign-in in the strip's words: what, and on which machine", () => {
     expect(putOffSignIn("Sign in to GitHub")).toEqual({ name: "GitHub" });

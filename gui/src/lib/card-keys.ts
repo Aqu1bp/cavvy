@@ -14,6 +14,12 @@ export function putOffSignIn(label: string, machine?: string): { name: string; o
     return at > 0 ? { name: rest.slice(0, at), on: rest.slice(at + 4) } : { name: rest, ...(machine ? { on: machine } : {}) };
 }
 
+/** The mark for a put-off sign-in to one service that has one (ProviderIcon's ids), from the watch's id ("sign-in:box:gh"): GitHub's, Claude Code's, Codex's. */
+export function signInMark(watchId: string): string | undefined {
+    const targets = watchId.slice(watchId.lastIndexOf(":") + 1).split(",");
+    return targets.length === 1 ? ({ gh: "github", claude: "claude-code", codex: "codex" } as Record<string, string>)[targets[0]!] : undefined;
+}
+
 type Focused = Pick<HTMLElement, "tagName" | "isContentEditable" | "closest"> & { value?: string };
 
 /**
