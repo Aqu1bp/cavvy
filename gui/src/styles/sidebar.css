@@ -283,9 +283,19 @@
     transition: color 140ms;
 }
 
-/* Folded days stacked: one list of headings, not each its own gap. */
-.day-head[aria-expanded="false"] + .day-head {
-    margin-top: calc(2 * var(--sp));
+.day-head {
+    transition: color 140ms, margin-bottom 180ms var(--ease);
+}
+
+/* Folded days stacked: one list of headings, not each its own gap. On the folded one, so it closes as its rows
+   go (the side list is a flex column: margins add, they don't collapse). */
+.day-head[aria-expanded="false"] {
+    margin-bottom: calc(-14 * var(--sp));
+}
+
+/* The last day folded: Settled keeps a heading's gap below it. */
+.day-head[aria-expanded="false"] + .settled-gap {
+    margin-top: calc(14 * var(--sp));
 }
 
 .day-head .wait-dot {

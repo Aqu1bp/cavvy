@@ -15,7 +15,7 @@ import { prefs, setPrefs } from "../state/prefs";
 import { agentFocus, railFree, setDeletedOpen, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
 import { frameDrag } from "../lib/drag";
 import { ago, monogram, projectColor, since } from "../lib/format";
-import { folderOf, holdSidebar, listedOnce, machineLabel, projectOf, revealDay, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type DayLabel, type SidebarEntry } from "../lib/session-order";
+import { dayOf, folderOf, holdSidebar, listedOnce, machineLabel, projectOf, revealDay, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type DayLabel, type SidebarEntry } from "../lib/session-order";
 import { sessionStatus } from "../lib/session-status";
 import { foldOrder, groupCounts, inFront, needsRowLine, needsYou, planFit, railFoot, type RailPlan } from "../lib/rail";
 import { railSelection, setRailSelection, setSidebarOrder } from "../state/sidebar";
@@ -751,6 +751,8 @@ export function Sidebar() {
         allowLayout();
         setPrefs("collapsedProjects", next);
     };
+    // The heading being folded (its key): it says so at once, while its rows shrink away.
+    const [folding, setFolding] = createSignal<string>();
     const setDaysFolded = (next: DayLabel[]) => {
         allowLayout();
         setPrefs("foldedDays", next);
@@ -771,9 +773,13 @@ export function Sidebar() {
         if (folding) {
             const rows = headRows(head);
             if (!rows.length) return commit();
+            setFolding(head);
             const shrinking = rows.map((el) => grow(el, el.offsetHeight, 0, [1, 0]));
             void Promise.all(shrinking.map((a) => a.done)).then(() => {
-                if (!isFolded()) commit();
+                batch(() => {
+                    if (!isFolded()) commit();
+                    setFolding(undefined);
+                });
                 // Rows still shown (held by an open menu, say) get their height back.
                 for (const a of shrinking) a.animation.cancel();
             });
@@ -1011,7 +1017,7 @@ export function Sidebar() {
                     }
                     if (kind === "project") {
                         const group = () => entry() as Extract<SidebarEntry, { kind: "project" }>;
-                        const open = () => !group().collapsed;
+                        const open = () => !group().collapsed && folding() !== key;
                         // Folded, a session in it that needs you still shows: the amber dot, on the heading.
                         const needsYou = () => !open() && (group().ids ?? []).some((id) => sessions().get(id)?.status === "waiting");
                         return <div class={`shelf project-head ${open() ? "" : "folded"}`} data-head={key}>
@@ -1020,7 +1026,7 @@ export function Sidebar() {
                                 <span class="truncate">{group().machine ? `${group().name} · ${group().machine}` : group().name}</span>
                                 <Show when={needsYou()}><span class="wait-dot" title="A session here needs you" /></Show>
                                 {/* Folded, how many are under it. Open, its rows say so. */}
-                                <Show when={!open()}><span class="n">{counts().get(key)}</span></Show>
+                                <Show when={!open()}><span class="n">{group().collapsed ? counts().get(key) : app.sessions.filter((s) => !s.settled && projectOf(s) === group().cwd).length}</span></Show>
                             </button>
                             <button class="shelf-btn add" title={`New session in ${group().name}`} aria-label={`New session in ${group().name}`} onClick={() => newSession(folderOf(group().cwd), group())}><Plus size={13} /></button>
                         </div>;
@@ -1029,11 +1035,12 @@ export function Sidebar() {
                         const day = () => entry() as Extract<SidebarEntry, { kind: "day" }>;
                         // Folded, a session under it that needs you still shows: the amber dot, as a project's heading does.
                         const needsYou = () => Boolean(day().collapsed) && (day().ids ?? []).some((id) => sessions().get(id)?.status === "waiting");
-                        return <button class="shelf day-head" data-head={key} aria-expanded={!day().collapsed} onClick={() => toggleFold("", day().label)}>
+                        const shut = () => Boolean(day().collapsed) || folding() === key;
+                        return <button class="shelf day-head" data-head={key} aria-expanded={!shut()} onClick={() => toggleFold("", day().label)}>
                             <span>{day().label}</span>
-                            <Show when={day().collapsed}><span class="n">{day().ids?.length}</span></Show>
+                            <Show when={shut()}><span class="n">{day().ids?.length ?? app.sessions.filter((s) => !s.settled && dayOf(s, today()) === day().label).length}</span></Show>
                             <Show when={needsYou()}><span class="wait-dot" title="Needs you" /></Show>
-                            <ChevronRight size={14} class={`settled-chev ${day().collapsed ? "closed" : ""}`} />
+                            <ChevronRight size={14} class={`settled-chev ${shut() ? "closed" : ""}`} />
                         </button>;
                     }
                     // At the foot of the list, under a gap that takes the room left: it stays put as sessions come and go above it.
@@ -1047,7 +1054,7 @@ export function Sidebar() {
                     const more = () => entry() as Extract<SidebarEntry, { kind: "more" }>;
                     return <button class="slim more" onClick={() => showMore(more().page)}><span class="lead" aria-hidden="true" /><span>Show {Math.min(PAGE, more().remaining)} more</span></button>;
                 }}</For>
-                <Show when={app.sessionsError || (!sidebarIds(layout()).length && !layout().some((e) => e.kind === "settled"))}>
+                <Show when={app.sessionsError || (!sidebarIds(layout()).length && !layout().some((e) => e.kind === "settled" || ((e.kind === "day" || e.kind === "project") && e.collapsed)))}>
                     {/* In the place of the first day's heading, the size of one: where the first session's "Today" comes. */}
                     <div class="side-empty">
                         <Show when={app.sessionsError} fallback={!app.sessionsLoaded ? app.conn === "open" ? "Loading sessions…" : "Connecting…" : showArchived() ? "Nothing archived" : "No sessions yet"}>

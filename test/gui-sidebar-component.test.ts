@@ -706,6 +706,10 @@ test("listed by date, a day's heading folds and unfolds its sessions, and says h
         head().props.onClick();
         expect(f.foldedDays()).toEqual([]);
         expect(f.ids.length).toBe(before);
+        // Every day folded: the headings and their counts, and no word that there are none.
+        for (const h of f.nodes.filter((n) => n.props.class === "shelf day-head" && n.props["aria-expanded"])) h.props.onClick();
+        expect(f.ids).toEqual([]);
+        expect(f.descendants(f.nav).some((n) => n.props?.class === "side-empty")).toBe(false);
     } finally {
         f.dispose();
     }
