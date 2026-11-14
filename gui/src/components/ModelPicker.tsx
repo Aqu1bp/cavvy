@@ -533,7 +533,6 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                         </Show>
                         {/* The icon is hidden from assistive tech, so the provider is named for it here. */}
                         <Show when={currentProvider()}>{(id) => <span class="sr-only">, {providerName(id())}</span>}</Show>
-                        <Show when={showAccounts()}><span class="pick-acct truncate"> · {accountName()}</span></Show>
                     </>
                 }>
                     <Layers size={15} />
