@@ -35,7 +35,7 @@ import { firstSendable, FOLLOW_UP_WORDS, followUpFor, followUpLabels, otherFollo
 import { canStop } from "../lib/session-status";
 import { listedSchedules } from "../lib/notices";
 import { QueueTab } from "./QueueTab";
-import { StashChip } from "./StashChip";
+import { StashTray } from "./StashTray";
 import { StepsTray } from "./StepsTray";
 
 /** `mention`: a skill picked from the $ menu, which goes in where the $ is. */
@@ -477,7 +477,8 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         const undo = draft.dropStash(item);
         if (!undo) return;
         toast("Stash discarded", "info", { label: "Undo", run: undo });
-        requestAnimationFrame(() => ta?.focus());
+        // The last one gone, its list goes with it: back to the box.
+        if (!draft.stashes().length) requestAnimationFrame(() => ta?.focus());
     };
 
     /** Adds a line where the caret is, keeping the box's own undo. */
@@ -820,7 +821,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 <QueueTab sessionId={p.sessionId!} state={st()!} dequeue={(i, edit) => void dequeue(i, edit)} />
             </Show>
             <Show when={draft.stashes().length}>
-                <StashChip items={draft.stashes()} placement={menuSide()} box={() => ta} onRestore={restoreStash} onDiscard={discardStash} />
+                <StashTray items={draft.stashes()} box={() => ta} onRestore={restoreStash} onDiscard={discardStash} />
             </Show>
             <div class="composer-box card-surface" ref={box}>
                 <Show when={p.sessionId ? st()?.goal : undefined}>

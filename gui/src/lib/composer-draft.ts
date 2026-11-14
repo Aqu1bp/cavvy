@@ -7,39 +7,44 @@ interface Draft {
     attachments: Attachment[];
 }
 
+/** A prompt put away with the stash key, and when. */
+export interface Stashed extends Draft {
+    at: number;
+}
+
 export const composerDrafts = new Map<string, Draft>();
 /**
  * Each composer's stashed prompts, newest first, with what's attached. Their texts are in composerStorage too, so they
  * outlive a reload; attachments don't, like a draft's (and a stash that was only attachments goes with them).
  */
-export const composerStashes = new Map<string, Draft[]>();
+export const composerStashes = new Map<string, Stashed[]>();
 const empty = (): Draft => ({ text: "", attachments: [] });
 const filled = (d: Draft) => Boolean(d.text.trim() || d.attachments.length);
 /** Counts every change to a stash, so each composer showing it (Home's comes and goes) reads it again. */
 const [stashChanges, setStashChanges] = createSignal(0);
-function stashesOf(key: string): Draft[] {
+function stashesOf(key: string): Stashed[] {
     const saved = composerStorage.stashes(key);
     const held = composerStashes.get(key) ?? [];
-    const texts = held.filter((d) => d.text.trim()).map((d) => d.text);
-    if (texts.length === saved.length && texts.every((text, i) => text === saved[i])) return held;
+    const texts = held.filter((d) => d.text.trim());
+    if (texts.length === saved.length && texts.every((d, i) => d.text === saved[i]!.text && d.at === saved[i]!.at)) return held;
     // Saved ones this page hasn't seen (a reload, another window): as saved, each keeping what was attached to it here.
     const pool = [...held];
-    const next = saved.map((text) => {
-        const i = pool.findIndex((d) => d.text === text);
-        return i < 0 ? { text, attachments: [] } : pool.splice(i, 1)[0]!;
+    const next = saved.map((st): Stashed => {
+        const i = pool.findIndex((d) => d.text === st.text && d.at === st.at);
+        return i < 0 ? { ...st, attachments: [] } : pool.splice(i, 1)[0]!;
     });
     if (next.length) composerStashes.set(key, next);
     else composerStashes.delete(key);
     return next;
 }
-function putStashes(key: string, list: Draft[]) {
+function putStashes(key: string, list: Stashed[]) {
     if (list.length) composerStashes.set(key, list);
     else composerStashes.delete(key);
-    composerStorage.setStashes(key, list.filter((d) => d.text.trim()).map((d) => d.text));
+    composerStorage.setStashes(key, list.filter((d) => d.text.trim()));
     setStashChanges((n) => n + 1);
 }
 
-export function createComposerDraft(key: () => string, wasDeleted: (key: string) => boolean = () => false) {
+export function createComposerDraft(key: () => string, wasDeleted: (key: string) => boolean = () => false, now: () => number = Date.now) {
     const [draft, setDraft] = createSignal<Draft>(empty());
     let disposed = false;
     const shows = (k: string) => !disposed && key() === k;
@@ -112,24 +117,24 @@ export function createComposerDraft(key: () => string, wasDeleted: (key: string)
         if (disposed || wasDeleted(k) || !filled(draft())) return false;
         const list = stashesOf(k);
         if (list.length >= STASH_LIMIT) return "full";
-        putStashes(k, [draft(), ...list]);
+        putStashes(k, [{ ...draft(), at: now() }, ...list]);
         putDraft(k, empty());
         return true;
     };
     /** Brings a stashed prompt back into the box (the newest by default). What was in the box, if anything, is stashed in its place, as the newest. */
-    const takeStash = (which?: Draft) => {
+    const takeStash = (which?: Stashed) => {
         const k = key();
         if (disposed || wasDeleted(k)) return false;
         const list = stashesOf(k);
         const back = which ?? list[0];
         if (!back || !list.includes(back)) return false;
         const rest = list.filter((d) => d !== back);
-        putStashes(k, filled(draft()) ? [draft(), ...rest] : rest);
-        putDraft(k, back);
+        putStashes(k, filled(draft()) ? [{ ...draft(), at: now() }, ...rest] : rest);
+        putDraft(k, { text: back.text, attachments: back.attachments });
         return true;
     };
     /** Throws a stashed prompt away. Returns the way back (Undo): to where it was in the list. */
-    const dropStash = (which: Draft) => {
+    const dropStash = (which: Stashed) => {
         const k = key();
         const at = stashesOf(k).indexOf(which);
         if (disposed || at < 0) return undefined;

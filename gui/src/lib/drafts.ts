@@ -7,18 +7,23 @@ export const HISTORY_LIMIT = 100;
 export const STASH_LIMIT = 20;
 export const COMPOSER_MAX_CHARS = 1_000_000; // ~2 MB of UTF-16, leaving room for other preferences.
 export const COMPOSER_MAX_AGE = 30 * 24 * 60 * 60 * 1000;
+/** A prompt put away with the stash key, and when. */
+export interface StashedText {
+    text: string;
+    at: number;
+}
 /** `stash`: the prompts put away with the stash key, newest first, kept apart from what's in the box. */
-type Entry = { draft: string; history: string[]; updated: number; stash?: string[] };
+type Entry = { draft: string; history: string[]; updated: number; stash?: StashedText[] };
 type Storage = Pick<globalThis.Storage, "getItem" | "setItem" | "removeItem">;
 
 // redact.ts's known-format patterns are shared; the GUI cannot import its Node config or
 // server-only registered secrets. Also exclude login commands and legacy OpenAI key shapes.
 const privateText = (text: string) => /^\s*\/login\b/im.test(text) || /\bsk-[A-Za-z0-9_-]{20,}/.test(text) || matchesSecretPattern(text);
 /** Absent when empty, so an entry with nothing stashed is written as it always was. */
-const keptStash = (texts: string[] | undefined) => (texts?.length ? texts : undefined);
-const safe = (e: Entry): Entry => ({ ...e, draft: privateText(e.draft) ? "" : e.draft, stash: keptStash(e.stash?.filter((text) => !privateText(text))), history: e.history.filter((text) => !privateText(text)) });
+const keptStash = (list: StashedText[] | undefined) => (list?.length ? list : undefined);
+const safe = (e: Entry): Entry => ({ ...e, draft: privateText(e.draft) ? "" : e.draft, stash: keptStash(e.stash?.filter((st) => !privateText(st.text))), history: e.history.filter((text) => !privateText(text)) });
 const clearPriority = (e: Entry) => e.draft || e.stash?.length ? 0 : e.history.length ? 1 : 2;
-const hasPrivateText = (e: Entry) => privateText(e.draft) || Boolean(e.stash?.some(privateText)) || e.history.some(privateText);
+const hasPrivateText = (e: Entry) => privateText(e.draft) || Boolean(e.stash?.some((st) => privateText(st.text))) || e.history.some(privateText);
 
 export function createComposerStorage(storage: () => Storage | undefined, now = Date.now) {
     const entries = new Map<string, Entry>();
@@ -40,7 +45,10 @@ export function createComposerStorage(storage: () => Storage | undefined, now = 
                 if (now() - value.updated >= COMPOSER_MAX_AGE) continue;
                 const e: Entry = { draft: value.draft, history: [...new Set<string>(value.history.filter((v: unknown) => typeof v === "string"))].slice(-HISTORY_LIMIT), updated: value.updated };
                 // Last, as it's written: what's read back is the same text, so nothing is saved again.
-                const stash = Array.isArray(value.stash) ? value.stash.filter((v: unknown): v is string => typeof v === "string" && Boolean(v)).slice(0, STASH_LIMIT * 2) : [];
+                const stash: StashedText[] = (Array.isArray(value.stash) ? value.stash : [])
+                    .filter((v: Partial<StashedText> | null) => v && typeof v.text === "string" && v.text && Number.isFinite(v.at))
+                    .slice(0, STASH_LIMIT * 2)
+                    .map((v: StashedText) => ({ text: v.text, at: v.at }));
                 if (stash.length) e.stash = stash;
                 scrub ||= hasPrivateText(e);
                 result.set(key, safe(e));
@@ -136,13 +144,13 @@ export function createComposerStorage(storage: () => Storage | undefined, now = 
             if (e.draft === text) return;
             update(key, { ...e, draft: text });
         },
-        stashes: (key: string) => [...(entry(key).stash ?? [])],
-        setStashes(key: string, texts: string[]) {
+        stashes: (key: string): StashedText[] => (entry(key).stash ?? []).map((st) => ({ ...st })),
+        setStashes(key: string, list: StashedText[]) {
             refresh();
             const e = entry(key);
             const now = e.stash ?? [];
-            if (now.length === texts.length && now.every((text, i) => text === texts[i])) return;
-            update(key, { ...e, stash: keptStash(texts) });
+            if (now.length === list.length && now.every((st, i) => st.text === list[i]!.text && st.at === list[i]!.at)) return;
+            update(key, { ...e, stash: keptStash(list.map((st) => ({ text: st.text, at: st.at }))) });
         },
         remember(key: string, text: string) {
             if (!text.trim()) return;
