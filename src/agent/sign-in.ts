@@ -156,6 +156,17 @@ function first(pattern: string | undefined, text: string): string | undefined {
     }
 }
 
+/** The last thing a pattern finds: a CLI prints what it's about (a link to its docs) before the link that matters. */
+function last(pattern: string, text: string): string | undefined {
+    try {
+        let found: string | undefined;
+        for (const m of text.matchAll(new RegExp(pattern, "gm"))) found = m[1] ?? m[0];
+        return found;
+    } catch {
+        return undefined;
+    }
+}
+
 /** "github.com/login/device" for the card; a long address is cut to its host. */
 export function siteOf(url: string): string {
     try {
@@ -443,7 +454,7 @@ export class SignInFlow {
                 if (why) this.set({ busy: undefined, error: why });
             }, 1200);
         }
-        const url = first(r.reads?.url ?? "(https://\\S+)", out)?.replace(/[)\].,'"]+$/, "");
+        const url = last(r.reads?.url ?? "(https://\\S+)", out)?.replace(/[)\].,'"]+$/, "");
         const patch: Partial<SignInView> = {};
         if (url && url !== this.view.url) Object.assign(patch, { url, site: siteOf(url) });
         if (way.flow === "device") {

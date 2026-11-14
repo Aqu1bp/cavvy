@@ -71,6 +71,7 @@ import { registerTools, type Registration, type ServerTool, type ServerToolResul
 import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./schedule-tools";
 import { WATCH_INSTRUCTIONS, watchServerTools } from "../tools/git-tools";
 import { SIGN_IN_INSTRUCTIONS, signInServerTools, signInToolTitle } from "../tools/sign-in-tools";
+import { signedOutIn, signInRecipes } from "./sign-in-recipes";
 import { MONITOR_INSTRUCTIONS, monitorServerTools, nativeMonitorCall, stoppedMonitorNote } from "../tools/monitor";
 import { BROWSER_INSTRUCTIONS, BrowserNavigateTool, browserServerTools, nativeBrowserCall, servedBrowserName } from "../tools/browser-tools";
 import { SIMULATOR_INSTRUCTIONS, SimulatorControlTool, nativeSimulatorCall, servedSimulatorName, simulatorServerTools } from "../tools/simulator-tools";
@@ -2864,6 +2865,23 @@ export class Agent {
         return sessionStartHooks(this.o.settings(), this.session, "compact", this.state.cwd, (msg, level = "warn") => this.emit({ type: "notice", level, message: msg }), this.hookServices());
     }
 
+    /** When each sign-in was last pointed to, so a command run again and again doesn't bring the same news each time. */
+    private signInPointed = new Map<string, number>();
+
+    /**
+     * What Cavvy's own Bash appends to a failed command (src/tools/bash.ts), for an agent CLI whose shell Cavvy only
+     * watches: a wake that joins the turn (or starts one, if the CLI has already ended it by telling the user to sign in).
+     */
+    private pointToSignIn(output: string) {
+        if (this.o.isSubagent || this.oneShot || !this.state.wakes || !this.serverTools.some((t) => t.name === "request_sign_in")) return;
+        const recipe = signedOutIn(output, signInRecipes(this.o.settings().signIns));
+        if (!recipe) return;
+        const now = Date.now();
+        if (now - (this.signInPointed.get(recipe.id) ?? 0) < 10 * 60_000) return;
+        this.signInPointed.set(recipe.id, now);
+        this.state.wakes.push({ source: "sign-in", key: `sign-in-hint:${recipe.id}`, label: `${recipe.name} isn't signed in`, text: `A command just failed because ${recipe.name} isn't signed in. Ask the user to sign in: call request_sign_in with target "${recipe.id}", then run the command again. Don't tell them to run a login command themselves.` });
+    }
+
     /**
      * Backend tool calls use Cavvy's tool (when there is one) for titles
      * and rendering. Their output is redacted here, as Cavvy's own tools
@@ -2875,6 +2893,8 @@ export class Agent {
         if (e.type === "tool_end") this.backendRequestAt = Date.now();
         e = redactBackendEvent(e);
         this.noteServedCall(e, this.servedMain);
+        // A command of the CLI's own that failed saying something isn't signed in: Cavvy can't add to what its model read, so the pointer follows as news.
+        if (e.type === "tool_end" && e.call.name === "Bash" && e.result.isError) this.pointToSignIn(e.result.content);
         // Cavvy's own tools it served (Monitor for Codex) show as those tools.
         if ((e.type === "tool_start" || e.type === "tool_end") && e.call.name.startsWith(`mcp__${MCP_SERVER_NAME}__`)) {
             const served = e.call.name.slice(`mcp__${MCP_SERVER_NAME}__`.length);

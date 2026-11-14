@@ -47,7 +47,8 @@ export interface SignInRecipe {
     /** Set for its commands. */
     env?: Record<string, string>;
     /**
-     * Patterns over what the sign-in prints: the first group of `url` and `code`; `prompt`, the whole of what it
+     * Patterns over what the sign-in prints: the first group of `url` (the last link that fits, any link without
+     * a pattern) and of `code`; `prompt`, the whole of what it
      * prints when it's waiting for the pasted code; `expired` when the code is no longer good.
      */
     reads?: { url?: string; code?: string; prompt?: string; expired?: string };
@@ -88,7 +89,9 @@ export const SIGN_IN_RECIPES: readonly SignInRecipe[] = [
         status: { run: "aws sts get-caller-identity --query Account --output text", signedIn: "^\\d{12}\\s*$", who: "\\d{8}(\\d{4})" },
         here: { flow: "browser", run: "aws login" },
         away: { flow: "paste", run: "aws login --remote" },
-        reads: { url: "(https://\\S+)", prompt: "Enter the authorization code[^:]*:" },
+        reads: { url: "(https://\\S*signin\\.\\S+)", prompt: "Enter the authorization code[^:]*:" },
+        // With no region configured it asks for one first: the one it offers is taken.
+        answers: [{ when: "AWS Region \\[[^\\]]*\\]:", send: "\r" }],
         signedOut: ["Unable to locate credentials", "ExpiredToken", "Your session has expired", "aws login"],
     },
     {
