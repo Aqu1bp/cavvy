@@ -157,6 +157,7 @@ function setup(respond: (req: { messages: Message[] }, n: number) => AssistantMe
     let n = 0;
     const requests: Message[][] = [];
     const notices: string[] = [];
+    const data: unknown[] = [];
     const agent = new Agent({
         session,
         model: { provider: "test", id: "test" },
@@ -174,16 +175,16 @@ function setup(respond: (req: { messages: Message[] }, n: number) => AssistantMe
         tools: [...BUILTIN_TOOLS, Poke],
         mode: { get: () => "bypassPermissions", set: () => {} },
         toolState,
-        host: { emit: (e: any) => e.type === "notice" && notices.push(e.message), ui: {} },
+        host: { emit: (e: any) => e.type === "notice" && (notices.push(e.message), e.data && data.push(e.data)), ui: {} },
     });
-    return { agent, session, wakes, requests, notices, settings };
+    return { agent, session, wakes, requests, notices, data, settings };
 }
 
 const lastText = (m: Message | undefined) => (m?.content ?? []).map((p: any) => (p.type === "text" ? p.text : p.type === "tool_result" ? p.content : "")).join("\n");
 
 describe("a running agent", () => {
     test("a wake raised during a tool call rides along with the results", async () => {
-        const { agent, wakes, requests, notices } = setup((_req, n) =>
+        const { agent, session, wakes, requests, notices, data } = setup((_req, n) =>
             n === 0 ? reply([{ type: "tool_call", id: "c1", name: "Poke", input: { label: "PR #3: checks failed" } }], "tool_use") : reply([{ type: "text", text: "on it" }]),
         );
         const reason = await agent.run([{ type: "text", text: "watch it" }], { signal: new AbortController().signal });
@@ -194,6 +195,10 @@ describe("a running agent", () => {
         expect(sent).toContain("not the user");
         expect(wakes.size).toBe(0);
         expect(notices).toContain("↻ PR #3: checks failed");
+        // The GUI draws its own bell over the text without the terminal's mark.
+        expect(data).toContainEqual({ wake: true, text: "PR #3: checks failed" });
+        // Kept with the session, where it joined: after the call's message, before its results.
+        expect(session.notices).toMatchObject([{ index: 2, level: "info", text: "PR #3: checks failed", wake: true }]);
         wakes.dispose();
     });
 
@@ -202,12 +207,20 @@ describe("a running agent", () => {
             n === 0 ? reply([{ type: "tool_call", id: "c1", name: "Poke", input: { label: "PR #3: new comment" } }], "tool_use") : reply([{ type: "text", text: "on it" }]),
         );
         let given = false;
-        (agent as any).o.host.drainQueued = () => (given ? [] : ((given = true), ["also check the docs"]));
+        const order: string[] = [];
+        const host = (agent as any).o.host;
+        const emit = host.emit;
+        host.emit = (e: any) => (e.type === "notice" && order.push("wake"), emit(e));
+        host.drainQueued = () => (given ? [] : ((given = true), order.push("steer"), ["also check the docs"]));
         await agent.run([{ type: "text", text: "watch it" }], { signal: new AbortController().signal });
         const sent = lastText(requests[1]!.at(-1));
         expect(sent).toContain("also check the docs");
         expect(sent).toContain("event PR #3: new comment");
         expect(JSON.stringify(session.messages)).toContain("event PR #3: new comment");
+        // Its line goes before the steer starts its turn, at the results' place: where a reopened session shows it.
+        expect(order).toEqual(["wake", "steer"]);
+        const results = session.messages.findIndex((m) => m.meta?.kind === "tool_results");
+        expect(session.notices).toMatchObject([{ index: results, wake: true }]);
         expect(wakes.size).toBe(0);
         wakes.dispose();
     });

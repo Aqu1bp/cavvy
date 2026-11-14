@@ -250,6 +250,8 @@ export interface NoticeData {
     limit?: NoticeLimit;
     /** The agent CLI compacted its context: a rule across the column, as Cavvy's own compaction is. */
     compacted?: true;
+    /** An event the agent asked to be woken for joined the running turn: the bell, as a wake that starts a turn has. */
+    wake?: true;
 }
 
 /** A background task an account switch's restart stopped. */

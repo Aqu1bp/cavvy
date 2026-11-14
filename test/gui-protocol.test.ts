@@ -480,8 +480,10 @@ describe("replay", () => {
         log.write({ t: "step", seg: 0, index: 0, drop: "b7" });
         step(rest[0]!, "b3");
         step(thought!, "tu1");
-        // A notice isn't a step.
+        // A notice isn't a step; what happened to the work while it ran (a compaction, a wake that joined it) is.
         expect(shownStep(rest[3]!)).toBeUndefined();
+        expect(shownStep({ t: "notice", id: "c", level: "info", text: "Claude Code compacted its context.", compacted: true })).toMatchObject({ compacted: true });
+        expect(shownStep({ t: "notice", id: "w", level: "info", text: "PR #3: checks failed", wake: true })).toMatchObject({ wake: true });
         for (const [i, b] of rest.entries()) if (i > 0 && shownStep(b)) step(b, rest[i - 1]!.id === "b4" ? "tu4" : rest[i - 1]!.id);
         // The sub-agents: what changed of them, and their steps.
         const subRead: Block = { t: "tool", id: "s1", name: "Read", title: "Read(a.ts)", status: "ok", output: "x".repeat(5000), diff, progress: "x" };
