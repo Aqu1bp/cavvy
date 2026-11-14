@@ -2106,6 +2106,15 @@ export class Engine {
         return { description: st.description, warning: st.apiKey ? `${def.name} is signed in with an API key, so usage is billed to that key, not a subscription.` : undefined, model: this.adoptDefaultModel(def.id) };
     }
 
+    /**
+     * An agent CLI was signed in through a sign-in card: its accounts and models are looked at again, as when its
+     * sign-in terminal closes. On a server, or where it's already in use, its default account is turned on too.
+     */
+    async cliSignedIn(providerId: string, accountId: string): Promise<void> {
+        if (accountId === "default" && (this.o.away || readAgentConfig(providerId))) await this.connectCli(providerId).catch(() => undefined);
+        await this.accountsList(providerId, true).then(() => this.refreshListings(true)).then(() => this.broadcast({ type: "models.changed" })).catch(() => undefined);
+    }
+
     /** As /login does: with no default model yet, the newly connected provider's best one becomes it. */
     private adoptDefaultModel(providerId: string): string | undefined {
         if (this.guiSettings(this.o.startCwd).model) return undefined;
@@ -2411,6 +2420,12 @@ export class Engine {
                         release();
                         throw e;
                     }
+                }
+                // A sign-in card's "Open in terminal": the command it shows, typed for the user to run (never run for them).
+                if (p.signIn !== undefined) {
+                    if (!p.signIn || typeof p.signIn !== "object") throw new RpcError("Invalid sign-in", "invalid");
+                    const input = this.runtimes.get(str(p.signIn.session, "session"))?.signInTyped(str(p.signIn.interaction, "interaction"));
+                    return this.terminals.open(client, str(p.id, "id"), str(p.cwd, "cwd"), p.cols, p.rows, input ? { input } : {});
                 }
                 return this.terminals.open(client, str(p.id, "id"), str(p.cwd, "cwd"), p.cols, p.rows);
             case "terminal.write":
@@ -2865,6 +2880,9 @@ export class Engine {
                 return null;
             case "session.restartCli":
                 await this.runtime(p.id).restartCli();
+                return null;
+            case "session.signIn":
+                this.runtime(p.id).reopenSignIn(str(p.watchId, "watchId"));
                 return null;
             case "session.stopWatch":
                 this.runtime(p.id).stopWatch(str(p.watchId, "watchId"));

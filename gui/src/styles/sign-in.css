@@ -1,0 +1,118 @@
+/* The sign-in card (components/SignInCard.tsx): what each kind of sign-in shows inside the dock's card. */
+.si-wait {
+    display: flex;
+    align-items: center;
+    gap: calc(8 * var(--sp));
+    font-size: 0.893rem;
+    color: var(--fg-2);
+}
+
+.si-error {
+    font-size: 0.893rem;
+    color: var(--err, var(--fg-2));
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.si-rows {
+    display: flex;
+    flex-direction: column;
+    border-radius: var(--r-well);
+    background: var(--well);
+    box-shadow: inset 0 0 0 0.5px var(--well-stroke);
+}
+
+.si-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: calc(12 * var(--sp));
+    min-height: calc(44 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(8 * var(--sp)) calc(6 * var(--sp)) calc(12 * var(--sp));
+}
+
+.si-row + .si-row {
+    border-top: 1px solid var(--line);
+}
+
+.si-name {
+    font-size: 0.929rem;
+    font-weight: 500;
+}
+
+.si-done {
+    display: flex;
+    align-items: center;
+    gap: calc(6 * var(--sp));
+    min-width: 0;
+    padding-right: calc(6 * var(--sp));
+    font-size: 0.857rem;
+    color: var(--fg-3);
+}
+
+.si-done svg {
+    flex: none;
+    color: var(--ok, var(--accent));
+}
+
+.si-code {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: calc(10 * var(--sp)) calc(8 * var(--sp)) calc(10 * var(--sp)) calc(14 * var(--sp));
+    border-radius: var(--r-well);
+    background: var(--well);
+    box-shadow: inset 0 0 0 0.5px var(--well-stroke);
+}
+
+.si-code .mono {
+    font-size: 1.5rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+}
+
+.si-code.old .mono {
+    color: var(--fg-3);
+    text-decoration: line-through;
+}
+
+.si-link {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(4 * var(--sp));
+    align-self: flex-start;
+    font-size: 0.857rem;
+}
+
+.si-term {
+    margin: 0;
+    min-height: calc(64 * var(--sp));
+    max-height: calc(160 * var(--sp));
+    overflow: auto;
+    padding: calc(10 * var(--sp)) calc(12 * var(--sp));
+    border-radius: var(--r-well);
+    background: #0b0b0d;
+    color: #e6e6e6;
+    font-size: 0.893rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    outline: none;
+    cursor: text;
+}
+
+.si-term:focus-visible {
+    box-shadow: 0 0 0 2px var(--accent);
+}
+
+.si-caret {
+    display: inline-block;
+    width: 0.6em;
+    height: 1.1em;
+    vertical-align: text-bottom;
+    background: #e6e6e6;
+    opacity: 0.35;
+}
+
+.si-term:focus .si-caret {
+    opacity: 1;
+}

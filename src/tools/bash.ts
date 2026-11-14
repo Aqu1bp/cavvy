@@ -1,5 +1,7 @@
 import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { Readable } from "node:stream";
+import { signInHint } from "./sign-in-tools";
+import { signInRecipes } from "../agent/sign-in-recipes";
 import { appendFileSync, closeSync, constants, createReadStream, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -1045,6 +1047,9 @@ export const BashTool: Tool<{ command: string; description?: string; timeout?: n
         out += notes;
         const hint = ctx.sandbox && !res.aborted ? sandboxOutputHint(ctx.sandbox, res.output, proxy, failed) : undefined;
         if (hint) out += `\n\n${hint}`;
+        // Something it needed isn't signed in: say which tool asks the user, so the agent doesn't just relay the CLI's advice.
+        const signIn = failed && !res.aborted && ctx.signInTool ? signInHint(res.output, signInRecipes(ctx.settings.signIns), ctx.signInTool) : undefined;
+        if (signIn) out += `\n\n${signIn}`;
         const lineCount = out.trim() ? out.trim().split("\n").length : 0;
         return {
             content: out.trim() || "(no output)",

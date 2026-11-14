@@ -108,6 +108,8 @@ export interface Settings {
     env?: Record<string, string>;
     mcpServers?: Record<string, McpServerConfig>;
     hooks?: Partial<Record<HookEvent, HookConfig[]>>;
+    /** Sign-ins of the user's own, beside Cavvy's (src/agent/sign-in-recipes.ts): how to tell, and the command that signs in. User settings only. */
+    signIns?: unknown[];
     /** Show model reasoning/thinking text when the provider returns it. */
     showThinking?: boolean;
     /** Upper bound for max output tokens per response. */
@@ -519,6 +521,9 @@ export function loadSettings(cwd: string, opts: { trusted?: boolean } = {}): Set
     }
     if (user.reviewModel) merged.reviewModel = user.reviewModel;
     else delete merged.reviewModel;
+    // Commands Cavvy runs itself, outside any sandbox: only the user's own file can add one, never a project's.
+    if (Array.isArray(user.signIns)) merged.signIns = user.signIns;
+    else delete merged.signIns;
     mergeBrowser(merged, layers, user);
     // Any layer can turn the simulator off; none can turn it back on.
     if (layers.some((l) => !simulatorEnabled(l))) merged.simulator = { enabled: false };

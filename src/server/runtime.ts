@@ -30,6 +30,11 @@ import { expandCommand, pluginCommandFor, slashCommand } from "../commands/custo
 import { addPermissionRule, updateSettings, EFFORT_LEVELS, type Effort, type Settings } from "../config/settings";
 import { MODE_INFO, PERMISSION_MODES, type PermissionMode } from "../permissions/modes";
 import { onServer } from "../servers/role";
+import { getServer, listServers } from "../servers/store";
+import { serverSignInHost } from "../servers/sign-in-host";
+import { localSignInHost } from "../agent/sign-in-host";
+import { signInRecipes } from "../agent/sign-in-recipes";
+import { SessionSignIns, signInAction, signInAsks, type SignInAnswer, type SignInMachine, type SignInRequest } from "../agent/sign-ins";
 import { PermissionChecker } from "../permissions/checker";
 import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "../permissions/classifier";
 import { toolPath } from "../permissions/rules";
@@ -1654,6 +1659,7 @@ export class Runtime {
                     askQuestion: (q, options, multi) => this.askQuestion(q, options, multi),
                     approvePlan: (plan) => this.approvePlan(plan),
                     requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),
+                    requestSignIn: (req, signal) => this.requestSignIn(req, signal),
                 },
                 drainQueued: (record, admit, id) => this.drainQueued(record, admit, id),
                 drainWaiting: (record) => this.drainWaiting(record),
@@ -2485,6 +2491,7 @@ export class Runtime {
             this.setState({ interactions: [...this.pendingList()] });
             this.setStatus("waiting");
             if (interaction.kind === "secret") return this.engine.notify(this, "question", `Asks you for ${interaction.name}`);
+            if (interaction.kind === "signin") return this.engine.notify(this, "question", signInAsks(interaction));
             const kind = interaction.kind;
             // A sub-agent's request says whose it is: the session's own agent didn't ask.
             const asker = kind === "permission" && interaction.agentLabel ? `Sub-agent "${interaction.agentLabel}" wants` : "Wants";
@@ -2505,6 +2512,15 @@ export class Runtime {
         const p = this.pending.get(interactionId);
         if (!p) throw new RpcError("That request was already answered or has expired.", "expired");
         if (p.interaction.kind !== r.kind) throw new RpcError("The answer doesn't match the request.");
+        // A step in a sign-in's card: the card stays until the sign-in itself is over.
+        if (r.kind === "signin") {
+            try {
+                this.signIns.act(interactionId, signInAction(r));
+            } catch (e) {
+                throw new RpcError(e instanceof Error ? e.message : String(e), "invalid");
+            }
+            return;
+        }
         // A bad value stays in the card for the user to fix; the message never quotes it.
         if (p.interaction.kind === "secret" && r.kind === "secret" && r.value !== undefined) {
             const bad = secretValueError(r.value, p.interaction.name);
@@ -2545,6 +2561,8 @@ export class Runtime {
     private cancelInteractions(opts: { keepDelegated?: boolean; keepBackground?: boolean } = {}) {
         for (const [id, p] of [...this.pending]) {
             if (opts.keepBackground && this.backgroundAsks.has(id)) continue;
+            // A sign-in's card goes when its sign-in does: one the turn waits on ends with the turn's own signal, and one left for the user stays.
+            if (p.interaction.kind === "signin" && this.signIns.has(id)) continue;
             const agentId = p.interaction.kind === "permission" ? p.interaction.agentId : undefined;
             // A delegated task's own sub-agent asks for the task.
             const agent = agentId ? this.outermost(agentId) : undefined;
@@ -2724,6 +2742,67 @@ export class Runtime {
             signal.removeEventListener("abort", withdraw);
             if (toolId) this.patchBlock(toolId, { status: "running" });
         }
+    }
+
+    /** RequestSignIn: the card is the flow's, changed in place as the sign-in goes; this waits for what the model is told. */
+    private async requestSignIn(req: SignInRequest, signal: AbortSignal): Promise<SignInAnswer> {
+        const toolId = this.runningTool("RequestSignIn") ?? this.runningTool(`mcp__${MCP_SERVER_NAME}__request_sign_in`);
+        if (toolId) this.patchBlock(toolId, { status: "awaiting" });
+        try {
+            return await this.signIns.request(req, signal);
+        } finally {
+            if (toolId) this.patchBlock(toolId, { status: "running" });
+        }
+    }
+
+    /** A sign-in one of Cavvy's own features needs for this session: the same card, with no tool call behind it. */
+    askSignIn(req: SignInRequest, then?: () => void): Promise<boolean> {
+        return this.signIns.ask(req, then);
+    }
+
+    /** What a sign-in card's "Open in terminal" types into the new terminal: the command it shows, for the user to run. */
+    signInTyped(interactionId: string): string | undefined {
+        return this.signIns.typed(interactionId);
+    }
+
+    /** The user came back to a sign-in they'd put off. */
+    reopenSignIn(watchId: string) {
+        if (!this.signIns.reopen(watchId)) throw new RpcError("That sign-in is no longer waiting.", "not_found");
+    }
+
+    private readonly signIns: SessionSignIns = new SessionSignIns({
+        recipes: () => signInRecipes(this.settings().signIns),
+        machine: (name, account) => this.signInMachine(name, account),
+        newId: () => this.newId(),
+        wakes: () => this.toolState.wakes,
+        watchers: () => this.toolState.watchers,
+        save: (recipe) => updateSettings("user", this.ws.cwd, (s) => { s.signIns = [...(Array.isArray(s.signIns) ? s.signIns : []).filter((r) => (r as { id?: unknown })?.id !== recipe.id), recipe]; }),
+        cards: {
+            show: (id, view) => {
+                const had = this.pending.get(id);
+                const interaction: Interaction = { ...view, kind: "signin", id, since: had?.interaction.since ?? Date.now() };
+                if (had) {
+                    had.interaction = interaction;
+                    this.setState({ interactions: this.pendingList() });
+                } else void this.interact(interaction);
+            },
+            hide: (id) => this.settle(id, undefined),
+        },
+    });
+
+    /** Where a sign-in an agent asked for happens: this machine, or one of the user's servers by its name here. */
+    private signInMachine(name: string | undefined, account?: string): SignInMachine {
+        const away = this.engine.away;
+        const here = !name || /^(this|here|local|localhost|this (mac|machine|computer|server))$/i.test(name);
+        if (here) return { host: localSignInHost({ away, account, signedIn: (recipe, acct) => (recipe.provider ? this.engine.cliSignedIn(recipe.provider, acct) : Promise.resolve()) }), where: away ? "this server" : undefined };
+        // A server reaches no other machine of the user's: its sign-ins are its own.
+        if (away) throw new Error("From a server, only this server can be signed in: leave machine out.");
+        const entry = getServer(name.toLowerCase());
+        if (!entry) {
+            const known = listServers().map((s) => s.name);
+            throw new Error(known.length ? `No server is called "${name}". The user's servers: ${known.join(", ")}. Leave machine out for this machine.` : `No server is called "${name}": the user has added none. Leave machine out for this machine.`);
+        }
+        return { host: serverSignInHost(entry), name: entry.name, where: entry.name };
     }
 
     forgetSecret(name: string) {
@@ -4262,7 +4341,8 @@ export class Runtime {
         if (!w) throw new RpcError("That watch has already ended.", "not_found");
         w.stop();
         this.toolState.watchers!.delete(watchId);
-        this.agent?.addReminder(`The user stopped watching ${w.label}. Don't watch it again unless they ask.`);
+        if (w.kind === "sign-in") this.agent?.addReminder(`The user dismissed the request: ${w.label}. Don't ask for it again unless they bring it up.`);
+        else this.agent?.addReminder(`The user stopped watching ${w.label}. Don't watch it again unless they ask.`);
     }
 
     /** Watching something (a pull request): kept loaded so the watch goes on with no window open. */
@@ -4367,6 +4447,7 @@ export class Runtime {
         this.titleAbort?.abort();
         this.cancelInteractions();
         this.toolState.secrets?.clear();
+        this.signIns.dispose();
         stopWatchers(this.toolState);
         this.toolState.wakes?.dispose();
         if (this.shellTimer) clearInterval(this.shellTimer);

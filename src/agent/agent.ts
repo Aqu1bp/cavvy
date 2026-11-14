@@ -70,6 +70,7 @@ import { cachedListings, type ProviderListing } from "../providers/models";
 import { registerTools, type Registration, type ServerTool, type ServerToolResult } from "../mcp/server";
 import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./schedule-tools";
 import { WATCH_INSTRUCTIONS, watchServerTools } from "../tools/git-tools";
+import { SIGN_IN_INSTRUCTIONS, signInServerTools, signInToolTitle } from "../tools/sign-in-tools";
 import { MONITOR_INSTRUCTIONS, monitorServerTools, nativeMonitorCall, stoppedMonitorNote } from "../tools/monitor";
 import { BROWSER_INSTRUCTIONS, BrowserNavigateTool, browserServerTools, nativeBrowserCall, servedBrowserName } from "../tools/browser-tools";
 import { SIMULATOR_INSTRUCTIONS, SimulatorControlTool, nativeSimulatorCall, servedSimulatorName, simulatorServerTools } from "../tools/simulator-tools";
@@ -1719,6 +1720,8 @@ export class Agent {
         const delegating = !acp && this.o.settings().delegation !== false && delegationAvailable(caller, this.listings());
         const store = acp ? undefined : this.state.secrets;
         const ask = this.o.host.ui.requestSecret?.bind(this.o.host.ui);
+        // Where there's someone to sign in (not a -p run).
+        const signIn = acp ? undefined : this.o.host.ui.requestSignIn?.bind(this.o.host.ui);
         const scheduling = !acp && Boolean(this.state.scheduler);
         // A watch wakes the session later: only one that stays open (not -p) has somewhere to wake.
         const watching = !acp && Boolean(this.state.wakes && this.state.watchers) && !this.oneShot;
@@ -1732,7 +1735,7 @@ export class Agent {
         const worktrees = caller === "codex" || acp;
         // The user's other sessions: where the host reaches them (not a -p run's).
         const peers = !acp && !this.oneShot ? this.state.peers : undefined;
-        if (!delegating && !(store && ask) && !scheduling && !watching && !browsing && !simulating && !worktrees && !peers) return undefined;
+        if (!delegating && !(store && ask) && !signIn && !scheduling && !watching && !browsing && !simulating && !worktrees && !peers) return undefined;
         const tools: ServerTool[] = [];
         const instructions: string[] = [];
         if (delegating) {
@@ -1752,6 +1755,11 @@ export class Agent {
         if (store && ask) {
             tools.push(...secretTools({ store, ask, authorize: (name, input, signal) => this.authorizeServedTool(name, secretToolTitle(name, input), input, signal), run: (o, signal) => this.runWithSecrets(o, signal) }));
             instructions.push(SECRET_INSTRUCTIONS);
+        }
+        if (signIn) {
+            // Under the CLI's limit for one of Cavvy's tools (toolTimeoutSec below): a call still waiting then answers "still waiting", and the card stays.
+            tools.push(...signInServerTools({ ask: signIn, waitMs: DELEGATION_LIMITS.maxWaitMs - 5 * 60_000, authorize: (name, input, signal) => this.authorizeServedTool(name, signInToolTitle(`mcp__${MCP_SERVER_NAME}__${name}`, input), input, signal) }));
+            instructions.push(SIGN_IN_INSTRUCTIONS);
         }
         if (scheduling) {
             tools.push(...scheduleServerTools(() => this.state.scheduler));
@@ -2889,7 +2897,7 @@ export class Agent {
             if (call.name === DELEGATE_TOOL && e.type === "tool_start") this.delegateCalls.push({ id: call.id, input: (call.input ?? {}) as Record<string, unknown>, claimed: false });
             else if (call.name === DELEGATE_TOOL) this.delegateCalls = this.delegateCalls.filter((c) => c.id !== call.id);
         }
-        const own = e.type === "tool_start" ? (orchestratorTitle(e.call.name, (e.call.input ?? {}) as Record<string, unknown>) ?? secretToolTitle(e.call.name, (e.call.input ?? {}) as Record<string, unknown>)) : undefined;
+        const own = e.type === "tool_start" ? (orchestratorTitle(e.call.name, (e.call.input ?? {}) as Record<string, unknown>) ?? secretToolTitle(e.call.name, (e.call.input ?? {}) as Record<string, unknown>) ?? signInToolTitle(e.call.name, (e.call.input ?? {}) as Record<string, unknown>)) : undefined;
         if (own && e.type === "tool_start") e = { ...e, title: own };
         else if (e.type === "tool_end" && e.title) {
             // Retitled at its end (its input only known then): titled as at its start.
@@ -3113,7 +3121,7 @@ export class Agent {
         const state: ToolState = { ...this.state, secrets: store.only(o.names) };
         let r: ToolResult;
         try {
-            r = await BashTool.run(input, { ...this.toolContext("", signal), state, onProgress: undefined });
+            r = await BashTool.run(input, { ...this.toolContext("", signal), state, onProgress: undefined, signInTool: this.o.host.ui.requestSignIn ? "request_sign_in" : undefined });
         } catch (e) {
             r = { content: signal.aborted ? "Interrupted by user" : `Tool error: ${redact((e as Error).message ?? String(e))}`, isError: true };
         }
@@ -3287,6 +3295,8 @@ export class Agent {
             },
             onProgress: (text) => this.emit({ type: "tool_progress", id: callId, text }),
             ui: this.o.host.ui,
+            // A sub-agent has no way to ask the user: its parent hears what's signed out from its report.
+            signInTool: this.o.isSubagent || !this.o.host.ui.requestSignIn ? undefined : "RequestSignIn",
             // Only the session's own agent can be woken: a sub-agent's turn ends with its task.
             wakes: this.o.isSubagent ? undefined : this.state.wakes,
             hidden: (toolName, abs) => this.o.checker.hiddenFromSearch(toolName, abs),
@@ -3772,7 +3782,7 @@ export class Agent {
             notes.push(...(servers?.notes ?? []));
         }
 
-        const exclude = new Set(["Task", "TaskStatus", "Monitor", "ListModels", "TodoWrite", "AskUserQuestion", "RequestSecret", "ExitPlanMode", ...CRON_TOOL_NAMES, ...SESSION_TOOL_NAMES]);
+        const exclude = new Set(["Task", "TaskStatus", "Monitor", "ListModels", "TodoWrite", "AskUserQuestion", "RequestSecret", "RequestSignIn", "ExitPlanMode", ...CRON_TOOL_NAMES, ...SESSION_TOOL_NAMES]);
         let tools = this.tools.filter((t) => !exclude.has(t.name));
         // Its own servers' tools (their names never match a configured server's: startAgentServers refuses those).
         if (servers?.tools.length) tools = [...tools, ...servers.tools];

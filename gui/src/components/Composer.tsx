@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
 import { isMod, mod } from "../lib/platform";
-import { ArrowUp, CornerDownRight, Database, FileText, Folder, ListEnd, Maximize2, Minimize2, Slash, Sparkles, SquareTerminal, Plus } from "lucide-solid";
+import { ArrowUp, CornerDownRight, Database, FileText, Folder, ListEnd, Maximize2, Minimize2, Slash, Sparkles, SquareTerminal, Plus, X } from "lucide-solid";
 import type { CommandInfo, FollowUpMode, McpResourceInfo, PermissionModeId } from "@shared/protocol";
 import { app, handleFor, reportError, rpc, toast, wasDeleted } from "../state/app";
 import { far, interrupt, send, setMode } from "../state/actions";
@@ -784,6 +784,26 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                 <QueueTab sessionId={p.sessionId!} state={st()!} dequeue={(i, edit) => void dequeue(i, edit)} />
             </Show>
             <div class="composer-box card-surface" ref={box}>
+                {/* Sign-ins put off with Later: each stays here until it's signed in or dismissed. Not while a sign-in's card is up. */}
+                <Show when={p.sessionId && interactions()[0]?.kind !== "signin" ? st()?.watches?.filter((w) => w.kind === "sign-in") : undefined}>
+                    {(items) => (
+                        <For each={items()}>
+                            {(w) => (
+                                <div class="queue goal-tab" role="status">
+                                    <div class="goal-row">
+                                        <span class="goal-text truncate">{w.label}</span>
+                                        <button class="pbtn sm" onClick={() => void rpc.call("session.signIn", { id: p.sessionId!, watchId: w.id }).catch(reportError)}>
+                                            Sign in
+                                        </button>
+                                        <button class="hb sm" title="Dismiss" aria-label={`Dismiss: ${w.label}`} onClick={() => void rpc.call("session.stopWatch", { id: p.sessionId!, watchId: w.id }).catch(reportError)}>
+                                            <X size={14} />
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+                        </For>
+                    )}
+                </Show>
                 <Show when={p.sessionId ? st()?.goal : undefined}>
                     {(goal) => <GoalTab sessionId={p.sessionId!} goal={goal()} />}
                 </Show>

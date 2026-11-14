@@ -3,9 +3,12 @@
 
 type Focused = Pick<HTMLElement, "tagName" | "isContentEditable" | "closest"> & { value?: string };
 
-/** Something that takes typing has the keyboard. The find bar's buttons too: its Esc closes it, and it has no use for the number keys. And the browser's page, which takes every key. */
+/**
+ * Something that takes typing has the keyboard. The find bar's buttons too: its Esc closes it, and it has no use for the number
+ * keys. And the browser's page and a sign-in's prompt, which take every key.
+ */
 export function typingIn(el: Focused | null): boolean {
-    return Boolean(el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.isContentEditable || el.closest(".find-bar, .br-canvas")));
+    return Boolean(el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.isContentEditable || el.closest(".find-bar, .br-canvas, .si-term")));
 }
 
 /**

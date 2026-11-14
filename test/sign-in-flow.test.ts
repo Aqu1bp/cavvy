@@ -1,0 +1,331 @@
+// The sign-in flow against a pretend CLI run for real (a terminal of its own, its status command): each kind of
+// sign-in, what the card shows on the way, and that success is the status check's word, not the command's exit.
+
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { isolate, tempDir } from "./helpers/isolate";
+import { acmeRecipe, fakeSignInCli } from "../scripts/fake-signin-cli";
+
+const iso = isolate();
+const dir = tempDir("cavvy-signin-");
+const acme = fakeSignInCli(dir);
+process.env.PATH = `${acme.bin}:${process.env.PATH}`;
+
+const { SignInFlow, SmallScreen, plain, siteOf, signInReport } = await import("../src/agent/sign-in");
+const { localSignInHost } = await import("../src/agent/sign-in-host");
+const { findRecipe, recipeError, signInRecipes, signedOutIn, SIGN_IN_RECIPES } = await import("../src/agent/sign-in-recipes");
+import type { SignInView, SignInOutcome } from "../src/agent/sign-in";
+import type { SignInRecipe } from "../src/agent/sign-in-recipes";
+
+afterAll(() => iso.cleanup());
+beforeEach(() => acme.reset());
+
+/** A flow for `acme`, with every card it showed. */
+function flow(recipe: Record<string, unknown> | undefined, o: { away?: boolean; command?: string; wants?: { target: string; recipe?: SignInRecipe; command?: string }[]; save?: (w: any) => void } = {}) {
+    const views: SignInView[] = [];
+    const f = new SignInFlow({
+        wants: o.wants ?? [{ target: "acme", recipe: recipe as SignInRecipe | undefined, command: o.command }],
+        host: localSignInHost({ away: Boolean(o.away) }),
+        show: (v) => views.push(v),
+        save: o.save,
+        pollMs: 60,
+    });
+    const abort = new AbortController();
+    const done = f.run(abort.signal);
+    const last = () => views[views.length - 1]!;
+    const until = async (ok: (v: SignInView) => boolean, what: string) => {
+        const end = Date.now() + 8000;
+        while (Date.now() < end) {
+            if (views.length && ok(last())) return last();
+            await Bun.sleep(15);
+        }
+        throw new Error(`never showed ${what}; last: ${JSON.stringify(views[views.length - 1])}`);
+    };
+    return { f, views, done, last, until, abort };
+}
+
+const state = (o: SignInOutcome) => o.results.map((r) => `${r.state}${r.who ? `:${r.who}` : ""}`).join(",");
+
+describe("a sign-in's card, for each kind", () => {
+    test("already signed in: no card, and who", async () => {
+        acme.signIn("me@example.com");
+        const x = flow(acmeRecipe("device"));
+        const o = await x.done;
+        expect(o.end).toBe("done");
+        expect(state(o)).toBe("in:me@example.com");
+        expect(x.views).toEqual([]);
+    });
+
+    test("a device code: the question, then the code and where to enter it, then done by itself", async () => {
+        const x = flow(acmeRecipe("device", { then: "acme setup" }));
+        expect(await x.until((v) => v.step === "ask", "the question")).toEqual({ step: "ask", target: "acme", name: "Acme" });
+        x.f.act({ action: "start" });
+        const code = await x.until((v) => v.step === "code", "the code");
+        expect(code).toMatchObject({ code: "WXYZ-1234", url: "https://acme.example/device", site: "acme.example/device" });
+        expect(code.busy).toBeUndefined();
+        acme.approve("dev@example.com");
+        const o = await x.done;
+        expect(o.end).toBe("done");
+        expect(state(o)).toBe("in:dev@example.com");
+        // The card opens the page: the CLI was told not to.
+        expect(acme.log()).toMatch(/browser=.*true/);
+        expect(acme.ranSetup()).toBe(true);
+    });
+
+    test("a browser on this machine: the CLI opens it, the card waits, and Open again has the link", async () => {
+        const x = flow(acmeRecipe("browser"));
+        await x.until((v) => v.step === "ask", "the question");
+        x.f.act({ action: "start" });
+        const wait = await x.until((v) => v.step === "browser" && Boolean(v.url), "the wait");
+        expect(wait.url).toBe("https://acme.example/authorize?state=abc");
+        expect(wait.open).toBeUndefined();
+        acme.approve();
+        expect(state(await x.done)).toBe("in:me@example.com");
+        expect(acme.log()).toContain("browser=default");
+    });
+
+    test("paste a code back: a wrong one shows the CLI's words with Try again, the right one signs in", async () => {
+        const x = flow(acmeRecipe("paste"));
+        await x.until((v) => v.step === "ask", "the question");
+        x.f.act({ action: "start" });
+        const paste = await x.until((v) => v.step === "paste", "the field");
+        expect(paste.url).toBe("https://acme.example/authorize?mode=paste");
+        x.f.act({ action: "submit", value: "bad-code" });
+        const failed = await x.until((v) => Boolean(v.error), "the error");
+        expect(failed.error).toContain("that code is not valid");
+        // What was typed is never in what the card says went wrong.
+        expect(failed.error).not.toContain("bad-code");
+        x.f.act({ action: "retry" });
+        await x.until((v) => v.step === "paste" && !v.error, "the field again");
+        x.f.act({ action: "submit", value: "good-code" });
+        expect(state(await x.done)).toBe("in:pasted@example.com");
+    });
+
+    test("a token: a bad one stays in the card without being quoted, a good one signs in", async () => {
+        const x = flow(acmeRecipe("device", { token: { run: "acme login --token", url: "https://acme.example/tokens" } }));
+        const ask = await x.until((v) => v.step === "ask", "the question");
+        expect(ask.canToken).toBe(true);
+        x.f.act({ action: "token" });
+        expect(await x.until((v) => v.step === "token", "the field")).toMatchObject({ tokenUrl: "https://acme.example/tokens" });
+        x.f.act({ action: "submit", value: "wrong-token-999" });
+        const failed = await x.until((v) => Boolean(v.error), "the error");
+        expect(failed.step).toBe("token");
+        expect(failed.error).toContain("Bad credentials");
+        expect(failed.error).not.toContain("wrong-token-999");
+        x.f.act({ action: "back" });
+        await x.until((v) => v.step === "ask", "the question again");
+        x.f.act({ action: "token" });
+        x.f.act({ action: "submit", value: "good-token-123" });
+        expect(state(await x.done)).toBe("in:token-user");
+    });
+
+    test("typed at its prompts: the card shows what the CLI shows, and a password isn't echoed", async () => {
+        const x = flow(acmeRecipe("typed"));
+        await x.until((v) => v.step === "ask", "the question");
+        x.f.act({ action: "start" });
+        await x.until((v) => v.step === "typed" && /Username: $/.test(v.term ?? ""), "the name prompt");
+        x.f.act({ action: "keys", value: "octo\r" });
+        await x.until((v) => /Password: $/.test(v.term ?? ""), "the password prompt");
+        x.f.act({ action: "keys", value: "hunter22\r" });
+        const o = await x.done;
+        expect(state(o)).toBe("in:octo");
+        const shown = x.views.map((v) => v.term ?? "").join("\n");
+        expect(shown).toContain("Username: octo");
+        expect(shown).not.toContain("hunter22");
+    });
+
+    test("no recipe: the command for the user to run, and their word that they did", async () => {
+        const saved: unknown[] = [];
+        const x = flow(undefined, { command: "acme login --device", save: (w) => saved.push(w) });
+        expect(await x.until((v) => v.step === "command", "the command")).toEqual({ step: "command", target: "acme", name: "acme", command: "acme login --device", canSave: true });
+        x.f.act({ action: "ran" });
+        await x.until((v) => v.ran === true, "Done");
+        x.f.act({ action: "done", save: true });
+        const o = await x.done;
+        expect(o.end).toBe("done");
+        expect(state(o)).toBe("unverified");
+        expect(saved).toHaveLength(1);
+    });
+
+    test("no recipe and no command: nothing to show", async () => {
+        const x = flow(undefined);
+        const o = await x.done;
+        expect(state(o)).toBe("unknown");
+        expect(x.views).toEqual([]);
+        expect(signInReport(o, undefined, "RequestSignIn").text).toContain("Call RequestSignIn again with `command`");
+    });
+
+    test("its CLI isn't installed: said, with no card", async () => {
+        const x = flow({ ...acmeRecipe("device"), status: { run: "acme-not-here status" } });
+        const o = await x.done;
+        expect(state(o)).toBe("none");
+        expect(x.views).toEqual([]);
+        expect(signInReport(o, "box", "request_sign_in")).toMatchObject({ isError: true, text: "Acme isn't installed on box: its command wasn't found. Install it first, then ask again." });
+    });
+});
+
+describe("what the user does instead of finishing", () => {
+    test("Later ends it, not signed in, and stops the command", async () => {
+        const x = flow(acmeRecipe("device"));
+        await x.until((v) => v.step === "ask", "the question");
+        x.f.act({ action: "start" });
+        await x.until((v) => v.step === "code", "the code");
+        x.f.act({ action: "later" });
+        const o = await x.done;
+        expect(o.end).toBe("later");
+        expect(state(o)).toBe("out");
+        // The page finished afterwards changes nothing: the command that waited for it is gone.
+        acme.approve();
+        await Bun.sleep(200);
+        expect(acme.signedIn()).toBeUndefined();
+        expect(signInReport(o, undefined, "RequestSignIn").text).toContain("the user chose Later");
+    });
+
+    test("signing in some other way closes the card: at the question, and with a code showing", async () => {
+        const a = flow(acmeRecipe("device"));
+        await a.until((v) => v.step === "ask", "the question");
+        acme.signIn("terminal@example.com");
+        expect(state(await a.done)).toBe("in:terminal@example.com");
+
+        acme.reset();
+        const b = flow(acmeRecipe("device"));
+        await b.until((v) => v.step === "ask", "the question");
+        b.f.act({ action: "start" });
+        await b.until((v) => v.step === "code", "the code");
+        acme.signIn("other@example.com");
+        expect(state(await b.done)).toBe("in:other@example.com");
+    });
+
+    test("an expired code offers a new one; a refusal shows the CLI's words with Try again", async () => {
+        const x = flow(acmeRecipe("device"));
+        await x.until((v) => v.step === "ask", "the question");
+        x.f.act({ action: "start" });
+        await x.until((v) => v.step === "code", "the code");
+        acme.expire();
+        const expired = await x.until((v) => v.expired === true, "New code");
+        expect(expired.error).toBeUndefined();
+        acme.reset();
+        x.f.act({ action: "retry" });
+        await x.until((v) => v.step === "code" && !v.expired, "a new code");
+        acme.refuse();
+        const refused = await x.until((v) => Boolean(v.error), "the error");
+        expect(refused.error).toBe("error: access was denied");
+        expect(refused.expired).toBeUndefined();
+        acme.reset();
+        x.f.act({ action: "retry" });
+        await x.until((v) => v.step === "code" && !v.error, "the code again");
+        acme.approve();
+        expect((await x.done).end).toBe("done");
+    });
+
+    test("the turn is interrupted: stopped, and the command with it", async () => {
+        const x = flow(acmeRecipe("device"));
+        await x.until((v) => v.step === "ask", "the question");
+        x.f.act({ action: "start" });
+        await x.until((v) => v.step === "code", "the code");
+        x.abort.abort();
+        const o = await x.done;
+        expect(o.end).toBe("stopped");
+        expect(signInReport(o, undefined, "RequestSignIn").text).toContain("interrupted");
+    });
+});
+
+describe("on a server, where the person's browser is elsewhere", () => {
+    test("the recipe's other command is used, and its warning shown", async () => {
+        const recipe = acmeRecipe("browser", { away: { flow: "device", run: "acme login --device" }, warning: "Agents there can push as you" });
+        const x = flow(recipe, { away: true });
+        expect(await x.until((v) => v.step === "ask", "the question")).toMatchObject({ warning: "Agents there can push as you" });
+        x.f.act({ action: "start" });
+        await x.until((v) => v.step === "code", "the code");
+        acme.approve();
+        expect((await x.done).end).toBe("done");
+    });
+
+    test("a sign-in that only opens a browser where it runs is left to the user", async () => {
+        const x = flow(acmeRecipe("browser"), { away: true });
+        expect(await x.until((v) => v.step === "command", "the command")).toMatchObject({ command: "acme login --browser" });
+        expect(x.last().canSave).toBeUndefined();
+    });
+});
+
+describe("several at once (a new server's sign-ins)", () => {
+    const other: SignInRecipe = { id: "beta", name: "Beta", status: { run: "acme-not-here status" }, here: { flow: "device", run: "acme-not-here login" } };
+
+    test("a list of what's signed out; each is its own sign-in, and the list comes back until none is left", async () => {
+        const token = acmeRecipe("device", { id: "acme-token", name: "Acme tokens", status: { run: "acme status", signedIn: "never-matches" }, token: { run: "acme login --token" } }) as SignInRecipe;
+        const x = flow(undefined, { wants: [{ target: "acme", recipe: acmeRecipe("device") as SignInRecipe }, { target: "beta", recipe: other }, { target: "acme-token", recipe: token }] });
+        const list = await x.until((v) => v.step === "list", "the list");
+        // One whose CLI isn't there isn't offered.
+        expect(list.rows).toEqual([{ target: "acme", name: "Acme", state: "out" }, { target: "acme-token", name: "Acme tokens", state: "out" }]);
+        x.f.act({ action: "pick", target: "acme" });
+        const code = await x.until((v) => v.step === "code", "the code");
+        expect(code.back).toBe(true);
+        // Later, from one of them, goes back to the list.
+        x.f.act({ action: "later" });
+        await x.until((v) => v.step === "list", "the list again");
+        x.f.act({ action: "pick", target: "acme" });
+        await x.until((v) => v.step === "code", "the code");
+        acme.approve("list@example.com");
+        const after = await x.until((v) => v.step === "list", "the list, one done");
+        expect(after.rows![0]).toEqual({ target: "acme", name: "Acme", state: "in", who: "list@example.com" });
+        // One that can take a token asks how first.
+        x.f.act({ action: "pick", target: "acme-token" });
+        expect(await x.until((v) => v.step === "ask", "its question")).toMatchObject({ canToken: true, back: true });
+        x.f.act({ action: "back" });
+        await x.until((v) => v.step === "list", "the list");
+        x.f.act({ action: "later" });
+        const o = await x.done;
+        expect(o.end).toBe("later");
+        expect(state(o)).toBe("in:list@example.com,none,out");
+    });
+
+    test("all signed in already: no card", async () => {
+        acme.signIn("me@example.com");
+        const x = flow(undefined, { wants: [{ target: "acme", recipe: acmeRecipe("device") as SignInRecipe }, { target: "beta", recipe: other }] });
+        const o = await x.done;
+        expect(o.end).toBe("done");
+        expect(x.views).toEqual([]);
+    });
+});
+
+describe("the pieces", () => {
+    test("terminal output is read as the text it shows", () => {
+        expect(plain("\x1b]8;;https://a.example/x\x1b\\https://a.example/x\x1b]8;;\x1b\\ \x1b[94mAB12-CD34\x1b[0m\r\n")).toBe("https://a.example/x AB12-CD34\n");
+        expect(siteOf("https://github.com/login/device")).toBe("github.com/login/device");
+        expect(siteOf("https://us-east-1.signin.aws.amazon.com/v1/authorize?x=1")).toBe("us-east-1.signin.aws.amazon.com/v1/authorize");
+    });
+
+    test("the small screen keeps a prompt's last lines, with its redraws", () => {
+        const s = new SmallScreen(3);
+        s.write("one\r\ntwo\r\nthree\r\nUser");
+        s.write("name: ab\b \bc");
+        expect(s.text()).toBe("two\nthree\nUsername: ac");
+        s.write("\r\x1b[2KPassword: ");
+        expect(s.text()).toBe("two\nthree\nPassword: ");
+        // An escape cut in two by a read isn't shown.
+        s.write("\x1b[");
+        s.write("1mok\x1b[0m");
+        expect(s.text()).toBe("two\nthree\nPassword: ok");
+    });
+
+    test("recipes: found by id, name or alias; the user's own win; a bad one is left out", () => {
+        const all = signInRecipes([{ id: "gh", name: "GitHub (work)", here: { flow: "device", run: "gh auth login -h git.example --web" }, status: { run: "gh auth status -h git.example" } }, { id: "Bad Id", name: "x", here: { flow: "device", run: "x" } }, { id: "fly", name: "Fly.io", here: { flow: "browser", run: "fly auth login" } }]);
+        expect(findRecipe("GitHub (work)", all)?.here.run).toContain("git.example");
+        expect(findRecipe("fly", all)?.status.run).toBe("");
+        expect(all.some((r) => r.id === "Bad Id")).toBe(false);
+        expect(findRecipe("github", SIGN_IN_RECIPES)?.id).toBe("gh");
+        expect(findRecipe("claude-code", SIGN_IN_RECIPES)?.id).toBe("claude");
+        expect(findRecipe("nope", SIGN_IN_RECIPES)).toBeUndefined();
+        expect(recipeError({ id: "x", name: "X", here: { flow: "device", run: "x login; rm -rf ~" } })).toBeUndefined();
+        expect(recipeError({ id: "x", name: "X", here: { flow: "shell", run: "x" } })).toContain("here needs a flow");
+        expect(recipeError({ id: "x", name: "X", here: { flow: "device", run: "x" }, reads: { code: "(" } })).toContain("reads.code");
+        for (const r of SIGN_IN_RECIPES) expect(recipeError(r)).toBeUndefined();
+    });
+
+    test("a command's output that says it's signed out names the recipe", () => {
+        expect(signedOutIn("You are not logged into any GitHub hosts. To log in, run: gh auth login", SIGN_IN_RECIPES)?.id).toBe("gh");
+        expect(signedOutIn("fatal: could not read Username for 'https://github.com': terminal prompts disabled", SIGN_IN_RECIPES)?.id).toBe("gh");
+        expect(signedOutIn("aws: [ERROR]: An error occurred (NoCredentials): Unable to locate credentials.", SIGN_IN_RECIPES)?.id).toBe("aws");
+        expect(signedOutIn("ERROR: (gcloud.auth.print-access-token) You do not currently have an active account selected.", SIGN_IN_RECIPES)?.id).toBe("gcloud");
+        expect(signedOutIn("everything is fine", SIGN_IN_RECIPES)).toBeUndefined();
+    });
+});

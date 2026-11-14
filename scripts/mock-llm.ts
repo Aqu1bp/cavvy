@@ -347,6 +347,12 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         ];
         return steps[toolRounds];
     }
+    // Asks the user to sign in to something ("signin gh", "signin fly on box"; "signin fly: fly auth login" offers a command Cavvy doesn't know), then carries on.
+    const signIn = /\bsignin ([\w.-]+)(?: on ([\w.-]+))?(?:: ([\w .-]+))?/.exec(p);
+    if (signIn) {
+        if (toolRounds === 0) return { text: "That needs a sign-in first.", calls: [{ name: "RequestSignIn", args: { target: signIn[1], ...(signIn[2] ? { machine: signIn[2] } : {}), ...(signIn[3] ? { command: signIn[3].trim() } : {}) } }] };
+        return { text: lastResult.startsWith("Signed in") ? `Carrying on. ${lastResult}` : `I'll leave that for now. ${lastResult}` };
+    }
     // Asks for a secret, then uses it without ever seeing it. "checksum N M" (from `printf %s VALUE | cksum`) checks the value it got.
     if (/\bsecret\b/.test(p)) {
         if (toolRounds === 0) return { text: "I need a token for this.", calls: [{ name: "RequestSecret", args: { name: "DEMO_TOKEN", purpose: "To call the demo API with curl." } }] };

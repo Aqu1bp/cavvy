@@ -31,6 +31,7 @@ import { startMockLlm } from "./mock-llm";
 import { createDemoProject } from "./demo-project";
 import { startDemoSite } from "./demo-site";
 import { createDemoUpdate } from "./demo-update";
+import { acmeRecipe, fakeSignInCli } from "./fake-signin-cli";
 
 const args = process.argv.slice(2);
 const arg = (n: string) => {
@@ -47,7 +48,17 @@ createDemoProject(project);
 const site = startDemoSite();
 const mock = startMockLlm({ port: Number(arg("--mock-port") ?? 0), delayMs: Number(arg("--delay") ?? 14), site: site.url });
 writeFileSync(join(home, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock (demo)", baseUrl: mock.url, requiresKey: false, modelEffortLevels: { "mock-opus": ["low", "medium", "high", "xhigh", "max"] } }] }, null, 2));
-writeFileSync(join(home, "settings.json"), JSON.stringify({ model: "mock:mock-opus", smallModel: "mock:mock-haiku" }, null, 2));
+// Sign-ins to try ("signin gh", "signin aws", "signin gcloud", "signin docker", "signin fly: fly auth login"): a pretend
+// CLI stands in for each, so nothing of this machine's own is signed in or out. A waiting one finishes by itself.
+const acme = fakeSignInCli(root);
+const pretend = (id: string, name: string, flow: Parameters<typeof acmeRecipe>[0], extra: Record<string, unknown> = {}) => ({ ...acmeRecipe(flow, extra), id, name, env: { ACME_SERVICE: id, ACME_AUTO: arg("--sign-in-after") ?? "20" } });
+const signIns = [
+    pretend("gh", "GitHub", "device", { token: { run: "acme login --token", url: "https://github.com/settings/personal-access-tokens/new" }, warning: "Agents there can push as you" }),
+    pretend("aws", "AWS", "browser"),
+    pretend("gcloud", "Google Cloud", "paste"),
+    pretend("docker", "Docker Hub", "typed"),
+];
+writeFileSync(join(home, "settings.json"), JSON.stringify({ model: "mock:mock-opus", smallModel: "mock:mock-haiku", signIns }, null, 2));
 // A few skills for the / and $ menus ("use the release-notes skill" has the model load one).
 const demoSkills: Record<string, string> = {
     "release-notes": "---\ndescription: Write release notes from the commits since the last tag\n---\nRead `git log` since the last tag and group the changes into Added, Changed and Fixed.",
@@ -61,7 +72,7 @@ for (const [name, text] of Object.entries(demoSkills)) {
 
 const repo = resolve(import.meta.dir, "..");
 const port = arg("--port") ?? "4600";
-const env: Record<string, string> = { ...(process.env as Record<string, string>), CAVVY_HOME: home, CAVVY_NO_KEYCHAIN: "1" };
+const env: Record<string, string> = { ...(process.env as Record<string, string>), CAVVY_HOME: home, CAVVY_NO_KEYCHAIN: "1", ACME_HOME: acme.home, PATH: `${acme.bin}:${process.env.PATH}` };
 if (args.includes("--update")) Object.assign(env, createDemoUpdate(root, home, arg("--update") === "fail"));
 if (arg("--token")) env.CAVVY_GUI_TOKEN = arg("--token")!;
 const extra = arg("--dev-origin") ? ["--dev-origin", arg("--dev-origin")!] : [];

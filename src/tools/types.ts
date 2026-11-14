@@ -13,6 +13,7 @@ import type { BrowserSession } from "../browser/session";
 import type { SimulatorSession } from "../simulator/session";
 import type { Lends } from "./lent";
 import type { SessionPeers } from "../agent/peers";
+import type { SignInAnswer, SignInRequest } from "../agent/sign-ins";
 
 
 /** One completion on the session's own model for an MCP server's sampling request: at most `maxTokens`, with why it stopped. */
@@ -135,6 +136,8 @@ export interface UiBridge {
     approvePlan?(plan: string): Promise<{ approved: boolean; mode?: PermissionMode; feedback?: string; handoff?: boolean }>;
     /** Ask the user to type in a secret (RequestSecret): the value, or undefined if they declined. `purpose` is already safe to show. */
     requestSecret?(name: string, purpose: string, signal: AbortSignal): Promise<string | undefined>;
+    /** Ask the user to sign in to something (RequestSignIn): Cavvy runs the sign-in, and this answers with what the model is told. */
+    requestSignIn?(req: SignInRequest, signal: AbortSignal): Promise<SignInAnswer>;
 }
 
 export interface ToolContext {
@@ -166,6 +169,8 @@ export interface ToolContext {
     hidden?: (toolName: string, absPath: string) => HiddenReason | undefined;
     /** Auto mode approved this shell command on the condition that it runs in this sandbox. */
     sandbox?: Sandbox;
+    /** The sign-in tool this agent can call, by the name it knows it by: a failed command that says something isn't signed in points to it. */
+    signInTool?: "RequestSignIn" | "request_sign_in";
     /** Wake the session's agent later (the main agent only; missing for sub-agents and one-shot runs). */
     wakes?: WakeQueue;
 }

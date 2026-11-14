@@ -1464,6 +1464,13 @@
     transition: transform 160ms var(--ease), background 140ms, opacity 140ms, color 140ms;
 }
 
+/* A button in a row of its own (a sign-in in a list, one put off above the message box). */
+.pbtn.sm {
+    height: calc(28 * var(--sp));
+    padding: 0 calc(12 * var(--sp));
+    font-size: 0.893rem;
+}
+
 .pbtn:has(> kbd) {
     padding-right: calc(12 * var(--sp));
 }

@@ -58,6 +58,8 @@ function waitLabel(i: Interaction): { label: string; detail?: string; mono?: boo
             return { label: "Waiting for plan review" };
         case "secret":
             return { label: "Waiting for a secret", detail: i.name };
+        case "signin":
+            return { label: "Waiting for you to sign in", detail: i.name };
         default: {
             const what = i.command?.split("\n")[0] ?? i.path;
             // No command or file: what the card asks, in its words (never the call as code, "BrowserAct(click e4)").

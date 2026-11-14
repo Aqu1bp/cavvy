@@ -500,7 +500,77 @@ export interface SecretInteraction {
     purpose: string;
 }
 
-export type Interaction = (PermissionInteraction | QuestionInteraction | PlanInteraction | SecretInteraction) & {
+/** One sign-in in a card that offers several (a new server's): what it is, and whether it's done. */
+export interface SignInRow {
+    target: string;
+    name: string;
+    /** "in": signed in (as `who`, when its CLI says). "none": its CLI isn't installed there. */
+    state: "out" | "in" | "none";
+    who?: string;
+}
+
+/**
+ * Cavvy asks the user to sign in to something (RequestSignIn, or a feature that found it signed out) and runs
+ * that sign-in itself. The card changes while it waits: the same id, sent again with what's new.
+ */
+export interface SignInInteraction {
+    kind: "signin";
+    id: string;
+    toolId?: string;
+    /** The server it happens on, by its name here. Left out: the machine this session runs on. */
+    machine?: string;
+    /** More than one to sign in to: the list, shown while `step` is "list". */
+    rows?: SignInRow[];
+    /** What is being signed in to now: its recipe's id and its name ("GitHub"). */
+    target?: string;
+    name?: string;
+    /**
+     * - list: `rows`, each with its own Sign in.
+     * - ask: Sign in, Use a token (`canToken`), Later.
+     * - browser: the CLI waits for the browser (`url` to open it again; `open`: nothing opened it, so the card must).
+     * - code: `code` to enter at `url`.
+     * - paste: the page at `url` gives a code to paste back.
+     * - token: a masked field (`tokenUrl`: where to make one).
+     * - typed: the CLI asks at a prompt; `term` is what it shows.
+     * - command: nothing Cavvy can run itself; `command` is for the user to run in a terminal.
+     */
+    step: "list" | "ask" | "browser" | "code" | "paste" | "token" | "typed" | "command";
+    /** One line under the question, where the risk is real ("Agents there can push as you"). */
+    warning?: string;
+    canToken?: boolean;
+    url?: string;
+    /** `url` without its scheme and query, to show ("github.com/login/device"). */
+    site?: string;
+    open?: boolean;
+    code?: string;
+    /** The code is no longer good: a new one is needed. */
+    expired?: boolean;
+    tokenUrl?: string;
+    term?: string;
+    command?: string;
+    /** The terminal was opened with `command`: Done is offered. */
+    ran?: boolean;
+    /** May be kept for next time (a sign-in Cavvy didn't know). */
+    canSave?: boolean;
+    /** The CLI's own words on why it didn't work, with Try again. */
+    error?: string;
+    /** Something is running that the card waits for (checking, sending the code). */
+    busy?: boolean;
+    /** Came from a list: Back returns to it. */
+    back?: boolean;
+}
+
+export type SignInAction =
+    | { action: "start" | "token" | "back" | "later" | "retry" | "ran" }
+    | { action: "pick"; target: string }
+    /** A pasted code or a token. */
+    | { action: "submit"; value: string }
+    /** Typed at the CLI's prompt. */
+    | { action: "keys"; value: string }
+    /** The user says they've run the command; `save` keeps it for next time. */
+    | { action: "done"; save?: boolean };
+
+export type Interaction = (PermissionInteraction | QuestionInteraction | PlanInteraction | SecretInteraction | SignInInteraction) & {
     /** When it was asked (ms since the epoch): how long it's been waiting, whenever the session is opened. */
     since?: number;
 };
@@ -510,7 +580,9 @@ export type InteractionResponse =
     | { kind: "question"; answers?: string[] }
     | { kind: "plan"; approved: boolean; mode?: PermissionModeId; feedback?: string }
     /** No value: declined. The value goes to the session's memory and nowhere else. */
-    | { kind: "secret"; value?: string };
+    | { kind: "secret"; value?: string }
+    /** A step in the card, not an answer: the card stays until the sign-in is over. */
+    | ({ kind: "signin" } & SignInAction);
 
 // ---------------------------------------------------------------------------
 // Session state
@@ -1434,7 +1506,7 @@ export interface GitPublishRequest {
 }
 export interface WatchInfo {
     id: string;
-    /** "pull-request". */
+    /** "pull-request", "monitor", or "sign-in": one the user put off, which wakes the agent once they've signed in. */
     kind: string;
     label: string;
     url?: string;
@@ -1908,7 +1980,7 @@ export interface Methods {
     "servers.remove": { params: { name: string }; result: null };
     /** Undoes a `servers.remove` made since this Cavvy started. */
     "servers.restore": { params: { name: string }; result: null };
-    "terminal.open": { params: { id: string; cwd: string; cols: number; rows: number; login?: { provider: string; accountId: string } }; result: { id: string; cwd: string } };
+    "terminal.open": { params: { id: string; cwd: string; cols: number; rows: number; login?: { provider: string; accountId: string }; /** A sign-in card's command, typed into the new shell for the user to run. */ signIn?: { session: string; interaction: string } }; result: { id: string; cwd: string } };
     "terminal.write": { params: { id: string; data: string }; result: null };
     /** The window has drawn this many characters of the terminal's output (flow control). */
     "terminal.ack": { params: { id: string; chars: number }; result: null };
@@ -2062,6 +2134,8 @@ export interface Methods {
     /** Restart the session's agent CLI process (/tasks restart): what it runs in the background stops. */
     "session.restartCli": { params: { id: string }; result: null };
     "session.stopWatch": { params: { id: string; watchId: string }; result: null };
+    /** Brings back the card of a sign-in the user put off (a watch of kind "sign-in"). */
+    "session.signIn": { params: { id: string; watchId: string }; result: null };
     /** New shells no longer get this secret. */
     "session.forgetSecret": { params: { id: string; name: string }; result: null };
     /** Stop a delegated task (by its sub-agent's id), or every one still running. Task sub-agents stop with the turn. */

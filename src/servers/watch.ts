@@ -89,7 +89,7 @@ export function heardSession(v: unknown): SessionSummary | undefined {
         settled: s.settled === true,
         live: s.live === true,
         ...(typeof s.model === "string" && s.model ? { model: cut(s.model, 100) } : {}),
-        ...(status === "waiting" && (s.waitingKind === "permission" || s.waitingKind === "question" || s.waitingKind === "plan" || s.waitingKind === "secret") ? { waitingKind: s.waitingKind } : {}),
+        ...(status === "waiting" && (s.waitingKind === "permission" || s.waitingKind === "question" || s.waitingKind === "plan" || s.waitingKind === "secret" || s.waitingKind === "signin") ? { waitingKind: s.waitingKind } : {}),
         ...(typeof s.turnStartedAt === "number" && Number.isFinite(s.turnStartedAt) ? { turnStartedAt: s.turnStartedAt } : {}),
     };
 }

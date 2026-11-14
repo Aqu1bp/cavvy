@@ -1,4 +1,4 @@
-// What the agent is waiting on you for: a permission, a question, a plan, a secret.
+// What the agent is waiting on you for: a permission, a question, a plan, a secret, a sign-in.
 // A card in the dock above the composer. It opens with the question itself
 // ("Run `bun test auth`?"), then what you need to answer it, then the answers:
 // the one that goes ahead first, filled; the way out at the far end, plain.
@@ -6,9 +6,9 @@
 // themselves, so an Enter meant for the input can't approve anything; the
 // number keys and Esc work when you're not typing.
 
-import { createEffect, createResource, createUniqueId, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
+import { createEffect, createResource, createUniqueId, createSignal, For, lazy, Match, on, onCleanup, onMount, Show, Suspense, Switch, type JSX } from "solid-js";
 import { AlertTriangle, Eye, EyeOff, FolderGit2, KeyRound, Save } from "lucide-solid";
-import type { Interaction, PermissionInteraction, PlanInteraction, QuestionInteraction, SecretInteraction } from "@shared/protocol";
+import type { Interaction, PermissionInteraction, PlanInteraction, QuestionInteraction, SecretInteraction, SignInInteraction } from "@shared/protocol";
 import { openAgents, respond } from "../state/actions";
 import { handleFor, rpc } from "../state/app";
 import { agentProvider } from "../lib/agent-marks";
@@ -23,13 +23,16 @@ import { Markdown } from "./blocks/Markdown";
 const typing = () => typingIn(document.activeElement as HTMLElement | null);
 
 /** A card arriving takes focus only when it's in sight and nothing is typed elsewhere (Settings covers it, kept mounted). */
-const mayFocus = () => !typing() && !settingsTab();
+export const mayFocus = () => !typing() && !settingsTab();
+
+/** A sign-in's card, loaded with the first one. */
+const SignInCard = lazy(() => import("./SignInCard"));
 
 /** A key pressed this soon after a card appears was meant for something else. */
 const SETTLE_MS = 400;
 
 /** Number keys and Esc, while this card is the one showing. */
-function useKeys(handler: (key: string) => boolean) {
+export function useKeys(handler: (key: string) => boolean) {
     onMount(() => {
         const shown = performance.now();
         const onKey = (e: KeyboardEvent) => {
@@ -74,6 +77,11 @@ export function InteractionTab(p: { sessionId: string; items: Interaction[] }) {
                         <Match when={first()!.kind === "secret"}>
                             <SecretCard sessionId={p.sessionId} it={first() as SecretInteraction} />
                         </Match>
+                        <Match when={first()!.kind === "signin"}>
+                            <Suspense>
+                                <SignInCard sessionId={p.sessionId} it={first() as SignInInteraction} />
+                            </Suspense>
+                        </Match>
                     </Switch>
                 </div>
             )}
@@ -99,7 +107,7 @@ function FitLabel(p: { text: string }) {
  * A card's question, then its lines under it: `sub` (a hint, or who asked) and `note` (why it's asking), each whole.
  * `end`: at the question's far end (what an edit adds and removes).
  */
-function Head(p: { title: JSX.Element; sub?: JSX.Element; note?: string; end?: JSX.Element }) {
+export function Head(p: { title: JSX.Element; sub?: JSX.Element; note?: string; end?: JSX.Element }) {
     return (
         <>
             <div class="ask-h">
