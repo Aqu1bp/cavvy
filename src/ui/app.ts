@@ -2231,6 +2231,8 @@ export class App {
                 return void this.pasteClipboardImage();
             case "chat:undo":
                 return e.undo();
+            case "chat:stash":
+                return this.stash();
             case "history:previous":
                 // The arrow moves between the lines of a long prompt first.
                 if (k.name === "up" && !k.ctrl && !k.meta && e.up()) return;
@@ -2250,6 +2252,28 @@ export class App {
             case "app:redraw":
                 return this.screen.clearScreen();
         }
+    }
+
+    /** The stash key: the prompt is put away (with its ! or # mode) on top of the others; with nothing typed, the newest comes back. Nothing else brings one back: not a send. */
+    private stash() {
+        const e = this.editor;
+        if (e.isEmpty) return this.takeStash(0);
+        const first = !e.stashes.length;
+        if (!e.pushStash(this.inputMode === "bash" ? "!" : this.inputMode === "memory" ? "#" : "")) return;
+        this.inputMode = "prompt";
+        this.menuHiddenFor = undefined;
+        this.showHelp = false;
+        this.flash = first ? { text: `Stashed · ${this.keys.label("chat:stash") ?? "the stash key"} on an empty prompt brings it back`, until: Date.now() + 3000 } : undefined;
+    }
+
+    /** A stashed prompt back in the box, in the mode it was typed in (`i`: which, newest first). What's in the box is stashed in its place. */
+    takeStash(i: number) {
+        const tag = this.editor.takeStash(i, this.inputMode === "bash" ? "!" : this.inputMode === "memory" ? "#" : "");
+        if (tag === undefined) return;
+        this.inputMode = tag === "!" ? "bash" : tag === "#" ? "memory" : "prompt";
+        this.menuHiddenFor = undefined;
+        this.showHelp = false;
+        this.flash = undefined;
     }
 
     private escapeKey() {
@@ -3204,6 +3228,13 @@ export class App {
         const { flow, status } = this.busy ? this.renderActivity(cols, rows) : { flow: [], status: [] };
         const goal = this.goalLine(cols);
         if (goal) status.push(goal);
+        const stashed = this.editor.stashes;
+        if (stashed.length) {
+            const key = this.keys.label("chat:stash");
+            const label = `  ⏷ stashed${key ? ` (${key})` : ""}: `;
+            const more = stashed.length > 1 ? ` · +${stashed.length - 1} more (/stash)` : "";
+            status.push(theme.muted(label + truncate(stashed[0]!, Math.max(8, cols - width(label) - width(more) - 2)) + more));
+        }
         const lines = [...flow];
         if (status.length) lines.push("", ...status);
         lines.push("");
@@ -3477,7 +3508,7 @@ function shortcutHelp(cols: number, keys: TuiKeybindings): string[] {
         ["/ for commands", hint("chat:externalEditor", (k) => `${k} to edit in $EDITOR`), hint("app:toggleTranscript", (k) => `${k} for verbose output`)],
         ["@ for file paths", `\\⏎${newline.length ? ` or ${newline[newline.length - 1]}` : ""} for newline`, hint("app:toggleTodos", (k) => `${k} to toggle todos`)],
         ["# to memorize", hint("chat:cancel", (k) => `${k} to interrupt (queued first)`), "ctrl+c twice to exit"],
-        [hint("chat:submitOtherWay", (k) => `${k}: steer or queue the other way`), "/queue to manage queued messages", ""],
+        [hint("chat:submitOtherWay", (k) => `${k}: steer or queue the other way`), "/queue to manage queued messages", hint("chat:stash", (k) => `${k} to stash the prompt`)],
     ];
     const w = Math.floor((cols - 4) / 3);
     return [
