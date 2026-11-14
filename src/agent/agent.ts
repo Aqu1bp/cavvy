@@ -71,6 +71,7 @@ import { registerTools, type Registration, type ServerTool, type ServerToolResul
 import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./schedule-tools";
 import { WATCH_INSTRUCTIONS, watchServerTools } from "../tools/git-tools";
 import { SIGN_IN_INSTRUCTIONS, signInServerTools, signInToolTitle } from "../tools/sign-in-tools";
+import { nativeServerCall, SERVER_INSTRUCTIONS, SERVER_TOOL_NAMES, servedServerName, serverServerTools } from "../tools/server-tools";
 import { signedOutIn, signInRecipes } from "./sign-in-recipes";
 import { signInAdvised } from "../backends/account-login";
 import { MONITOR_INSTRUCTIONS, monitorServerTools, nativeMonitorCall, stoppedMonitorNote } from "../tools/monitor";
@@ -1746,7 +1747,9 @@ export class Agent {
         const worktrees = caller === "codex" || acp;
         // The user's other sessions: where the host reaches them (not a -p run's).
         const peers = !acp && !this.oneShot ? this.state.peers : undefined;
-        if (!delegating && !(store && ask) && !signIn && !scheduling && !watching && !browsing && !simulating && !worktrees && !peers) return undefined;
+        // The user's servers: from their own machine, where there's someone to say yes to what costs money.
+        const servers = !acp && !this.oneShot && Boolean(this.state.servers && this.o.host.ui.confirm);
+        if (!delegating && !(store && ask) && !signIn && !scheduling && !watching && !browsing && !simulating && !worktrees && !peers && !servers) return undefined;
         const tools: ServerTool[] = [];
         const instructions: string[] = [];
         if (delegating) {
@@ -1795,6 +1798,10 @@ export class Agent {
         if (worktrees) {
             tools.push(...worktreeServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId), () => this.state));
             instructions.push(WORKTREE_INSTRUCTIONS);
+        }
+        if (servers) {
+            tools.push(...serverServerTools((tool, input, signal, callId) => this.runServed(tool, input, signal, callId)));
+            instructions.push(SERVER_INSTRUCTIONS);
         }
         if (peers) {
             const drives = Boolean(peers.send && peers.start);
@@ -2909,7 +2916,7 @@ export class Agent {
         if ((e.type === "tool_start" || e.type === "tool_end") && e.call.name.startsWith(`mcp__${MCP_SERVER_NAME}__`)) {
             const served = e.call.name.slice(`mcp__${MCP_SERVER_NAME}__`.length);
             const input = (e.call.input ?? {}) as Record<string, unknown>;
-            const native = nativeMonitorCall(served, input) ?? nativeBrowserCall(served, input) ?? nativeSimulatorCall(served, input) ?? nativeWorktreeCall(served, input) ?? nativeSessionCall(served, input);
+            const native = nativeMonitorCall(served, input) ?? nativeBrowserCall(served, input) ?? nativeSimulatorCall(served, input) ?? nativeWorktreeCall(served, input) ?? nativeSessionCall(served, input) ?? nativeServerCall(served, input);
             const tool = native && this.findTool(native.name);
             if (native && tool) {
                 const call = { ...e.call, ...native };
@@ -3087,7 +3094,7 @@ export class Agent {
             if (caller === undefined && !isReadOnly(tool, input)) return { text: "Couldn't tell which agent made this call, so it wasn't sent. Only the main agent can send to or start sessions.", isError: true };
         }
         // The CLI approves Cavvy's tools without asking: a rule naming the tool as served is enforced here, before the checks its own name gets.
-        const served = servedBrowserName(tool.name) ?? servedSimulatorName(tool.name) ?? servedWorktreeFor(tool.name) ?? servedSessionName(tool.name);
+        const served = servedBrowserName(tool.name) ?? servedSimulatorName(tool.name) ?? servedWorktreeFor(tool.name) ?? servedSessionName(tool.name) ?? servedServerName(tool.name);
         if (served) {
             // A rule's deny first; then a call that can't run is refused before a rule asks the user about it (prepare
             // checks it again, cheaply).
@@ -3812,7 +3819,7 @@ export class Agent {
             notes.push(...(servers?.notes ?? []));
         }
 
-        const exclude = new Set(["Task", "TaskStatus", "Monitor", "ListModels", "TodoWrite", "AskUserQuestion", "RequestSecret", "RequestSignIn", "ExitPlanMode", ...CRON_TOOL_NAMES, ...SESSION_TOOL_NAMES]);
+        const exclude = new Set(["Task", "TaskStatus", "Monitor", "ListModels", "TodoWrite", "AskUserQuestion", "RequestSecret", "RequestSignIn", "ExitPlanMode", ...SERVER_TOOL_NAMES, ...CRON_TOOL_NAMES, ...SESSION_TOOL_NAMES]);
         let tools = this.tools.filter((t) => !exclude.has(t.name));
         // Its own servers' tools (their names never match a configured server's: startAgentServers refuses those).
         if (servers?.tools.length) tools = [...tools, ...servers.tools];

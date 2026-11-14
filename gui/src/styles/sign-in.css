@@ -116,3 +116,27 @@
 .si-term:focus .si-caret {
     opacity: 1;
 }
+
+/* A confirm card's details: Name, Where, Size, System. */
+.si-facts {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: calc(6 * var(--sp)) calc(18 * var(--sp));
+    margin: 0;
+    padding: calc(10 * var(--sp)) calc(12 * var(--sp));
+    border-radius: var(--r-well);
+    background: var(--well);
+    box-shadow: inset 0 0 0 0.5px var(--well-stroke);
+    font-size: 0.893rem;
+}
+
+.si-facts dt {
+    color: var(--fg-3);
+}
+
+.si-facts dd {
+    margin: 0;
+    min-width: 0;
+    color: var(--fg);
+    overflow-wrap: anywhere;
+}

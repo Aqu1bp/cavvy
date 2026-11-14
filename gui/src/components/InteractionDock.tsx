@@ -8,7 +8,7 @@
 
 import { createEffect, createResource, createUniqueId, createSignal, For, lazy, Match, on, onCleanup, onMount, Show, Suspense, Switch, type JSX } from "solid-js";
 import { AlertTriangle, Eye, EyeOff, FolderGit2, KeyRound, Save } from "lucide-solid";
-import type { Interaction, PermissionInteraction, PlanInteraction, QuestionInteraction, SecretInteraction, SignInInteraction } from "@shared/protocol";
+import type { ConfirmInteraction, Interaction, PermissionInteraction, PlanInteraction, QuestionInteraction, SecretInteraction, SignInInteraction } from "@shared/protocol";
 import { openAgents, respond } from "../state/actions";
 import { handleFor, rpc } from "../state/app";
 import { agentProvider } from "../lib/agent-marks";
@@ -27,6 +27,8 @@ export const mayFocus = () => !typing() && !settingsTab();
 
 /** A sign-in's card, loaded with the first one. */
 const SignInCard = lazy(() => import("./SignInCard"));
+/** The card that asks before money is spent or something is deleted: in the same chunk. */
+const ConfirmCard = lazy(() => import("./SignInCard").then((m) => ({ default: m.ConfirmCard })));
 
 /** A key pressed this soon after a card appears was meant for something else. */
 const SETTLE_MS = 400;
@@ -60,7 +62,7 @@ export function InteractionTab(p: { sessionId: string; items: Interaction[] }) {
             {(_id) => (
                 // A terminal that took the keyboard by itself gives it up, so the card's keys answer it.
                 cardArrived(),
-                <div class={`ask card-surface itab itab-${first()!.kind} ${first()!.kind === "permission" && (first() as PermissionInteraction).dangerous ? "danger" : ""}`} style={{ "--column-h": columnHeight() }} role="alertdialog" aria-label="Waiting for you">
+                <div class={`ask card-surface itab itab-${first()!.kind} ${(first()!.kind === "permission" && (first() as PermissionInteraction).dangerous) || (first()!.kind === "confirm" && (first() as ConfirmInteraction).danger) ? "danger" : ""}`} style={{ "--column-h": columnHeight() }} role="alertdialog" aria-label="Waiting for you">
                     <Show when={p.items.length > 1}>
                         <div class="itab-count">1 of {p.items.length} waiting</div>
                     </Show>
@@ -80,6 +82,11 @@ export function InteractionTab(p: { sessionId: string; items: Interaction[] }) {
                         <Match when={first()!.kind === "signin"}>
                             <Suspense>
                                 <SignInCard sessionId={p.sessionId} it={first() as SignInInteraction} />
+                            </Suspense>
+                        </Match>
+                        <Match when={first()!.kind === "confirm"}>
+                            <Suspense>
+                                <ConfirmCard sessionId={p.sessionId} it={first() as ConfirmInteraction} />
                             </Suspense>
                         </Match>
                     </Switch>

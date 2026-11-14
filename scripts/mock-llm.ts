@@ -347,6 +347,21 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         ];
         return steps[toolRounds];
     }
+    // Sets a server up for the user ("newserver aws-mumbai ubuntu@203.0.113.7"), adds one they have ("addserver box dev@box.example"), or deletes one ("deleteserver aws-mumbai").
+    const newServer = /\bnewserver ([\w-]+) (\S+)/.exec(p);
+    if (newServer) {
+        const [, name, address] = newServer;
+        if (toolRounds === 0) return { text: "A small one in Mumbai fits.", calls: [{ name: "ServerKey", args: { name, provider: "AWS Lightsail", where: "Mumbai", size: "2 CPUs · 2 GB · 60 GB", system: "Ubuntu 24.04", price: "$12/month" } }] };
+        if (toolRounds === 1) {
+            if (!lastResult.startsWith("The user approved")) return { text: lastResult.startsWith("The user wants") ? "What would you like instead?" : "Nothing was created." };
+            return { text: "Creating it.", calls: [{ name: "ServerAdd", args: { name, address, provider: "AWS Lightsail", where: "Mumbai", cost: "$12/month", teardown: [`aws lightsail delete-instance --instance-name ${name}`] } }] };
+        }
+        return { text: lastResult };
+    }
+    const addServer = /\baddserver ([\w-]+) (\S+)/.exec(p);
+    if (addServer) return toolRounds === 0 ? { text: "Adding it.", calls: [{ name: "ServerAdd", args: { name: addServer[1], address: addServer[2] } }] } : { text: lastResult };
+    const deleteServer = /\bdeleteserver ([\w-]+)/.exec(p);
+    if (deleteServer) return toolRounds === 0 ? { text: "Deleting it.", calls: [{ name: "ServerRemove", args: { name: deleteServer[1] } }] } : { text: lastResult };
     // Asks the user to sign in to something ("signin gh", "signin fly on box"; "signin fly: fly auth login" offers a command Cavvy doesn't know), then carries on.
     const signIn = /\bsignin ([\w.-]+)(?: on ([\w.-]+))?(?:: ([\w .-]+))?/.exec(p);
     if (signIn) {

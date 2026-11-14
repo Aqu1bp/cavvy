@@ -82,6 +82,8 @@ import { SessionSignIns, type SignInAnswer, type SignInRequest } from "../agent/
 import { findRecipe, signInRecipes } from "../agent/sign-in-recipes";
 import { onServer } from "../servers/role";
 import { SignInDialog } from "./sign-in-dialog";
+import type { ConfirmRequest } from "../tools/types";
+import { SERVER_TOOLS, type ServerSetup } from "../tools/server-tools";
 import { planLimitKey } from "../server/protocol";
 import { mergeLimits } from "../backends/limits";
 import { steersMidTurn } from "../backends/defs";
@@ -297,6 +299,8 @@ export class App {
         // The user's other sessions, read from disk: the terminal can't drive those another process has open.
         this.toolState.peers = diskPeers(() => this.session.meta.id, () => this.cwd);
         (this.toolState.watchers as WatcherMap).onChange = () => this.renderLive();
+        // The user's servers, for an agent to set one up, add one or remove one: from their own machine (a server reaches no other).
+        if (!onServer()) this.toolState.servers = this.serverSetup();
         this.editor.setHistory(loadPromptHistory(init.cwd));
     }
 
@@ -885,7 +889,7 @@ export class App {
         const native = this.nativeSearch();
         const builtin = BUILTIN_TOOLS.filter((t) => !(native && t.name === "WebSearch") && !(t.name === "WebSearch" && this.settings.webSearch === "off") && offered(t, this.settings));
         const skill = skillTool(this.skills);
-        return [...builtin, ...(skill ? [skill] : []), ...CRON_TOOLS, ...SESSION_READ_TOOLS, ...this.mcp.tools()];
+        return [...builtin, ...(skill ? [skill] : []), ...CRON_TOOLS, ...SESSION_READ_TOOLS, ...(this.toolState.servers ? SERVER_TOOLS : []), ...this.mcp.tools()];
     }
 
     makeAgent() {
@@ -926,6 +930,7 @@ export class App {
                     requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),
                     requestSignIn: (req, signal) => this.requestSignIn(req, signal),
                     askSignIn: (req, then) => this.signIns.ask(req, then),
+                    confirm: (req, signal) => this.confirm(req, signal),
                 },
                 drainQueued: (_record, admit) => this.drainQueued(admit),
                 unsteered: (steers) => this.unsteered(steers.flatMap((s) => s.texts), steers.map((s) => s.id)),
@@ -1908,6 +1913,38 @@ export class App {
         signal.addEventListener("abort", withdraw, { once: true });
         const value = await this.showDialog(d).finally(() => signal.removeEventListener("abort", withdraw));
         return signal.aborted ? undefined : value;
+    }
+
+    /** The servers' manager behind the server tools, as `cavvy servers` uses it; loaded with the first call. */
+    private serverSetup(): ServerSetup {
+        let made: Promise<ServerSetup> | undefined;
+        const real = () =>
+            (made ??= Promise.all([import("../servers/agent-setup"), import("../servers/manager")]).then(([setup, { ServerLinks }]) => {
+                const links = new ServerLinks();
+                return setup.serverSetup({ links: async () => links, settings: () => this.settings });
+            }));
+        return {
+            get: async (name) => (await real()).get(name),
+            names: async () => (await real()).names(),
+            hasKey: async (name) => (await real()).hasKey(name),
+            makeKey: async (name) => (await real()).makeKey(name),
+            copy: async (name) => (await real()).copy(name),
+            add: async (spec, o) => (await real()).add(spec, o),
+            remove: async (name, o) => (await real()).remove(name, o),
+        };
+    }
+
+    /** Before something that spends money or can't be taken back: asked whatever the mode. Esc, or the turn stopping, is a no. */
+    private async confirm(req: ConfirmRequest, signal: AbortSignal): Promise<"yes" | "other" | "no"> {
+        if (signal.aborted) return "no";
+        const header = [...(req.facts ?? []).map(([k, v]) => `${theme.muted(k.padEnd(8))} ${v}`), ...(req.commands ?? []).map((c) => theme.muted(`$ ${c}`))];
+        const items: SelectItem<"yes" | "other" | "no">[] = [{ label: req.yes, value: "yes" }, ...(req.other ? [{ label: req.other, value: "other" as const }] : []), { label: req.no, value: "no" }];
+        const d = new SelectDialog<"yes" | "other" | "no">({ title: `${req.title}?`, header, items, numbers: true, initial: req.danger ? items.length - 1 : 0, color: req.danger ? theme.error : theme.info });
+        void this.notifier.notify("question");
+        const withdraw = () => d.cancel();
+        signal.addEventListener("abort", withdraw, { once: true });
+        const r = await this.showDialog(d).finally(() => signal.removeEventListener("abort", withdraw));
+        return signal.aborted || r === undefined || Array.isArray(r) ? "no" : r;
     }
 
     /** A sign-in Cavvy runs (RequestSignIn): its prompt changes in place as the sign-in goes, and closes when it's over. */

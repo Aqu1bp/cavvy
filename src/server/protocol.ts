@@ -500,6 +500,28 @@ export interface SecretInteraction {
     purpose: string;
 }
 
+/**
+ * Cavvy asks before something an agent set in motion that spends money or can't be taken back (creating a server,
+ * deleting one). Asked in every permission mode: no mode, rule or reviewer answers it for the user.
+ */
+export interface ConfirmInteraction {
+    kind: "confirm";
+    id: string;
+    toolId?: string;
+    /** The question, without its mark: "Create a server for $12/month". */
+    title: string;
+    /** What it's about, as label and value: Name, Where, Size, System. */
+    facts?: [string, string][];
+    /** Commands that run on yes, as they'll run. */
+    commands?: string[];
+    /** The buttons: the one that goes ahead, one that asks for something else ("Change…"), and the way out. */
+    yes: string;
+    other?: string;
+    no: string;
+    /** Yes destroys something. */
+    danger?: boolean;
+}
+
 /** One sign-in in a card that offers several (a new server's): what it is, and whether it's done. */
 export interface SignInRow {
     target: string;
@@ -579,7 +601,7 @@ export type SignInAction =
     /** The window brought the card's `forward` port over, or couldn't (`error`). */
     | { action: "port"; error?: string };
 
-export type Interaction = (PermissionInteraction | QuestionInteraction | PlanInteraction | SecretInteraction | SignInInteraction) & {
+export type Interaction = (PermissionInteraction | QuestionInteraction | PlanInteraction | SecretInteraction | SignInInteraction | ConfirmInteraction) & {
     /** When it was asked (ms since the epoch): how long it's been waiting, whenever the session is opened. */
     since?: number;
 };
@@ -591,7 +613,8 @@ export type InteractionResponse =
     /** No value: declined. The value goes to the session's memory and nowhere else. */
     | { kind: "secret"; value?: string }
     /** A step in the card, not an answer: the card stays until the sign-in is over. */
-    | ({ kind: "signin" } & SignInAction);
+    | ({ kind: "signin" } & SignInAction)
+    | { kind: "confirm"; choice: "yes" | "other" | "no" };
 
 // ---------------------------------------------------------------------------
 // Session state
@@ -1750,6 +1773,10 @@ export interface ServerSummary {
     destination: string;
     /** Connected to from this Cavvy right now. */
     connected: boolean;
+    /** A rented machine's cost, as its user agreed to it ("$12/month"). */
+    cost?: string;
+    /** An agent created it, and Cavvy knows how to delete it at its provider. */
+    rented?: boolean;
 }
 
 /**
@@ -1863,6 +1890,8 @@ export type ServerEvent =
      * terminal.attach). `reset`: the window's screen is to be reset before `data`,
      * which replays all the output kept.
      */
+    /** An agent added or removed a server (ServerAdd, ServerRemove): how many this machine knows now. */
+    | { type: "servers.changed"; count: number }
     | { type: "terminal.data"; id: string; data: string; pos: number; reset?: boolean }
     | { type: "terminal.exit"; id: string; exitCode: number }
     /** Another connection with this window's key (a copy of the window) attached the terminal: it's shown there now. */

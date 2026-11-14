@@ -4,6 +4,7 @@
 // decision, MCP servers and file index, shared by its sessions.
 
 import { noteScheduleIndex, readScheduleIndex } from "../agent/schedule-host";
+import type { ServerSetup } from "../tools/server-tools";
 import { findRecipe, signInRecipes } from "../agent/sign-in-recipes";
 import { ACCOUNT_PROVIDERS, account, accountProvider, cliAccounts, accountSharingWarning, addAccount, defaultAccount, holdLogin, listAccounts, removeAccount, renameAccount, setDefaultAccount, registerAccountRoots } from "../providers/accounts";
 import { loginCommand } from "../backends/account-login";
@@ -2066,7 +2067,7 @@ export class Engine {
      * the server whose progress this window is to be told. A server's own Cavvy offers none of this: what it may
      * reach is decided where its user sits.
      */
-    private async servers(client: EngineClient, asking?: string) {
+    private async servers(client?: EngineClient, asking?: string) {
         if (this.o.away) throw new RpcError("Servers are managed from your own machine.", "unsupported");
         if (!this.serverLinks) {
             const { ServerLinks } = await import("../servers/manager");
@@ -2089,8 +2090,32 @@ export class Engine {
                 },
             });
         }
-        if (asking) this.serverAskers.set(asking, client);
+        if (asking && client) this.serverAskers.set(asking, client);
         return this.serverLinks;
+    }
+
+    private setup?: Promise<ServerSetup>;
+    /**
+     * The user's servers as an agent's tools use them (ServerKey, ServerAdd, ServerRemove): the same manager the
+     * windows' Servers list uses. Loaded with the first call: what reaches a server isn't needed to start.
+     */
+    serverSetup(): ServerSetup {
+        const real = () => (this.setup ??= import("../servers/agent-setup").then((m) => m.serverSetup({ links: () => this.servers(), settings: () => loadSettings(homedir(), { trusted: false }) })));
+        return {
+            get: async (name) => (await real()).get(name),
+            names: async () => (await real()).names(),
+            hasKey: async (name) => (await real()).hasKey(name),
+            makeKey: async (name) => (await real()).makeKey(name),
+            copy: async (name) => (await real()).copy(name),
+            add: async (spec, o) => (await real()).add(spec, o).finally(() => void this.serversChanged()),
+            remove: async (name, o) => (await real()).remove(name, o).finally(() => void this.serversChanged()),
+        };
+    }
+
+    /** An agent added or removed a server: windows hear how many there are now (the first one changes what a window shows). */
+    private async serversChanged() {
+        const count = await import("../servers/store").then((m) => m.listServers().length, () => 0);
+        for (const c of this.clients) if (!c.machine) c.send({ type: "servers.changed", count });
     }
 
     /** The window that says what another machine's session has to tell: one on this computer if there is one, else the first that shows them. */

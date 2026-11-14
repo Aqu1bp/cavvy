@@ -13,7 +13,12 @@ import type { BrowserSession } from "../browser/session";
 import type { SimulatorSession } from "../simulator/session";
 import type { Lends } from "./lent";
 import type { SessionPeers } from "../agent/peers";
+import type { ServerSetup } from "./server-tools";
 import type { SignInAnswer, SignInRequest } from "../agent/sign-ins";
+import type { ConfirmInteraction } from "../server/protocol";
+
+/** What a confirm card asks: the interaction without what the session adds. */
+export type ConfirmRequest = Omit<ConfirmInteraction, "kind" | "id" | "toolId">;
 
 
 /** One completion on the session's own model for an MCP server's sampling request: at most `maxTokens`, with why it stopped. */
@@ -105,6 +110,8 @@ export interface ToolState {
     background?: SessionBackground;
     /** The user's other sessions, as this one's main agent may reach them (src/agent/peers.ts); not given to sub-agents. */
     peers?: SessionPeers;
+    /** The user's servers, for ServerKey, ServerAdd and ServerRemove: on their own machine, in a session that stays open. */
+    servers?: ServerSetup;
 }
 
 /** Something a tool left running that raises wakes (a pull request watch, a monitor). */
@@ -138,6 +145,11 @@ export interface UiBridge {
     requestSecret?(name: string, purpose: string, signal: AbortSignal): Promise<string | undefined>;
     /** Ask the user to sign in to something (RequestSignIn): Cavvy runs the sign-in, and this answers with what the model is told. */
     requestSignIn?(req: SignInRequest, signal: AbortSignal): Promise<SignInAnswer>;
+    /**
+     * Ask before something that spends money or can't be taken back (the confirm card): "no" when they cancel or
+     * the turn is interrupted. Missing where there's no one to ask: what needs it doesn't happen.
+     */
+    confirm?(req: ConfirmRequest, signal: AbortSignal): Promise<"yes" | "other" | "no">;
     /**
      * The same card for something that runs outside a turn (a pull request's watch that found GitHub signed out):
      * "later" when the user put it off, and `then` runs if they sign in after all.

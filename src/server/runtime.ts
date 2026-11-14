@@ -32,6 +32,8 @@ import { MODE_INFO, PERMISSION_MODES, type PermissionMode } from "../permissions
 import { onServer } from "../servers/role";
 import { findRecipe, signInRecipes } from "../agent/sign-in-recipes";
 import { SessionSignIns, signInAction, signInAsks, type SignInAnswer, type SignInRequest } from "../agent/sign-ins";
+import { SERVER_TOOL_NAMES, SERVER_TOOLS, servedServerName } from "../tools/server-tools";
+import type { ConfirmRequest } from "../tools/types";
 import { PermissionChecker } from "../permissions/checker";
 import { AutoClassifier, REVIEW_REQUEST, reviewText, type ReviewStage } from "../permissions/classifier";
 import { toolPath } from "../permissions/rules";
@@ -461,6 +463,8 @@ export class Runtime {
         if (engine.away) this.toolState.lends = { call: (tool, input, signal) => engine.borrow(this, tool, input, signal) };
         this.toolState.simulator.onChange(() => this.engine.sendSimulator(this.id, this.simulator.state()));
         this.toolState.secrets!.onChange(() => this.setState({ secrets: this.toolState.secrets!.names() }));
+        // The user's servers, for an agent to set one up or add one: from their own machine only (a server reaches no other machine of theirs).
+        if (!engine.away) this.toolState.servers = engine.serverSetup();
         this.schedules = new SessionSchedules({
             session: () => this.session,
             settings: () => this.settings(),
@@ -1596,11 +1600,11 @@ export class Runtime {
         const native = this.nativeSearch();
         const off = this.settings().webSearch === "off";
         const skill = skillTool(this.ws.skills);
-        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off)) && offered(t, this.settings())), ...(skill ? [skill] : []), ...CRON_TOOLS, ...SESSION_TOOLS, ...this.ws.mcp.tools()];
+        return [...BUILTIN_TOOLS.filter((t) => !(t.name === "WebSearch" && (native || off)) && offered(t, this.settings())), ...(skill ? [skill] : []), ...CRON_TOOLS, ...SESSION_TOOLS, ...(this.toolState.servers ? SERVER_TOOLS : []), ...this.ws.mcp.tools()];
     }
 
     private toolMeta(call: ToolCallPart): ToolMeta {
-        const tool = BUILTIN_TOOLS.find((t) => t.name === call.name) ?? CRON_TOOLS.find((t) => t.name === call.name) ?? SESSION_TOOLS.find((t) => t.name === call.name) ?? (call.name === "Skill" ? (skillTool(this.ws.skills) as Tool<any> | undefined) : undefined) ?? this.ws.mcp.tools().find((t) => t.name === call.name);
+        const tool = BUILTIN_TOOLS.find((t) => t.name === call.name) ?? CRON_TOOLS.find((t) => t.name === call.name) ?? SESSION_TOOLS.find((t) => t.name === call.name) ?? SERVER_TOOLS.find((t) => t.name === call.name) ?? (call.name === "Skill" ? (skillTool(this.ws.skills) as Tool<any> | undefined) : undefined) ?? this.ws.mcp.tools().find((t) => t.name === call.name);
         let title = call.name;
         try {
             if (tool) title = tool.title(call.input ?? {});
@@ -1658,6 +1662,7 @@ export class Runtime {
                     requestSecret: (name, purpose, signal) => this.requestSecret(name, purpose, signal),
                     requestSignIn: (req, signal) => this.requestSignIn(req, signal),
                     askSignIn: (req, then) => this.askSignIn(req, then),
+                    confirm: (req, signal) => this.confirm(req, signal),
                 },
                 drainQueued: (record, admit, id) => this.drainQueued(record, admit, id),
                 drainWaiting: (record) => this.drainWaiting(record),
@@ -2490,6 +2495,7 @@ export class Runtime {
             this.setStatus("waiting");
             if (interaction.kind === "secret") return this.engine.notify(this, "question", `Asks you for ${interaction.name}`);
             if (interaction.kind === "signin") return this.engine.notify(this, "question", signInAsks(interaction));
+            if (interaction.kind === "confirm") return this.engine.notify(this, "question", `${interaction.title}?`);
             const kind = interaction.kind;
             // A sub-agent's request says whose it is: the session's own agent didn't ask.
             const asker = kind === "permission" && interaction.agentLabel ? `Sub-agent "${interaction.agentLabel}" wants` : "Wants";
@@ -2510,6 +2516,10 @@ export class Runtime {
         const p = this.pending.get(interactionId);
         if (!p) throw new RpcError("That request was already answered or has expired.", "expired");
         if (p.interaction.kind !== r.kind) throw new RpcError("The answer doesn't match the request.");
+        if (r.kind === "confirm" && p.interaction.kind === "confirm") {
+            const choice = r.choice === "yes" || (r.choice === "other" && p.interaction.other) ? r.choice : "no";
+            return this.settle(interactionId, { kind: "confirm", choice });
+        }
         // A step in a sign-in's card: the card stays until the sign-in itself is over.
         if (r.kind === "signin") {
             try {
@@ -2736,6 +2746,23 @@ export class Runtime {
         try {
             const r = await this.interact({ kind: "secret", id, toolId, name, purpose: redact(purpose) });
             return r?.kind === "secret" ? r.value : undefined;
+        } finally {
+            signal.removeEventListener("abort", withdraw);
+            if (toolId) this.patchBlock(toolId, { status: "running" });
+        }
+    }
+
+    /** Before something that spends money or can't be taken back: the card, whatever the mode. Withdrawn with the turn, it's a no. */
+    private async confirm(req: ConfirmRequest, signal: AbortSignal): Promise<"yes" | "other" | "no"> {
+        if (signal.aborted) return "no";
+        const toolId = [...SERVER_TOOL_NAMES, ...SERVER_TOOL_NAMES.map((n) => `mcp__${MCP_SERVER_NAME}__${servedServerName(n)}`)].map((n) => this.runningTool(n)).find(Boolean);
+        if (toolId) this.patchBlock(toolId, { status: "awaiting" });
+        const id = this.newId();
+        const withdraw = () => this.settle(id, undefined);
+        signal.addEventListener("abort", withdraw, { once: true });
+        try {
+            const r = await this.interact({ kind: "confirm", id, toolId, title: redact(req.title), facts: req.facts?.map(([k, v]) => [redact(k), redact(v)]), commands: req.commands?.map(redact), yes: req.yes, other: req.other, no: req.no, danger: req.danger });
+            return r?.kind === "confirm" ? r.choice : "no";
         } finally {
             signal.removeEventListener("abort", withdraw);
             if (toolId) this.patchBlock(toolId, { status: "running" });

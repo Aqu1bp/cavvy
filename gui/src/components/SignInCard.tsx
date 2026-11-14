@@ -5,7 +5,7 @@
 
 import { createEffect, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, type JSX } from "solid-js";
 import { Check, ExternalLink, SquareTerminal } from "lucide-solid";
-import type { SignInAction, SignInInteraction } from "@shared/protocol";
+import type { ConfirmInteraction, SignInAction, SignInInteraction } from "@shared/protocol";
 import { respond } from "../state/actions";
 import { machine as windowMachine, openExternal } from "../lib/platform";
 import { home } from "../lib/machines";
@@ -407,5 +407,60 @@ function Prompt(p: { term: string; keys: (text: string) => void; later: () => vo
             {p.term}
             <span class="si-caret" />
         </pre>
+    );
+}
+
+/**
+ * Before something an agent set in motion that spends money or can't be taken back (creating a server, deleting
+ * one): what it is, and the answer. Asked in every permission mode.
+ */
+export function ConfirmCard(p: { sessionId: string; it: ConfirmInteraction }) {
+    const [busy, setBusy] = createSignal(false);
+    const answer = async (choice: "yes" | "other" | "no") => {
+        if (busy()) return;
+        setBusy(true);
+        if (!(await respond(p.sessionId, p.it.id, { kind: "confirm", choice }))) setBusy(false);
+    };
+    useKeys((k) => {
+        if (k === "1") return void answer("yes"), true;
+        if (k === "2" && p.it.other) return void answer("other"), true;
+        if (k === "Escape") return void answer("no"), true;
+        return false;
+    });
+    return (
+        <>
+            <Head title={<>{p.it.title}?</>} />
+            <div class="itab-body">
+                <Show when={p.it.facts?.length}>
+                    <dl class="si-facts">
+                        <For each={p.it.facts}>
+                            {([k, v]) => (
+                                <>
+                                    <dt>{k}</dt>
+                                    <dd class={`selectable ${k === "Name" || k === "Key" || k === "Address" ? "mono" : ""}`}>{v}</dd>
+                                </>
+                            )}
+                        </For>
+                    </dl>
+                </Show>
+                <Show when={p.it.commands?.length}>
+                    <pre class="itab-code mono selectable">{p.it.commands!.join("\n")}</pre>
+                </Show>
+            </div>
+            <div class="itab-actions ask-row">
+                <button class="pbtn primary" disabled={busy()} onClick={() => void answer("yes")}>
+                    {p.it.yes} <kbd>1</kbd>
+                </button>
+                <Show when={p.it.other}>
+                    <button class="pbtn" disabled={busy()} onClick={() => void answer("other")}>
+                        {p.it.other} <kbd>2</kbd>
+                    </button>
+                </Show>
+                <span class="grow" />
+                <button class="pbtn quiet" disabled={busy()} onClick={() => void answer("no")}>
+                    {p.it.no} <kbd>Esc</kbd>
+                </button>
+            </div>
+        </>
     );
 }
