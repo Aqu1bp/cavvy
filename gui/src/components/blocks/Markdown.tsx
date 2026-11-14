@@ -87,11 +87,11 @@ export function Markdown(p: { text: string; streaming?: boolean; class?: string;
 }
 
 /**
- * One rendered block. While the reply streams it's updated in place (see lib/stream-dom.ts); the last one carries the
- * writing mark. One written as it streams is `md-written` for good (markdown.css): its lines wrap as they came.
+ * One rendered block. While the reply streams it's updated in place (see lib/stream-dom.ts). One written as it streams
+ * is `md-written` for good (markdown.css): its lines wrap as they came.
  */
-function HtmlBlock(p: { html: string; live: boolean; last: boolean }) {
-    return <div class={untrack(() => p.live) ? "md-block md-written" : "md-block"} ref={(el) => createRenderEffect(() => paint(el, p.html, p.live, p.live && p.last))} />;
+function HtmlBlock(p: { html: string; live: boolean }) {
+    return <div class={untrack(() => p.live) ? "md-block md-written" : "md-block"} ref={(el) => createRenderEffect(() => paint(el, p.html, p.live))} />;
 }
 
 function MarkdownContent(p: { text: string; streaming?: boolean; class?: string; sessionId?: string; find?: string }) {
@@ -141,10 +141,9 @@ function MarkdownContent(p: { text: string; streaming?: boolean; class?: string;
                 {(s, i) => {
                     const code = createMemo(() => { const part = s(); return part.kind === "code" ? part : undefined; });
                     const html = createMemo(() => { const part = s(); return part.kind === "html" ? part : undefined; });
-                    const last = createMemo(() => i === segments().length - 1);
                     return <Switch>
                         <Match when={code()}>{(c) => <CodeBlock code={c().code} lang={c().lang} streaming={c().open} />}</Match>
-                        <Match when={html()}>{(h) => <HtmlBlock html={h().html} live={live()} last={last()} />}</Match>
+                        <Match when={html()}>{(h) => <HtmlBlock html={h().html} live={live()} />}</Match>
                     </Switch>;
                 }}
             </Index>

@@ -313,8 +313,7 @@
 
 /* While the reply streams, what has just come out is drawn lighter for a moment: an ink trail. lib/stream-dom.ts
    gives each new piece a tier by its age on the steps text comes out on, so nothing animates and nothing is drawn
-   between them. Opacity, not a colour: links, code and emphasis keep their own. A soft dot sits where it's being
-   written, after the last text or the code being typed. */
+   between them. Opacity, not a colour: links, code and emphasis keep their own. */
 @media (prefers-reduced-motion: no-preference) {
     .md .md-t1 {
         opacity: 0.4;
@@ -330,41 +329,5 @@
 
     .md .md-t4 {
         opacity: 0.93;
-    }
-}
-
-.md-caret,
-.md .code.writing .code-body code::after {
-    display: inline-block;
-    width: 0.5em;
-    height: 0.5em;
-    margin-left: 0.3em;
-    border-radius: 50%;
-    background: var(--accent);
-    vertical-align: 0.05em;
-}
-
-/* Stepped, like every animation that runs on for as long as something waits: the compositor draws the window on a
-   refresh only if something changed, so 20 small changes a second rather than one on every refresh. */
-.md-caret.waiting,
-.md .code.writing.waiting .code-body code::after {
-    animation: md-caret 1.1s steps(22) infinite alternate;
-}
-
-.md .code.writing .code-body code::after {
-    content: "";
-}
-
-@keyframes md-caret {
-    to {
-        opacity: 0.35;
-        transform: scale(0.75);
-    }
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .md-caret.waiting,
-    .md .code.writing.waiting .code-body code::after {
-        animation: none;
     }
 }
