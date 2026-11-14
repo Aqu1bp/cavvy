@@ -4402,7 +4402,8 @@ export class Runtime {
             }
             await ending;
         } finally {
-            await this.agent?.turnSnapshots?.stop();
+            // The session's, not the agent's: a session whose agent is gone still has its last turn's end to wait for.
+            await TurnSnapshots.for(this.session, this.ws.cwd)?.stop();
             await commit;
             this.ui.close();
             this.session.release();
