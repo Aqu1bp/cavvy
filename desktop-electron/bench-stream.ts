@@ -3,7 +3,7 @@
 // bytes the page received. On the demo's mock model ("perfstream" in scripts/mock-llm.ts). Writes
 // bench-results/bench-stream-<label>.json.
 //
-//   bun desktop-electron/bench-stream.ts --label before [--app <packaged executable>] [--history 200] [--seconds 15] [--only idleLongOnScreen,textLongOnScreen]
+//   bun desktop-electron/bench-stream.ts --label before [--app <packaged executable>] [--history 200] [--seconds 15] [--only idleLongOnScreen,textLongOnScreen] [--theme <id>]
 //
 // Phases: idle with a long session on screen; a long reply streaming in a short session, then in the long one; a
 // command's output streaming in the long one; the long one streaming while a short one is on screen; and a 40 KB reply
@@ -197,9 +197,16 @@ try {
     // Experiments: --css <rules> added to the page; --reduced-motion as macOS's Reduce motion setting.
     if (arg("--css")) await js(`(() => { const s = document.createElement('style'); s.textContent = ${JSON.stringify(arg("--css"))}; document.head.append(s); })()`);
     if (args.includes("--reduced-motion")) await page.cdp("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+    // --theme <id>: the window shows that theme (Settings → Appearance → Theme), its scene drawn before anything's measured.
+    if (arg("--theme")) {
+        await js(`(() => { const p = JSON.parse(localStorage.getItem("cavvy.prefs") || "{}"); p.themeId = ${JSON.stringify(arg("--theme"))}; localStorage.setItem("cavvy.prefs", JSON.stringify(p)); setTimeout(() => location.reload(), 50); })()`);
+        await sleep(500);
+        for (let i = 0; !(await js(`!!document.querySelector('textarea[aria-label="Message"]') && !!document.querySelector('.tb-scene.on')`).catch(() => false)); i++) { if (i > 1500) throw new Error("no theme"); await sleep(10); }
+        await sleep(1000);
+    }
     // Whether Chromium keeps an accessibility tree for the page (it does while anything on the Mac reads the screen through accessibility).
     const ax = main ? (await main.cdp("Runtime.evaluate", { expression: "process.mainModule.require(\"electron\").app.isAccessibilitySupportEnabled()", returnByValue: true })).result?.result?.value : undefined;
-    report.experiment = { css: arg("--css"), reducedMotion: args.includes("--reduced-motion"), chromium: arg("--chromium"), accessibility: ax };
+    report.experiment = { css: arg("--css"), theme: arg("--theme"), reducedMotion: args.includes("--reduced-motion"), chromium: arg("--chromium"), accessibility: ax };
 
     // ---- Sessions, through the app's own server.
     let server: { pid?: number; port?: number; token?: string } = {};
