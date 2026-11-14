@@ -280,12 +280,14 @@
     margin-top: 0;
 }
 
+/* The stashed prompts' list, open over the composer (StashTray sets --stash-lift): the question moves up for it too. */
 .home-q {
+    translate: 0 calc(-1 * var(--stash-lift, 0px));
     transition: translate 320ms var(--ease);
 }
 
 .asking .home-q {
-    translate: 0 calc(-38 * var(--sp));
+    translate: 0 calc(-38 * var(--sp) - var(--stash-lift, 0px));
 }
 
 .home-tab .ic,
@@ -339,8 +341,8 @@
 }
 
 /* ---- Continue from your terminal ------------------------------------------
-   Claude Code / Codex sessions of this project, to carry on here: a quiet
-   list. Hovering a row swaps its time for Import. */
+   Claude Code / Codex sessions of this project, to carry on here: a group of
+   rows, as Settings' are, each with its Import. */
 .cli-sessions {
     margin-top: calc(34 * var(--sp));
     animation: home-in 320ms 120ms var(--ease) both;
@@ -351,11 +353,11 @@
     align-items: center;
     gap: calc(8 * var(--sp));
     height: calc(24 * var(--sp));
-    margin-bottom: calc(4 * var(--sp));
-    padding: 0 calc(2 * var(--sp)) 0 calc(10 * var(--sp));
-    font-size: 0.857rem;
+    margin-bottom: calc(6 * var(--sp));
+    padding: 0 0 0 calc(4 * var(--sp));
+    font-size: 0.929rem;
     font-weight: 600;
-    color: var(--fg-3);
+    color: var(--fg-2);
 }
 
 .cli-h .grow {
@@ -364,8 +366,9 @@
 
 .cli-all {
     height: calc(24 * var(--sp));
-    padding: 0 calc(9 * var(--sp));
-    border-radius: var(--pill);
+    padding: 0 calc(8 * var(--sp));
+    border-radius: calc(7 * var(--sp));
+    font-size: 0.857rem;
     font-weight: 500;
     color: var(--fg-3);
     transition: background 140ms, color 140ms;
@@ -376,61 +379,72 @@
     color: var(--fg);
 }
 
+.cli-rows {
+    border-radius: var(--r-card);
+    background: var(--group);
+    box-shadow: inset 0 0 0 0.5px var(--line);
+    overflow: hidden;
+}
+
 .cli-row {
+    position: relative;
     display: flex;
     align-items: center;
     gap: calc(12 * var(--sp));
     min-width: 0;
-    padding: calc(7 * var(--sp)) calc(10 * var(--sp)) calc(7 * var(--sp)) calc(8 * var(--sp));
-    border-radius: calc(14 * var(--sp));
+    padding: calc(8 * var(--sp)) calc(10 * var(--sp)) calc(8 * var(--sp)) calc(14 * var(--sp));
     cursor: default;
     outline: none;
     transition: background 140ms;
 }
 
-.cli-row + .cli-row {
-    margin-top: 1px;
+/* A hairline between rows, from the text's edge. */
+.cli-row + .cli-row::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    right: 0;
+    left: calc(42 * var(--sp));
+    border-top: 0.5px solid var(--line);
 }
 
-.cli-row:hover {
+.cli-row:hover,
+.cli-row:focus-visible {
     background: var(--hover);
 }
 
 .cli-row:focus-visible {
-    background: var(--hover);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent);
+    box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
-/* The provider's mark on a tile. */
+/* The provider's mark. */
 .cli-pv {
     display: grid;
     place-items: center;
     flex: none;
-    width: calc(32 * var(--sp));
-    height: calc(32 * var(--sp));
-    border-radius: calc(10 * var(--sp));
-    color: var(--fg);
-    background: var(--group);
-    box-shadow: inset 0 0 0 0.5px var(--line);
+    width: calc(16 * var(--sp));
+    color: var(--fg-2);
 }
 
 .cli-main {
     display: flex;
     flex: 1;
     flex-direction: column;
-    gap: 1px;
+    gap: calc(2 * var(--sp));
     min-width: 0;
 }
 
 .cli-title {
+    font-size: 0.929rem;
     font-weight: 500;
     color: var(--fg);
 }
 
 .cli-meta {
     overflow: hidden;
-    font-size: 0.857rem;
+    font-size: 0.821rem;
     font-weight: 400;
+    font-variant-numeric: tabular-nums;
     white-space: nowrap;
     text-overflow: ellipsis;
     color: var(--fg-3);
@@ -452,61 +466,32 @@
     vertical-align: middle;
 }
 
-.cli-end {
-    display: grid;
-    flex: none;
-    align-items: center;
-    justify-items: end;
-}
-
-.cli-ago,
-.cli-go {
-    grid-area: 1 / 1;
-}
-
-.cli-ago {
-    font-size: 0.857rem;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-    color: var(--fg-3);
-    transition: opacity 120ms;
-}
-
 .cli-go {
     display: inline-flex;
+    flex: none;
     align-items: center;
-    gap: calc(5 * var(--sp));
     height: calc(26 * var(--sp));
-    padding: 0 calc(9 * var(--sp)) 0 calc(12 * var(--sp));
-    border-radius: var(--pill);
+    padding: 0 calc(11 * var(--sp));
+    border-radius: calc(8 * var(--sp));
     font-size: 0.857rem;
     font-weight: 600;
-    color: var(--accent-ink);
-    background: var(--accent);
-    box-shadow:
-        inset 0 1px 0 color-mix(in srgb, var(--accent-ink) 25%, transparent),
-        0 4px 12px -4px color-mix(in srgb, var(--accent) 60%, transparent);
-    opacity: 0;
-    transform: translateX(calc(6 * var(--sp)));
-    pointer-events: none;
-    transition: opacity 140ms, transform 240ms var(--ease);
+    white-space: nowrap;
+    color: var(--fg);
+    background: var(--press);
+    transition: background 140ms, color 140ms;
 }
 
 .cli-row:is(:hover, :focus-visible, .busy) .cli-go {
-    opacity: 1;
-    transform: none;
-}
-
-.cli-row:is(:hover, :focus-visible, .busy) .cli-ago {
-    opacity: 0;
+    color: var(--accent-ink);
+    background: var(--accent);
 }
 
 /* Its CLI isn't turned on: where to turn it on, in place of Import. */
 .cli-off {
-    max-width: calc(220 * var(--sp));
+    flex: none;
     font-size: 0.857rem;
     font-weight: 550;
-    text-align: right;
+    white-space: nowrap;
     color: var(--accent-text);
 }
 
@@ -541,8 +526,7 @@
 }
 
 .cl-item .cli-pv {
-    width: calc(30 * var(--sp));
-    height: calc(30 * var(--sp));
+    width: calc(22 * var(--sp));
 }
 
 .cl-main {

@@ -2,13 +2,17 @@
 // refuses them, but nothing it says is trusted here: what a file is comes
 // from its bytes (not its name or MIME type), every cap is checked again,
 // and anything wrong is an error back to the composer, never a silent drop.
+// What can't go to the model inline (a .docx, a zip, text past the cap) is
+// saved in the project for the model to open with its tools.
 
-import { createHash } from "crypto";
+import { createHash, randomBytes } from "crypto";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "fs";
+import { join } from "path";
 import { ATTACH_LIMITS, type FileChip, type WireFile } from "./protocol";
 import { RpcError } from "./rpc-error";
 import { MEDIA_BUDGET, base64Size } from "../util/media";
 import type { AttachedPart, FilePart, ImagePart } from "../providers/types";
-import { formatBytes, looksBinary } from "../util/files";
+import { formatBytes, isInside, looksBinary } from "../util/files";
 import { redact } from "../util/redact";
 
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
@@ -39,16 +43,46 @@ function lineCount(text: string): number {
     return text.split("\n").length - (text.endsWith("\n") ? 1 : 0);
 }
 
+/** Saves a file that can't go to the model inline, and says where it is. */
+export type SaveFile = (name: string, bytes: Uint8Array) => string;
+
+/** Where a session's saved files go: a folder of the project's own, which git leaves out. */
+export function attachmentsDir(cwd: string): string {
+    return join(cwd, ".cavvy", "attachments");
+}
+
+/**
+ * Saves into the project (the session's folder, where its agent works and can read without asking, on whichever
+ * machine runs it), a folder per file so two of the same name don't meet.
+ */
+export function fileSaver(cwd: string, session: string): SaveFile {
+    return (name, bytes) => {
+        const root = attachmentsDir(cwd);
+        mkdirSync(root, { recursive: true });
+        // A repository's own .cavvy can be a link out of it: saved only inside the project.
+        if (!isInside(realpathSync(root), realpathSync(cwd))) throw new RpcError(`Couldn't save ${name} in this project: its .cavvy folder leads out of it.`);
+        const ignore = join(root, ".gitignore");
+        if (!existsSync(ignore)) writeFileSync(ignore, "*\n");
+        const dir = join(root, session.replace(/[^\w.-]/g, "_") || "session", `${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`);
+        mkdirSync(dir, { recursive: true });
+        const file = join(dir, name === "." || name === ".." ? "file" : name);
+        writeFileSync(file, bytes);
+        return file;
+    };
+}
+
 /**
  * The files of a `session.send`, checked: each one text (valid UTF-8 that
- * doesn't look binary, redacted like an @mention) or a PDF (by its header).
- * Throws an RpcError naming the file otherwise. Model support is checked at send time.
+ * doesn't look binary, redacted like an @mention) or a PDF (by its header),
+ * inline; anything else, or past their caps, saved by `save`. Throws an
+ * RpcError naming the file when it can't be either. Model support is checked at send time.
  */
-export function checkFiles(raw: unknown): FilePart[] {
+export function checkFiles(raw: unknown, save?: SaveFile): FilePart[] {
     if (raw === undefined || raw === null) return [];
     if (!Array.isArray(raw)) throw new RpcError("files must be a list");
     if (raw.length > ATTACH_LIMITS.files) throw new RpcError(`A message can carry ${ATTACH_LIMITS.files} files at most; this one has ${raw.length}.`);
     const out: FilePart[] = [];
+    const toSave: { part: { path: string; name: string }; bytes: Uint8Array }[] = [];
     let total = 0;
     /** As kept: text redacted, which can make it longer (an edited message must fit again). */
     let stored = 0;
@@ -59,35 +93,54 @@ export function checkFiles(raw: unknown): FilePart[] {
         if (typeof f?.name !== "string" || typeof f.data !== "string") throw new RpcError("Each file needs a name and its data");
         const pasted = f.pasted === true;
         const name = pasted ? "Pasted text" : sanitizeName(f.name);
-        // Over the largest cap, don't even decode it.
-        if (f.data.length > Math.ceil((ATTACH_LIMITS.pdfBytes * 4) / 3) + 4) throw new RpcError(`${name} is too large to attach (PDFs up to ${formatBytes(ATTACH_LIMITS.pdfBytes)}, text files up to ${formatBytes(ATTACH_LIMITS.textBytes)}).`);
+        // Over every file's cap, don't even decode it.
+        if (f.data.length > Math.ceil((ATTACH_LIMITS.totalBytes * 4) / 3) + 4) throw new RpcError(`${name} is too large to attach (files in one message can come to ${formatBytes(ATTACH_LIMITS.totalBytes)} at most).`);
         if (f.data.length % 4 !== 0 || !BASE64.test(f.data)) throw new RpcError(`${name} didn't arrive as base64`);
         const bytes = Buffer.from(f.data, "base64");
         total += bytes.length;
         stored += bytes.length;
         if (total > ATTACH_LIMITS.totalBytes) throw new RpcError(`These files come to more than ${formatBytes(ATTACH_LIMITS.totalBytes)}, the most one message can carry.`);
+        /** Kept in the project rather than in the message (once all of them pass): `why` when there's nowhere to keep it. */
+        const saved = (why: string, kept: Uint8Array = bytes, code?: string): FilePart => {
+            if (!save) throw new RpcError(why, code);
+            stored -= bytes.length;
+            const part = { type: "file" as const, kind: "saved" as const, name: pasted ? "Pasted text.txt" : name, size: kept.length, path: "" };
+            toSave.push({ part, bytes: kept });
+            return part;
+        };
         // Pasted text is text, whatever it starts with.
         if (!pasted && bytes.subarray(0, 5).toString("latin1") === "%PDF-") {
-            if (bytes.length > ATTACH_LIMITS.pdfBytes) throw new RpcError(`${name} is ${formatBytes(bytes.length)}; PDFs can be ${formatBytes(ATTACH_LIMITS.pdfBytes)} at most.`);
+            if (bytes.length > ATTACH_LIMITS.pdfBytes) {
+                out.push(saved(`${name} is ${formatBytes(bytes.length)}; PDFs can be ${formatBytes(ATTACH_LIMITS.pdfBytes)} at most.`));
+                continue;
+            }
             storedFits();
             out.push({ type: "file", kind: "pdf", name, size: bytes.length, mediaType: "application/pdf", data: f.data });
             continue;
         }
-        if (bytes.length > ATTACH_LIMITS.textBytes) throw new RpcError(`${name} is ${formatBytes(bytes.length)}; text files can be ${formatBytes(ATTACH_LIMITS.textBytes)} at most.`);
-        let text: string;
+        let text: string | undefined;
         try {
             text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
         } catch {
-            throw new RpcError(`${name} isn't a text file or a PDF, so it can't be attached.`, "not_text");
+            text = undefined;
         }
-        if (looksBinary(bytes)) throw new RpcError(`${name} isn't a text file or a PDF, so it can't be attached.`, "not_text");
+        if (text === undefined || looksBinary(bytes)) {
+            out.push(saved(`${name} isn't a text file or a PDF, so it can't be attached.`, bytes, "not_text"));
+            continue;
+        }
+        // Redacted whether it's sent or saved: the model reads a saved one too.
         text = redact(text);
         // Stored redacted: what comes back to the box when it's edited must fit again.
-        if (Buffer.byteLength(text) > ATTACH_LIMITS.textBytes) throw new RpcError(`${name} is too large to attach once the secrets in it are redacted (text files can be ${formatBytes(ATTACH_LIMITS.textBytes)} at most).`);
+        if (bytes.length > ATTACH_LIMITS.textBytes || Buffer.byteLength(text) > ATTACH_LIMITS.textBytes) {
+            const why = bytes.length > ATTACH_LIMITS.textBytes ? `${name} is ${formatBytes(bytes.length)}; text files can be ${formatBytes(ATTACH_LIMITS.textBytes)} at most.` : `${name} is too large to attach once the secrets in it are redacted (text files can be ${formatBytes(ATTACH_LIMITS.textBytes)} at most).`;
+            out.push(saved(why, Buffer.from(text, "utf-8")));
+            continue;
+        }
         stored += Buffer.byteLength(text) - bytes.length;
         storedFits();
         out.push({ type: "file", kind: "text", name, size: bytes.length, lines: lineCount(text), text, ...(pasted ? { pasted: true } : {}) });
     }
+    for (const { part, bytes } of toSave) part.path = save!(part.name, bytes);
     return out;
 }
 
@@ -129,6 +182,14 @@ export function toWire(parts: readonly AttachedPart[] | undefined): { images?: {
     const images = (parts ?? []).filter((p): p is ImagePart => p.type === "image").map((i) => ({ mediaType: i.mediaType, data: i.data }));
     const files = (parts ?? []).flatMap((p): WireFile[] => {
         if (p.type !== "file") return [];
+        if (p.kind === "saved") {
+            // Back from where it was saved; gone from there (the folder deleted), it can't come back.
+            try {
+                return [{ name: p.name, data: readFileSync(p.path).toString("base64") }];
+            } catch {
+                return [];
+            }
+        }
         const data = p.kind === "pdf" ? p.data : Buffer.from(p.text, "utf-8").toString("base64");
         return [{ name: p.name, data, ...(p.kind === "text" && p.pasted ? { pasted: true } : {}) }];
     });

@@ -145,9 +145,14 @@ export function pdfPlaceholder(p: Extract<FilePart, { kind: "pdf" }>): string {
     return `[The user attached a PDF, "${frameName(p.name)}" (${Math.max(1, Math.round(p.size / 1024))} KB), but this model can't read PDFs, so its contents aren't included.]`;
 }
 
-/** A file part as text: the framed contents, or a note for a PDF this model can't take. */
+/** What stands in for a file saved in the project: where it is, for the model to open. */
+export function savedNote(p: Extract<FilePart, { kind: "saved" }>): string {
+    return `[The user attached "${frameName(p.name)}" (${formatBytes(p.size)}). It's saved at ${p.path}; open it with your tools if you need what's in it.]`;
+}
+
+/** A file part as text: the framed contents, a note for a PDF this model can't take, or where a saved file is. */
 export function fileAsText(p: FilePart): string {
-    return p.kind === "text" ? framedText(p) : pdfPlaceholder(p);
+    return p.kind === "text" ? framedText(p) : p.kind === "saved" ? savedNote(p) : pdfPlaceholder(p);
 }
 
 /**

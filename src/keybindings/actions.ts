@@ -66,6 +66,7 @@ export const ACTIONS: readonly ActionDef[] = [
     { id: "chat:expand", context: "Chat", description: "Make the input box large, or back to its size", defaults: { gui: ["mod+shift+e"] } },
     { id: "chat:imagePaste", context: "Chat", description: "Paste an image from the clipboard", defaults: { tui: ["ctrl+v"] } },
     { id: "chat:undo", context: "Chat", description: "Undo the last edit", defaults: { tui: ["ctrl+_", "ctrl+-"] } },
+    { id: "chat:stash", context: "Chat", description: "Stash the prompt, or bring it back", defaults: { tui: ["ctrl+s"], gui: ["mod+s"] } },
     { id: "history:previous", context: "Chat", description: "Previous prompt", defaults: { tui: ["up", "ctrl+p"], gui: ["up"] } },
     { id: "history:next", context: "Chat", description: "Next prompt", defaults: { tui: ["down", "ctrl+n"], gui: ["down"] } },
     // Autocomplete (the / and @ menu)

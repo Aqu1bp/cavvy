@@ -47,6 +47,49 @@ test("history is session-local, deduplicated, bounded and persisted; deletion re
     expect(createComposerStorage(() => disk).history("a")).toEqual([]);
 });
 
+test("stashed prompts are kept apart from the draft, in order, survive a reload, and go with their session", () => {
+    const disk = storage();
+    const state = createComposerStorage(() => disk);
+    state.setDraft("a", "in the box");
+    state.setStashes("a", ["newest", "older"]);
+    state.flush();
+    const restored = createComposerStorage(() => disk);
+    expect(restored.draft("a")).toBe("in the box");
+    expect(restored.stashes("a")).toEqual(["newest", "older"]);
+    expect(restored.stashes("b")).toEqual([]);
+    // Read back as it was written: loading it doesn't save it again.
+    const writes = disk.writes;
+    restored.flush();
+    expect(disk.writes).toBe(writes);
+    restored.setStashes("a", []);
+    restored.flush();
+    expect(disk.data.get(COMPOSER_STORAGE_KEY)).not.toContain("stash");
+    restored.setStashes("a", ["again"]);
+    restored.delete("a");
+    expect(createComposerStorage(() => disk).stashes("a")).toEqual([]);
+});
+
+test("a stashed credential stays in memory, and stashes alone keep their entry", () => {
+    const disk = storage();
+    const state = createComposerStorage(() => disk);
+    const key = "sk-" + "a".repeat(30);
+    state.setStashes("a", ["fine to save", key]);
+    state.setStashes("b", ["only a stash"]);
+    state.flush();
+    expect(state.stashes("a")).toEqual(["fine to save", key]);
+    expect(disk.data.get(COMPOSER_STORAGE_KEY)).not.toContain("sk-");
+    const restored = createComposerStorage(() => disk);
+    expect(restored.stashes("a")).toEqual(["fine to save"]);
+    expect(restored.stashes("b")).toEqual(["only a stash"]);
+    // Saved by a version that wrote something else there: only its text is restored.
+    disk.data.set(COMPOSER_STORAGE_KEY, JSON.stringify([["c", { draft: "", history: [], updated: Date.now(), stash: ["text", { data: "SECRET" }, ""] }], ["d", { draft: "kept", history: [], updated: Date.now(), stash: "not a list" }]]));
+    const odd = createComposerStorage(() => disk);
+    expect(odd.stashes("c")).toEqual(["text"]);
+    expect(odd.stashes("d")).toEqual([]);
+    expect(odd.draft("d")).toBe("kept");
+    expect(disk.data.get(COMPOSER_STORAGE_KEY) ?? "").not.toContain("SECRET");
+});
+
 test("corrupt, blocked and quota-exceeded storage preserve in-memory operation", () => {
     const disk = storage();
     for (const raw of ["broken", "null", '{}', '[["a",{}]]', '[["a",{"draft":1,"history":[],"updated":0}]]']) {

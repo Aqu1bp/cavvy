@@ -126,6 +126,7 @@ function renderForTranscript(m: Message, cap: number, fit = false): Rendered {
         else if (p.type === "image") add("[image]", Infinity);
         else if (p.type === "file") {
             if (p.kind === "pdf") add(`[the user attached ${p.name} earlier; its contents aren't included here]`, Infinity);
+            else if (p.kind === "saved") add(`[the user attached ${p.name} earlier; it's saved at ${p.path}]`, Infinity);
             // Framed here too (shortened first), so a file can't pass for the transcript's own lines. A paste is the user's own words.
             else if (ownWords && p.pasted) add(p.text, Infinity, (t) => framedText({ ...p, text: t }), { words: true });
             else add(p.text, 4000, (t) => framedText({ ...p, text: t }), { file: p.name });
@@ -191,7 +192,7 @@ export function estimateTokens(messages: Message[]): number {
             else if (p.type === "thinking") chars += p.text.length;
             else if (p.type === "image") chars += 6000;
             // A PDF's pages are read as text and images: a rough guess from its size.
-            else if (p.type === "file") chars += p.kind === "text" ? p.text.length + 300 : Math.max(6000, Math.round(p.size / 6));
+            else if (p.type === "file") chars += p.kind === "text" ? p.text.length + 300 : p.kind === "saved" ? 200 : Math.max(6000, Math.round(p.size / 6));
         }
     }
     return Math.ceil(chars / 3.5);

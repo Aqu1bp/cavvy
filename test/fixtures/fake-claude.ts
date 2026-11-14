@@ -20,7 +20,7 @@
 //
 // FAKE_LOG          each line: what it was started with, and what it received
 // FAKE_LOGGED_IN=0  auth status says signed out
-// FAKE_SCENARIO     write (default) | shell-cap-late | write-config | read-secret | rm | bash | leak | ask | plan | hang | write-hang | mcp | silent | agent | agent-background | agent-background-late | agent-background-stuck | agent-quiet | agent-waits | agent-renotified | agent-fails-later | agent-fails-then-reports | agent-hands-back-late | agent-resume
+// FAKE_SCENARIO     write (default) | read-image | shell-cap-late | write-config | read-secret | rm | bash | leak | ask | plan | hang | write-hang | mcp | silent | agent | agent-background | agent-background-late | agent-background-stuck | agent-quiet | agent-waits | agent-renotified | agent-fails-later | agent-fails-then-reports | agent-hands-back-late | agent-resume
 //                   (agent-resume: SendMessage resumes the sub-agent an earlier turn ran, as 2.1.304 does; see agentResume)
 // FAKE_SECOND_SCENARIO  the scenario for its prompts after the first (default: the same)
 // FAKE_BACKGROUND_MS  how long a background sub-agent goes on after the turn's result (default 300)
@@ -1184,6 +1184,15 @@ async function turn(content: any[], uuid?: string) {
             here = cwd;
             toolResult(id, `Exited worktree. Session is now back in “${cwd}”.`, false, { action: "keep", originalCwd: cwd, worktreePath, worktreeBranch: "worktree-wt", restoredCwd: cwd, originalCwdMissing: false });
         }
+        text("done");
+        return result("success");
+    }
+    if (scenario === "read-image") {
+        // A Read of an image: its result is the image, as Claude Code 2.1.304 gives it.
+        const id = `toolu_img${prompts}`;
+        toolUse(id, "Read", { file_path: join(cwd, "shot.png") });
+        const data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+        out({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: [{ type: "image", source: { type: "base64", data, media_type: "image/png" } }] }] }, parent_tool_use_id: null, session_id: sessionId });
         text("done");
         return result("success");
     }

@@ -5,8 +5,8 @@
 import { foldCase, type Block, type Turn } from "@shared/protocol";
 import { cardOf } from "../components/blocks/Activity";
 import { planTitle } from "./plan-chat";
-import { sameInARow, toolLabel } from "./tool-words";
-import { commandLabel, commandMeta, outputLines } from "./command-row";
+import { commandDescription, sameInARow, toolLabel } from "./tool-words";
+import { commandLabel, commandMeta, firstStep, liveCommand, outputLines } from "./command-row";
 import { stripAnsi } from "./format";
 import { renderMarkdown } from "./markdown";
 import { splitComments } from "./review-comments";
@@ -56,8 +56,9 @@ function blockText(b: Block, counted = false): string | undefined {
                 // As its row reads folded: its label (what it's for, or the command shortened) and what it came to;
                 // opened, all of the command and its output.
                 if (b.status === "streaming") return undefined;
-                // Under way, the turn's live line shows it: its command is what find counts there (its description is the line's label).
-                if (b.status === "running" || b.status === "queued" || b.status === "awaiting") return l.arg;
+                // Under way, the turn's live line shows it: what it says after its label is what find counts there.
+                if (b.status === "running" || b.status === "queued") return liveCommand(b);
+                if (b.status === "awaiting") return commandDescription(b) ?? firstStep(String(b.input?.command ?? ""));
                 const head = [commandLabel(b), commandMeta(b)].filter(Boolean).join(" ");
                 const command = String(b.input?.command ?? "").trim();
                 // Its output as the opened row draws it (without the exit code the tool adds: the footer, which find skips, says it).
