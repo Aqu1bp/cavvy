@@ -194,9 +194,9 @@ export function sandboxPolicy(roots: string[], opts: { home?: string; cavvyHome:
     const allAccounts = [...new Set(accountProtectedPaths().map(canonical))];
     const accounts = allAccounts.filter((a) => !isWithin(a, cavvy));
     const worktrees = [...new Set(ws.flatMap(claudeWorktrees))];
-    // The secrets and accounts/ (registered or not) can't even be listed; the rest of the
+    // The secrets, accounts/ (registered or not) and server-keys/ can't even be listed; the rest of the
     // home can, but not read: settings and session logs may hold secrets too.
-    const secrets = homes.flatMap((h) => [basename(paths.credentialsFile()), basename(paths.mcpOAuth()), basename(paths.providers()), "accounts"].flatMap((f) => bothForms(join(h, f))));
+    const secrets = homes.flatMap((h) => [basename(paths.credentialsFile()), basename(paths.mcpOAuth()), basename(paths.providers()), "accounts", "server-keys"].flatMap((f) => bothForms(join(h, f))));
     // Seatbelt matches where a path leads: a settings.json symlinked out of the home is covered where it points.
     const settings = homes.flatMap((h) => linkedFile(join(h, basename(paths.userSettings()))));
     const globalConfig = [opencodeConfigDir(home), ...antigravityConfigDirs(home)].flatMap(bothForms);

@@ -583,6 +583,8 @@ describe("approvals are per session", () => {
             settings: {},
             makeAgent() {},
             schedules: { switchSession() {} },
+            // Its sign-ins go with the session too.
+            signIns: { dispose() {} },
             replayTranscript() {},
             sessionHook: async () => {},
         });

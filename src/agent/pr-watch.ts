@@ -304,7 +304,7 @@ export class PrReadError extends Error {
 function classify(text: string): PrReadError {
     const t = redact(text).trim().slice(0, 500) || "gh failed without saying why";
     if (/rate limit|secondary rate|abuse detection|HTTP 429/i.test(t)) return new PrReadError(t, "rate");
-    if (/gh auth login|not logged in|authentication|HTTP 401|bad credentials|requires authentication/i.test(t)) return new PrReadError(`GitHub CLI isn't logged in: ${t}. Run gh auth login in a terminal.`, "auth");
+    if (/gh auth login|not logged in|authentication|HTTP 401|bad credentials|requires authentication/i.test(t)) return new PrReadError(`GitHub isn't signed in: ${t}`, "auth");
     if (/Could not resolve to a (PullRequest|Repository)|NOT_FOUND|HTTP 404/i.test(t)) return new PrReadError(`Pull request not found, or this gh account can't see it: ${t}`, "missing");
     return new PrReadError(t, "other");
 }
@@ -471,6 +471,11 @@ export interface PrWatchOptions {
     snapshot: PrSnapshot;
     /** It ended by itself (merged, closed, gave up): the host forgets it. */
     onEnd?: (reason: string) => void;
+    /**
+     * GitHub turned out signed out: asks the user to sign in (the card). "later": they put it off, and `resume` is
+     * called if they sign in after all. Left out, or "cannot": the watch ends, and the agent is told why.
+     */
+    signIn?: (heard: (signedIn: boolean) => void) => Promise<"signed-in" | "later" | "cannot">;
     now?: () => number;
 }
 
@@ -483,6 +488,8 @@ export class PrWatch {
     private abort = new AbortController();
     private failures = 0;
     private stopped = false;
+    /** Waiting for the user to sign in to GitHub: nothing is read meanwhile. */
+    private signedOut = false;
     /** Polls made, for tests and /status-like listings. */
     polls = 0;
     last: PrSnapshot;
@@ -526,7 +533,8 @@ export class PrWatch {
         const pending = s.checks.some((c) => c.status === "pending");
         const parts = [failed ? `${failed} check${failed === 1 ? "" : "s"} failing` : pending ? "checks running" : s.checks.length ? "checks passed" : "no checks yet"];
         if (s.mergeable === "conflicting") parts.push("conflicts");
-        if (this.failures) parts.push("can't reach GitHub, retrying");
+        if (this.signedOut) parts.push("GitHub signed out");
+        else if (this.failures) parts.push("can't reach GitHub, retrying");
         return parts.join(" · ");
     }
 
@@ -574,6 +582,8 @@ export class PrWatch {
     private failed(e: unknown) {
         const err = e instanceof PrReadError ? e : new PrReadError(redact(e instanceof Error ? e.message : String(e)), "other");
         if (err.kind === "rate") return this.schedule(prWatchTiming.rateLimitMs);
+        // Signed out: the user is asked, and the watch waits for them rather than ending (the agent isn't woken for it).
+        if (err.kind === "auth" && this.o.signIn && !this.signedOut) return void this.waitForSignIn(err);
         if (!this.failures) queueMicrotask(() => this.onChange?.());
         if (err.kind === "auth" || err.kind === "missing" || ++this.failures >= FAILURE_LIMIT) {
             const why = err.kind === "other" ? `reading it failed ${FAILURE_LIMIT} times in a row (last: ${err.message})` : err.message;
@@ -586,6 +596,26 @@ export class PrWatch {
             return this.end(why);
         }
         this.schedule(Math.min(prWatchTiming.slowMs * 2 ** (this.failures - 1), prWatchTiming.maxBackoffMs));
+    }
+
+    private async waitForSignIn(err: PrReadError) {
+        this.signedOut = true;
+        this.onChange?.();
+        const heard = (signedIn: boolean) => {
+            if (this.stopped || !this.signedOut) return;
+            // Put off, then dismissed: nobody is going to sign in for it, so it ends as with no one to ask.
+            if (!signedIn) return this.failed(err);
+            this.signedOut = false;
+            this.onChange?.();
+            this.schedule(0);
+        };
+        const r = await this.o.signIn!(heard).catch(() => "cannot" as const);
+        if (this.stopped) return;
+        if (r === "signed-in") return heard(true);
+        // Put off: it stays, reading nothing, until it hears.
+        if (r === "later") return;
+        // Nothing could be shown (it says it's signed in, yet reading failed): as without anyone to ask.
+        this.failed(err);
     }
 
     private end(reason: string) {

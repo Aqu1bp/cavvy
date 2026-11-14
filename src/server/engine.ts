@@ -4,6 +4,8 @@
 // decision, MCP servers and file index, shared by its sessions.
 
 import { noteScheduleIndex, readScheduleIndex } from "../agent/schedule-host";
+import type { ServerSetup } from "../tools/server-tools";
+import { findRecipe, signInRecipes } from "../agent/sign-in-recipes";
 import { ACCOUNT_PROVIDERS, account, accountProvider, cliAccounts, accountSharingWarning, addAccount, defaultAccount, holdLogin, listAccounts, removeAccount, renameAccount, setDefaultAccount, registerAccountRoots } from "../providers/accounts";
 import { loginCommand } from "../backends/account-login";
 import { redactedError } from "./git-handles";
@@ -1302,9 +1304,20 @@ export class Engine {
         this.unloadTimers.set(id, t);
     }
 
+    /** Ports of a server brought here for a window's sign-in card (servers.forward): closed with the card, or with the window. */
+    private forwards = new Map<string, { opening: Promise<{ close(): void }>; clients: Set<EngineClient> }>();
+
+    private unforward(client: EngineClient, key: string) {
+        const f = this.forwards.get(key);
+        if (!f?.clients.delete(client) || f.clients.size) return;
+        this.forwards.delete(key);
+        void f.opening.then((x) => x.close(), () => undefined);
+    }
+
     /** A window went away (closed, reloading, or lost its connection). Its terminals wait a while for it to come back. */
     dropClient(client: EngineClient) {
         this.clients.delete(client);
+        for (const key of [...this.forwards.keys()]) this.unforward(client, key);
         if (this.lenders.has(client) || [...this.lentCalls.values()].some((c) => c.client === client)) this.setLender(client, [], true);
         for (const [name, asker] of this.serverAskers) if (asker === client) this.serverAskers.delete(name);
         this.terminals.drop(client);
@@ -2054,7 +2067,7 @@ export class Engine {
      * the server whose progress this window is to be told. A server's own Cavvy offers none of this: what it may
      * reach is decided where its user sits.
      */
-    private async servers(client: EngineClient, asking?: string) {
+    private async servers(client?: EngineClient, asking?: string) {
         if (this.o.away) throw new RpcError("Servers are managed from your own machine.", "unsupported");
         if (!this.serverLinks) {
             const { ServerLinks } = await import("../servers/manager");
@@ -2077,8 +2090,32 @@ export class Engine {
                 },
             });
         }
-        if (asking) this.serverAskers.set(asking, client);
+        if (asking && client) this.serverAskers.set(asking, client);
         return this.serverLinks;
+    }
+
+    private setup?: Promise<ServerSetup>;
+    /**
+     * The user's servers as an agent's tools use them (ServerKey, ServerAdd, ServerRemove): the same manager the
+     * windows' Servers list uses. Loaded with the first call: what reaches a server isn't needed to start.
+     */
+    serverSetup(): ServerSetup {
+        const real = () => (this.setup ??= import("../servers/agent-setup").then((m) => m.serverSetup({ links: () => this.servers(), settings: () => loadSettings(homedir(), { trusted: false }) })));
+        return {
+            get: async (name) => (await real()).get(name),
+            names: async () => (await real()).names(),
+            hasKey: async (name) => (await real()).hasKey(name),
+            makeKey: async (name) => (await real()).makeKey(name),
+            copy: async (name) => (await real()).copy(name),
+            add: async (spec, o) => (await real()).add(spec, o).finally(() => void this.serversChanged()),
+            remove: async (name, o) => (await real()).remove(name, o).finally(() => void this.serversChanged()),
+        };
+    }
+
+    /** An agent added or removed a server: windows hear how many there are now (the first one changes what a window shows). */
+    private async serversChanged() {
+        const count = await import("../servers/store").then((m) => m.listServers().length, () => 0);
+        for (const c of this.clients) if (!c.machine) c.send({ type: "servers.changed", count });
     }
 
     /** The window that says what another machine's session has to tell: one on this computer if there is one, else the first that shows them. */
@@ -2104,6 +2141,15 @@ export class Engine {
         this.noteStatus(def.id, "default", st);
         if (limits) this.limitsReported(limits, false);
         return { description: st.description, warning: st.apiKey ? `${def.name} is signed in with an API key, so usage is billed to that key, not a subscription.` : undefined, model: this.adoptDefaultModel(def.id) };
+    }
+
+    /**
+     * An agent CLI was signed in through a sign-in card: its accounts and models are looked at again, as when its
+     * sign-in terminal closes. On a server, or where it's already in use, its default account is turned on too.
+     */
+    async cliSignedIn(providerId: string, accountId: string): Promise<void> {
+        if (accountId === "default" && (this.o.away || readAgentConfig(providerId))) await this.connectCli(providerId).catch(() => undefined);
+        await this.accountsList(providerId, true).then(() => this.refreshListings(true)).then(() => this.broadcast({ type: "models.changed" })).catch(() => undefined);
     }
 
     /** As /login does: with no default model yet, the newly connected provider's best one becomes it. */
@@ -2411,6 +2457,12 @@ export class Engine {
                         release();
                         throw e;
                     }
+                }
+                // A sign-in card's "Open in terminal": the command it shows, typed for the user to run (never run for them).
+                if (p.signIn !== undefined) {
+                    if (!p.signIn || typeof p.signIn !== "object") throw new RpcError("Invalid sign-in", "invalid");
+                    const input = this.runtimes.get(str(p.signIn.session, "session"))?.signInTyped(str(p.signIn.interaction, "interaction"));
+                    return this.terminals.open(client, str(p.id, "id"), str(p.cwd, "cwd"), p.cols, p.rows, input ? { input } : {});
                 }
                 return this.terminals.open(client, str(p.id, "id"), str(p.cwd, "cwd"), p.cols, p.rows);
             case "terminal.write":
@@ -2868,6 +2920,13 @@ export class Engine {
             case "session.restartCli":
                 await this.runtime(p.id).restartCli();
                 return null;
+            case "session.askSignIn":
+                // Only one of Cavvy's own: a window names what, never a command.
+                if (!findRecipe(str(p.target, "target"), signInRecipes(this.runtime(p.id).settings().signIns))) throw new RpcError("Cavvy has no sign-in for that.", "invalid");
+                return await this.runtime(p.id).askSignIn({ targets: [{ target: p.target }] });
+            case "session.signIn":
+                this.runtime(p.id).reopenSignIn(str(p.watchId, "watchId"));
+                return null;
             case "session.stopWatch":
                 this.runtime(p.id).stopWatch(str(p.watchId, "watchId"));
                 return null;
@@ -3030,6 +3089,35 @@ export class Engine {
                 return await (await this.servers(client)).remove(str(p.name, "name"));
             case "servers.restore":
                 (await this.servers(client)).restore(str(p.name, "name"));
+                return null;
+            case "servers.forward": {
+                if (this.o.away) throw new RpcError("Servers are managed from your own machine.", "unsupported");
+                const entry = (await import("../servers/store")).getServer(str(p.name, "name"));
+                if (!entry) throw new RpcError(`No server is called ${p.name}.`, "invalid");
+                // The card is the server's word. Which port this machine listens on is this machine's: only the one a sign-in of the user's own here says its page calls.
+                const known = findRecipe(str(p.target, "target"), signInRecipes(loadSettings(homedir(), { trusted: false }).signIns));
+                if (![known?.here, known?.away].some((w) => w?.flow === "callback" && w.port === Number(p.port))) throw new RpcError("This machine has no sign-in that uses that port. Add the sign-in to Cavvy's settings here too.", "invalid");
+                const key = `${entry.name}:${Number(p.port)}`;
+                // One per port, however many windows show the card: each holds it until it lets go or goes.
+                let f = this.forwards.get(key);
+                if (!f) {
+                    const opening = (await import("../servers/sign-in-host")).forwardPort(entry, Number(p.port));
+                    f = { opening, clients: new Set() };
+                    this.forwards.set(key, f);
+                    opening.catch(() => this.forwards.get(key) === f && this.forwards.delete(key));
+                }
+                f.clients.add(client);
+                try {
+                    await f.opening;
+                } catch (e) {
+                    throw new RpcError(e instanceof Error ? e.message : String(e), "failed");
+                }
+                // The window went while it opened.
+                if (!this.clients.has(client)) this.unforward(client, key);
+                return null;
+            }
+            case "servers.unforward":
+                this.unforward(client, `${str(p.name, "name")}:${Number(p.port)}`);
                 return null;
             case "providers.removeKey": {
                 const id = str(p.provider, "provider");

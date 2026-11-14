@@ -943,6 +943,11 @@ function onEvent(ev: ServerEvent) {
             // A fetch in flight gets the new list anyway.
             if (!app.modelsLoading) void refreshModels().catch(() => undefined);
             return;
+        case "servers.changed":
+            // An agent added or removed a server: the first one changes what this window shows (its sessions, where a new one runs).
+            if (app.hello) setApp("hello", "servers", ev.count);
+            if (ev.count) void serversUi().then((m) => m.connected());
+            return;
         case "notify": {
             if (ev.kind === "background") return backgroundEnded(ev);
             if (!prefs.notifications) return;

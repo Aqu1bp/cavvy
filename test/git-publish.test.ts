@@ -102,8 +102,8 @@ test("fake gh creates editable draft PR after local push, redacts prefill and ou
 test("unauthenticated gh offers compare and refuses PR creation before push", async () => {
     const { cwd, state } = repo(true); process.env.FAKE_PUBLISH_MODE = "unauthenticated";
     const preview = await gitPublishInfo(cwd);
-    expect(preview.gh).toBe(false); expect(preview.compareUrl).toBe("https://github.com/example/project/compare/main...feature?expand=1");
-    await expect(gitPublish(cwd, { fingerprint: preview.fingerprint, action: "pr", base: "main", title: "Title" })).rejects.toThrow("not authenticated");
+    expect(preview.gh).toBe(false); expect(preview.ghSignedOut).toBe(true); expect(preview.compareUrl).toBe("https://github.com/example/project/compare/main...feature?expand=1");
+    await expect(gitPublish(cwd, { fingerprint: preview.fingerprint, action: "pr", base: "main", title: "Title" })).rejects.toMatchObject({ message: "GitHub isn't signed in.", code: "sign_in" });
     expect(calls(state, ".git-calls").some((args) => args.includes("push"))).toBe(false);
 });
 

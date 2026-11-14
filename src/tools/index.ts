@@ -11,6 +11,7 @@ import { WebFetchTool, WebSearchTool } from "./web-tools";
 import { GitCommitTool, GitPushTool, CreatePullRequestTool, WatchPullRequestTool, UnwatchPullRequestTool } from "./git-tools";
 import { TodoWriteTool, ExitPlanModeTool, AskUserQuestionTool, RequestSecretTool, TaskTool, TaskStatusTool, ListModelsTool } from "./meta-tools";
 import { EnterWorktreeTool, ExitWorktreeTool } from "./worktree-tools";
+import { RequestSignInTool } from "./sign-in-tools";
 
 export const BUILTIN_TOOLS: Tool<any>[] = [
     TaskTool,
@@ -42,6 +43,7 @@ export const BUILTIN_TOOLS: Tool<any>[] = [
     TodoWriteTool,
     AskUserQuestionTool,
     RequestSecretTool,
+    RequestSignInTool,
     ExitPlanModeTool,
 ];
 

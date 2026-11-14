@@ -1,11 +1,46 @@
 // Whose a key is while a card waits for an answer (components/InteractionDock.tsx): its number keys and Esc work
 // while nothing is typed elsewhere.
 
+/** When the user last pressed Sign in here (in a card, or on one put off): a window only brings a port over for a sign-in started in it. */
+export const signInPressed = { at: 0 };
+
+/**
+ * A put-off sign-in in the strip's words: what ("GitHub", "Claude Code and Codex") and on which machine. From the
+ * watch's label ("Sign in to GitHub on box"); `machine`: the server this window is on, which a session there doesn't name.
+ */
+export function putOffSignIn(label: string, machine?: string): { name: string; on?: string } {
+    const rest = label.replace(/^Sign in to /, "");
+    const at = rest.lastIndexOf(" on ");
+    return at > 0 ? { name: rest.slice(0, at), on: rest.slice(at + 4) } : { name: rest, ...(machine ? { on: machine } : {}) };
+}
+
+/** The mark for a put-off sign-in to one service that has one (ProviderIcon's ids), from the watch's id ("sign-in:box:gh"): GitHub's, Claude Code's, Codex's. */
+export function signInMark(watchId: string): string | undefined {
+    const targets = watchId.slice(watchId.lastIndexOf(":") + 1).split(",");
+    return targets.length === 1 ? ({ gh: "github", claude: "claude-code", codex: "codex" } as Record<string, string>)[targets[0]!] : undefined;
+}
+
+/**
+ * Whether the sign-in card that's up is the one for a put-off sign-in (the watch's id, "sign-in:box:gh"): the same
+ * machine, and everything the row waits on. Its row isn't shown beside its own card; the other rows stay.
+ */
+export function signInCardFor(watchId: string, card: { machine?: string; target?: string; rows?: { target: string }[] }): boolean {
+    const rest = watchId.replace(/^sign-in:/, "");
+    const at = rest.lastIndexOf(":");
+    // The machine, without the account an agent CLI's sign-in is for ("box/work").
+    const on = rest.slice(0, Math.max(at, 0)).split("/")[0]!;
+    const asked = card.rows?.length ? card.rows.map((r) => r.target) : card.target ? [card.target] : [];
+    return on === (card.machine?.toLowerCase() ?? "") && rest.slice(at + 1).split(",").every((t) => asked.includes(t));
+}
+
 type Focused = Pick<HTMLElement, "tagName" | "isContentEditable" | "closest"> & { value?: string };
 
-/** Something that takes typing has the keyboard. The find bar's buttons too: its Esc closes it, and it has no use for the number keys. And the browser's page, which takes every key. */
+/**
+ * Something that takes typing has the keyboard. The find bar's buttons too: its Esc closes it, and it has no use for the number
+ * keys. And the browser's page and a sign-in's prompt, which take every key.
+ */
 export function typingIn(el: Focused | null): boolean {
-    return Boolean(el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.isContentEditable || el.closest(".find-bar, .br-canvas")));
+    return Boolean(el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT" || el.isContentEditable || el.closest(".find-bar, .br-canvas, .si-term")));
 }
 
 /**

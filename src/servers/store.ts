@@ -20,7 +20,20 @@ export interface ServerEntry {
     identityFile?: string;
     /** Where this server's host key is kept, when the user's ssh config keeps none for it (ssh.ts trustHostKey). */
     knownHostsFile?: string;
+    /** A machine rented for this (an agent created it): what it is, what it costs, and how it's given back. */
+    cloud?: ServerCloud;
     addedAt: string;
+}
+
+export interface ServerCloud {
+    /** Who it's rented from: "AWS Lightsail". */
+    provider: string;
+    /** Where it runs, as the provider's own words: "Mumbai". */
+    where?: string;
+    /** What it costs, as the user was told when they agreed: "$12/month". */
+    cost?: string;
+    /** The provider CLI's commands that delete it and what was made with it, each as words (no shell reads them). */
+    teardown?: string[][];
 }
 
 interface StoreFile {
@@ -83,6 +96,29 @@ function checked(e: Partial<ServerEntry>): ServerEntry {
         if (!isAbsolute(f) || /[\0\n\r]/.test(f)) throw new ServerError("That isn't a known-hosts file's path.");
         out.knownHostsFile = f;
     }
+    if (e.cloud !== undefined) out.cloud = checkedCloud(e.cloud);
+    return out;
+}
+
+const LINE = /^[^\0-\x1f\x7f]{1,80}$/;
+/** One word of a command: nothing a shell would act on, though none reads it. */
+const WORD = /^[A-Za-z0-9_@%+=:,./-]{1,200}$/;
+
+/** A rented machine's details as they're saved, or why they can't be. Words for people are one short line each. */
+export function checkedCloud(c: unknown): ServerCloud {
+    const x = (c && typeof c === "object" ? c : {}) as Record<string, unknown>;
+    const line = (v: unknown, what: string) => {
+        if (typeof v !== "string" || !LINE.test(v.trim())) throw new ServerError(`${what} must be one short line.`);
+        return v.trim();
+    };
+    const out: ServerCloud = { provider: line(x.provider, "The provider") };
+    if (x.where !== undefined) out.where = line(x.where, "Where it runs");
+    if (x.cost !== undefined) out.cost = line(x.cost, "The cost");
+    if (x.teardown !== undefined) {
+        const list = Array.isArray(x.teardown) ? x.teardown : [];
+        if (!list.length || list.length > 8 || !list.every((cmd) => Array.isArray(cmd) && cmd.length > 0 && cmd.length <= 40 && cmd.every((w) => typeof w === "string" && WORD.test(w)) && !String(cmd[0]).includes("/"))) throw new ServerError("Each teardown command is plain words starting with the provider CLI's name: no quotes, pipes or paths to a program.");
+        out.teardown = list.map((cmd: string[]) => [...cmd]);
+    }
     return out;
 }
 
@@ -102,7 +138,7 @@ export function requireServer(name: string): ServerEntry {
 }
 
 /** What `add` would save, checked, without saving it (the connection is tried first). */
-export function draftServer(e: { name: string; destination: string; port?: number; identityFile?: string; knownHostsFile?: string }): ServerEntry {
+export function draftServer(e: { name: string; destination: string; port?: number; identityFile?: string; knownHostsFile?: string; cloud?: ServerCloud }): ServerEntry {
     const entry = checked(e);
     if (getServer(entry.name)) throw new ServerError(`There's already a server named ${entry.name}.`);
     return entry;
