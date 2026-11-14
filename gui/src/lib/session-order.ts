@@ -44,8 +44,8 @@ export type SidebarEntry =
     /** `cwd`: the project (projectOf). `machine`: the server it's on. */
     | { key: string; kind: "project"; cwd: string; name: string; machine?: string; collapsed?: boolean; ids?: string[] }
     | { key: string; kind: "settled" | "archived" }
-    /** Listed by date: the day its sessions below were last at work (dayOf). */
-    | { key: string; kind: "day"; label: DayLabel }
+    /** Listed by date: the day its sessions below were last at work (dayOf); `collapsed`: they're folded under it (`ids`). */
+    | { key: string; kind: "day"; label: DayLabel; collapsed?: boolean; ids?: string[] }
     | { key: string; kind: "more"; page: "cards" | "settled" | "archived"; remaining: number }
     /**
      * Needs you, pinned above everything: the sessions waiting on you (`ids`). The
@@ -65,6 +65,8 @@ export interface SidebarOptions {
     archive: number;
     /** Grouped by project: the projects (by path) whose sessions are folded under their heading. */
     collapsed?: readonly string[];
+    /** Listed by date: the days whose sessions are folded under their heading. */
+    foldedDays?: readonly DayLabel[];
     /** Sessions waiting on you but the one in front of you (rail.ts needsYou), pinned at the top of the active list. */
     needs?: readonly string[];
     /** Listed by date: the time now, to put them under Today, Yesterday and so on. Without it, no days. */
@@ -72,7 +74,7 @@ export interface SidebarOptions {
 }
 
 export type DayLabel = "Pinned" | "Today" | "Yesterday" | "Previous 7 days" | "Older";
-const DAYS: readonly DayLabel[] = ["Pinned", "Today", "Yesterday", "Previous 7 days", "Older"];
+export const DAYS: readonly DayLabel[] = ["Pinned", "Today", "Yesterday", "Previous 7 days", "Older"];
 
 /** The heading a session is listed under by date. Working or waiting on you is today, whenever its turn started. */
 export function dayOf(s: Pick<SessionSummary, "pinned" | "status" | "updatedAt">, now: number): DayLabel {
@@ -100,8 +102,8 @@ export const onAnother = (on: { machine?: string } | undefined, here: string | u
 /** A project's folder (projectOf), without the server it's on. */
 export const folderOf = (project: string) => project.slice(project.indexOf("\n") + 1);
 
-/** Fold a project's sessions under its heading, or unfold them. */
-export function toggleProject(collapsed: readonly string[], cwd: string): string[] {
+/** Fold a project's (or a day's) sessions under its heading, or unfold them. */
+export function toggleProject<T extends string>(collapsed: readonly T[], cwd: T): T[] {
     return collapsed.includes(cwd) ? collapsed.filter((c) => c !== cwd) : [...collapsed, cwd];
 }
 
@@ -113,6 +115,13 @@ export function toggleProject(collapsed: readonly string[], cwd: string): string
 export function revealProject(collapsed: readonly string[], s: Pick<SessionSummary, "cwd" | "run" | "settled" | "archived"> | undefined, groupBy: "date" | "project"): readonly string[] {
     if (!s || groupBy !== "project" || s.settled || s.archived || !collapsed.includes(projectOf(s))) return collapsed;
     return collapsed.filter((c) => c !== projectOf(s));
+}
+
+/** Opening a session under a folded day unfolds it, as revealProject does a project. */
+export function revealDay(folded: readonly DayLabel[], s: Pick<SessionSummary, "pinned" | "status" | "updatedAt" | "settled" | "archived"> | undefined, groupBy: "date" | "project", now: number): readonly DayLabel[] {
+    if (!s || groupBy !== "date" || s.settled || s.archived) return folded;
+    const day = dayOf(s, now);
+    return folded.includes(day) ? folded.filter((d) => d !== day) : folded;
 }
 
 /** A single projection drives the DOM and keyboard navigation, including paging. */
@@ -144,8 +153,23 @@ export function sidebarEntries(sessions: readonly SessionSummary[], archived: re
     const all = orderSessions(sessions.filter((s) => !s.settled));
     // A folded project's sessions take no page slots: only its heading shows, where its latest session would be.
     const folded = new Set(o.groupBy === "project" ? o.collapsed ?? [] : []);
-    const cards = folded.size ? all.filter((s) => !folded.has(projectOf(s))) : all;
+    let cards = folded.size ? all.filter((s) => !folded.has(projectOf(s))) : all;
+    // Listed by date, a folded day's the same: its heading and how many are under it. A run goes by its first.
+    const foldedDays = new Set(o.groupBy === "date" && o.now !== undefined ? o.foldedDays ?? [] : []);
+    const underDay = new Map<DayLabel, string[]>();
+    if (foldedDays.size) {
+        const out = new Set<string>();
+        for (const group of sessionGroups(cards)) {
+            const day = dayOf(group[0]!, o.now!);
+            if (!foldedDays.has(day)) continue;
+            const ids = underDay.get(day) ?? [];
+            for (const s of group) { ids.push(s.id); out.add(s.id); }
+            underDay.set(day, ids);
+        }
+        cards = cards.filter((s) => !out.has(s.id));
+    }
     const visible = pageSessions(cards, o.cards, o.activeId);
+    const remaining = () => sessionGroups(cards).length - sessionGroups(visible).length;
     if (o.groupBy === "project") {
         const shown = new Set(visible.map((s) => s.id));
         const groups = new Map<string, SessionSummary[]>();
@@ -165,19 +189,26 @@ export function sidebarEntries(sessions: readonly SessionSummary[], archived: re
                 rows(group, "card", "cards");
             }
         }
-    } else if (o.now === undefined) rows(visible, "card", "cards");
-    else {
+        more("cards", remaining());
+    } else if (o.now === undefined) {
+        rows(visible, "card", "cards");
+        more("cards", remaining());
+    } else {
         // Each day's sessions in their order; a run goes by its first. (Waiting on you sorts first: here it's in its day.)
         const now = o.now;
         const days = new Map<DayLabel, SessionSummary[]>(DAYS.map((d) => [d, []]));
         for (const group of sessionGroups(visible)) days.get(dayOf(group[0]!, now))!.push(...group);
+        // Show more goes under the last day with rows: the rest are its, or later ones'. A folded day after it stays below.
+        const last = DAYS.filter((d) => days.get(d)!.length).at(-1);
         for (const [label, list] of days) {
-            if (!list.length) continue;
+            const ids = underDay.get(label);
+            if (ids) entries.push({ key: `day:${label}`, kind: "day", label, collapsed: true, ids });
+            if (ids || !list.length) continue;
             entries.push({ key: `day:${label}`, kind: "day", label });
             rows(list, "card", "cards");
+            if (label === last) more("cards", remaining());
         }
     }
-    more("cards", sessionGroups(cards).length - sessionGroups(visible).length);
     const settled = orderSessions(sessions.filter((s) => s.settled));
     if (settled.length) {
         entries.push({ key: "heading:settled", kind: "settled" });
@@ -239,7 +270,7 @@ export function listedOnce(entries: readonly SidebarEntry[]): readonly SidebarEn
         return [e];
     });
     // A heading's rows come straight after it: the next entry is a session's, or the heading has none.
-    return kept.filter((e, i) => (e.kind !== "day" && !(e.kind === "project" && !e.collapsed)) || /card|row|run/.test(kept[i + 1]?.kind ?? ""));
+    return kept.filter((e, i) => !((e.kind === "day" || e.kind === "project") && !e.collapsed) || /card|row|run/.test(kept[i + 1]?.kind ?? ""));
 }
 
 /** The ids pinned under Needs you, in its order. */

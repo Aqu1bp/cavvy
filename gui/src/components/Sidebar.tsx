@@ -15,7 +15,7 @@ import { prefs, setPrefs } from "../state/prefs";
 import { agentFocus, railFree, setDeletedOpen, setPaletteOpen, setRailDrag, setSettingsTab, settingsTab } from "../state/ui";
 import { frameDrag } from "../lib/drag";
 import { ago, monogram, projectColor, since } from "../lib/format";
-import { folderOf, holdSidebar, listedOnce, machineLabel, projectOf, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type SidebarEntry } from "../lib/session-order";
+import { folderOf, holdSidebar, listedOnce, machineLabel, projectOf, revealDay, revealProject, sidebarEntries, sidebarIds, SESSION_PAGE, toggleProject, type DayLabel, type SidebarEntry } from "../lib/session-order";
 import { sessionStatus } from "../lib/session-status";
 import { foldOrder, groupCounts, inFront, needsRowLine, needsYou, planFit, railFoot, type RailPlan } from "../lib/rail";
 import { railSelection, setRailSelection, setSidebarOrder } from "../state/sidebar";
@@ -424,6 +424,7 @@ function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) =
     // Where it is, for the tooltip: its server, its project, and its branch when it isn't the usual one.
     const where = () => [p.s.machine && machineLabel(p.s.machine), p.s.projectName, usualBranch(branchOf(p.s)) ? undefined : branchOf(p.s)].filter(Boolean).join(" · ");
     const picked = () => p.pick.picked(p.s.id);
+    const provider = () => modelOf(p.s)?.split(":")[0];
     return (
         <div
             ref={el}
@@ -440,8 +441,9 @@ function SessionCard(p: { s: SessionSummary; hold: (id: string, held: boolean) =
                 <span class="end">
                     <RowEnd s={p.s} />
                 </span>
-                {/* Its project, under the title. Listed by date only: by project, the heading says it. */}
+                {/* Its project, under the title, and what it runs on. Listed by date only: by project, the heading says it. */}
                 <span class="sub" aria-hidden="true">{p.s.machine ? `${machineLabel(p.s.machine)} · ${p.s.projectName}` : p.s.projectName}</span>
+                <Show when={provider()}>{(id) => <span class="prov" aria-hidden="true"><ProviderIcon id={id()} size={12} /></span>}</Show>
             </button>
             <span class="sess-acts">
                 {/* A session waiting for you isn't archived from under its question. */}
@@ -655,7 +657,7 @@ export function Sidebar() {
         const next = sidebarEntries(app.sessions, app.archived, {
             activeId: app.activeId, groupBy: prefs.groupBy, archived: showArchived(),
             settledOpen: prefs.settledOpen, cards: shown(), settled: settledShown(), archive: archiveShown(),
-            collapsed: prefs.collapsedProjects, needs: needs(), now: prefs.groupBy === "date" ? today() : undefined,
+            collapsed: prefs.collapsedProjects, foldedDays: prefs.foldedDays, needs: needs(), now: prefs.groupBy === "date" ? today() : undefined,
         });
         return holdSidebar(previous ?? [], next, held(), all(), app.activeId, pinnedHeld());
     });
@@ -732,10 +734,10 @@ export function Sidebar() {
     // ---- Folding a project's sessions under its heading (grouped by project) ----
     const EASE = "cubic-bezier(0.22, 1, 0.36, 1)"; // --ease
     const foldMs = () => (prefs.motion === "instant" || matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : prefs.motion === "smooth" ? 260 : 180);
-    /** The row elements under a project heading, in the layout as it is. */
-    const projectRows = (cwd: string) => {
+    /** The row elements under a heading (a project's, a day's), in the layout as it is. */
+    const headRows = (head: string) => {
         const entries = layout();
-        const start = entries.findIndex((e) => e.kind === "project" && e.cwd === cwd);
+        const start = entries.findIndex((e) => e.key === head);
         const keys = new Set<string>();
         for (let i = start + 1; start >= 0 && i < entries.length; i++) {
             const e = entries[i]!;
@@ -749,11 +751,17 @@ export function Sidebar() {
         allowLayout();
         setPrefs("collapsedProjects", next);
     };
-    /** Rows shrink away before they fold; unfolded, they grow back in. */
-    const toggleFold = (cwd: string) => {
-        const folding = !prefs.collapsedProjects.includes(cwd);
+    const setDaysFolded = (next: DayLabel[]) => {
+        allowLayout();
+        setPrefs("foldedDays", next);
+    };
+    /** Rows shrink away before they fold; unfolded, they grow back in. A project's (by its path) or a day's. */
+    const toggleFold = (cwd: string, day?: DayLabel) => {
+        const isFolded = () => (day ? prefs.foldedDays.includes(day) : prefs.collapsedProjects.includes(cwd));
+        const folding = !isFolded();
         const ms = foldMs();
-        const commit = () => setFolded(toggleProject(prefs.collapsedProjects, cwd));
+        const head = day ? `day:${day}` : `project:${cwd}`;
+        const commit = () => (day ? setDaysFolded(toggleProject(prefs.foldedDays, day)) : setFolded(toggleProject(prefs.collapsedProjects, cwd)));
         if (!ms) return commit();
         const grow = (el: HTMLElement, from: number, to: number, opacity: [number, number]) => {
             el.style.overflow = "hidden";
@@ -761,24 +769,26 @@ export function Sidebar() {
             return { animation, done: animation.finished.catch(() => undefined).finally(() => { el.style.overflow = ""; }) };
         };
         if (folding) {
-            const rows = projectRows(cwd);
+            const rows = headRows(head);
             if (!rows.length) return commit();
             const shrinking = rows.map((el) => grow(el, el.offsetHeight, 0, [1, 0]));
             void Promise.all(shrinking.map((a) => a.done)).then(() => {
-                if (!prefs.collapsedProjects.includes(cwd)) commit();
+                if (!isFolded()) commit();
                 // Rows still shown (held by an open menu, say) get their height back.
                 for (const a of shrinking) a.animation.cancel();
             });
             return;
         }
         commit();
-        for (const el of projectRows(cwd)) grow(el, 0, el.offsetHeight, [0, 1]);
+        for (const el of headRows(head)) grow(el, 0, el.offsetHeight, [0, 1]);
     };
     const projectsInPlay = createMemo(() => [...new Set(app.sessions.filter((s) => !s.settled).map(projectOf))]);
     // Opening a session in a folded project (⌘K, a notification) unfolds it, so the open row shows.
     createEffect(on(() => [app.activeId, Boolean(app.activeId && sessions().has(app.activeId))] as const, ([id]) => {
         const next = revealProject(prefs.collapsedProjects, id ? sessions().get(id) : undefined, prefs.groupBy);
         if (next !== prefs.collapsedProjects) setFolded([...next]);
+        const days = revealDay(prefs.foldedDays, id ? sessions().get(id) : undefined, prefs.groupBy, now());
+        if (days !== prefs.foldedDays) setDaysFolded([...days]);
     }));
 
     // ---- Picking several (lib/rail-select.ts has the rules) ----
@@ -1015,7 +1025,17 @@ export function Sidebar() {
                             <button class="shelf-btn add" title={`New session in ${group().name}`} aria-label={`New session in ${group().name}`} onClick={() => newSession(folderOf(group().cwd), group())}><Plus size={13} /></button>
                         </div>;
                     }
-                    if (kind === "day") return <div class="day-head" data-head={key}>{(entry() as Extract<SidebarEntry, { kind: "day" }>).label}</div>;
+                    if (kind === "day") {
+                        const day = () => entry() as Extract<SidebarEntry, { kind: "day" }>;
+                        // Folded, a session under it that needs you still shows: the amber dot, as a project's heading does.
+                        const needsYou = () => Boolean(day().collapsed) && (day().ids ?? []).some((id) => sessions().get(id)?.status === "waiting");
+                        return <button class="shelf day-head" data-head={key} aria-expanded={!day().collapsed} onClick={() => toggleFold("", day().label)}>
+                            <span>{day().label}</span>
+                            <Show when={day().collapsed}><span class="n">{day().ids?.length}</span></Show>
+                            <Show when={needsYou()}><span class="wait-dot" title="Needs you" /></Show>
+                            <ChevronRight size={14} class={`settled-chev ${day().collapsed ? "closed" : ""}`} />
+                        </button>;
+                    }
                     // At the foot of the list, under a gap that takes the room left: it stays put as sessions come and go above it.
                     if (kind === "settled") return <><div class="settled-gap" aria-hidden="true" /><button class="shelf settled-head" data-head={key} aria-expanded={prefs.settledOpen} onClick={() => { allowLayout(); setPrefs("settledOpen", !prefs.settledOpen); }}>
                         <span>Settled</span>

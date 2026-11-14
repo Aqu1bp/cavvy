@@ -36,6 +36,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
     const [groupBy, setGroupBy] = solid.createSignal("date");
     const [settledOpen, setSettledOpen] = solid.createSignal(true);
     const [collapsedProjects, setCollapsedProjects] = solid.createSignal<string[]>([]);
+    const [foldedDays, setFoldedDays] = solid.createSignal<string[]>([]);
     const [motion, setMotion] = solid.createSignal("instant");
     const [settingsTab, setSettingsTab] = solid.createSignal<string>();
     const [agentFocus, setAgentFocus] = solid.createSignal<string>();
@@ -43,7 +44,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
     const bulk = { settle: mock((_ids: readonly string[], _on: boolean) => Promise.resolve([] as string[])), archive: mock((_ids: readonly string[], _on: boolean) => Promise.resolve([] as string[])), deleteSessions: mock((_ids: readonly string[]) => Promise.resolve([] as string[])) };
     let reduced = false;
     const app = { get sessions() { return sessions(); }, get archived() { return archived(); }, get activeId() { return activeId(); }, projects: [], models: [], limits: {}, providers: [], get conn() { return conn(); }, get sessionsLoaded() { return sessionsLoaded(); }, get sessionsError() { return sessionsError(); } };
-    const prefs = { get groupBy() { return groupBy(); }, get settledOpen() { return settledOpen(); }, get motion() { return motion(); }, get collapsedProjects() { return collapsedProjects(); } };
+    const prefs = { get groupBy() { return groupBy(); }, get settledOpen() { return settledOpen(); }, get motion() { return motion(); }, get collapsedProjects() { return collapsedProjects(); }, get foldedDays() { return foldedDays(); } };
     const resolve = (value: any): any => typeof value === "function" ? resolve(value()) : Array.isArray(value) ? value.map(resolve) : value;
     // A menu's children may be a Show's accessor: read through it.
     const descendants = (node: any): any[] => [node, ...[...(node.children ?? []), node.content].map(resolve).flat(Infinity).filter((child) => child && typeof child === "object" && child !== node).flatMap(descendants)];
@@ -80,7 +81,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
         holdSidebar: (...args: Parameters<typeof order.holdSidebar>) => order.holdSidebar(...args).map((entry) => ({
             ...entry, get key() { entryKeyReads++; return entry.key; },
         })),
-        setPrefs: (key: string, value: any) => key === "groupBy" ? setGroupBy(value) : key === "collapsedProjects" ? setCollapsedProjects(value) : setSettledOpen(value),
+        setPrefs: (key: string, value: any) => key === "groupBy" ? setGroupBy(value) : key === "collapsedProjects" ? setCollapsedProjects(value) : key === "foldedDays" ? setFoldedDays(value) : setSettledOpen(value),
         setSidebarOrder: (value: string[] | undefined) => { ids = value ?? []; }, now: () => 100000,
         handleFor: () => undefined, isUnread: () => true, activate: setActiveId, openWaiting: setActiveId, refreshSessions, reportError,
         Menu: (p: any) => { menus.push(p); return solid.createMemo(() => p.open ? p.children : null); },
@@ -98,7 +99,7 @@ function fixture(count = 60, o: { actionOf?: (e: KeyboardEvent, contexts: readon
     const update = (id: string, patch: Partial<SessionSummary>) => setSessions((list) => list.map((s) => s.id === id ? { ...s, ...patch } : s));
     const flushFrames = () => { for (const [id, fn] of [...frames]) { frames.delete(id); fn(); } };
     const contextMenu = (row: any) => row.props.onContextMenu({ target: row.querySelector(), currentTarget: row, button: 2, clientX: 40, clientY: 60, preventDefault() {} });
-    return { railSelection, setRailSelection, bulk, setSettingsTab, setAgentFocus, collapsedProjects, setCollapsedProjects, setSessionsError, refreshSessions, reportError, setSessionsLoaded, setConn, nodes, menus, descendants, contextMenu, nav, update, setGroupBy, setSettledOpen, setActiveId, setSessions, sessions, archived, setArchived, setMotion, animations,
+    return { railSelection, setRailSelection, bulk, setSettingsTab, setAgentFocus, collapsedProjects, setCollapsedProjects, foldedDays, setFoldedDays, setSessionsError, refreshSessions, reportError, setSessionsLoaded, setConn, nodes, menus, descendants, contextMenu, nav, update, setGroupBy, setSettledOpen, setActiveId, setSessions, sessions, archived, setArchived, setMotion, animations,
         resetEntryKeyReads: () => { entryKeyReads = 0; }, get entryKeyReads() { return entryKeyReads; },
         setReduced: (value: boolean) => { reduced = value; }, flushFrames, dispose, get ids() { return [...ids]; } };
 }
@@ -685,6 +686,29 @@ test("rail keys: select all, act on the selection (else the open row), Esc clear
         key(f, "a", { target: { closest: () => ({}) } });
         expect(f.railSelection().ids).toEqual([]);
     } finally { f.dispose(); }
+});
+
+// ---- Folding a day under its heading -----------------------------------------
+
+test("listed by date, a day's heading folds and unfolds its sessions, and says how many when folded", () => {
+    const f = fixture(9);
+    try {
+        const head = () => f.nodes.findLast((n) => n.props.class === "shelf day-head");
+        expect(head()).toBeDefined();
+        const label = f.descendants(head()).find((n) => n.content !== undefined && typeof n.content === "string")?.content;
+        const before = f.ids.length;
+        expect(head().props["aria-expanded"]).toBe(true);
+        head().props.onClick();
+        expect(f.foldedDays()).toEqual([label]);
+        expect(head().props["aria-expanded"]).toBe(false);
+        expect(f.ids.length).toBeLessThan(before);
+        expect(f.descendants(head()).find((n) => n.props?.class === "n").content).toBe(before - f.ids.length);
+        head().props.onClick();
+        expect(f.foldedDays()).toEqual([]);
+        expect(f.ids.length).toBe(before);
+    } finally {
+        f.dispose();
+    }
 });
 
 // ---- Folding a project under its heading ----------------------------------
