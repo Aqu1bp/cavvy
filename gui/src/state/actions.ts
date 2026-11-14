@@ -14,7 +14,7 @@ import type { ReviewScope } from "./changes";
 import { refreshGitChanges } from "./changes";
 import { keepSentImages } from "./images";
 import { prefs, setPrefs } from "./prefs";
-import { railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, review, setReview, setRewindOpen, setSettingsTab, setTerminalMax, shellLayout } from "./ui";
+import { freeRail, railOpen, requestComposerFocus, setAgentFocus, setArchiveRequest, setContextCardOpen, setFolderPickerOpen, setMcpOpen, setModePickerOpen, setModelPickerOpen, setRailOpen, review, setReview, setRewindOpen, setSettingsTab, setTerminalMax, shellLayout } from "./ui";
 import { clientAction, slashName } from "../lib/commands";
 import { forkAnchor } from "../lib/fork";
 import { backgroundOf, stopOutcome, stopTasks } from "../lib/background";
@@ -401,23 +401,55 @@ export async function rename(id: string, title: string) {
     if (title.trim()) await rpc.call("session.rename", { id, title: title.trim() }).catch(reportError);
 }
 
+/**
+ * A flag the list places sessions by (settled, pinned), set here at once and the rail let go for it: the row moves with
+ * the click, not after the server's answer and the pointer leaving the list. What it returns puts back the ones the
+ * server refused.
+ */
+function flagAtOnce(ids: readonly string[], key: "settled" | "pinned", on: boolean): (failed: readonly string[]) => void {
+    const was = new Map(app.sessions.filter((s) => ids.includes(s.id)).map((s) => [s.id, Boolean(s[key])] as const));
+    batch(() => {
+        freeRail();
+        setApp("sessions", (s) => was.has(s.id), key, on);
+    });
+    return (failed) => {
+        const back = failed.filter((id) => was.has(id));
+        if (!back.length) return;
+        batch(() => {
+            freeRail();
+            for (const id of back) setApp("sessions", (s) => s.id === id, key, was.get(id)!);
+        });
+    };
+}
+
 export async function pin(id: string, pinned: boolean) {
-    await rpc.call("session.pin", { id, pinned }).catch(reportError);
+    const back = flagAtOnce([id], "pinned", pinned);
+    await rpc.call("session.pin", { id, pinned }).catch((e) => {
+        back([id]);
+        reportError(e);
+    });
 }
 
 /** Set aside (or back in play). Sending to it puts it back too. Whether it was done. */
 export async function settle(id: string, settled: boolean): Promise<boolean> {
+    const back = flagAtOnce([id], "settled", settled);
     try {
         await rpc.call("session.settle", { id, settled });
     } catch (e) {
+        back([id]);
         reportError(e);
         return false;
     }
     if (settled) {
         toast("Session settled", "info", {
             label: "Undo",
+            // A failure throws, so the toast keeps its Undo to try again.
             run: async () => {
-                await rpc.call("session.settle", { id, settled: false });
+                const again = flagAtOnce([id], "settled", false);
+                await rpc.call("session.settle", { id, settled: false }).catch((e) => {
+                    again([id]);
+                    throw e;
+                });
             },
         });
     }
@@ -515,12 +547,23 @@ async function bulk(ids: readonly string[], o: {
 /** Settle several (or bring them back into play). The ids that failed. */
 export async function settleSessions(ids: readonly string[], settled: boolean): Promise<string[]> {
     if (ids.length === 1) return (await settle(ids[0]!, settled)) ? (unselect(ids), []) : [...ids];
-    return bulk(ids, {
+    const back = flagAtOnce(ids, "settled", settled);
+    const failed = await bulk(ids, {
         verb: settled ? "settle" : "bring back",
         did: settled ? "settled" : undefined,
         one: (id) => rpc.call("session.settle", { id, settled }),
-        undo: settled ? (id) => rpc.call("session.settle", { id, settled: false }) : undefined,
+        undo: settled
+            ? (id) => {
+                  const again = flagAtOnce([id], "settled", false);
+                  return rpc.call("session.settle", { id, settled: false }).catch((e) => {
+                      again([id]);
+                      throw e;
+                  });
+              }
+            : undefined,
     });
+    back(failed);
+    return failed;
 }
 
 /**

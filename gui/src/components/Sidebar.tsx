@@ -6,7 +6,7 @@
 // them all, under Needs you, with what they ask, until answered.
 
 import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
-import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronsUpDown, ChevronUp, Download, Folder, FolderOpen, FolderPlus, Layers, ListFilter, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
+import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronRight, ChevronsUpDown, Download, Folder, FolderOpen, FolderPlus, Layers, ListFilter, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
 import { activate, app, handleFor, isUnread, refreshSessions, reportError } from "../state/app";
 import { createUpdateAction } from "./UpdateAction";
@@ -630,6 +630,7 @@ export function Sidebar() {
     let listEl: HTMLElement | undefined;
     let frame = 0;
     const animations = new Set<Animation>();
+    const fades = new WeakSet<Animation>();
     const all = createMemo(() => [...app.sessions, ...app.archived]);
     const sessions = createMemo(() => new Map(all().map((s) => [s.id, s])));
     const settledCount = () => app.sessions.filter((s) => s.settled).length;
@@ -666,26 +667,41 @@ export function Sidebar() {
     const keys = createMemo<string[]>((previous) => {
         const next = layout().map((entry) => entry.key);
         if (previous?.length === next.length && previous.every((key, i) => key === next[i])) return previous;
-        if (held()) return next;
-        const before = new Map<string, number>();
-        for (const el of listEl?.querySelectorAll<HTMLElement>("[data-session-row]") ?? []) before.set(el.dataset.sessionRow!, el.getBoundingClientRect().top);
+        // The first list isn't a change, and one held under the pointer doesn't move. One let go (the user's own
+        // settle or pin, with the pointer still here) moves now, so it's decided now, not when the frame comes.
+        if (!previous || held()) return next;
+        // Where each row and heading was, and in what shape (a card or a one-line row).
+        const before = new Map<string, { top: number; card: boolean }>();
+        for (const el of listEl?.querySelectorAll<HTMLElement>("[data-session-row], [data-head]") ?? [])
+            before.set(el.dataset.sessionRow ?? `head:${el.dataset.head}`, { top: el.getBoundingClientRect().top, card: Boolean(el.querySelector(".card")) });
         for (const animation of animations) animation.cancel();
         animations.clear();
         cancelAnimationFrame(frame);
         frame = requestAnimationFrame(() => {
-            if (held() || prefs.motion === "instant" || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-            for (const el of listEl?.querySelectorAll<HTMLElement>("[data-session-row]") ?? []) {
-                const old = before.get(el.dataset.sessionRow!);
-                if (old === undefined) continue;
-                const delta = old - el.getBoundingClientRect().top;
-                if (!delta) continue;
+            if (prefs.motion === "instant" || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+            const duration = prefs.motion === "smooth" ? 260 : 160;
+            const run = (el: HTMLElement, frames: Keyframe[]) => {
+                const animation = el.animate(frames, { duration, easing: "ease-out" });
+                animations.add(animation);
+                if ("opacity" in frames[0]!) fades.add(animation);
+                animation.onfinish = () => animations.delete(animation);
+            };
+            for (const el of listEl?.querySelectorAll<HTMLElement>("[data-session-row], [data-head]") ?? []) {
+                const old = before.get(el.dataset.sessionRow ?? `head:${el.dataset.head}`);
+                // New here (a heading that comes with the first session under it, a row from another shelf's page): it fades in.
+                if (!old) {
+                    run(el, [{ opacity: 0 }, { opacity: 1 }]);
+                    continue;
+                }
+                const delta = old.top - el.getBoundingClientRect().top;
+                // A row that changed shape (a card settled into a one-line row, or back) fades into it near its new place.
+                const reshaped = el.dataset.sessionRow !== undefined && old.card !== Boolean(el.querySelector(".card"));
+                if (!delta && !reshaped) continue;
                 // A row that changes place by a slot slides there with its neighbours. One that jumps past others
                 // (a session that just moved to the top) fades in near its new place: sliding, it ran through the
                 // rows between, their words over each other.
-                const far = Math.abs(delta) > el.offsetHeight * 1.5;
-                const animation = el.animate(far ? [{ opacity: 0, transform: `translateY(${Math.sign(delta) * 10}px)` }, { opacity: 1, transform: "translateY(0)" }] : [{ transform: `translateY(${delta}px)` }, { transform: "translateY(0)" }], { duration: prefs.motion === "smooth" ? 260 : 160, easing: "ease-out" });
-                animations.add(animation);
-                animation.onfinish = () => animations.delete(animation);
+                const far = reshaped || Math.abs(delta) > el.offsetHeight * 1.5;
+                run(el, far ? [{ opacity: 0, transform: `translateY(${Math.sign(delta) * 6}px)` }, { opacity: 1, transform: "translateY(0)" }] : [{ transform: `translateY(${delta}px)` }, { transform: "translateY(0)" }]);
             }
         });
         return next;
@@ -695,7 +711,9 @@ export function Sidebar() {
     createEffect(() => {
         const pause = held();
         for (const animation of animations) {
-            if (pause) animation.pause(); else animation.play();
+            // Held, a slide stops where it is; a fade ends, so nothing is left half there.
+            if (pause) fades.has(animation) ? animation.finish() : animation.pause();
+            else animation.play();
         }
     });
     onCleanup(() => {
@@ -986,7 +1004,7 @@ export function Sidebar() {
                         const open = () => !group().collapsed;
                         // Folded, a session in it that needs you still shows: the amber dot, on the heading.
                         const needsYou = () => !open() && (group().ids ?? []).some((id) => sessions().get(id)?.status === "waiting");
-                        return <div class={`shelf project-head ${open() ? "" : "folded"}`}>
+                        return <div class={`shelf project-head ${open() ? "" : "folded"}`} data-head={key}>
                             <button class="shelf-toggle" aria-expanded={open()} title={(group().machine ? `${group().machine}: ` : "") + folderOf(group().cwd)} onClick={() => toggleFold(group().cwd)}>
                                 <span class="lead" aria-hidden="true"><Show when={open()} fallback={<Folder size={15} />}><FolderOpen size={15} /></Show></span>
                                 <span class="truncate">{group().machine ? `${group().name} · ${group().machine}` : group().name}</span>
@@ -997,9 +1015,12 @@ export function Sidebar() {
                             <button class="shelf-btn add" title={`New session in ${group().name}`} aria-label={`New session in ${group().name}`} onClick={() => newSession(folderOf(group().cwd), group())}><Plus size={13} /></button>
                         </div>;
                     }
-                    if (kind === "day") return <div class="day-head">{(entry() as Extract<SidebarEntry, { kind: "day" }>).label}</div>;
-                    if (kind === "settled") return <button class="shelf settled-head" aria-expanded={prefs.settledOpen} onClick={() => { allowLayout(); setPrefs("settledOpen", !prefs.settledOpen); }}>
-                        <span>Settled</span><span class="n">{settledCount()}</span><ChevronUp size={14} class={`settled-chev ${prefs.settledOpen ? "" : "closed"}`} />
+                    if (kind === "day") return <div class="day-head" data-head={key}>{(entry() as Extract<SidebarEntry, { kind: "day" }>).label}</div>;
+                    if (kind === "settled") return <button class="shelf settled-head" data-head={key} aria-expanded={prefs.settledOpen} onClick={() => { allowLayout(); setPrefs("settledOpen", !prefs.settledOpen); }}>
+                        <span>Settled</span>
+                        {/* Folded, how many are under it; open, its rows say so (as a project's heading does). */}
+                        <Show when={!prefs.settledOpen}><span class="n">{settledCount()}</span></Show>
+                        <ChevronRight size={14} class={`settled-chev ${prefs.settledOpen ? "" : "closed"}`} />
                     </button>;
                     if (kind === "archived") return <div class="shelf"><span>Archived</span><span class="n">{app.archived.length}</span><button class="shelf-btn" onClick={() => { allowLayout(); setShowArchived(false); }}>Done</button></div>;
                     const more = () => entry() as Extract<SidebarEntry, { kind: "more" }>;

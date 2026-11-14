@@ -287,14 +287,16 @@
 
 /* The fold's chevron: after the words, there while you point at the heading (or it's folded, so it says why
    nothing is under it). */
+/* Open, it points down at its rows; folded, along the heading. */
 .settled-chev {
     flex: none;
     opacity: 0;
+    transform: rotate(90deg);
     transition: transform var(--dur-fast), opacity 140ms;
 }
 
 .settled-chev.closed {
-    transform: rotate(180deg);
+    transform: none;
     opacity: 0.8;
 }
 
