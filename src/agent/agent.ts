@@ -72,7 +72,7 @@ import { CRON_TOOL_NAMES, SCHEDULE_INSTRUCTIONS, scheduleServerTools } from "./s
 import { WATCH_INSTRUCTIONS, watchServerTools } from "../tools/git-tools";
 import { SIGN_IN_INSTRUCTIONS, signInServerTools, signInToolTitle } from "../tools/sign-in-tools";
 import { nativeServerCall, SERVER_INSTRUCTIONS, SERVER_TOOL_NAMES, servedServerName, serverServerTools } from "../tools/server-tools";
-import { findRecipe, signedOutIn, signInRecipes, statusMasked } from "./sign-in-recipes";
+import { findRecipe, signedOutIn, signInRecipes, statusMasked, type SignInRecipe } from "./sign-in-recipes";
 import { signInAdvised } from "../backends/account-login";
 import { MONITOR_INSTRUCTIONS, monitorServerTools, nativeMonitorCall, stoppedMonitorNote } from "../tools/monitor";
 import { BROWSER_INSTRUCTIONS, BrowserNavigateTool, browserServerTools, nativeBrowserCall, servedBrowserName } from "../tools/browser-tools";
@@ -737,6 +737,8 @@ export class Agent {
         this.prompted = false;
         this.limitStop = undefined;
         this.signedOutStop = undefined;
+        this.signedOutUnasked = undefined;
+        this.askedSignIns.clear();
         // Interrupting a turn stops the delegated tasks it waits on. Those in the background (started on this
         // turn or an earlier one) run on: only an explicit stop ends them (#228, stopBackground).
         const onAbort = () => this.cancelTasks();
@@ -2891,14 +2893,42 @@ export class Agent {
      * What Cavvy's own Bash appends to a failed command (src/tools/bash.ts), for an agent CLI whose shell Cavvy only
      * watches: a wake that joins the turn (or starts one, if the CLI has already ended it by telling the user to sign in).
      */
-    private pointToSignIn(command: unknown, output: string) {
-        if (typeof command !== "string" || this.o.isSubagent || this.oneShot || !this.state.wakes || !this.serverTools.some((t) => t.name === "request_sign_in")) return;
-        const recipe = signedOutIn(output, signInRecipes(this.o.settings().signIns), command);
-        if (!recipe) return;
+    private pointToSignIn(recipe: SignInRecipe) {
+        if (!this.state.wakes || !this.serverTools.some((t) => t.name === "request_sign_in")) return;
         const now = Date.now();
         if (now - (this.signInPointed.get(recipe.id) ?? 0) < 10 * 60_000) return;
         this.signInPointed.set(recipe.id, now);
         this.state.wakes.push({ source: "sign-in", key: `sign-in-hint:${recipe.id}`, label: `${recipe.name} isn't signed in`, text: `A command just said ${recipe.name} isn't signed in. Ask the user to sign in: call request_sign_in with target "${recipe.id}", then run the command again. Don't tell them to run a login command themselves.` });
+    }
+
+    /** What the agent asked the user to sign in to in this turn: their answer stands for the turn. */
+    private askedSignIns = new Set<string>();
+
+    /**
+     * A command in this turn said one of these isn't signed in, and the agent hasn't asked the user about it. Whether
+     * an agent asks is its own choice (one told "not now" earlier may never ask again); when the turn ends with this
+     * still set, the host puts the sign-in in front of the user itself.
+     */
+    signedOutUnasked?: { target: string; name: string };
+
+    /**
+     * The sign-in a command's output says is missing, if it ran that CLI. Whether or not the call counts as failed
+     * when its status may not be the CLI's own: agents end a command with `; echo "exit=$?"` or pipe it into tail.
+     */
+    private sawSignedOut(command: unknown, output: string, failed: boolean): SignInRecipe | undefined {
+        if (typeof command !== "string" || this.o.isSubagent || this.oneShot || (!failed && !statusMasked(command))) return undefined;
+        const recipe = signedOutIn(output, signInRecipes(this.o.settings().signIns), command);
+        if (recipe && !this.askedSignIns.has(recipe.id)) this.signedOutUnasked = { target: recipe.id, name: recipe.name };
+        return recipe;
+    }
+
+    /** The agent asked the user to sign in to `target`: however that ended, nothing more is asked about it this turn. */
+    private askedToSignIn(target: unknown) {
+        const asked = findRecipe(String(target ?? ""), signInRecipes(this.o.settings().signIns));
+        if (!asked) return;
+        this.askedSignIns.add(asked.id);
+        this.signInPointed.set(asked.id, Date.now());
+        if (this.signedOutUnasked?.target === asked.id) this.signedOutUnasked = undefined;
     }
 
     /**
@@ -2913,13 +2943,11 @@ export class Agent {
         e = redactBackendEvent(e);
         this.noteServedCall(e, this.servedMain);
         // A command of the CLI's own whose output says something isn't signed in: Cavvy can't add to what its model read, so the pointer follows as news.
-        // Whether or not the call counts as failed: agents end a command with `; echo "exit=$?"` or pipe it into tail, and its status is then the last word's.
-        // Once it has asked in this turn, the answer stands for the turn: a command that fails the same way again isn't a reason to ask again.
-        if (e.type === "tool_end" && e.call.name === `mcp__${MCP_SERVER_NAME}__request_sign_in`) {
-            const asked = findRecipe(String((e.call.input as { target?: unknown } | undefined)?.target ?? ""), signInRecipes(this.o.settings().signIns));
-            if (asked) this.signInPointed.set(asked.id, Date.now());
+        if (e.type === "tool_end" && e.call.name === `mcp__${MCP_SERVER_NAME}__request_sign_in`) this.askedToSignIn((e.call.input as { target?: unknown } | undefined)?.target);
+        if (e.type === "tool_end" && e.call.name === "Bash") {
+            const recipe = this.sawSignedOut((e.call.input as { command?: unknown } | undefined)?.command, e.result.content, Boolean(e.result.isError));
+            if (recipe) this.pointToSignIn(recipe);
         }
-        if (e.type === "tool_end" && e.call.name === "Bash" && (e.result.isError || statusMasked(String((e.call.input as { command?: unknown } | undefined)?.command ?? "")))) this.pointToSignIn((e.call.input as { command?: unknown } | undefined)?.command, e.result.content);
         // Cavvy's own tools it served (Monitor for Codex) show as those tools.
         if ((e.type === "tool_start" || e.type === "tool_end") && e.call.name.startsWith(`mcp__${MCP_SERVER_NAME}__`)) {
             const served = e.call.name.slice(`mcp__${MCP_SERVER_NAME}__`.length);
@@ -3620,6 +3648,8 @@ export class Agent {
             if (h?.blocked) result = { ...result, content: `${result.content}\n\n${event} hook feedback:\n${h.blocked}` };
             if (h?.additionalContext) (served ?? this.toolHookContext).push(`Context from a ${event} hook (${tool.name}):\n${h.additionalContext}`);
         }
+        if (tool.name === "RequestSignIn") this.askedToSignIn((input as { target?: unknown }).target);
+        else if (tool.name === "Bash") this.sawSignedOut((input as { command?: unknown }).command, result.content, Boolean(result.isError));
         if (!quiet) this.emit({ type: "tool_end", call, result, durationMs: Date.now() - started });
         return {
             type: "tool_result",

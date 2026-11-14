@@ -69,6 +69,7 @@ Commands are words, not shell: no pipes, quotes or variables. Only your own sett
 
 - `RequestSignIn` for models used with an API key, and `request_sign_in` for Claude Code and Codex through Cavvy's tools. Rules that name the tool apply (`mcp__cavvy__request_sign_in` in a deny rule turns it off).
 - When a command fails with a message that means "not signed in" (`gh`'s "not logged into any GitHub hosts", `aws`'s "Unable to locate credentials"), Cavvy adds a line to what the agent reads: ask the user with the sign-in tool. Only a command that ran that CLI counts (`gh` or `git` for GitHub): a test or a file that merely quotes "run gh auth login" doesn't. It has to have failed, unless its status isn't the CLI's own (`git push 2>&1; echo "exit=$?"`, or piped into `tail`), as agents often write it. For Claude Code and Codex, whose own shell Cavvy only watches, that line arrives as a note right after.
+- If the agent doesn't ask (it was told "not now" earlier, or just relays the CLI's advice), Cavvy does: when its turn ends, the same card comes up, and once you've signed in the agent is told to carry on. Not for a sign-in you've put off, which stays above the message box.
 - Sub-agents can't ask: what they found signed out is in their report.
 - With no one to ask (`-p`), the tool says so and the agent goes on without.
 

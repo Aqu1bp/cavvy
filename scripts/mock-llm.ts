@@ -370,6 +370,9 @@ function scenario(prompt: string, toolRounds: number, lastResult: string): Step 
         if (toolRounds === 0) return { text: "That needs a sign-in first.", calls: [{ name: "RequestSignIn", args: { target: signIn[1], ...(signIn[2] ? { machine: signIn[2] } : {}), ...(signIn[3] ? { command: signIn[3].trim() } : {}) } }] };
         return { text: lastResult.startsWith("Signed in") ? `Carrying on. ${lastResult}` : `I'll leave that for now. ${lastResult}` };
     }
+    // Runs one command and reports, asking the user nothing: an agent that meets a signed-out CLI and doesn't ask ("justrun: gh pr list").
+    const justRun = /\bjustrun: (.+)$/m.exec(p);
+    if (justRun) return toolRounds === 0 ? { text: "Running it.", calls: [{ name: "Bash", args: { command: justRun[1]!.trim(), description: "Run it" } }] } : { text: "That didn't work. You'll have to sign in yourself." };
     // Asks for a secret, then uses it without ever seeing it. "checksum N M" (from `printf %s VALUE | cksum`) checks the value it got.
     if (/\bsecret\b/.test(p)) {
         if (toolRounds === 0) return { text: "I need a token for this.", calls: [{ name: "RequestSecret", args: { name: "DEMO_TOKEN", purpose: "To call the demo API with curl." } }] };

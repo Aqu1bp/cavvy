@@ -22,7 +22,7 @@ const TOKEN = "test-token-signin-0123456789";
 const mock = startMockLlm({ delayMs: 0 });
 mkdirSync(iso.home, { recursive: true });
 writeFileSync(join(iso.home, "providers.json"), JSON.stringify({ custom: [{ id: "mock", name: "Mock", baseUrl: mock.url, requiresKey: false }] }));
-writeFileSync(join(iso.home, "settings.json"), JSON.stringify({ model: "mock:mock-opus", smallModel: "mock:mock-haiku", signIns: [acmeRecipe("device", { token: { run: "acme login --token" } })] }));
+writeFileSync(join(iso.home, "settings.json"), JSON.stringify({ model: "mock:mock-opus", smallModel: "mock:mock-haiku", permissions: { allowBypass: true }, signIns: [acmeRecipe("device", { token: { run: "acme login --token" } })] }));
 
 let srv: Awaited<ReturnType<typeof startServer>>;
 const project = () => createDemoProject(realpathSync(tempDir("cavvy-gui-signin-")), { git: false });
@@ -313,6 +313,50 @@ describe("a sign-in in a GUI session", () => {
         // Signed in already: nothing to show. And only what Cavvy has a sign-in for: a window names it, never a command.
         expect(await c.call<string>("session.askSignIn", { id, target: "acme" })).toBe("cannot");
         await expect(c.call("session.askSignIn", { id, target: "rm -rf" })).rejects.toThrow("no sign-in for that");
+        c.close();
+    });
+
+    test("an agent that meets a signed-out CLI and doesn't ask: the user is asked all the same when its turn ends, and it carries on once they've signed in", async () => {
+        const c = await client();
+        const id = await c.open({ cwd: project() });
+        await c.call("session.setMode", { id, mode: "bypassPermissions" });
+        // As agents write it: the command as a whole succeeds, whatever the CLI said.
+        await c.call("session.send", { id, text: 'justrun: acme status 2>&1; echo "exit=$?"' });
+        const ask = await c.card(id, "ask");
+        // The turn is over, with the agent's own words; the card has no tool call behind it.
+        expect(ask.toolId).toBeUndefined();
+        await c.until(id, done, "the turn's end");
+        expect(texts(lastTurn(c.view(id)))).toContain("You'll have to sign in yourself.");
+        expect(tools(lastTurn(c.view(id))).map((t) => t.name)).toEqual(["Bash"]);
+        // Put off: listed, and the next turn that runs into it shows no second card.
+        await step(c, id, ask.id, { action: "later" });
+        await c.until(id, (v) => v.state.watches.length === 1 && !v.state.interactions.length, "the line");
+        await c.call("session.send", { id, text: "justrun: acme status | cat" });
+        await c.until(id, (v) => v.turns.length === 2 && done(v), "the second turn");
+        await Bun.sleep(300);
+        expect(c.view(id).state.interactions).toEqual([]);
+        expect(c.view(id).state.watches).toHaveLength(1);
+        // Signed in from the line: the agent is told once, and carries on.
+        await c.call("session.signIn", { id, watchId: c.view(id).state.watches[0]!.id });
+        await step(c, id, (await c.card(id, "ask")).id, { action: "start" });
+        await c.card(id, "code");
+        acme.approve("me@example.com");
+        await c.until(id, (v) => v.turns.length === 3 && done(v), "the wake's turn", 15_000);
+        expect(lastTurn(c.view(id)).prompt?.text).toBe("Signed in to Acme");
+        expect(c.view(id).state.watches).toEqual([]);
+        await Bun.sleep(400);
+        expect(c.view(id).turns).toHaveLength(3);
+        c.close();
+    }, 30_000);
+
+    test("an agent that does ask isn't asked over: Later is the answer for that turn", async () => {
+        const c = await client();
+        const id = await c.open({ cwd: project() });
+        await c.call("session.send", { id, text: "signin acme" });
+        await step(c, id, (await c.card(id, "ask")).id, { action: "later" });
+        await c.until(id, done, "the turn's end");
+        await Bun.sleep(300);
+        expect(c.view(id).state.interactions).toEqual([]);
         c.close();
     });
 

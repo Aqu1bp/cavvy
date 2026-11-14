@@ -181,9 +181,9 @@ export class SessionSignIns {
      * signed-out CLI): the card, with no tool call behind it. "signed-in": the user did, in the card. "later": they
      * put it off, and `then` hears how that ends: true once they've signed in after all, false if they dismiss it.
      * "cannot": there was nothing to show (it already says it's signed in, its CLI isn't installed, or Cavvy has
-     * no sign-in for it).
+     * no sign-in for it). `unlessListed`: nothing is shown for one the user already put off, which stays listed.
      */
-    async ask(req: SignInRequest, then?: (signedIn: boolean) => void): Promise<"signed-in" | "later" | "cannot"> {
+    async ask(req: SignInRequest, then?: (signedIn: boolean) => void, how: { unlessListed?: boolean } = {}): Promise<"signed-in" | "later" | "cannot"> {
         let machine: SignInMachine;
         try {
             machine = await this.o.machine(req.machine, req.account);
@@ -191,6 +191,16 @@ export class SessionSignIns {
             return "cannot";
         }
         const wants = this.wants(req.targets);
+        if (how.unlessListed) {
+            // Already put off, and listed where the user can get back to it: it isn't put in front of them again.
+            const on = this.on(req);
+            const listed = [...this.later.values()].find((l) => l.on === on && wants.every((w) => l.wants.some((x) => x.target === w.target)));
+            if (listed) {
+                // One follower is enough to have the agent hear of it.
+                if (then && !listed.wake && !listed.thens.length) listed.thens.push(then);
+                return "later";
+            }
+        }
         const a = this.open(req, wants, machine);
         a.kept = true;
         const o = await a.run;

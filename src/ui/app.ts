@@ -1990,12 +1990,13 @@ export class App {
     }
 
     /** The turn stopped on something signed out: its prompt, and once it's signed in the agent carries on (as the GUI does). */
-    private offerSignIn(out: { target: string; account: string; advice: string }) {
+    private offerSignIn(out: { target: string; account: string; advice: string }, unasked = false) {
         const name = findRecipe(out.target, signInRecipes(this.settings.signIns))?.name ?? out.target;
-        const carryOn = (signedIn: boolean) => signedIn && this.toolState.wakes?.push({ source: "sign-in", label: `Signed in to ${name}`, text: `The user has now signed in to ${name}. Your last turn stopped because it wasn't signed in: carry on with what they asked.` });
-        void this.signIns.ask({ targets: [{ target: out.target }], account: out.account }, carryOn).then((r) => {
+        const why = unasked ? "Something you ran in your last turn needed it" : "Your last turn stopped because it wasn't signed in";
+        const carryOn = (signedIn: boolean) => signedIn && this.toolState.wakes?.push({ source: "sign-in", key: `sign-in-carry:${out.target}`, label: `Signed in to ${name}`, text: `The user has now signed in to ${name}. ${why}: carry on with what they asked.` });
+        void this.signIns.ask({ targets: [{ target: out.target }], account: out.account || undefined }, carryOn, { unlessListed: unasked }).then((r) => {
             if (r === "signed-in") carryOn(true);
-            else if (r === "cannot") this.notice(out.advice, "warn");
+            else if (r === "cannot" && out.advice) this.notice(out.advice, "warn");
         });
     }
 
@@ -2730,6 +2731,8 @@ export class App {
         if (reason && !(goal?.active && goal.view()?.state !== "paused")) void this.notifier.turnEnded(reason, Date.now() - this.turnStart);
         if (reason) this.schedules.turnEnded(reason, agent.limitStop);
         if (reason === "error" && agent.signedOutStop) this.offerSignIn(agent.signedOutStop);
+        // A command in the turn said something isn't signed in, and the agent didn't ask: the user is asked all the same.
+        else if (reason === "done" && agent.signedOutUnasked) this.offerSignIn({ target: agent.signedOutUnasked.target, account: "", advice: "" }, true);
         if (ac.signal.aborted) {
             if (goal === this.goal) void goal?.afterTurn("aborted", from, Boolean(opts.goal));
             this.returnQueued();

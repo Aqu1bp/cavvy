@@ -2809,16 +2809,18 @@ export class Runtime {
     /**
      * The turn stopped because something isn't signed in (the session's own CLI, gcloud for Vertex): its card, and
      * once it's signed in (there, or later) the agent is told to carry on. Where there's nothing to show, the way
-     * to do it by hand is said after all.
+     * to do it by hand is said after all. `unasked`: the turn ended as usual, but a command in it said something
+     * isn't signed in and the agent didn't ask; nothing is shown for one the user has already put off.
      */
-    private offerSignIn(out: { target: string; account: string; advice: string }) {
+    private offerSignIn(out: { target: string; account: string; advice: string }, unasked = false) {
         const name = findRecipe(out.target, signInRecipes(this.settings().signIns))?.name ?? out.target;
         // Dismissed instead: nothing to carry on with, and the user knows.
-        const carryOn = (signedIn: boolean) => signedIn && this.toolState.wakes?.push({ source: "sign-in", label: `Signed in to ${name}`, text: `The user has now signed in to ${name}. Your last turn stopped because it wasn't signed in: carry on with what they asked.` });
-        void this.signIns.ask({ targets: [{ target: out.target }], account: out.account }, carryOn).then((r) => {
+        const why = unasked ? "Something you ran in your last turn needed it" : "Your last turn stopped because it wasn't signed in";
+        const carryOn = (signedIn: boolean) => signedIn && this.toolState.wakes?.push({ source: "sign-in", key: `sign-in-carry:${out.target}`, label: `Signed in to ${name}`, text: `The user has now signed in to ${name}. ${why}: carry on with what they asked.` });
+        void this.signIns.ask({ targets: [{ target: out.target }], account: out.account || undefined }, carryOn, { unlessListed: unasked }).then((r) => {
             if (this.closed) return;
             if (r === "signed-in") carryOn(true);
-            else if (r === "cannot") this.notice(out.advice, "warn");
+            else if (r === "cannot" && out.advice) this.notice(out.advice, "warn");
         });
     }
 
@@ -3456,6 +3458,8 @@ export class Runtime {
         if (!(this.goal.active && this.goal.view()?.state !== "paused")) notify();
         if (reason && !this.closed) this.schedules.turnEnded(reason, agent.limitStop);
         if (reason === "error" && agent.signedOutStop && !this.closed) this.offerSignIn(agent.signedOutStop);
+        // A command in the turn said something isn't signed in, and the agent didn't ask: the user is asked all the same.
+        else if (reason === "done" && agent.signedOutUnasked && !this.closed) this.offerSignIn({ target: agent.signedOutUnasked.target, account: "", advice: "" }, true);
         const queued = Boolean(this.nextQueued());
         if (ac.signal.aborted) void this.goal.afterTurn("aborted", index, Boolean(opts.goal));
         // What was queued goes first. If none of it is a turn (a !command, /compact), the goal takes this turn's end after it.
