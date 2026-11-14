@@ -280,12 +280,14 @@
     margin-top: 0;
 }
 
+/* The stashed prompts' list, open over the composer (StashTray sets --stash-lift): the question moves up for it too. */
 .home-q {
+    translate: 0 calc(-1 * var(--stash-lift, 0px));
     transition: translate 320ms var(--ease);
 }
 
 .asking .home-q {
-    translate: 0 calc(-38 * var(--sp));
+    translate: 0 calc(-38 * var(--sp) - var(--stash-lift, 0px));
 }
 
 .home-tab .ic,

@@ -167,6 +167,179 @@
     font-variant-numeric: tabular-nums;
 }
 
+/* ---- Stashed prompts: a tab on the box's top edge, which opens into their list ----
+   In the card's own fill and standing on its edge, so it reads as part of the box: closed,
+   a small tab at its far end; open, a tray along it, a row for each prompt. */
+
+.stash-tray {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    align-self: flex-end;
+    min-width: 0;
+    /* On the box's top edge: the composer's column gap is 8px. */
+    margin: 0 calc(20 * var(--sp)) calc(-8 * var(--sp)) 0;
+    border-radius: calc(11 * var(--sp)) calc(11 * var(--sp)) 0 0;
+    background: var(--card);
+    box-shadow:
+        inset 0 0.5px 0 var(--card-stroke),
+        inset 0.5px 0 0 var(--card-stroke),
+        inset -0.5px 0 0 var(--card-stroke),
+        inset 0 1px 0 var(--card-hi);
+    font-size: 0.857rem;
+    color: var(--fg-2);
+}
+
+.stash-tray.open {
+    align-self: stretch;
+    margin-left: calc(20 * var(--sp));
+    padding: calc(3 * var(--sp)) calc(4 * var(--sp)) calc(5 * var(--sp));
+    border-radius: calc(15 * var(--sp)) calc(15 * var(--sp)) 0 0;
+}
+
+.stash-head {
+    display: flex;
+    align-items: center;
+    gap: calc(7 * var(--sp));
+    height: calc(28 * var(--sp));
+    padding: 0 calc(12 * var(--sp));
+    border-radius: inherit;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    transition: color 140ms;
+}
+
+.stash-head:hover {
+    color: var(--fg);
+}
+
+.stash-head:focus-visible,
+.stash-pick:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+/* Open, the head is the list's first line: its icon and word over the rows', the count and the way to close at the far end. */
+.stash-tray.open .stash-head {
+    gap: calc(10 * var(--sp));
+    height: calc(30 * var(--sp));
+    padding: 0 calc(11 * var(--sp)) 0 calc(9 * var(--sp));
+    border-radius: calc(10 * var(--sp));
+}
+
+.stash-tray.open .stash-head > svg:first-child {
+    width: calc(14 * var(--sp));
+}
+
+.stash-tray.open .stash-word {
+    flex: 1;
+}
+
+.stash-n,
+.stash-head .chev {
+    flex: none;
+    color: var(--fg-3);
+}
+
+.stash-tray.open .stash-n {
+    margin-right: calc(4 * var(--sp));
+}
+
+.stash-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+    /* Past five rows it scrolls, so the conversation keeps its room. */
+    max-height: min(154 * var(--sp), 30vh);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.stash-row {
+    display: flex;
+    flex: none;
+    align-items: center;
+    min-width: 0;
+    height: calc(30 * var(--sp));
+    border-radius: calc(10 * var(--sp));
+    transition: background 140ms;
+}
+
+.stash-row:hover,
+.stash-row:focus-within {
+    background: var(--hover);
+}
+
+.stash-pick {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    gap: calc(10 * var(--sp));
+    min-width: 0;
+    height: 100%;
+    padding: 0 calc(8 * var(--sp)) 0 calc(9 * var(--sp));
+    border-radius: inherit;
+    font: inherit;
+    font-size: 0.929rem;
+    color: var(--fg);
+    text-align: left;
+}
+
+.stash-pick > svg {
+    flex: none;
+    color: var(--fg-3);
+}
+
+.stash-text {
+    flex: 1;
+}
+
+.stash-drop {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: calc(26 * var(--sp));
+    height: calc(26 * var(--sp));
+    margin-right: calc(5 * var(--sp));
+    border-radius: calc(8 * var(--sp));
+    color: var(--fg-3);
+    transition: background 140ms, color 140ms;
+}
+
+.stash-drop:hover {
+    background: var(--press);
+    color: var(--fg);
+}
+
+/* Home: in the fill of the card's other tabs there (home.css), and it takes no room in the column, so the composer
+   doesn't move when it comes, goes, opens or closes. */
+.composer.v-home .stash-tray {
+    position: absolute;
+    right: 0;
+    bottom: 100%;
+    /* Set in from the card's ends as its other tabs are. */
+    margin: 0 calc(22 * var(--sp)) 0 0;
+    background: color-mix(in srgb, var(--fg) 3.5%, var(--sheet));
+    box-shadow:
+        inset 0 0.5px 0 var(--line),
+        inset 0.5px 0 0 var(--line),
+        inset -0.5px 0 0 var(--line);
+}
+
+.composer.v-home .stash-tray.open {
+    left: 0;
+    margin-left: calc(22 * var(--sp));
+}
+
+/* Over the tab that asks to trust the folder, which stands on the card's top edge too. */
+.home-tab + .composer.v-home .stash-tray {
+    bottom: calc(100% + 38 * var(--sp));
+}
+
 /* ---- Up next: steers and queued messages, in a tray on top of the box -------
    Its own small glass card, inset from the box's edges, so it reads as "waiting
    to go into this box". Rows are numbered in the order they go; the number is a
