@@ -374,13 +374,17 @@ export function bwrapArgs(p: SandboxPolicy): string[] {
     for (const r of [...p.readOnly, ...cliInWorktrees(p), ...gits.flatMap(gitProtectedPaths)]) if (existsSync(r)) args.push("--ro-bind", r, r);
     // bwrap can't hide contents and keep names, so those folders are hidden whole: an empty folder over each, read-only
     // as Seatbelt has them (a write there fails, not lands in a throwaway folder and seems to work).
+    // Nothing goes beneath one after: it's hidden already, and a read-only folder has no room to mount it on.
     const hidden = p.contentsUnreadable ?? [];
-    for (const u of [...hidden, ...p.unreadable.filter((u) => !hidden.some((h) => isWithin(u, h)))]) {
-        if (!existsSync(u)) continue;
-        if (statSync(u).isDirectory()) args.push("--tmpfs", u, "--remount-ro", u);
-        else args.push("--ro-bind", "/dev/null", u);
+    const masked: string[] = [];
+    for (const u of [...hidden, ...p.unreadable]) {
+        if (!existsSync(u) || masked.some((m) => isWithin(u, m))) continue;
+        if (statSync(u).isDirectory()) {
+            args.push("--tmpfs", u, "--remount-ro", u);
+            masked.push(u);
+        } else args.push("--ro-bind", "/dev/null", u);
     }
-    for (const d of hostSocketDirs()) args.push("--tmpfs", d);
+    for (const d of hostSocketDirs()) if (!masked.some((m) => isWithin(d, m))) args.push("--tmpfs", d);
     return args;
 }
 
