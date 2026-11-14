@@ -502,6 +502,8 @@ function keptBlock(b: Block, output?: number): Block {
 export function shownStep(b: Block): Block | undefined {
     // A message from another session that joined the turn: kept as it was shown (and dropped if it was taken back).
     if (b.t === "peer") return b;
+    // What happened to the work while it ran (a compaction, a wake that joined it): kept in its place.
+    if (b.t === "notice" && (b.compacted || b.wake)) return b;
     return b.t === "text" || b.t === "thinking" || b.t === "tool" ? keptBlock(b) : undefined;
 }
 
@@ -532,8 +534,8 @@ export interface ReplayInput {
 
 /** A kept notice as the transcript shows it (a live one is built the same way: Runtime.notice). */
 export function noticeBlock(n: Omit<TurnNotice, "index" | "at">, id: string): NoticeBlock {
-    const { level, text, details, source, title, link, account, stopped, limit, compacted } = n;
-    return { t: "notice", id, level, text, ...(details ? { details } : {}), ...(source ? { source } : {}), ...(title ? { title } : {}), ...(link ? { link } : {}), ...(account ? { account } : {}), ...(stopped ? { stopped } : {}), ...(limit ? { limit } : {}), ...(compacted ? { compacted } : {}) };
+    const { level, text, details, source, title, link, account, stopped, limit, compacted, wake } = n;
+    return { t: "notice", id, level, text, ...(details ? { details } : {}), ...(source ? { source } : {}), ...(title ? { title } : {}), ...(link ? { link } : {}), ...(account ? { account } : {}), ...(stopped ? { stopped } : {}), ...(limit ? { limit } : {}), ...(compacted ? { compacted } : {}), ...(wake ? { wake } : {}) };
 }
 
 /** A notice as it happens (an agent's event): its text the data's, if it has one, else the message; redacted. */

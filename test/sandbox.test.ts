@@ -181,6 +181,12 @@ test("bwrapArgs binds existing paths: writable read-write, protected read-only, 
     expect(pairs("--ro-bind")).toContain(join(ws, ".git", "modules", "sub", "hooks"));
     expect(pairs("--ro-bind")).toContain(join(ws, ".git", "modules", "sub", "config"));
     expect(pairs("--tmpfs")[0]).toBe(secret);
+    // Read-only, as Seatbelt has it: a write there fails rather than landing in the empty folder.
+    expect(pairs("--remount-ro")).toEqual([secret]);
+    // Nothing is mounted beneath a hidden folder: it has no room for it, and it's hidden already.
+    mkdirSync(join(secret, "inner"));
+    const nested = bwrapArgs({ writable: [ws], readOnly: [], unreadable: [secret, join(secret, "inner")], gitDirs: [] });
+    expect(nested.flatMap((a, i) => (a === "--tmpfs" ? [nested[i + 1]] : [])).filter((d) => d!.startsWith(secret))).toEqual([secret]);
     expect(args.join(" ")).toContain(`--ro-bind /dev/null ${join(ws, "secret-file")}`);
     expect(sandboxArgv({ kind: "bwrap", policy: { writable: [], readOnly: [], unreadable: [], gitDirs: [] } }, "/bin/sh", "echo hi").slice(-4)).toEqual(["--", "/bin/sh", "-c", "echo hi"]);
 });

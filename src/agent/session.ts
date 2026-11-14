@@ -1044,6 +1044,8 @@ export function noticeData(l: Partial<NoticeData>): NoticeData {
     if (m && str(m.provider) && str(m.accountId) && str(m.name)) {
         out.limit = { provider: m.provider, accountId: m.accountId, name: m.name, ...(str(m.window) ? { window: m.window } : {}), ...(typeof m.resetsAt === "number" ? { resetsAt: m.resetsAt } : {}), ...(m.credits === true ? { credits: true as const } : {}) };
     }
+    if (l.compacted === true) out.compacted = true;
+    if (l.wake === true) out.wake = true;
     return out;
 }
 

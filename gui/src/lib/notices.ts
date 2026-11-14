@@ -145,10 +145,12 @@ export function hasErrorCard(blocks: Block[]): boolean {
 
 /**
  * How many of a turn's first segments are notices from before its first step: they sit above "Worked for", where
- * they happened. A mid-turn one stays in its place, in time order.
+ * they happened. A mid-turn one stays in its place, in time order. A compaction or a wake happened to the work (it
+ * folds with it, lib/live-line.ts workSegments), so it's under "Worked for" even before the first step.
  */
-export function leadingNotices<S extends { kind: string; item?: { kind: string; block?: { t: string } } }>(segs: S[]): number {
+export function leadingNotices<S extends { kind: string; item?: { kind: string; block?: { t: string; compacted?: boolean; wake?: boolean } } }>(segs: S[]): number {
     let n = 0;
-    while (n < segs.length && segs[n]!.kind === "item" && segs[n]!.item?.kind === "block" && segs[n]!.item!.block?.t === "notice") n++;
+    const lead = (s: S) => s.kind === "item" && s.item?.kind === "block" && s.item.block?.t === "notice" && !s.item.block.compacted && !s.item.block.wake;
+    while (n < segs.length && lead(segs[n]!)) n++;
     return n;
 }

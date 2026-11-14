@@ -79,6 +79,11 @@ test("notices from before the first step sit above Worked for; later ones stay w
     expect(leadingNotices([item("notice"), item("notice"), work, item("notice"), item("text")])).toBe(2);
     expect(leadingNotices([work, item("notice")])).toBe(0);
     expect(leadingNotices([item("text"), item("notice"), work])).toBe(0);
+    // A compaction is part of the work: under "Worked for", folding with it.
+    const compacted = { kind: "item", item: { kind: "block", block: { t: "notice", compacted: true } } };
+    expect(leadingNotices([item("notice"), compacted, item("notice"), work])).toBe(1);
+    const wake = { kind: "item", item: { kind: "block", block: { t: "notice", wake: true } } };
+    expect(leadingNotices([wake, work])).toBe(0);
 });
 
 test("a CLI's compaction is a rule, and find reads its label", () => {
