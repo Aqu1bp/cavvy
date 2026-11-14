@@ -398,6 +398,18 @@
     animation: none;
 }
 
+/* Shut, the inspector isn't drawn once it has finished closing, so a change of layout while it's shut happens out
+   of sight: the sheet narrowing as the sidebar opens floats a docked one, and its slide out of the way showed as a
+   grey card across the conversation. Opacity, not visibility, as for a covered one: nothing inside is restyled. */
+[data-insp="off"] .insp {
+    opacity: 0;
+    transition: opacity 0s linear var(--dur-panel);
+}
+
+[data-insp="off"][data-inspmode="float"] .insp {
+    transition: transform var(--dur-panel) var(--ease), bottom var(--dur-panel) var(--ease), opacity 0s linear var(--dur-panel);
+}
+
 [data-inspfull="on"] .main :is(.header, .composer-dock) {
     visibility: hidden;
 }

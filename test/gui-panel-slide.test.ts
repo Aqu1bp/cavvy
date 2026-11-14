@@ -248,6 +248,19 @@ test("the side panel keeps what's in it until it has slid shut", () => {
     expect(transition('[data-inspmode="float"] .insp')).toContain(`${INSPECTOR_MOVES[1]} var(--dur-panel)`);
 });
 
+test("a shut side panel isn't drawn once it has closed, so a change of layout while it's shut doesn't show", () => {
+    // Opening the sidebar narrowed the sheet and floated the shut panel: its slide out of the way crossed the
+    // conversation as a grey card. It goes at once from sight once its own slide is over, by opacity (not inherited).
+    const shell = parseRules(read("styles/shell.css"));
+    const rule = (selector: string) => shell.find((r) => r.selectors.includes(selector))?.decls;
+    expect(rule('[data-insp="off"] .insp')?.get("opacity")).toBe("0");
+    expect(rule('[data-insp="off"] .insp')?.get("transition")).toBe("opacity 0s linear var(--dur-panel)");
+    const float = rule('[data-insp="off"][data-inspmode="float"] .insp')?.get("transition") ?? "";
+    expect(float).toContain(`${INSPECTOR_MOVES[1]} var(--dur-panel)`);
+    expect(float).toContain("opacity 0s linear var(--dur-panel)");
+    expect(shell.some((r) => r.selectors.some((s) => s.includes(".insp")) && r.decls.has("visibility") && r.selectors.some((s) => s.includes('data-insp="off"')))).toBe(false);
+});
+
 test("the Browser page is drawn no further than what shows of its box, and sized by the whole box", () => {
     // The page isn't inside the sheet (it's laid over the window), so nothing cut it as its panel slid: opening or
     // closing, it was drawn across the window's margin, past the sheet's edge.
