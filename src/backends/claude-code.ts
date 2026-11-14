@@ -1804,7 +1804,7 @@ class ClaudeTurn {
             else if (p.name === "Skill" && this.endedAgents.has(b.tool_use_id) && !b.is_error) this.report(b.tool_use_id, content, true);
             // The structured result (for diffs) describes the message's one tool result.
             const structured = blocks.length === 1 && !b.is_error ? resultDisplay(p, m.tool_use_result, this.t.cwd) : undefined;
-            this.endTool(b.tool_use_id, p, content, Boolean(b.is_error), structured);
+            this.endTool(b.tool_use_id, p, content, Boolean(b.is_error), structured, resultImages(b.content));
             const moved = blocks.length === 1 && !b.is_error ? claudeWorktreeMove(p.name, m.tool_use_result) : undefined;
             if (moved) this.sink.emit({ type: "cwd", cwd: moved });
         }
@@ -1820,14 +1820,14 @@ class ClaudeTurn {
             // A sub-agent's own Agent call: its report rather than where it went, as at the top level.
             const content = (p.name === "Task" && (this.reports.get(b.tool_use_id) || (blocks.length === 1 && handedBack(m)))) || resultText(b.content);
             const structured = blocks.length === 1 && !b.is_error ? resultDisplay(p, m.tool_use_result, this.t.cwd) : undefined;
-            this.endSubTool(b.tool_use_id, p, content, Boolean(b.is_error), structured);
+            this.endSubTool(b.tool_use_id, p, content, Boolean(b.is_error), structured, resultImages(b.content));
         }
     }
 
-    private endSubTool(id: string, p: PendingTool & { parent: string }, content: string, isError: boolean, display?: ToolDisplay) {
+    private endSubTool(id: string, p: PendingTool & { parent: string }, content: string, isError: boolean, display?: ToolDisplay, images?: ImagePart[]) {
         this.subTools.delete(id);
         const label = this.agentLabels.get(p.parent) ?? "sub-agent";
-        this.sink.emit({ type: "subagent", parentId: p.parent, label, event: { type: "tool_end", call: { type: "tool_call", id, name: p.name, input: p.input }, result: { content, isError, display }, durationMs: Date.now() - p.started } });
+        this.sink.emit({ type: "subagent", parentId: p.parent, label, event: { type: "tool_end", call: { type: "tool_call", id, name: p.name, input: p.input }, result: { content, isError, display, ...(images?.length ? { images } : {}) }, durationMs: Date.now() - p.started } });
     }
 
     /**
@@ -1906,10 +1906,10 @@ class ClaudeTurn {
         this.sink.emit({ type: "subagent", parentId: id, label: this.agentLabels.get(id) ?? "sub-agent", event: { type: "turn_end", reason } });
     }
 
-    private endTool(id: string, p: PendingTool, content: string, isError: boolean, display?: ToolDisplay) {
+    private endTool(id: string, p: PendingTool, content: string, isError: boolean, display?: ToolDisplay, images?: ImagePart[]) {
         this.tools.delete(id);
         if (!this.listedEarly.delete(id)) this.actions.push(p.title);
-        this.sink.emit({ type: "tool_end", call: { type: "tool_call", id, name: p.name, input: p.input }, result: { content, isError, display }, durationMs: Date.now() - p.started });
+        this.sink.emit({ type: "tool_end", call: { type: "tool_call", id, name: p.name, input: p.input }, result: { content, isError, display, ...(images?.length ? { images } : {}) }, durationMs: Date.now() - p.started });
     }
 
     private noteLimits(limits: PlanLimits, partial: boolean) {
@@ -2253,6 +2253,12 @@ export function titleFor(name: string, input: Record<string, unknown>): string {
         default:
             return name;
     }
+}
+
+/** A result's images as the model saw them (an image file read, a screenshot). */
+export function resultImages(content: unknown): ImagePart[] {
+    if (!Array.isArray(content)) return [];
+    return content.flatMap((c: any) => (c?.type === "image" && c.source?.type === "base64" && typeof c.source.data === "string" && typeof c.source.media_type === "string" ? [{ type: "image" as const, mediaType: c.source.media_type, data: c.source.data }] : []));
 }
 
 export function resultText(content: unknown): string {

@@ -4,7 +4,8 @@
 // survive the queue, an interrupt, replay, redaction, compaction and export.
 
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
-import { readFileSync, writeFileSync } from "fs";
+import { mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import { isolate, tempDir } from "./helpers/isolate";
 import { secretsSnapshot } from "./helpers/secrets";
@@ -15,7 +16,7 @@ const { Engine } = await import("../src/server/engine");
 const { startMockLlm } = await import("../scripts/mock-llm");
 const { createDemoProject } = await import("../scripts/demo-project");
 const { RpcError } = await import("../src/server/rpc-error");
-const { attachedPrompt, checkFiles, checkMedia, sanitizeName } = await import("../src/server/attachments");
+const { attachedPrompt, checkFiles, checkMedia, sanitizeName, toWire } = await import("../src/server/attachments");
 const { framedText, readsPdf, forBackend, attachmentsNote, fitMedia, fitRequest, REQUEST_LIMIT } = await import("../src/providers/files");
 const { MEDIA_BUDGET, base64Size } = await import("../src/util/media");
 const { OpenAICompatProvider } = await import("../src/providers/openai-compat");
@@ -112,15 +113,54 @@ describe("session.send with files", () => {
         }
     });
 
-    test("anything that isn't text, a PDF the model can read, or within the caps is an error, and nothing is sent", async () => {
+    test("files that can't go inline are saved in the project, out of git, and the model is told where", async () => {
+        const { engine, c, id, rt } = await engineWithSession();
+        try {
+            const elf = new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 0, 0, 1]);
+            const big = "a".repeat(512 * 1024 + 1);
+            const files = [
+                { name: "app.bin", data: b64(elf) },
+                { name: "latin1.txt", data: b64(new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x0a])) },
+                // A zip says it's text: the bytes say otherwise.
+                { name: "notes.txt", data: b64(new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x14, 0, 0, 0])) },
+                { name: "big.log", data: b64(big) },
+            ];
+            await engine.handle(c, "session.send", { id, text: "look", files });
+            await until(() => rt.idle && userPrompts(rt.session.messages).length === 1);
+            const parts = userPrompts(rt.session.messages)[0]!.content.filter((p): p is Extract<FilePart, { kind: "saved" }> => p.type === "file" && p.kind === "saved");
+            expect(parts.map((p) => [p.name, p.size])).toEqual([["app.bin", 7], ["latin1.txt", 5], ["notes.txt", 8], ["big.log", big.length]]);
+            const root = join(rt.ws.cwd, ".cavvy", "attachments");
+            for (const p of parts) expect(p.path.startsWith(join(root, id) + "/")).toBe(true);
+            expect(new Uint8Array(readFileSync(parts[0]!.path))).toEqual(elf);
+            expect(readFileSync(parts[3]!.path, "utf8")).toBe(big);
+            expect(readFileSync(join(root, ".gitignore"), "utf8")).toBe("*\n");
+            // The model gets where it is, not its bytes.
+            expect(lastPromptSent()).toContain(`[The user attached "app.bin" (7 B). It's saved at ${parts[0]!.path}; open it with your tools if you need what's in it.]`);
+            expect(lastPromptSent()).not.toContain("aaaaaaaaaa");
+            // The prompt's chips name them; edited, they come back to the box whole.
+            expect(rt.snapshot().turns.at(-1)!.prompt.files?.map((f) => f.kind)).toEqual(["saved", "saved", "saved", "saved"]);
+            expect(toWire(parts).files?.[0]).toEqual({ name: "app.bin", data: b64(elf) });
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("a project's .cavvy that leads out of it gets nothing saved through it", async () => {
+        const { engine, c, id, rt } = await engineWithSession();
+        const away = mkdtempSync(join(tmpdir(), "cavvy-away-"));
+        try {
+            symlinkSync(away, join(rt.ws.cwd, ".cavvy"));
+            await expect(engine.handle(c, "session.send", { id, text: "look", files: [{ name: "app.bin", data: b64(new Uint8Array([0, 1, 2])) }] })).rejects.toThrow(/leads out of it/);
+            expect(readdirSync(join(away, "attachments")).filter((n) => n !== ".gitignore")).toEqual([]);
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("anything past the caps is an error, and nothing is sent", async () => {
         const { engine, c, id, rt } = await engineWithSession();
         try {
             const send = (files: unknown, images?: unknown) => engine.handle(c, "session.send", { id, text: "look", files, images });
-            await expect(send([{ name: "app.bin", data: b64(new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 0, 0, 1])) }])).rejects.toThrow(/app\.bin isn't a text file or a PDF/);
-            await expect(send([{ name: "latin1.txt", data: b64(new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x0a])) }])).rejects.toThrow(/isn't a text file or a PDF/);
-            // A zip says it's text: the bytes say otherwise.
-            await expect(send([{ name: "notes.txt", data: b64(new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x14, 0, 0, 0])) }])).rejects.toThrow(/isn't a text file/);
-            await expect(send([{ name: "big.log", data: b64("a".repeat(512 * 1024 + 1)) }])).rejects.toThrow(/big\.log is 512\.0 KB; text files can be 512\.0 KB at most/);
             await expect(send(Array.from({ length: 11 }, (_, i) => ({ name: `f${i}.txt`, data: b64("x") })))).rejects.toThrow(/10 files at most; this one has 11/);
             await expect(send([{ name: "spec.pdf", data: PDF }])).rejects.toThrow(/can't read PDFs\. Remove spec\.pdf/);
             await expect(send([{ name: "x.txt", data: "not base64!" }])).rejects.toThrow(/didn't arrive as base64/);
@@ -131,8 +171,6 @@ describe("session.send with files", () => {
             rt.model = { ...rt.model!, supportsPdf: true };
             const pdf8 = b64(Buffer.concat([Buffer.from("%PDF-1.4\n"), Buffer.alloc(8 * 1024 * 1024, 0x20)]));
             await expect(send([1, 2, 3].map((i) => ({ name: `${i}.pdf`, data: pdf8 })))).rejects.toThrow(/more than 20\.0 MB/);
-            const pdf11 = b64(Buffer.concat([Buffer.from("%PDF-1.4\n"), Buffer.alloc(10 * 1024 * 1024, 0x20)]));
-            await expect(send([{ name: "huge.pdf", data: pdf11 }])).rejects.toThrow(/huge\.pdf .*PDFs can be 10\.0 MB at most|too large to attach/);
             expect(rt.session.messages.length).toBe(0);
             expect(rt.snapshot().turns.length).toBe(0);
         } finally {
@@ -358,10 +396,15 @@ describe("edge cases", () => {
         }
     });
 
-    test("text that grows past the cap when redacted is refused, so an edited message always fits again", () => {
+    test("text that grows past the cap when redacted isn't inline, so an edited message always fits again: it's saved, redacted", () => {
         const key = "AKIAABCDEFGHIJKLMNOP\n";
         const near = key.repeat(Math.floor((512 * 1024) / key.length));
         expect(() => checkFiles([{ name: "keys.txt", data: b64(near) }])).toThrow(/too large to attach once the secrets in it are redacted/);
+        let kept = "";
+        const [saved] = checkFiles([{ name: "keys.txt", data: b64(near) }], (_name, bytes) => ((kept = Buffer.from(bytes).toString("utf8")), "/p/keys.txt"));
+        expect(saved).toMatchObject({ kind: "saved", name: "keys.txt", path: "/p/keys.txt" });
+        expect(kept).toContain("[REDACTED aws-key-id]");
+        expect(kept).not.toContain("AKIAABCDEFGHIJKLMNOP");
         const [ok] = checkFiles([{ name: "keys.txt", data: b64(key.repeat(100)) }]);
         expect((ok as { text: string }).text).toContain("[REDACTED aws-key-id]");
     });
@@ -419,16 +462,33 @@ describe("review comments and @mentions", () => {
 describe("the composer's sorting (gui/src/lib/attachments)", () => {
     const file = (bytes: string | Uint8Array, name: string, type = "") => new File([bytes], name, { type });
 
-    test("judged by the bytes: code and logs are text, a PDF is a PDF whatever it's called, anything else is refused with the reason", async () => {
+    test("judged by the bytes: code and logs are text, a PDF is a PDF whatever it's called, anything else a file to save", async () => {
         expect(await gui.readAttachment(file("const a = 1;\n", "a.ts", "video/mp2t"), [])).toMatchObject({ kind: "text", name: "a.ts", lines: 1 });
         expect(await gui.readAttachment(file("%PDF-1.7\n", "scan.bin"), [])).toMatchObject({ kind: "pdf" });
-        expect(await gui.readAttachment(file(new Uint8Array([0x50, 0x4b, 3, 4, 0, 0]), "a.zip", "text/plain"), [])).toEqual({ kind: "refused", name: "a.zip", size: 6, reason: "Not a text file, PDF or image" });
-        expect(await gui.readAttachment(file(new Uint8Array([0x63, 0xe9]), "latin1.txt"), [])).toMatchObject({ kind: "refused" });
-        expect(await gui.readAttachment(file("a".repeat(512 * 1024 + 1), "big.log"), [])).toMatchObject({ kind: "refused", reason: "Text files can be 512 KB at most" });
+        const zip = new Uint8Array([0x50, 0x4b, 3, 4, 0, 0]);
+        expect(await gui.readAttachment(file(zip, "a.zip", "text/plain"), [])).toEqual({ kind: "file", name: "a.zip", size: 6, data: b64(zip) });
+        expect(await gui.readAttachment(file(new Uint8Array([0x63, 0xe9]), "latin1.txt"), [])).toMatchObject({ kind: "file" });
+        expect(await gui.readAttachment(file("a".repeat(512 * 1024 + 1), "big.log"), [])).toMatchObject({ kind: "file", name: "big.log" });
+        // A photo only the system opens, with no desktop app to make it a JPEG: a file too, not a broken image.
+        expect(await gui.readAttachment(file(new Uint8Array([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63]), "IMG_1.HEIC", "image/heic"), [])).toMatchObject({ kind: "file", name: "IMG_1.HEIC" });
+        // Past every file's cap it isn't read at all.
+        expect(await gui.readAttachment({ name: "huge.mov", size: 21 * 1024 * 1024, type: "video/quicktime", arrayBuffer: () => Promise.reject(new Error("not read")) } as unknown as File, [])).toMatchObject({ kind: "refused", reason: "Files can be 20.0 MB at most" });
         const tooMany = Array.from({ length: 10 }, (_, i) => ({ kind: "text", name: `${i}`, size: 1, data: "", text: "", lines: 0 }) as const);
         expect(await gui.readAttachment(file("x", "eleven.txt"), tooMany)).toMatchObject({ kind: "refused", reason: "A message can carry 10 files at most" });
         const img = await gui.readAttachment(file(Buffer.from(PNG, "base64"), "shot.png", "image/png"), []);
         expect(img).toMatchObject({ kind: "image", mediaType: "image/png", data: PNG });
+    });
+
+    test("a file's tile: its extension, tinted by its family", () => {
+        expect(["Proposal.docx", "q3.XLSX", "deck.key", "a.tar.gz", "scan.pdf", "run.sh", "README"].map((n) => [gui.extensionOf(n), gui.tintOf(n)])).toEqual([
+            ["DOCX", "doc"],
+            ["XLSX", "sheet"],
+            ["KEY", "box"],
+            ["GZ", "box"],
+            ["PDF", "pdf"],
+            ["SH", undefined],
+            [undefined, undefined],
+        ]);
     });
 
     test("the media cap refuses additions in either order and blocks oversized restored drafts", async () => {
@@ -1444,10 +1504,14 @@ for (const pasted of [false, true]) {
             }
             expect(lastPromptSent()).toContain("[REDACTED ATTACH_TEST_TOKEN]");
             expect(prompt.content.find((p) => p.type === "file" && p.kind === "text")).toMatchObject({ text: text.replace(value, "[REDACTED ATTACH_TEST_TOKEN]") });
-            // Size limits refuse the whole file, without keeping a raw prefix at the cap.
+            // Past the cap it's saved for the model to open: redacted too, whole.
             const oversized = [{ name: "large.txt", data: b64("a".repeat(512 * 1024 - 6) + value), ...(pasted ? { pasted: true } : {}) }];
-            await expect(engine.handle(c, "session.send", { id, text: "too large", files: oversized })).rejects.toThrow(/at most/);
-            expect(userPrompts(rt.session.messages)).toHaveLength(1);
+            await engine.handle(c, "session.send", { id, text: "too large", files: oversized });
+            await until(() => rt.idle && userPrompts(rt.session.messages).length === 2);
+            const saved = userPrompts(rt.session.messages)[1]!.content.find((p) => p.type === "file" && p.kind === "saved") as Extract<FilePart, { kind: "saved" }>;
+            const kept = readFileSync(saved.path, "utf8");
+            expect(kept.endsWith("[REDACTED ATTACH_TEST_TOKEN]")).toBe(true);
+            for (let i = 0; i <= value.length - 6; i++) expect(kept).not.toContain(value.slice(i, i + 6));
         } finally {
             await engine.stop();
         }

@@ -947,6 +947,54 @@ describe("connecting", () => {
         }
     });
 
+    test("once a call ends, the activity says the model is thinking, not the call's title", async () => {
+        const { engine, c, id, rt } = await engineWithSession();
+        try {
+            await engine.handle(c, "session.send", { id, text: "Hi" });
+            await whenIdle(rt);
+            const label = () => rt.snapshot().state.activity?.label;
+            const call = (n: string) => ({ type: "tool_call" as const, id: n, name: "Bash", input: { command: `echo ${n}` } });
+            const start = (n: string) => (rt as any).onEvent({ type: "tool_start", call: call(n), title: `Bash(echo ${n})` });
+            const end = (n: string) => (rt as any).onEvent({ type: "tool_end", call: call(n), result: { content: n, isError: false }, durationMs: 5 });
+            start("a");
+            expect(label()).toBe("Bash(echo a)");
+            end("a");
+            expect(label()).toBe("Thinking");
+            // Side by side: the first one ending leaves the second, still running, in the activity.
+            start("b");
+            start("c");
+            end("b");
+            expect(label()).toBe("Bash(echo c)");
+            end("c");
+            expect(label()).toBe("Thinking");
+        } finally {
+            await engine.stop();
+        }
+    });
+
+    test("a call's result images reach its row by key, and the image comes back for it", async () => {
+        const { engine, c, id, rt } = await engineWithSession();
+        try {
+            await engine.handle(c, "session.send", { id, text: "Hi" });
+            await whenIdle(rt);
+            const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+            const call = { type: "tool_call" as const, id: "read_img", name: "Read", input: { file_path: "/elsewhere/shot.png" } };
+            (rt as any).onEvent({ type: "tool_start", call, title: "Read(/elsewhere/shot.png)" });
+            (rt as any).onEvent({ type: "tool_end", call, result: { content: "[image]", isError: false, images: [{ type: "image", mediaType: "image/png", data: png }] }, durationMs: 5 });
+            const row = () => rt.snapshot().turns.flatMap((t) => t.blocks).find((b): b is ToolBlock => b.t === "tool" && b.id === "read_img")!;
+            expect(row().images).toBe(1);
+            const [key] = row().imageKeys!;
+            expect(key).toMatch(/^[a-f0-9]{24}\.png$/);
+            // The bytes never ride on the row: they're asked for.
+            expect(JSON.stringify(rt.snapshot())).not.toContain(png);
+            expect(await engine.handle(c, "session.toolImage", { id, key })).toEqual({ mediaType: "image/png", data: png });
+            await expect(engine.handle(c, "session.toolImage", { id, key: "../../x.png" })).rejects.toThrow(/isn't an image key/);
+            await expect(engine.handle(c, "session.toolImage", { id, key: "0".repeat(24) + ".png" })).rejects.toThrow(/no longer kept/);
+        } finally {
+            await engine.stop();
+        }
+    });
+
     test("a call still arriving names its file once that much of its input is in", async () => {
         const { engine, c, id, rt } = await engineWithSession();
         try {

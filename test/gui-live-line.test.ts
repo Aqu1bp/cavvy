@@ -36,7 +36,10 @@ test("special states (a retry, a compaction, a wait on background work) say them
 test("the step under way: its verb and target, a command by its description, an approval first", () => {
     expect(line({ blocks: [tool({})] })).toMatchObject({ kind: "tool", label: "Reading", detail: "src/a.ts", mono: true, since: 5, toolId: "t1" });
     const cmd = tool({ id: "c", name: "Bash", title: "Bash", input: { command: "bun test ./test/a.test.ts\necho done", description: "Run the transcript tests" }, progress: "a\nb\n" });
-    expect(line({ blocks: [cmd] })).toMatchObject({ label: "Run the transcript tests", detail: "bun test ./test/a.test.ts" });
+    // Its description alone: the command beside it made a long line of code.
+    expect(line({ blocks: [cmd] })).toMatchObject({ label: "Run the transcript tests" });
+    expect(line({ blocks: [cmd] })?.detail).toBeUndefined();
+    expect(line({ blocks: [{ ...cmd, status: "awaiting" }] })?.detail).toBe("Run the transcript tests");
     // A running command opens (on a click) to the block its row opens to: the line carries its call for that (#388).
     expect(line({ blocks: [cmd] })?.opens).toBe(cmd);
     // No native tooltip dumps the whole command, running or waiting for approval (#389).
@@ -44,6 +47,10 @@ test("the step under way: its verb and target, a command by its description, an 
     expect(line({ blocks: [{ ...cmd, status: "awaiting" }] })?.title).toBeUndefined();
     // Codex sends no description: "Running" and the command.
     expect(line({ blocks: [{ ...cmd, input: { command: "rg -n x" } }] })).toMatchObject({ label: "Running", detail: "rg -n x" });
+    // Its first step only: past its cd, up to a pipe, an && or a `;`.
+    const long = { command: `cd /repo && grep -n "a\\|b" src/x.ts | head -40; wc -l src/x.ts` };
+    expect(line({ blocks: [{ ...cmd, input: long }] })).toMatchObject({ label: "Running", detail: 'grep -n "a\\|b" src/x.ts' });
+    expect(line({ blocks: [{ ...cmd, input: long, status: "awaiting" }] })?.detail).toBe('grep -n "a\\|b" src/x.ts');
     // Only a running command opens; one still arriving says only what it is, and one waiting for approval has its card.
     expect(line({ blocks: [{ ...cmd, status: "streaming", receiving: 1200 }] })).toMatchObject({ label: "Writing command" });
     expect(line({ blocks: [{ ...cmd, status: "streaming", receiving: 1200 }] })?.meta).toBeUndefined();
