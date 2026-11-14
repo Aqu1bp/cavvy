@@ -199,6 +199,8 @@ export class App {
     /** A model switch in progress; prompts wait for it so they go to the right model. */
     private switching?: Promise<unknown>;
     private inputMode: InputMode = "prompt";
+    /** The mode the stashed prompt was typed in. */
+    private stashMode: InputMode = "prompt";
     private md?: MarkdownStream;
     private mdLines = 0;
     /** The streaming reply: what's been printed of it, and its text so far. */
@@ -2117,6 +2119,8 @@ export class App {
                 return void this.pasteClipboardImage();
             case "chat:undo":
                 return e.undo();
+            case "chat:stash":
+                return this.stash();
             case "history:previous":
                 // The arrow moves between the lines of a long prompt first.
                 if (k.name === "up" && !k.ctrl && !k.meta && e.up()) return;
@@ -2136,6 +2140,27 @@ export class App {
             case "app:redraw":
                 return this.screen.clearScreen();
         }
+    }
+
+    /** The stash key: the prompt is put away (with its ! or # mode), or the one put away comes back; with both, they trade places. */
+    private stash() {
+        const e = this.editor;
+        const mode = this.inputMode;
+        const had = e.stashPreview !== undefined;
+        if (!e.swapStash()) return;
+        this.inputMode = this.stashMode;
+        this.stashMode = e.stashPreview === undefined ? "prompt" : mode;
+        this.menuHiddenFor = undefined;
+        this.showHelp = false;
+        if (!had) this.flash = { text: `Stashed · comes back after you send, or with ${this.keys.label("chat:stash") ?? "the stash key"}`, until: Date.now() + 3000 };
+        else this.flash = undefined;
+    }
+
+    /** A prompt went out and the box is free: the stashed one comes back. Never over something typed since. */
+    private unstash() {
+        if (this.editor.stashPreview === undefined || !this.editor.isEmpty || this.inputMode !== "prompt") return;
+        this.stash();
+        this.renderLive();
     }
 
     private escapeKey() {
@@ -2445,11 +2470,14 @@ export class App {
         this.editor.clear();
         this.inputMode = "prompt";
         this.showHelp = false;
+        // Images still being read can hand the prompt back (settleImages): the stashed one waits for that.
+        if (!pending.length) this.unstash();
         this.renderLive();
         if (mode === "bash") return this.runBashMode(text);
         if (mode === "memory") return this.addMemory(text);
         if (pending.length) {
             if (!(await this.settleImages(draft!, pending))) return;
+            this.unstash();
             // Images that never came leave nothing to send when they were all there was.
             if (!plainText(draft!.text).trim() && !imagesIn(draft!.text, draft!.attachments).length) return;
         }
@@ -3089,6 +3117,13 @@ export class App {
         const { flow, status } = this.busy ? this.renderActivity(cols, rows) : { flow: [], status: [] };
         const goal = this.goalLine(cols);
         if (goal) status.push(goal);
+        const stashed = this.editor.stashPreview;
+        if (stashed !== undefined) {
+            const key = this.keys.label("chat:stash");
+            const label = `  ⏷ stashed${key ? ` (${key})` : ""}: `;
+            const prefix = this.stashMode === "bash" ? "!" : this.stashMode === "memory" ? "#" : "";
+            status.push(theme.muted(label + truncate(prefix + stashed, Math.max(8, cols - width(label) - 2))));
+        }
         const lines = [...flow];
         if (status.length) lines.push("", ...status);
         lines.push("");
@@ -3359,7 +3394,7 @@ function shortcutHelp(cols: number, keys: TuiKeybindings): string[] {
         ["/ for commands", hint("chat:externalEditor", (k) => `${k} to edit in $EDITOR`), hint("app:toggleTranscript", (k) => `${k} for verbose output`)],
         ["@ for file paths", `\\⏎${newline.length ? ` or ${newline[newline.length - 1]}` : ""} for newline`, hint("app:toggleTodos", (k) => `${k} to toggle todos`)],
         ["# to memorize", hint("chat:cancel", (k) => `${k} to interrupt (queued first)`), "ctrl+c twice to exit"],
-        [hint("chat:submitOtherWay", (k) => `${k}: steer or queue the other way`), "/queue to manage queued messages", ""],
+        [hint("chat:submitOtherWay", (k) => `${k}: steer or queue the other way`), "/queue to manage queued messages", hint("chat:stash", (k) => `${k} to stash the prompt`)],
     ];
     const w = Math.floor((cols - 4) / 3);
     return [

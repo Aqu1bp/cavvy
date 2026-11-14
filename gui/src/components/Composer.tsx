@@ -35,6 +35,7 @@ import { firstSendable, FOLLOW_UP_WORDS, followUpFor, followUpLabels, otherFollo
 import { canStop } from "../lib/session-status";
 import { listedSchedules } from "../lib/notices";
 import { QueueTab } from "./QueueTab";
+import { StashTab } from "./StashTab";
 import { StepsTray } from "./StepsTray";
 
 /** `mention`: a skill picked from the $ menu, which goes in where the $ is. */
@@ -449,6 +450,24 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         finish(ok);
     };
 
+    /** The stash key, or a click on the stashed row: the prompt is put away, or the one put away comes back. */
+    const swapStash = () => {
+        // A send under way clears what it sent: put away meanwhile, that prompt would come back after it went.
+        if (sending() || !draft.swapStash()) return;
+        histIdx = -1;
+        setExpanded(false);
+        setMenuDismissedFor(undefined);
+        dismissMenu();
+        requestAnimationFrame(() => {
+            resize();
+            ta?.focus();
+        });
+    };
+    const discardStash = () => {
+        const undo = draft.dropStash();
+        if (undo) toast("Stash discarded", "info", { label: "Undo", run: undo });
+    };
+
     /** Adds a line where the caret is, keeping the box's own undo. */
     const newline = () => {
         if (!ta) return;
@@ -508,6 +527,11 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
             case "chat:expand":
                 e.preventDefault();
                 toggleExpanded();
+                return;
+            case "chat:stash":
+                // The key is taken either way: with nothing to stash it isn't the browser's Save.
+                e.preventDefault();
+                swapStash();
                 return;
             case "chat:submitOtherWay":
                 // While a turn runs, with the / and @ menu open too: the message goes the other way, or the first queued one now.
@@ -793,6 +817,9 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
                             <ScheduleTab sessionId={p.sessionId!} items={items()} />
                         </Show>
                     )}
+                </Show>
+                <Show when={draft.stash()}>
+                    {(stashed) => <StashTab text={stashed().text} attached={stashed().attachments.length} onRestore={swapStash} onDiscard={discardStash} />}
                 </Show>
                 <Show when={comments().length}>
                     <ReviewCommentChips

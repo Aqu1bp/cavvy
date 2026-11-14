@@ -47,6 +47,46 @@ test("history is session-local, deduplicated, bounded and persisted; deletion re
     expect(createComposerStorage(() => disk).history("a")).toEqual([]);
 });
 
+test("a stashed prompt is kept apart from the draft, survives a reload, and goes with its session", () => {
+    const disk = storage();
+    const state = createComposerStorage(() => disk);
+    state.setDraft("a", "in the box");
+    state.setStash("a", "put away");
+    state.flush();
+    const restored = createComposerStorage(() => disk);
+    expect(restored.draft("a")).toBe("in the box");
+    expect(restored.stash("a")).toBe("put away");
+    expect(restored.stash("b")).toBe("");
+    // Read back as it was written: loading it doesn't save it again.
+    const writes = disk.writes;
+    restored.flush();
+    expect(disk.writes).toBe(writes);
+    restored.setStash("a", "");
+    restored.flush();
+    expect(disk.data.get(COMPOSER_STORAGE_KEY)).not.toContain("stash");
+    restored.setStash("a", "again");
+    restored.delete("a");
+    expect(createComposerStorage(() => disk).stash("a")).toBe("");
+});
+
+test("a stashed credential stays in memory, and a stash alone keeps its entry", () => {
+    const disk = storage();
+    const state = createComposerStorage(() => disk);
+    state.setStash("a", "sk-" + "a".repeat(30));
+    state.setStash("b", "only a stash");
+    state.flush();
+    expect(state.stash("a")).toContain("sk-");
+    expect(disk.data.get(COMPOSER_STORAGE_KEY)).not.toContain("sk-");
+    const restored = createComposerStorage(() => disk);
+    expect(restored.stash("a")).toBe("");
+    expect(restored.stash("b")).toBe("only a stash");
+    // Saved by a version that wrote something else there: not text, not restored.
+    disk.data.set(COMPOSER_STORAGE_KEY, JSON.stringify([["c", { draft: "", history: [], updated: Date.now(), stash: { data: "SECRET" } }]]));
+    const odd = createComposerStorage(() => disk);
+    expect(odd.stash("c")).toBe("");
+    expect(disk.data.get(COMPOSER_STORAGE_KEY) ?? "").not.toContain("SECRET");
+});
+
 test("corrupt, blocked and quota-exceeded storage preserve in-memory operation", () => {
     const disk = storage();
     for (const raw of ["broken", "null", '{}', '[["a",{}]]', '[["a",{"draft":1,"history":[],"updated":0}]]']) {

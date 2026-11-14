@@ -515,6 +515,35 @@
     font-variant-numeric: tabular-nums;
 }
 
+/* The stashed prompt: the row is its way back. */
+.stash-tab .goal-row {
+    padding-left: 0;
+}
+
+.stash-back {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    align-self: stretch;
+    gap: calc(8 * var(--sp));
+    min-width: 0;
+    padding-left: calc(10 * var(--sp));
+    border-radius: inherit;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+}
+
+.stash-back:hover .goal-text,
+.stash-back:focus-visible .goal-text {
+    color: var(--accent-text);
+}
+
+.stash-tab kbd {
+    flex: none;
+    color: var(--fg-3);
+}
+
 .goal-details {
     max-height: min(140 * var(--sp), 18vh);
     overflow-y: auto;

@@ -98,25 +98,25 @@ describe("a keybindings file", () => {
     });
 
     test("the steer-or-queue key is an action: Tab by default, rebindable, and only while a turn runs", () => {
-        write([{ context: "Global", bindings: { tab: null, "ctrl+s": "chat:submitOtherWay" } }]);
+        write([{ context: "Global", bindings: { tab: null, "ctrl+r": "chat:submitOtherWay" } }]);
         const { app, a, press } = testApp();
         const sent: boolean[] = [];
         a.submit = async (opposite: boolean) => void sent.push(opposite);
         app.editor.set("follow-up");
         // Idle, the key does nothing.
-        press("\x13");
+        press("\x12");
         expect(sent).toEqual([]);
         a.busy = true;
         press("\t");
         expect(sent).toEqual([]);
-        press("\x13");
+        press("\x12");
         expect(sent).toEqual([true]);
         // Nothing typed: nothing to send.
         app.editor.clear();
-        press("\x13");
+        press("\x12");
         expect(sent).toEqual([true]);
-        expect(a.keys.label("chat:submitOtherWay")).toBe("ctrl+s");
-        expect(stripAnsi(a.renderInput(160).join("\n"))).toContain("ctrl+s to queue it for after");
+        expect(a.keys.label("chat:submitOtherWay")).toBe("ctrl+r");
+        expect(stripAnsi(a.renderInput(160).join("\n"))).toContain("ctrl+r to queue it for after");
     });
 
     test("unbound in Chat, the steer-or-queue key is gone from the help and the placeholder too", () => {
@@ -311,6 +311,74 @@ describe("a keybindings file", () => {
         } finally {
             a.keys.close();
         }
+    });
+});
+
+describe("the stash key", () => {
+    test("puts the prompt away with its mode, and it comes back once the next one is sent", async () => {
+        const { app, a, press } = testApp();
+        a.submitText = async () => {};
+        a.runBashMode = async () => {};
+        press("!", "ls -la", "\x13");
+        expect(app.editor.text).toBe("");
+        expect(a.inputMode).toBe("prompt");
+        // What's put away is said above the prompt, as it was typed.
+        const live: string[][] = [];
+        a.screen.setLive = (lines: string[]) => void live.push(lines);
+        Object.getPrototypeOf(a).renderLive.call(a);
+        expect(stripAnsi(live.at(-1)!.join("\n"))).toContain("⏷ stashed (ctrl+s): !ls -la");
+        expect(stripAnsi(a.footer(160))).toContain("Stashed · comes back after you send, or with ctrl+s");
+        press("quick question", "\r");
+        await Bun.sleep(0);
+        expect(app.editor.text).toBe("ls -la");
+        expect(a.inputMode).toBe("bash");
+        expect(app.editor.stashPreview).toBeUndefined();
+    });
+
+    test("pressed again it brings the prompt back, or trades it with what's typed", () => {
+        const { app, a, press } = testApp();
+        // Nothing typed, nothing stashed: the key does nothing.
+        press("\x13");
+        expect(app.editor.stashPreview).toBeUndefined();
+        press("first", "\x13", "#", "note", "\x13");
+        expect(app.editor.text).toBe("first");
+        expect(a.inputMode).toBe("prompt");
+        expect(app.editor.stashPreview).toBe("note");
+        app.editor.clear();
+        press("\x13");
+        expect(app.editor.text).toBe("note");
+        expect(a.inputMode).toBe("memory");
+        expect(app.editor.stashPreview).toBeUndefined();
+    });
+
+    test("a prompt waiting on its images: the stash comes back once it goes, never over something typed since or a prompt handed back", async () => {
+        for (const how of ["sent", "typed since", "cancelled"] as const) {
+            const { app, a, press } = testApp();
+            a.submitText = async () => {};
+            a.attachWaitMs = 5;
+            press("keep me", "\x13", "send me ");
+            a.preparing.set(app.editor.reserveImage(), new Promise(() => {}));
+            const submit = a.submit();
+            // Still stashed while the images are read: Esc there hands the prompt back to the box.
+            expect(app.editor.text).toBe("");
+            expect(app.editor.stashPreview).toBe("keep me");
+            if (how === "typed since") app.editor.insert("typed since");
+            if (how === "cancelled") a.pendingSubmit.cancel();
+            await submit;
+            expect(app.editor.text).toStartWith(how === "sent" ? "keep me" : how === "typed since" ? "typed since" : "send me ");
+            expect(app.editor.stashPreview).toBe(how === "sent" ? undefined : "keep me");
+        }
+    });
+
+    test("unbound, the key is gone from the help and the stashed line", () => {
+        write([{ context: "Chat", bindings: { "ctrl+s": null, "ctrl+r": "chat:stash" } }]);
+        const { a, press } = testApp();
+        press("later", "\x13");
+        expect(a.editor.stashPreview).toBeUndefined();
+        press("\x12");
+        expect(a.editor.stashPreview).toBe("later");
+        a.showHelp = true;
+        expect(stripAnsi(a.renderInput(160).join("\n"))).toContain("ctrl+r to stash the prompt");
     });
 });
 

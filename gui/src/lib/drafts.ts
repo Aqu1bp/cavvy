@@ -5,15 +5,16 @@ export const COMPOSER_STORAGE_KEY = "cavvy.composer.v1";
 export const HISTORY_LIMIT = 100;
 export const COMPOSER_MAX_CHARS = 1_000_000; // ~2 MB of UTF-16, leaving room for other preferences.
 export const COMPOSER_MAX_AGE = 30 * 24 * 60 * 60 * 1000;
-type Entry = { draft: string; history: string[]; updated: number };
+/** `stash`: the prompt put away with the stash key, kept apart from what's in the box. */
+type Entry = { draft: string; history: string[]; updated: number; stash?: string };
 type Storage = Pick<globalThis.Storage, "getItem" | "setItem" | "removeItem">;
 
 // redact.ts's known-format patterns are shared; the GUI cannot import its Node config or
 // server-only registered secrets. Also exclude login commands and legacy OpenAI key shapes.
 const privateText = (text: string) => /^\s*\/login\b/im.test(text) || /\bsk-[A-Za-z0-9_-]{20,}/.test(text) || matchesSecretPattern(text);
-const safe = (e: Entry): Entry => ({ ...e, draft: privateText(e.draft) ? "" : e.draft, history: e.history.filter((text) => !privateText(text)) });
-const clearPriority = (e: Entry) => e.draft ? 0 : e.history.length ? 1 : 2;
-const hasPrivateText = (e: Entry) => privateText(e.draft) || e.history.some(privateText);
+const safe = (e: Entry): Entry => ({ ...e, draft: privateText(e.draft) ? "" : e.draft, stash: e.stash && !privateText(e.stash) ? e.stash : undefined, history: e.history.filter((text) => !privateText(text)) });
+const clearPriority = (e: Entry) => e.draft || e.stash ? 0 : e.history.length ? 1 : 2;
+const hasPrivateText = (e: Entry) => privateText(e.draft) || privateText(e.stash ?? "") || e.history.some(privateText);
 
 export function createComposerStorage(storage: () => Storage | undefined, now = Date.now) {
     const entries = new Map<string, Entry>();
@@ -34,6 +35,8 @@ export function createComposerStorage(storage: () => Storage | undefined, now = 
                 if (typeof key !== "string" || !value || typeof value.draft !== "string" || !Array.isArray(value.history) || !Number.isFinite(value.updated)) continue;
                 if (now() - value.updated >= COMPOSER_MAX_AGE) continue;
                 const e: Entry = { draft: value.draft, history: [...new Set<string>(value.history.filter((v: unknown) => typeof v === "string"))].slice(-HISTORY_LIMIT), updated: value.updated };
+                // Last, as it's written: what's read back is the same text, so nothing is saved again.
+                if (typeof value.stash === "string" && value.stash) e.stash = value.stash;
                 scrub ||= hasPrivateText(e);
                 result.set(key, safe(e));
             }
@@ -127,6 +130,13 @@ export function createComposerStorage(storage: () => Storage | undefined, now = 
             const e = entry(key);
             if (e.draft === text) return;
             update(key, { ...e, draft: text });
+        },
+        stash: (key: string) => entry(key).stash ?? "",
+        setStash(key: string, text: string) {
+            refresh();
+            const e = entry(key);
+            if ((e.stash ?? "") === text) return;
+            update(key, { ...e, stash: text || undefined });
         },
         remember(key: string, text: string) {
             if (!text.trim()) return;

@@ -128,6 +128,8 @@ export class Editor {
     private history: HistoryEntry[] = [];
     private histIdx = -1;
     private draft = "";
+    /** The prompt put away with the stash key, as it was in the box (placeholders and all). */
+    private stashed?: { text: string; undo: { text: string; cursor: number }[] };
     private killRing = "";
     private undoStack: { text: string; cursor: number }[] = [];
     private pastes = new Map<number, string>();
@@ -185,11 +187,30 @@ export class Editor {
         this.histIdx = -1;
     }
 
+    /**
+     * The stash key: what's in the box is put away, and what was put away comes back; with both, they trade
+     * places. Each keeps its pasted text, its images and its own undo steps. False with neither.
+     */
+    swapStash(): boolean {
+        if (this.secret || (!this.text && !this.stashed)) return false;
+        const back = this.stashed;
+        this.stashed = this.text ? { text: this.text, undo: this.undoStack } : undefined;
+        this.undoStack = back?.undo ?? [];
+        this.set(back?.text ?? "");
+        this.histIdx = -1;
+        return true;
+    }
+
+    /** The stashed prompt as one line of plain text; undefined with none. */
+    get stashPreview(): string | undefined {
+        return this.stashed && plainText(this.stashed.text).replace(/\s+/g, " ").trim();
+    }
+
     /** Drop pasted text and images nothing can bring back; undo (or a yank) can restore a placeholder. */
     private prunePastes() {
         const live = new Set<number>();
         const liveImages = new Set<number>();
-        for (const t of [this.text, this.draft, this.killRing, ...this.undoStack.map((u) => u.text)]) {
+        for (const t of [this.text, this.draft, this.killRing, ...this.undoStack.map((u) => u.text), ...(this.stashed ? [this.stashed.text, ...this.stashed.undo.map((u) => u.text)] : [])]) {
             for (const m of t.matchAll(/\[Pasted text #(\d+) \+\d+ lines\]/g)) live.add(Number(m[1]));
             for (const m of t.matchAll(MARKS)) liveImages.add(uidOf(m[0]));
         }
@@ -237,6 +258,11 @@ export class Editor {
     dropImage(uid: number, replacement = "") {
         this.attachments.delete(uid);
         ({ text: this.text, cursor: this.cursor } = replaceTokens(this.text, uid, replacement, this.cursor));
+        if (this.stashed) {
+            this.stashed.text = replaceTokens(this.stashed.text, uid, replacement).text;
+            // One that was only this image is nothing to bring back.
+            if (!this.stashed.text.trim()) this.stashed = undefined;
+        }
         for (let i = this.history.length - 1; i >= 0; i--) {
             const h = this.history[i]!;
             if (!h.attachments?.has(uid)) continue;
