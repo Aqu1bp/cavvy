@@ -46,6 +46,28 @@ test("offline Anthropic pricing includes Haiku's full-prompt long tier", async (
     expect((await usageSummary(1, now)).totals.cost).toBeCloseTo(.0075005, 10);
 });
 
+test("Claude Code usage of a model newer than Cavvy's table is priced like its family's latest, marked estimated", async () => {
+    const line = (model: string, id: string) => JSON.stringify({ type: "assistant", timestamp: new Date(now - 1000).toISOString(), sessionId: "s", requestId: id, message: { id, model, content: [], usage: { input_tokens: 1_000_000, output_tokens: 0 } } }) + "\n";
+    write(join(claude, "projects/p/new.jsonl"), line("claude-fable-5-2", "a") + line("claude-fable-5-9", "b") + line("claude-newfamily-1", "c"));
+    const s = await usageSummary(1, now);
+    const row = (model: string) => s.rows.find(r => r.model === model)!;
+    expect(row("claude-fable-5-2")).toMatchObject({ cost: 8, unknown: false });
+    expect(row("claude-fable-5-2").estimated).toBeUndefined();
+    expect(row("claude-fable-5-9")).toMatchObject({ cost: 8, unknown: false, estimated: true });
+    expect(row("claude-newfamily-1")).toMatchObject({ inputTokens: 1_000_000, cost: 0, unknown: true });
+    expect(s.totals).toMatchObject({ cost: 16, estimated: true, unknown: true });
+    rmSync(join(claude, "projects"), { recursive: true });
+});
+
+test("an API session's cost saved from a guessed price is marked estimated; a provider's own figure isn't", async () => {
+    write(join(iso.home, "projects/p/api-new.jsonl"), cavvyLine("anthropic:claude-opus-6", 0.5)
+        + JSON.stringify({ t: "usage", at: now - 1000, model: "anthropic:claude-opus-7", cost: 0.5, usage: { inputTokens: 100, outputTokens: 10, cost: 0.5 } }) + "\n");
+    const s = await usageSummary(1, now);
+    expect(s.rows.find(r => r.model === "claude-opus-6")).toMatchObject({ cost: 0.5, estimated: true });
+    expect(s.rows.find(r => r.model === "claude-opus-7")!.estimated).toBeUndefined();
+    rmSync(join(iso.home, "projects/p/api-new.jsonl"));
+});
+
 test("cached Anthropic metadata cannot retain stale static prices", async () => {
     const { resolveModelInfo, cachedListings } = await import("../src/providers/models");
     write(join(iso.home, "cache/models.json"), JSON.stringify({ version: 3, providers: { anthropic: { fetchedAt: now, fp: "test", models: [

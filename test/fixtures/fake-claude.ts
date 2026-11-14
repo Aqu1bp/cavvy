@@ -839,7 +839,7 @@ async function turn(content: any[], uuid?: string) {
     if (process.env.FAKE_INIT_DELAY_MS) await Bun.sleep(Number(process.env.FAKE_INIT_DELAY_MS));
     log({ init: prompts });
     // slash_commands: its built-ins and skills, named as 2.1.301 names them (a plugin's skills as plugin:skill, as --plugin-dir's are).
-    out({ ...(process.env.FAKE_FAST_MODE_END ? { fast_mode_state: "on" } : {}), ...(uuid && process.env.FAKE_OLD_RESULTS !== "1" ? { user_message_uuids: [uuid] } : {}), capabilities: CAPABILITIES, type: "system", subtype: "init", cwd: here, session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode, slash_commands: [...(process.env.FAKE_SLASH_COMMANDS ? JSON.parse(process.env.FAKE_SLASH_COMMANDS) : ["code-review", "simplify", "compact", "context", "design:ux-copy"]), ...pluginSkills()] });
+    out({ ...(process.env.FAKE_FAST_MODE_END ? { fast_mode_state: "on" } : {}), ...(uuid && process.env.FAKE_OLD_RESULTS !== "1" ? { user_message_uuids: [uuid] } : {}), capabilities: CAPABILITIES, type: "system", subtype: "init", ...(process.env.FAKE_INIT_MODEL ? { model: process.env.FAKE_INIT_MODEL } : {}), cwd: here, session_id: sessionId, apiKeySource: process.env.FAKE_API_KEY_SOURCE ?? "none", permissionMode: mode, slash_commands: [...(process.env.FAKE_SLASH_COMMANDS ? JSON.parse(process.env.FAKE_SLASH_COMMANDS) : ["code-review", "simplify", "compact", "context", "design:ux-copy"]), ...pluginSkills()] });
     // Commands it answers itself: a synthetic message, no model call, nothing spent.
     const said = String(content.find((c) => c?.type === "text")?.text ?? "");
     if (/^\/(effort|cost)\s*$/.test(said)) {

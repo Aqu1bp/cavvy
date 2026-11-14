@@ -66,8 +66,8 @@ function PlanLimitsGroup() {
 type Metric = "cost" | "tokens";
 const SHORT: Record<UsageSource, string> = { "claude-code": "Claude Code", codex: "Codex", api: "API" };
 const amount = (r: Pick<UsageTotals, "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "cost">, m: Metric) => (m === "tokens" ? processed(r) : r.cost);
-/** A cost as a figure: "$X+" when part of it had no price, "—" when none did. Never "$0" for unpriced usage. */
-const costFigure = (r: { cost: number; unknown: boolean }) => (r.unknown ? (r.cost > 0 ? `${usd(r.cost)}+` : "—") : usd(r.cost));
+/** A cost as a figure: "$X+" when part of it had no price, "—" when none did, "~$X" when part is at a guessed price. Never "$0" for unpriced usage. */
+const costFigure = (r: { cost: number; unknown: boolean; estimated?: boolean }) => (r.unknown && !r.cost ? "—" : `${r.estimated ? "~" : ""}${usd(r.cost)}${r.unknown ? "+" : ""}`);
 const figure = (r: Parameters<typeof amount>[0] & { unknown: boolean }, m: Metric) => (m === "tokens" ? tokens(processed(r)) : costFigure(r));
 /** The CLIs report plans in lower case ("max"). */
 const planLabel = (plan?: string) => (plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : undefined);
@@ -134,6 +134,7 @@ export function UsageDashboard(p: { data: UsageSummary; metric: Metric }) {
         <p class="set-note u-notes">
             Only this computer's usage. Costs are at API list prices, not what a plan bills.
             <Show when={p.data.totals.unknown}> Costs leave out unpriced usage; the Tokens view includes it.</Show>
+            <Show when={p.data.totals.estimated}> ~ marks a newer model priced like the one before it.</Show>
             {p.data.approxDated ? ` Times are approximate for ${plural(p.data.approxDated, "older record")}.` : ""}{p.data.approxPriced ? ` ${plural(p.data.approxPriced, "record")} may be unpriced.` : ""}
         </p>
         </></Show>
