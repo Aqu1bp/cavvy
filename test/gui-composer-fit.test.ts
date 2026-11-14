@@ -23,8 +23,8 @@ test("the styles carry out each step, and the column's width no longer hides the
     for (const rule of ['[data-fit~="1"] .pick .lbl', '[data-fit~="2"] .pick .chev', '[data-fit~="3"] .pick.model:has(> svg:not(.chev), > .provider-mono) > .truncate', '[data-fit~="4"] .ctx-btn']) expect(css).toContain(`.composer-bar${rule}`);
     expect(css).not.toContain(".composer .pick .lbl");
     expect(css).not.toContain(".composer .pick .chev");
-    // The account isn't on the chip: its tooltip and the picker say it.
-    expect(css).not.toContain(".pick-acct");
+    // The account is on the chip only once it's removed, and goes with the model's name.
+    expect(css).toContain('.composer-bar[data-fit~="3"] .pick-acct,');
     const composer = readFileSync(new URL("../gui/src/components/Composer.tsx", import.meta.url), "utf8");
     expect(composer).toContain('<div ref={bar} class="composer-bar">');
     expect(composer).toContain("onMount(() => onCleanup(fitComposerBar(bar!)));");

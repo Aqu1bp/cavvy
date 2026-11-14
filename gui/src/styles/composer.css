@@ -1267,6 +1267,7 @@ button.att-card:hover {
 /* Tight, what's on the row gives way a step at a time (lib/composer-fit.ts says the steps). Out of sight,
    still named for assistive tech; the model's name only while the provider's mark (or Compare's) is there. */
 .composer-bar[data-fit~="1"] .pick .lbl,
+.composer-bar[data-fit~="3"] .pick-acct,
 .composer-bar[data-fit~="3"] .pick.model:has(> svg:not(.chev), > .provider-mono) > .truncate {
     position: absolute;
     width: 1px;
@@ -2603,6 +2604,12 @@ button.att-card:hover {
 
 .mp-acct-btn.open .chev {
     transform: rotate(180deg);
+}
+
+/* On the model button, only once the session's account is gone (ModelPicker). */
+.pick-acct {
+    flex: 0 1 auto;
+    color: var(--warn);
 }
 
 /* The session's account was removed: the button asks for another. */

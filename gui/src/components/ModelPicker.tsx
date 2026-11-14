@@ -533,6 +533,8 @@ export function ModelPicker(p: ComposerMenu & { current?: ModelSummary; currentR
                         </Show>
                         {/* The icon is hidden from assistive tech, so the provider is named for it here. */}
                         <Show when={currentProvider()}>{(id) => <span class="sr-only">, {providerName(id())}</span>}</Show>
+                        {/* The account isn't named here (the tooltip does), except when it's gone: nothing runs until another is picked. */}
+                        <Show when={showAccounts() && missingAccount()}><span class="pick-acct truncate"> · Removed account</span></Show>
                     </>
                 }>
                     <Layers size={15} />
