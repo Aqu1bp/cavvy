@@ -262,7 +262,7 @@
 /* The conversation column. Not a query container: WebKit restyles everything in one each time its size
    changes, which with a long conversation took 300ms or more (a panel opening, a window resize). Other
    areas size their parts by the steps its size is within, which App.tsx sets from lib/layout.ts:
-   `:where(.main[data-narrow~="600"]) { .x {…} }` is what `@container main (max-width: 600px)` was, and
+   `:where(:is(.main, .session-pane)[data-narrow~="600"]) { .x {…} }` is what `@container main (max-width: 600px)` was, and
    adds no specificity either. Its height, which `cqh` measured, is --column-h on the boxes that use it
    (state/ui.ts columnHeight). */
 .main {
@@ -526,3 +526,43 @@ body.resizing .insp,
         transition: none;
     }
 }
+
+/* Two live conversations, with the inspector belonging to the focused one. */
+.session-panes { position: relative; display: flex; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+.session-pane { isolation: isolate; position: relative; display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+[data-split="on"] .session-pane + .session-pane { border-left: calc(1 * var(--sp)) solid var(--line); }
+[data-split="on"] .session-pane::after { content: ""; position: absolute; top: 0; left: 0; right: 0; height: calc(2 * var(--sp)); pointer-events: none; background: transparent; }
+[data-split="on"] .session-pane.focused::after { background: var(--accent); }
+.split-drop { position: absolute; inset: calc(8 * var(--sp)); z-index: 80; display: grid; place-items: center; border: calc(2 * var(--sp)) solid var(--accent); border-radius: calc(12 * var(--sp)); background: var(--sheet); opacity: .94; pointer-events: none; font-size: calc(18 * var(--sp)); }
+.split-status { position: absolute; top: calc(54 * var(--sp)); right: calc(16 * var(--sp)); z-index: 80; padding: calc(8 * var(--sp)) calc(12 * var(--sp)); background: var(--sheet); border-radius: calc(8 * var(--sp)); }
+
+[data-split="on"] .session-pane:last-child .bar-rail { display: none; }
+[data-split="on"] .session-pane:last-child > .header { padding-left: calc(16 * var(--sp)); }
+[data-split="on"] .session-pane .proj-box { display: none; }
+
+.split-resizer {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: calc(10 * var(--sp));
+    margin-left: calc(-5 * var(--sp));
+    z-index: 40;
+    cursor: col-resize;
+    touch-action: none;
+    -webkit-app-region: no-drag;
+}
+.split-resizer::after {
+    content: "";
+    position: absolute;
+    inset: 0 calc(4 * var(--sp));
+    background: transparent;
+}
+.split-resizer:hover::after,
+.split-resizer:focus-visible::after,
+.split-resizer.drag::after { background: var(--accent); }
+.split-resizer:focus-visible { outline: none; }
+
+/* Full-screen inspectors cover every layer of both conversations, including the divider. */
+[data-split="on"][data-inspfull="on"] .main { visibility: hidden; }
+[data-split="on"][data-inspfull="on"] .insp { background: var(--sheet); }
+.split-exit { white-space: nowrap; }

@@ -18,6 +18,7 @@ test("the composer dock's measured height is the transcript's dock prop, and the
     let transcript: { dock?: number } | undefined;
     const windowDock: number[] = [];
     const SessionView = component(between("../../gui/src/App.tsx", "function SessionView(", "/** The docked inspector's left edge"), "SessionView", {
+        app: { activeId: "s" },
         Header: () => node("header"),
         Transcript: (p: { dock?: number }) => { transcript = p; return node("transcript"); },
         FloatingBrowser: () => node("floating-browser"),
@@ -43,7 +44,7 @@ test("the composer dock's measured height is the transcript's dock prop, and the
         dock.offsetHeight = 244;
         observed[0]!.cb();
         expect(transcript!.dock).toBe(244);
-        expect(windowDock).toEqual([112, 244]);
+        expect(windowDock).toEqual([0, 112, 244]);
     } finally {
         dispose();
     }

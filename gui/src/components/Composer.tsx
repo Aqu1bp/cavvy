@@ -81,6 +81,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     /** Asks for the commands again (a skill added since): set while the composer has a project. */
     let refetchCommands: (() => void) | undefined;
 
+    const focused = () => app.activeId === p.sessionId;
     const h = () => handleFor(p.sessionId);
     const st = () => h()?.view.state;
     const busy = () => Boolean(st()?.busy);
@@ -185,7 +186,7 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     }));
     // A message is held because the session's CLI account was removed (#410): the model picker opens on its accounts.
     createEffect(on(() => st()?.accountNeeded, (provider, was) => {
-        if (provider && provider !== was) setModelPickerOpen(true);
+        if (focused() && provider && provider !== was) setModelPickerOpen(true);
     }, { defer: true }));
     // What the server hands back (interrupted queue, rewound prompt, a steer the turn never took).
     createEffect(() => {
@@ -202,16 +203,16 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
         // Restored without focus while Settings covers it: that would take focus from what's typed there.
         requestAnimationFrame(() => {
             resize();
-            if (!settingsTab()) ta?.focus();
+            if (!settingsTab() && focused()) ta?.focus();
         });
     });
     // Not while Settings covers it (App.tsx keeps it mounted there).
-    createEffect(on(focusComposer, () => requestAnimationFrame(() => !settingsTab() && ta?.focus()), { defer: true }));
+    createEffect(on(focusComposer, () => requestAnimationFrame(() => !settingsTab() && focused() && ta?.focus()), { defer: true }));
 
     /** Takes focus on the next frame, as on opening, unless something else is being typed in or a dialog is open. */
     const focusSoon = () => {
         const frame = requestAnimationFrame(() => {
-            if (settingsTab() || window.matchMedia("(max-width: 760px)").matches) return;
+            if (!focused() || settingsTab() || window.matchMedia("(max-width: 760px)").matches) return;
             const active = document.activeElement;
             if (active !== ta && active?.matches("input, textarea, select, [contenteditable='true']")) return;
             if (document.querySelector('[role="dialog"]')) return;
@@ -697,10 +698,10 @@ export function Composer(p: { sessionId?: string; placeholder?: string; autofocu
     const pickers = () => (
         <>
             <ModelPicker
-                current={st()?.model} currentRef={app.settings.model} open={modelPickerOpen()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare}
+                current={st()?.model} currentRef={app.settings.model} open={focused() && modelPickerOpen()} setOpen={setModelPickerOpen} placement={menuSide()} compare={p.sessionId ? undefined : p.compare}
                 effort={st() ? st()!.effort : app.settings.effort} fast={st() ? st()!.fastMode : app.settings.fastMode} busy={st()?.busy && !st()?.activity?.idle}
             />
-            <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} autoAsks={autoAsks()} open={modePickerOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
+            <ModePicker mode={mode()} bypassAllowed={bypassAllowed()} autoAsks={autoAsks()} open={focused() && modePickerOpen()} setOpen={setModePickerOpen} placement={menuSide()} />
         </>
     );
     const meter = () => <ComposerMeter sessionId={p.sessionId} provider={st()?.model?.provider ?? app.settings.model?.split(":")[0]} home={p.variant === "home"} />;

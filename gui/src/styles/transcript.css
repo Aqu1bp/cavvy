@@ -3586,7 +3586,7 @@
 }
 
 /* Narrow: who worked there by mark only, then not at all; the branch chip by its icon. */
-:where(.main[data-narrow~="640"]) {
+:where(:is(.main, .session-pane)[data-narrow~="640"]) {
     .place-ag .truncate,
     .place-files {
         display: none;
@@ -3605,7 +3605,7 @@
     }
 }
 
-:where(.main[data-narrow~="440"]) {
+:where(:is(.main, .session-pane)[data-narrow~="440"]) {
     .place-who {
         display: none;
     }

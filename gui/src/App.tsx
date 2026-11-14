@@ -1,8 +1,12 @@
+import { SplitResizer } from "./components/SplitResizer";
+import { clampSplitRatio } from "./lib/session-split";
+import { SESSION_DRAG, splitPair, splitSessions, setSplitSessions, splitRatio } from "./state/split";
+import { inspectorPane, setInspectorPane } from "./state/ui";
 import { RenderBoundary } from "./components/ui/ErrorBoundary";
-import { batch, createEffect, createMemo, createSignal, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
 import { PlugZap } from "lucide-solid";
 import { ErrorCards } from "./components/ErrorCards";
-import { activate, app, attentionCount, connNote, handleFor, restoreActiveSession, rpc, serversUi, type SessionHandle } from "./state/app";
+import { activate, app, attentionCount, connNote, handleFor, openSession, toast, restoreActiveSession, rpc, serversUi, type SessionHandle } from "./state/app";
 import { cycleSession, far, interrupt, newSession, togglePanel, toggleSidebar } from "./state/actions";
 import { prefs, setPrefs } from "./state/prefs";
 import { agentFocus, dockHeight, inspectorDrag, inspectorWidth, paletteOpen, railDrag, railOpen, requestComposerFocus, review, reviewDrag, panelFull, setPanelFull, setAgentFocus, setDockHeight, setInspectorDrag, setInspectorWidth, setModelPickerOpen, setPaletteOpen, setRailOpen, setReview, setSettingsTab, setShellLayout, settingsTab, shellLayout, terminalDrag, terminalMax, terminalShown, panelHold, setPanelHold, inspectorDocking, setInspectorDocking, tracksSliding, setTracksSliding } from "./state/ui";
@@ -75,7 +79,7 @@ function Disconnected() {
 }
 
 /** A session: the conversation, and the composer floating over its end. (Its inspector is the sheet's other column.) */
-function SessionView(p: { handle: SessionHandle }) {
+function SessionView(p: { handle: SessionHandle; onCloseSplit?: () => void }) {
     let dock: HTMLDivElement | undefined;
     // Unmeasured: the transcript's boxes have --dock-h's initial value (stage.css).
     const [dockH, setDockH] = createSignal<number>();
@@ -85,17 +89,17 @@ function SessionView(p: { handle: SessionHandle }) {
         const ro = new ResizeObserver(() => {
             const h = dock?.offsetHeight ?? 0;
             setDockH(h);
-            setDockHeight(h);
         });
         if (dock) ro.observe(dock);
         onCleanup(() => {
             ro.disconnect();
-            setDockHeight(0);
+            if (app.activeId === p.handle.id) setDockHeight(0);
         });
     });
+    createEffect(() => { if (app.activeId === p.handle.id) setDockHeight(dockH() ?? 0); });
     return (
         <>
-            <Header handle={p.handle} />
+            <Header handle={p.handle} onCloseSplit={p.onCloseSplit} />
             <div class="stage">
                 <Transcript handle={p.handle} dock={dockH()} />
                 <FloatingBrowser handle={p.handle} />
@@ -339,17 +343,86 @@ export function App() {
     const openingScreen = () => app.opening !== undefined && app.opening.id === app.activeId && !holding();
     const blocked = () => Boolean(document.querySelector(".dialog-backdrop, .popover"));
 
-    // Another session: its own view, not the last one's sub-agent or review.
-    createEffect(
-        on(
-            () => app.activeId,
-            () => {
-                setAgentFocus(undefined);
-                setReview(undefined);
-            },
-            { defer: true },
-        ),
-    );
+    const splitKey = "cavvy.sessionSplit";
+    let restoredSplit: readonly [string, string] | undefined;
+    try {
+        const saved: unknown = JSON.parse(sessionStorage.getItem(splitKey) ?? "null");
+        if (Array.isArray(saved) && saved.length === 2 && saved.every((id) => typeof id === "string" && id) && saved[0] !== saved[1]) restoredSplit = saved as [string, string];
+    } catch { /* No saved split. */ }
+    createEffect(on(splitSessions, (pair) => {
+        try { if (pair) sessionStorage.setItem(splitKey, JSON.stringify(pair)); else sessionStorage.removeItem(splitKey); } catch { /* Storage is optional. */ }
+    }, { defer: true }));
+    createEffect(() => {
+        if (app.conn !== "open" || !active() || !restoredSplit) return;
+        const pair = restoredSplit;
+        restoredSplit = undefined;
+        if (!pair.includes(app.activeId!)) return;
+        const from = app.activeId;
+        const version = dropVersion;
+        void Promise.all(pair.map((id) => openSession(id))).then(() => {
+            if (version === dropVersion && app.activeId === from && !splitSessions()) setSplitSessions(pair);
+        }, () => toast("Couldn't restore the split. Try dragging again."));
+    });
+    const [dropOver, setDropOver] = createSignal(false);
+    const [splitLoading, setSplitLoading] = createSignal(false);
+    let dropVersion = 0;
+    const panels = new Map<string, { pane: ReturnType<typeof inspectorPane>; review: ReturnType<typeof review>; agent: ReturnType<typeof agentFocus>; open: boolean }>();
+    createEffect(on(() => app.activeId, (id, previous) => {
+        if (previous) panels.set(previous, { pane: inspectorPane(), review: review(), agent: agentFocus(), open: prefs.panel });
+        const saved = id ? panels.get(id) : undefined;
+        batch(() => {
+            setAgentFocus(saved?.agent);
+            setReview(saved?.review);
+            setInspectorPane(saved?.pane ?? "agents");
+            if (saved) setPrefs("panel", saved.open);
+            setPanelFull(false);
+        });
+        if (splitSessions() && (!id || !splitSessions()!.includes(id))) {
+            setSplitSessions(undefined);
+            dropVersion++;
+        }
+    }, { defer: true }));
+    onMount(() => {
+        const clear = () => setDropOver(false);
+        window.addEventListener("dragend", clear);
+        window.addEventListener("drop", clear);
+        onCleanup(() => { window.removeEventListener("dragend", clear); window.removeEventListener("drop", clear); });
+    });
+    const closeSplit = () => {
+        const original = splitSessions()?.[0];
+        ++dropVersion;
+        setSplitLoading(false);
+        setPanelFull(false);
+        if (original) void activate(original);
+        setSplitSessions(undefined);
+    };
+    const drop = async (e: DragEvent) => {
+        if (!e.dataTransfer?.types.includes(SESSION_DRAG)) return;
+        e.preventDefault();
+        setDropOver(false);
+        const id = e.dataTransfer.getData(SESSION_DRAG);
+        const original = splitSessions()?.[0] ?? app.activeId;
+        if (!active() || !original || !id || id === original || splitSessions()?.includes(id)) return;
+        const summary = app.sessions.find((s) => s.id === id);
+        if (!summary || summary.machine !== machine) return void toast("Open sessions from the same machine.");
+        const version = ++dropVersion;
+        const from = app.activeId;
+        setSplitLoading(true);
+        try {
+            await openSession(id);
+            if (version !== dropVersion || app.activeId !== from) return;
+            const replaced = splitSessions()?.[1];
+            batch(() => {
+                setSplitSessions(splitPair(original, id, splitSessions()));
+                if (app.activeId === replaced) void activate(id);
+            });
+        } catch {
+            if (version === dropVersion) toast("Couldn't open the split. Try again.");
+        } finally {
+            if (version === dropVersion) setSplitLoading(false);
+        }
+    };
+    const panes = createMemo(() => splitSessions()?.map((id) => handleFor(id)).filter((h): h is SessionHandle => !!h) ?? (stage() ? [stage()!] : []));
 
     // Enter-sends decides what Enter and Mod+Enter are bound to.
     createEffect(() => setEnterSends(prefs.enterSends));
@@ -486,12 +559,15 @@ export function App() {
     // stale value there): each element that reads a size has it set here, on itself.
     const railWidth = () => railDrag() ?? prefs.sidebarWidth;
     // The steps of the column's size that its contents' styles read (shell.css .main); none until it's measured.
-    const narrow = createMemo(() => (layout().sheet.w ? columnSteps(layout().column.w, COLUMN_NARROW) : undefined));
+    const splitWidth = () => clampSplitRatio(splitRatio(), layout().column.w);
+    const paneShare = (id: string) => !splitSessions() ? 1 : id === splitSessions()?.[0] ? splitWidth() : 1 - splitWidth();
+    const narrow = createMemo(() => (layout().sheet.w && !splitSessions() ? columnSteps(layout().column.w, COLUMN_NARROW) : undefined));
     const short = createMemo(() => (layout().sheet.h ? columnSteps(layout().column.h, COLUMN_SHORT) : undefined));
 
     return (
         <div
             class={`app ${isDesktop ? `tauri os-${os}${isElectron ? " electron" : ""}` : "browser"} ${prefs.sidebar ? "" : "rail-off"}`}
+            data-split={splitSessions() ? "on" : undefined}
             data-machine={machine}
             data-rail={layout().railMode === "overlay" ? "overlay" : "docked"}
             data-railopen={layout().railMode === "overlay" && layout().railShown ? "on" : "off"}
@@ -530,12 +606,18 @@ export function App() {
                     {/* Behind the open drawer the sheet takes no focus, clicks or keys (Enter on a focused Allow, say). */}
                     <div
                         class="sheet"
+                        onDragOver={(e) => { if (app.activeId && !settingsTab() && e.dataTransfer?.types.includes(SESSION_DRAG)) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; setDropOver(true); } }}
+                        onDragLeave={(e) => { if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) setDropOver(false); }}
+                        onDragEnd={() => setDropOver(false)}
+                        onDrop={(e) => void drop(e)}
                         inert={drawerOpen()}
                         style={{
                             "--insp-col": inspOpen() && layout().inspector.mode === "dock" ? `${layout().inspector.width}px` : "0px",
                             "--term-h": `${layout().terminal.height}px`,
                         }}
                     >
+                        <Show when={dropOver()}><div class="split-drop" aria-hidden="true">{splitSessions() ? "Replace second session" : "Open side by side"}</div></Show>
+                        <Show when={splitLoading()}><div class="split-status" role="status">Opening split…</div></Show>
                         <main class="main" data-narrow={narrow()} data-short={short()}>
                             <Reconnecting />
                             {/* In a box of its own: adding or removing it beside the session would restyle all of it. */}
@@ -570,11 +652,21 @@ export function App() {
                                                 </div>
                                             </>}
                                         </Match>
-                                        <Match when={active() && agent()}>
+                                        <Match when={!splitSessions() && active() && agent()}>
                                             <AgentView handle={active()!} agent={agent()!} />
                                         </Match>
-                                        <Match when={stage()} keyed>
-                                            {(h) => <SessionView handle={h} />}
+                                        <Match when={stage()}>
+                                            <div class="session-panes" inert={layout().inspector.full || layout().terminal.maximized}>
+                                                <Show when={splitSessions()}><SplitResizer width={layout().column.w} ratio={splitWidth()} /></Show>
+                                                <For each={panes()}>{(h) => <section class="session-pane" style={{ flex: `${paneShare(h.id)} 1 0px` }} data-narrow={splitSessions() ? columnSteps(layout().column.w * paneShare(h.id), COLUMN_NARROW) : undefined} classList={{ focused: app.activeId === h.id }} aria-label={h.view.state.title ?? "Session"}
+                                                    onPointerDown={() => { if (app.activeId !== h.id) void activate(h.id); }}
+                                                    onFocusIn={() => { if (app.activeId !== h.id) void activate(h.id); }}>
+
+                                                    <Show when={app.activeId === h.id && agent()} fallback={<SessionView handle={h} onCloseSplit={splitSessions()?.[1] === h.id ? closeSplit : undefined} />}>
+                                                        <AgentView handle={h} agent={agent()!} />
+                                                    </Show>
+                                                </section>}</For>
+                                            </div>
                                         </Match>
                                         <Match when={app.activeId}>
                                             <Header />

@@ -73,7 +73,7 @@
 }
 
 /* A narrow column: a card's text runs to more lines and its buttons stack (composer.css .ask-row). */
-:where(.main[data-narrow~="600"]) {
+:where(:is(.main, .session-pane)[data-narrow~="600"]) {
     .home-col {
         --home-card-h: 220;
     }
@@ -239,7 +239,7 @@
         0 1px 0 var(--line);
 }
 
-:where(.main[data-narrow~="700"]) {
+:where(:is(.main, .session-pane)[data-narrow~="700"]) {
     .strip-hints {
         display: none;
     }

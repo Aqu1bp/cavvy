@@ -22,9 +22,9 @@ test("nothing in the covered session takes focus on its own while Settings is up
     const read = (f: string) => Bun.file(new URL(`../gui/src/components/${f}`, import.meta.url)).text();
     const composer = await read("Composer.tsx");
     const restore = composer.slice(composer.indexOf("What the server hands back"), composer.indexOf("createEffect(on(focusComposer"));
-    expect(restore).toContain("if (!settingsTab()) ta?.focus();");
+    expect(restore).toContain("if (!settingsTab() && focused()) ta?.focus();");
     expect(restore).not.toMatch(/^\s*ta\?\.focus\(\);/m);
-    expect(composer).toMatch(/const focusSoon = [\s\S]{0,120}if \(settingsTab\(\) \|\|/);
+    expect(composer).toMatch(/const focusSoon = [\s\S]{0,120}if \(!focused\(\) \|\| settingsTab\(\) \|\|/);
     const dock = await read("InteractionDock.tsx");
     expect(dock).toContain("const mayFocus = () => !typing() && !settingsTab();");
     expect(dock).not.toMatch(/!typing\(\) && el\.focus\(\)|typing\(\) \|\| input\.focus\(\)/);

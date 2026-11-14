@@ -10,7 +10,7 @@ import { createEffect, createResource, createUniqueId, createSignal, For, Match,
 import { AlertTriangle, Eye, EyeOff, FolderGit2, KeyRound, Save } from "lucide-solid";
 import type { Interaction, PermissionInteraction, PlanInteraction, QuestionInteraction, SecretInteraction } from "@shared/protocol";
 import { openAgents, respond } from "../state/actions";
-import { handleFor, rpc } from "../state/app";
+import { app, handleFor, rpc } from "../state/app";
 import { agentProvider } from "../lib/agent-marks";
 import { approvalChoices, approvalQuestion } from "../lib/approval";
 import { cardsKey, typingIn } from "../lib/card-keys";
@@ -29,11 +29,11 @@ const mayFocus = () => !typing() && !settingsTab();
 const SETTLE_MS = 400;
 
 /** Number keys and Esc, while this card is the one showing. */
-function useKeys(handler: (key: string) => boolean) {
+function useKeys(sessionId: () => string, handler: (key: string) => boolean) {
     onMount(() => {
         const shown = performance.now();
         const onKey = (e: KeyboardEvent) => {
-            if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing || !cardsKey(e.key, document.activeElement as HTMLElement | null) || document.querySelector(".dialog-backdrop, .popover")) return;
+            if (sessionId() !== app.activeId || e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || e.isComposing || !cardsKey(e.key, document.activeElement as HTMLElement | null) || document.querySelector(".dialog-backdrop, .popover")) return;
             if (performance.now() - shown < SETTLE_MS) return;
             // Not while the card is out of sight: Settings over it (lib/cover.ts), or the terminal maximized
             // over the conversation (which hides it with visibility, seen by checkVisibility only when asked).
@@ -56,7 +56,7 @@ export function InteractionTab(p: { sessionId: string; items: Interaction[] }) {
         <Show when={first()?.id} keyed>
             {(_id) => (
                 // A terminal that took the keyboard by itself gives it up, so the card's keys answer it.
-                cardArrived(),
+                p.sessionId === app.activeId && cardArrived(),
                 <div class={`ask card-surface itab itab-${first()!.kind} ${first()!.kind === "permission" && (first() as PermissionInteraction).dangerous ? "danger" : ""}`} style={{ "--column-h": columnHeight() }} role="alertdialog" aria-label="Waiting for you">
                     <Show when={p.items.length > 1}>
                         <div class="itab-count">1 of {p.items.length} waiting</div>
@@ -137,7 +137,7 @@ function PermissionCard(p: { sessionId: string; it: PermissionInteraction }) {
     };
     const choices = () => approvalChoices(p.it.options);
     const question = () => approvalQuestion(p.it);
-    useKeys((k) => {
+    useKeys(() => p.sessionId, (k) => {
         const opt = choices().keys[Number(k) - 1];
         if (opt) {
             void answer(opt.id);
@@ -287,7 +287,7 @@ function QuestionCard(p: { sessionId: string; it: QuestionInteraction }) {
         if (!p.it.multi) return void submit([label]);
         setPicked((l) => (l.includes(label) ? l.filter((x) => x !== label) : [...l, label]));
     };
-    useKeys((k) => {
+    useKeys(() => p.sessionId, (k) => {
         const i = Number(k);
         const o = p.it.options[i - 1];
         if (o) {
@@ -323,7 +323,7 @@ function QuestionCard(p: { sessionId: string; it: QuestionInteraction }) {
                     class="itab-input"
                     ref={(el) => {
                         // Nothing to pick: the answer is typed, so the cursor goes there (unless it's in another field).
-                        if (!p.it.options.length) queueMicrotask(() => mayFocus() && el.focus());
+                        if (!p.it.options.length) queueMicrotask(() => p.sessionId === app.activeId && mayFocus() && el.focus());
                     }}
                     value={other()}
                     placeholder={p.it.options.length ? "Something else…" : "Your answer"}
@@ -380,13 +380,13 @@ function SecretCard(p: { sessionId: string; it: SecretInteraction }) {
         input.value = "";
         void respond(p.sessionId, p.it.id, { kind: "secret" });
     };
-    useKeys((k) => {
+    useKeys(() => p.sessionId, (k) => {
         if (k !== "Escape") return false;
         decline();
         return true;
     });
     // Not while typing elsewhere: what was meant for the message box would land in here.
-    onMount(() => mayFocus() && input.focus());
+    onMount(() => p.sessionId === app.activeId && mayFocus() && input.focus());
     onCleanup(() => {
         if (input) input.value = "";
     });
@@ -453,7 +453,7 @@ function PlanCard(p: { sessionId: string; it: PlanInteraction }) {
     const planId = () => p.it.toolId ?? p.it.id;
     const worktree = () => info()?.git && setPlanDialog({ kind: "worktree", sessionId: p.sessionId, planId: planId() });
     const save = () => setPlanDialog({ kind: "save", sessionId: p.sessionId, planId: planId() });
-    useKeys((k) => {
+    useKeys(() => p.sessionId, (k) => {
         if (k === "1") return void approve("acceptEdits"), true;
         if (k === "2") return void approve("default"), true;
         if (k === "3") return void approve("auto"), true;
