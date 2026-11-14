@@ -503,14 +503,12 @@ test("a command is one quiet row by default: no card, no Done pill", () => {
         expect(text(card)).not.toContain("Done");
         expect(text(card)).not.toContain("kiwi output");
         expect(tailOf(card)).toBeUndefined();
-        // A multi-line command shows its first line (CSS adds " …"); the whole of it is in the body.
-        h.op({ op: "block", block: { ...finished("multi"), input: { command: "cd app\nmake all" } } });
+        // A multi-line command reads as its commands (a cd on its own line says only where); the whole of it is in the body.
+        h.op({ op: "block", block: { ...finished("multi"), input: { command: "cd app\nmake all\nmake test" } } });
         const multi = row(h.root, "multi");
-        expect(text(multi)).toContain("cd app");
-        expect(text(multi)).not.toContain("make all");
-        expect(all(multi).some((n) => has(n, "cmd-l") && has(n, "solo") && has(n, "more"))).toBe(true);
+        expect(text(all(multi).find((n) => has(n, "cmd-l"))!)).toBe("make all; make test");
         head(multi).props.onClick();
-        expect(text(body(multi)!)).toContain("cd app\nmake all");
+        expect(text(body(multi)!)).toContain("cd app\nmake all\nmake test");
         // Even with nothing printed, it opens: the whole command, "No output", and how it ended.
         h.op({ op: "block", block: { ...finished("quiet", "ok", ""), summary: "(no output)" } });
         const quiet = row(h.root, "quiet");
@@ -539,9 +537,8 @@ test("folded, a command's row says only its description; without one (Codex) the
         expect(text(body(desc)!)).toContain("bun test ./test/a.test.ts");
         const codex = row(h.root, "codex");
         const label = all(codex).find((n) => has(n, "cmd-l"))!;
-        expect(text(label)).toBe("bun run typecheck");
+        expect(text(label)).toBe("bun run typecheck; bun test");
         expect(has(label, "solo")).toBe(true);
-        expect(has(label, "more")).toBe(true);
         // The whole of it is in the row opened (and Copy), not a native tooltip: a long one made a wall of one (#389).
         expect(all(codex).some((n) => typeof n.props.title === "string" && n.props.title.includes("bun test"))).toBe(false);
         head(codex).props.onClick();

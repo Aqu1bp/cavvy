@@ -1078,7 +1078,7 @@ function CommandCardContent(p: { tool: ToolBlock }) {
                     {/* Folded, only what it's for: the command is in the row opened. Under way, find counts the command
                         (as on the live line, whose label the description is), so not this. */}
                     <Show when={rowLabel()}>
-                        <span class={`cmd-l ${description() ? "" : "solo"} ${!description() && command().includes("\n") ? "more" : ""}`} data-find-skip={live() || undefined}>{rowLabel()}</span>{" "}
+                        <span class={`cmd-l ${description() ? "" : "solo"}`} data-find-skip={live() || undefined}>{rowLabel()}</span>{" "}
                     </Show>
                     <span class="cmd-tools" data-find-skip>
                         <Show when={background() && task()!.stoppable && folds.sessionId}>

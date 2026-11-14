@@ -2211,12 +2211,6 @@
     color: var(--fg);
 }
 
-/* More than one line: the first, and a hint there's more. */
-.cmd-l.more::after {
-    content: " …";
-    color: var(--fg-4);
-}
-
 /* The columns after the label: each part, when there is one, 8px from the one before. */
 .cmd-tags,
 .cmd-res,

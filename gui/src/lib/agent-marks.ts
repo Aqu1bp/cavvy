@@ -4,7 +4,7 @@
 
 import type { AgentRun, ToolBlock } from "@shared/protocol";
 import { splitTitle } from "./format";
-import { commandLabel } from "./command-row";
+import { commandParts } from "./command-row";
 import { RUNNING, commandDescription, isLive, runningVerb, toolLabel } from "./tool-words";
 
 /**
@@ -49,7 +49,7 @@ export function stepWords(t: ToolBlock): string {
     const description = commandDescription(t);
     if (description) return oneLine(description);
     const { verb, arg } = toolLabel(t);
-    const what = t.name === "Bash" ? commandLabel(t) : arg && FILE_TOOLS.has(t.name) ? base(arg) : arg;
+    const what = t.name === "Bash" ? commandDescription(t) ?? commandParts(String(t.input?.command ?? ""))[0]?.split(/\s+(?:&&|\|\|?)\s+/)[0] : arg && FILE_TOOLS.has(t.name) ? base(arg) : arg;
     return oneLine([verbOf(t, verb), what].filter(Boolean).join(" "));
 }
 
