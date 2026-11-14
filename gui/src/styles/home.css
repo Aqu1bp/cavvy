@@ -245,8 +245,22 @@
     }
 }
 
-/* ---- Before the first message: trusting the folder, connecting a model ----
-   Shaped like the request cards (composer.css .ask), with their question and buttons. */
+/* ---- Before the first message: connecting a model, trusting a folder whose settings run commands ----
+   The ways to connect: a quiet row under the question, the strip's controls a size up. */
+.home-connect {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: calc(4 * var(--sp));
+    margin: calc(-8 * var(--sp)) 0 calc(18 * var(--sp));
+}
+
+.home-connect .strip-ctl {
+    height: calc(32 * var(--sp));
+    padding: 0 calc(11 * var(--sp));
+}
+
+/* The trust card: shaped like the request cards (composer.css .ask), with their question and buttons. */
 .hcard {
     padding: calc(16 * var(--sp)) calc(16 * var(--sp)) calc(14 * var(--sp)) calc(18 * var(--sp));
     border-radius: calc(18 * var(--sp));

@@ -4,7 +4,8 @@
 // little above the middle of the column (home.css).
 
 import { createEffect, createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js";
-import { ChevronDown, Folder, FolderGit2, FolderOpen, KeyRound } from "lucide-solid";
+import { ChevronDown, Folder, FolderGit2, FolderOpen, KeyRound, Shield } from "lucide-solid";
+import type { ProviderInfo } from "@shared/protocol";
 import { app, refreshProjects, reportError, rpc, serversUi } from "../state/app";
 import { chooseProject, connectCli, openProject, trustAndContinue } from "../state/actions";
 import { columnHeight, requestComposerFocus, setSettingsTab, shellLayout } from "../state/ui";
@@ -30,10 +31,6 @@ const HINTS = [
  * Types `text` into the composer under `root` where its caret is, as typing would: its draft, undo
  * and autosize follow, and so do its / and @ menus. An @ goes after a space, as the composer's own does.
  */
-/** "A, B or C". */
-function orList(names: string[]): string {
-    return names.length > 1 ? `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}` : (names[0] ?? "");
-}
 
 function typeInComposer(root: HTMLElement | undefined, text: string) {
     const ta = root?.querySelector("textarea");
@@ -60,6 +57,9 @@ function rowsFitting(column: { w: number; h: number }, cards: number): number {
     return Math.max(0, Math.min(3, Math.floor((column.h - sp(FRAME_H + GROUP_H + cards * card + LIST_H)) / sp(ROW_H))));
 }
 
+/** A plan's own name, short enough for the row of ways in: "Claude subscription" → "Claude". */
+const planName = (p: ProviderInfo) => (p.agentCli?.plan ?? p.name).replace(/\s+(subscription|plan|account)$/i, "");
+
 export function Home() {
     const [pickerOpen, setPickerOpen] = createSignal(false);
     /** The project chip: the recent-projects menu opens by it. */
@@ -75,10 +75,21 @@ export function Home() {
     // Claude Code / Codex on this computer that aren't turned on yet: the user's own plan, one click away.
     const clis = () => app.providers.filter((p) => p.agentCli?.installed && !p.configured);
     const [connecting, setConnecting] = createSignal<string>();
-    const noModel = () => Boolean(app.modelsLoaded && !app.modelsLoading && app.models.every((g) => !g.models.length));
+    // Once known, kept while the lists load again (opening the model picker does that): the row under the question
+    // would otherwise go and come back.
+    const noModel = () => Boolean(app.modelsLoaded && app.models.every((g) => !g.models.length));
     const needsTrust = () => info()?.needsTrust ?? [];
     const askTrust = () => Boolean(info()?.askTrust);
-    const cards = () => (needsTrust().length || askTrust() ? 1 : 0) + (noModel() ? 1 : 0);
+    // The card for a folder whose settings run commands; the row of ways to connect a model is a third of one.
+    const cards = () => (needsTrust().length ? 1 : 0) + (noModel() ? 1 / 3 : 0);
+    const [trustOpen, setTrustOpen] = createSignal(false);
+    const [trustAnchor, setTrustAnchor] = createSignal<HTMLElement>();
+    const trust = async (yes: boolean) => {
+        setTrustOpen(false);
+        await trustAndContinue(app.homeCwd!, yes);
+        void refetch();
+        if (yes) void refreshProjects();
+    };
 
     // The terminal rows shown under the composer: home.css places the group by them. When they arrive
     // (or go) after Home is up, the group glides to its new place rather than jumping.
@@ -155,6 +166,14 @@ export function Home() {
             <Show when={app.homeCwd && info()?.git}>
                 <WorktreePicker cwd={app.homeCwd!} branch={info()?.branch} />
             </Show>
+            {/* Only the edits' checks wait on it, so it's asked here, quietly, by the folder it's about. */}
+            <Show when={app.homeCwd && !needsTrust().length && askTrust()}>
+                <button ref={setTrustAnchor} class="strip-ctl" title="Edits get checked for errors only in folders you trust" aria-haspopup="menu" aria-expanded={trustOpen()} onClick={() => setTrustOpen(!trustOpen())}>
+                    <Shield size={14} class="ic" />
+                    <span class="truncate">Not trusted</span>
+                    <ChevronDown size={12} stroke-width={2} class="chv" />
+                </button>
+            </Show>
             <span class="grow" />
             <Show when={app.homeCwd}>
                 <span class="strip-hints">
@@ -183,7 +202,18 @@ export function Home() {
                 class="home-col"
                 style={{ "--column-h": columnHeight(), "--cli-rows": app.homeCwd ? cliRows() : 0, "--cli-on": app.homeCwd && cliOn() ? 1 : 0, "--home-cards": cards() }}
             >
-                <h1 class="home-q">{app.homeCwd ? "What should we work on?" : "Choose a project to start"}</h1>
+                <h1 class="home-q">{!app.homeCwd ? "Choose a project to start" : noModel() ? "Connect a model to start" : "What should we work on?"}</h1>
+                <Menu label="Trust this folder" open={trustOpen()} anchor={trustAnchor} onClose={() => setTrustOpen(false)} width={280}>
+                    <div class="menu-head">Trust {basename(app.homeCwd ?? "")}?</div>
+                    <div class="menu-note">Edits get checked for errors only in folders you trust.</div>
+                    <div class="menu-sep" />
+                    <button role="menuitem" class="menu-item" onClick={() => void trust(true)}>
+                        <span class="menu-label">Trust</span>
+                    </button>
+                    <button role="menuitem" class="menu-item" onClick={() => void trust(false)}>
+                        <span class="menu-label">Not now</span>
+                    </button>
+                </Menu>
                 <Menu label="Recent projects" open={pickerOpen()} anchor={pickerAnchor} onClose={() => setPickerOpen(false)} width={420}>
                     <div class="menu-head">Recent projects</div>
                     <For each={app.projects} fallback={<div class="menu-note">No projects yet.</div>}>
@@ -241,56 +271,26 @@ export function Home() {
                         </div>
                     </Show>
 
-                    {/* Nothing in it runs by itself, but its edits are checked for errors only once it's trusted. */}
-                    <Show when={!needsTrust().length && askTrust()}>
-                        <div class="hcard card-surface trust" role="group" aria-label="Trust this folder">
-                            <div class="ask-h">
-                                <span class="ask-title">Do you trust this folder?</span>
-                            </div>
-                            <p>Edits are checked for errors only in folders you trust, as that runs the project's own tools.</p>
-                            <div class="ask-row">
-                                <button class="pbtn primary" onClick={async () => { await trustAndContinue(app.homeCwd!, true); void refetch(); void refreshProjects(); }}>
-                                    Trust this folder
-                                </button>
-                                <span class="grow" />
-                                <button class="pbtn quiet" onClick={async () => { await trustAndContinue(app.homeCwd!, false); void refetch(); }}>
-                                    Not now
-                                </button>
-                            </div>
-                        </div>
-                    </Show>
-
+                    {/* No model yet: the ways to connect one, under the question that asks for it. A plan the user already
+                        has (Claude Code, Codex…) is one click; a key is in Settings. */}
                     <Show when={noModel()}>
-                        <div class="hcard card-surface connect" role="group" aria-label="Connect a model">
-                            <div class="ask-h">
-                                <span class="ask-title">Connect a model to start</span>
-                            </div>
-                            <p>
-                                {clis().length === 1
-                                    ? `Use the ${clis()[0]!.agentCli!.plan} you already have through ${clis()[0]!.name}, add`
-                                    : clis().length
-                                      ? `Use a plan you already have through ${orList(clis().map((pr) => pr.name))}, add`
-                                      : "Add"}{" "}
-                                an API key, or start Ollama or LM Studio on this computer.
-                            </p>
-                            <div class="ask-row">
-                                <button class={`pbtn ${clis().length ? "" : "primary"}`} onClick={() => setSettingsTab("providers")}>
-                                    <KeyRound size={14} />
-                                    Add an API key
-                                </button>
-                                <For each={clis()}>
-                                    {(pr) => (
-                                        <button class="pbtn primary" disabled={connecting() === pr.id} onClick={async () => {
-                                            setConnecting(pr.id);
-                                            await connectCli(pr);
-                                            setConnecting(undefined);
-                                        }}>
-                                            <ProviderIcon id={pr.id} name={pr.name} size={14} />
-                                            Use my {pr.agentCli!.plan}
-                                        </button>
-                                    )}
-                                </For>
-                            </div>
+                        <div class="home-connect" role="group" aria-label="Connect a model">
+                            <For each={clis()}>
+                                {(pr) => (
+                                    <button class="strip-ctl" title={`Use your ${pr.agentCli!.plan}`} disabled={connecting() === pr.id} onClick={async () => {
+                                        setConnecting(pr.id);
+                                        await connectCli(pr);
+                                        setConnecting(undefined);
+                                    }}>
+                                        <ProviderIcon id={pr.id} name={pr.name} size={16} />
+                                        {planName(pr)}
+                                    </button>
+                                )}
+                            </For>
+                            <button class="strip-ctl" title="Anthropic, OpenAI, Gemini and more, in Settings" onClick={() => setSettingsTab("providers")}>
+                                <KeyRound size={15} class="ic" />
+                                API key
+                            </button>
                         </div>
                     </Show>
 
@@ -300,7 +300,7 @@ export function Home() {
                         strip={strip}
                         onText={(t) => setTyped(Boolean(t))}
                         compare={info()?.git ? { available: true } : { available: false, why: app.homeCwd ? "Comparing models needs a Git repository." : "Choose a project folder first." }}
-                        placeholder={!app.homeCwd ? "Choose a project folder to start" : noModel() ? "Connect a model to start" : "Describe a task or ask a question"}
+                        placeholder={!app.homeCwd ? "Choose a project folder to start" : "Describe a task or ask a question"}
                     />
                 </div>
 
