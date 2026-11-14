@@ -828,7 +828,8 @@ async function runTurn(threadId: string, turnId: string, policy: { approvalPolic
         if (decision === "accept") notify("item/completed", { threadId, turnId, item: { ...cmd, status: "completed", exitCode: 0, aggregatedOutput: "ok\n" } });
         else notify("item/completed", { threadId, turnId, item: { ...cmd, status: "declined" } });
         // FAKE_STEP_MS: the model's next step, after the command, takes this long (what was steered meanwhile waits for it).
-        if (process.env.FAKE_STEP_MS) await Promise.race([Bun.sleep(Number(process.env.FAKE_STEP_MS)), new Promise<void>((r) => (t.wake = r))]);
+        // An interrupt that came before it (while the approval was being answered) ends the turn here: no step to wait out.
+        if (process.env.FAKE_STEP_MS && !t.interrupted) await Promise.race([Bun.sleep(Number(process.env.FAKE_STEP_MS)), new Promise<void>((r) => (t.wake = r))]);
         if (process.env.FAKE_REVIEW_TIMING === "after") approve();
     }
     spend(threadId, turnId, tokens(120, 20, 30, 5));
