@@ -60,8 +60,9 @@ export async function checkModelPicker(root: HTMLElement) {
     const inPanel = <T extends HTMLElement = HTMLElement>(selector: string) => [...(panel()?.querySelectorAll<T>(selector) ?? [])];
     const rows = () => inPanel(".mr");
     const row = (name: string) => rows().find((r) => r.querySelector(".mr-name")?.textContent === name)!;
-    // A filter by its name: plain words, no mark.
-    const filter = (name: string) => inPanel(".mp-filters [role='tab']").find((t) => t.textContent?.trim() === name)!;
+    // A filter by its name: its words, after the provider's icon (a letter, for a provider with no logo).
+    const filterName = (t: Element) => (t.querySelector(".truncate") ?? t).textContent?.trim();
+    const filter = (name: string) => inPanel(".mp-filters [role='tab']").find((t) => filterName(t) === name)!;
     // A subscription's account, at the end of the filters' row: one button naming the session's, which opens a short
     // list of them (each by its name, and a plan near its limit), then "Add account".
     const acctButton = () => panel()?.querySelector<HTMLButtonElement>(".mp-bar .mp-acct-btn");
@@ -111,7 +112,8 @@ export async function checkModelPicker(root: HTMLElement) {
         const filterCurrent = filter("Claude Code");
         check(/current model/.test(filterCurrent.getAttribute("aria-label") ?? ""), "screen readers hear which provider has the current model");
         check(!panel()!.querySelector(".mp-filters .bar, .mp-filters .mp-f-cur, .mp-filters .mp-f.cur"), "the filters have no current-provider marker");
-        check(!filterCurrent.children.length && filterCurrent.textContent?.trim() === "Claude Code", `a filter is its name alone, no mark and no pill (${filterCurrent.innerHTML.slice(0, 200)})`);
+        // The provider's icon and its name, nothing more.
+        check([...filterCurrent.children].every((c) => c.matches(".provider-icon, .truncate")) && filterName(filterCurrent) === "Claude Code", `a filter is its icon and name, no mark and no pill (${filterCurrent.innerHTML.slice(0, 200)})`);
         check(bg(filterCurrent) === "rgba(0, 0, 0, 0)", "the open filter has no fill");
 
         // The keyboard highlight is apart from the current model: both shown at once, and different.

@@ -2391,7 +2391,9 @@
     width: max-content;
     min-width: calc(180 * var(--sp));
     max-width: calc(260 * var(--sp));
-    max-height: calc(220 * var(--sp));
+    /* Inside the picker, which is only as tall as its list of models (--mp-fit): what's under the search and the
+       filters' row. */
+    max-height: min(calc(220 * var(--sp)), calc((var(--mp-fit, 380) - 72) * var(--sp)));
     padding: calc(4 * var(--sp));
     overflow-y: auto;
     border-radius: calc(9 * var(--sp));
