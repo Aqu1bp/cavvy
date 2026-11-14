@@ -22,6 +22,8 @@ export interface SignInProcess {
 export interface SignInHost {
     /** The person's browser is on another machine than this one. */
     readonly away: boolean;
+    /** Each of its commands is a connection of its own (a server reached over SSH): its status is looked at less often. */
+    readonly far?: boolean;
     /** Runs one of a recipe's commands to its end. `missing`: its program isn't installed there. */
     run(recipe: SignInRecipe, words: string[], o?: { stdin?: string; timeoutMs?: number }): Promise<{ code: number; out: string; missing?: boolean }>;
     /** Starts one in a terminal of its own. `opens`: it may open the browser itself. */
@@ -228,7 +230,7 @@ export class SignInFlow {
 
     constructor(private o: SignInFlowOptions) {
         this.entries = o.wants.map((w) => ({ ...w, name: w.recipe?.name ?? w.target, state: w.recipe || w.command ? "out" : "unknown" }));
-        this.pollMs = o.pollMs ?? (o.host.away ? 5000 : 2500);
+        this.pollMs = o.pollMs ?? (o.host.far ? 15_000 : o.host.away ? 5000 : 2500);
         this.now = o.now ?? Date.now;
         this.done = new Promise((resolve) => { this.finish = resolve; });
     }
@@ -521,10 +523,19 @@ export class SignInFlow {
         this.set({ busy: undefined, error: (said(res.out, [value]) || "That token didn't sign in.").split("\n")[0] });
     }
 
+    /** One being wrapped up: a status check that lands meanwhile doesn't wrap it up again. */
+    private finishing: Entry | undefined;
+
     private async signedIn(e: Entry) {
+        if (this.finishing === e) return;
+        this.finishing = e;
         this.stopCommand();
-        if (e.recipe?.then) await this.o.host.run(e.recipe, words(e.recipe.then), { timeoutMs: 30_000 }).catch(() => undefined);
-        if (e.recipe) await this.o.host.signedIn?.(e.recipe).catch(() => undefined);
+        try {
+            if (e.recipe?.then) await this.o.host.run(e.recipe, words(e.recipe.then), { timeoutMs: 30_000 }).catch(() => undefined);
+            if (e.recipe) await this.o.host.signedIn?.(e.recipe).catch(() => undefined);
+        } finally {
+            this.finishing = undefined;
+        }
         this.next();
     }
 

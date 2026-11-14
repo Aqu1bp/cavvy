@@ -41,6 +41,7 @@ function command(recipe: SignInRecipe, words: string[], extra: Record<string, st
 export function serverSignInHost(e: ServerEntry): SignInHost {
     return {
         away: true,
+        far: true,
         async run(recipe, words, o = {}) {
             const r = await ssh(e, command(recipe, words), { stdin: o.stdin === undefined ? undefined : new TextEncoder().encode(o.stdin), timeoutMs: o.timeoutMs ?? 30_000 });
             return { code: r.code, out: r.stdout + r.stderr, missing: r.code === MISSING && !r.stdout && !r.stderr };
