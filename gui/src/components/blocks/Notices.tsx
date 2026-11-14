@@ -47,7 +47,7 @@ function onFound(id: () => string, open: () => void) {
 const GOAL_MARK = /^([◎✓✗]) /;
 
 /** Info: one quiet line, the CLI's logo its icon. Cut short, it opens on click (or when find lands in it). */
-function InfoLine(p: { block: NoticeBlock }) {
+function InfoLine(p: { block: NoticeBlock; leaving?: boolean }) {
     let tx: HTMLSpanElement | undefined;
     const mark = () => GOAL_MARK.exec(p.block.text)?.[1];
     // Without a closing list of terminal commands ("(/tasks shows them, …)"): here the side panel has them.
@@ -59,7 +59,7 @@ function InfoLine(p: { block: NoticeBlock }) {
     const toggle = () => long() && setOpen(!open());
     return (
         <div
-            class={`nt ${long() ? "long" : ""} ${open() ? "open" : ""} ${mark() === "✓" ? "goal-met" : ""} ${p.block.wake ? "wake" : ""}`}
+            class={`nt ${long() ? "long" : ""} ${open() ? "open" : ""} ${mark() === "✓" ? "goal-met" : ""} ${p.block.wake ? "wake" : ""} ${p.leaving ? "leaving" : ""}`}
             data-find={p.block.id}
             role={long() ? "button" : "note"}
             tabIndex={long() ? 0 : undefined}
@@ -401,11 +401,11 @@ function CompactedLine(p: { block: NoticeBlock; leaving?: boolean }) {
 }
 
 /** A notice block, drawn as what it is (lib/notices.ts noticeKind). */
-/** `leaving`: a compaction fading out with the work it folds away with (TurnView). */
+/** `leaving`: a compaction or a wake, fading out with the work it folds away with (TurnView). */
 export function Notice(p: { block: NoticeBlock; state?: SessionState; leaving?: boolean }) {
     const kind = () => noticeKind(p.block);
     return (
-        <Switch fallback={<InfoLine block={p.block} />}>
+        <Switch fallback={<InfoLine block={p.block} leaving={p.leaving} />}>
             <Match when={kind() === "switch"}>
                 <SwitchLine block={p.block} />
             </Match>

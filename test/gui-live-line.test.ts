@@ -139,12 +139,18 @@ test("a done turn folds its steps and what was said between them; the reply, the
     // Done, the card stays with the reply; what was said before it is on the way, as before a step.
     const kept = (items: any[]) => workSegments(items).filter((s) => s.kind === "item" && !s.interim).map((s) => (s as { item: any }).item);
     expect(kept([said("Looking."), steps, said("Here's the plan."), plan, steps, said("Started.")])).toEqual([plan, said("Started.")]);
-    // A compaction during the work (the CLI's, or Cavvy's own) folds with it, in its place; with no steps it stays.
+    // A compaction during the work (the CLI's, or Cavvy's own) folds with it, in its place, as a wake that joined it
+    // does; one after the reply, or with no steps, stays where it happened.
     const cliCompacted = { kind: "block" as const, block: { t: "notice", text: "compacted", compacted: true } };
+    const wake = { kind: "block" as const, block: { t: "notice", text: "PR #3: checks failed", wake: true } };
     expect(shown([steps, cliCompacted, steps, said("Done.")])).toEqual(["Done."]);
     expect(shown([cliCompacted, steps, said("Done.")])).toEqual(["Done."]);
     expect(shown([steps, block("compact"), steps, said("Done.")])).toEqual(["Done."]);
+    expect(shown([steps, cliCompacted, said("Done.")])).toEqual(["Done."]);
+    expect(shown([steps, wake, steps, said("Done.")])).toEqual(["Done."]);
     expect(workSegments([steps, cliCompacted, steps]).map((s) => s.kind)).toEqual(["work", "item", "work"]);
+    expect(shown([steps, said("Done."), cliCompacted])).toEqual(["Done.", "compacted"]);
+    expect(shown([steps, cliCompacted])).toEqual(["compacted"]);
     expect(shown([cliCompacted, said("Compacted.")])).toEqual(["compacted", "Compacted."]);
 });
 

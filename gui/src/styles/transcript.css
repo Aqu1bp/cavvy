@@ -601,10 +601,11 @@
     color: var(--fg-2);
 }
 
-/* The work, fading out before it folds into "Worked for" (and what was said on the way, and a compaction, with it). */
+/* The work, fading out before it folds into "Worked for" (and what was said on the way, a compaction, a wake, with it). */
 .worklog.leaving,
 .reply > .md.leaving,
-.reply > .compacted.leaving {
+.reply > .compacted.leaving,
+.reply > .nt.leaving {
     animation: fade-out 200ms ease-out both;
 }
 

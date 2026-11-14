@@ -656,7 +656,7 @@ function TurnViewContent(p: TurnViewProps) {
     const worked = () => workedLabel(p.turn.startedAt, p.turn.endedAt);
 
     // By position, not by object: the items are rebuilt on every streamed token, the rows mustn't be.
-    // `leaving`: what was said on the way (or a compaction), fading out with the work it's folding away with.
+    // `leaving`: what was said on the way (or a compaction, a wake), fading out with the work it's folding away with.
     const renderItem = (it: () => Item, leaving?: () => boolean) => (
         <Switch>
             <Match when={it().kind === "activity" && (it() as Extract<Item, { kind: "activity" }>)}>
