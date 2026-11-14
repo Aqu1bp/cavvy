@@ -182,6 +182,7 @@ test("a CLI's warning keeps its first line as the title, and the docs link it en
     // A live notice's text is the data's, redacted; the message stays the terminal's.
     expect(liveNotice("n1", "info", "Codex: hello", { source: "codex", text: "hello" })).toEqual({ t: "notice", id: "n1", level: "info", text: "hello", source: "codex" });
     expect(liveNotice("n2", "warn", "plain")).toEqual({ t: "notice", id: "n2", level: "warn", text: "plain" });
+    expect(liveNotice("n3", "info", "↻ PR #3: checks failed", { wake: true, text: "PR #3: checks failed" })).toEqual({ t: "notice", id: "n3", level: "info", text: "PR #3: checks failed", wake: true });
 });
 
 test("a limit says whose, which window and until when; a turn it stopped says the window too", () => {

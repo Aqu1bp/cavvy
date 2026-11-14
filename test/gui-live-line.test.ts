@@ -139,6 +139,13 @@ test("a done turn folds its steps and what was said between them; the reply, the
     // Done, the card stays with the reply; what was said before it is on the way, as before a step.
     const kept = (items: any[]) => workSegments(items).filter((s) => s.kind === "item" && !s.interim).map((s) => (s as { item: any }).item);
     expect(kept([said("Looking."), steps, said("Here's the plan."), plan, steps, said("Started.")])).toEqual([plan, said("Started.")]);
+    // A compaction during the work (the CLI's, or Cavvy's own) folds with it, in its place; with no steps it stays.
+    const cliCompacted = { kind: "block" as const, block: { t: "notice", text: "compacted", compacted: true } };
+    expect(shown([steps, cliCompacted, steps, said("Done.")])).toEqual(["Done."]);
+    expect(shown([cliCompacted, steps, said("Done.")])).toEqual(["Done."]);
+    expect(shown([steps, block("compact"), steps, said("Done.")])).toEqual(["Done."]);
+    expect(workSegments([steps, cliCompacted, steps]).map((s) => s.kind)).toEqual(["work", "item", "work"]);
+    expect(shown([cliCompacted, said("Compacted.")])).toEqual(["compacted", "Compacted."]);
 });
 
 test("a glide starts where the content was drawn, continues a running one, and never covers more than 240px", () => {

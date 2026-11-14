@@ -1102,7 +1102,8 @@ export class Agent {
         const wakes = this.state.wakes?.drainRunning() ?? [];
         if (!wakes.length) return undefined;
         const events = wakes.filter((w) => !w.from);
-        if (events.length) this.emit({ type: "notice", level: "info", message: `↻ ${wakeDisplay(events)}` });
+        // The terminal marks it with ↻; the GUI draws its own icon for a wake, over the text without the mark.
+        if (events.length) this.emit({ type: "notice", level: "info", message: `↻ ${wakeDisplay(events)}`, data: { wake: true, text: wakeDisplay(events) } });
         const peers = wakes.filter((w) => w.from).map((w) => ({ from: w.from!, text: w.message ?? w.text }));
         for (const w of wakes) if (w.from) this.emit({ type: "peer_message", key: peerKey(w), from: w.from, text: w.message ?? w.text });
         return { text: formatWakes(wakes), wakes, ...(peers.length ? { peers } : {}) };

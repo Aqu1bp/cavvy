@@ -190,19 +190,22 @@ export function workedLabel(startedAt?: number, endedAt?: number): string | unde
 }
 
 /** A turn's rows as TurnView lays them out: a run of steps (Activity's groupBlocks), or a block of its own. */
-type Row = { kind: "activity"; card?: string } | { kind: "block"; block: { t: string; text?: string } };
+type Row = { kind: "activity"; card?: string } | { kind: "block"; block: { t: string; text?: string; compacted?: boolean } };
 
 export type Seg<R> = { kind: "work"; items: R[] } | { kind: "item"; item: R; interim: boolean };
 
 /**
  * Work (tool runs, thinking) vs what's said: the reply, notices. What the model said on its way (`interim`) folds
  * away with the work once the turn is done. The reply is what it said after its last step; when it ended on a
- * step (a background wait, a stop), it's the last thing it said, so that never folds away. Notices (errors) never do.
+ * step (a background wait, a stop), it's the last thing it said, so that never folds away. Notices (errors) never do,
+ * but a compaction (Cavvy's or the CLI's) is part of the work: it folds with it, in its place. A turn without steps
+ * (a /compact of its own) keeps it.
  */
 export function workSegments<R extends Row>(items: R[]): Seg<R>[] {
     // A plan's card isn't work: it stays in its turn when the work folds away.
     const isWork = (it: Row) => (it.kind === "activity" ? it.card !== "plan" : it.block.t === "thinking");
     const isText = (it: Row) => it.kind === "block" && it.block.t === "text";
+    const isCompaction = (it: Row) => it.kind === "block" && (it.block.t === "compact" || (it.block.t === "notice" && it.block.compacted === true));
     // Something said: a blank block (a CLI's stray newlines) isn't a reply.
     const said = (it: Row) => isText(it) && Boolean((it as { block: { text?: string } }).block.text?.trim());
     const lastWork = items.findLastIndex(isWork);
@@ -215,7 +218,7 @@ export function workSegments<R extends Row>(items: R[]): Seg<R>[] {
             const prev = out[out.length - 1];
             if (prev?.kind === "work") prev.items.push(it);
             else out.push({ kind: "work", items: [it] });
-        } else out.push({ kind: "item", item: it, interim: i < reply && isText(it) });
+        } else out.push({ kind: "item", item: it, interim: (i < reply && isText(it)) || (lastWork >= 0 && isCompaction(it)) });
     });
     return out;
 }

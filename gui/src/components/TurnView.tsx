@@ -229,11 +229,11 @@ function Imported(p: { block: ImportedBlock }) {
     );
 }
 
-function Compacted(p: { block: CompactBlock }) {
+function Compacted(p: { block: CompactBlock; leaving?: boolean }) {
     const [open, setOpen] = createSignal(false);
     createEffect(on(findReveal, (r) => r?.part === p.block.id && setOpen(true)));
     return (
-        <div class="compacted" data-find={p.block.id}>
+        <div class={`compacted ${p.leaving ? "leaving" : ""}`} data-find={p.block.id}>
             <div class="compacted-rule" data-find-skip>
                 <span />
                 <button
@@ -656,7 +656,7 @@ function TurnViewContent(p: TurnViewProps) {
     const worked = () => workedLabel(p.turn.startedAt, p.turn.endedAt);
 
     // By position, not by object: the items are rebuilt on every streamed token, the rows mustn't be.
-    // `leaving`: what was said on the way, fading out with the work it's folding away with.
+    // `leaving`: what was said on the way (or a compaction), fading out with the work it's folding away with.
     const renderItem = (it: () => Item, leaving?: () => boolean) => (
         <Switch>
             <Match when={it().kind === "activity" && (it() as Extract<Item, { kind: "activity" }>)}>
@@ -669,8 +669,8 @@ function TurnViewContent(p: TurnViewProps) {
                             {(t) => <Markdown text={t().text} streaming={writing() && t().id === lastText()} sessionId={p.state.id} find={t().id} class={leaving?.() ? "leaving" : undefined} />}
                         </Match>
                         <Match when={b().t === "thinking" && (b() as ThinkingBlock)}>{(t) => <Show when={!liveThought(t())}><Thinking block={t()} live={false} /></Show>}</Match>
-                        <Match when={b().t === "notice" && (b() as NoticeBlock)}>{(n) => <Notice block={n()} state={p.state} />}</Match>
-                        <Match when={b().t === "compact" && (b() as CompactBlock)}>{(c) => <Compacted block={c()} />}</Match>
+                        <Match when={b().t === "notice" && (b() as NoticeBlock)}>{(n) => <Notice block={n()} state={p.state} leaving={leaving?.()} />}</Match>
+                        <Match when={b().t === "compact" && (b() as CompactBlock)}>{(c) => <Compacted block={c()} leaving={leaving?.()} />}</Match>
                         <Match when={b().t === "imported" && (b() as ImportedBlock)}>{(c) => <Imported block={c()} />}</Match>
                         <Match when={b().t === "peer" && (b() as PeerBlock)}>{(m) => <PeerQuote from={m().from} text={m().text} find={m().id} reveal={findReveal()?.part === m().id} />}</Match>
                         <Match when={b().t === "shell" && (b() as ShellBlock)}>{(s) => <Shell block={s()} />}</Match>

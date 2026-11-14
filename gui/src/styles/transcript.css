@@ -601,9 +601,10 @@
     color: var(--fg-2);
 }
 
-/* The work, fading out before it folds into "Worked for" (and what was said on the way, with it). */
+/* The work, fading out before it folds into "Worked for" (and what was said on the way, and a compaction, with it). */
 .worklog.leaving,
-.reply > .md.leaving {
+.reply > .md.leaving,
+.reply > .compacted.leaving {
     animation: fade-out 200ms ease-out both;
 }
 
@@ -919,6 +920,11 @@
 
 .nt.goal-met .ic {
     color: var(--ok);
+}
+
+/* A wake that joined the turn: the bell of one that starts a turn (.wake-row). */
+.nt.wake .ic {
+    color: var(--accent);
 }
 
 .nt .tx {
