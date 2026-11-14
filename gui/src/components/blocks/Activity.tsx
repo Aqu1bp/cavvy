@@ -584,46 +584,52 @@ export function SubAgentsRow(p: { runs: AgentRun[] }) {
         return duration(Math.max(0, end - start)).replace(/^(\d+)ms$/, "0s");
     };
     return (
-        <div class="subagents">
-            <button class="ag-head" aria-expanded={open()} onClick={() => setOpen(!open())}>
-                <ProviderStack providers={p.runs.map(providerOf)} />
-                <span class="ag-text">
-                    <span class="ag-title">{plural(p.runs.length, "sub-agent")}</span>
-                    <span class={`ag-sub tone-${tone()}`}>{counts().join(" · ")}</span>
+        // One agent: its row alone, which opens it. Several: how many and how they're doing, opening into a row each.
+        <Show when={p.runs.length > 1} fallback={<div class="subagents single"><Show when={p.runs[0]} keyed>{(a) => <AgentRow a={a} providerOf={providerOf} />}</Show></div>}>
+            <div class="subagents">
+                <button class="ag-head" aria-expanded={open()} onClick={() => setOpen(!open())}>
+                    <ProviderStack providers={p.runs.map(providerOf)} />
+                    <span class="ag-text">
+                        <span class="ag-title">{plural(p.runs.length, "sub-agent")}</span>
+                        <span class={`ag-sub tone-${tone()}`}>{counts().join(" · ")}</span>
+                    </span>
+                    <span class="grow" />
+                    <span class="ag-time num">{span()}</span>
+                    <ChevronRight size={14} class="chev" />
+                </button>
+                <Show when={open()}>
+                    <div class="agl">
+                        <For each={p.runs}>{(a) => <AgentRow a={a} providerOf={providerOf} />}</For>
+                    </div>
+                </Show>
+            </div>
+        </Show>
+    );
+}
+
+/** A sub-agent's row: what it's for, its model and what it's up to (or found), how long; it opens its own view. */
+function AgentRow(p: { a: AgentRun; providerOf: (a: AgentRun) => string | undefined }) {
+    const a = p.a;
+    const providerOf = p.providerOf;
+    const meta = () => `${a.model ? `${shortModelRef(a.model)} · ` : ""}${a.effort ? `${a.effort} effort · ` : ""}`;
+    // The whole call it's making, for the tooltip and a screen reader: the line says it in a few words.
+    const full = () => (a.status === "running" ? agentStep(a)?.full : undefined);
+    return (
+        <button class={`agr ${findReveal()?.part === a.id ? "found" : ""}`} data-find={a.id} onClick={() => openAgents(a.id)} title={a.model ? `${a.description ?? ""}\n${shortModelRef(a.model)}` : a.description}>
+            <span class="av">
+                <AgentMark provider={providerOf(a)} />
+                <span class={`nd st-${a.status}`} />
+            </span>
+            <span class="agr-text">
+                <span class="agr-name truncate">{a.description?.trim() || "Sub-agent"}</span>{" "}
+                <span class={`agr-sub truncate ${a.status === "failed" ? "tone-err" : ""}`} title={full()} aria-label={full() && `${meta()}${full()}`}>
+                    {meta()}
+                    {agentLine(a)}
                 </span>
-                <span class="grow" />
-                <span class="ag-time num">{span()}</span>
-                <ChevronRight size={14} class="chev" />
-            </button>
-            <Show when={open()}>
-                <div class="agl">
-                    <For each={p.runs}>
-                        {(a) => {
-                            const meta = () => `${a.model ? `${shortModelRef(a.model)} · ` : ""}${a.effort ? `${a.effort} effort · ` : ""}`;
-                            // The whole call it's making, for the tooltip and a screen reader: the line says it in a few words.
-                            const full = () => (a.status === "running" ? agentStep(a)?.full : undefined);
-                            return (
-                                <button class={`agr ${findReveal()?.part === a.id ? "found" : ""}`} data-find={a.id} onClick={() => openAgents(a.id)} title={a.model ? `${a.description}\n${shortModelRef(a.model)}` : a.description}>
-                                    <span class="av">
-                                        <AgentMark provider={providerOf(a)} />
-                                        <span class={`nd st-${a.status}`} />
-                                    </span>
-                                    <span class="agr-text">
-                                        <span class="agr-name truncate">{a.description.trim() || "Sub-agent"}</span>{" "}
-                                        <span class={`agr-sub truncate ${a.status === "failed" ? "tone-err" : ""}`} title={full()} aria-label={full() && `${meta()}${full()}`}>
-                                            {meta()}
-                                            {agentLine(a)}
-                                        </span>
-                                    </span>
-                                    <span class="ag-time num">{agentElapsed(a)}</span>
-                                    <ChevronRight size={14} class="chev" />
-                                </button>
-                            );
-                        }}
-                    </For>
-                </div>
-            </Show>
-        </div>
+            </span>
+            <span class="ag-time num">{agentElapsed(a)}</span>
+            <ChevronRight size={14} class="chev" />
+        </button>
     );
 }
 

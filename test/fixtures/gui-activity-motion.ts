@@ -365,6 +365,9 @@ test("a group's sub-agents card follows its rows", () => {
         const list = all(h.root).find((n) => has(n, "steps"))!;
         const agents = all(h.root).find((n) => has(n, "subagents"))!;
         expect(list.children.indexOf(first)).toBeLessThan(list.children.indexOf(agents));
+        // One sub-agent: its row alone, which opens it, with no heading to open first.
+        expect(all(agents).some((n) => has(n, "ag-head"))).toBe(false);
+        expect(all(agents).some((n) => has(n, "agr"))).toBe(true);
         h.op({ op: "block", block: tool("b") });
         expect(row(h.root, "b")).toBeUndefined();
         h.op({ op: "block.patch", blockId: "b", patch: { status: "ok" } });

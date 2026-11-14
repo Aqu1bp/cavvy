@@ -2722,6 +2722,13 @@
     background: var(--hover);
 }
 
+/* One sub-agent: its row is the card, as tall as the heading of several, and opens it in one click. */
+.subagents.single > .agr {
+    min-height: calc(48 * var(--sp));
+    padding: calc(6 * var(--sp)) calc(10 * var(--sp)) calc(6 * var(--sp)) calc(12 * var(--sp));
+    border-radius: 0;
+}
+
 .agr .av {
     box-shadow: inset 0 0 0 0.5px var(--line);
 }
