@@ -10,7 +10,7 @@ import { chooseProject, connectCli, openProject, trustAndContinue } from "../sta
 import { columnHeight, requestComposerFocus, setSettingsTab, shellLayout } from "../state/ui";
 import { sp } from "../state/prefs";
 import { ago, basename, tildify } from "../lib/format";
-import { isWindowShown, machine } from "../lib/platform";
+import { isElectron, isWindowShown, machine } from "../lib/platform";
 import { now } from "../lib/clock";
 import { CliSessions } from "./CliSessions";
 import { Composer } from "./Composer";
@@ -114,14 +114,15 @@ export function Home() {
     // Drawn before the desktop window came up (at launch): the window appearing is its entrance.
     const instant = !isWindowShown();
 
-    // Which machine it runs on is said (and chosen) only where there's more than this one: once the window knows.
+    // Which machine it runs on, and the way to add a server: in the desktop app, and wherever there's more than this
+    // one machine, once the window knows.
     let where: HTMLSpanElement | undefined;
     /** Takes it away again: undefined until it's shown; called at once if this screen went first. */
     let unmountWhere: (() => void) | undefined;
     let whereShown = false;
     let left = false;
     createEffect(() => {
-        if (whereShown || !where || !(machine || app.hello?.servers)) return;
+        if (whereShown || !where || !(isElectron || machine || app.hello?.servers)) return;
         whereShown = true;
         const el = where;
         void serversUi().then((m) => {
@@ -138,7 +139,7 @@ export function Home() {
     /** Under the composer, like a drawer: where the session runs, then the composer's prefixes. */
     const strip = (
         <>
-            {/* Where it runs, when this Cavvy has servers (components/Servers.tsx puts it here). */}
+            {/* Where it runs, and the servers to add or pick (components/Servers.tsx puts it here). */}
             <span class="strip-at" ref={where} />
             <button
                 class="strip-ctl"

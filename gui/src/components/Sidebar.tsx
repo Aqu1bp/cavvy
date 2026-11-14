@@ -8,7 +8,7 @@
 import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack, type JSX } from "solid-js";
 import { Archive, ArchiveRestore, Check, CheckCheck, ChevronsDownUp, ChevronsUpDown, ChevronUp, Download, Folder, FolderOpen, FolderPlus, Layers, ListFilter, MoreHorizontal, PanelLeft, Pencil, Pin, PinOff, Plus, Search, Settings, SquarePen, Trash2, Undo2, X } from "lucide-solid";
 import type { SessionSummary } from "@shared/protocol";
-import { activate, app, handleFor, isUnread, refreshSessions, reportError, serversUi } from "../state/app";
+import { activate, app, handleFor, isUnread, refreshSessions, reportError } from "../state/app";
 import { createUpdateAction } from "./UpdateAction";
 import { archive, archiveSessions, chooseProject, deleteSessions, newSession, openProject, openWaiting, pin, rename, settle, settleSessions, toggleSidebar } from "../state/actions";
 import { prefs, setPrefs } from "../state/prefs";
@@ -21,7 +21,7 @@ import { foldOrder, groupCounts, inFront, needsRowLine, needsYou, planFit, railF
 import { railSelection, setRailSelection, setSidebarOrder } from "../state/sidebar";
 import { bulkPlan, clickKind, clickSelect, extendSelect, pruneSelection, railTargets, selectAll, sessionCount, type BulkPlan, type RailList } from "../lib/rail-select";
 import { now } from "../lib/clock";
-import { isDesktop, isElectron, machine, os } from "../lib/platform";
+import { isDesktop, machine, os } from "../lib/platform";
 import { Menu } from "./ui/Menu";
 import { rowMenuKey } from "../lib/menu";
 import { ProviderIcon } from "./ui/ProviderIcon";
@@ -255,27 +255,6 @@ function PlanGauge(p: { plan: RailPlan }) {
             </svg>
             <ProviderIcon id={p.plan.provider} name={p.plan.name} size={11} />
         </span>
-    );
-}
-
-/**
- * Beside Settings in the desktop app: this Cavvy's servers, to add one or start a session on one
- * (components/Servers.tsx, loaded when it's first pressed).
- */
-function MachineButton() {
-    return (
-        <button
-            class="hb lg machine"
-            title="Servers"
-            aria-label="Servers"
-            aria-haspopup="menu"
-            onClick={(e) => {
-                const button = e.currentTarget;
-                void serversUi().then((m) => m.openMachines(button), reportError);
-            }}
-        >
-            <Layers size={16} />
-        </button>
     );
 }
 
@@ -1044,9 +1023,6 @@ export function Sidebar() {
                     <PlanRow plans={plans()} />
                 </Show>
                 <UpdateButton />
-                <Show when={isElectron}>
-                    <MachineButton />
-                </Show>
                 <button class="hb lg" title={withShortcut("Settings", "app:settings")} aria-label="Settings" onClick={() => setSettingsTab("general")}>
                     <Settings size={16} />
                 </button>
